@@ -9,10 +9,10 @@ import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.js";
 import {
   buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel, validateVideoElement
 } from "../browser/video.js";
+import { getChannelLogo, getShowName } from "./showInfo.js";
 import { getStream, getStreamMemoryUsage } from "./registry.js";
 import { CONFIG } from "../config/index.js";
 import { emitStreamHealthChanged } from "./statusEmitter.js";
-import { getShowName } from "./showInfo.js";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 
 /*
@@ -704,6 +704,9 @@ export function monitorPlaybackHealth(
     const entry = getStream(streamInfo.numericStreamId);
     const memoryBytes = entry ? getStreamMemoryUsage(entry).total : 0;
 
+    // Get the channel key from the registry entry for logo lookup.
+    const channelKey = entry?.info.storeKey ?? "";
+
     const status: StreamStatus = {
 
       bufferingDuration: bufferingStartTime ? Math.round((now - bufferingStartTime) / 1000) : null,
@@ -716,6 +719,7 @@ export function monitorPlaybackHealth(
       lastIssueTime,
       lastIssueType,
       lastRecoveryTime: lastRecoveryTime > 0 ? lastRecoveryTime : null,
+      logoUrl: channelKey ? (getChannelLogo(channelKey) ?? "") : "",
       memoryBytes,
       networkState: lastVideoState?.networkState ?? 0,
       pageReloadsInWindow: pageReloadTimestamps.length,
@@ -804,22 +808,35 @@ export function monitorPlaybackHealth(
    * IMPORTANT: Early returns must call emitStatusUpdate() before returning (except when the stream is terminating, e.g., page closed or circuit breaker tripped). This
    * ensures SSE clients always have current status data (duration, memory, health) even during recovery, buffering, or video search periods. Without this, the
    * streamStatuses map becomes stale and new SSE connections receive outdated snapshots.
+   *
+   * CHECK ORDER MATTERS: The recoveryInProgress check must come BEFORE the currentPage.isClosed() check. During tab replacement, the old page is intentionally closed
+   * while the handler creates a new page. If we check isClosed() first, we would terminate the interval while recovery is still in progress, causing status updates to
+   * stop permanently. The sequence is: (1) intervalCleared for explicit cleanup, (2) recoveryInProgress to continue during recovery, (3) isClosed() for unexpected
+   * page termination outside of recovery.
    */
   const interval = setInterval((): void => {
 
-    // Stop monitoring if cleanup was requested or the page was closed. The interval clears itself on these conditions.
-    if(intervalCleared || currentPage.isClosed()) {
+    // Stop monitoring if cleanup was requested.
+    if(intervalCleared) {
 
       clearInterval(interval);
 
       return;
     }
 
-    // Skip this check if a recovery operation is still in progress. Recovery can be async and take multiple seconds. We don't want to stack recovery attempts. We still
-    // emit status so SSE clients see current state (health, duration, memory) even during recovery.
+    // Skip health checks if a recovery operation is in progress. During tab replacement, the old page will be closed but we must keep the interval running until the
+    // new page is assigned. Emit status so SSE clients see current state (health, duration, memory) even during recovery.
     if(recoveryInProgress) {
 
       emitStatusUpdate();
+
+      return;
+    }
+
+    // Stop monitoring if the page was closed outside of recovery. This handles cases like browser disconnect or explicit stream termination.
+    if(currentPage.isClosed()) {
+
+      clearInterval(interval);
 
       return;
     }
@@ -886,6 +903,9 @@ export function monitorPlaybackHealth(
 
               currentContext = newContext;
               videoNotFoundCount = 0;
+
+              // Emit status so SSE clients stay current even when returning early after context re-search.
+              emitStatusUpdate();
 
               return;
             }
@@ -1392,6 +1412,10 @@ export function monitorPlaybackHealth(
 
           LOG.warn("Monitor check timed out (%s consecutive). Tab may be unresponsive.", consecutiveTimeouts);
 
+          // Update issue state so SSE clients can show the degraded state.
+          lastIssueType = "tab timing out";
+          lastIssueTime = Date.now();
+
           // After 3 consecutive timeouts, attempt tab replacement if the callback is available.
           if((consecutiveTimeouts >= 3) && onTabReplacement) {
 
@@ -1430,9 +1454,6 @@ export function monitorPlaybackHealth(
                 videoNotFoundCount = 0;
                 pendingReMinimize = true;
                 recoveryGraceUntil = Date.now() + recoveryGracePeriods[3];
-
-                // Finalize: clear recovery flag and emit status so SSE clients know the stream survived.
-                finalizeTabReplacement();
               } else {
 
                 // Tab replacement failed - check circuit breaker.
@@ -1449,9 +1470,6 @@ export function monitorPlaybackHealth(
 
                   return;
                 }
-
-                // Finalize: clear recovery flag and emit status so SSE clients see the stream is still alive.
-                finalizeTabReplacement();
               }
             } catch(replacementError) {
 
@@ -1468,11 +1486,17 @@ export function monitorPlaybackHealth(
 
                 return;
               }
+            } finally {
 
-              // Finalize: clear recovery flag and emit status so SSE clients see the stream is still alive.
+              // Clear recovery flag and emit status. The finally block ensures cleanup happens on all paths including circuit breaker returns.
               finalizeTabReplacement();
             }
+
+            return;
           }
+
+          // Emit status so SSE clients see current duration/memory even during timeout degradation (when consecutiveTimeouts < 3).
+          emitStatusUpdate();
 
           return;
         }
@@ -1486,6 +1510,13 @@ export function monitorPlaybackHealth(
         } else {
 
           LOG.error("Monitor check failed: %s.", errorMessage);
+        }
+
+        // Emit status for non-abort errors so SSE clients stay current. Abort errors don't need this because termination is already in progress and the next
+        // tick's abort check will clean up.
+        if(!errorMessage.includes("aborted")) {
+
+          emitStatusUpdate();
         }
       }
     }).catch((outerError) => {
