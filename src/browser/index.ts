@@ -52,6 +52,22 @@ let stalePageCleanupInterval: ReturnType<typeof setInterval> | null = null;
 // since these are handled by the shutdown code path. This prevents false "unexpected disconnect" errors during graceful shutdown.
 let gracefulShutdownInProgress = false;
 
+/**
+ * Returns true if graceful shutdown is in progress.
+ */
+export function isGracefulShutdown(): boolean {
+
+  return gracefulShutdownInProgress;
+}
+
+/**
+ * Sets the graceful shutdown flag. Call this at the start of shutdown, before terminating streams, so that page close errors are suppressed.
+ */
+export function setGracefulShutdown(value: boolean): void {
+
+  gracefulShutdownInProgress = value;
+}
+
 /*
  * MANAGED PAGE TRACKING
  *
@@ -797,8 +813,9 @@ export async function getBrowserPages(): Promise<Page[]> {
  */
 export async function closeBrowser(): Promise<void> {
 
-  // Set the flag so the disconnect handler knows this is intentional and skips error logging and stream termination.
-  gracefulShutdownInProgress = true;
+  // Ensure the flag is set so the disconnect handler knows this is intentional. Normally set earlier by app.ts shutdown(), but set here as a fallback for direct
+  // calls to closeBrowser().
+  setGracefulShutdown(true);
 
   try {
 

@@ -5,7 +5,7 @@
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.js";
 import type { Express, NextFunction, Request, Response } from "express";
 import { LOG, createMorganStream, formatError, isFFmpegAvailable, setConsoleLogging } from "./utils/index.js";
-import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChromium, prepareExtension, startStalePageCleanup,
+import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChromium, prepareExtension, setGracefulShutdown, startStalePageCleanup,
   stopStalePageCleanup } from "./browser/index.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
@@ -94,6 +94,9 @@ function setupGracefulShutdown(): void {
     shutdownInProgress = true;
 
     LOG.info("Received %s, starting graceful shutdown.", signal);
+
+    // Set the graceful shutdown flag early so that page close errors are suppressed during stream termination.
+    setGracefulShutdown(true);
 
     // Stop cleanup and polling intervals.
     stopStalePageCleanup();

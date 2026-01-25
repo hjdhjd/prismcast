@@ -8,6 +8,7 @@ import { getStream, unregisterStream } from "./registry.js";
 import type { RecoveryMetrics } from "./monitor.js";
 import { clearShowName } from "./showInfo.js";
 import { emitStreamRemoved } from "./statusEmitter.js";
+import { isGracefulShutdown } from "../browser/index.js";
 
 /*
  * STREAM LIFECYCLE
@@ -161,8 +162,8 @@ export function terminateStream(streamId: number, channelName: string, reason: s
       recoveryMetrics = streamInfo.stopMonitor();
     }
 
-    // Close the browser page.
-    if(!streamInfo.page.isClosed()) {
+    // Close the browser page. Skip during graceful shutdown since closeBrowser() will close all pages and we'd get spurious "Target closed" errors.
+    if(!isGracefulShutdown() && !streamInfo.page.isClosed()) {
 
       streamInfo.page.close().catch((error) => {
 
