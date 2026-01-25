@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+/* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
+ *
+ * prismcast: CLI entry point for PrismCast.
+ */
+import "../dist/index.js";
