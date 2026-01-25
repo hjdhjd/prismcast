@@ -155,7 +155,7 @@ export function generateBaseStyles(): string {
     ".form-error { color: var(--status-error-text); font-size: 12px; margin-top: 3px; }",
     ".form-warning { color: var(--status-warning-text); font-size: 12px; margin-top: 5px; padding: 6px 10px; background: var(--status-warning-bg); ",
     "border-radius: var(--radius-sm); }",
-    ".hint { color: var(--text-secondary); font-size: 12px; margin-top: 3px; }",
+    ".hint { color: var(--text-secondary); font-size: 12px; margin-top: 1px; margin-bottom: 15px; }",
 
     // Env badge in form labels.
     ".env-badge { display: inline-block; background: var(--badge-env-bg); color: var(--badge-env-text); padding: 2px 8px; ",

@@ -141,7 +141,8 @@ function generateStatusScript(): string {
     "    else { label = 'Recovering'; }",
     "  }",
     "  else { label = health; }",
-    "  return '<span class=\"status-dot\" style=\"color: ' + (colorVars[health] || 'var(--text-muted)') + ';\">&#9679;</span> ' + label;",
+    "  return '<span class=\"status-dot\" style=\"color: ' + (colorVars[health] || 'var(--text-muted)') + ';\">&#9679;</span> ' +",
+    "    '<span style=\"color: var(--text-secondary);\">' + label + '</span>';",
     "}",
 
     // Update system status display in header. Shows system health (green dot when connected, red with label when not) and stream count.
@@ -198,7 +199,12 @@ function generateStatusScript(): string {
     "    var isExpanded = expandedStreams[id];",
     "    var chevron = isExpanded ? '&#9660;' : '&#9654;';",
     "    var rowTint = getRowTint(s.health);",
-    "    var channelDisplay = s.channel || getDomain(s.url);",
+    "    var channelText = s.channel || getDomain(s.url);",
+    "    var channelDisplay = s.logoUrl",
+    "      ? '<img src=\"' + s.logoUrl + '\" class=\"channel-logo\" alt=\"' + channelText + '\" ' +",
+    "        'onerror=\"this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'inline\\'\">' +",
+    "        '<span class=\"channel-text\" style=\"display:none\">' + channelText + '</span>'",
+    "      : '<span class=\"channel-text\">' + channelText + '</span>';",
     "    html += '<tr class=\"stream-row\" data-id=\"' + id + '\" onclick=\"toggleStreamDetails(' + id + ')\" style=\"background-color: ' + rowTint + ';\">';",
     "    html += '<td class=\"chevron\">' + chevron + '</td>';",
     "    var durationSpan = '<span class=\"stream-duration\" id=\"duration-' + id + '\">\\u00b7 ' + formatDuration(s.duration) + '</span>';",
@@ -1463,6 +1469,14 @@ function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
+    // Profile reference toggle.
+    "  window.toggleProfileReference = function() {",
+    "    var ref = document.getElementById('profile-reference');",
+    "    if (ref) {",
+    "      ref.style.display = ref.style.display === 'none' ? 'block' : 'none';",
+    "    }",
+    "  };",
+
     // Submit channel form via AJAX (add or edit).
     "  window.submitChannelForm = function(event, action) {",
     "    event.preventDefault();",
@@ -1677,10 +1691,12 @@ function generateLandingPageStyles(): string {
     ".streams-table .stream-row { cursor: pointer; }",
     ".streams-table .stream-row:hover { background: var(--table-row-hover); }",
     ".streams-table .chevron { width: 20px; color: var(--text-muted); font-size: 10px; }",
-    ".streams-table .stream-info { width: 180px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }",
+    ".streams-table .stream-info { width: 180px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: 13px; }",
     ".streams-table .stream-duration { font-weight: 400; color: var(--text-secondary); }",
+    ".streams-table .channel-logo { height: 24px; width: auto; max-width: 100px; vertical-align: middle; margin-right: 4px; }",
+    ".streams-table .channel-text { vertical-align: middle; }",
     ".streams-table .stream-show { max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 13px; }",
-    ".streams-table .stream-health { text-align: right; white-space: nowrap; }",
+    ".streams-table .stream-health { text-align: right; white-space: nowrap; font-size: 13px; }",
     ".streams-table .stream-details td { padding: 10px 12px 12px 32px; background: var(--surface-sunken); }",
     ".streams-table .details-content { font-size: 12px; color: var(--text-secondary); }",
     ".streams-table .details-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 10px; }",
@@ -1724,15 +1740,32 @@ function generateLandingPageStyles(): string {
     // Channel form styles. Inputs use full width; selects use width classes from ui.ts for consistency with settings forms.
     ".channel-form { background: var(--form-bg); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 20px; }",
     ".channel-form h3 { margin-top: 0; margin-bottom: 15px; color: var(--text-heading-secondary); }",
-    ".channel-form .form-row { margin-bottom: 15px; }",
+    ".channel-form .form-row { margin-bottom: 4px; }",
     ".channel-form .form-row:last-child { margin-bottom: 0; }",
     ".channel-form .form-input { width: 100%; box-sizing: border-box; }",
 
     // Advanced toggle styles.
-    ".advanced-toggle { color: var(--interactive-primary); cursor: pointer; font-size: 13px; margin-bottom: 15px; }",
+    ".advanced-toggle { color: var(--interactive-primary); cursor: pointer; font-size: 13px; margin-top: 5px; margin-bottom: 15px; }",
     ".advanced-toggle:hover { text-decoration: underline; }",
     ".advanced-fields { display: none; }",
     ".advanced-fields.show { display: block; }",
+
+    // Profile reference section styles.
+    ".profile-reference { background: var(--surface-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-lg); margin: 20px 0; ",
+    "padding: 20px; }",
+    ".profile-reference-header { display: flex; justify-content: space-between; align-items: flex-start; }",
+    ".profile-reference h3 { margin: 0 0 10px 0; color: var(--text-heading-secondary); }",
+    ".profile-reference-close { color: var(--text-secondary); font-size: 18px; text-decoration: none; padding: 0 5px; }",
+    ".profile-reference-close:hover { color: var(--text-primary); }",
+    ".reference-intro { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }",
+    ".profile-category { margin-bottom: 20px; }",
+    ".profile-category:last-child { margin-bottom: 0; }",
+    ".profile-category h4 { color: var(--text-heading-secondary); font-size: 14px; font-weight: 600; margin: 0 0 8px 0; }",
+    ".category-desc { color: var(--text-tertiary); font-size: 12px; margin: 0 0 10px 0; }",
+    ".profile-list { margin: 0; padding: 0; }",
+    ".profile-list dt { font-family: var(--font-mono); font-size: 13px; font-weight: 600; margin-top: 10px; color: var(--text-primary); }",
+    ".profile-list dt:first-child { margin-top: 0; }",
+    ".profile-list dd { color: var(--text-secondary); font-size: 13px; margin: 4px 0 0 0; }",
 
     // Other landing page styles.
     ".endpoint code { font-size: 13px; }",
