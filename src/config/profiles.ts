@@ -70,6 +70,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     description: "Brightcove player sites requiring network idle wait and API fullscreen.",
     extends: "fullscreenApi",
+    summary: "Brightcove players (network wait)",
     waitForNetworkIdle: true
   },
 
@@ -80,6 +81,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     description: "Iframe-embedded players with multiple video elements requiring network idle wait.",
     extends: "embeddedPlayer",
     selectReadyVideo: true,
+    summary: "Embedded multi-video (network wait)",
     waitForNetworkIdle: true
   },
 
@@ -89,7 +91,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     description: "Intermediate base profile for iframe-embedded players using fullscreen API.",
     extends: "fullscreenApi",
-    needsIframeHandling: true
+    needsIframeHandling: true,
+    summary: "Embedded iframe players"
   },
 
   // Profile for iframe-embedded players that aggressively mute audio after page load - likely to comply with autoplay policies or for accessibility reasons. Some
@@ -99,7 +102,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     description: "Iframe-embedded players that aggressively mute audio after page load.",
     extends: "embeddedPlayer",
-    lockVolumeProperties: true
+    lockVolumeProperties: true,
+    summary: "Embedded players that auto-mute"
   },
 
   // Base profile for sites that require the JavaScript fullscreen API (element.requestFullscreen()) instead of keyboard shortcuts. Many modern players intercept
@@ -108,6 +112,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   fullscreenApi: {
 
     description: "Base profile for sites requiring the JavaScript fullscreen API.",
+    summary: "Sites needing JavaScript fullscreen",
     useRequestFullscreen: true
   },
 
@@ -117,6 +122,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     description: "Keyboard fullscreen sites requiring network idle wait for dynamic content loading.",
     extends: "keyboardFullscreen",
+    summary: "Dynamic sites ('f' key fullscreen)",
     waitForNetworkIdle: true
   },
 
@@ -128,7 +134,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     channelSelection: { strategy: "thumbnailRow" },
     description: "Multi-channel keyboard players requiring network idle wait and video selection.",
     extends: "keyboardDynamic",
-    selectReadyVideo: true
+    selectReadyVideo: true,
+    summary: "Multi-channel dynamic players"
   },
 
   // Base profile for sites that respond to the f key for fullscreen toggle. This is the most common fullscreen mechanism, following YouTube-style keyboard
@@ -136,7 +143,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   keyboardFullscreen: {
 
     description: "Base profile for sites that respond to the f key for fullscreen toggle.",
-    fullscreenKey: "f"
+    fullscreenKey: "f",
+    summary: "Standard 'f' key fullscreen"
   },
 
   // Profile for sites using keyboard fullscreen with video players embedded in iframes. The video element is not directly in the main page DOM, so we need to search
@@ -145,7 +153,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     description: "Keyboard fullscreen sites with video embedded in iframes.",
     extends: "keyboardFullscreen",
-    needsIframeHandling: true
+    needsIframeHandling: true,
+    summary: "Iframe players ('f' key fullscreen)"
   },
 
   // Profile for sites using keyboard fullscreen that load multiple video elements simultaneously - placeholder videos, ad videos, and the main content. We must find
@@ -154,7 +163,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     description: "Keyboard fullscreen sites with multiple video elements requiring ready-state selection.",
     extends: "keyboardFullscreen",
-    selectReadyVideo: true
+    selectReadyVideo: true,
+    summary: "Multi-video sites ('f' key fullscreen)"
   },
 
   // Profile for non-video pages that should be captured as static visual content. Examples include weather displays (weatherscan.net), maps (windy.com), and
@@ -162,7 +172,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   staticPage: {
 
     description: "Base profile for non-video pages captured as static visual content.",
-    noVideo: true
+    noVideo: true,
+    summary: "Static pages (no video)"
   }
 };
 
@@ -548,7 +559,7 @@ export function validateProfiles(): void {
  */
 
 /**
- * Profile information for UI display, including name and description.
+ * Profile information for UI display, including name, description, and summary.
  */
 export interface ProfileInfo {
 
@@ -557,18 +568,27 @@ export interface ProfileInfo {
 
   // Profile name (the key in SITE_PROFILES).
   name: string;
+
+  // Short summary for dropdown display (max ~40 chars).
+  summary: string;
 }
 
 /**
- * Returns all profiles with their descriptions, sorted alphabetically by name. Used by the channel configuration UI to populate the profile dropdown with
- * tooltips.
+ * Returns all profiles with their descriptions and summaries, sorted alphabetically by name. Used by the channel configuration UI to populate the profile
+ * dropdown with tooltips and the profile reference section.
  * @returns Array of profile info objects.
  */
 export function getProfiles(): ProfileInfo[] {
 
-  return Object.keys(SITE_PROFILES).sort().map((name) => ({
+  return Object.keys(SITE_PROFILES).sort().map((name) => {
 
-    description: SITE_PROFILES[name].description ?? "",
-    name
-  }));
+    const profile = SITE_PROFILES[name];
+
+    return {
+
+      description: profile.description ?? "",
+      name,
+      summary: profile.summary ?? profile.description ?? ""
+    };
+  });
 }

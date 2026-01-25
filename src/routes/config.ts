@@ -169,11 +169,11 @@ function generateTextField(id: string, name: string, label: string, value: strin
 }
 
 /**
- * Generates HTML for the profile dropdown field with descriptions as tooltips.
+ * Generates HTML for the profile dropdown field with descriptions as tooltips and summaries inline.
  * @param id - The select element ID.
  * @param selectedProfile - The currently selected profile (empty string for autodetect).
- * @param profiles - List of available profiles with descriptions.
- * @param showHint - Whether to show the hint text.
+ * @param profiles - List of available profiles with descriptions and summaries.
+ * @param showHint - Whether to show the hint text with profile reference link.
  * @returns Array of HTML strings for the form row.
  */
 function generateProfileDropdown(id: string, selectedProfile: string, profiles: ProfileInfo[], showHint = true): string[] {
@@ -183,14 +183,17 @@ function generateProfileDropdown(id: string, selectedProfile: string, profiles: 
   lines.push("<div class=\"form-row\">");
   lines.push("<label for=\"" + id + "\">Profile</label>");
   lines.push("<select class=\"form-select field-wide\" id=\"" + id + "\" name=\"profile\">");
-  lines.push("<option value=\"\">Auto-detect (Recommended)</option>");
+  lines.push("<option value=\"\">Autodetect (Recommended)</option>");
 
   for(const profile of profiles) {
 
     const selected = (profile.name === selectedProfile) ? " selected" : "";
     const title = profile.description ? " title=\"" + escapeHtml(profile.description) + "\"" : "";
 
-    lines.push("<option value=\"" + escapeHtml(profile.name) + "\"" + title + selected + ">" + escapeHtml(profile.name) + "</option>");
+    // Show "name — summary" format for better discoverability.
+    const displayText = profile.summary ? profile.name + " \u2014 " + profile.summary : profile.name;
+
+    lines.push("<option value=\"" + escapeHtml(profile.name) + "\"" + title + selected + ">" + escapeHtml(displayText) + "</option>");
   }
 
   lines.push("</select>");
@@ -198,10 +201,95 @@ function generateProfileDropdown(id: string, selectedProfile: string, profiles: 
 
   if(showHint) {
 
-    lines.push("<div class=\"hint\">Auto-detect selects the best profile based on the site's domain.</div>");
+    lines.push("<div class=\"hint\">Autodetect uses predefined profiles for known sites. If video doesn't play or fullscreen fails, " +
+      "try experimenting with different profiles. ");
+    lines.push("<a href=\"#\" onclick=\"toggleProfileReference(); return false;\">View profile reference</a></div>");
   }
 
   return lines;
+}
+
+/**
+ * Generates HTML for the profile reference section. This collapsible section provides detailed documentation for all available profiles, grouped by category to
+ * help users understand which profile to select for their site.
+ * @param profiles - List of available profiles with descriptions and summaries.
+ * @returns HTML string for the profile reference section.
+ */
+function generateProfileReference(profiles: ProfileInfo[]): string {
+
+  const lines: string[] = [];
+
+  // Group profiles by category based on name prefix for automatic categorization.
+  const keyboardProfiles = profiles.filter((p) => p.name.startsWith("keyboard"));
+  const embeddedProfiles = profiles.filter((p) => p.name.startsWith("embedded"));
+  const apiProfiles = profiles.filter((p) => (p.name === "fullscreenApi") || (p.name === "brightcove"));
+  const specialProfiles = profiles.filter((p) => p.name === "staticPage");
+
+  lines.push("<div id=\"profile-reference\" class=\"profile-reference\" style=\"display: none;\">");
+  lines.push("<div class=\"profile-reference-header\">");
+  lines.push("<h3>Profile Reference</h3>");
+  lines.push("<a href=\"#\" class=\"profile-reference-close\" onclick=\"toggleProfileReference(); return false;\">\u2715</a>");
+  lines.push("</div>");
+  lines.push("<p class=\"reference-intro\">Profiles configure how PrismCast interacts with different video players. Autodetect uses predefined ");
+  lines.push("profiles for known sites. If video doesn't play or fullscreen fails, use this reference to experiment with different profiles.</p>");
+
+  // Keyboard fullscreen profiles.
+  if(keyboardProfiles.length > 0) {
+
+    lines.push("<div class=\"profile-category\">");
+    lines.push("<h4>Keyboard Fullscreen Profiles</h4>");
+    lines.push("<p class=\"category-desc\">For sites that use the 'f' key to toggle fullscreen mode.</p>");
+    lines.push("<dl class=\"profile-list\">");
+
+    for(const profile of keyboardProfiles) {
+
+      lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
+      lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
+    }
+
+    lines.push("</dl>");
+    lines.push("</div>");
+  }
+
+  // Fullscreen API profiles.
+  if((apiProfiles.length > 0) || (embeddedProfiles.length > 0)) {
+
+    lines.push("<div class=\"profile-category\">");
+    lines.push("<h4>Fullscreen API Profiles</h4>");
+    lines.push("<p class=\"category-desc\">For sites that require JavaScript's requestFullscreen() API instead of keyboard shortcuts.</p>");
+    lines.push("<dl class=\"profile-list\">");
+
+    for(const profile of [ ...apiProfiles, ...embeddedProfiles ]) {
+
+      lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
+      lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
+    }
+
+    lines.push("</dl>");
+    lines.push("</div>");
+  }
+
+  // Special profiles.
+  if(specialProfiles.length > 0) {
+
+    lines.push("<div class=\"profile-category\">");
+    lines.push("<h4>Special Profiles</h4>");
+    lines.push("<p class=\"category-desc\">For non-standard use cases like static pages without video.</p>");
+    lines.push("<dl class=\"profile-list\">");
+
+    for(const profile of specialProfiles) {
+
+      lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
+      lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
+    }
+
+    lines.push("</dl>");
+    lines.push("</div>");
+  }
+
+  lines.push("</div>");
+
+  return lines.join("\n");
 }
 
 /**
@@ -235,7 +323,10 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
   ));
 
   // Channel selector.
-  const channelSelectorHint = showHints ? "For multi-channel players, the text to match for channel selection." : undefined;
+  const channelSelectorHint = showHints ?
+    "String to match in channel thumbnail src URLs on multi-channel guide pages. Right-click the desired channel's thumbnail → Inspect → " +
+    "copy a unique portion of the image URL." :
+    undefined;
 
   lines.push(...generateTextField(
     idPrefix + "-channelSelector",
@@ -1084,6 +1175,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   lines.push("</form>");
   lines.push("</div>"); // End add-channel-form.
+
+  // Profile reference section (hidden by default, toggled via link in profile dropdown hint).
+  lines.push(generateProfileReference(profiles));
 
   // Channels table.
   lines.push("<table class=\"channel-table\">");

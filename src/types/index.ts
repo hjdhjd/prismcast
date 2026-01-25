@@ -308,6 +308,10 @@ export interface SiteProfile {
   // multiple levels deep. Circular inheritance is detected and prevented during profile resolution.
   extends?: string;
 
+  // Short summary of the profile for dropdown display (max ~40 characters). Used in the UI to provide a brief description alongside the profile name. Falls back
+  // to description if not provided.
+  summary?: string;
+
   // Keyboard key to press for fullscreen mode. Most video players use "f" for fullscreen. When set, the stream handler sends this keypress to the video element
   // after playback begins. Set to null to disable keyboard fullscreen and rely on CSS-based fullscreen styling instead.
   fullscreenKey?: string | null;
