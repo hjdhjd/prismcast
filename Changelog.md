@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.7 (2026-01-25)
+  * Improvement: startup and shutdown robustness.
+  * Fix: double punctuation in error log messages.
+  * Fix: active streams table spacing.
+  * Housekeeping.
+
 ## 1.0.6 (2026-01-25)
   * New feature: display channel logos from Channels DVR in the active streams panel.
   * New feature: profile reference documentation UI with summaries in the dropdown.
