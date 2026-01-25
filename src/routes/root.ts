@@ -1682,7 +1682,7 @@ function generateLandingPageStyles(): string {
     "#streams-container { border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 20px; }",
 
     // Streams table - minimal design with no borders between columns.
-    ".streams-table { width: 100%; border-collapse: collapse; }",
+    ".streams-table { width: 100%; border-collapse: collapse; margin: 0; }",
     ".streams-table td { padding: 6px 10px; border: none; color: var(--text-primary); vertical-align: middle; }",
     ".streams-table td:first-child { padding-left: 12px; }",
     ".streams-table td:last-child { padding-right: 12px; }",
