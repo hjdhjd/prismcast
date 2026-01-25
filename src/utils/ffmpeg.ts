@@ -88,7 +88,6 @@ export async function resolveFFmpegPath(): Promise<string | undefined> {
 
     if(existsSync(channelsDvrPath) && (await checkFFmpegAtPath(channelsDvrPath))) {
 
-      LOG.info("Using Channels DVR bundled FFmpeg at: %s", channelsDvrPath);
       cachedFFmpegPath = channelsDvrPath;
 
       return cachedFFmpegPath;
@@ -98,7 +97,6 @@ export async function resolveFFmpegPath(): Promise<string | undefined> {
   // Check ffmpeg-for-homebridge bundled FFmpeg. This provides a reliable fallback without requiring manual FFmpeg installation.
   if(ffmpegPath && existsSync(ffmpegPath) && (await checkFFmpegAtPath(ffmpegPath))) {
 
-    LOG.info("Using bundled FFmpeg from ffmpeg-for-homebridge.");
     cachedFFmpegPath = ffmpegPath;
 
     return cachedFFmpegPath;

@@ -4,8 +4,8 @@
  */
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.js";
 import type { Express, NextFunction, Request, Response } from "express";
-import { LOG, createMorganStream, formatError, isFFmpegAvailable, setConsoleLogging } from "./utils/index.js";
-import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChromium, prepareExtension, setGracefulShutdown, startStalePageCleanup,
+import { LOG, createMorganStream, formatError, resolveFFmpegPath, setConsoleLogging } from "./utils/index.js";
+import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, prepareExtension, setGracefulShutdown, startStalePageCleanup,
   stopStalePageCleanup } from "./browser/index.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
@@ -342,22 +342,6 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
   displayConfiguration();
   setupGracefulShutdown();
 
-  // Check FFmpeg availability if using FFmpeg capture mode.
-  if(CONFIG.streaming.captureMode === "ffmpeg") {
-
-    const ffmpegAvailable = await isFFmpegAvailable();
-
-    if(!ffmpegAvailable) {
-
-      LOG.error("FFmpeg is not available. FFmpeg capture mode requires FFmpeg to be installed and in the system PATH.");
-      LOG.error("Either install FFmpeg or change the capture mode to 'native' in the configuration.");
-
-      process.exit(1);
-    }
-
-    LOG.info("FFmpeg is available for FFmpeg capture mode.");
-  }
-
   // Ensure the data directory exists before any operations that depend on it.
   await ensureDataDirectory();
 
@@ -367,10 +351,26 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
     await initializeFileLogger(CONFIG.logging.maxSize);
   }
 
+  // Check FFmpeg availability if using FFmpeg capture mode. This must be after file logger initialization so the log message is captured.
+  if(CONFIG.streaming.captureMode === "ffmpeg") {
+
+    const ffmpegPath = await resolveFFmpegPath();
+
+    if(!ffmpegPath) {
+
+      LOG.error("FFmpeg is not available. FFmpeg capture mode requires FFmpeg to be installed and in the system PATH.");
+      LOG.error("Either install FFmpeg or change the capture mode to 'native' in the configuration.");
+
+      process.exit(1);
+    }
+
+    LOG.info("Using FFmpeg at: %s", ffmpegPath);
+  }
+
   // Load user channels from ~/.prismcast/channels.json if it exists.
   await initializeUserChannels();
 
-  killStaleChromium();
+  killStaleChrome();
 
   // Warm up browser.
   try {

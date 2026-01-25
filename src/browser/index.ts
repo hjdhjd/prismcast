@@ -292,7 +292,7 @@ export async function ensureDataDirectory(): Promise<void> {
  * This is called at startup before launching the browser to ensure a clean slate. It's safe to call even when no stale processes exist - pkill returns a non-zero
  * exit code when no processes match, which we ignore.
  */
-export function killStaleChromium(): void {
+export function killStaleChrome(): void {
 
   // Build the profile directory path that would appear in Chrome's command-line arguments.
   const profileDir = path.join(dataDir, CONFIG.paths.chromeProfileName);
@@ -810,6 +810,11 @@ export async function getBrowserPages(): Promise<Page[]> {
 /**
  * Closes the browser and cleans up resources. This is called during graceful shutdown to ensure Chrome exits cleanly. After this call, the browser reference is
  * cleared and any subsequent stream requests will launch a fresh browser.
+ *
+ * The function uses a multi-stage approach to ensure Chrome actually exits:
+ * 1. Try browser.close() with a 5-second timeout
+ * 2. If that fails or times out, kill the browser process directly
+ * 3. As a final fallback, use pkill to terminate any Chrome processes using our profile
  */
 export async function closeBrowser(): Promise<void> {
 
@@ -817,20 +822,66 @@ export async function closeBrowser(): Promise<void> {
   // calls to closeBrowser().
   setGracefulShutdown(true);
 
-  try {
+  const browserRef = currentBrowser;
 
-    if(currentBrowser && currentBrowser.isConnected()) {
+  // Clear the reference early to prevent any new operations from using it.
+  currentBrowser = null;
 
-      await currentBrowser.close();
-    }
-  } catch(error) {
+  if(!browserRef) {
 
-    // Log at debug level - errors like "Target closed" are expected during graceful shutdown.
-    LOG.debug("Browser close during shutdown: %s.", formatError(error));
+    return;
   }
 
-  // Clear the reference regardless of whether close() succeeded.
-  currentBrowser = null;
+  // Stage 1: Try graceful close with a timeout. We use Promise.race to avoid hanging indefinitely if Chrome is unresponsive.
+  let closedGracefully = false;
+
+  if(browserRef.isConnected()) {
+
+    try {
+
+      await Promise.race([
+        browserRef.close(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Browser close timed out")), 5000))
+      ]);
+
+      closedGracefully = true;
+    } catch(error) {
+
+      const message = formatError(error);
+
+      if(message.includes("timed out")) {
+
+        LOG.warn("Browser did not close within 5 seconds. Forcing termination.");
+      } else {
+
+        LOG.debug("Browser close error: %s.", message);
+      }
+    }
+  } else {
+
+    closedGracefully = true;
+  }
+
+  // Stage 2: If graceful close failed, try to kill the process directly.
+  if(!closedGracefully) {
+
+    try {
+
+      const browserProcess = browserRef.process();
+
+      if(browserProcess && !browserProcess.killed) {
+
+        browserProcess.kill("SIGKILL");
+        LOG.info("Sent SIGKILL to browser process.");
+      }
+    } catch(error) {
+
+      LOG.debug("Browser process kill error: %s.", formatError(error));
+    }
+  }
+
+  // Stage 3: As a final fallback, use pkill to ensure no Chrome processes using our profile remain.
+  killStaleChrome();
 }
 
 /*
