@@ -46,6 +46,9 @@ const API_TIMEOUT_MS = 5000;
 // Debounce delay for triggered updates (2 seconds).
 const TRIGGER_DEBOUNCE_MS = 2000;
 
+// Logo height in pixels for URL sizing parameter (2x for retina displays).
+const LOGO_HEIGHT_PX = 48;
+
 // ─────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────
@@ -60,6 +63,9 @@ interface ChannelsDvrChannel {
 
   // Channel ID from the M3U playlist - this is our channel key (e.g., "cnn").
   ID: string;
+
+  // Logo URL for the channel (absolute URL, may include query parameters).
+  Logo?: string;
 }
 
 /**
@@ -150,6 +156,9 @@ const showNameCache = new Map<number, string>();
 // Cache of device channel mappings by DVR host.
 const deviceMappingsByHost = new Map<string, DeviceMappingsCache>();
 
+// Cache of channel logos by channel key (e.g., "cnn" → "http://...").
+const channelLogoCache = new Map<string, string>();
+
 // Pending debounced trigger for immediate show name updates.
 let pendingTrigger: ReturnType<typeof setTimeout> | null = null;
 
@@ -197,6 +206,7 @@ export function stopShowInfoPolling(): void {
   // Clear caches on shutdown.
   showNameCache.clear();
   deviceMappingsByHost.clear();
+  channelLogoCache.clear();
 }
 
 /**
@@ -237,6 +247,16 @@ export function getShowName(streamId: number): string {
 export function clearShowName(streamId: number): void {
 
   showNameCache.delete(streamId);
+}
+
+/**
+ * Gets the cached logo URL for a channel.
+ * @param channelKey - The channel key to look up (e.g., "cnn").
+ * @returns The logo URL if known, undefined otherwise.
+ */
+export function getChannelLogo(channelKey: string): string | undefined {
+
+  return channelLogoCache.get(channelKey);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -438,12 +458,23 @@ async function getDeviceMappings(host: string): Promise<Map<string, Map<string, 
 
     LOG.debug("Matched M3U device %s as PrismCast source (%d channels).", device.DeviceID, device.Channels.length);
 
-    // Build guide number → channel ID map for this device.
+    // Build guide number → channel ID map for this device and cache logo URLs.
     const guideToChannelId = new Map<string, string>();
 
     for(const channel of device.Channels) {
 
       guideToChannelId.set(channel.GuideNumber, channel.ID);
+
+      // Cache the logo URL if available.
+      if(channel.Logo) {
+
+        const normalizedLogo = normalizeLogoUrl(channel.Logo);
+
+        if(normalizedLogo) {
+
+          channelLogoCache.set(channel.ID, normalizedLogo);
+        }
+      }
     }
 
     mappings.set(device.DeviceID, guideToChannelId);
@@ -542,5 +573,27 @@ async function fetchFromDvr<T>(host: string, path: string): Promise<T[]> {
     }
 
     return [];
+  }
+}
+
+/**
+ * Normalizes a logo URL by stripping existing query parameters and adding our sizing parameter.
+ * @param url - The original logo URL from Channels DVR.
+ * @returns The normalized URL with height parameter, or undefined if the URL is invalid.
+ */
+function normalizeLogoUrl(url: string): string | undefined {
+
+  try {
+
+    const parsed = new URL(url);
+
+    // Strip existing query parameters and add our sizing.
+    parsed.search = "?h=" + String(LOGO_HEIGHT_PX);
+
+    return parsed.toString();
+  } catch {
+
+    // Invalid URL - return undefined to skip caching.
+    return undefined;
   }
 }

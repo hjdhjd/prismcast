@@ -31,6 +31,7 @@ export interface StreamStatus {
   lastIssueTime: number | null;
   lastIssueType: string | null;
   lastRecoveryTime: number | null;
+  logoUrl: string;
   memoryBytes: number;
   networkState: number;
   pageReloadsInWindow: number;
@@ -114,6 +115,7 @@ export function createInitialStreamStatus(options: {
     lastIssueTime: null,
     lastIssueType: null,
     lastRecoveryTime: null,
+    logoUrl: "",
     memoryBytes: 0,
     networkState: 0,
     pageReloadsInWindow: 0,
