@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.6 (2026-01-25)
+  * New feature: display channel logos from Channels DVR in the active streams panel.
+  * New feature: profile reference documentation UI with summaries in the dropdown.
+  * Improvement: active streams panel styling and font consistency.
+  * Improvement: graceful shutdown handling.
+  * Fix: monitor status emit race conditions and duplicate emits.
+
 ## 1.0.5 (2026-01-24)
   * Housekeeping.
 
