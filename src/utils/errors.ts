@@ -11,24 +11,28 @@
  */
 
 /**
- * Formats an error for logging by extracting the message if available, falling back to string conversion for non-Error objects. This ensures consistent error
- * output regardless of what type of value is thrown or rejected.
+ * Formats an error for logging by extracting the message if available, falling back to string conversion for non-Error objects. Trailing punctuation is stripped
+ * to allow callers to add consistent punctuation in their log format strings.
  * @param error - The error to format.
- * @returns A string representation suitable for logging.
+ * @returns A string representation suitable for logging, without trailing punctuation.
  */
 export function formatError(error: unknown): string {
 
+  let message: string;
+
   if(error instanceof Error) {
 
-    return error.message;
+    message = error.message;
+  } else if(error && (typeof (error as { message?: unknown }).message === "string")) {
+
+    message = (error as { message: string }).message;
+  } else {
+
+    message = String(error);
   }
 
-  if(error && (typeof (error as { message?: unknown }).message === "string")) {
-
-    return (error as { message: string }).message;
-  }
-
-  return String(error);
+  // Strip trailing punctuation to prevent double punctuation when callers add their own.
+  return message.replace(/[.!?]+$/, "");
 }
 
 /**
