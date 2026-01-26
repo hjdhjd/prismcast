@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.8 (2026-01-25)
+  * Improvement: version display refinements.
+  * Housekeeping.
+
 ## 1.0.7 (2026-01-25)
   * New feature: version display in header with update checking and changelog modal.
   * Improvement: startup and shutdown robustness.
