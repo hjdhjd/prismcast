@@ -3,6 +3,7 @@
  * showInfo.ts: Channels DVR API integration for show name lookup.
  */
 import { LOG, formatError } from "../utils/index.js";
+import type { Nullable } from "../types/index.js";
 import { getAllChannels } from "../config/userChannels.js";
 import { getAllStreams } from "./registry.js";
 
@@ -148,7 +149,7 @@ interface ChannelsDvrGuideEntry {
 // ─────────────────────────────────────────────────────────────
 
 // Interval handle for periodic polling.
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+let pollInterval: Nullable<ReturnType<typeof setInterval>> = null;
 
 // Cache of show names by stream ID.
 const showNameCache = new Map<number, string>();
@@ -160,7 +161,7 @@ const deviceMappingsByHost = new Map<string, DeviceMappingsCache>();
 const channelLogoCache = new Map<string, string>();
 
 // Pending debounced trigger for immediate show name updates.
-let pendingTrigger: ReturnType<typeof setTimeout> | null = null;
+let pendingTrigger: Nullable<ReturnType<typeof setTimeout>> = null;
 
 // ─────────────────────────────────────────────────────────────
 // Public API

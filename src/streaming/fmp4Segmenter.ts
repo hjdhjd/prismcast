@@ -5,6 +5,7 @@
 import { storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.js";
 import { CONFIG } from "../config/index.js";
 import type { MP4Box } from "./mp4Parser.js";
+import type { Nullable } from "../types/index.js";
 import type { Readable } from "node:stream";
 import { createMP4BoxParser } from "./mp4Parser.js";
 
@@ -122,7 +123,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
   };
 
   // Reference to the input stream for cleanup.
-  let inputStream: Readable | null = null;
+  let inputStream: Nullable<Readable> = null;
 
   /**
    * Generates the m3u8 playlist content.

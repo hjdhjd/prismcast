@@ -10,6 +10,7 @@ import { getStream, launch } from "puppeteer-stream";
 import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.js";
 import { setBrowserChrome, setMaxSupportedViewport } from "./display.js";
 import { CONFIG } from "../config/index.js";
+import type { Nullable } from "../types/index.js";
 import type { SystemStatus } from "../streaming/statusEmitter.js";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.js";
 import { execSync } from "node:child_process";
@@ -38,7 +39,7 @@ const { promises: fsPromises } = fs;
 
 // The shared browser instance used by all streaming sessions. Created on first stream request or during warmup. Set to null when the browser is not running or
 // has disconnected.
-let currentBrowser: Browser | null = null;
+let currentBrowser: Nullable<Browser> = null;
 
 // The data directory stores Chrome's profile data and the streaming extension files. This is always ~/.prismcast, which provides a consistent location for
 // user-specific data regardless of how PrismCast is run.
@@ -46,7 +47,7 @@ const dataDir = path.join(os.homedir(), ".prismcast");
 
 // The stale page cleanup interval handle, stored so we can clear it during graceful shutdown. The interval periodically checks for browser pages that are not
 // associated with active streams and closes them to prevent resource exhaustion.
-let stalePageCleanupInterval: ReturnType<typeof setInterval> | null = null;
+let stalePageCleanupInterval: Nullable<ReturnType<typeof setInterval>> = null;
 
 // Flag indicating that the browser is being closed intentionally via closeBrowser(). When true, the disconnect handler skips error logging and stream termination
 // since these are handled by the shutdown code path. This prevents false "unexpected disconnect" errors during graceful shutdown.
@@ -110,16 +111,16 @@ const potentiallyStalePages = new Map<string, number>();
 let loginModeActive = false;
 
 // The browser page (tab) used for login. Set when login starts, cleared when login ends.
-let loginPage: Page | null = null;
+let loginPage: Nullable<Page> = null;
 
 // The URL being used for login. Stored for status reporting.
-let loginUrl: string | null = null;
+let loginUrl: Nullable<string> = null;
 
 // Timestamp when login mode started. Used for status reporting and timeout calculation.
-let loginStartTime: number | null = null;
+let loginStartTime: Nullable<number> = null;
 
 // Timeout handle for auto-ending login mode after 15 minutes.
-let loginTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+let loginTimeoutHandle: Nullable<ReturnType<typeof setTimeout>> = null;
 
 // Login timeout duration (15 minutes).
 const LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
@@ -133,10 +134,10 @@ export interface LoginStatus {
   active: boolean;
 
   // Timestamp when login started (milliseconds since epoch), if active.
-  startTime: number | null;
+  startTime: Nullable<number>;
 
   // The URL being used for login, if active.
-  url: string | null;
+  url: Nullable<string>;
 }
 
 /**
@@ -526,14 +527,14 @@ async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
  */
 async function detectDisplayDimensions(browser: Browser): Promise<void> {
 
-  let tempPage: Page | null = null;
+  let tempPage: Nullable<Page> = null;
   let usingTempPage = false;
 
   try {
 
     // Try to use an existing page first to avoid window activation issues on macOS.
     const existingPages = await browser.pages();
-    let targetPage: Page | null = existingPages.find((p) => !p.isClosed()) ?? null;
+    let targetPage: Nullable<Page> = existingPages.find((p) => !p.isClosed()) ?? null;
 
     if(!targetPage) {
 
@@ -733,14 +734,14 @@ export async function minimizeBrowserWindow(): Promise<void> {
     return;
   }
 
-  let tempPage: Page | null = null;
+  let tempPage: Nullable<Page> = null;
   let usingTempPage = false;
 
   try {
 
     // Try to use an existing page first. Creating a new page can cause the window to restore/activate on macOS, which defeats the purpose of minimizing.
     const existingPages = await currentBrowser.pages();
-    let targetPage: Page | null = existingPages.find((p) => !p.isClosed()) ?? null;
+    let targetPage: Nullable<Page> = existingPages.find((p) => !p.isClosed()) ?? null;
 
     // If no existing pages, we must create a temporary one. This is less ideal but necessary to get a CDP session target.
     if(!targetPage) {

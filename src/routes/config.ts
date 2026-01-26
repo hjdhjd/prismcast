@@ -10,6 +10,7 @@ import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, formatError, isRunningAsService } from "../utils/index.js";
 import { getAllChannels, getChannelsParseErrorMessage, getUserChannels, getUserChannelsFilePath, hasChannelsParseError, isUserChannel, loadUserChannels,
   saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
+import type { Nullable } from "../types/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
 import { closeBrowser } from "../browser/index.js";
@@ -350,7 +351,7 @@ export interface ChannelRowHtml {
   displayRow: string;
 
   // The edit form row HTML (only present for user channels).
-  editRow: string | null;
+  editRow: Nullable<string>;
 }
 
 /**
@@ -476,7 +477,7 @@ function formatValueForDisplay(value: unknown, settingType?: string): string {
  * @param setting - The setting metadata.
  * @returns The display value.
  */
-function toDisplayValue(value: unknown, setting: SettingMetadata): number | string | null {
+function toDisplayValue(value: unknown, setting: SettingMetadata): Nullable<number | string> {
 
   if((value === null) || (value === undefined)) {
 
@@ -720,7 +721,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   lines.push("</label>");
 
   // Track if the selected preset is degraded (used for inline message).
-  let selectedPresetDegradedTo: string | null = null;
+  let selectedPresetDegradedTo: Nullable<string> = null;
 
   if(hasValidValues) {
 
@@ -995,7 +996,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
  * @param value - The raw string value from the form (in display units).
  * @returns The parsed value (in storage units).
  */
-function parseFormValue(setting: SettingMetadata, value: string): boolean | number | string | null {
+function parseFormValue(setting: SettingMetadata, value: string): Nullable<boolean | number | string> {
 
   // Handle empty values for path type.
   if((setting.type === "path") && (value.trim() === "")) {

@@ -9,6 +9,7 @@ import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, 
   stopStalePageCleanup } from "./browser/index.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
+import type { Nullable } from "./types/index.js";
 import type { Server } from "http";
 import { cleanupIdleStreams } from "./streaming/hls.js";
 import consoleStamp from "console-stamp";
@@ -36,10 +37,10 @@ let usingConsoleLogging = false;
  * The HTTP server instance is stored globally so it can be closed during graceful shutdown.
  */
 
-let server: Server | null = null;
+let server: Nullable<Server> = null;
 
 // Interval for idle stream cleanup.
-let idleCleanupInterval: ReturnType<typeof setInterval> | null = null;
+let idleCleanupInterval: Nullable<ReturnType<typeof setInterval>> = null;
 
 /**
  * Starts the idle cleanup interval. Runs every 10 seconds to check for idle streams and terminate them.

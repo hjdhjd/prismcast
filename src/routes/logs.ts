@@ -4,6 +4,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { isConsoleLogging, subscribeToLogs } from "../utils/index.js";
+import type { Nullable } from "../types/index.js";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -61,7 +62,7 @@ function stripAnsiCodes(text: string): string {
  * @param line - The raw log line from the file.
  * @returns The parsed log entry, or null if the line does not match the expected format.
  */
-function parseLogLine(line: string): LogEntry | null {
+function parseLogLine(line: string): Nullable<LogEntry> {
 
   // Strip ANSI color codes before parsing.
   const cleanLine = stripAnsiCodes(line);

@@ -5,6 +5,7 @@
 import type { Readable, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { LOG } from "./logger.js";
+import type { Nullable } from "../types/index.js";
 import { existsSync } from "node:fs";
 import ffmpegForHomebridge from "ffmpeg-for-homebridge";
 import { homedir } from "node:os";
@@ -40,7 +41,7 @@ const ffmpegPath = ffmpegForHomebridge as unknown as string | undefined;
  */
 
 // Cached FFmpeg path after resolution. Null means not yet resolved, undefined means not found.
-let cachedFFmpegPath: string | null | undefined = null;
+let cachedFFmpegPath: Nullable<string> | undefined = null;
 
 /**
  * Checks if FFmpeg exists at a specific path by attempting to run it.

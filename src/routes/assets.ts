@@ -4,6 +4,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { dirname, join } from "path";
+import type { Nullable } from "../types/index.js";
 import { fileURLToPath } from "url";
 import { readFile } from "fs/promises";
 
@@ -15,8 +16,8 @@ import { readFile } from "fs/promises";
  */
 
 // Cached asset data. Populated on first request and reused for subsequent requests.
-let svgData: Buffer | null = null;
-let pngData: Buffer | null = null;
+let svgData: Nullable<Buffer> = null;
+let pngData: Nullable<Buffer> = null;
 
 // Resolve the project root directory (two levels up from src/routes/).
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -26,7 +27,7 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
  * @param filename - The filename to load from the project root.
  * @returns The file contents as a Buffer, or null if the file could not be read.
  */
-async function loadAsset(filename: string): Promise<Buffer | null> {
+async function loadAsset(filename: string): Promise<Nullable<Buffer>> {
 
   try {
 

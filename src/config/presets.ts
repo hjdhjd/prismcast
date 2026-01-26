@@ -2,7 +2,7 @@
  *
  * presets.ts: Quality presets for PrismCast configuration.
  */
-import type { Config } from "../types/index.js";
+import type { Config, Nullable } from "../types/index.js";
 import { getMaxSupportedViewport } from "../browser/display.js";
 
 /*
@@ -183,7 +183,7 @@ export interface EffectivePresetResult {
   effectivePreset: QualityPreset;
 
   // The maximum supported viewport dimensions, or null if not yet detected.
-  maxViewport: { height: number; width: number } | null;
+  maxViewport: Nullable<{ height: number; width: number }>;
 }
 
 /**
@@ -192,7 +192,7 @@ export interface EffectivePresetResult {
  * @param maxHeight - Maximum available viewport height.
  * @returns The largest fitting preset, or null if no preset fits (extremely small display).
  */
-export function findBestFittingPreset(maxWidth: number, maxHeight: number): QualityPreset | null {
+export function findBestFittingPreset(maxWidth: number, maxHeight: number): Nullable<QualityPreset> {
 
   // Iterate from highest to lowest resolution (reverse order since VIDEO_QUALITY_PRESETS is ordered low to high).
   for(let i = VIDEO_QUALITY_PRESETS.length - 1; i >= 0; i--) {
@@ -317,7 +317,7 @@ export interface PresetOption {
   preset: QualityPreset;
 
   // The preset this will degrade to, or null if no degradation needed.
-  degradedTo: QualityPreset | null;
+  degradedTo: Nullable<QualityPreset>;
 }
 
 /**
@@ -326,7 +326,7 @@ export interface PresetOption {
 export interface PresetOptionsResult {
 
   // Maximum supported viewport dimensions, or null if display detection hasn't completed.
-  maxViewport: { height: number; width: number } | null;
+  maxViewport: Nullable<{ height: number; width: number }>;
 
   // All available presets with their degradation status.
   options: PresetOption[];

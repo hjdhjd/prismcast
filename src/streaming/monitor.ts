@@ -4,7 +4,7 @@
  */
 import { EvaluateTimeoutError, LOG, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext } from "../utils/index.js";
 import type { Frame, Page } from "puppeteer-core";
-import type { ResolvedSiteProfile, VideoState } from "../types/index.js";
+import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.js";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.js";
 import {
   buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel, validateVideoElement
@@ -69,10 +69,10 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 export interface RecoveryMetrics {
 
   // Timestamp when current recovery started, or null if not recovering. Used to calculate recovery duration.
-  currentRecoveryStartTime: number | null;
+  currentRecoveryStartTime: Nullable<number>;
 
   // The recovery method currently in progress, for logging success. Null if not recovering.
-  currentRecoveryMethod: string | null;
+  currentRecoveryMethod: Nullable<string>;
 
   // Page navigation recovery statistics.
   pageNavigationAttempts: number;
@@ -351,7 +351,7 @@ export function formatRecoveryMetricsSummary(metrics: RecoveryMetrics): string {
 interface CircuitBreakerState {
 
   // Timestamp of the first failure in the current window. Used to determine if failures are within the window.
-  firstFailureTime: number | null;
+  firstFailureTime: Nullable<number>;
 
   // Total number of failures within the circuit breaker window.
   totalFailureCount: number;
@@ -553,7 +553,7 @@ function getIssueCategory(state: VideoState, isStalled: boolean, isBuffering: bo
  */
 export interface MonitorStreamInfo {
 
-  channelName: string | null;
+  channelName: Nullable<string>;
   numericStreamId: number;
   startTime: Date;
 }
@@ -578,7 +578,7 @@ export function monitorPlaybackHealth(
   let currentPage = page;
 
   // The video's currentTime from the previous check. Used to detect whether the video is progressing. Null on first check since we have no previous value.
-  let lastTime: number | null = null;
+  let lastTime: Nullable<number> = null;
 
   // Number of consecutive checks where currentTime did not advance. We require multiple consecutive stalls before triggering recovery to avoid reacting to momentary
   // hiccups. Reset to 0 when progression is detected.
@@ -593,7 +593,7 @@ export function monitorPlaybackHealth(
 
   // Timestamp when buffering started, or null if not currently buffering. Used to apply the buffering grace period - we don't trigger recovery for buffering until
   // it exceeds BUFFERING_GRACE_PERIOD.
-  let bufferingStartTime: number | null = null;
+  let bufferingStartTime: Nullable<number> = null;
 
   // Timestamps of recent page reloads within the PAGE_RELOAD_WINDOW. Used to enforce MAX_PAGE_RELOADS limit. Old entries are pruned on each check.
   let pageReloadTimestamps: number[] = [];
@@ -634,14 +634,14 @@ export function monitorPlaybackHealth(
   let totalRecoveryAttempts = 0;
 
   // Last known video state for status reporting.
-  let lastVideoState: VideoState | null = null;
+  let lastVideoState: Nullable<VideoState> = null;
 
   // Recovery metrics tracked throughout the stream's lifetime.
   const metrics = createRecoveryMetrics();
 
   // Last issue tracking for UI display. Stores what triggered recovery and when, so users can see stream history.
-  let lastIssueType: string | null = null;
-  let lastIssueTime: number | null = null;
+  let lastIssueType: Nullable<string> = null;
+  let lastIssueTime: Nullable<number> = null;
 
   // Recovery grace period. After a recovery action, we wait before checking for new issues to give the action time to take effect. L1 (play/unmute) is a quick
   // action. L2 (source reload) and L3 (page reload) need more time for rebuffering/navigation.
@@ -885,7 +885,7 @@ export function monitorPlaybackHealth(
         }
 
         // Map to the VideoState type used by the monitor (includes 'time' alias for currentTime).
-        const state: VideoState | null = stateInfo ? { ...stateInfo, time: stateInfo.currentTime } : null;
+        const state: Nullable<VideoState> = stateInfo ? { ...stateInfo, time: stateInfo.currentTime } : null;
 
         // If context was invalidated (frame detached), immediately try to find the video in a new context.
         if(contextInvalidated) {
@@ -932,7 +932,7 @@ export function monitorPlaybackHealth(
           const frameCount = currentPage.frames().length;
 
           // Check video presence to distinguish between "no video" and "video exists but not ready".
-          let presence = null;
+          let presence: Nullable<Awaited<ReturnType<typeof checkVideoPresence>>> = null;
 
           try {
 

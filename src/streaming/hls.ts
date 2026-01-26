@@ -3,6 +3,7 @@
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
 import { LOG, formatError, runWithStreamContext } from "../utils/index.js";
+import type { Nullable, ResolvedSiteProfile } from "../types/index.js";
 import type { Request, Response } from "express";
 import { StreamSetupError, createPageWithCapture, setupStream } from "./setup.js";
 import { createHLSState, getAllStreams, getStream, registerStream, updateLastAccess } from "./registry.js";
@@ -12,7 +13,6 @@ import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } fro
 import { getInitSegment, getPlaylist, getSegment, waitForPlaylist } from "./hlsSegments.js";
 import { CONFIG } from "../config/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
-import type { ResolvedSiteProfile } from "../types/index.js";
 import type { TabReplacementHandlerFactory } from "./setup.js";
 import type { TabReplacementResult } from "./monitor.js";
 import { createFMP4Segmenter } from "./fmp4Segmenter.js";
@@ -397,7 +397,7 @@ async function startHLSStream(channelName: string, url: string, req: Request, re
   const profileOverride = req.query.profile as string | undefined;
 
   // Capture client IP for Channels DVR API integration. This identifies the DVR server for show info lookup.
-  const clientAddress = req.ip ?? req.socket.remoteAddress ?? null;
+  const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
 
   // Create a placeholder to prevent duplicate stream starts while we're setting up.
   const placeholderStreamId = -1;

@@ -2,7 +2,7 @@
  *
  * setup.ts: Common stream setup logic for PrismCast.
  */
-import type { Channel, ResolvedSiteProfile, UrlValidation } from "../types/index.js";
+import type { Channel, Nullable, ResolvedSiteProfile, UrlValidation } from "../types/index.js";
 import type { Frame, Page } from "puppeteer-core";
 import { LOG, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg } from "../utils/index.js";
 import type { MonitorStreamInfo, RecoveryMetrics, TabReplacementResult } from "./monitor.js";
@@ -100,13 +100,13 @@ export interface StreamSetupResult {
   captureStream: Readable;
 
   // The channel display name if streaming a named channel.
-  channelName: string | null;
+  channelName: Nullable<string>;
 
   // Cleanup function to release all resources. Safe to call multiple times.
   cleanup: () => Promise<void>;
 
   // The FFmpeg process for WebM-to-fMP4 transcoding, or null if using native fMP4 mode.
-  ffmpegProcess: FFmpegProcess | null;
+  ffmpegProcess: Nullable<FFmpegProcess>;
 
   // Unique numeric ID for this stream.
   numericStreamId: number;
@@ -181,7 +181,7 @@ export interface CreatePageWithCaptureResult {
   context: Frame | Page;
 
   // The FFmpeg process if using WebM+FFmpeg mode, null otherwise.
-  ffmpegProcess: FFmpegProcess | null;
+  ffmpegProcess: Nullable<FFmpegProcess>;
 
   // The browser page for this capture.
   page: Page;
@@ -337,7 +337,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   // Track the output stream that will be sent to the segmenter and FFmpeg process if used.
   let outputStream: Readable;
-  let ffmpegProcess: FFmpegProcess | null = null;
+  let ffmpegProcess: Nullable<FFmpegProcess> = null;
 
   // Initialize media stream capture.
   try {

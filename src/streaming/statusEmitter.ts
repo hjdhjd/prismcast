@@ -3,6 +3,7 @@
  * statusEmitter.ts: Event emitter for real-time stream and system status via SSE.
  */
 import { EventEmitter } from "events";
+import type { Nullable } from "../types/index.js";
 
 /*
  * STATUS TYPES
@@ -21,16 +22,16 @@ export type StreamHealthStatus = "buffering" | "error" | "healthy" | "recovering
  */
 export interface StreamStatus {
 
-  bufferingDuration: number | null;
-  channel: string | null;
+  bufferingDuration: Nullable<number>;
+  channel: Nullable<string>;
   currentTime: number;
   duration: number;
   escalationLevel: number;
   health: StreamHealthStatus;
   id: number;
-  lastIssueTime: number | null;
-  lastIssueType: string | null;
-  lastRecoveryTime: number | null;
+  lastIssueTime: Nullable<number>;
+  lastIssueType: Nullable<string>;
+  lastRecoveryTime: Nullable<number>;
   logoUrl: string;
   memoryBytes: number;
   networkState: number;
@@ -97,7 +98,7 @@ statusEmitter.setMaxListeners(100);
  * @returns The initial stream status.
  */
 export function createInitialStreamStatus(options: {
-  channelName: string | null;
+  channelName: Nullable<string>;
   numericStreamId: number;
   startTime: Date;
   url: string;
@@ -131,7 +132,7 @@ export function createInitialStreamStatus(options: {
 const streamStatuses = new Map<number, StreamStatus>();
 
 // Cached system status, updated periodically and on significant events.
-let cachedSystemStatus: SystemStatus | null = null;
+let cachedSystemStatus: Nullable<SystemStatus> = null;
 
 /**
  * Emits a stream added event when a new stream starts.

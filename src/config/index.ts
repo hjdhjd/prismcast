@@ -2,9 +2,9 @@
  *
  * index.ts: Configuration management for PrismCast.
  */
+import type { Config, Nullable } from "../types/index.js";
 import { DEFAULTS, loadUserConfig, mergeConfiguration } from "./userConfig.js";
 import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.js";
-import type { Config } from "../types/index.js";
 import { LOG } from "../utils/index.js";
 
 /*
@@ -101,7 +101,7 @@ export function getDefaults(): Config {
  * @param max - Optional maximum allowed value (inclusive).
  * @returns Error message if invalid, null if valid.
  */
-export function validatePositiveInt(name: string, value: number, min?: number, max?: number): string | null {
+export function validatePositiveInt(name: string, value: number, min?: number, max?: number): Nullable<string> {
 
   // Check for NaN (from parseInt of invalid input) and non-positive values.
   if(!Number.isInteger(value) || (value < 1)) {
@@ -132,7 +132,7 @@ export function validatePositiveInt(name: string, value: number, min?: number, m
  * @param max - Optional maximum allowed value (inclusive).
  * @returns Error message if invalid, null if valid.
  */
-export function validatePositiveNumber(name: string, value: number, min?: number, max?: number): string | null {
+export function validatePositiveNumber(name: string, value: number, min?: number, max?: number): Nullable<string> {
 
   // Check for NaN and non-positive values.
   if(Number.isNaN(value) || (value <= 0)) {

@@ -5,6 +5,12 @@
 import type { Frame, Page } from "puppeteer-core";
 import type { RecoveryMetrics } from "../streaming/monitor.js";
 
+/**
+ * A utility type that represents a value that can be null.
+ * @typeParam T - The type that can be nullable.
+ */
+export type Nullable<T> = T | null;
+
 /*
  * CONFIGURATION TYPES
  *
@@ -21,7 +27,7 @@ export interface BrowserConfig {
 
   // Path to the Chrome executable. When null, the application searches common installation paths across macOS, Linux, and Windows. Setting this explicitly is
   // useful in containerized environments or when multiple browser versions are installed. Environment variable: CHROME_BIN.
-  executablePath: string | null;
+  executablePath: Nullable<string>;
 
   // Time in milliseconds to wait after browser launch for the puppeteer-stream extension to initialize. The extension injects recording APIs into the browser
   // context, and attempting to capture streams before initialization completes causes silent failures. Increase this value if streams start with blank frames.
@@ -294,7 +300,7 @@ export interface SiteProfile {
 
   // The channel slug to match when selecting a channel from a multi-channel player. This is the literal string to find in thumbnail image URLs or other channel
   // identifiers. The value typically comes from the channel definition rather than the profile itself.
-  channelSelector?: string | null;
+  channelSelector?: Nullable<string>;
 
   // Whether the video player requires a click to start playback. Brightcove-based players commonly require this. When true, the stream handler clicks the video
   // element after page load and before waiting for the video to become ready. This simulates user interaction to satisfy autoplay policies.
@@ -314,7 +320,7 @@ export interface SiteProfile {
 
   // Keyboard key to press for fullscreen mode. Most video players use "f" for fullscreen. When set, the stream handler sends this keypress to the video element
   // after playback begins. Set to null to disable keyboard fullscreen and rely on CSS-based fullscreen styling instead.
-  fullscreenKey?: string | null;
+  fullscreenKey?: Nullable<string>;
 
   // Whether to override the video element's volume properties to prevent auto-muting. Some sites (like France 24) aggressively mute videos and fight attempts to
   // unmute them by resetting volume on every state change. When true, we use Object.defineProperty to intercept volume property access and force the video to
@@ -353,13 +359,13 @@ export interface ResolvedSiteProfile {
   channelSelection: ChannelSelectionConfig;
 
   // The channel slug to match when selecting a channel, or null if not applicable.
-  channelSelector: string | null;
+  channelSelector: Nullable<string>;
 
   // Whether to click the video element to initiate playback.
   clickToPlay: boolean;
 
   // Keyboard key for fullscreen, or null to use CSS-based fullscreen.
-  fullscreenKey: string | null;
+  fullscreenKey: Nullable<string>;
 
   // Whether to override volume properties to prevent auto-muting.
   lockVolumeProperties: boolean;
@@ -446,7 +452,7 @@ export type ChannelMap = Record<string, Channel>;
 export interface StreamInfo {
 
   // Channel name if streaming a named channel from the CHANNELS configuration, or null if streaming an arbitrary URL via the url query parameter.
-  channelName: string | null;
+  channelName: Nullable<string>;
 
   // Unique numeric identifier for this stream session. Used by the /streams/:id endpoint for stream management and in log messages for correlation.
   id: number;
@@ -460,7 +466,7 @@ export interface StreamInfo {
 
   // Function to stop the playback health monitor for this stream, or null if monitoring hasn't started yet. Called during cleanup to stop the monitoring
   // interval and prevent the monitor from trying to recover a stream that's being terminated. Returns recovery metrics for the termination summary.
-  stopMonitor: (() => RecoveryMetrics) | null;
+  stopMonitor: Nullable<() => RecoveryMetrics>;
 
   // URL being streamed. Logged for debugging and displayed in the /streams endpoint.
   url: string;
@@ -619,7 +625,7 @@ export interface HealthStatus {
 export interface StreamListItem {
 
   // Channel name if streaming a named channel, or null for arbitrary URLs.
-  channel: string | null;
+  channel: Nullable<string>;
 
   // Stream duration in seconds since it started.
   duration: number;

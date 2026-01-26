@@ -5,6 +5,7 @@
 import type { Platform, ServiceManager } from "../utils/platform.js";
 import { SERVICE_ID, SERVICE_NAME, getLogsDirectory, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getPrismCastWorkingDirectory, getServiceFileDirectory,
   getServiceFilePath } from "../utils/platform.js";
+import type { Nullable } from "../types/index.js";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 
@@ -586,7 +587,7 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
  * Returns the service generator for the current platform.
  * @returns The appropriate ServiceGenerator, or null if the platform is not supported.
  */
-export function getServiceGenerator(): ServiceGenerator | null {
+export function getServiceGenerator(): Nullable<ServiceGenerator> {
 
   switch(getPlatform()) {
 

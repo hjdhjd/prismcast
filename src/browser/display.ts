@@ -2,6 +2,7 @@
  *
  * display.ts: Display dimension detection and caching for PrismCast.
  */
+import type { Nullable } from "../types/index.js";
 
 /*
  * DISPLAY DIMENSION CACHE
@@ -19,10 +20,10 @@
  */
 
 // Cached maximum supported viewport dimensions. Null before browser initialization completes display detection.
-let maxSupportedViewport: { height: number; width: number } | null = null;
+let maxSupportedViewport: Nullable<{ height: number; width: number }> = null;
 
 // Cached browser chrome dimensions (title bar, toolbar, borders). Null before browser initialization completes display detection.
-let browserChrome: { height: number; width: number } | null = null;
+let browserChrome: Nullable<{ height: number; width: number }> = null;
 
 /**
  * Sets the maximum supported viewport dimensions. Called by browser initialization after detecting the display size and accounting for browser chrome.
@@ -39,7 +40,7 @@ export function setMaxSupportedViewport(width: number, height: number): void {
  * is returned.
  * @returns The maximum supported viewport dimensions, or null before detection.
  */
-export function getMaxSupportedViewport(): { height: number; width: number } | null {
+export function getMaxSupportedViewport(): Nullable<{ height: number; width: number }> {
 
   return maxSupportedViewport;
 }
@@ -58,7 +59,7 @@ export function setBrowserChrome(width: number, height: number): void {
  * Returns the cached browser chrome dimensions, or null if display detection has not yet completed.
  * @returns The browser chrome dimensions, or null before detection.
  */
-export function getBrowserChrome(): { height: number; width: number } | null {
+export function getBrowserChrome(): Nullable<{ height: number; width: number }> {
 
   return browserChrome;
 }

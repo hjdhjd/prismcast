@@ -3,6 +3,7 @@
  * version.ts: Version checking and update notification utilities.
  */
 import { LOG } from "./logger.js";
+import type { Nullable } from "../types/index.js";
 import { fileURLToPath } from "url";
 import { formatError } from "./errors.js";
 import { readFileSync } from "fs";
@@ -12,7 +13,7 @@ import { resolve } from "path";
 const NPM_PACKAGE_NAME = "prismcast";
 
 // Cached package version.
-let cachedPackageVersion: string | null = null;
+let cachedPackageVersion: Nullable<string> = null;
 
 /**
  * Gets the current package version from package.json.
@@ -48,10 +49,10 @@ const CHANGELOG_URL = "https://raw.githubusercontent.com/hjdhjd/prismcast/main/C
 const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
 
 // Cached version information.
-let cachedLatestVersion: string | null = null;
-let cachedChangelog: string | null = null;
+let cachedLatestVersion: Nullable<string> = null;
+let cachedChangelog: Nullable<string> = null;
 let lastCheckTime = 0;
-let updateCheckInterval: ReturnType<typeof setInterval> | null = null;
+let updateCheckInterval: Nullable<ReturnType<typeof setInterval>> = null;
 
 /**
  * Normalizes a version string by stripping the leading 'v' prefix if present.
@@ -97,7 +98,7 @@ function isVersionLessThan(a: string, b: string): boolean {
  * Fetches the latest version from the npm registry.
  * @returns The latest version string, or null if the fetch failed.
  */
-async function fetchLatestVersion(): Promise<string | null> {
+async function fetchLatestVersion(): Promise<Nullable<string>> {
 
   try {
 
@@ -124,7 +125,7 @@ async function fetchLatestVersion(): Promise<string | null> {
  * Fetches the changelog from GitHub.
  * @returns The full changelog content, or null if the fetch failed.
  */
-async function fetchChangelogContent(): Promise<string | null> {
+async function fetchChangelogContent(): Promise<Nullable<string>> {
 
   try {
 
@@ -150,7 +151,7 @@ async function fetchChangelogContent(): Promise<string | null> {
  * @param version - The version to extract (e.g., "1.0.8").
  * @returns The changelog entry for the version, or null if not found.
  */
-function extractVersionChangelog(changelog: string, version: string): string | null {
+function extractVersionChangelog(changelog: string, version: string): Nullable<string> {
 
   // Match the version header and capture everything until the next version header or end of file. The changelog format is: ## 1.0.8 (date)
   // Note: We use (?![^]) instead of $ for end-of-string because the m flag makes $ match end-of-line, which would stop the non-greedy *? at the first line.
@@ -216,7 +217,7 @@ export async function checkForUpdates(currentVersion: string, force = false): Pr
  * @param currentVersion - The currently running version.
  * @returns Object with latest version and whether an update is available.
  */
-export function getVersionInfo(currentVersion: string): { latestVersion: string | null; updateAvailable: boolean } {
+export function getVersionInfo(currentVersion: string): { latestVersion: Nullable<string>; updateAvailable: boolean } {
 
   const current = normalizeVersion(currentVersion);
   const latest = cachedLatestVersion;
@@ -233,7 +234,7 @@ export function getVersionInfo(currentVersion: string): { latestVersion: string 
  * @param version - The version to get changelog for.
  * @returns The changelog entry, or null if not available.
  */
-export function getChangelogForVersion(version: string): string | null {
+export function getChangelogForVersion(version: string): Nullable<string> {
 
   if(!cachedChangelog) {
 

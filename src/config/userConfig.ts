@@ -2,7 +2,7 @@
  *
  * userConfig.ts: User configuration file management for PrismCast.
  */
-import type { Config } from "../types/index.js";
+import type { Config, Nullable } from "../types/index.js";
 import { LOG } from "../utils/index.js";
 import fs from "node:fs";
 import { getValidPresetIds } from "./presets.js";
@@ -536,7 +536,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
  */
 export interface UserBrowserConfig {
 
-  executablePath?: string | null;
+  executablePath?: Nullable<string>;
   initTimeout?: number;
 }
 
@@ -847,7 +847,7 @@ export const DEFAULTS: Config = {
  * @param type - The expected type of the setting.
  * @returns The parsed value, or undefined if parsing fails.
  */
-function parseEnvValue(value: string, type: SettingMetadata["type"]): boolean | number | string | null | undefined {
+function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<boolean | number | string> | undefined {
 
   switch(type) {
 

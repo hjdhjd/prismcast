@@ -2,6 +2,7 @@
  *
  * fileLogger.ts: File-based logging with automatic size-based rotation for PrismCast.
  */
+import type { Nullable } from "../types/index.js";
 import df from "dateformat";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,7 +33,7 @@ const { promises: fsPromises } = fs;
  */
 
 // Path to the log file, set during initialization.
-let logFilePath: string | null = null;
+let logFilePath: Nullable<string> = null;
 
 // Buffer for collecting log entries before flushing to disk.
 let writeBuffer: string[] = [];

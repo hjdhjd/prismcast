@@ -5,6 +5,7 @@
 import { LOG, formatDuration, formatError, getAbortController, unregisterAbortController } from "../utils/index.js";
 import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./monitor.js";
 import { getStream, unregisterStream } from "./registry.js";
+import type { Nullable } from "../types/index.js";
 import type { RecoveryMetrics } from "./monitor.js";
 import { clearShowName } from "./showInfo.js";
 import { emitStreamRemoved } from "./statusEmitter.js";
@@ -152,7 +153,7 @@ export function terminateStream(streamId: number, channelName: string, reason: s
   }
 
   // Clean up stream resources and capture recovery metrics.
-  let recoveryMetrics: RecoveryMetrics | null = null;
+  let recoveryMetrics: Nullable<RecoveryMetrics> = null;
 
   if(streamInfo) {
 

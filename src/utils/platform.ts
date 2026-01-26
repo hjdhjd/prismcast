@@ -2,6 +2,7 @@
  *
  * platform.ts: Platform detection and service-related utilities for PrismCast.
  */
+import type { Nullable } from "../types/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -58,7 +59,7 @@ export function getPlatform(): Platform {
  * Returns the appropriate service manager for the current platform.
  * @returns The service manager type, or null if the platform is not supported for service installation.
  */
-export function getServiceManager(): ServiceManager | null {
+export function getServiceManager(): Nullable<ServiceManager> {
 
   switch(getPlatform()) {
 

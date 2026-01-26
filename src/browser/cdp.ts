@@ -4,8 +4,8 @@
  */
 import type { CDPSession, Page } from "puppeteer-core";
 import { LOG, evaluateWithAbort, formatError } from "../utils/index.js";
+import type { Nullable, UiSize } from "../types/index.js";
 import { CONFIG } from "../config/index.js";
-import type { UiSize } from "../types/index.js";
 import { getBrowserChrome } from "./display.js";
 import { getEffectiveViewport } from "../config/presets.js";
 
@@ -112,7 +112,7 @@ export async function resizeAndMinimizeWindow(page: Page, shouldMinimize: boolea
 
   // Get browser chrome dimensions. Prefer cached values from display detection, which were measured when the browser was in a known good state. Fall back to
   // measuring via page.evaluate() if cached values aren't available (e.g., during early initialization or after cache clear).
-  let uiSize: UiSize | null = getBrowserChrome();
+  let uiSize: Nullable<UiSize> = getBrowserChrome();
 
   if(!uiSize) {
 

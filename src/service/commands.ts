@@ -5,6 +5,7 @@
 import { DEFAULTS, loadUserConfig } from "../config/userConfig.js";
 import { SERVICE_NAME, getPlatform, getServiceFilePath } from "../utils/platform.js";
 import { collectServiceEnvironment, getServiceGenerator } from "./generators.js";
+import type { Nullable } from "../types/index.js";
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -18,7 +19,7 @@ interface StreamsResponse {
   count: number;
   limit: number;
   streams: Array<{
-    channel: string | null;
+    channel: Nullable<string>;
     duration: number;
     id: number;
     url: string;
@@ -83,7 +84,7 @@ function formatDuration(seconds: number): string {
  * @param port - The server port to connect to.
  * @returns Stream data on success, null if the server is unreachable.
  */
-async function fetchActiveStreams(port: number): Promise<StreamsResponse | null> {
+async function fetchActiveStreams(port: number): Promise<Nullable<StreamsResponse>> {
 
   try {
 

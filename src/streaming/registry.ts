@@ -2,11 +2,11 @@
  *
  * registry.ts: Stream tracking for PrismCast.
  */
+import type { Nullable, ResolvedSiteProfile } from "../types/index.js";
 import type { FFmpegProcess } from "../utils/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { Page } from "puppeteer-core";
 import type { RecoveryMetrics } from "./monitor.js";
-import type { ResolvedSiteProfile } from "../types/index.js";
 
 /*
  * STREAM REGISTRY
@@ -37,7 +37,7 @@ export interface HLSState {
 
   // The fMP4 initialization segment containing codec configuration. Sent once at stream start and retained for the stream's lifetime. Clients must fetch this before
   // any media segments.
-  initSegment: Buffer | null;
+  initSegment: Nullable<Buffer>;
 
   // The current m3u8 playlist content.
   playlist: string;
@@ -70,13 +70,13 @@ export interface StreamInfo {
 export interface StreamRegistryEntry {
 
   // Channel name if streaming a named channel, or null for arbitrary URLs.
-  channelName: string | null;
+  channelName: Nullable<string>;
 
   // IP address of the client that initiated this stream. Used to identify the Channels DVR server for show info lookup.
-  clientAddress: string | null;
+  clientAddress: Nullable<string>;
 
   // The FFmpeg process for WebM-to-fMP4 transcoding, or null if using native fMP4 capture.
-  ffmpegProcess: FFmpegProcess | null;
+  ffmpegProcess: Nullable<FFmpegProcess>;
 
   // HLS segment storage including init segment, media segments, and playlist.
   hls: HLSState;
@@ -94,13 +94,13 @@ export interface StreamRegistryEntry {
   profile: ResolvedSiteProfile;
 
   // The fMP4 segmenter that processes the capture stream, or null if not yet created.
-  segmenter: FMP4SegmenterResult | null;
+  segmenter: Nullable<FMP4SegmenterResult>;
 
   // Timestamp when the stream started.
   startTime: Date;
 
   // Function to stop the health monitor, or null if monitoring hasn't started. Returns recovery metrics for the termination summary.
-  stopMonitor: (() => RecoveryMetrics) | null;
+  stopMonitor: Nullable<() => RecoveryMetrics>;
 
   // String identifier for logging (e.g., "cnn-5jecl6").
   streamIdStr: string;

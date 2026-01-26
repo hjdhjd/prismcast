@@ -7,6 +7,7 @@ import { LOG, formatError } from "../utils/index.js";
 import { getAllStreams, getStream, getStreamCount, getStreamMemoryUsage, unregisterStream } from "../streaming/registry.js";
 import { getStatusSnapshot, subscribeToStatus } from "../streaming/statusEmitter.js";
 import { CONFIG } from "../config/index.js";
+import type { Nullable } from "../types/index.js";
 
 /*
  * STREAM MANAGEMENT
@@ -26,7 +27,7 @@ export function setupStreamsEndpoint(app: Express): void {
     const now = Date.now();
 
     const streams: {
-      channel: string | null;
+      channel: Nullable<string>;
       duration: number;
       id: number;
       memory: { initSegment: number; segments: number; total: number };
