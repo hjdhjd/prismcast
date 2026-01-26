@@ -3,7 +3,9 @@
 All notable changes to this project will be documented in this file.
 
 ## 1.0.7 (2026-01-25)
+  * New feature: version display in header with update checking and changelog modal.
   * Improvement: startup and shutdown robustness.
+  * Fix: channel duplication when creating override channels.
   * Fix: double punctuation in error log messages.
   * Fix: active streams table spacing.
   * Housekeeping.
