@@ -3,7 +3,7 @@
  * root.ts: Landing page route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { escapeHtml, isRunningAsService } from "../utils/index.js";
+import { escapeHtml, getChangelogForVersion, getPackageVersion, getVersionInfo, isRunningAsService } from "../utils/index.js";
 import { generateAdvancedTabContent, generateChannelsPanel, generateSettingsFormFooter, generateSettingsTabContent, hasEnvOverrides } from "./config.js";
 import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "./ui.js";
 import { VIDEO_QUALITY_PRESETS } from "../config/presets.js";
@@ -34,6 +34,71 @@ function generateHeaderStatusHtml(): string {
     "<div id=\"system-status\" class=\"header-status\">",
     "<span id=\"system-health\"><span class=\"status-dot\" style=\"color: var(--text-muted);\">&#9679;</span> Connecting...</span>",
     "<span id=\"stream-count\">-</span>",
+    "</div>"
+  ].join("\n");
+}
+
+/**
+ * Generates the version display HTML with update indicator if available.
+ * @returns HTML content for the version display.
+ */
+function generateVersionHtml(): string {
+
+  const currentVersion = getPackageVersion();
+  const versionInfo = getVersionInfo(currentVersion);
+
+  if(versionInfo.updateAvailable && versionInfo.latestVersion) {
+
+    // Update available - make entire version area clickable to open changelog modal.
+    return [
+      "<a href=\"#\" class=\"version version-update\" onclick=\"openChangelogModal(); return false;\">",
+      "v" + currentVersion + " &rarr; v" + versionInfo.latestVersion,
+      "</a>"
+    ].join("");
+  }
+
+  // No update - just show current version.
+  return "<span class=\"version\">v" + currentVersion + "</span>";
+}
+
+/**
+ * Generates the changelog modal HTML for displaying update information.
+ * @returns HTML content for the changelog modal.
+ */
+function generateChangelogModal(): string {
+
+  const currentVersion = getPackageVersion();
+  const versionInfo = getVersionInfo(currentVersion);
+
+  // No update available - return empty string.
+  if(!versionInfo.updateAvailable || !versionInfo.latestVersion) {
+
+    return "";
+  }
+
+  const changelog = getChangelogForVersion(versionInfo.latestVersion);
+
+  // Format changelog entries as HTML list items.
+  let changelogHtml = "<p>Unable to load changelog.</p>";
+
+  if(changelog) {
+
+    const lines = changelog.split("\n").filter((line) => line.trim().startsWith("*"));
+    const items = lines.map((line) => "<li>" + escapeHtml(line.replace(/^\s*\*\s*/, "")) + "</li>").join("\n");
+
+    changelogHtml = "<ul class=\"changelog-list\">" + items + "</ul>";
+  }
+
+  return [
+    "<div id=\"changelog-modal\" class=\"changelog-modal\">",
+    "<div class=\"changelog-modal-content\">",
+    "<h3>What's New in v" + versionInfo.latestVersion + "</h3>",
+    changelogHtml,
+    "<div class=\"changelog-modal-buttons\">",
+    "<a href=\"https://github.com/hjdhjd/prismcast/releases\" target=\"_blank\" rel=\"noopener\" class=\"btn btn-primary\">View on GitHub</a>",
+    "<button type=\"button\" class=\"btn btn-secondary\" onclick=\"closeChangelogModal()\">Close</button>",
+    "</div>",
+    "</div>",
     "</div>"
   ].join("\n");
 }
@@ -1009,6 +1074,18 @@ function generateConfigSubtabScript(): string {
     "    }, 1000);",
     "  }",
 
+    // Open the changelog modal.
+    "  window.openChangelogModal = function() {",
+    "    var modal = document.getElementById('changelog-modal');",
+    "    if (modal) { modal.style.display = 'flex'; }",
+    "  };",
+
+    // Close the changelog modal.
+    "  window.closeChangelogModal = function() {",
+    "    var modal = document.getElementById('changelog-modal');",
+    "    if (modal) { modal.style.display = 'none'; }",
+    "  };",
+
     // Clear all field error indicators.
     "  function clearFieldErrors() {",
     "    var errorInputs = document.querySelectorAll('.form-input.error, .form-select.error');",
@@ -1412,17 +1489,15 @@ function generateConfigSubtabScript(): string {
     "    if (addForm) addForm.querySelector('form').reset();",
     "  };",
 
-    // Insert or replace channel rows in the table. For edits, removes existing rows first, then inserts at the correct alphabetical position.
-    "  window.insertChannelRow = function(html, key, isNew) {",
+    // Insert or replace channel rows in the table. Always removes existing rows with the same key first (handles both edits and overrides of builtin channels).
+    "  window.insertChannelRow = function(html, key) {",
     "    var tbody = document.querySelector('.channel-table tbody');",
     "    if (!tbody || !html) return;",
-    // For edit: remove existing rows first.
-    "    if (!isNew) {",
-    "      var oldDisplay = document.getElementById('display-row-' + key);",
-    "      var oldEdit = document.getElementById('edit-row-' + key);",
-    "      if (oldEdit) oldEdit.remove();",
-    "      if (oldDisplay) oldDisplay.remove();",
-    "    }",
+    // Remove any existing rows with this key (edit or override of builtin).
+    "    var oldDisplay = document.getElementById('display-row-' + key);",
+    "    var oldEdit = document.getElementById('edit-row-' + key);",
+    "    if (oldEdit) oldEdit.remove();",
+    "    if (oldDisplay) oldDisplay.remove();",
     // Create temporary container to parse HTML.
     "    var temp = document.createElement('tbody');",
     "    temp.innerHTML = html.displayRow + (html.editRow || '');",
@@ -1495,7 +1570,7 @@ function generateConfigSubtabScript(): string {
     "      if (result.ok && result.data.success) {",
     "        showStatus(result.data.message, 'success');",
     "        if (result.data.html) {",
-    "          insertChannelRow(result.data.html, result.data.key, action === 'add');",
+    "          insertChannelRow(result.data.html, result.data.key);",
     "          if (action === 'add') {",
     "            hideAddForm();",
     "          } else {",
@@ -1677,6 +1752,8 @@ function generateLandingPageStyles(): string {
 
     // Settings panel description styling (replaces redundant header titles).
     ".settings-panel-description { margin: 0; font-size: 15px; color: var(--text-primary); }",
+    ".settings-panel-description p { margin: 0; }",
+    ".description-hint { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }",
 
     // Streams table container - outer border with rounded corners.
     "#streams-container { border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 20px; }",
@@ -1834,7 +1911,23 @@ function generateLandingPageStyles(): string {
     ".btn-copy-inline { background: var(--surface-elevated); border: 1px solid var(--border-default); padding: 2px 8px; font-size: 12px; ",
     "border-radius: var(--radius-sm); cursor: pointer; color: var(--text-secondary); margin-left: 6px; vertical-align: middle; }",
     ".btn-copy-inline:hover { background: var(--surface-hover); color: var(--text-primary); }",
-    ".copy-feedback-inline { color: var(--stream-healthy); font-size: 12px; margin-left: 8px; display: none; }"
+    ".copy-feedback-inline { color: var(--stream-healthy); font-size: 12px; margin-left: 8px; display: none; }",
+
+    // Version display styles.
+    ".version { font-size: 13px; color: var(--text-muted); font-weight: 400; }",
+    ".version.version-update { color: var(--interactive-primary); text-decoration: none; transition: color 0.2s; }",
+    ".version.version-update:hover { color: var(--interactive-primary-hover, var(--interactive-primary)); text-decoration: underline; }",
+
+    // Changelog modal styles.
+    ".changelog-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); display: none; ",
+    "align-items: center; justify-content: center; z-index: 1000; }",
+    ".changelog-modal-content { background: var(--surface-overlay); padding: 30px; border-radius: var(--radius-lg); max-width: 500px; width: 90%; ",
+    "box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); }",
+    ".changelog-modal-content h3 { margin-top: 0; margin-bottom: 20px; color: var(--text-heading); }",
+    ".changelog-list { margin: 0 0 20px 0; padding: 0 0 0 20px; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }",
+    ".changelog-list li { margin-bottom: 8px; }",
+    ".changelog-list li:last-child { margin-bottom: 0; }",
+    ".changelog-modal-buttons { display: flex; gap: 12px; justify-content: flex-end; }"
   ].join("\n");
 }
 
@@ -1886,12 +1979,13 @@ export function setupRootEndpoint(app: Express): void {
       generateTabPanel("api", apiContent, false)
     ].join("\n");
 
-    // Build the page header with logo, title, links, and status bar.
+    // Build the page header with logo, title, version, links, and status bar.
     const header = [
       "<div class=\"header\">",
       "<div class=\"header-left\">",
       "<img src=\"/logo.svg\" alt=\"PrismCast\" class=\"logo\">",
       "<h1>PrismCast</h1>",
+      generateVersionHtml(),
       "<span class=\"header-links\">",
       "<a href=\"https://github.com/hjdhjd/prismcast\" target=\"_blank\" rel=\"noopener\">GitHub</a>",
       "<span class=\"header-links-sep\">&middot;</span>",
@@ -1921,7 +2015,8 @@ export function setupRootEndpoint(app: Express): void {
     ].join("\n");
 
     // Build the body content.
-    const bodyContent = [ header, tabBar, tabPanels, restartModal ].join("\n");
+    const changelogModal = generateChangelogModal();
+    const bodyContent = [ header, tabBar, tabPanels, restartModal, changelogModal ].join("\n");
 
     // Generate scripts: tab switching, config subtab handling, then status SSE for header updates.
     const scripts = [
