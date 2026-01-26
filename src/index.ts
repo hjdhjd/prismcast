@@ -2,7 +2,7 @@
  *
  * index.ts: Entry point for PrismCast.
  */
-import { LOG, formatError, setDebugLogging } from "./utils/index.js";
+import { LOG, formatError, getPackageVersion, setDebugLogging } from "./utils/index.js";
 import { CONFIG } from "./config/index.js";
 import { handleServiceCommand } from "./service/index.js";
 import { startServer } from "./app.js";
@@ -117,7 +117,7 @@ function parseArgs(): ParsedArgs {
     if((arg === "-v") || (arg === "--version")) {
 
       // eslint-disable-next-line no-console
-      console.log("PrismCast v2.0.0");
+      console.log("PrismCast v" + getPackageVersion());
 
       process.exit(0);
     }

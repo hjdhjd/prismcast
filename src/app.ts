@@ -4,7 +4,7 @@
  */
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.js";
 import type { Express, NextFunction, Request, Response } from "express";
-import { LOG, createMorganStream, formatError, resolveFFmpegPath, setConsoleLogging } from "./utils/index.js";
+import { LOG, createMorganStream, formatError, getPackageVersion, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.js";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, prepareExtension, setGracefulShutdown, startStalePageCleanup,
   stopStalePageCleanup } from "./browser/index.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
@@ -102,6 +102,7 @@ function setupGracefulShutdown(): void {
     stopStalePageCleanup();
     stopIdleCleanup();
     stopShowInfoPolling();
+    stopUpdateChecking();
 
     // Terminate all streams. terminateStream() handles all cleanup including page closure and registry removal.
     const streams = getAllStreams();
@@ -393,6 +394,9 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
 
   // Start show info polling for Channels DVR integration.
   startShowInfoPolling();
+
+  // Start checking for updates.
+  startUpdateChecking(getPackageVersion());
 
   // Build and start Express application.
   try {

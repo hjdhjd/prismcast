@@ -14,3 +14,4 @@ export * from "./morganStream.js";
 export * from "./platform.js";
 export * from "./retry.js";
 export * from "./streamContext.js";
+export * from "./version.js";
