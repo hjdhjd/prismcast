@@ -95,7 +95,7 @@ export function generateBaseStyles(): string {
     ".btn-delete { background: var(--interactive-delete); color: var(--text-inverse); }",
     ".btn-delete:hover { background: var(--interactive-delete-hover); }",
     ".btn-group { display: flex; gap: 6px; }",
-    ".btn-sm { padding: 6px 12px; font-size: 12px; }",
+    ".btn-sm { padding: 6px 12px; font-size: 12px; white-space: nowrap; }",
     ".btn:disabled { opacity: 0.6; cursor: not-allowed; }",
 
     // Badge styles.

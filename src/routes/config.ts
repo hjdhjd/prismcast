@@ -1073,7 +1073,10 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   // Panel header with description.
   lines.push("<div class=\"panel-header\">");
-  lines.push("<p class=\"settings-panel-description\">Define and manage streaming channels for the playlist. Your custom channels are highlighted.</p>");
+  lines.push("<div class=\"settings-panel-description\">");
+  lines.push("<p>Define and manage streaming channels for the playlist. Your custom channels are highlighted.</p>");
+  lines.push("<p class=\"description-hint\">Tip: To override a built-in channel, add a custom channel with the same key.</p>");
+  lines.push("</div>");
   lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"document.getElementById('add-channel-form').style.display='block'; ",
     "this.style.display='none';\">Add Channel</button>");
   lines.push("</div>");
