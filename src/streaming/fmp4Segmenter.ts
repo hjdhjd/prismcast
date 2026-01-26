@@ -12,17 +12,16 @@ import { createMP4BoxParser } from "./mp4Parser.js";
 /*
  * FMP4 SEGMENTATION
  *
- * This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. It replaces FFmpeg by performing native MP4 parsing and segmentation. The overall flow
- * is:
+ * This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is:
  *
- * 1. Receive MP4 data from puppeteer-stream (already fragmented MP4 with H.264 + AAC)
+ * 1. Receive MP4 data from puppeteer-stream (H.264 + AAC from either native capture or FFmpeg transcoding)
  * 2. Parse MP4 box structure to identify:
  *    - ftyp + moov: Initialization segment (codec configuration)
  *    - moof + mdat pairs: Media fragments
  * 3. Store init segment and accumulate media fragments into segments
  * 4. Generate and update the m3u8 playlist
  *
- * The key advantage over FFmpeg is eliminating an external process dependency while achieving the same result: zero-transcoding HLS output.
+ * The parser is codec-agnostic—it only examines box types (ftyp, moov, moof, mdat) without parsing codec-specific data. Media passes through unchanged.
  */
 
 // ─────────────────────────────────────────────────────────────

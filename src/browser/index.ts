@@ -873,7 +873,7 @@ export async function closeBrowser(): Promise<void> {
       if(browserProcess && !browserProcess.killed) {
 
         browserProcess.kill("SIGKILL");
-        LOG.info("Sent SIGKILL to browser process.");
+        LOG.debug("Sent SIGKILL to browser process.");
       }
     } catch(error) {
 

@@ -137,7 +137,7 @@ export interface FFmpegProcess {
 
 /**
  * Spawns an FFmpeg process configured to transcode WebM (H264+Opus) to fMP4 (H264+AAC). The process reads from stdin and writes to stdout, allowing it to be
- * integrated into a Node.js stream pipeline.
+ * integrated into a Node.js stream pipeline. Video is passed through unchanged; audio is transcoded from Opus to AAC for HLS compatibility.
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
@@ -147,7 +147,7 @@ export interface FFmpegProcess {
  * - `-f mp4`: Output MP4 container format
  * - `-movflags frag_keyframe+empty_moov+default_base_moof`: Streaming-friendly fMP4 flags
  * - `pipe:1`: Write output to stdout
- * @param audioBitrate - Audio bitrate in bits per second (e.g., 256000 for 256kbps).
+ * @param audioBitrate - Audio bitrate in bits per second (e.g., 256000 for 256 kbps).
  * @param onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
  * @param streamId - Stream identifier for logging.
  * @returns FFmpeg process wrapper with stdin, stdout, and kill function.
@@ -158,15 +158,15 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
   // If somehow not set, fall back to "ffmpeg" and let spawn handle the error.
   const ffmpegPath = cachedFFmpegPath ?? "ffmpeg";
 
-  // Use AudioToolbox encoder on macOS for better quality. Fall back to FFmpeg's built-in AAC encoder on other platforms.
-  const audioCodec = process.platform === "darwin" ? "aac_at" : "aac";
+  // Use Apple's AudioToolbox AAC encoder on macOS for better quality and performance. Fall back to FFmpeg's built-in AAC encoder on other platforms.
+  const aacEncoder = process.platform === "darwin" ? "aac_at" : "aac";
 
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
     "-i", "pipe:0",
     "-c:v", "copy",
-    "-c:a", audioCodec,
+    "-c:a", aacEncoder,
     "-b:a", String(audioBitrate),
     "-f", "mp4",
     "-movflags", "frag_keyframe+empty_moov+default_base_moof",

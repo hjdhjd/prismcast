@@ -277,7 +277,7 @@ function generateStatusScript(): string {
     "    var rowTint = getRowTint(s.health);",
     "    var channelText = s.channel || getDomain(s.url);",
     "    var channelDisplay = s.logoUrl",
-    "      ? '<img src=\"' + s.logoUrl + '\" class=\"channel-logo\" alt=\"' + channelText + '\" ' +",
+    "      ? '<img src=\"' + s.logoUrl + '\" class=\"channel-logo\" alt=\"' + channelText + '\" title=\"' + channelText + '\" ' +",
     "        'onerror=\"this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'inline\\'\">' +",
     "        '<span class=\"channel-text\" style=\"display:none\">' + channelText + '</span>'",
     "      : '<span class=\"channel-text\">' + channelText + '</span>';",

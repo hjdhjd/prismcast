@@ -84,7 +84,7 @@ function setupGracefulShutdown(): void {
 
   let shutdownInProgress = false;
 
-  async function shutdown(signal: string): Promise<void> {
+  async function shutdown(): Promise<void> {
 
     // Prevent multiple shutdown attempts if multiple signals are received.
     if(shutdownInProgress) {
@@ -94,7 +94,7 @@ function setupGracefulShutdown(): void {
 
     shutdownInProgress = true;
 
-    LOG.info("Received %s, starting graceful shutdown.", signal);
+    LOG.info("Shutting down.");
 
     // Set the graceful shutdown flag early so that page close errors are suppressed during stream termination.
     setGracefulShutdown(true);
@@ -142,12 +142,12 @@ function setupGracefulShutdown(): void {
 
   process.on("SIGINT", (): void => {
 
-    void shutdown("SIGINT");
+    void shutdown();
   });
 
   process.on("SIGTERM", (): void => {
 
-    void shutdown("SIGTERM");
+    void shutdown();
   });
 }
 
