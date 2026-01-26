@@ -5,9 +5,10 @@
 import type { Express, Request, Response } from "express";
 import { LOG, formatError } from "../utils/index.js";
 import { getAllStreams, getStream, getStreamCount, getStreamMemoryUsage, unregisterStream } from "../streaming/registry.js";
-import { getStatusSnapshot, subscribeToStatus } from "../streaming/statusEmitter.js";
+import { getStatusSnapshot, getStreamStatus, subscribeToStatus } from "../streaming/statusEmitter.js";
 import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
+import type { StreamHealthStatus } from "../streaming/statusEmitter.js";
 
 /*
  * STREAM MANAGEMENT
@@ -29,20 +30,32 @@ export function setupStreamsEndpoint(app: Express): void {
     const streams: {
       channel: Nullable<string>;
       duration: number;
+      escalationLevel: number;
+      health: StreamHealthStatus;
       id: number;
+      logoUrl: string;
       memory: { initSegment: number; segments: number; total: number };
+      recoveryAttempts: number;
+      showName: string;
       startTime: string;
       url: string;
     }[] = [];
 
     for(const streamInfo of getAllStreams()) {
 
+      const status = getStreamStatus(streamInfo.id);
+
       streams.push({
 
         channel: streamInfo.channelName,
         duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
+        escalationLevel: status?.escalationLevel ?? 0,
+        health: status?.health ?? "healthy",
         id: streamInfo.id,
+        logoUrl: status?.logoUrl ?? "",
         memory: getStreamMemoryUsage(streamInfo),
+        recoveryAttempts: status?.recoveryAttempts ?? 0,
+        showName: status?.showName ?? "",
         startTime: streamInfo.startTime.toISOString(),
         url: streamInfo.url
       });
