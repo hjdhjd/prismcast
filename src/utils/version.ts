@@ -50,7 +50,6 @@ const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
 // Cached version information.
 let cachedLatestVersion: string | null = null;
 let cachedChangelog: string | null = null;
-let cachedChangelogVersion: string | null = null;
 let lastCheckTime = 0;
 let updateCheckInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -154,7 +153,8 @@ async function fetchChangelogContent(): Promise<string | null> {
 function extractVersionChangelog(changelog: string, version: string): string | null {
 
   // Match the version header and capture everything until the next version header or end of file. The changelog format is: ## 1.0.8 (date)
-  const pattern = new RegExp("^## " + version.replace(/\./g, "\\.") + "\\s+\\([^)]+\\)\\s*\\n([\\s\\S]*?)(?=^## \\d|$)", "m");
+  // Note: We use (?![^]) instead of $ for end-of-string because the m flag makes $ match end-of-line, which would stop the non-greedy *? at the first line.
+  const pattern = new RegExp("^## " + version.replace(/\./g, "\\.") + "\\s+\\([^)]+\\)\\s*\\n([\\s\\S]*?)(?=^## \\d|(?![^]))", "m");
   const match = changelog.match(pattern);
 
   if(!match) {
@@ -169,13 +169,14 @@ function extractVersionChangelog(changelog: string, version: string): string | n
 /**
  * Checks for updates and caches the results.
  * @param currentVersion - The currently running version.
+ * @param force - If true, bypasses the debounce check.
  */
-export async function checkForUpdates(currentVersion: string): Promise<void> {
+export async function checkForUpdates(currentVersion: string, force = false): Promise<void> {
 
   const now = Date.now();
 
-  // Skip if we checked recently (within 1 minute) to avoid duplicate checks on startup.
-  if((now - lastCheckTime) < 60000) {
+  // Skip if we checked recently (within 1 minute) to avoid duplicate checks on startup, unless forced.
+  if(!force && ((now - lastCheckTime) < 60000)) {
 
     return;
   }
@@ -192,17 +193,20 @@ export async function checkForUpdates(currentVersion: string): Promise<void> {
 
   cachedLatestVersion = latest;
 
-  // Fetch changelog if there's a newer version and we haven't fetched it for this version yet.
-  if(isVersionLessThan(current, latest) && (cachedChangelogVersion !== latest)) {
+  // Log if there's a newer version available.
+  if(isVersionLessThan(current, latest)) {
 
     LOG.info("Update available: v%s (current: v%s).", latest, current);
+  }
+
+  // Always fetch changelog if we haven't yet (needed for both current version display and update notes).
+  if(!cachedChangelog) {
 
     const changelog = await fetchChangelogContent();
 
     if(changelog) {
 
       cachedChangelog = changelog;
-      cachedChangelogVersion = latest;
     }
   }
 }

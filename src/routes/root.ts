@@ -3,7 +3,7 @@
  * root.ts: Landing page route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { escapeHtml, getChangelogForVersion, getPackageVersion, getVersionInfo, isRunningAsService } from "../utils/index.js";
+import { checkForUpdates, escapeHtml, getChangelogForVersion, getPackageVersion, getVersionInfo, isRunningAsService } from "../utils/index.js";
 import { generateAdvancedTabContent, generateChannelsPanel, generateSettingsFormFooter, generateSettingsTabContent, hasEnvOverrides } from "./config.js";
 import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "./ui.js";
 import { VIDEO_QUALITY_PRESETS } from "../config/presets.js";
@@ -47,22 +47,37 @@ function generateVersionHtml(): string {
   const currentVersion = getPackageVersion();
   const versionInfo = getVersionInfo(currentVersion);
 
+  // Refresh icon for manual update check (using Unicode refresh symbol).
+  const refreshIcon = [
+    "<button type=\"button\" class=\"version-check\" onclick=\"checkForUpdates()\" title=\"Check for updates\">",
+    "&#8635;",
+    "</button>"
+  ].join("");
+
   if(versionInfo.updateAvailable && versionInfo.latestVersion) {
 
-    // Update available - make entire version area clickable to open changelog modal.
+    // Update available - make version area clickable to open changelog modal, with refresh icon.
     return [
+      "<span class=\"version-container\">",
       "<a href=\"#\" class=\"version version-update\" onclick=\"openChangelogModal(); return false;\">",
       "v" + currentVersion + " &rarr; v" + versionInfo.latestVersion,
-      "</a>"
+      "</a>",
+      refreshIcon,
+      "</span>"
     ].join("");
   }
 
-  // No update - just show current version.
-  return "<span class=\"version\">v" + currentVersion + "</span>";
+  // No update - show current version (clickable to view changelog) with refresh icon.
+  return [
+    "<span class=\"version-container\" id=\"version-display\">",
+    "<a href=\"#\" class=\"version\" onclick=\"openChangelogModal(); return false;\">v" + currentVersion + "</a>",
+    refreshIcon,
+    "</span>"
+  ].join("");
 }
 
 /**
- * Generates the changelog modal HTML for displaying update information.
+ * Generates the changelog modal HTML for displaying version information.
  * @returns HTML content for the changelog modal.
  */
 function generateChangelogModal(): string {
@@ -70,13 +85,9 @@ function generateChangelogModal(): string {
   const currentVersion = getPackageVersion();
   const versionInfo = getVersionInfo(currentVersion);
 
-  // No update available - return empty string.
-  if(!versionInfo.updateAvailable || !versionInfo.latestVersion) {
-
-    return "";
-  }
-
-  const changelog = getChangelogForVersion(versionInfo.latestVersion);
+  // Show latest version's changelog if update available, otherwise current version's changelog.
+  const displayVersion = (versionInfo.updateAvailable && versionInfo.latestVersion) ? versionInfo.latestVersion : currentVersion;
+  const changelog = getChangelogForVersion(displayVersion);
 
   // Format changelog entries as HTML list items.
   let changelogHtml = "<p>Unable to load changelog.</p>";
@@ -92,7 +103,7 @@ function generateChangelogModal(): string {
   return [
     "<div id=\"changelog-modal\" class=\"changelog-modal\">",
     "<div class=\"changelog-modal-content\">",
-    "<h3>What's New in v" + versionInfo.latestVersion + "</h3>",
+    "<h3>What's new in v" + displayVersion + "</h3>",
     changelogHtml,
     "<div class=\"changelog-modal-buttons\">",
     "<a href=\"https://github.com/hjdhjd/prismcast/releases\" target=\"_blank\" rel=\"noopener\" class=\"btn btn-primary\">View on GitHub</a>",
@@ -1086,6 +1097,31 @@ function generateConfigSubtabScript(): string {
     "    if (modal) { modal.style.display = 'none'; }",
     "  };",
 
+    // Check for updates manually.
+    "  window.checkForUpdates = function() {",
+    "    var btn = document.querySelector('.version-check');",
+    "    if (!btn || btn.classList.contains('checking')) return;",
+    "    btn.classList.add('checking');",
+    "    fetch('/version/check', { method: 'POST' })",
+    "      .then(function(res) { return res.json(); })",
+    "      .then(function(data) {",
+    "        btn.classList.remove('checking');",
+    "        if (data.updateAvailable) {",
+    // Only reload if update wasn't already visible (need to fetch changelog modal).
+    "          var alreadyShowing = document.querySelector('.version-update');",
+    "          if (!alreadyShowing) { location.reload(); }",
+    "        } else {",
+    "          btn.classList.add('up-to-date');",
+    "          setTimeout(function() { btn.classList.remove('up-to-date'); }, 2000);",
+    "        }",
+    "      })",
+    "      .catch(function() {",
+    "        btn.classList.remove('checking');",
+    "        btn.classList.add('check-error');",
+    "        setTimeout(function() { btn.classList.remove('check-error'); }, 2000);",
+    "      });",
+    "  };",
+
     // Clear all field error indicators.
     "  function clearFieldErrors() {",
     "    var errorInputs = document.querySelectorAll('.form-input.error, .form-select.error');",
@@ -1914,9 +1950,18 @@ function generateLandingPageStyles(): string {
     ".copy-feedback-inline { color: var(--stream-healthy); font-size: 12px; margin-left: 8px; display: none; }",
 
     // Version display styles.
-    ".version { font-size: 13px; color: var(--text-muted); font-weight: 400; }",
-    ".version.version-update { color: var(--interactive-primary); text-decoration: none; transition: color 0.2s; }",
+    ".version-container { display: inline-flex; align-items: center; gap: 6px; }",
+    ".version { font-size: 13px; color: var(--text-muted); font-weight: 400; text-decoration: none; transition: color 0.2s; }",
+    ".version:hover { color: var(--text-primary); }",
+    ".version.version-update { color: var(--interactive-primary); }",
     ".version.version-update:hover { color: var(--interactive-primary-hover, var(--interactive-primary)); text-decoration: underline; }",
+    ".version-check { background: none; border: none; padding: 0; margin: 0; cursor: pointer; font-size: 14px; color: var(--text-muted); ",
+    "line-height: 1; transition: color 0.2s, transform 0.3s; opacity: 0.7; }",
+    ".version-check:hover { color: var(--text-primary); opacity: 1; }",
+    ".version-check.checking { animation: spin 1s linear infinite; pointer-events: none; }",
+    ".version-check.up-to-date { color: var(--stream-healthy); opacity: 1; }",
+    ".version-check.check-error { color: var(--stream-error); opacity: 1; }",
+    "@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }",
 
     // Changelog modal styles.
     ".changelog-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); display: none; ",
@@ -1936,6 +1981,23 @@ function generateLandingPageStyles(): string {
  * @param app - The Express application.
  */
 export function setupRootEndpoint(app: Express): void {
+
+  // Manual version check endpoint.
+  app.post("/version/check", async (_req: Request, res: Response): Promise<void> => {
+
+    const currentVersion = getPackageVersion();
+
+    await checkForUpdates(currentVersion, true);
+
+    const versionInfo = getVersionInfo(currentVersion);
+
+    res.json({
+
+      currentVersion,
+      latestVersion: versionInfo.latestVersion,
+      updateAvailable: versionInfo.updateAvailable
+    });
+  });
 
   app.get("/", (req: Request, res: Response): void => {
 
