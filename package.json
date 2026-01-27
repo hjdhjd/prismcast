@@ -1,7 +1,7 @@
 {
   "name": "prismcast",
   "displayName": "PrismCast",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Browser-based live TV capture server for Channels DVR and other streaming clients.",
   "author": {
     "name": "HJD",
@@ -78,6 +78,6 @@
     "nodemon": "3.1.11",
     "shx": "0.4.0",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.53.1"
+    "typescript-eslint": "8.54.0"
   }
 }
