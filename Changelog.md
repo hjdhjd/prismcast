@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.11 (2026-01-27)
+  * Housekeeping.
+
 ## 1.0.10 (2026-01-26)
   * Housekeeping.
 
