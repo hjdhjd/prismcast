@@ -2022,15 +2022,24 @@ export function setupRootEndpoint(app: Express): void {
     });
   });
 
-  // Changelog fetch endpoint. Returns changelog items for the appropriate version (latest if update available, otherwise current).
+  // Changelog fetch endpoint. Returns changelog items for the appropriate version (latest if update available, otherwise current). Falls back to current version's
+  // changelog if the latest version's changelog isn't available.
   app.get("/version/changelog", async (_req: Request, res: Response): Promise<void> => {
 
     const currentVersion = getPackageVersion();
     const versionInfo = getVersionInfo(currentVersion);
 
-    // Show latest version's changelog if update available, otherwise current version's changelog.
-    const displayVersion = (versionInfo.updateAvailable && versionInfo.latestVersion) ? versionInfo.latestVersion : currentVersion;
-    const items = await getChangelogItems(displayVersion);
+    // Prefer latest version's changelog if update available, otherwise use current version.
+    let displayVersion = (versionInfo.updateAvailable && versionInfo.latestVersion) ? versionInfo.latestVersion : currentVersion;
+    let items = await getChangelogItems(displayVersion);
+
+    // Fallback: if latest version's changelog not found, try current version instead. Update displayVersion immediately so it reflects what we're actually
+    // attempting to show, even if the fallback also fails.
+    if((items === null) && (displayVersion !== currentVersion)) {
+
+      displayVersion = currentVersion;
+      items = await getChangelogItems(currentVersion);
+    }
 
     res.json({
 

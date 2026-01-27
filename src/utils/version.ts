@@ -192,16 +192,21 @@ export async function checkForUpdates(currentVersion: string, force = false): Pr
     return;
   }
 
+  const previousLatest = cachedLatestVersion;
+
   cachedLatestVersion = latest;
 
+  // Determine if this is a newly detected update (version changed since last check).
+  const isNewUpdate = (previousLatest !== latest) && isVersionLessThan(current, latest);
+
   // Log if there's a newer version available.
-  if(isVersionLessThan(current, latest)) {
+  if(isNewUpdate) {
 
     LOG.info("Update available: v%s (current: v%s).", latest, current);
   }
 
-  // Always fetch changelog if we haven't yet (needed for both current version display and update notes).
-  if(!cachedChangelog) {
+  // Fetch changelog if we haven't yet, or refresh it when a new update is detected to ensure the new version's changelog is available.
+  if(!cachedChangelog || isNewUpdate) {
 
     const changelog = await fetchChangelogContent();
 
@@ -230,7 +235,21 @@ export function getVersionInfo(currentVersion: string): { latestVersion: Nullabl
 }
 
 /**
- * Gets the changelog items for a specific version as an array of strings. Fetches the changelog from GitHub if not already cached.
+ * Parses a changelog entry into an array of items.
+ * @param entry - The raw changelog entry text.
+ * @returns Array of changelog items (bullet points), or null if no items found.
+ */
+function parseChangelogItems(entry: string): Nullable<string[]> {
+
+  const lines = entry.split("\n").filter((line) => line.trim().startsWith("*"));
+  const items = lines.map((line) => line.replace(/^\s*\*\s*/, ""));
+
+  return items.length > 0 ? items : null;
+}
+
+/**
+ * Gets the changelog items for a specific version as an array of strings. Uses a two-phase lookup: first checks the cache, then fetches fresh data if the
+ * version isn't found. This handles both cold cache (no data yet) and stale cache (new version not in cached data) scenarios.
  * @param version - The version to get changelog items for.
  * @returns Array of changelog items (bullet points), or null if unavailable.
  */
@@ -238,22 +257,26 @@ export async function getChangelogItems(version: string): Promise<Nullable<strin
 
   const normalized = normalizeVersion(version);
 
-  // Fetch changelog if not cached.
-  if(!cachedChangelog) {
+  // Phase 1: Try to find version in cached changelog (fast path).
+  if(cachedChangelog) {
 
-    const changelog = await fetchChangelogContent();
+    const entry = extractVersionChangelog(cachedChangelog, normalized);
 
-    if(changelog) {
+    if(entry) {
 
-      cachedChangelog = changelog;
+      return parseChangelogItems(entry);
     }
   }
 
-  // Still no changelog after fetch attempt.
-  if(!cachedChangelog) {
+  // Phase 2: Version not in cache (or no cache). Fetch fresh changelog and try again.
+  const changelog = await fetchChangelogContent();
+
+  if(!changelog) {
 
     return null;
   }
+
+  cachedChangelog = changelog;
 
   const entry = extractVersionChangelog(cachedChangelog, normalized);
 
@@ -262,11 +285,7 @@ export async function getChangelogItems(version: string): Promise<Nullable<strin
     return null;
   }
 
-  // Parse lines starting with * and strip the bullet prefix.
-  const lines = entry.split("\n").filter((line) => line.trim().startsWith("*"));
-  const items = lines.map((line) => line.replace(/^\s*\*\s*/, ""));
-
-  return items.length > 0 ? items : null;
+  return parseChangelogItems(entry);
 }
 
 /**
