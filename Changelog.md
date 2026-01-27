@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.9 (2026-01-26)
+  * Housekeeping.
+
 ## 1.0.8 (2026-01-25)
   * Improvement: version display refinements.
   * Housekeeping.
