@@ -3,7 +3,7 @@
  * root.ts: Landing page route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { checkForUpdates, escapeHtml, getChangelogForVersion, getPackageVersion, getVersionInfo, isRunningAsService } from "../utils/index.js";
+import { checkForUpdates, escapeHtml, getChangelogItems, getPackageVersion, getVersionInfo, isRunningAsService } from "../utils/index.js";
 import { generateAdvancedTabContent, generateChannelsPanel, generateSettingsFormFooter, generateSettingsTabContent, hasEnvOverrides } from "./config.js";
 import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "./ui.js";
 import { VIDEO_QUALITY_PRESETS } from "../config/presets.js";
@@ -77,34 +77,18 @@ function generateVersionHtml(): string {
 }
 
 /**
- * Generates the changelog modal HTML for displaying version information.
+ * Generates the changelog modal HTML with placeholder content. The actual changelog is fetched dynamically when the modal opens.
  * @returns HTML content for the changelog modal.
  */
 function generateChangelogModal(): string {
 
-  const currentVersion = getPackageVersion();
-  const versionInfo = getVersionInfo(currentVersion);
-
-  // Show latest version's changelog if update available, otherwise current version's changelog.
-  const displayVersion = (versionInfo.updateAvailable && versionInfo.latestVersion) ? versionInfo.latestVersion : currentVersion;
-  const changelog = getChangelogForVersion(displayVersion);
-
-  // Format changelog entries as HTML list items.
-  let changelogHtml = "<p>Unable to load changelog.</p>";
-
-  if(changelog) {
-
-    const lines = changelog.split("\n").filter((line) => line.trim().startsWith("*"));
-    const items = lines.map((line) => "<li>" + escapeHtml(line.replace(/^\s*\*\s*/, "")) + "</li>").join("\n");
-
-    changelogHtml = "<ul class=\"changelog-list\">" + items + "</ul>";
-  }
-
   return [
     "<div id=\"changelog-modal\" class=\"changelog-modal\">",
     "<div class=\"changelog-modal-content\">",
-    "<h3>What's new in v" + displayVersion + "</h3>",
-    changelogHtml,
+    "<h3 class=\"changelog-title\">What's new</h3>",
+    "<div class=\"changelog-loading\">Loading...</div>",
+    "<div class=\"changelog-content\" style=\"display: none;\"></div>",
+    "<p class=\"changelog-error\" style=\"display: none;\">Unable to load changelog.</p>",
     "<div class=\"changelog-modal-buttons\">",
     "<a href=\"https://github.com/hjdhjd/prismcast/releases\" target=\"_blank\" rel=\"noopener\" class=\"btn btn-primary\">View on GitHub</a>",
     "<button type=\"button\" class=\"btn btn-secondary\" onclick=\"closeChangelogModal()\">Close</button>",
@@ -602,10 +586,13 @@ function generateApiReferenceContent(): string {
     "<div class=\"section\">",
     "<h3>Example: Health Check Response</h3>",
     "<pre>{",
-    "  \"status\": \"healthy\",",
     "  \"browser\": { \"connected\": true, \"pageCount\": 2 },",
+    "  \"captureMode\": \"webm\",",
+    "  \"ffmpegAvailable\": true,",
+    "  \"memory\": { \"heapTotal\": 120000000, \"heapUsed\": 85000000, \"rss\": 150000000, \"segmentBuffers\": 25000000 },",
+    "  \"status\": \"healthy\",",
     "  \"streams\": { \"active\": 1, \"limit\": 10 },",
-    "  \"memory\": { \"heapUsed\": 85000000, \"heapTotal\": 120000000 },",
+    "  \"timestamp\": \"2026-01-26T12:00:00.000Z\",",
     "  \"uptime\": 3600.5",
     "}</pre>",
     "</div>"
@@ -1085,10 +1072,46 @@ function generateConfigSubtabScript(): string {
     "    }, 1000);",
     "  }",
 
-    // Open the changelog modal.
+    // Escape HTML entities in text for safe display.
+    "  function escapeHtmlText(text) {",
+    "    var div = document.createElement('div');",
+    "    div.textContent = text;",
+    "    return div.innerHTML;",
+    "  }",
+
+    // Open the changelog modal and fetch content dynamically.
     "  window.openChangelogModal = function() {",
     "    var modal = document.getElementById('changelog-modal');",
-    "    if (modal) { modal.style.display = 'flex'; }",
+    "    if (!modal) return;",
+    "    var title = modal.querySelector('.changelog-title');",
+    "    var loading = modal.querySelector('.changelog-loading');",
+    "    var content = modal.querySelector('.changelog-content');",
+    "    var error = modal.querySelector('.changelog-error');",
+    "    modal.style.display = 'flex';",
+    "    loading.style.display = 'block';",
+    "    content.style.display = 'none';",
+    "    error.style.display = 'none';",
+    "    fetch('/version/changelog')",
+    "      .then(function(res) { return res.json(); })",
+    "      .then(function(data) {",
+    "        loading.style.display = 'none';",
+    "        title.textContent = \"What's new in v\" + data.displayVersion;",
+    "        if (data.items && data.items.length > 0) {",
+    "          var html = '<ul class=\"changelog-list\">';",
+    "          for (var i = 0; i < data.items.length; i++) {",
+    "            html += '<li>' + escapeHtmlText(data.items[i]) + '</li>';",
+    "          }",
+    "          html += '</ul>';",
+    "          content.innerHTML = html;",
+    "          content.style.display = 'block';",
+    "        } else {",
+    "          error.style.display = 'block';",
+    "        }",
+    "      })",
+    "      .catch(function() {",
+    "        loading.style.display = 'none';",
+    "        error.style.display = 'block';",
+    "      });",
     "  };",
 
     // Close the changelog modal.
@@ -1995,6 +2018,24 @@ export function setupRootEndpoint(app: Express): void {
 
       currentVersion,
       latestVersion: versionInfo.latestVersion,
+      updateAvailable: versionInfo.updateAvailable
+    });
+  });
+
+  // Changelog fetch endpoint. Returns changelog items for the appropriate version (latest if update available, otherwise current).
+  app.get("/version/changelog", async (_req: Request, res: Response): Promise<void> => {
+
+    const currentVersion = getPackageVersion();
+    const versionInfo = getVersionInfo(currentVersion);
+
+    // Show latest version's changelog if update available, otherwise current version's changelog.
+    const displayVersion = (versionInfo.updateAvailable && versionInfo.latestVersion) ? versionInfo.latestVersion : currentVersion;
+    const items = await getChangelogItems(displayVersion);
+
+    res.json({
+
+      displayVersion,
+      items,
       updateAvailable: versionInfo.updateAvailable
     });
   });

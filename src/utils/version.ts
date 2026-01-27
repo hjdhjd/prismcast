@@ -230,18 +230,43 @@ export function getVersionInfo(currentVersion: string): { latestVersion: Nullabl
 }
 
 /**
- * Gets the changelog entry for a specific version.
- * @param version - The version to get changelog for.
- * @returns The changelog entry, or null if not available.
+ * Gets the changelog items for a specific version as an array of strings. Fetches the changelog from GitHub if not already cached.
+ * @param version - The version to get changelog items for.
+ * @returns Array of changelog items (bullet points), or null if unavailable.
  */
-export function getChangelogForVersion(version: string): Nullable<string> {
+export async function getChangelogItems(version: string): Promise<Nullable<string[]>> {
 
+  const normalized = normalizeVersion(version);
+
+  // Fetch changelog if not cached.
+  if(!cachedChangelog) {
+
+    const changelog = await fetchChangelogContent();
+
+    if(changelog) {
+
+      cachedChangelog = changelog;
+    }
+  }
+
+  // Still no changelog after fetch attempt.
   if(!cachedChangelog) {
 
     return null;
   }
 
-  return extractVersionChangelog(cachedChangelog, version);
+  const entry = extractVersionChangelog(cachedChangelog, normalized);
+
+  if(!entry) {
+
+    return null;
+  }
+
+  // Parse lines starting with * and strip the bullet prefix.
+  const lines = entry.split("\n").filter((line) => line.trim().startsWith("*"));
+  const items = lines.map((line) => line.replace(/^\s*\*\s*/, ""));
+
+  return items.length > 0 ? items : null;
 }
 
 /**
