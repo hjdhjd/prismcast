@@ -41,6 +41,10 @@ const { promises: fsPromises } = fs;
 // has disconnected.
 let currentBrowser: Nullable<Browser> = null;
 
+// The Chrome version string (e.g., "Chrome/144.0.7559.110") captured when the browser launches. Cleared when the browser disconnects. Used by the
+// health endpoint to report the active Chrome version.
+let currentChromeVersion: Nullable<string> = null;
+
 // The data directory stores Chrome's profile data and the streaming extension files. This is always ~/.prismcast, which provides a consistent location for
 // user-specific data regardless of how PrismCast is run.
 const dataDir = path.join(os.homedir(), ".prismcast");
@@ -313,38 +317,31 @@ export function killStaleChrome(): void {
 }
 
 /**
- * Locates the Chrome or Chromium executable on the system. The CHROME_BIN environment variable takes precedence, allowing operators to specify a non-standard
- * installation. Otherwise, we search common installation paths across macOS, Linux, and Windows for Chrome, Chromium, and Brave browsers.
+ * Locates the Google Chrome executable on the system. The CHROME_BIN environment variable takes precedence, allowing operators to specify a non-standard
+ * installation. Otherwise, we search common installation paths across macOS, Linux, and Windows.
  *
- * Brave is included because it's Chromium-based and supports the extensions and features we need. The search order prioritizes Google Chrome over Chromium over
- * Brave, as Chrome generally has the best compatibility with puppeteer-stream.
  * @returns Path to the Chrome executable.
- * @throws If no suitable browser is found.
+ * @throws If no Chrome installation is found.
  */
 export function getExecutablePath(): string {
 
-  // Environment variable override takes precedence. This is useful for containerized deployments, non-standard installations, or when multiple browser versions
-  // are present.
+  // Environment variable override takes precedence. This is useful for containerized deployments or non-standard installations.
   if(CONFIG.browser.executablePath) {
 
     return CONFIG.browser.executablePath;
   }
 
-  // Check standard installation paths across platforms. We search in priority order: Google Chrome (best compatibility) -> Chromium -> Brave.
+  // Check standard Google Chrome installation paths across platforms.
   const paths = [
 
-    // macOS paths. Applications are typically in /Applications with .app bundles containing the actual executable.
+    // macOS. Applications are typically in /Applications with .app bundles containing the actual executable.
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
 
-    // Linux paths. Browser packages install to /usr/bin with various naming conventions depending on the distribution and package.
+    // Linux. Chrome packages install to /usr/bin with naming conventions that vary by distribution.
     "/usr/bin/google-chrome",
     "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
 
-    // Windows paths. Both 64-bit (Program Files) and 32-bit (Program Files (x86)) installations are checked.
+    // Windows. Both 64-bit (Program Files) and 32-bit (Program Files (x86)) installations are checked.
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
   ];
@@ -506,18 +503,6 @@ async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
 }
 
 /**
- * Handles browser disconnection events by cleaning up all active streams and resetting browser state. This function is called when the browser crashes, is closed
- * manually, or loses its connection for any other reason.
- *
- * When the browser disconnects, all pages (tabs) within it are immediately invalid and cannot be used. Any active streams using those pages will fail if they try
- * to interact with them. We proactively clean up by:
- * 1. Setting currentBrowser to null so the next stream request will launch a fresh browser
- * 2. Stopping all health monitors (they would fail trying to check page state)
- * 3. Removing all entries from activeStreams (the pages are gone)
- *
- * This ensures streams fail gracefully rather than hanging indefinitely trying to use closed pages.
- */
-/**
  * Detects the maximum supported viewport dimensions based on the user's display. This function measures the available screen space and subtracts browser chrome to
  * determine the largest viewport we can use for video capture.
  *
@@ -599,10 +584,23 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
   }
 }
 
+/**
+ * Handles browser disconnection events by cleaning up all active streams and resetting browser state. This function is called when the browser crashes, is closed
+ * manually, or loses its connection for any other reason.
+ *
+ * When the browser disconnects, all pages (tabs) within it are immediately invalid and cannot be used. Any active streams using those pages will fail if they try
+ * to interact with them. We proactively clean up by:
+ * 1. Setting currentBrowser to null so the next stream request will launch a fresh browser
+ * 2. Stopping all health monitors (they would fail trying to check page state)
+ * 3. Removing all entries from activeStreams (the pages are gone)
+ *
+ * This ensures streams fail gracefully rather than hanging indefinitely trying to use closed pages.
+ */
 function handleBrowserDisconnect(): void {
 
-  // Clear the browser reference so getCurrentBrowser() will launch a new instance on the next call.
+  // Clear the browser reference and cached version so getCurrentBrowser() will launch a new instance on the next call.
   currentBrowser = null;
+  currentChromeVersion = null;
 
   // Clear login state if login mode was active. We clear directly rather than calling endLoginMode() because the browser is already gone and we don't want to
   // attempt any browser operations.
@@ -694,19 +692,37 @@ export async function getCurrentBrowser(): Promise<Browser> {
     // it reduces resource consumption. CDP allows us to control window state without affecting capture.
     await minimizeBrowserWindow();
 
+    // Log the Chrome version for diagnostic reference. This helps correlate browser behavior changes (tab unresponsiveness, memory pressure, capture issues)
+    // with specific Chrome releases.
+    const chromeVersion = await currentBrowser.version();
+
+    currentChromeVersion = chromeVersion;
+
+    LOG.info("Chrome ready: %s.", chromeVersion);
+
     // Emit system status update for SSE subscribers.
     await emitCurrentSystemStatus();
   } catch(error) {
 
     LOG.error("Failed to launch browser: %s.", formatError(error));
 
-    // Clear the browser reference on failure so the next call will attempt to launch again.
+    // Clear the browser reference and cached version on failure so the next call will attempt to launch again.
     currentBrowser = null;
+    currentChromeVersion = null;
 
     throw error;
   }
 
   return currentBrowser;
+}
+
+/**
+ * Returns the Chrome version string captured when the browser launched, or null if the browser is not connected.
+ * @returns The Chrome version string (e.g., "Chrome/144.0.7559.110") or null.
+ */
+export function getChromeVersion(): Nullable<string> {
+
+  return currentChromeVersion;
 }
 
 /**
@@ -825,8 +841,9 @@ export async function closeBrowser(): Promise<void> {
 
   const browserRef = currentBrowser;
 
-  // Clear the reference early to prevent any new operations from using it.
+  // Clear the reference and cached version early to prevent any new operations from using it.
   currentBrowser = null;
+  currentChromeVersion = null;
 
   if(!browserRef) {
 

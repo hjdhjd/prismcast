@@ -4,6 +4,7 @@
  */
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
+import type { StreamRegistryEntry } from "./registry.js";
 import { getStream } from "./registry.js";
 
 /*
@@ -47,6 +48,9 @@ export function storeSegment(streamId: number, filename: string, data: Buffer): 
   }
 
   stream.hls.segments.set(filename, data);
+
+  // Notify MPEG-TS consumers that a new segment is available. Emit before rotation so the data is guaranteed accessible in the Map.
+  stream.hls.segmentEmitter.emit("segment", filename, data);
 
   // Enforce segment limit by removing oldest segments. JavaScript Maps maintain insertion order, so the first key is always the oldest segment.
   while(stream.hls.segments.size > CONFIG.hls.maxSegments) {
@@ -96,7 +100,17 @@ export function storeInitSegment(streamId: number, data: Buffer): void {
     return;
   }
 
+  const isFirstInit = stream.hls.initSegment === null;
+
   stream.hls.initSegment = data;
+
+  // Notify MPEG-TS consumers that the init segment is available.
+  stream.hls.segmentEmitter.emit("initSegment", data);
+
+  if(isFirstInit) {
+
+    stream.hls.signalInitSegmentReady();
+  }
 }
 
 /**
@@ -164,6 +178,34 @@ export function getPlaylist(streamId: number): string | undefined {
  */
 export async function waitForPlaylist(streamId: number, timeout: number): Promise<boolean> {
 
+  return waitForReady(streamId, async (stream) => stream.hls.playlistReady, timeout);
+}
+
+/**
+ * Waits for the first init segment to be available for a stream. Used by MPEG-TS consumers to wait for codec configuration before starting their FFmpeg remuxer.
+ * @param streamId - The numeric stream ID.
+ * @param timeout - Maximum time to wait in milliseconds.
+ * @returns True if init segment is ready, false if timeout or stream not found.
+ */
+export async function waitForInitSegment(streamId: number, timeout: number): Promise<boolean> {
+
+  return waitForReady(streamId, async (stream) => stream.hls.initSegmentReady, timeout);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Internal Helpers
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Races a readiness promise from a stream's HLS state against a timeout. Returns true if the promise resolves before the timeout, false if the timeout fires first or
+ * the stream doesn't exist.
+ * @param streamId - The numeric stream ID.
+ * @param getPromise - Accessor that extracts the readiness promise from the stream's HLS state.
+ * @param timeout - Maximum time to wait in milliseconds.
+ * @returns True if ready before timeout, false otherwise.
+ */
+async function waitForReady(streamId: number, getPromise: (stream: StreamRegistryEntry) => Promise<void>, timeout: number): Promise<boolean> {
+
   const stream = getStream(streamId);
 
   if(!stream) {
@@ -176,7 +218,7 @@ export async function waitForPlaylist(streamId: number, timeout: number): Promis
     setTimeout(() => resolve(false), timeout);
   });
 
-  const readyPromise = stream.hls.playlistReady.then(() => true);
+  const readyPromise = getPromise(stream).then(() => true);
 
   return Promise.race([ readyPromise, timeoutPromise ]);
 }

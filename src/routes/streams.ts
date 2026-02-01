@@ -3,12 +3,14 @@
  * streams.ts: Stream management routes for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { LOG, formatError } from "../utils/index.js";
-import { getAllStreams, getStream, getStreamCount, getStreamMemoryUsage, unregisterStream } from "../streaming/registry.js";
+import { getAllStreams, getStream, getStreamCount, getStreamMemoryUsage } from "../streaming/registry.js";
 import { getStatusSnapshot, getStreamStatus, subscribeToStatus } from "../streaming/statusEmitter.js";
 import { CONFIG } from "../config/index.js";
+import type { ClientTypeCount } from "../streaming/clients.js";
 import type { Nullable } from "../types/index.js";
 import type { StreamHealthStatus } from "../streaming/statusEmitter.js";
+import { emitCurrentSystemStatus } from "../browser/index.js";
+import { terminateStream } from "../streaming/lifecycle.js";
 
 /*
  * STREAM MANAGEMENT
@@ -29,6 +31,8 @@ export function setupStreamsEndpoint(app: Express): void {
 
     const streams: {
       channel: Nullable<string>;
+      clientCount: number;
+      clients: ClientTypeCount[];
       duration: number;
       escalationLevel: number;
       health: StreamHealthStatus;
@@ -48,6 +52,8 @@ export function setupStreamsEndpoint(app: Express): void {
       streams.push({
 
         channel: streamInfo.channelName,
+        clientCount: status?.clientCount ?? 0,
+        clients: status?.clients ?? [],
         duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
         escalationLevel: status?.escalationLevel ?? 0,
         health: status?.health ?? "healthy",
@@ -69,8 +75,9 @@ export function setupStreamsEndpoint(app: Express): void {
     });
   });
 
-  // Stream termination endpoint.
-  app.delete("/streams/:id", async (req: Request, res: Response): Promise<void> => {
+  // Stream termination endpoint. Uses the authoritative terminateStream() function for consistent cleanup of all resources (segmenter, capture stream, FFmpeg,
+  // channel mapping, client tracking, SSE events).
+  app.delete("/streams/:id", (req: Request, res: Response): void => {
 
     const streamIdParam = parseInt((req.params as { id: string }).id);
 
@@ -90,26 +97,8 @@ export function setupStreamsEndpoint(app: Express): void {
       return;
     }
 
-    LOG.info("Terminating stream %s via API request.", streamIdParam);
-
-    // Stop monitor and close page.
-    if(streamInfo.stopMonitor) {
-
-      streamInfo.stopMonitor();
-    }
-
-    try {
-
-      if(!streamInfo.page.isClosed()) {
-
-        await streamInfo.page.close();
-      }
-    } catch(error) {
-
-      LOG.warn("Error closing page during API termination: %s.", formatError(error));
-    }
-
-    unregisterStream(streamIdParam);
+    terminateStream(streamIdParam, streamInfo.info.storeKey, "API request");
+    void emitCurrentSystemStatus();
 
     res.json({ message: "Stream terminated.", streamId: streamIdParam });
   });

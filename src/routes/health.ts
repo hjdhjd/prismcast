@@ -3,11 +3,13 @@
  * health.ts: Health check route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { getBrowserPages, isBrowserConnected } from "../browser/index.js";
-import { getStreamCount, getTotalSegmentMemory } from "../streaming/registry.js";
+import { getAllStreams, getStreamCount, getTotalSegmentMemory } from "../streaming/registry.js";
+import { getBrowserPages, getChromeVersion, isBrowserConnected } from "../browser/index.js";
+import { getPackageVersion, isFFmpegAvailable } from "../utils/index.js";
 import { CONFIG } from "../config/index.js";
+import type { ClientType } from "../streaming/clients.js";
 import type { HealthStatus } from "../types/index.js";
-import { isFFmpegAvailable } from "../utils/index.js";
+import { getClientSummary } from "../streaming/clients.js";
 
 /*
  * HEALTH CHECK
@@ -45,6 +47,22 @@ export function setupHealthEndpoint(app: Express): void {
     const segmentMemory = getTotalSegmentMemory();
     const ffmpegAvailable = await isFFmpegAvailable();
 
+    // Aggregate client data across all active streams for the system-wide summary.
+    const allClientTypes = new Map<ClientType, number>();
+    let totalClients = 0;
+
+    for(const streamInfo of getAllStreams()) {
+
+      const summary = getClientSummary(streamInfo.id);
+
+      totalClients += summary.total;
+
+      for(const entry of summary.clients) {
+
+        allClientTypes.set(entry.type, (allClientTypes.get(entry.type) ?? 0) + entry.count);
+      }
+    }
+
     const streamUtilization = getStreamCount() / CONFIG.streaming.maxConcurrentStreams;
 
     let status: "degraded" | "healthy" | "unhealthy" = "healthy";
@@ -65,6 +83,12 @@ export function setupHealthEndpoint(app: Express): void {
         pageCount: pageCount
       },
       captureMode: CONFIG.streaming.captureMode,
+      chrome: getChromeVersion(),
+      clients: {
+
+        byType: Array.from(allClientTypes.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([ type, count ]) => ({ count, type })),
+        total: totalClients
+      },
       ffmpegAvailable: ffmpegAvailable,
       memory: {
 
@@ -80,7 +104,8 @@ export function setupHealthEndpoint(app: Express): void {
         limit: CONFIG.streaming.maxConcurrentStreams
       },
       timestamp: new Date().toISOString(),
-      uptime: process.uptime()
+      uptime: process.uptime(),
+      version: getPackageVersion()
     };
 
     if(!browserConnected) {

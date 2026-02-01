@@ -57,6 +57,10 @@ export interface FMP4SegmenterResult {
   // Get the current segment index. Used by tab replacement to continue numbering from where the old segmenter left off.
   getSegmentIndex: () => number;
 
+  // Flush the current fragment buffer as a short segment and mark the next segment with a discontinuity tag. Called after recovery events (source reload, page
+  // navigation) that disrupt the video source, so HLS clients know to flush their decoder state and resynchronize.
+  markDiscontinuity: () => void;
+
   // Pipe a readable stream to the segmenter.
   pipe: (stream: Readable) => void;
 
@@ -218,8 +222,6 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           storeInitSegment(streamId, initData);
 
           state.hasInit = true;
-
-          // Debug: LOG.info("Stored init segment for stream %s (%s bytes).", streamId, initData.length);
         }
 
         return;
@@ -320,6 +322,19 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
   return {
 
     getSegmentIndex: (): number => state.segmentIndex,
+
+    markDiscontinuity: (): void => {
+
+      if(state.stopped) {
+
+        return;
+      }
+
+      // Flush any accumulated fragments as a short segment so pre-recovery and post-recovery content are cleanly separated.
+      outputSegment();
+
+      state.pendingDiscontinuity = true;
+    },
 
     pipe: (stream: Readable): void => {
 

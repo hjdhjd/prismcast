@@ -13,6 +13,7 @@ import { getChannelLogo, getShowName } from "./showInfo.js";
 import { getStream, getStreamMemoryUsage } from "./registry.js";
 import { CONFIG } from "../config/index.js";
 import { emitStreamHealthChanged } from "./statusEmitter.js";
+import { getClientSummary } from "./clients.js";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 
 /*
@@ -654,6 +655,13 @@ export function monitorPlaybackHealth(
   // Capture stream context for re-establishing on each interval tick. AsyncLocalStorage context is lost when entering setInterval callbacks.
   const streamContext = { channelName: streamInfo.channelName ?? undefined, streamId, url };
 
+  // Helper to mark a discontinuity in the HLS playlist after recovery events that disrupt the video source. The segmenter flushes its current fragment buffer and sets
+  // a pending discontinuity flag so the next segment boundary includes an #EXT-X-DISCONTINUITY tag. This tells HLS clients to flush their decoder state.
+  const markStreamDiscontinuity = (): void => {
+
+    getStream(streamInfo.numericStreamId)?.segmenter?.markDiscontinuity();
+  };
+
   /**
    * Computes the health status classification based on current monitor state.
    * @returns The health status classification.
@@ -707,10 +715,15 @@ export function monitorPlaybackHealth(
     // Get the channel key from the registry entry for logo lookup.
     const channelKey = entry?.info.storeKey ?? "";
 
+    // Get current client counts and type breakdown for this stream.
+    const clientSummary = getClientSummary(streamInfo.numericStreamId);
+
     const status: StreamStatus = {
 
       bufferingDuration: bufferingStartTime ? Math.round((now - bufferingStartTime) / 1000) : null,
       channel: streamInfo.channelName,
+      clientCount: clientSummary.total,
+      clients: clientSummary.clients,
       currentTime: lastVideoState?.time ?? 0,
       duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
       escalationLevel,
@@ -1054,6 +1067,9 @@ export function monitorPlaybackHealth(
           // Use the unified recovery function with validation.
           const recoveryResult = await performPageNavigationRecovery();
 
+          // Page navigation disrupted the video stream. Mark a discontinuity regardless of navigation success so HLS clients resynchronize their decoders.
+          markStreamDiscontinuity();
+
           // Set grace period to give page navigation time to take effect (L3 = 10 seconds).
           recoveryGraceUntil = now + recoveryGracePeriods[3];
 
@@ -1303,6 +1319,9 @@ export function monitorPlaybackHealth(
               if(escalationLevel === 2) {
 
                 sourceReloadAttempted = true;
+
+                // The source reload disrupted the video stream. Mark a discontinuity so HLS clients resynchronize their decoders.
+                markStreamDiscontinuity();
               }
 
               // Set grace period to give this recovery level time to take effect before the next check.
@@ -1351,6 +1370,9 @@ export function monitorPlaybackHealth(
 
                   // Use the unified recovery function with validation.
                   const recoveryResult = await performPageNavigationRecovery();
+
+                  // Page navigation disrupted the video stream. Mark a discontinuity regardless of navigation success so HLS clients resynchronize their decoders.
+                  markStreamDiscontinuity();
 
                   // Set grace period to give page navigation time to take effect (L3 = 10 seconds).
                   recoveryGraceUntil = now + recoveryGracePeriods[3];
