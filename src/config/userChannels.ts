@@ -2,7 +2,8 @@
  *
  * userChannels.ts: User channel file management for PrismCast.
  */
-import type { Channel, ChannelMap } from "../types/index.js";
+import type { Channel, ChannelListingEntry, ChannelMap } from "../types/index.js";
+import { CONFIG } from "./index.js";
 import { LOG } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import fs from "node:fs";
@@ -255,19 +256,82 @@ export async function initializeUserChannels(): Promise<void> {
 }
 
 /*
- * CHANNEL MERGING
+ * CHANNEL LISTING AND MERGING
  *
- * The getAllChannels() function merges predefined channels with user channels. User channels take precedence when there are key conflicts.
+ * The getChannelListing() function is the single source of truth for merging predefined channels with user channels. It returns enriched entries with source
+ * classification and enabled status. All other channel retrieval functions that need merged data build on top of it.
  */
 
 /**
- * Returns all channels (predefined + user), with user channels taking precedence on key conflicts.
- * @returns The merged channel map.
+ * Returns the full channel listing with source classification and enabled status. This is the authoritative merge point for predefined and user channels — all
+ * code that needs a merged view of channels should use this function (or getAllChannels() which delegates to it).
+ *
+ * For each channel key, the source is classified as:
+ * - "predefined": exists only in predefined channels
+ * - "user": exists only in user channels
+ * - "override": exists in both (user channel data takes precedence)
+ *
+ * The enabled field reflects whether the channel is available for streaming. Predefined-only channels can be disabled via configuration; user and override
+ * channels are always enabled.
+ * @returns Sorted array of channel listing entries.
+ */
+export function getChannelListing(): ChannelListingEntry[] {
+
+  const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(loadedUserChannels) ]);
+  const listing: ChannelListingEntry[] = [];
+
+  for(const key of allKeys) {
+
+    const isPredefined = key in PREDEFINED_CHANNELS;
+    const isUser = key in loadedUserChannels;
+
+    // Determine source classification. User channel data takes precedence on key conflicts.
+    let source: "override" | "predefined" | "user";
+
+    if(isPredefined && isUser) {
+
+      source = "override";
+    } else if(isUser) {
+
+      source = "user";
+    } else {
+
+      source = "predefined";
+    }
+
+    listing.push({
+
+      channel: isUser ? loadedUserChannels[key] : PREDEFINED_CHANNELS[key],
+      enabled: !isPredefinedChannelDisabled(key),
+      key,
+      source
+    });
+  }
+
+  // Sort alphabetically by key for consistent ordering across all callers.
+  listing.sort((a, b) => a.key.localeCompare(b.key));
+
+  return listing;
+}
+
+/**
+ * Returns all available channels (predefined + user), with user channels taking precedence on key conflicts. Disabled predefined channels are excluded unless they
+ * have a user override. Built on top of getChannelListing() to ensure a single merging code path.
+ * @returns The merged channel map with disabled predefined channels filtered out.
  */
 export function getAllChannels(): ChannelMap {
 
-  // User channels override predefined channels.
-  return { ...PREDEFINED_CHANNELS, ...loadedUserChannels };
+  const result: ChannelMap = {};
+
+  for(const entry of getChannelListing()) {
+
+    if(entry.enabled) {
+
+      result[entry.key] = entry.channel;
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -307,6 +371,64 @@ export function isUserChannel(key: string): boolean {
 export function isOverrideChannel(key: string): boolean {
 
   return isPredefinedChannel(key) && isUserChannel(key);
+}
+
+/*
+ * DISABLED PREDEFINED CHANNELS
+ *
+ * Users can disable predefined channels to exclude them from the playlist and block streaming. Disabled channels appear grayed out in the UI with an option to
+ * re-enable. This is useful for users who don't want certain predefined channels cluttering their channel list.
+ */
+
+/**
+ * Checks if a predefined channel is disabled.
+ * @param key - The channel key to check.
+ * @returns True if the channel is predefined and disabled.
+ */
+export function isPredefinedChannelDisabled(key: string): boolean {
+
+  // Only predefined channels can be disabled via this mechanism.
+  if(!isPredefinedChannel(key)) {
+
+    return false;
+  }
+
+  // If a user channel overrides this predefined channel, the predefined channel's disabled state is irrelevant.
+  if(isUserChannel(key)) {
+
+    return false;
+  }
+
+  return CONFIG.channels.disabledPredefined.includes(key);
+}
+
+/**
+ * Returns the list of disabled predefined channel keys.
+ * @returns Array of disabled channel keys.
+ */
+export function getDisabledPredefinedChannels(): string[] {
+
+  return [...CONFIG.channels.disabledPredefined];
+}
+
+/**
+ * Returns all predefined channels regardless of disabled state. Used by the UI to show all predefined channels including disabled ones.
+ * @returns The predefined channel map.
+ */
+export function getPredefinedChannels(): ChannelMap {
+
+  return { ...PREDEFINED_CHANNELS };
+}
+
+/**
+ * Checks if a channel is available for streaming. A channel is available if it exists in the merged channel map returned by getAllChannels(), which already
+ * excludes disabled predefined channels (unless overridden by a user channel).
+ * @param key - The channel key to check.
+ * @returns True if the channel can be streamed.
+ */
+export function isChannelAvailable(key: string): boolean {
+
+  return key in getAllChannels();
 }
 
 /*
@@ -550,7 +672,43 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
       channel.channelSelector = channelData.channelSelector;
     }
 
+    // Validate optional channelNumber field (range and type).
+    if(channelData.channelNumber !== undefined) {
+
+      const num = Number(channelData.channelNumber);
+
+      if(!Number.isInteger(num) || (num < 1) || (num > 99999)) {
+
+        errors.push("Channel '" + key + "': channelNumber must be an integer between 1 and 99999.");
+
+        continue;
+      }
+
+      channel.channelNumber = num;
+    }
+
     channels[key] = channel;
+  }
+
+  // Validate channelNumber uniqueness across all imported channels. We check after building the full map so that all duplicates are reported.
+  const numberToKey = new Map<number, string>();
+
+  for(const [ key, channel ] of Object.entries(channels)) {
+
+    if(channel.channelNumber === undefined) {
+
+      continue;
+    }
+
+    const existing = numberToKey.get(channel.channelNumber);
+
+    if(existing) {
+
+      errors.push("Channel '" + key + "': channelNumber " + String(channel.channelNumber) + " is already used by '" + existing + "'.");
+    } else {
+
+      numberToKey.set(channel.channelNumber, key);
+    }
   }
 
   return { channels, errors, valid: errors.length === 0 };
