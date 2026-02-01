@@ -118,6 +118,7 @@ export function generateBaseStyles(): string {
     // Form styles.
     ".form-group { margin-bottom: 20px; padding: 15px; background: var(--form-bg); border-radius: var(--radius-lg); }",
     ".form-group.disabled { background: var(--form-bg-disabled); }",
+    ".form-group.depends-disabled { opacity: 0.45; pointer-events: none; }",
     ".form-row { display: flex; align-items: center; gap: 15px; margin-bottom: 8px; }",
     ".form-row label { display: block; font-weight: 600; margin-bottom: 5px; font-size: 13px; }",
     ".form-label { font-weight: 600; min-width: 200px; }",
@@ -128,12 +129,14 @@ export function generateBaseStyles(): string {
     "background: var(--form-input-bg); color: var(--text-primary); }",
     ".form-select { flex: 0 0 auto; padding: 8px 12px; border: 1px solid var(--form-input-border); border-radius: var(--radius-md); ",
     "background: var(--form-input-bg); color: var(--text-primary); font-size: 14px; cursor: pointer; }",
+    ".form-checkbox { flex: none; width: 18px; height: 18px; cursor: pointer; accent-color: var(--interactive-primary); }",
 
     // Focus states.
     ".form-input:focus, .form-select:focus { border-color: var(--interactive-primary); outline: none; box-shadow: 0 0 0 2px var(--border-focus); }",
 
     // Disabled states.
     ".form-input:disabled, .form-select:disabled { background: var(--form-bg-disabled); cursor: not-allowed; color: var(--text-disabled); }",
+    ".form-checkbox:disabled { cursor: not-allowed; opacity: 0.5; }",
 
     // Error states.
     ".form-input.error, .form-select.error { border-color: var(--status-error-border); background: var(--status-error-bg); }",
