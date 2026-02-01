@@ -7,10 +7,12 @@ import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from
 import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getConfigFilePath, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault,
   loadUserConfig, saveUserConfig, setNestedValue } from "../config/userConfig.js";
 import type { Express, Request, Response } from "express";
-import { LOG, escapeHtml, formatError, isRunningAsService } from "../utils/index.js";
-import { getAllChannels, getChannelsParseErrorMessage, getUserChannels, getUserChannelsFilePath, hasChannelsParseError, isUserChannel, loadUserChannels,
-  saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
+import { LOG, escapeHtml, formatError, generateChannelKey, isRunningAsService, parseM3U } from "../utils/index.js";
+import { getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError,
+  isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile,
+  validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
 import type { Nullable } from "../types/index.js";
+import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
 import { closeBrowser } from "../browser/index.js";
@@ -125,6 +127,9 @@ interface TextFieldOptions {
   // Hint text displayed below the input (optional).
   hint?: string;
 
+  // Associates the input with a <datalist> for suggestions. When provided, a list attribute is added to the input and an empty <datalist> element is appended.
+  list?: string;
+
   // HTML pattern attribute for validation (optional).
   pattern?: string;
 
@@ -144,22 +149,30 @@ interface TextFieldOptions {
  * @param name - The input name attribute.
  * @param label - The label text.
  * @param value - The current value.
- * @param options - Additional options (hint, pattern, placeholder, required, type).
+ * @param options - Additional options (hint, list, pattern, placeholder, required, type).
  * @returns Array of HTML strings for the form row.
  */
 function generateTextField(id: string, name: string, label: string, value: string, options: TextFieldOptions = {}): string[] {
 
   const lines: string[] = [];
   const inputType = options.type ?? "text";
+  const listAttr = options.list ? " list=\"" + options.list + "\"" : "";
   const required = options.required ? " required" : "";
   const pattern = options.pattern ? " pattern=\"" + options.pattern + "\"" : "";
   const placeholder = options.placeholder ? " placeholder=\"" + escapeHtml(options.placeholder) + "\"" : "";
 
   lines.push("<div class=\"form-row\">");
   lines.push("<label for=\"" + id + "\">" + label + "</label>");
-  lines.push("<input class=\"form-input\" type=\"" + inputType + "\" id=\"" + id + "\" name=\"" + name + "\"" + required + pattern + placeholder +
-    " value=\"" + escapeHtml(value) + "\">");
+  lines.push("<input class=\"form-input\" type=\"" + inputType + "\" id=\"" + id + "\" name=\"" + name + "\"" + required + listAttr + pattern +
+    placeholder + " value=\"" + escapeHtml(value) + "\">");
   lines.push("</div>");
+
+  // When a datalist ID is specified, append an empty <datalist> element outside the form-row flex container. The client-side JavaScript populates it dynamically
+  // based on the URL field value.
+  if(options.list) {
+
+    lines.push("<datalist id=\"" + options.list + "\"></datalist>");
+  }
 
   if(options.hint) {
 
@@ -223,7 +236,7 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
   // Group profiles by category based on name prefix for automatic categorization.
   const keyboardProfiles = profiles.filter((p) => p.name.startsWith("keyboard"));
   const embeddedProfiles = profiles.filter((p) => p.name.startsWith("embedded"));
-  const apiProfiles = profiles.filter((p) => (p.name === "fullscreenApi") || (p.name === "brightcove"));
+  const apiProfiles = profiles.filter((p) => p.name.startsWith("api") || (p.name === "fullscreenApi") || (p.name === "brightcove"));
   const specialProfiles = profiles.filter((p) => p.name === "staticPage");
 
   lines.push("<div id=\"profile-reference\" class=\"profile-reference\" style=\"display: none;\">");
@@ -294,14 +307,15 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
 }
 
 /**
- * Generates HTML for the advanced fields section (station ID and channel selector).
+ * Generates HTML for the advanced fields section (station ID, channel selector, and channel number).
  * @param idPrefix - Prefix for element IDs ("add" or "edit").
  * @param stationIdValue - Current station ID value.
  * @param channelSelectorValue - Current channel selector value.
+ * @param channelNumberValue - Current channel number value.
  * @param showHints - Whether to show hint text.
  * @returns Array of HTML strings for the advanced fields section.
  */
-function generateAdvancedFields(idPrefix: string, stationIdValue: string, channelSelectorValue: string, showHints = true): string[] {
+function generateAdvancedFields(idPrefix: string, stationIdValue: string, channelSelectorValue: string, channelNumberValue: string, showHints = true): string[] {
 
   const lines: string[] = [];
 
@@ -325,8 +339,8 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
 
   // Channel selector.
   const channelSelectorHint = showHints ?
-    "String to match in channel thumbnail src URLs on multi-channel guide pages. Right-click the desired channel's thumbnail → Inspect → " +
-    "copy a unique portion of the image URL." :
+    "Identifies which channel to select on sites that host multiple live streams. Known values are suggested when the URL matches a supported site. " +
+    "For other sites, right-click a channel image → Inspect → copy a unique portion of the image src URL." :
     undefined;
 
   lines.push(...generateTextField(
@@ -334,12 +348,57 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
     "channelSelector",
     "Channel Selector",
     channelSelectorValue,
-    { hint: channelSelectorHint, placeholder: showHints ? "e.g., ESPN" : undefined }
+    { hint: channelSelectorHint, list: idPrefix + "-selectorList", placeholder: showHints ? "e.g., ESPN" : undefined }
+  ));
+
+  // Channel number for HDHomeRun/Plex integration.
+  const channelNumberHint = showHints ?
+    "Optional numeric channel number for Plex guide matching when HDHomeRun emulation is enabled. Leave empty for auto-assignment." :
+    undefined;
+
+  lines.push(...generateTextField(
+    idPrefix + "-channelNumber",
+    "channelNumber",
+    "Channel Number",
+    channelNumberValue,
+    { hint: channelNumberHint, placeholder: showHints ? "e.g., 501" : undefined }
   ));
 
   lines.push("</div>"); // End advanced fields.
 
   return lines;
+}
+
+/**
+ * Generates a JavaScript object literal mapping URL hostnames to known channel selector values from predefined channels. This data is embedded as a `<script>` block
+ * in the channels panel so the client-side datalist can offer suggestions based on the URL the user enters.
+ *
+ * @returns A JavaScript variable declaration string ready to embed in a `<script>` tag.
+ */
+function generateChannelSelectorData(): string {
+
+  const byDomain: Record<string, Array<{ label: string; value: string }>> = {};
+
+  for(const channel of Object.values(PREDEFINED_CHANNELS)) {
+
+    if(!channel.channelSelector) {
+
+      continue;
+    }
+
+    const hostname = new URL(channel.url).hostname;
+
+    byDomain[hostname] ??= [];
+    byDomain[hostname].push({ label: channel.name, value: channel.channelSelector });
+  }
+
+  // Sort entries within each domain alphabetically by label for consistent ordering in the datalist dropdown.
+  for(const entries of Object.values(byDomain)) {
+
+    entries.sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  return "var channelSelectorsByDomain = " + JSON.stringify(byDomain) + ";";
 }
 
 /**
@@ -362,37 +421,71 @@ export interface ChannelRowHtml {
  */
 export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): ChannelRowHtml {
 
-  const allChannels = getAllChannels();
+  // Look up channel from user channels first (they override predefined), then predefined channels.
+  const userChannels = getUserChannels();
+  const predefinedChannels = getPredefinedChannels();
+  const channel = userChannels[key] ?? predefinedChannels[key];
 
   // If channel doesn't exist, return empty rows (shouldn't happen in normal use).
-  if(!(key in allChannels)) {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!channel) {
 
     return { displayRow: "", editRow: null };
   }
 
-  const channel = allChannels[key];
-
   const isUser = isUserChannel(key);
+  const isPredefined = isPredefinedChannel(key);
+  const isDisabled = isPredefinedChannelDisabled(key);
 
-  // Generate display row. User channels (custom or override) get a CSS class for row tinting.
+  // Generate display row. User channels get one CSS class, disabled predefined get another.
   const displayLines: string[] = [];
-  const rowClass = isUser ? " class=\"user-channel\"" : "";
+  const rowClasses: string[] = [];
 
-  displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClass + ">");
+  if(isUser) {
+
+    rowClasses.push("user-channel");
+  }
+
+  if(isDisabled) {
+
+    rowClasses.push("channel-disabled");
+  }
+
+  const rowClassAttr = (rowClasses.length > 0) ? " class=\"" + rowClasses.join(" ") + "\"" : "";
+
+  displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + ">");
   displayLines.push("<td><code>" + escapeHtml(key) + "</code></td>");
   displayLines.push("<td>" + escapeHtml(channel.name) + "</td>");
   displayLines.push("<td class=\"channel-url\" title=\"" + escapeHtml(channel.url) + "\">" + escapeHtml(channel.url) + "</td>");
   displayLines.push("<td>" + (channel.profile ? escapeHtml(channel.profile) : "<em>auto</em>") + "</td>");
 
-  // Actions column. Login button appears for all channels. Edit/Delete appear only for user channels.
+  // Actions column.
   displayLines.push("<td>");
   displayLines.push("<div class=\"btn-group\">");
-  displayLines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startChannelLogin('" + escapeHtml(key) + "')\">Login</button>");
+
+  // Login button appears for enabled channels only.
+  if(!isDisabled) {
+
+    displayLines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startChannelLogin('" + escapeHtml(key) + "')\">Login</button>");
+  }
 
   if(isUser) {
 
+    // User channels: Edit/Delete buttons.
     displayLines.push("<button type=\"button\" class=\"btn btn-edit btn-sm\" onclick=\"showEditForm('" + escapeHtml(key) + "')\">Edit</button>");
     displayLines.push("<button type=\"button\" class=\"btn btn-delete btn-sm\" onclick=\"deleteChannel('" + escapeHtml(key) + "')\">Delete</button>");
+  } else if(isPredefined) {
+
+    // Predefined channels: Enable/Disable button.
+    if(isDisabled) {
+
+      displayLines.push("<button type=\"button\" class=\"btn btn-enable btn-sm\" onclick=\"togglePredefinedChannel('" + escapeHtml(key) +
+        "', true)\">Enable</button>");
+    } else {
+
+      displayLines.push("<button type=\"button\" class=\"btn btn-disable btn-sm\" onclick=\"togglePredefinedChannel('" + escapeHtml(key) +
+        "', false)\">Disable</button>");
+    }
   }
 
   displayLines.push("</div>");
@@ -417,16 +510,26 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
     editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapeHtml(key) + "\">");
 
     // Channel name.
-    editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", channel.name, { required: true }));
+    editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", channel.name, {
+
+      hint: "Friendly name shown in the playlist and UI.",
+      required: true
+    }));
 
     // Channel URL.
-    editLines.push(...generateTextField("edit-url-" + key, "url", "Stream URL", channel.url, { required: true, type: "url" }));
+    editLines.push(...generateTextField("edit-url-" + key, "url", "Stream URL", channel.url, {
+
+      hint: "The URL of the streaming page to capture.",
+      required: true,
+      type: "url"
+    }));
 
     // Profile dropdown.
-    editLines.push(...generateProfileDropdown("edit-profile-" + key, channel.profile ?? "", profiles, false));
+    editLines.push(...generateProfileDropdown("edit-profile-" + key, channel.profile ?? "", profiles));
 
     // Advanced fields.
-    editLines.push(...generateAdvancedFields("edit-" + key, channel.stationId ?? "", channel.channelSelector ?? "", false));
+    editLines.push(...generateAdvancedFields("edit-" + key, channel.stationId ?? "", channel.channelSelector ?? "",
+      channel.channelNumber ? String(channel.channelNumber) : ""));
 
     // Form buttons.
     editLines.push("<div class=\"form-buttons\">");
@@ -686,6 +789,11 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   // Determine if this should be a select dropdown.
   const hasValidValues = setting.validValues && (setting.validValues.length > 0);
 
+  // Check if this setting depends on a boolean toggle that is currently disabled. The depends-disabled class applies a visual grey-out without actually
+  // disabling the inputs, so values are still submitted during save.
+  const dependsOnId = setting.dependsOn ? setting.dependsOn.replace(/\./g, "-") : undefined;
+  const isDependencyDisabled = setting.dependsOn ? !getNestedValue(CONFIG, setting.dependsOn) : false;
+
   // Build CSS classes for the form group.
   const groupClasses = ["form-group"];
 
@@ -699,8 +807,16 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     groupClasses.push("modified");
   }
 
+  if(isDependencyDisabled) {
+
+    groupClasses.push("depends-disabled");
+  }
+
+  // Build the opening div with optional data-depends-on attribute for client-side toggle behavior.
+  const dependsAttr = dependsOnId ? " data-depends-on=\"" + dependsOnId + "\"" : "";
+
   const lines = [
-    "<div class=\"" + groupClasses.join(" ") + "\">",
+    "<div class=\"" + groupClasses.join(" ") + "\"" + dependsAttr + ">",
     "<div class=\"form-row\">",
     "<label class=\"form-label\" for=\"" + inputId + "\">"
   ];
@@ -736,6 +852,11 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     if(isDisabled) {
 
       selectAttrs.push("disabled");
+    }
+
+    if(isDependencyDisabled) {
+
+      selectAttrs.push("tabindex=\"-1\"");
     }
 
     lines.push("<select " + selectAttrs.join(" ") + ">");
@@ -783,6 +904,40 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     }
 
     lines.push("</select>");
+  } else if(setting.type === "boolean") {
+
+    // Render boolean as a checkbox. A hidden input with value "false" precedes the checkbox so that unchecking submits "false" rather than omitting the field
+    // entirely (which would cause the server to skip it and fall back to the default).
+    const isChecked = (currentValue === true) || (currentValue === "true");
+    const defaultStr = String(defaultValue ?? false);
+
+    lines.push("<input type=\"hidden\" name=\"" + setting.path + "\" value=\"false\">");
+
+    const checkboxAttrs = [
+      "class=\"form-checkbox\"",
+      "type=\"checkbox\"",
+      "id=\"" + inputId + "\"",
+      "name=\"" + setting.path + "\"",
+      "value=\"true\"",
+      "data-default=\"" + escapeHtml(defaultStr) + "\""
+    ];
+
+    if(isChecked) {
+
+      checkboxAttrs.push("checked");
+    }
+
+    if(isDisabled) {
+
+      checkboxAttrs.push("disabled");
+    }
+
+    if(isDependencyDisabled) {
+
+      checkboxAttrs.push("tabindex=\"-1\"");
+    }
+
+    lines.push("<input " + checkboxAttrs.join(" ") + ">");
   } else {
 
     // Render as input field.
@@ -835,6 +990,11 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     if(isDisabled) {
 
       inputAttrs.push("disabled");
+    }
+
+    if(isDependencyDisabled) {
+
+      inputAttrs.push("tabindex=\"-1\"");
     }
 
     lines.push("<input " + inputAttrs.join(" ") + ">");
@@ -1066,20 +1226,67 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
 export function generateChannelsPanel(channelMessage?: string, channelError?: boolean, editingChannelKey?: string, showAddForm?: boolean,
   formErrors?: Map<string, string>, formValues?: Map<string, string>): string {
 
-  const allChannels = getAllChannels();
+  // Get all channels including disabled predefined ones. User channels override predefined.
+  const userChannels = getUserChannels();
+  const predefinedChannels = getPredefinedChannels();
+  const allChannelKeys = new Set([ ...Object.keys(predefinedChannels), ...Object.keys(userChannels) ]);
+  const channelKeys = [...allChannelKeys].sort();
   const profiles = getProfiles();
-  const channelKeys = Object.keys(allChannels).sort();
+  const disabledPredefined = getDisabledPredefinedChannels();
+  const predefinedCount = Object.keys(predefinedChannels).length;
+  const allDisabled = disabledPredefined.length === predefinedCount;
+
+  // Count predefined channels that are actually disabled in the DOM — excludes those overridden by user channels, since overridden channels render as user channel
+  // rows rather than disabled predefined rows.
+  const visibleDisabledCount = disabledPredefined.filter((key) => !isUserChannel(key)).length;
 
   const lines: string[] = [];
 
-  // Panel header with description.
-  lines.push("<div class=\"panel-header\">");
+  // Panel description.
   lines.push("<div class=\"settings-panel-description\">");
   lines.push("<p>Define and manage streaming channels for the playlist. Your custom channels are highlighted.</p>");
-  lines.push("<p class=\"description-hint\">Tip: To override a built-in channel, add a custom channel with the same key.</p>");
+  lines.push("<p class=\"description-hint\">Tip: To override a predefined channel, add a custom channel with the same key.</p>");
   lines.push("</div>");
-  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"document.getElementById('add-channel-form').style.display='block'; ",
-    "this.style.display='none';\">Add Channel</button>");
+
+  // Toolbar with channel operations and display controls.
+  lines.push("<div class=\"channel-toolbar\">");
+
+  // Left group: channel operations. Import uses a dropdown menu to consolidate M3U and JSON import into a single button.
+  lines.push("<div class=\"toolbar-group\">");
+  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" id=\"add-channel-btn\" onclick=\"document.getElementById('add-channel-form')",
+    ".style.display='block'; this.style.display='none';\">Add Channel</button>");
+  lines.push("<div class=\"dropdown\">");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"toggleDropdown(this)\">Import &#9662;</button>");
+  lines.push("<div class=\"dropdown-menu\">");
+  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); document.getElementById('import-channels-file').click()\">Channels (JSON)</div>");
+  lines.push("<div class=\"dropdown-divider\"></div>");
+  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); document.getElementById('import-m3u-file').click()\">M3U Playlist</div>");
+  lines.push("<label class=\"dropdown-option\"><input type=\"checkbox\" id=\"m3u-replace-duplicates\"> Replace duplicates</label>");
+  lines.push("</div>");
+  lines.push("</div>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"exportChannels()\">Export</button>");
+  lines.push("<input type=\"file\" id=\"import-m3u-file\" accept=\".m3u,.m3u8\" style=\"display: none;\" onchange=\"importM3U(this)\">");
+  lines.push("</div>");
+
+  // Spacer.
+  lines.push("<div class=\"toolbar-spacer\"></div>");
+
+  // Right group: display controls.
+  lines.push("<div class=\"toolbar-group\">");
+
+  if(allDisabled) {
+
+    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" id=\"bulk-toggle-btn\" ",
+      "onclick=\"toggleAllPredefined(true)\">Enable All Predefined</button>");
+  } else {
+
+    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" id=\"bulk-toggle-btn\" ",
+      "onclick=\"toggleAllPredefined(false)\">Disable All Predefined</button>");
+  }
+
+  lines.push("<label class=\"toggle-label\"><input type=\"checkbox\" id=\"show-disabled-toggle\" onchange=\"toggleDisabledVisibility()\"> ",
+    "Show disabled (<span id=\"disabled-count\">" + String(visibleDisabledCount) + "</span>)</label>");
+  lines.push("</div>");
   lines.push("</div>");
 
   // Show channels file parse error if applicable.
@@ -1167,14 +1374,15 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Profile dropdown.
   lines.push(...generateProfileDropdown("add-profile", formValues?.get("profile") ?? "", profiles));
 
-  // Advanced fields (station ID, channel selector).
-  lines.push(...generateAdvancedFields("add", formValues?.get("stationId") ?? "", formValues?.get("channelSelector") ?? ""));
+  // Advanced fields (station ID, channel selector, channel number).
+  lines.push(...generateAdvancedFields("add", formValues?.get("stationId") ?? "", formValues?.get("channelSelector") ?? "",
+    formValues?.get("channelNumber") ?? ""));
 
   // Form buttons.
   lines.push("<div class=\"form-buttons\">");
   lines.push("<button type=\"submit\" class=\"btn btn-primary\">Add Channel</button>");
   lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"document.getElementById('add-channel-form').style.display='none'; ",
-    "document.querySelector('.panel-header .btn-primary').style.display='inline-block';\">Cancel</button>");
+    "document.getElementById('add-channel-btn').style.display='inline-block';\">Cancel</button>");
   lines.push("</div>");
 
   lines.push("</form>");
@@ -1183,8 +1391,8 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Profile reference section (hidden by default, toggled via link in profile dropdown hint).
   lines.push(generateProfileReference(profiles));
 
-  // Channels table.
-  lines.push("<table class=\"channel-table\">");
+  // Channels table. Disabled predefined channels are hidden by default and revealed via the "Show disabled" toggle.
+  lines.push("<table class=\"channel-table hide-disabled\">");
   lines.push("<thead>");
   lines.push("<tr>");
   lines.push("<th class=\"col-key\">Key</th>");
@@ -1212,8 +1420,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</tbody>");
   lines.push("</table>");
 
-  // Show channels file path.
-  lines.push("<div class=\"config-path\">User channels file: <code>" + escapeHtml(getUserChannelsFilePath()) + "</code></div>");
+  // Embed channel selector data for datalist population. The client-side JavaScript uses this to offer known selector suggestions when the URL matches a
+  // multi-channel site like Disney+ or USA Network.
+  lines.push("<script>" + generateChannelSelectorData() + "</script>");
 
   return lines.join("\n");
 }
@@ -1630,6 +1839,285 @@ export function setupConfigEndpoint(app: Express): void {
     }
   });
 
+  // POST /config/channels/import-m3u - Import channels from M3U playlist file.
+  app.post("/config/channels/import-m3u", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { conflictMode?: string; content?: string };
+      const content = body.content;
+      const conflictMode = body.conflictMode ?? "skip";
+
+      // Validate content is provided.
+      if(!content || (typeof content !== "string") || (content.trim() === "")) {
+
+        res.status(400).json({ error: "No M3U content provided.", success: false });
+
+        return;
+      }
+
+      // Validate conflict mode.
+      if((conflictMode !== "skip") && (conflictMode !== "replace")) {
+
+        res.status(400).json({ error: "Invalid conflict mode. Must be 'skip' or 'replace'.", success: false });
+
+        return;
+      }
+
+      // Parse the M3U content.
+      const parseResult = parseM3U(content);
+
+      // Check for empty result.
+      if(parseResult.channels.length === 0) {
+
+        res.status(400).json({
+
+          error: "No channels found in M3U file." + (parseResult.errors.length > 0 ? " Parse errors: " + parseResult.errors.join("; ") : ""),
+          success: false
+        });
+
+        return;
+      }
+
+      // Load existing user channels.
+      const loadResult = await loadUserChannels();
+      const existingChannels = loadResult.parseError ? {} : loadResult.channels;
+
+      // Track import statistics.
+      const conflicts: string[] = [];
+      const importErrors: string[] = [];
+      const seenKeys = new Set<string>();
+      let imported = 0;
+      let replaced = 0;
+      let skipped = 0;
+
+      // Process each parsed channel.
+      for(const m3uChannel of parseResult.channels) {
+
+        // Generate the channel key from the name.
+        const key = generateChannelKey(m3uChannel.name);
+
+        // Validate the generated key.
+        if(!key || (key.length === 0)) {
+
+          importErrors.push("Could not generate key for channel '" + m3uChannel.name + "'.");
+
+          continue;
+        }
+
+        // Skip duplicate keys within the same M3U file (first occurrence wins).
+        if(seenKeys.has(key)) {
+
+          continue;
+        }
+
+        seenKeys.add(key);
+
+        // Validate the URL.
+        const urlError = validateChannelUrl(m3uChannel.url);
+
+        if(urlError) {
+
+          importErrors.push("Channel '" + m3uChannel.name + "': " + urlError);
+
+          continue;
+        }
+
+        // Validate the name.
+        const nameError = validateChannelName(m3uChannel.name);
+
+        if(nameError) {
+
+          importErrors.push("Channel '" + m3uChannel.name + "': " + nameError);
+
+          continue;
+        }
+
+        // Check for conflicts with existing channels.
+        if(key in existingChannels) {
+
+          conflicts.push(key);
+
+          if(conflictMode === "skip") {
+
+            skipped++;
+
+            continue;
+          }
+
+          // Replace mode - count as replaced instead of imported.
+          replaced++;
+        } else {
+
+          imported++;
+        }
+
+        // Build the channel object.
+        const channel: UserChannel = {
+
+          name: m3uChannel.name,
+          url: m3uChannel.url
+        };
+
+        // Add station ID if present.
+        if(m3uChannel.stationId) {
+
+          channel.stationId = m3uChannel.stationId;
+        }
+
+        // Add to channels collection.
+        existingChannels[key] = channel;
+      }
+
+      // Save the updated channels.
+      await saveUserChannels(existingChannels);
+
+      // Log the import.
+      LOG.info("M3U import completed: %d imported, %d replaced, %d skipped.", imported, replaced, skipped);
+
+      // Build response.
+      res.json({
+
+        conflicts,
+        errors: [ ...parseResult.errors, ...importErrors ],
+        imported,
+        replaced,
+        skipped,
+        success: true
+      });
+    } catch(error) {
+
+      LOG.error("Failed to import M3U channels: %s", formatError(error));
+      res.status(500).json({ error: "Failed to import channels: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/channels/toggle-predefined - Toggle a single predefined channel's enabled/disabled state.
+  app.post("/config/channels/toggle-predefined", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { enabled?: boolean; key?: string };
+      const key = body.key?.trim();
+      const enabled = body.enabled;
+
+      // Validate key is provided.
+      if(!key) {
+
+        res.status(400).json({ error: "Channel key is required.", success: false });
+
+        return;
+      }
+
+      // Validate enabled is provided.
+      if(typeof enabled !== "boolean") {
+
+        res.status(400).json({ error: "Enabled state (true/false) is required.", success: false });
+
+        return;
+      }
+
+      // Validate the channel exists as a predefined channel.
+      if(!isPredefinedChannel(key)) {
+
+        res.status(400).json({ error: "Channel '" + key + "' is not a predefined channel.", success: false });
+
+        return;
+      }
+
+      // Load current config.
+      const configResult = await loadUserConfig();
+      const userConfig = configResult.config;
+
+      // Initialize channels.disabledPredefined if not present.
+      userConfig.channels ??= {};
+      userConfig.channels.disabledPredefined ??= [];
+
+      const disabledSet = new Set(userConfig.channels.disabledPredefined);
+
+      if(enabled) {
+
+        // Enable: remove from disabled list.
+        disabledSet.delete(key);
+      } else {
+
+        // Disable: add to disabled list.
+        disabledSet.add(key);
+      }
+
+      // Update and save config.
+      userConfig.channels.disabledPredefined = [...disabledSet].sort();
+
+      await saveUserConfig(userConfig);
+
+      // Update the runtime CONFIG to reflect the change immediately.
+      CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
+
+      LOG.info("Predefined channel '%s' %s.", key, enabled ? "enabled" : "disabled");
+
+      res.json({ enabled, key, success: true });
+    } catch(error) {
+
+      LOG.error("Failed to toggle predefined channel: %s", formatError(error));
+      res.status(500).json({ error: "Failed to toggle channel: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/channels/toggle-all-predefined - Toggle all predefined channels' enabled/disabled state.
+  app.post("/config/channels/toggle-all-predefined", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { enabled?: boolean };
+      const enabled = body.enabled;
+
+      // Validate enabled is provided.
+      if(typeof enabled !== "boolean") {
+
+        res.status(400).json({ error: "Enabled state (true/false) is required.", success: false });
+
+        return;
+      }
+
+      // Load current config.
+      const configResult = await loadUserConfig();
+      const userConfig = configResult.config;
+
+      // Initialize channels.disabledPredefined if not present.
+      userConfig.channels ??= {};
+
+      const predefinedKeys = Object.keys(getPredefinedChannels());
+      let affected: number;
+
+      if(enabled) {
+
+        // Enable all: clear the disabled list.
+        affected = userConfig.channels.disabledPredefined?.length ?? 0;
+        userConfig.channels.disabledPredefined = [];
+      } else {
+
+        // Disable all: add all predefined channel keys.
+        const previousCount = userConfig.channels.disabledPredefined?.length ?? 0;
+
+        userConfig.channels.disabledPredefined = predefinedKeys.sort();
+        affected = predefinedKeys.length - previousCount;
+      }
+
+      await saveUserConfig(userConfig);
+
+      // Update the runtime CONFIG to reflect the change immediately.
+      CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
+
+      LOG.info("All predefined channels %s (%d affected).", enabled ? "enabled" : "disabled", affected);
+
+      res.json({ affected, enabled, success: true });
+    } catch(error) {
+
+      LOG.error("Failed to toggle all predefined channels: %s", formatError(error));
+      res.status(500).json({ error: "Failed to toggle channels: " + formatError(error), success: false });
+    }
+  });
+
   // POST /config/channels - Handle channel add, edit, delete operations. Returns JSON response.
   app.post("/config/channels", async (req: Request, res: Response): Promise<void> => {
 
@@ -1673,8 +2161,12 @@ export function setupConfigEndpoint(app: Express): void {
 
         LOG.info("User channel '%s' deleted.", key);
 
-        // Return success response with key for client-side DOM removal. Changes take effect immediately due to hot-reloading in saveUserChannels().
-        res.json({ key, message: "Channel '" + key + "' deleted successfully.", success: true });
+        // If a predefined channel exists with the same key, generate its HTML so the client can replace the user channel row with the predefined version instead of
+        // just removing it. Without this, deleting a user override of a predefined channel would leave the predefined channel invisible until a page refresh.
+        const predefined = isPredefinedChannel(key) ? generateChannelRowHtml(key, profiles) : undefined;
+
+        // Return success response with key for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
+        res.json({ html: predefined, key, message: "Channel '" + key + "' deleted successfully.", success: true });
 
         return;
       }
@@ -1696,6 +2188,32 @@ export function setupConfigEndpoint(app: Express): void {
       const profile = body.profile?.trim() ?? "";
       const stationId = body.stationId?.trim() ?? "";
       const channelSelector = body.channelSelector?.trim() ?? "";
+      const channelNumberStr = body.channelNumber?.trim() ?? "";
+
+      // Validate channel number if provided.
+      if(channelNumberStr) {
+
+        const num = parseInt(channelNumberStr, 10);
+
+        if(Number.isNaN(num) || (num < 1) || (num > 99999)) {
+
+          formErrors.channelNumber = "Channel number must be between 1 and 99999.";
+        } else {
+
+          // Check for duplicate channel numbers across all channels.
+          const allChannels = { ...getPredefinedChannels(), ...getUserChannels() };
+
+          for(const [ existingKey, existingChannel ] of Object.entries(allChannels)) {
+
+            if((existingChannel.channelNumber === num) && (existingKey !== key)) {
+
+              formErrors.channelNumber = "Channel number " + String(num) + " is already used by '" + existingKey + "'.";
+
+              break;
+            }
+          }
+        }
+      }
 
       // Validate key (only for add action, not edit).
       if(action === "add") {
@@ -1777,6 +2295,11 @@ export function setupConfigEndpoint(app: Express): void {
       if(channelSelector) {
 
         channel.channelSelector = channelSelector;
+      }
+
+      if(channelNumberStr) {
+
+        channel.channelNumber = parseInt(channelNumberStr, 10);
       }
 
       // Add or update the channel.
