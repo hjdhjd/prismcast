@@ -54,6 +54,23 @@ export const CHANNELS: ChannelMap = {
   e: { channelSelector: "E-_East", name: "E!", profile: "keyboardDynamicMultiVideo", stationId: "61812", url: "https://www.usanetwork.com/live" },
   ep: { channelSelector: "E-_West", name: "E! (Pacific)", profile: "keyboardDynamicMultiVideo", stationId: "91579", url: "https://www.usanetwork.com/live" },
 
+  // Disney+ live channels using tile-based channel selection from the shared live TV page.
+  espn: {
+
+    channelSelector: "poster_linear_espn_none", name: "ESPN", profile: "apiMultiVideo", stationId: "32645",
+    url: "https://www.disneyplus.com/browse/live"
+  },
+  espn2: {
+
+    channelSelector: "poster_linear_espn2_none", name: "ESPN2", profile: "apiMultiVideo", stationId: "45507",
+    url: "https://www.disneyplus.com/browse/live"
+  },
+  espnews: {
+
+    channelSelector: "poster_linear_espnews_none", name: "ESPNews", profile: "apiMultiVideo", stationId: "59976",
+    url: "https://www.disneyplus.com/browse/live"
+  },
+
   // Iframe-embedded players with multiple video elements requiring network idle wait.
   fbc: { name: "Fox Business", profile: "embeddedDynamicMultiVideo", stationId: "58718", url: "https://www.foxbusiness.com/video/5640669329001" },
   fnc: { name: "Fox News", profile: "embeddedDynamicMultiVideo", stationId: "60179", url: "https://www.foxnews.com/video/5614615980001" },
@@ -75,8 +92,8 @@ export const CHANNELS: ChannelMap = {
   // A&E family channels use standard players that work with the default profile.
   fyi: { name: "FYI", stationId: "58988", url: "https://play.fyi.tv/live" },
 
-  // Multi-channel keyboard players requiring channel selection from the UI.
-  golf: { channelSelector: "gc", name: "Golf", profile: "keyboardDynamicMultiVideo", stationId: "61854", url: "https://www.usanetwork.com/live" },
+  // Golf Channel has its own standalone site using the fullscreen API profile.
+  golf: { name: "Golf", profile: "fullscreenApi", stationId: "61854", url: "https://www.golfchannel.com/watch/live" },
 
   // Discovery and Warner Brothers Discovery family channels use the fullscreen API profile.
   hgtv: { name: "HGTV", profile: "fullscreenApi", stationId: "49788", url: "https://watch.foodnetwork.com/channel/hgtv" },
@@ -158,14 +175,18 @@ export const CHANNELS: ChannelMap = {
   oxygen: { channelSelector: "Oxygen_East", name: "Oxygen", profile: "keyboardDynamicMultiVideo", stationId: "70522", url: "https://www.usanetwork.com/live" },
   oxygenp: { channelSelector: "Oxygen_West", name: "Oxygen (Pacific)", profile: "keyboardDynamicMultiVideo", stationId: "74032", url: "https://www.usanetwork.com/live" },
 
-  // WTTW PBS uses standard player.
+  // WTTW PBS uses a standard player.
   pbschicago: { name: "PBS Chicago (WTTW)", stationId: "30415", url: "https://www.wttw.com/wttw-live-stream" },
 
-  // PBS station Lakeshore uses embedded player in iframe.
+  // PBS station Lakeshore uses an embedded player in iframe.
   pbslakeshore: { name: "PBS Lakeshore (WYIN)", profile: "embeddedPlayer", stationId: "49237", url: "https://video.lakeshorepbs.org/livestream" },
 
   // Discovery and Warner Brothers Discovery family channels use the fullscreen API profile.
   science: { name: "Science", profile: "fullscreenApi", stationId: "57390", url: "https://watch.foodnetwork.com/channel/science" },
+
+  // Paramount Plus / Showtime uses a standard player.
+  showtime: { name: "Showtime", stationId: "91620", url: "https://www.paramountplus.com/live-tv/stream/showtime-east" },
+  showtimep: { name: "Showtime (Pacific)", stationId: "91621", url: "https://www.paramountplus.com/live-tv/stream/showtime-west" },
 
   // Multi-channel keyboard players requiring channel selection from the UI.
   syfy: { channelSelector: "Syfy_East", name: "Syfy", profile: "keyboardDynamicMultiVideo", stationId: "58623", url: "https://www.usanetwork.com/live" },

@@ -54,6 +54,7 @@ import { CHANNELS } from "../channels/index.js";
  * - keyboardDynamicMultiVideo: Keyboard + network idle + multi-video selection (extends keyboardDynamic)
  * - brightcove: Brightcove players using API fullscreen + network idle wait (extends fullscreenApi)
  * - embeddedPlayer: Iframe-based players using fullscreen API (extends fullscreenApi)
+ * - apiMultiVideo: API fullscreen + multi-video + tile-based channel selection (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
  *
@@ -62,6 +63,18 @@ import { CHANNELS } from "../channels/index.js";
  */
 
 export const SITE_PROFILES: Record<string, SiteProfile> = {
+
+  // Profile for multi-channel live TV pages that present a grid or shelf of live channel tiles requiring tile-based selection followed by a play button click. Uses
+  // the fullscreen API and multi-video selection to find the actively playing stream after channel selection. Does not use iframe handling or network idle wait
+  // because these sites serve video directly in the main page and have persistent connections that prevent network idle.
+  apiMultiVideo: {
+
+    channelSelection: { strategy: "tileClick" },
+    description: "Multi-channel live TV pages requiring tile-based channel selection with API fullscreen.",
+    extends: "fullscreenApi",
+    selectReadyVideo: true,
+    summary: "Multi-channel live TV (tile selection)"
+  },
 
   // Profile for sites using the Brightcove player platform. Brightcove players require waiting for network activity to settle before the video player is fully
   // initialized. The player dynamically loads its configuration and stream manifest, so waitForNetworkIdle ensures we don't try to interact with the player before
@@ -204,9 +217,14 @@ export const DOMAIN_TO_PROFILE: Record<string, string> = {
   // Keyboard fullscreen sites with iframe-embedded players.
   "cbs.com": "keyboardIframe",
 
-  // Sites using JavaScript fullscreen API.
+  // Sites using the JavaScript fullscreen API.
   "cnbc.com": "fullscreenApi",
   "cnn.com": "fullscreenApi",
+
+  // Embedded player with dynamic multi-video and tile-based channel selection.
+  "disneyplus.com": "embeddedDynamicMultiVideo",
+
+  // Sites using the JavaScript fullscreen API.
   "foodnetwork.com": "fullscreenApi",
 
   // Iframe-embedded players with complex multi-video setup.
@@ -215,6 +233,9 @@ export const DOMAIN_TO_PROFILE: Record<string, string> = {
 
   // Iframe-embedded players that require volume locking.
   "france24.com": "embeddedVolumeLock",
+
+  // Sites using the JavaScript fullscreen API.
+  "hbomax.com": "fullscreenApi",
 
   // Keyboard fullscreen sites with dynamic content loading.
   "ms.now": "keyboardDynamic",
@@ -225,21 +246,22 @@ export const DOMAIN_TO_PROFILE: Record<string, string> = {
   // Keyboard fullscreen sites with dynamic content loading.
   "nbc.com": "keyboardDynamic",
 
-  // Sites using JavaScript fullscreen API.
+  // Sites using the JavaScript fullscreen API.
+  "paramountplus.com": "fullscreenApi",
   "tbs.com": "fullscreenApi",
   "tntdrama.com": "fullscreenApi",
 
   // Multi-channel keyboard players with dynamic content.
   "usanetwork.com": "keyboardDynamicMultiVideo",
 
-  // Sites using JavaScript fullscreen API.
+  // Sites using the JavaScript fullscreen API.
   "vh1.com": "fullscreenApi",
 
   // Static pages without video content.
   "weatherscan.net": "staticPage",
   "windy.com": "staticPage",
 
-  // Sites using JavaScript fullscreen API.
+  // Sites using the JavaScript fullscreen API.
   "wttw.com": "fullscreenApi",
 
   // Keyboard fullscreen sites with dynamic content loading.
