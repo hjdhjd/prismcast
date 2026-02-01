@@ -10,6 +10,7 @@ export * from "./format.js";
 export * from "./html.js";
 export * from "./logEmitter.js";
 export * from "./logger.js";
+export * from "./m3u.js";
 export * from "./morganStream.js";
 export * from "./platform.js";
 export * from "./retry.js";

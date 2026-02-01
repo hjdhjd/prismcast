@@ -163,6 +163,39 @@ export interface HLSConfig {
 }
 
 /**
+ * Channels configuration controlling which predefined channels are enabled.
+ */
+export interface ChannelsConfig {
+
+  // List of predefined channel keys that are disabled. Disabled channels are excluded from the playlist and cannot be streamed.
+  disabledPredefined: string[];
+}
+
+/**
+ * HDHomeRun emulation configuration. When enabled, PrismCast runs a separate HTTP server that emulates the HDHomeRun API, allowing Plex to discover and use
+ * PrismCast as a virtual tuner for live TV and DVR recording. The emulated device appears in Plex's tuner setup and serves PrismCast's HLS streams directly.
+ */
+export interface HdhrConfig {
+
+  // Device ID for HDHomeRun identification on the network. Auto-generated on first startup using the HDHomeRun checksum algorithm and stored in the config file
+  // for persistence across restarts. Must be exactly 8 hex characters with a valid check digit.
+  deviceId: string;
+
+  // Whether HDHomeRun emulation is enabled. When enabled, a second HTTP server listens on the configured port and responds to HDHomeRun API requests from Plex.
+  // When disabled, no additional server is started and no resources are consumed. Environment variable: HDHR_ENABLED. Default: true.
+  enabled: boolean;
+
+  // Friendly name displayed in Plex when it discovers this tuner. This helps users identify PrismCast among multiple tuners in their Plex setup. Environment
+  // variable: HDHR_FRIENDLY_NAME. Default: "PrismCast".
+  friendlyName: string;
+
+  // TCP port for the HDHomeRun emulation server. HDHomeRun devices traditionally use port 5004, and Plex expects this port when auto-discovering tuners via UDP.
+  // If another HDHomeRun device or emulator is already using this port, PrismCast logs a warning and continues without HDHR emulation. Environment variable:
+  // HDHR_PORT. Default: 5004. Valid range: 1-65535.
+  port: number;
+}
+
+/**
  * Logging configuration controlling file-based logging behavior.
  */
 export interface LoggingConfig {
@@ -253,6 +286,12 @@ export interface Config {
 
   // Browser launch and viewport configuration.
   browser: BrowserConfig;
+
+  // Channel enable/disable configuration.
+  channels: ChannelsConfig;
+
+  // HDHomeRun emulation configuration for Plex integration.
+  hdhr: HdhrConfig;
 
   // HLS streaming configuration.
   hls: HLSConfig;
@@ -411,6 +450,10 @@ export interface ProfileResolutionResult {
  */
 export interface Channel {
 
+  // Numeric channel number for HDHomeRun/Plex guide matching. When set, this number is used as the GuideNumber in the HDHomeRun lineup, enabling Plex to match
+  // the channel with electronic program guide data. When omitted, a number is auto-assigned. Only relevant when HDHomeRun emulation is enabled.
+  channelNumber?: number;
+
   // CSS selector for channel selection within a multi-channel player. This overrides any channelSelector in the profile. Used for sites like Pluto TV where the
   // base URL is the same but different channels require clicking different UI elements.
   channelSelector?: string;
@@ -430,6 +473,25 @@ export interface Channel {
   // URL of the streaming page to capture. This should be the direct URL to the live stream player, not a landing page or show page. Authentication cookies from
   // the Chrome profile are used, so the URL can be to authenticated content.
   url: string;
+}
+
+/**
+ * Enriched channel entry returned by getChannelListing(). Wraps a Channel definition with source classification and enabled status metadata, providing the
+ * single source of truth for merged channel data across the codebase.
+ */
+export interface ChannelListingEntry {
+
+  // The channel definition with all properties (name, url, profile, etc.).
+  channel: Channel;
+
+  // Whether the channel is enabled for streaming and playlist inclusion. Disabled predefined channels (without user overrides) have this set to false.
+  enabled: boolean;
+
+  // The channel key (URL-safe slug used in stream URLs).
+  key: string;
+
+  // Where this channel comes from: "predefined" (built-in), "user" (user-defined), or "override" (user channel replacing a predefined one).
+  source: "override" | "predefined" | "user";
 }
 
 /**
@@ -570,6 +632,19 @@ export interface HealthStatus {
   // Media capture mode currently configured ("ffmpeg" or "native").
   captureMode: string;
 
+  // Chrome browser version string (e.g., "Chrome/144.0.7559.110"), or null if the browser is not connected.
+  chrome: Nullable<string>;
+
+  // Aggregate client information across all active streams.
+  clients: {
+
+    // Per-type breakdown sorted alphabetically by type name.
+    byType: { count: number; type: string }[];
+
+    // Total number of clients across all streams.
+    total: number;
+  };
+
   // Whether FFmpeg is available on the system. Only relevant when captureMode is "ffmpeg".
   ffmpegAvailable: boolean;
 
@@ -610,6 +685,9 @@ export interface HealthStatus {
 
   // Server uptime in seconds since the process started.
   uptime: number;
+
+  // PrismCast server version from package.json.
+  version: string;
 }
 
 /*
@@ -668,8 +746,9 @@ export interface StreamListResponse {
  *
  * - "none": No channel selection needed (single-channel sites). This is the default.
  * - "thumbnailRow": Find channel by matching image URL slug, click adjacent element on the same row. Used by USA Network.
+ * - "tileClick": Find channel tile by matching image URL slug, click tile, then click play button on modal. Used by Disney+ live channels.
  */
-export type ChannelSelectionStrategy = "none" | "thumbnailRow";
+export type ChannelSelectionStrategy = "none" | "thumbnailRow" | "tileClick";
 
 /**
  * Configuration for channel selection behavior within a site profile.

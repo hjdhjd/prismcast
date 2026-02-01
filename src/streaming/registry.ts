@@ -3,9 +3,11 @@
  * registry.ts: Stream tracking for PrismCast.
  */
 import type { Nullable, ResolvedSiteProfile } from "../types/index.js";
+import { EventEmitter } from "node:events";
 import type { FFmpegProcess } from "../utils/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { Page } from "puppeteer-core";
+import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./monitor.js";
 
 /*
@@ -39,14 +41,26 @@ export interface HLSState {
   // any media segments.
   initSegment: Nullable<Buffer>;
 
+  // Promise that resolves when the first init segment is stored. Used by MPEG-TS consumers to wait for codec configuration before starting their FFmpeg remuxer.
+  initSegmentReady: Promise<void>;
+
   // The current m3u8 playlist content.
   playlist: string;
 
   // Promise that resolves when the first playlist is available.
   playlistReady: Promise<void>;
 
+  // EventEmitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time. Events:
+  //   "initSegment" (data: Buffer) — fired when an init segment is stored
+  //   "segment" (filename: string, data: Buffer) — fired when a media segment is stored
+  //   "terminated" () — fired when the stream is being terminated
+  segmentEmitter: EventEmitter;
+
   // Map of media segment filenames to their binary data.
   segments: Map<string, Buffer>;
+
+  // Function to signal that the init segment is ready.
+  signalInitSegmentReady: () => void;
 
   // Function to signal that the playlist is ready.
   signalPlaylistReady: () => void;
@@ -84,6 +98,10 @@ export interface StreamRegistryEntry {
   // Unique numeric identifier for this stream.
   id: number;
 
+  // Count of active MPEG-TS client connections consuming this stream. Incremented when a client connects, decremented on disconnect. Used by idle timeout logic to
+  // keep the stream alive while MPEG-TS clients are connected.
+  mpegTsClientCount: number;
+
   // Stream-specific info for idle detection.
   info: StreamInfo;
 
@@ -92,6 +110,11 @@ export interface StreamRegistryEntry {
 
   // The resolved site profile used for this stream. Needed for tab replacement recovery to recreate the capture with the same profile.
   profile: ResolvedSiteProfile;
+
+  // The raw capture stream from puppeteer-stream. In FFmpeg mode, this is the WebM stream piped to FFmpeg's stdin. In native mode, this is the same as the segmenter
+  // input. Must be destroyed before closing the page to ensure chrome.tabCapture releases the capture and prevents "Cannot capture a tab with an active stream" errors
+  // on subsequent stream requests.
+  rawCaptureStream: Nullable<Readable>;
 
   // The fMP4 segmenter that processes the capture stream, or null if not yet created.
   segmenter: Nullable<FMP4SegmenterResult>;
@@ -198,19 +221,33 @@ export function updateLastAccess(id: number): void {
  */
 export function createHLSState(): HLSState {
 
+  let signalInitSegmentReady: () => void = () => {};
   let signalPlaylistReady: () => void = () => {};
+
+  const initSegmentReady = new Promise<void>((resolve) => {
+
+    signalInitSegmentReady = resolve;
+  });
 
   const playlistReady = new Promise<void>((resolve) => {
 
     signalPlaylistReady = resolve;
   });
 
+  const segmentEmitter = new EventEmitter();
+
+  // Allow up to 20 listeners per event to support multiple concurrent MPEG-TS clients consuming the same stream.
+  segmentEmitter.setMaxListeners(20);
+
   return {
 
     initSegment: null,
+    initSegmentReady,
     playlist: "",
     playlistReady,
+    segmentEmitter,
     segments: new Map(),
+    signalInitSegmentReady,
     signalPlaylistReady
   };
 }

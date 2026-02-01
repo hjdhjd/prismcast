@@ -6,7 +6,9 @@ import { LOG, formatDuration, formatError, getAbortController, unregisterAbortCo
 import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./monitor.js";
 import { getStream, unregisterStream } from "./registry.js";
 import type { Nullable } from "../types/index.js";
+import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./monitor.js";
+import { clearClients } from "./clients.js";
 import { clearShowName } from "./showInfo.js";
 import { emitStreamRemoved } from "./statusEmitter.js";
 import { isGracefulShutdown } from "../browser/index.js";
@@ -22,6 +24,7 @@ import { isGracefulShutdown } from "../browser/index.js";
  * - Stopping the health monitor
  * - Closing the browser page
  * - Unregistering from the stream registry
+ * - Clearing client tracking data
  * - Emitting SSE events
  *
  * Callers are responsible for calling emitCurrentSystemStatus() after termination if they need to update the SSE system status. This is not done automatically to
@@ -91,6 +94,30 @@ export function isTerminationInitiated(streamId: number): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Capture Stream Cleanup
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Destroys the raw capture stream to ensure chrome.tabCapture releases the capture. This MUST be called before closing the page to prevent capture state corruption.
+ * When the stream is destroyed, puppeteer-stream's close handler fires synchronously (while the browser is still connected), which calls STOP_RECORDING in the
+ * extension. Without this, the extension may think a capture is still active, causing subsequent getStream() calls to hang with "Cannot capture a tab with an active
+ * stream" errors.
+ * @param rawCaptureStream - The raw capture stream from puppeteer-stream, or null if not available.
+ */
+function destroyCaptureStream(rawCaptureStream: Nullable<Readable>): void {
+
+  if(!rawCaptureStream) {
+
+    return;
+  }
+
+  if(!rawCaptureStream.destroyed) {
+
+    rawCaptureStream.destroy();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Stream Termination
 // ─────────────────────────────────────────────────────────────
 
@@ -132,8 +159,15 @@ export function terminateStream(streamId: number, channelName: string, reason: s
     unregisterAbortController(streamInfo.streamIdStr);
   }
 
-  // Kill the FFmpeg process first if using FFmpeg mode. This sets FFmpeg's internal shuttingDown flag, so when the segmenter stops (which closes the capture stream
-  // and FFmpeg's stdin), FFmpeg won't report spurious errors about truncated input. The order matters: kill() must be called before segmenter.stop() to set the flag
+  // Destroy the raw capture stream BEFORE killing FFmpeg or closing the page. This triggers puppeteer-stream's close handler while the browser is still connected,
+  // ensuring STOP_RECORDING is called and chrome.tabCapture releases the capture. Without this, subsequent getStream() calls may hang with "active stream" errors.
+  if(streamInfo) {
+
+    destroyCaptureStream(streamInfo.rawCaptureStream);
+  }
+
+  // Kill the FFmpeg process if using FFmpeg mode. This sets FFmpeg's internal shuttingDown flag, so when the segmenter stops (which closes the capture stream and
+  // FFmpeg's stdin), FFmpeg won't report spurious errors about truncated input. The order matters: kill() must be called before segmenter.stop() to set the flag
   // before stdin closes.
   if(streamInfo?.ffmpegProcess) {
 
@@ -173,8 +207,19 @@ export function terminateStream(streamId: number, channelName: string, reason: s
     }
   }
 
+  // Notify MPEG-TS clients that this stream is ending. This must happen before unregisterStream() which destroys the HLSState. Removing all listeners prevents
+  // memory leaks from orphaned event handlers.
+  if(streamInfo) {
+
+    streamInfo.hls.segmentEmitter.emit("terminated");
+    streamInfo.hls.segmentEmitter.removeAllListeners();
+  }
+
   // Unregister from registry. This also clears the HLS segment storage.
   unregisterStream(streamId);
+
+  // Clear client tracking data for this stream.
+  clearClients(streamId);
 
   // Clear cached show name.
   clearShowName(streamId);

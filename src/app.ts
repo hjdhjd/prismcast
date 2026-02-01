@@ -8,6 +8,7 @@ import { LOG, createMorganStream, formatError, getPackageVersion, resolveFFmpegP
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, prepareExtension, setGracefulShutdown, startStalePageCleanup,
   stopStalePageCleanup } from "./browser/index.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
+import { startHdhrServer, stopHdhrServer } from "./hdhr/index.js";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
 import type { Nullable } from "./types/index.js";
 import type { Server } from "http";
@@ -100,6 +101,7 @@ function setupGracefulShutdown(): void {
     setGracefulShutdown(true);
 
     // Stop cleanup and polling intervals.
+    stopHdhrServer();
     stopStalePageCleanup();
     stopIdleCleanup();
     stopShowInfoPolling();
@@ -378,8 +380,6 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
   try {
 
     await getCurrentBrowser();
-
-    LOG.info("Chrome ready.");
   } catch(error) {
 
     LOG.error("Failed to initialize browser during startup: %s.", formatError(error));
@@ -414,4 +414,8 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
 
     throw error;
   }
+
+  // Start HDHomeRun emulation server if enabled. This runs independently of the main server and handles EADDRINUSE gracefully without affecting PrismCast's
+  // primary functionality.
+  await startHdhrServer();
 }

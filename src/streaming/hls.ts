@@ -2,21 +2,23 @@
  *
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
-import { LOG, formatError, runWithStreamContext } from "../utils/index.js";
+import { LOG, delay, formatError, runWithStreamContext } from "../utils/index.js";
 import type { Nullable, ResolvedSiteProfile } from "../types/index.js";
 import type { Request, Response } from "express";
 import { StreamSetupError, createPageWithCapture, setupStream } from "./setup.js";
-import { createHLSState, getAllStreams, getStream, registerStream, updateLastAccess } from "./registry.js";
+import { createHLSState, getAllStreams, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.js";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.js";
 import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.js";
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
+import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
 import { getInitSegment, getPlaylist, getSegment, waitForPlaylist } from "./hlsSegments.js";
 import { CONFIG } from "../config/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
+import type { StreamRegistryEntry } from "./registry.js";
 import type { TabReplacementHandlerFactory } from "./setup.js";
 import type { TabReplacementResult } from "./monitor.js";
 import { createFMP4Segmenter } from "./fmp4Segmenter.js";
-import { getAllChannels } from "../config/userChannels.js";
+import { registerClient } from "./clients.js";
 import { triggerShowNameUpdate } from "./showInfo.js";
 
 /*
@@ -41,8 +43,108 @@ import { triggerShowNameUpdate } from "./showInfo.js";
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Handles HLS playlist requests. Starts a new stream if one doesn't exist for the requested channel, waits for FFmpeg to produce the first playlist, then returns
- * it. Subsequent requests for the same channel return the existing playlist.
+ * Ensures a stream is running for a channel. If no stream exists, starts one. If a stream startup is in progress (placeholder), waits for it to complete. Returns the
+ * stream ID if successful, or null if an error occurred (with the error response already sent to the client).
+ *
+ * This is the shared entry point for both HLS and MPEG-TS handlers. It handles channel validation, login mode blocking, and concurrent startup deduplication.
+ *
+ * @param channelName - The channel key to stream.
+ * @param req - Express request object (for profile override and client IP).
+ * @param res - Express response object (for error responses).
+ * @returns The stream ID if a stream is running, or null if an error occurred.
+ */
+export async function ensureChannelStream(channelName: string, req: Request, res: Response): Promise<number | null> {
+
+  // Check if this is a disabled predefined channel.
+  if(isPredefinedChannelDisabled(channelName)) {
+
+    res.status(404).send("Channel is disabled.");
+
+    return null;
+  }
+
+  const channels = getAllChannels();
+  const channel = channels[channelName];
+
+  // Runtime check needed even though TypeScript thinks channel is always defined (Record indexing quirk).
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!channel) {
+
+    res.status(404).send("Channel not found.");
+
+    return null;
+  }
+
+  // Check for an existing stream.
+  let streamId = getChannelStreamId(channelName);
+
+  // If a stream is already running (not a placeholder), return it directly.
+  if((streamId !== undefined) && (streamId !== -1)) {
+
+    return streamId;
+  }
+
+  // No stream exists — start a new one.
+  if(streamId === undefined) {
+
+    // Block new stream requests while login mode is active. This prevents the browser from being disrupted during authentication.
+    if(isLoginModeActive()) {
+
+      res.status(503).json({
+
+        error: "Login in progress",
+        message: "Please complete authentication before starting new streams."
+      });
+
+      return null;
+    }
+
+    const newStreamId = await startHLSStream(channelName, channel.url, req, res);
+
+    if(newStreamId === null) {
+
+      // Error response already sent by startHLSStream.
+      return null;
+    }
+
+    return newStreamId;
+  }
+
+  // Placeholder (-1) means another request is already starting this stream. Poll until the real stream ID appears or we timeout.
+  const pollInterval = 200;
+  const deadline = Date.now() + CONFIG.streaming.navigationTimeout;
+
+  while(Date.now() < deadline) {
+
+    // eslint-disable-next-line no-await-in-loop
+    await delay(pollInterval);
+
+    streamId = getChannelStreamId(channelName);
+
+    // The startup failed and the placeholder was removed.
+    if(streamId === undefined) {
+
+      res.status(500).send("Stream startup failed.");
+
+      return null;
+    }
+
+    // Real stream ID is now available.
+    if(streamId !== -1) {
+
+      return streamId;
+    }
+  }
+
+  // Timed out waiting for the placeholder to resolve.
+  res.setHeader("Retry-After", "5");
+  res.status(503).send("Stream is starting. Please retry.");
+
+  return null;
+}
+
+/**
+ * Handles HLS playlist requests. Ensures a stream is running for the requested channel, waits for the first playlist to be produced, then returns it.
  *
  * Route: GET /hls/:name/stream.m3u8
  *
@@ -60,72 +162,32 @@ export async function handleHLSPlaylist(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const channels = getAllChannels();
-  const channel = channels[channelName];
+  const streamId = await ensureChannelStream(channelName, req, res);
 
-  // Runtime check needed even though TypeScript thinks channel is always defined (Record indexing quirk).
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!channel) {
+  if(streamId === null) {
 
-    res.status(404).send("Channel not found.");
+    // Error response already sent by ensureChannelStream.
+    return;
+  }
+
+  // Capture client address for client tracking.
+  const clientAddress = req.ip ?? req.socket.remoteAddress ?? "unknown";
+
+  // If a playlist is already available, return it immediately.
+  const existingPlaylist = getPlaylist(streamId);
+
+  if(existingPlaylist) {
+
+    updateLastAccess(streamId);
+    registerClient(streamId, clientAddress, "hls");
+
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.send(existingPlaylist);
 
     return;
   }
 
-  // Check if there's already an active HLS stream for this channel.
-  const existingStreamId = getChannelStreamId(channelName);
-
-  if(existingStreamId !== undefined) {
-
-    const playlist = getPlaylist(existingStreamId);
-
-    if(playlist) {
-
-      updateLastAccess(existingStreamId);
-
-      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.send(playlist);
-
-      return;
-    }
-
-    // Stream exists but playlist not ready - fall through to wait for it.
-  }
-
-  // No existing stream or playlist not ready - start a new stream.
-  if(existingStreamId === undefined) {
-
-    // Block new stream requests while login mode is active. This prevents the browser from being disrupted during authentication.
-    if(isLoginModeActive()) {
-
-      res.status(503).json({
-
-        error: "Login in progress",
-        message: "Please complete authentication before starting new streams."
-      });
-
-      return;
-    }
-
-    const streamId = await startHLSStream(channelName, channel.url, req, res);
-
-    if(streamId === null) {
-
-      // Error response already sent by startHLSStream.
-      return;
-    }
-  }
-
-  // Wait for the playlist to be ready.
-  const streamId = getChannelStreamId(channelName);
-
-  if(streamId === undefined) {
-
-    res.status(500).send("Stream startup failed.");
-
-    return;
-  }
-
+  // Wait for the first playlist to be ready.
   const playlistReady = await waitForPlaylist(streamId, CONFIG.streaming.navigationTimeout);
 
   if(!playlistReady) {
@@ -146,6 +208,7 @@ export async function handleHLSPlaylist(req: Request, res: Response): Promise<vo
   }
 
   updateLastAccess(streamId);
+  registerClient(streamId, clientAddress, "hls");
 
   res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
   res.send(playlist);
@@ -194,6 +257,7 @@ export function handleHLSSegment(req: Request, res: Response): void {
 
     updateLastAccess(streamId);
 
+    res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Content-Type", "video/mp4");
     res.send(initSegment);
 
@@ -276,6 +340,14 @@ function createTabReplacementHandler(
 
     // Get the current segment index from the old segmenter before stopping it. This allows the new segmenter to continue numbering from where we left off.
     const currentSegmentIndex = stream.segmenter?.getSegmentIndex() ?? 0;
+
+    // Destroy the OLD capture stream first. This MUST happen before closing the page to ensure chrome.tabCapture releases the capture. Without this, the new
+    // getStream() call would hang with "Cannot capture a tab with an active stream" error.
+    if(stream.rawCaptureStream && !stream.rawCaptureStream.destroyed) {
+
+      LOG.debug("Destroying old capture stream for tab replacement.");
+      stream.rawCaptureStream.destroy();
+    }
 
     // Stop the current segmenter if it exists.
     if(stream.segmenter) {
@@ -370,6 +442,7 @@ function createTabReplacementHandler(
     // Update the registry entry with the new resources.
     stream.ffmpegProcess = captureResult.ffmpegProcess;
     stream.page = captureResult.page;
+    stream.rawCaptureStream = captureResult.rawCaptureStream;
     stream.segmenter = newSegmenter;
 
     LOG.info("Tab replacement complete. New capture started with segment continuity.");
@@ -425,6 +498,12 @@ async function startHLSStream(channelName: string, url: string, req: Request, re
     return createTabReplacementHandler(numericStreamId, streamId, channelName, url, profile, onCircuitBreak);
   };
 
+  // If at capacity, try to reclaim an idle stream before starting setup. This avoids rejecting new requests when idle streams can be freed.
+  if(getStreamCount() >= CONFIG.streaming.maxConcurrentStreams) {
+
+    reclaimIdleStream();
+  }
+
   try {
 
     setup = await setupStream(
@@ -448,6 +527,7 @@ async function startHLSStream(channelName: string, url: string, req: Request, re
       if(error.statusCode === 503) {
 
         res.setHeader("Retry-After", "5");
+        res.setHeader("X-HDHomeRun-Error", "All Tuners In Use");
       }
 
       res.status(error.statusCode).send(error.userMessage);
@@ -485,8 +565,10 @@ async function startHLSStream(channelName: string, url: string, req: Request, re
           lastPlaylistRequest: Date.now(),
           storeKey: channelName
         },
+        mpegTsClientCount: 0,
         page: setup.page,
         profile: setup.profile,
+        rawCaptureStream: setup.rawCaptureStream,
         segmenter: null,
         startTime: setup.startTime,
         stopMonitor: setup.stopMonitor,
@@ -582,6 +664,12 @@ export function cleanupIdleStreams(): void {
 
   for(const stream of streams) {
 
+    // Skip streams with active MPEG-TS clients. These streams are still being consumed even if no HLS playlist requests have been made recently.
+    if(stream.mpegTsClientCount > 0) {
+
+      continue;
+    }
+
     const idleTime = now - stream.info.lastPlaylistRequest;
 
     if(idleTime >= CONFIG.hls.idleTimeout) {
@@ -596,4 +684,46 @@ export function cleanupIdleStreams(): void {
 
     void emitCurrentSystemStatus();
   }
+}
+
+/**
+ * Attempts to reclaim a single idle stream to free capacity for a new request. Finds the stream that has been idle the longest and terminates it. A stream is
+ * considered idle when it has no MPEG-TS clients and its last access exceeds the idle timeout. This is called when the concurrent stream limit is reached, allowing
+ * channel-surfing users to get new streams without being rejected while abandoned streams linger.
+ * @returns True if a stream was reclaimed, false if no idle streams exist.
+ */
+function reclaimIdleStream(): boolean {
+
+  const streams = getAllStreams();
+  const now = Date.now();
+  let oldest: StreamRegistryEntry | null = null;
+
+  for(const stream of streams) {
+
+    // Skip streams with active MPEG-TS clients.
+    if(stream.mpegTsClientCount > 0) {
+
+      continue;
+    }
+
+    const idleTime = now - stream.info.lastPlaylistRequest;
+
+    // Only consider streams that have exceeded the idle timeout, and pick the one that has been idle the longest.
+    if((idleTime >= CONFIG.hls.idleTimeout) && (!oldest || (stream.info.lastPlaylistRequest < oldest.info.lastPlaylistRequest))) {
+
+      oldest = stream;
+    }
+  }
+
+  if(!oldest) {
+
+    return false;
+  }
+
+  LOG.info("Reclaiming idle stream %s (%s) to free capacity.", oldest.id, oldest.info.storeKey);
+
+  terminateStream(oldest.id, oldest.info.storeKey, "reclaimed for new stream");
+  void emitCurrentSystemStatus();
+
+  return true;
 }

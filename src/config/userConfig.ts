@@ -41,6 +41,10 @@ export interface SettingMetadata {
   // Human-readable description shown in the UI.
   description: string;
 
+  // Path to a boolean setting that must be enabled for this setting to be active. When the referenced setting is false, this field is visually greyed out in the
+  // UI. The field values are still submitted during save to avoid losing custom values when the parent toggle is temporarily disabled.
+  dependsOn?: string;
+
   // Divisor for converting stored value to display value (e.g., 1000 to convert ms to seconds). When set, the UI displays value/displayDivisor and stores
   // submittedValue*displayDivisor.
   displayDivisor?: number;
@@ -102,6 +106,39 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       path: "browser.initTimeout",
       type: "integer",
       unit: "ms"
+    }
+  ],
+
+  hdhr: [
+    {
+
+      description: "Enable HDHomeRun emulation for Plex integration. When enabled, PrismCast runs a second HTTP server that emulates an HDHomeRun tuner, " +
+        "allowing Plex to use PrismCast as a live TV source. In Plex, go to Settings > Live TV & DVR > Set Up Plex DVR and enter this server's address " +
+        "manually as IP:port (e.g., 192.168.1.100:5004).",
+      envVar: "HDHR_ENABLED",
+      label: "Enable HDHomeRun Emulation",
+      path: "hdhr.enabled",
+      type: "boolean"
+    },
+    {
+
+      dependsOn: "hdhr.enabled",
+      description: "TCP port for the HDHomeRun emulation server. This is the port you enter in Plex when manually adding the tuner (e.g., 192.168.1.100:5004).",
+      envVar: "HDHR_PORT",
+      label: "HDHomeRun Port",
+      max: 65535,
+      min: 1,
+      path: "hdhr.port",
+      type: "port"
+    },
+    {
+
+      dependsOn: "hdhr.enabled",
+      description: "Display name shown in Plex for this tuner. Helps identify PrismCast when you have multiple HDHomeRun devices.",
+      envVar: "HDHR_FRIENDLY_NAME",
+      label: "Friendly Name",
+      path: "hdhr.friendlyName",
+      type: "string"
     }
   ],
 
@@ -616,11 +653,33 @@ export interface UserStreamingConfig {
 }
 
 /**
+ * Partial channels configuration for user config file.
+ */
+export interface UserChannelsConfig {
+
+  // List of predefined channel keys that are disabled.
+  disabledPredefined?: string[];
+}
+
+/**
+ * Partial HDHomeRun configuration for user config file.
+ */
+export interface UserHdhrConfig {
+
+  deviceId?: string;
+  enabled?: boolean;
+  friendlyName?: string;
+  port?: number;
+}
+
+/**
  * User configuration with all fields optional. This is the structure of the config.json file.
  */
 export interface UserConfig {
 
   browser?: UserBrowserConfig;
+  channels?: UserChannelsConfig;
+  hdhr?: UserHdhrConfig;
   hls?: UserHLSConfig;
   logging?: UserLoggingConfig;
   playback?: UserPlaybackConfig;
@@ -770,6 +829,19 @@ export const DEFAULTS: Config = {
 
     executablePath: null,
     initTimeout: 1000
+  },
+
+  channels: {
+
+    disabledPredefined: []
+  },
+
+  hdhr: {
+
+    deviceId: "",
+    enabled: true,
+    friendlyName: "PrismCast",
+    port: 5004
   },
 
   hls: {
@@ -961,6 +1033,20 @@ export function mergeConfiguration(userConfig: UserConfig): Config {
     }
   }
 
+  /* NON-CONFIG_METADATA FIELDS — These fields are stored in the user config file but are not part of CONFIG_METADATA because they are complex types (arrays,
+   * auto-generated strings) that don't fit the standard scalar setting model. When adding a new field here, you MUST also add corresponding logic in
+   * filterDefaults() below to preserve it during save. The filterDefaults() counterpart is marked with the same "NON-CONFIG_METADATA FIELDS" heading.
+   */
+  if(Array.isArray(userConfig.channels?.disabledPredefined)) {
+
+    config.channels.disabledPredefined = [...userConfig.channels.disabledPredefined];
+  }
+
+  if((typeof userConfig.hdhr?.deviceId === "string") && (userConfig.hdhr.deviceId.length > 0)) {
+
+    config.hdhr.deviceId = userConfig.hdhr.deviceId;
+  }
+
   // Apply environment variable overrides (highest priority).
   for(const settings of Object.values(CONFIG_METADATA)) {
 
@@ -1068,6 +1154,12 @@ const SETTINGS_TAB_SECTIONS: { displayName: string; id: string; paths: string[] 
     displayName: "Capture",
     id: "capture",
     paths: [ "streaming.captureMode", "streaming.qualityPreset", "streaming.videoBitsPerSecond", "streaming.audioBitsPerSecond", "streaming.frameRate" ]
+  },
+  {
+
+    displayName: "HDHomeRun / Plex",
+    id: "hdhr",
+    paths: [ "hdhr.enabled", "hdhr.port", "hdhr.friendlyName" ]
   }
 ];
 
@@ -1303,6 +1395,23 @@ export function filterDefaults(config: UserConfig): UserConfig {
         setNestedValue(filtered, setting.path, value);
       }
     }
+  }
+
+  /* NON-CONFIG_METADATA FIELDS — Counterpart to the same section in mergeConfiguration() above. When adding a new non-CONFIG_METADATA field to
+   * mergeConfiguration(), you MUST also add corresponding preservation logic here, otherwise the field will be lost when saving configuration.
+   */
+  const configChannelsDisabled = getNestedValue(config, "channels.disabledPredefined") as string[] | undefined;
+
+  if(Array.isArray(configChannelsDisabled) && (configChannelsDisabled.length > 0)) {
+
+    setNestedValue(filtered, "channels.disabledPredefined", configChannelsDisabled);
+  }
+
+  const configDeviceId = getNestedValue(config, "hdhr.deviceId") as string | undefined;
+
+  if((typeof configDeviceId === "string") && (configDeviceId.length > 0)) {
+
+    setNestedValue(filtered, "hdhr.deviceId", configDeviceId);
   }
 
   // Remove any empty nested objects that resulted from filtering.

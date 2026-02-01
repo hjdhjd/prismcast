@@ -52,6 +52,11 @@ const NATIVE_FMP4_MIME_TYPE = "video/mp4;codecs=avc1,mp4a.40.2";
 // MediaRecorder can become unstable after 20-30 minutes.
 const WEBM_FFMPEG_MIME_TYPE = "video/webm;codecs=h264,opus";
 
+// Capture initialization queue. Chrome's tabCapture extension can only initialize one capture at a time — concurrent getStream() calls fail with "Cannot capture a
+// tab with an active stream." We serialize capture initialization using a promise chain so requests execute sequentially. Once a capture is established, it runs
+// concurrently with other captures without issue.
+let captureQueue: Promise<void> = Promise.resolve();
+
 // ─────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────
@@ -120,6 +125,9 @@ export interface StreamSetupResult {
   // The name of the resolved profile (e.g., "keyboardDynamic", "fullscreenApi", "default").
   profileName: string;
 
+  // The raw capture stream from puppeteer-stream. Must be destroyed before closing the page.
+  rawCaptureStream: Readable;
+
   // Timestamp when the stream started.
   startTime: Date;
 
@@ -185,6 +193,10 @@ export interface CreatePageWithCaptureResult {
 
   // The browser page for this capture.
   page: Page;
+
+  // The raw capture stream from puppeteer-stream (before FFmpeg processing). Must be destroyed before closing the page to ensure chrome.tabCapture releases the
+  // capture. In native mode, this is the same object as captureStream.
+  rawCaptureStream: Readable;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -335,8 +347,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
   const captureMimeType = useFFmpeg ? WEBM_FFMPEG_MIME_TYPE : NATIVE_FMP4_MIME_TYPE;
 
-  // Track the output stream that will be sent to the segmenter and FFmpeg process if used.
+  // Track the output stream that will be sent to the segmenter and FFmpeg process if used. Also track the raw capture stream separately - it must be destroyed
+  // before closing the page to ensure chrome.tabCapture releases the capture.
   let outputStream: Readable;
+  let rawCaptureStream: Nullable<Readable> = null;
   let ffmpegProcess: Nullable<FFmpegProcess> = null;
 
   // Initialize media stream capture.
@@ -363,7 +377,44 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       }
     } as unknown as Parameters<typeof getStream>[1];
 
+    // Serialize capture initialization. Wait for any previous capture to finish before calling getStream(), because Chrome's tabCapture extension rejects
+    // concurrent initialization attempts. The lock is released when getStream() resolves or rejects (not when our timeout fires), because Chrome's extension state
+    // is what matters. If our timeout fires while getStream() is still in-flight, the catch block closes the page, which causes the pending getStream() to reject,
+    // which releases the lock and allows the next queued capture to proceed.
+    let releaseCaptureQueue: () => void = () => {};
+    const previousCapture = captureQueue;
+
+    captureQueue = new Promise<void>((resolve) => {
+
+      releaseCaptureQueue = resolve;
+    });
+
+    // Guard against a permanently hung predecessor. If the previous capture doesn't complete within the navigation timeout, release our queue position and let the
+    // caller's error handling deal with it. This prevents a single stuck getStream() from blocking all future captures indefinitely.
+    try {
+
+      await Promise.race([
+        previousCapture,
+        new Promise<never>((_, reject) => {
+
+          setTimeout(() => {
+
+            reject(new Error("Capture queue wait timed out."));
+          }, CONFIG.streaming.navigationTimeout);
+        })
+      ]);
+    } catch(error) {
+
+      // Release our queue position so subsequent captures aren't blocked by our failure.
+      releaseCaptureQueue();
+
+      throw error;
+    }
+
     const streamPromise = getStream(page, streamOptions);
+
+    // Release the queue when getStream() completes, regardless of success or failure. This is independent of our application timeout below.
+    void streamPromise.then(() => releaseCaptureQueue(), () => releaseCaptureQueue());
 
     const timeoutPromise = new Promise<never>((_, reject) => {
 
@@ -374,6 +425,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     });
 
     const stream = await Promise.race([ streamPromise, timeoutPromise ]);
+
+    // Store the raw capture stream. This must be destroyed before closing the page.
+    rawCaptureStream = stream as unknown as Readable;
 
     // For FFmpeg mode, spawn FFmpeg to transcode the WebM stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC.
     if(useFFmpeg) {
@@ -436,12 +490,17 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       outputStream = ffmpeg.stdout;
     } else {
 
-      // Native fMP4 mode: Use the raw capture stream directly.
-      outputStream = stream as unknown as Readable;
+      // Native fMP4 mode: Use the raw capture stream directly. In this mode, rawCaptureStream and outputStream are the same object.
+      outputStream = rawCaptureStream;
     }
   } catch(error) {
 
-    // Clean up on capture initialization failure.
+    // Clean up on capture initialization failure. Destroy the raw capture stream first to ensure chrome.tabCapture releases the capture.
+    if(rawCaptureStream && !rawCaptureStream.destroyed) {
+
+      rawCaptureStream.destroy();
+    }
+
     unregisterManagedPage(page);
 
     if(!page.isClosed()) {
@@ -480,7 +539,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     }
   } catch(error) {
 
-    // Clean up on navigation failure.
+    // Clean up on navigation failure. Destroy the raw capture stream first to ensure chrome.tabCapture releases the capture.
+    if(!rawCaptureStream.destroyed) {
+
+      rawCaptureStream.destroy();
+    }
+
     if(ffmpegProcess) {
 
       ffmpegProcess.kill();
@@ -504,7 +568,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     captureStream: outputStream,
     context,
     ffmpegProcess,
-    page
+    page,
+    rawCaptureStream
   };
 }
 
@@ -625,7 +690,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       throw new StreamSetupError("Stream error.", 500, "Failed to start stream.");
     }
 
-    const { captureStream, context, ffmpegProcess, page } = captureResult;
+    const { captureStream, context, ffmpegProcess, page, rawCaptureStream } = captureResult;
 
     // Monitor stream info for status updates.
     const monitorStreamInfo: MonitorStreamInfo = {
@@ -652,6 +717,13 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
       // Stop the health monitor first.
       stopMonitor();
+
+      // Destroy the raw capture stream BEFORE closing the page. This triggers puppeteer-stream's close handler while the browser is still connected, ensuring
+      // STOP_RECORDING is called and chrome.tabCapture releases the capture. Without this, subsequent getStream() calls may hang with "active stream" errors.
+      if(!rawCaptureStream.destroyed) {
+
+        rawCaptureStream.destroy();
+      }
 
       // Kill the FFmpeg process if using WebM+FFmpeg mode.
       if(ffmpegProcess) {
@@ -686,6 +758,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       page,
       profile,
       profileName,
+      rawCaptureStream,
       startTime,
       stopMonitor,
       streamId,

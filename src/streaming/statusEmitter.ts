@@ -2,6 +2,7 @@
  *
  * statusEmitter.ts: Event emitter for real-time stream and system status via SSE.
  */
+import type { ClientTypeCount } from "./clients.js";
 import { EventEmitter } from "events";
 import type { Nullable } from "../types/index.js";
 
@@ -24,6 +25,8 @@ export interface StreamStatus {
 
   bufferingDuration: Nullable<number>;
   channel: Nullable<string>;
+  clientCount: number;
+  clients: ClientTypeCount[];
   currentTime: number;
   duration: number;
   escalationLevel: number;
@@ -108,6 +111,8 @@ export function createInitialStreamStatus(options: {
 
     bufferingDuration: null,
     channel: options.channelName,
+    clientCount: 0,
+    clients: [],
     currentTime: 0,
     duration: 0,
     escalationLevel: 0,

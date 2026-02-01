@@ -266,6 +266,119 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 }
 
 /**
+ * Spawns an FFmpeg process configured to remux fMP4 input to MPEG-TS output with codec copy. The process reads a continuous fMP4 stream (init segment followed by
+ * media segments) from stdin and writes MPEG-TS to stdout. No transcoding occurs — both video (H264) and audio (AAC) are copied unchanged — so CPU usage is minimal.
+ *
+ * FFmpeg arguments:
+ * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
+ * - `-f mp4 -i pipe:0`: Read fragmented MP4 from stdin
+ * - `-c copy`: Copy both video and audio codecs without transcoding
+ * - `-f mpegts`: Output MPEG-TS container format
+ * - `pipe:1`: Write output to stdout
+ * @param onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
+ * @param streamId - Optional stream identifier for logging.
+ * @returns FFmpeg process wrapper with stdin, stdout, and kill function.
+ */
+export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: string): FFmpegProcess {
+
+  const ffmpegBin = cachedFFmpegPath ?? "ffmpeg";
+
+  const ffmpegArgs = [
+    "-hide_banner",
+    "-loglevel", "warning",
+    "-f", "mp4",
+    "-i", "pipe:0",
+    "-c", "copy",
+    "-f", "mpegts",
+    "pipe:1"
+  ];
+
+  const ffmpeg = spawn(ffmpegBin, ffmpegArgs, {
+
+    stdio: [ "pipe", "pipe", "pipe" ]
+  });
+
+  const logPrefix = streamId ? "[" + streamId + "] " : "";
+
+  // Track whether graceful shutdown has been initiated. When true, we suppress error callbacks because any exit is expected.
+  let shuttingDown = false;
+
+  // Log FFmpeg stderr output (warnings and errors).
+  ffmpeg.stderr.on("data", (data: Buffer) => {
+
+    if(shuttingDown) {
+
+      return;
+    }
+
+    const message = data.toString().trim();
+    const noisePatterns = [ "Press [q] to stop", "frame=", "size=", "time=", "bitrate=", "speed=" ];
+
+    if(noisePatterns.some((pattern) => message.includes(pattern))) {
+
+      return;
+    }
+
+    if(message.length > 0) {
+
+      LOG.debug("%sMPEG-TS remuxer: %s", logPrefix, message);
+    }
+  });
+
+  // Handle FFmpeg process exit.
+  ffmpeg.on("exit", (code, signal) => {
+
+    if(shuttingDown) {
+
+      return;
+    }
+
+    if(signal === "SIGTERM") {
+
+      return;
+    }
+
+    if((code !== null) && (code !== 0)) {
+
+      onError(new Error("MPEG-TS remuxer exited with code " + String(code) + "."));
+    } else if(signal) {
+
+      onError(new Error("MPEG-TS remuxer killed by signal " + signal + "."));
+    }
+  });
+
+  // Handle spawn errors (e.g., FFmpeg not found).
+  ffmpeg.on("error", (error) => {
+
+    if(shuttingDown) {
+
+      return;
+    }
+
+    onError(error);
+  });
+
+  // Kill function for graceful shutdown.
+  const kill = (): void => {
+
+    shuttingDown = true;
+
+    if(!ffmpeg.killed) {
+
+      ffmpeg.kill("SIGTERM");
+    }
+  };
+
+  return {
+
+    kill,
+    process: ffmpeg,
+    stdin: ffmpeg.stdin as Writable,
+    stdout: ffmpeg.stdout as Readable
+  };
+}
+
+/**
  * Checks if FFmpeg is available on the system. This resolves the FFmpeg path and caches it for use by spawnFFmpeg().
  * @returns Promise resolving to true if FFmpeg is available, false otherwise.
  */

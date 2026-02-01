@@ -257,6 +257,32 @@ export function validateConfiguration(): void {
     errors.push(hlsIdleTimeoutError);
   }
 
+  // Validate HDHomeRun configuration when enabled.
+  if(CONFIG.hdhr.enabled) {
+
+    // HDHR requires FFmpeg for MPEG-TS remuxing. In native mode, FFmpeg is not guaranteed to be available. Disable HDHR and warn the operator.
+    if(CONFIG.streaming.captureMode === "native") {
+
+      CONFIG.hdhr.enabled = false;
+
+      LOG.warn("HDHomeRun emulation requires FFmpeg mode. Disabling HDHR because capture mode is set to native.");
+    } else {
+
+      const hdhrPortError = validatePositiveInt("HDHR_PORT", CONFIG.hdhr.port, 1, 65535);
+
+      if(hdhrPortError) {
+
+        errors.push(hdhrPortError);
+      }
+
+      // Warn if HDHR port conflicts with the main server port (same host).
+      if((CONFIG.hdhr.port === CONFIG.server.port) && ((CONFIG.server.host === "0.0.0.0") || (CONFIG.server.host === "::"))) {
+
+        errors.push("HDHR_PORT (" + String(CONFIG.hdhr.port) + ") conflicts with the main server port.");
+      }
+    }
+  }
+
   // If any validation errors occurred, throw with complete list for operator to fix all issues at once.
   if(errors.length > 0) {
 
@@ -286,6 +312,7 @@ export function displayConfiguration(): void {
     CONFIG.recovery.circuitBreakerThreshold, Math.round(CONFIG.recovery.circuitBreakerWindow / 60000));
   LOG.info("  Chrome executable: %s", CONFIG.browser.executablePath ?? "autodetect");
   LOG.info("  HLS segment duration: %ss, max segments: %s", CONFIG.hls.segmentDuration, CONFIG.hls.maxSegments);
+  LOG.info("  HDHomeRun emulation: %s", CONFIG.hdhr.enabled ? "enabled (port " + String(CONFIG.hdhr.port) + ")" : "disabled");
 
   // Log a prominent warning if preset was degraded due to display limitations.
   if(presetResult.degraded && presetResult.maxViewport) {

@@ -15,14 +15,18 @@ import { getAllStreams } from "./registry.js";
  * 1. Active recordings (/dvr/jobs) - If Channels DVR is recording a channel, we get the show name from the recording job
  * 2. Program guide (/devices/{id}/guide/now) - For live viewing without recording, we fall back to the current program from the guide
  *
- * The polling mechanism:
- * 1. Every 30 seconds, query each unique Channels DVR server that has active streams
- * 2. Fetch active jobs from /dvr/jobs and match to our streams
- * 3. For streams without a recording match, fetch guide data and use the currently airing program
- * 4. Cache the show name for each stream, which is then included in SSE status updates
+ * The polling mechanism uses a two-phase approach — discovery and lookup:
+ *
+ * 1. DISCOVERY: Every 30 seconds, try each unique client address as a potential Channels DVR server by calling getDeviceMappings(). If a host has matching M3U
+ *    devices, cache it as the last known DVR host. Device mappings are cached for 5 minutes, so non-DVR hosts (e.g., Plex IPs) only incur a network timeout on the
+ *    first attempt and every 5 minutes thereafter.
+ *
+ * 2. LOOKUP: Use the cached DVR host for show name and logo lookups across ALL active streams, regardless of which client initiated them. This enables Plex-initiated
+ *    streams to display show names and logos from the Channels DVR guide, as long as any Channels DVR connection has been seen at some point.
  *
  * Caching strategy:
- * - Device channel mappings: Cached for 5 minutes (rarely change)
+ * - Last known DVR host: Persists across poll cycles, resets on shutdown
+ * - Device channel mappings: Cached for 5 minutes per host (rarely change)
  * - Recording jobs and guide data: Fetched fresh each poll cycle (30 seconds)
  *
  * Failure handling is graceful: if the API is unreachable or returns no match, the show name simply stays empty. This never affects streaming functionality.
@@ -160,6 +164,10 @@ const deviceMappingsByHost = new Map<string, DeviceMappingsCache>();
 // Cache of channel logos by channel key (e.g., "cnn" → "http://...").
 const channelLogoCache = new Map<string, string>();
 
+// Last known Channels DVR host that had matching M3U devices. Used to look up show names and logos for all streams, including those initiated by non-DVR clients
+// (e.g., Plex). Persists across poll cycles but resets on shutdown. Updated whenever getDeviceMappings() finds matching devices on a host.
+let lastKnownDvrHost: Nullable<string> = null;
+
 // Pending debounced trigger for immediate show name updates.
 let pendingTrigger: Nullable<ReturnType<typeof setTimeout>> = null;
 
@@ -204,10 +212,11 @@ export function stopShowInfoPolling(): void {
     pendingTrigger = null;
   }
 
-  // Clear caches on shutdown.
+  // Clear caches and cached DVR host on shutdown.
   showNameCache.clear();
   deviceMappingsByHost.clear();
   channelLogoCache.clear();
+  lastKnownDvrHost = null;
 }
 
 /**
@@ -265,7 +274,8 @@ export function getChannelLogo(channelKey: string): string | undefined {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Updates show names for all active streams by querying their respective Channels DVR servers.
+ * Updates show names for all active streams. Discovery phase tries each unique client address as a potential Channels DVR server. Lookup phase uses the cached DVR
+ * host for all streams, enabling non-DVR clients (e.g., Plex) to display show names and logos.
  */
 async function updateShowNames(): Promise<void> {
 
@@ -276,37 +286,50 @@ async function updateShowNames(): Promise<void> {
     return;
   }
 
-  // Group streams by their client address (DVR server) and build channel key lookup.
-  const streamsByHost = new Map<string, Array<{ channelKey: string; id: number }>>();
+  // Collect all stream entries for lookup and unique client addresses for DVR host discovery.
+  const allStreamEntries: Array<{ channelKey: string; id: number }> = [];
+  const discoveryHosts = new Set<string>();
 
   for(const stream of streams) {
 
-    const clientAddress = stream.clientAddress;
+    allStreamEntries.push({ channelKey: stream.info.storeKey, id: stream.id });
 
-    if(!clientAddress) {
+    if(stream.clientAddress) {
 
-      continue;
-    }
+      // Normalize IPv6-mapped IPv4 addresses (::ffff:192.168.1.1 → 192.168.1.1).
+      const host = stream.clientAddress.startsWith("::ffff:") ? stream.clientAddress.slice(7) : stream.clientAddress;
 
-    // Normalize IPv6-mapped IPv4 addresses (::ffff:192.168.1.1 → 192.168.1.1).
-    const host = clientAddress.startsWith("::ffff:") ? clientAddress.slice(7) : clientAddress;
-
-    const existing = streamsByHost.get(host);
-    const streamEntry = { channelKey: stream.info.storeKey, id: stream.id };
-
-    if(existing) {
-
-      existing.push(streamEntry);
-    } else {
-
-      streamsByHost.set(host, [streamEntry]);
+      discoveryHosts.add(host);
     }
   }
 
-  // Process each DVR host in parallel.
-  const hosts = Array.from(streamsByHost.keys());
+  // Discovery phase: try each unique client address to find or confirm a DVR host. Device mappings are cached with a 5-minute TTL, so non-DVR hosts only incur a
+  // network timeout on the first attempt and every 5 minutes thereafter.
+  await Promise.all(
+    Array.from(discoveryHosts).map(async (host) => {
 
-  await Promise.all(hosts.map(async (host) => updateShowNamesForHost(host, streamsByHost.get(host) ?? [])));
+      const mappings = await getDeviceMappings(host);
+
+      if(mappings.size > 0) {
+
+        lastKnownDvrHost = host;
+      }
+    })
+  );
+
+  // Lookup phase: use the cached DVR host for show name and logo lookups across all streams.
+  if(lastKnownDvrHost) {
+
+    await updateShowNamesForHost(lastKnownDvrHost, allStreamEntries);
+
+    return;
+  }
+
+  // No DVR host available — clear show names for all streams.
+  for(const stream of allStreamEntries) {
+
+    showNameCache.delete(stream.id);
+  }
 }
 
 /**
