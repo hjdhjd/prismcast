@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.12 (2026-02-01)
+  * New feature: HDHomeRun emulation for Plex integration. PrismCast can now appear as a virtual HDHomeRun tuner, allowing Plex to discover and record channels directly.
+  * New feature: predefined channel enable/disable controls with bulk toggle.
+  * Improvement: streamlined channels tab with consolidated toolbar, import dropdown, and channel selector suggestions for known multi-channel sites.
+  * Improvement: additions and refinements to predefined channels and site audodetection presets.
+  * Improvement: additions and refinements to the PrismCast API.
+  * Improvement: refinements to the active streams panel.
+  * Improvement: smoother stream recovery with HLS discontinuity markers.
+  * Housekeeping.
+
 ## 1.0.11 (2026-01-27)
   * Housekeeping.
 
