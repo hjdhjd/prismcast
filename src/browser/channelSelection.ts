@@ -173,6 +173,25 @@ async function thumbnailRowStrategy(page: Page, channelSlug: string): Promise<Ch
 
     await scrollAndClick(page, clickTarget);
 
+    // Poll for the video readyState to drop below 3, indicating the channel switch has started loading new content. This replaces a fixed post-click delay with
+    // early exit. If no video exists yet or readyState never drops (channel already selected), the timeout expires harmlessly and waitForVideoReady() handles the
+    // rest.
+    try {
+
+      await page.waitForFunction(
+        (): boolean => {
+
+          const v = document.querySelector("video");
+
+          return !v || (v.readyState < 3);
+        },
+        { timeout: CONFIG.playback.channelSwitchDelay }
+      );
+    } catch {
+
+      // Timeout — readyState never dropped. Proceed normally.
+    }
+
     return { success: true };
   }
 
@@ -325,10 +344,10 @@ async function tileClickStrategy(page: Page, channelSlug: string): Promise<Chann
  * tuneToChannel() after page navigation.
  *
  * The function handles:
+ * - Polling for channel slug image readiness before strategy dispatch
  * - Strategy dispatch based on profile.channelSelection.strategy
  * - No-op for single-channel sites (strategy "none" or no channelSelector)
  * - Logging of selection attempts and results
- * - Timing delays before and after selection
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile containing channelSelection config and channelSelector slug.
  * @returns Result object with success status and optional failure reason.
@@ -343,8 +362,22 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     return { success: true };
   }
 
-  // Wait for the channel guide UI to fully render before attempting to interact with it.
-  await delay(CONFIG.playback.channelSelectorDelay);
+  // Poll for the channel slug image to appear in the DOM. This replaces a fixed delay with an early-exit poll — if the guide renders quickly, we proceed
+  // immediately instead of waiting the full configured duration. The configured delay serves as the timeout ceiling.
+  try {
+
+    await page.waitForFunction(
+      (slug: string): boolean => {
+
+        return Array.from(document.querySelectorAll("img")).some((img) => img.src && img.src.includes(slug));
+      },
+      { timeout: CONFIG.playback.channelSelectorDelay },
+      channelSelector
+    );
+  } catch {
+
+    // Timeout — the image hasn't appeared yet. Proceed anyway and let the strategy evaluate and report not-found naturally.
+  }
 
   // Dispatch to the appropriate strategy.
   let result: ChannelSelectorResult;
@@ -374,11 +407,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     }
   }
 
-  if(result.success) {
-
-    // Wait for the channel switch to complete and the new stream to stabilize.
-    await delay(CONFIG.playback.channelSwitchDelay);
-  } else {
+  if(!result.success) {
 
     LOG.warn("Failed to select %s from channel guide: %s", channelSelector, result.reason ?? "Unknown reason.");
   }
