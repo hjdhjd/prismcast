@@ -76,6 +76,9 @@ interface SegmenterState {
   // Segment indices that should have a discontinuity marker before them in the playlist.
   discontinuityIndices: Set<number>;
 
+  // Whether the first segment has been emitted. When false, the moof handler cuts at the first opportunity (one moof+mdat pair) to minimize time-to-first-frame.
+  firstSegmentEmitted: boolean;
+
   // Accumulated fragment data for the current segment.
   fragmentBuffer: Buffer[];
 
@@ -87,6 +90,10 @@ interface SegmenterState {
 
   // Whether the next segment should have a discontinuity marker (consumed when first segment is output).
   pendingDiscontinuity: boolean;
+
+  // Actual wall-clock durations for each segment in seconds. Used by generatePlaylist() for accurate #EXTINF values. Pruned to keep only entries within the playlist
+  // sliding window.
+  segmentDurations: Map<number, number>;
 
   // Current media segment index.
   segmentIndex: number;
@@ -116,10 +123,12 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
   const state: SegmenterState = {
 
     discontinuityIndices: new Set(),
+    firstSegmentEmitted: false,
     fragmentBuffer: [],
     hasInit: false,
     initBoxes: [],
     pendingDiscontinuity: pendingDiscontinuity ?? false,
+    segmentDurations: new Map(),
     segmentIndex: startingSegmentIndex ?? 0,
     segmentStartTime: Date.now(),
     stopped: false
@@ -152,7 +161,11 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         lines.push("#EXT-X-DISCONTINUITY");
       }
 
-      lines.push([ "#EXTINF:", String(CONFIG.hls.segmentDuration.toFixed(3)), "," ].join(""));
+      // Use the actual recorded duration for this segment. Fall back to the configured target duration for segments that predate duration tracking (e.g. after
+      // a hot restart with continuation).
+      const duration = state.segmentDurations.get(i) ?? CONFIG.hls.segmentDuration;
+
+      lines.push([ "#EXTINF:", String(duration.toFixed(3)), "," ].join(""));
       lines.push([ "segment", String(i), ".m4s" ].join(""));
     }
 
@@ -178,6 +191,11 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       state.pendingDiscontinuity = false;
     }
 
+    // Record the actual wall-clock duration of this segment. We floor at 0.1 seconds to prevent zero-duration entries that would violate HLS expectations.
+    const actualDuration = Math.max(0.1, (Date.now() - state.segmentStartTime) / 1000);
+
+    state.segmentDurations.set(state.segmentIndex, actualDuration);
+
     // Combine all fragment data into a single segment.
     const segmentData = Buffer.concat(state.fragmentBuffer);
     const segmentName = [ "segment", String(state.segmentIndex), ".m4s" ].join("");
@@ -185,8 +203,20 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     // Store the segment.
     storeSegment(streamId, segmentName, segmentData);
 
-    // Increment segment index.
+    // Increment segment index and mark the first segment as emitted.
     state.segmentIndex++;
+    state.firstSegmentEmitted = true;
+
+    // Prune duration entries outside the playlist sliding window to prevent unbounded growth.
+    const pruneThreshold = Math.max(0, state.segmentIndex - CONFIG.hls.maxSegments);
+
+    for(const idx of state.segmentDurations.keys()) {
+
+      if(idx < pruneThreshold) {
+
+        state.segmentDurations.delete(idx);
+      }
+    }
 
     // Clear the fragment buffer.
     state.fragmentBuffer = [];
@@ -231,13 +261,24 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     // Handle media fragment boxes (moof, mdat).
     if(box.type === "moof") {
 
-      // Start of a new fragment. If we have accumulated enough data, output a segment first.
-      const elapsedMs = Date.now() - state.segmentStartTime;
-      const targetMs = CONFIG.hls.segmentDuration * 1000;
+      // Start of a new fragment. Check whether we should cut a segment before adding this moof to the buffer.
+      if(state.fragmentBuffer.length > 0) {
 
-      if((state.fragmentBuffer.length > 0) && (elapsedMs >= targetMs)) {
+        if(!state.firstSegmentEmitted) {
 
-        outputSegment();
+          // Fast path: emit the first segment as soon as we have one complete moof+mdat pair. This minimizes time-to-first-frame by making the first segment
+          // available after just one fragment rather than waiting for the full target duration.
+          outputSegment();
+        } else {
+
+          const elapsedMs = Date.now() - state.segmentStartTime;
+          const targetMs = CONFIG.hls.segmentDuration * 1000;
+
+          if(elapsedMs >= targetMs) {
+
+            outputSegment();
+          }
+        }
       }
 
       // Add moof to the fragment buffer.
