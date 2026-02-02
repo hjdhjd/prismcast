@@ -6,4 +6,6 @@
 !dist/**
 !LICENSE.md
 !package.json
+!prismcast.png
+!prismcast.svg
 !README.md

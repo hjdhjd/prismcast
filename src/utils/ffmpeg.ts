@@ -95,6 +95,19 @@ export async function resolveFFmpegPath(): Promise<string | undefined> {
     }
   }
 
+  // On Windows, check Channels DVR bundled FFmpeg. Users of PrismCast with Channels DVR likely have this available.
+  if(process.platform === "win32") {
+
+    const channelsDvrPath = join("C:", "ProgramData", "channelsdvr", "latest", "ffmpeg.exe");
+
+    if(existsSync(channelsDvrPath) && (await checkFFmpegAtPath(channelsDvrPath))) {
+
+      cachedFFmpegPath = channelsDvrPath;
+
+      return cachedFFmpegPath;
+    }
+  }
+
   // Check ffmpeg-for-homebridge bundled FFmpeg. This provides a reliable fallback without requiring manual FFmpeg installation.
   if(ffmpegPath && existsSync(ffmpegPath) && (await checkFFmpegAtPath(ffmpegPath))) {
 

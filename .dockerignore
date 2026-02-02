@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output (we install from npm)
+dist/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+LICENSE
+
+# Development files
+tsconfig.json
+eslint.config.js
+.eslintrc*
+.prettierrc*
+
+# Test files
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/
