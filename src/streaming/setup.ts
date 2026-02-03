@@ -66,7 +66,8 @@ let captureQueue: Promise<void> = Promise.resolve();
 export type TabReplacementHandlerFactory = (
   numericStreamId: number,
   streamId: string,
-  profile: ResolvedSiteProfile
+  profile: ResolvedSiteProfile,
+  metadataComment: string | undefined
 ) => () => Promise<TabReplacementResult | null>;
 
 /**
@@ -166,6 +167,9 @@ export class StreamSetupError extends Error {
  */
 export interface CreatePageWithCaptureOptions {
 
+  // Comment to embed in FFmpeg output metadata (channel name or domain).
+  comment?: string;
+
   // Callback invoked on FFmpeg process errors (only used in ffmpeg capture mode).
   onFFmpegError?: (error: Error) => void;
 
@@ -223,6 +227,22 @@ function generateRequestId(): string {
 }
 
 /**
+ * Extracts the domain from a URL, removing the www. prefix for cleaner display. Returns undefined if the URL cannot be parsed.
+ * @param url - The URL to extract the domain from.
+ * @returns The domain without www. prefix, or undefined if parsing fails.
+ */
+function extractDomain(url: string): string | undefined {
+
+  try {
+
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+
+    return undefined;
+  }
+}
+
+/**
  * Generates a concise stream identifier for logging purposes. The identifier combines the channel name or hostname with a unique request ID, making it easy to
  * trace related log messages. We prefer the channel name when available because it's more meaningful than a hostname.
  * @param channelName - The channel name if streaming a named channel.
@@ -239,24 +259,20 @@ export function generateStreamId(channelName: string | undefined, url: string | 
     return [ channelName, "-", requestId ].join("");
   }
 
-  // For direct URL requests, extract the hostname for the prefix. We remove the www. prefix since it adds no value.
+  // For direct URL requests, extract the hostname for the prefix.
   if(url) {
 
-    try {
+    const domain = extractDomain(url);
 
-      const parsed = new URL(url);
+    if(domain) {
 
-      // Remove the www. prefix for cleaner display.
-      const hostname = parsed.hostname.replace(/^www\./, "");
-
-      return [ hostname, "-", requestId ].join("");
-    } catch(_error) {
-
-      // If URL parsing fails, use a truncated version of the URL. This handles malformed URLs gracefully.
-      const truncated = url.length > 20 ? [ url.substring(0, 20), "..." ].join("") : url;
-
-      return [ truncated, "-", requestId ].join("");
+      return [ domain, "-", requestId ].join("");
     }
+
+    // If URL parsing fails, use a truncated version of the URL. This handles malformed URLs gracefully.
+    const truncated = url.length > 20 ? [ url.substring(0, 20), "..." ].join("") : url;
+
+    return [ truncated, "-", requestId ].join("");
   }
 
   // Fallback when neither channel name nor URL is available. This shouldn't happen in normal operation but provides a valid ID for edge cases.
@@ -329,7 +345,7 @@ export function validateStreamUrl(url: string | undefined): UrlValidation {
  */
 export async function createPageWithCapture(options: CreatePageWithCaptureOptions): Promise<CreatePageWithCaptureResult> {
 
-  const { onFFmpegError, profile, streamId, url } = options;
+  const { comment, onFFmpegError, profile, streamId, url } = options;
 
   // Create browser page.
   const browser = await getCurrentBrowser();
@@ -436,7 +452,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
           onFFmpegError(error);
         }
-      }, streamId);
+      }, streamId, comment);
 
       ffmpegProcess = ffmpeg;
 
@@ -684,8 +700,11 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       profile = { ...profile, channelSelector };
     }
 
+    // Compute the metadata comment for FFmpeg. Prefer the friendly channel name, fall back to the channel key, or extract the domain from the URL.
+    const metadataComment = channel?.name ?? channelName ?? extractDomain(url);
+
     // Create the tab replacement handler if a factory was provided. This is done after profile resolution so the handler has access to the final profile.
-    const onTabReplacement = onTabReplacementFactory ? onTabReplacementFactory(numericStreamId, streamId, profile) : undefined;
+    const onTabReplacement = onTabReplacementFactory ? onTabReplacementFactory(numericStreamId, streamId, profile, metadataComment) : undefined;
 
     // Validate URL.
     const validation = validateStreamUrl(url);
@@ -720,6 +739,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
       captureResult = await createPageWithCapture({
 
+        comment: metadataComment,
         onFFmpegError: onCircuitBreak,
         profile,
         streamId,

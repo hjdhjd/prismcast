@@ -445,6 +445,7 @@ function cleanupOrphanedSetup(segmenter: FMP4SegmenterResult): void {
  * @param channelName - The channel name (or synthetic ad-hoc key like "play-a1b2c3d4") used as the store key for error callbacks and termination.
  * @param url - The URL to navigate to.
  * @param profile - The site profile for video handling.
+ * @param metadataComment - Optional comment to embed in FFmpeg output metadata.
  * @param onCircuitBreak - Callback for circuit breaker trips during replacement.
  * @returns A handler function that performs tab replacement, or null if the stream no longer exists.
  */
@@ -454,6 +455,7 @@ function createTabReplacementHandler(
   channelName: string,
   url: string,
   profile: ResolvedSiteProfile,
+  metadataComment: string | undefined,
   onCircuitBreak: () => void
 ): () => Promise<TabReplacementResult | null> {
 
@@ -516,6 +518,7 @@ function createTabReplacementHandler(
 
       captureResult = await createPageWithCapture({
 
+        comment: metadataComment,
         onFFmpegError: (error) => {
 
           LOG.error("FFmpeg error during tab replacement recovery: %s.", formatError(error));
@@ -649,9 +652,9 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
   };
 
   // Factory to create the tab replacement handler. Called by setupStream after stream IDs are generated, allowing the handler to be created with access to those IDs.
-  const tabReplacementFactory: TabReplacementHandlerFactory = (numericStreamId, streamId, profile) => {
+  const tabReplacementFactory: TabReplacementHandlerFactory = (numericStreamId, streamId, profile, metadataComment) => {
 
-    return createTabReplacementHandler(numericStreamId, streamId, channelName, url, profile, onCircuitBreak);
+    return createTabReplacementHandler(numericStreamId, streamId, channelName, url, profile, metadataComment, onCircuitBreak);
   };
 
   // If at capacity, try to reclaim an idle stream before starting setup. This avoids rejecting new requests when idle streams can be freed.
