@@ -7,9 +7,7 @@ import { SERVICE_NAME, getPlatform, getServiceFilePath } from "../utils/platform
 import { collectServiceEnvironment, getServiceGenerator } from "./generators.js";
 import type { Nullable } from "../types/index.js";
 
-// ─────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────
+// Types.
 
 /**
  * Response from the /streams endpoint.

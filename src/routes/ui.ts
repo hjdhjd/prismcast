@@ -42,7 +42,7 @@ export function generateBaseStyles(): string {
   return [
 
     // Base styles.
-    "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1000px; margin: 40px auto; padding: 0 20px; ",
+    "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 2000px; margin: 40px auto; padding: 0 20px; ",
     "line-height: 1.6; color: var(--text-primary); background: var(--surface-page); }",
     "h1 { color: var(--text-heading); border-bottom: 2px solid var(--interactive-primary); padding-bottom: 10px; }",
     "h2 { color: var(--text-heading-secondary); margin-top: 0; margin-bottom: 20px; }",

@@ -502,6 +502,11 @@ function generateApiReferenceContent(): string {
     "<td>fMP4 media segment containing audio/video data.</td>",
     "</tr>",
     "<tr>",
+    "<td class=\"endpoint\"><code>GET /play</code></td>",
+    "<td>Stream any URL without creating a channel definition. Pass the URL as <code>?url=&lt;url&gt;</code>. " +
+    "Advanced: <code>&amp;profile=</code> overrides auto-detection, <code>&amp;selector=</code> picks a channel on multi-channel sites.</td>",
+    "</tr>",
+    "<tr>",
     "<td class=\"endpoint\"><code>GET /stream/:name</code></td>",
     "<td>MPEG-TS stream for HDHomeRun-compatible clients (e.g., Plex). Remuxes fMP4 to MPEG-TS with codec copy.</td>",
     "</tr>",
@@ -2187,18 +2192,22 @@ function generateLandingPageStyles(): string {
     ".log-muted { color: var(--dark-text-muted); }",
     ".log-connecting { color: var(--dark-text-muted); }",
 
-    // Channel table styles.
-    ".channel-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; table-layout: fixed; }",
-    ".channel-table th, .channel-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border-default); overflow: hidden; ",
-    "text-overflow: ellipsis; white-space: nowrap; }",
+    // Channel table styles. The wrapper enables horizontal scrolling on small screens.
+    ".channel-table-wrapper { overflow-x: auto; margin-bottom: 20px; }",
+    ".channel-table { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 700px; }",
+    ".channel-table th, .channel-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border-default); ",
+    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
     ".channel-table th { background: var(--table-header-bg); font-weight: 600; font-size: 13px; }",
     ".channel-table tr:hover { background: var(--table-row-hover); }",
-    ".channel-table .col-key { width: 12%; }",
-    ".channel-table .col-name { width: 18%; }",
-    ".channel-table .col-url { width: 32%; }",
-    ".channel-table .col-profile { width: 14%; }",
-    ".channel-table .col-actions { width: 24%; overflow: visible; }",
-    ".channel-url { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-secondary); }",
+    ".channel-table .col-key { width: 170px; }",
+    ".channel-table .col-name { width: 220px; }",
+    ".channel-table .col-profile { width: 140px; }",
+    ".channel-table .col-actions { width: 170px; white-space: nowrap; overflow: visible; }",
+    ".channel-url { font-size: 12px; color: var(--text-secondary); }",
+
+    // Responsive: hide Profile on tablets, hide Key and Profile on phones.
+    "@media (max-width: 1024px) { .channel-table .col-profile, .channel-table td:nth-child(4), .channel-table th:nth-child(4) { display: none; } }",
+    "@media (max-width: 768px) { .channel-table .col-key, .channel-table td:nth-child(1), .channel-table th:nth-child(1) { display: none; } }",
 
     // User channel row tinting to distinguish custom/override channels from predefined.
     ".channel-table tr.user-channel { background: var(--user-channel-tint); }",
