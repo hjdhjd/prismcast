@@ -870,7 +870,7 @@ export const DEFAULTS: Config = {
 
 
     bufferingGracePeriod: 10000,
-    channelSelectorDelay: 3000,
+    channelSelectorDelay: 5000,
     channelSwitchDelay: 4000,
     clickToPlayDelay: 1000,
     iframeInitDelay: 1500,

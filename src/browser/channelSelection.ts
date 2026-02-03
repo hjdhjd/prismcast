@@ -226,52 +226,59 @@ async function tileClickStrategy(page: Page, channelSlug: string): Promise<Chann
 
       if(img.src && img.src.includes(slug)) {
 
-        // Walk up the DOM to find the nearest clickable ancestor wrapping the tile. Check for semantic clickable elements (<a>, <button>, role="button") and
-        // elements with explicit click handlers first. Track cursor:pointer elements as a fallback for sites using custom click handlers without semantic markup.
-        let ancestor: HTMLElement | null = img.parentElement;
-        let pointerFallback: HTMLElement | null = null;
+        const imgRect = img.getBoundingClientRect();
 
-        while(ancestor && (ancestor !== document.body)) {
+        // Verify the image has dimensions (is actually rendered and visible). This matches the pattern in thumbnailRowStrategy and provides defense-in-depth if the
+        // wait phase timed out before the image fully loaded.
+        if((imgRect.width > 0) && (imgRect.height > 0)) {
 
-          const tag = ancestor.tagName;
+          // Walk up the DOM to find the nearest clickable ancestor wrapping the tile. Check for semantic clickable elements (<a>, <button>, role="button") and
+          // elements with explicit click handlers first. Track cursor:pointer elements as a fallback for sites using custom click handlers without semantic markup.
+          let ancestor: HTMLElement | null = img.parentElement;
+          let pointerFallback: HTMLElement | null = null;
 
-          // Semantic clickable elements are the most reliable indicators of an interactive tile container.
-          if((tag === "A") || (tag === "BUTTON") || (ancestor.getAttribute("role") === "button") || ancestor.hasAttribute("onclick")) {
+          while(ancestor && (ancestor !== document.body)) {
 
-            ancestor.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+            const tag = ancestor.tagName;
 
-            const rect = ancestor.getBoundingClientRect();
+            // Semantic clickable elements are the most reliable indicators of an interactive tile container.
+            if((tag === "A") || (tag === "BUTTON") || (ancestor.getAttribute("role") === "button") || ancestor.hasAttribute("onclick")) {
+
+              ancestor.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+
+              const rect = ancestor.getBoundingClientRect();
+
+              if((rect.width > 0) && (rect.height > 0)) {
+
+                return { x: rect.x + (rect.width / 2), y: rect.y + (rect.height / 2) };
+              }
+            }
+
+            // Track the nearest cursor:pointer ancestor with reasonable dimensions as a fallback.
+            if(!pointerFallback) {
+
+              const rect = ancestor.getBoundingClientRect();
+
+              if((rect.width > 20) && (rect.height > 20) && (window.getComputedStyle(ancestor).cursor === "pointer")) {
+
+                pointerFallback = ancestor;
+              }
+            }
+
+            ancestor = ancestor.parentElement;
+          }
+
+          // Fallback: use cursor:pointer ancestor if no semantic clickable was found above.
+          if(pointerFallback) {
+
+            pointerFallback.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+
+            const rect = pointerFallback.getBoundingClientRect();
 
             if((rect.width > 0) && (rect.height > 0)) {
 
               return { x: rect.x + (rect.width / 2), y: rect.y + (rect.height / 2) };
             }
-          }
-
-          // Track the nearest cursor:pointer ancestor with reasonable dimensions as a fallback.
-          if(!pointerFallback) {
-
-            const rect = ancestor.getBoundingClientRect();
-
-            if((rect.width > 20) && (rect.height > 20) && (window.getComputedStyle(ancestor).cursor === "pointer")) {
-
-              pointerFallback = ancestor;
-            }
-          }
-
-          ancestor = ancestor.parentElement;
-        }
-
-        // Fallback: use cursor:pointer ancestor if no semantic clickable was found above.
-        if(pointerFallback) {
-
-          pointerFallback.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-
-          const rect = pointerFallback.getBoundingClientRect();
-
-          if((rect.width > 0) && (rect.height > 0)) {
-
-            return { x: rect.x + (rect.width / 2), y: rect.y + (rect.height / 2) };
           }
         }
       }
@@ -362,21 +369,22 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     return { success: true };
   }
 
-  // Poll for the channel slug image to appear in the DOM. This replaces a fixed delay with an early-exit poll — if the guide renders quickly, we proceed
-  // immediately instead of waiting the full configured duration. The configured delay serves as the timeout ceiling.
+  // Poll for the channel slug image to appear and fully load. We check both src match and load completion (img.complete + naturalWidth) to ensure the image is
+  // actually rendered before proceeding. This prevents race conditions where the img element exists with the correct src but the browser hasn't finished fetching
+  // and rendering it, which can cause layout instability and click failures.
   try {
 
     await page.waitForFunction(
       (slug: string): boolean => {
 
-        return Array.from(document.querySelectorAll("img")).some((img) => img.src && img.src.includes(slug));
+        return Array.from(document.querySelectorAll("img")).some((img) => img.src && img.src.includes(slug) && img.complete && (img.naturalWidth > 0));
       },
       { timeout: CONFIG.playback.channelSelectorDelay },
       channelSelector
     );
   } catch {
 
-    // Timeout — the image hasn't appeared yet. Proceed anyway and let the strategy evaluate and report not-found naturally.
+    // Timeout — the image hasn't loaded yet. Proceed anyway and let the strategy evaluate and report not-found naturally.
   }
 
   // Dispatch to the appropriate strategy.
