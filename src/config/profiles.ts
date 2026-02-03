@@ -221,8 +221,8 @@ export const DOMAIN_TO_PROFILE: Record<string, string> = {
   "cnbc.com": "fullscreenApi",
   "cnn.com": "fullscreenApi",
 
-  // Embedded player with dynamic multi-video and tile-based channel selection.
-  "disneyplus.com": "embeddedDynamicMultiVideo",
+  // Tile-based channel selection from the shared live TV page.
+  "disneyplus.com": "apiMultiVideo",
 
   // Sites using the JavaScript fullscreen API.
   "foodnetwork.com": "fullscreenApi",
@@ -230,6 +230,9 @@ export const DOMAIN_TO_PROFILE: Record<string, string> = {
   // Iframe-embedded players with complex multi-video setup.
   "foxbusiness.com": "embeddedDynamicMultiVideo",
   "foxnews.com": "embeddedDynamicMultiVideo",
+
+  // Sites using the JavaScript fullscreen API.
+  "foxsports.com": "fullscreenApi",
 
   // Iframe-embedded players that require volume locking.
   "france24.com": "embeddedVolumeLock",
@@ -434,6 +437,9 @@ export function getProfileForUrl(url: string | undefined): ProfileResolutionResu
  * - The same domain serves multiple channel types needing different handling
  * - A channel needs a custom combination of flags not covered by existing profiles
  *
+ * The special value "auto" triggers URL-based domain detection, equivalent to omitting the profile property. This allows channels to explicitly opt into domain
+ * detection rather than relying on the implicit behavior of an absent property.
+ *
  * Channel-specific properties like channelSelector are merged into the resolved profile, allowing channels to extend profiles with additional configuration.
  *
  * @param channel - The channel object with url and optional profile properties.
@@ -450,8 +456,9 @@ export function getProfileForChannel(channel: { channelSelector?: string; profil
   let profile: ResolvedSiteProfile;
   let profileName: string;
 
-  // If the channel specifies an explicit profile name, use it directly. This takes precedence over URL-based detection.
-  if(channel.profile) {
+  // If the channel specifies an explicit profile name, use it directly. This takes precedence over URL-based detection. The value "auto" is treated as unset,
+  // falling through to URL-based detection below.
+  if(channel.profile && (channel.profile !== "auto")) {
 
     profile = resolveProfile(channel.profile);
     profileName = channel.profile;
@@ -561,7 +568,7 @@ export function validateProfiles(): void {
     const channelProfile = channel.profile;
 
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if((channelProfile !== undefined) && !SITE_PROFILES[channelProfile]) {
+    if((channelProfile !== undefined) && (channelProfile !== "auto") && !SITE_PROFILES[channelProfile]) {
 
       errors.push([ "Channel ", channelName, " references non-existent profile: ", channelProfile ].join(""));
     }
