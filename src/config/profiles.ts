@@ -6,8 +6,6 @@ import type { ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "
 import { CHANNELS } from "../channels/index.js";
 
 /*
- * SITE PROFILES SYSTEM
- *
  * Streaming sites implement their video players in wildly different ways. Some use standard HTML5 video with keyboard shortcuts, others embed players in iframes,
  * and many have unique quirks like auto-muting or requiring specific fullscreen methods. Rather than scattering site-specific conditionals throughout the streaming
  * code, we define "site profiles" that describe each site's behavior in a declarative way.
@@ -37,8 +35,6 @@ import { CHANNELS } from "../channels/index.js";
  */
 
 /*
- * SITE PROFILES
- *
  * Each profile defines a set of behavior flags that control how we interact with the video player. Profiles are organized in an inheritance hierarchy based on
  * behavior patterns rather than site ownership. This makes it easier to identify the right profile when adding new channels.
  *
@@ -61,7 +57,6 @@ import { CHANNELS } from "../channels/index.js";
  * Each profile includes a description field documenting its purpose. This is metadata only - it's stripped during profile resolution and exists purely for
  * documentation.
  */
-
 export const SITE_PROFILES: Record<string, SiteProfile> = {
 
   // Profile for multi-channel live TV pages that present a grid or shelf of live channel tiles requiring tile-based selection followed by a play button click. Uses
@@ -191,8 +186,6 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 };
 
 /*
- * DOMAIN TO PROFILE MAPPING
- *
  * This mapping associates domain patterns with profile names for automatic profile detection. When resolving a profile for a URL, we check if the URL contains any
  * of these domain strings. Using string containment rather than exact hostname matching allows us to handle:
  *
@@ -205,74 +198,32 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
  *
  * Domains not listed here will use DEFAULT_SITE_PROFILE, which works for most standard video players. Only add entries here when a site requires specific handling.
  */
-
 export const DOMAIN_TO_PROFILE: Record<string, string> = {
 
-  // Sites with multiple video elements requiring ready-state selection.
   "abc.com": "keyboardMultiVideo",
-
-  // Brightcove player sites requiring network idle wait.
   "c-span.org": "brightcove",
-
-  // Keyboard fullscreen sites with iframe-embedded players.
   "cbs.com": "keyboardIframe",
-
-  // Sites using the JavaScript fullscreen API.
   "cnbc.com": "fullscreenApi",
   "cnn.com": "fullscreenApi",
-
-  // Tile-based channel selection from the shared live TV page.
   "disneyplus.com": "apiMultiVideo",
-
-  // Sites using the JavaScript fullscreen API.
   "foodnetwork.com": "fullscreenApi",
-
-  // Iframe-embedded players with complex multi-video setup.
   "foxbusiness.com": "embeddedDynamicMultiVideo",
   "foxnews.com": "embeddedDynamicMultiVideo",
-
-  // Sites using the JavaScript fullscreen API.
   "foxsports.com": "fullscreenApi",
-
-  // Iframe-embedded players that require volume locking.
   "france24.com": "embeddedVolumeLock",
-
-  // Sites using the JavaScript fullscreen API.
   "hbomax.com": "fullscreenApi",
-
-  // Keyboard fullscreen sites with dynamic content loading.
   "ms.now": "keyboardDynamic",
-
-  // Keyboard fullscreen sites with dynamic content and multiple video elements.
   "nationalgeographic.com": "keyboardDynamicMultiVideo",
-
-  // Keyboard fullscreen sites with dynamic content loading.
   "nbc.com": "keyboardDynamic",
-
-  // Sites using the JavaScript fullscreen API.
   "paramountplus.com": "fullscreenApi",
-
-  // Iframe-embedded players that require volume locking.
   "sling.com": "embeddedVolumeLock",
-
-  // Sites using the JavaScript fullscreen API.
   "tbs.com": "fullscreenApi",
   "tntdrama.com": "fullscreenApi",
-
-  // Multi-channel keyboard players with dynamic content.
   "usanetwork.com": "keyboardDynamicMultiVideo",
-
-  // Sites using the JavaScript fullscreen API.
   "vh1.com": "fullscreenApi",
-
-  // Static pages without video content.
   "weatherscan.net": "staticPage",
   "windy.com": "staticPage",
-
-  // Sites using the JavaScript fullscreen API.
   "wttw.com": "fullscreenApi",
-
-  // Keyboard fullscreen sites with dynamic content loading.
   "youtube.com": "keyboardDynamic"
 };
 
@@ -329,17 +280,17 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
 };
 
 /*
- * PROFILE RESOLUTION
- *
  * Profile resolution is the process of determining which behavior flags to use for a given stream. The resolution process handles inheritance, merging parent and
  * child profile properties, and falling back to defaults for unspecified flags.
  *
  * Resolution order (highest to lowest priority):
+ *
  * 1. Channel's explicit profile property (if specified)
  * 2. URL-based detection via DOMAIN_TO_PROFILE
  * 3. DEFAULT_SITE_PROFILE
  *
  * Within a profile, inheritance works as follows:
+ *
  * 1. Start with DEFAULT_SITE_PROFILE for base values
  * 2. Apply parent profile properties (if extends is set)
  * 3. Apply current profile properties (overriding parent)
@@ -353,6 +304,7 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
  * is resolved recursively, with child profile properties overriding parent properties.
  *
  * The resolution process:
+ *
  * 1. Start with a copy of DEFAULT_SITE_PROFILE
  * 2. If the profile extends another, recursively resolve the parent and merge its properties
  * 3. Merge the current profile's properties, overriding any inherited values
@@ -491,8 +443,6 @@ export function getProfileForChannel(channel: { channelSelector?: string; profil
 }
 
 /*
- * PROFILE VALIDATION
- *
  * Before starting the server, we validate all profile configurations to catch errors early. Invalid configurations would cause runtime failures that are difficult
  * to diagnose:
  *
@@ -510,6 +460,7 @@ export function getProfileForChannel(channel: { channelSelector?: string; profil
  * function runs at startup before the server begins accepting connections.
  *
  * Validation checks:
+ *
  * 1. Circular inheritance detection - walks the extends chain for each profile to detect cycles
  * 2. Invalid extends references - ensures all extends targets exist
  * 3. Domain mapping validation - ensures all domain profile references exist
@@ -587,8 +538,6 @@ export function validateProfiles(): void {
 }
 
 /*
- * PROFILE ENUMERATION
- *
  * Helper functions for listing available profiles in the UI.
  */
 
