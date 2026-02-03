@@ -1,4 +1,5 @@
-# docker buildx build --platform linux/amd64 -f Dockerfile -t bnhf/prismcast:latest -t bnhf/prismcast:2026.01.29 . --push --no-cache
+# PrismCast Docker image. Published to ghcr.io/hjdhjd/prismcast on each release.
+# docker pull ghcr.io/hjdhjd/prismcast:latest
 FROM node:22-slim
 
 # Prevent interactive prompts during package installation.
