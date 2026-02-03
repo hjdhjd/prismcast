@@ -8,31 +8,28 @@ import type { ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../type
 import { CONFIG } from "../config/index.js";
 import { selectChannel } from "./channelSelection.js";
 
-/*
- * VIDEO CONTEXT AND PLAYBACK HANDLING
+/* These functions manage the video element lifecycle for streaming capture. The key challenges we solve:
  *
- * These functions manage the video element lifecycle for streaming capture. The key challenges we solve:
- *
- * 1. VIDEO CONTEXT RESOLUTION: Video elements may be in the main page or nested inside iframes. Some streaming sites (like those using Brightcove or JW Player
+ * 1. Video context resolution: Video elements may be in the main page or nested inside iframes. Some streaming sites (like those using Brightcove or JW Player
  *    embedded via iframe) require searching through frames to find the video. We detect this based on the site profile's needsIframeHandling flag.
  *
- * 2. VIDEO SELECTION: Pages may have multiple video elements (ads, previews, main content). The selectReadyVideo strategy finds the video with readyState >= 3,
+ * 2. Video selection: Pages may have multiple video elements (ads, previews, main content). The selectReadyVideo strategy finds the video with readyState >= 3,
  *    which typically identifies the actively playing main content. The selectFirstVideo strategy simply takes the first video in DOM order.
  *
- * 3. READY STATE DETECTION: We wait for readyState >= 3 (HAVE_FUTURE_DATA) rather than readyState === 4 (HAVE_ENOUGH_DATA) because live streams continuously
+ * 3. Ready state detection: We wait for readyState >= 3 (HAVE_FUTURE_DATA) rather than readyState === 4 (HAVE_ENOUGH_DATA) because live streams continuously
  *    receive data and may never reach readyState 4. The >= 3 threshold indicates enough data is buffered to begin playback.
  *
- * 4. FULLSCREEN STYLING: To maximize capture quality, we apply CSS styles that make the video fill the entire viewport. This CSS-based approach works
- *    regardless of the site's native fullscreen mechanism.
+ * 4. Fullscreen styling: To maximize capture quality, we apply CSS styles that make the video fill the entire viewport. This CSS-based approach works regardless
+ *    of the site's native fullscreen mechanism.
  *
- * 5. VOLUME ENFORCEMENT: Some sites aggressively mute videos or lower volume. We enforce volume=1 and muted=false, and for particularly aggressive sites, we
- *    use Object.defineProperty to intercept and ignore attempts to change these values.
+ * 5. Volume enforcement: Some sites aggressively mute videos or lower volume. We enforce volume=1 and muted=false, and for particularly aggressive sites, we use
+ *    Object.defineProperty to intercept and ignore attempts to change these values.
  *
- * 6. RECOVERY ESCALATION: When playback stalls, we use increasingly aggressive recovery techniques:
- *    - Level 1: Basic play/unmute - just call play() and ensure audio is on
- *    - Level 2: Seek to live edge - jump to the end of the seekable range for live streams
- *    - Level 3: Reload source - reset video.src and call load() to reinitialize the player
- *    - Level 4: Full page navigation (handled in monitor.ts, not here)
+ * 6. Recovery escalation: When playback stalls, we use increasingly aggressive recovery techniques:
+ *    - Level 1: Basic play/unmute - just call play() and ensure audio is on.
+ *    - Level 2: Seek to live edge - jump to the end of the seekable range for live streams.
+ *    - Level 3: Reload source - reset video.src and call load() to reinitialize the player.
+ *    - Level 4: Full page navigation (handled in monitor.ts, not here).
  *
  * The video selector system uses a string type identifier ("selectReadyVideo" or "selectFirstVideo") that's passed to page.evaluate() and interpreted in the
  * browser context. This avoids using eval() while still allowing dynamic video selection behavior.
@@ -52,32 +49,14 @@ export function buildVideoSelectorType(profile: ResolvedSiteProfile): VideoSelec
   return profile.selectReadyVideo ? "selectReadyVideo" : "selectFirstVideo";
 }
 
-/*
- * VIDEO STATE AND CONTROL HELPERS
- *
- * These helper functions encapsulate common video element operations that are used in both initial setup and health monitoring. By centralizing these operations,
+/* These helper functions encapsulate common video element operations that are used in both initial setup and health monitoring. By centralizing these operations,
  * we ensure consistent behavior and reduce code duplication across the codebase.
  *
- * BROWSER CONTEXT PATTERN (Intentional Duplication)
- *
- * Many functions below contain identical video selection logic:
- *
- *   let video: HTMLVideoElement | null | undefined;
- *   if(type === "selectReadyVideo") {
- *     video = Array.from(document.querySelectorAll("video")).find((v) => v.readyState >= 3);
- *   } else {
- *     video = document.querySelector("video");
- *   }
- *
- * This duplication is INTENTIONAL and unavoidable due to Puppeteer's architecture. When we call evaluateWithAbort(), the function body is serialized as a string
- * and executed in Chrome's browser context. We cannot:
- * - Import shared modules (browser context has no access to Node modules)
- * - Pass function references (only serializable data crosses the boundary)
- * - Use closures over Node-side variables (they don't exist in the browser)
- *
- * Each browser-context function must be self-contained. The duplication is the cost of operating across the Node/browser boundary. To maintain consistency:
- * - All video selector blocks MUST use the exact pattern above
- * - When modifying the selection logic, update ALL functions that use this pattern
+ * Many functions below contain identical video selection logic. This duplication is intentional and unavoidable due to Puppeteer's architecture. When we call
+ * evaluateWithAbort(), the function body is serialized as a string and executed in Chrome's browser context. We cannot import shared modules (browser context has
+ * no access to Node modules), pass function references (only serializable data crosses the boundary), or use closures over Node-side variables (they don't exist
+ * in the browser). Each browser-context function must be self-contained. The duplication is the cost of operating across the Node/browser boundary. To maintain
+ * consistency, all video selector blocks must use the same pattern, and when modifying the selection logic, update all functions that use this pattern.
  * - The selectorType parameter MUST be passed as the first argument to evaluateWithAbort
  */
 

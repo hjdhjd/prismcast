@@ -1035,9 +1035,8 @@ export function mergeConfiguration(userConfig: UserConfig): Config {
     }
   }
 
-  /* NON-CONFIG_METADATA FIELDS — These fields are stored in the user config file but are not part of CONFIG_METADATA because they are complex types (arrays,
-   * auto-generated strings) that don't fit the standard scalar setting model. When adding a new field here, you MUST also add corresponding logic in
-   * filterDefaults() below to preserve it during save. The filterDefaults() counterpart is marked with the same "NON-CONFIG_METADATA FIELDS" heading.
+  /* These fields are stored in the user config file but are not part of CONFIG_METADATA because they are complex types (arrays, auto-generated strings) that don't
+   * fit the standard scalar setting model. When adding a new field here, you must also add corresponding preservation logic in filterDefaults() below.
    */
   if(Array.isArray(userConfig.channels?.disabledPredefined)) {
 
@@ -1399,8 +1398,8 @@ export function filterDefaults(config: UserConfig): UserConfig {
     }
   }
 
-  /* NON-CONFIG_METADATA FIELDS — Counterpart to the same section in mergeConfiguration() above. When adding a new non-CONFIG_METADATA field to
-   * mergeConfiguration(), you MUST also add corresponding preservation logic here, otherwise the field will be lost when saving configuration.
+  /* Counterpart to the non-CONFIG_METADATA handling in mergeConfiguration() above. When adding a new complex field there, you must also add corresponding
+   * preservation logic here, otherwise the field will be lost when saving configuration.
    */
   const configChannelsDisabled = getNestedValue(config, "channels.disabledPredefined") as string[] | undefined;
 
