@@ -4,9 +4,9 @@
  */
 import type { Channel, Nullable, ResolvedSiteProfile, UrlValidation } from "../types/index.js";
 import type { Frame, Page } from "puppeteer-core";
-import { LOG, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg } from "../utils/index.js";
+import { LOG, delay, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg } from "../utils/index.js";
 import type { MonitorStreamInfo, RecoveryMetrics, TabReplacementResult } from "./monitor.js";
-import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
+import { closeBrowser, getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.js";
 import { CONFIG } from "../config/index.js";
@@ -56,6 +56,11 @@ const WEBM_FFMPEG_MIME_TYPE = "video/webm;codecs=h264,opus";
 // tab with an active stream." We serialize capture initialization using a promise chain so requests execute sequentially. Once a capture is established, it runs
 // concurrently with other captures without issue.
 let captureQueue: Promise<void> = Promise.resolve();
+
+// Stale capture recovery. Chrome's tabCapture can retain stale state after a crash, causing "Cannot capture a tab with an active stream" errors on fresh launches.
+// When detected, we restart Chrome entirely to clear the state. Limited to 3 attempts per server lifetime to prevent infinite loops.
+const MAX_STALE_CAPTURE_RECOVERY_ATTEMPTS = 3;
+let staleCaptureRecoveryAttempts = 0;
 
 // Types.
 
@@ -520,6 +525,30 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       page.close().catch(() => {});
     }
 
+    // Check for stale capture state error. This occurs after a crash when Chrome's tabCapture retains state from the previous process. Restarting Chrome clears
+    // the stale state. We limit recovery attempts to prevent infinite loops if the issue persists.
+    const errorMessage = formatError(error);
+
+    if(errorMessage.includes("Cannot capture a tab with an active stream") && (staleCaptureRecoveryAttempts < MAX_STALE_CAPTURE_RECOVERY_ATTEMPTS)) {
+
+      staleCaptureRecoveryAttempts++;
+
+      LOG.warn("Stale capture state detected (attempt %d/%d). Restarting Chrome to clear state.",
+        staleCaptureRecoveryAttempts, MAX_STALE_CAPTURE_RECOVERY_ATTEMPTS);
+
+      // Kill Chrome entirely to clear all tabCapture state.
+      await closeBrowser();
+
+      // Wait for Chrome to fully exit before relaunching.
+      await delay(1500);
+
+      // Relaunch Chrome. getCurrentBrowser() creates a fresh instance since closeBrowser() cleared the reference.
+      await getCurrentBrowser();
+
+      // Retry the capture with a fresh browser.
+      return createPageWithCapture(options);
+    }
+
     throw error;
   }
 
@@ -756,7 +785,12 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         LOG.error("Stream setup failed for %s: %s.", url, errorMessage);
       }
 
-      throw new StreamSetupError("Stream error.", 500, "Failed to start stream.");
+      // Capture infrastructure errors should return 503 to signal Channels DVR to back off. These include Chrome capture state issues, queue timeouts, and stream
+      // initialization failures. Using 503 with Retry-After prevents retry storms when there's a systemic issue.
+      const captureErrorPatterns = [ "Cannot capture", "timed out", "Capture queue" ];
+      const isCaptureError = captureErrorPatterns.some((pattern) => errorMessage.includes(pattern));
+
+      throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.");
     }
 
     const { captureStream, context, ffmpegProcess, page, rawCaptureStream } = captureResult;

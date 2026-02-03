@@ -348,7 +348,7 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
 
       if(error.statusCode === 503) {
 
-        res.setHeader("Retry-After", "5");
+        res.setHeader("Retry-After", "10");
       }
 
       res.status(error.statusCode).send(error.userMessage);
@@ -823,7 +823,7 @@ async function startHLSStream(channelName: string, url: string, req: Request, re
 
       if(error.statusCode === 503) {
 
-        res.setHeader("Retry-After", "5");
+        res.setHeader("Retry-After", "10");
         res.setHeader("X-HDHomeRun-Error", "All Tuners In Use");
       }
 
