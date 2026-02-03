@@ -57,9 +57,7 @@ const WEBM_FFMPEG_MIME_TYPE = "video/webm;codecs=h264,opus";
 // concurrently with other captures without issue.
 let captureQueue: Promise<void> = Promise.resolve();
 
-// ─────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────
+// Types.
 
 /**
  * Factory function type for creating tab replacement handlers. Called by setupStream after generating stream IDs and resolving the profile, allowing the caller to
@@ -81,6 +79,10 @@ export interface StreamSetupOptions {
 
   // The channel name (key) if streaming a named channel.
   channelName?: string;
+
+  // Channel selector for multi-channel sites. Only used for ad-hoc streams (no channel definition). For predefined channels, the selector comes from
+  // channel.channelSelector via getProfileForChannel.
+  channelSelector?: string;
 
   // Whether to treat this as a static page without video.
   noVideo?: boolean;
@@ -199,9 +201,7 @@ export interface CreatePageWithCaptureResult {
   rawCaptureStream: Readable;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Request ID Generation
-// ─────────────────────────────────────────────────────────────
+// Request ID Generation.
 
 /**
  * Generates a short alphanumeric request ID for log correlation. The ID is 6 characters to keep log messages readable while providing enough uniqueness for
@@ -263,9 +263,7 @@ export function generateStreamId(channelName: string | undefined, url: string | 
   return [ "unknown-", requestId ].join("");
 }
 
-// ─────────────────────────────────────────────────────────────
-// URL Validation
-// ─────────────────────────────────────────────────────────────
+// URL Validation.
 
 /**
  * Validates a URL before attempting to navigate to it. This function checks for supported protocols, prevents local file access, and ensures the URL is properly
@@ -309,9 +307,7 @@ export function validateStreamUrl(url: string | undefined): UrlValidation {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Page and Capture Creation
-// ─────────────────────────────────────────────────────────────
+// Page and Capture Creation.
 
 /**
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
@@ -573,9 +569,31 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Stream Setup
-// ─────────────────────────────────────────────────────────────
+// URL Redirect Resolution.
+
+/**
+ * Resolves a URL's final destination by following HTTP redirects. This is used for profile detection when a channel's URL belongs to an indirection service (e.g.,
+ * FruitDeepLinks) whose domain has no profile mapping. By following redirects, we discover the actual streaming site's domain and can resolve the correct profile.
+ *
+ * Uses a HEAD request to avoid downloading response bodies. The 3-second timeout ensures stream startup isn't blocked by slow or unreachable indirection services.
+ *
+ * @param url - The URL to resolve.
+ * @returns The final URL after following all redirects, or null on any error.
+ */
+async function resolveRedirectUrl(url: string): Promise<string | null> {
+
+  try {
+
+    const response = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(3000) });
+
+    return response.url;
+  } catch {
+
+    return null;
+  }
+}
+
+// Stream Setup.
 
 /**
  * Sets up a stream: validates input, creates browser page, initializes capture, navigates to URL, and starts health monitoring.
@@ -592,7 +610,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
  */
 export async function setupStream(options: StreamSetupOptions, onCircuitBreak: () => void): Promise<StreamSetupResult> {
 
-  const { channel, channelName, noVideo, onTabReplacementFactory, profileOverride, url } = options;
+  const { channel, channelName, channelSelector, noVideo, onTabReplacementFactory, profileOverride, url } = options;
 
   // Generate stream identifiers early so all log messages include them.
   const streamId = generateStreamId(channelName, url);
@@ -604,8 +622,32 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
   registerAbortController(streamId, abortController);
 
-  // Resolve the profile for this stream.
-  const profileResult = channel ? getProfileForChannel(channel) : getProfileForUrl(url);
+  // Resolve the profile for this stream. If the original URL's domain has no mapping (profileName === "default"), try following HTTP redirects to discover the
+  // actual destination domain. This supports indirection services like FruitDeepLinks that use redirect URLs to route to the actual streaming site.
+  let profileResult = channel ? getProfileForChannel(channel) : getProfileForUrl(url);
+
+  if(profileResult.profileName === "default") {
+
+    const urlToResolve = channel?.url ?? url;
+
+    if(urlToResolve) {
+
+      const resolvedUrl = await resolveRedirectUrl(urlToResolve);
+
+      if(resolvedUrl && (resolvedUrl !== urlToResolve)) {
+
+        const redirectResult = getProfileForUrl(resolvedUrl);
+
+        if(redirectResult.profileName !== "default") {
+
+          profileResult = redirectResult;
+
+          LOG.info("Resolved redirect for profile detection: %s → %s (%s).", urlToResolve, resolvedUrl, redirectResult.profileName);
+        }
+      }
+    }
+  }
+
   let profile = profileResult.profile;
   let profileName = profileResult.profileName;
 
@@ -633,6 +675,13 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     if(noVideo) {
 
       profile = { ...profile, noVideo: true };
+    }
+
+    // Merge the ad-hoc channel selector into the profile if provided. This must happen after the profile override block above, which replaces the profile object
+    // wholesale and would discard an earlier merge. For predefined channels, getProfileForChannel already handles the merge from channel.channelSelector.
+    if(channelSelector) {
+
+      profile = { ...profile, channelSelector };
     }
 
     // Create the tab replacement handler if a factory was provided. This is done after profile resolution so the handler has access to the final profile.

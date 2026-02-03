@@ -27,9 +27,7 @@ import { waitForInitSegment } from "./hlsSegments.js";
  * 7. On client disconnect or stream termination, kill FFmpeg and clean up
  */
 
-// ─────────────────────────────────────────────────────────────
-// Public Endpoint Handler
-// ─────────────────────────────────────────────────────────────
+// Public Endpoint Handler.
 
 /**
  * Handles MPEG-TS stream requests. Ensures a capture is running for the requested channel, waits for the init segment, spawns a per-client FFmpeg remuxer to convert
