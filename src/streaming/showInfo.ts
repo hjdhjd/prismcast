@@ -32,9 +32,7 @@ import { getAllStreams } from "./registry.js";
  * Failure handling is graceful: if the API is unreachable or returns no match, the show name simply stays empty. This never affects streaming functionality.
  */
 
-// ─────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────
+// Constants.
 
 // Default Channels DVR port.
 const CHANNELS_DVR_PORT = 8089;
@@ -54,9 +52,7 @@ const TRIGGER_DEBOUNCE_MS = 2000;
 // Logo height in pixels for URL sizing parameter (2x for retina displays).
 const LOGO_HEIGHT_PX = 48;
 
-// ─────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────
+// Types.
 
 /**
  * Channel entry from a Channels DVR device.
@@ -148,9 +144,7 @@ interface ChannelsDvrGuideEntry {
   Channel: ChannelsDvrGuideChannel;
 }
 
-// ─────────────────────────────────────────────────────────────
-// State
-// ─────────────────────────────────────────────────────────────
+// State.
 
 // Interval handle for periodic polling.
 let pollInterval: Nullable<ReturnType<typeof setInterval>> = null;
@@ -171,9 +165,7 @@ let lastKnownDvrHost: Nullable<string> = null;
 // Pending debounced trigger for immediate show name updates.
 let pendingTrigger: Nullable<ReturnType<typeof setTimeout>> = null;
 
-// ─────────────────────────────────────────────────────────────
-// Public API
-// ─────────────────────────────────────────────────────────────
+// Public API.
 
 /**
  * Starts the show info polling interval. Should be called on server startup.
@@ -269,9 +261,7 @@ export function getChannelLogo(channelKey: string): string | undefined {
   return channelLogoCache.get(channelKey);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Internal Functions
-// ─────────────────────────────────────────────────────────────
+// Internal Functions.
 
 /**
  * Updates show names for all active streams. Discovery phase tries each unique client address as a potential Channels DVR server. Lookup phase uses the cached DVR

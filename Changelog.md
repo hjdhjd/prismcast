@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.1.0 (2026-02-03)
+  * New feature: ad-hoc URL streaming via `/play` endpoint. Stream any URL without creating a channel definition.
+  * New feature: Docker and LXC container support with prebuilt images, VNC/noVNC access, and Docker Compose configuration, courtesy of @bnhf.
+  * Improvement: streaming startup performance optimizations.
+  * Improvement: channel profile additions and refinements.
+  * Improvement: webUI improvements.
+  * Housekeeping.
+
 ## 1.0.12 (2026-02-01)
   * New feature: HDHomeRun emulation for Plex integration. PrismCast can now appear as a virtual HDHomeRun tuner, allowing Plex to discover and record channels directly.
   * New feature: predefined channel enable/disable controls with bulk toggle.

@@ -33,7 +33,10 @@ const ffmpegPath = ffmpegForHomebridge as unknown as string | undefined;
  * FFMPEG PATH RESOLUTION
  *
  * FFmpeg can be located in several places depending on how it was installed. We check in order of preference:
- * 1. Channels DVR bundled FFmpeg on macOS (~/Library/Application Support/ChannelsDVR/latest/ffmpeg)
+ * 1. Channels DVR bundled FFmpeg:
+ *    - macOS: ~/Library/Application Support/ChannelsDVR/latest/ffmpeg
+ *    - Windows: C:\ProgramData\channelsdvr\latest\ffmpeg.exe
+ *    - Linux: ~/channels-dvr/latest/ffmpeg, /usr/local/channels-dvr/latest/ffmpeg, /opt/channels-dvr/latest/ffmpeg
  * 2. Bundled FFmpeg from ffmpeg-for-homebridge package
  * 3. System PATH (standard installation via package manager or manual install)
  *
@@ -70,8 +73,8 @@ async function checkFFmpegAtPath(pathToCheck: string): Promise<boolean> {
 }
 
 /**
- * Resolves the FFmpeg executable path. Checks Channels DVR (macOS), then the bundled ffmpeg-for-homebridge, then system PATH. The resolved path is cached for
- * subsequent calls.
+ * Resolves the FFmpeg executable path. Checks Channels DVR (macOS, Windows, Linux), then the bundled ffmpeg-for-homebridge, then system PATH. The resolved path is
+ * cached for subsequent calls.
  * @returns Promise resolving to the FFmpeg path if found, or undefined if not available.
  */
 export async function resolveFFmpegPath(): Promise<string | undefined> {
@@ -105,6 +108,28 @@ export async function resolveFFmpegPath(): Promise<string | undefined> {
       cachedFFmpegPath = channelsDvrPath;
 
       return cachedFFmpegPath;
+    }
+  }
+
+  // On Linux, check common Channels DVR installation paths. The Channels DVR setup script creates a channels-dvr directory in the current working directory when
+  // run. The official recommendation is ~/channels-dvr, but users also install to /usr/local/channels-dvr and /opt/channels-dvr.
+  if(process.platform === "linux") {
+
+    const linuxChannelsDvrPaths = [
+      join(homedir(), "channels-dvr", "latest", "ffmpeg"),
+      join("/usr", "local", "channels-dvr", "latest", "ffmpeg"),
+      join("/opt", "channels-dvr", "latest", "ffmpeg")
+    ];
+
+    for(const channelsDvrPath of linuxChannelsDvrPaths) {
+
+      // eslint-disable-next-line no-await-in-loop
+      if(existsSync(channelsDvrPath) && (await checkFFmpegAtPath(channelsDvrPath))) {
+
+        cachedFFmpegPath = channelsDvrPath;
+
+        return cachedFFmpegPath;
+      }
     }
   }
 
@@ -159,13 +184,15 @@ export interface FFmpegProcess {
  * - `-c:a aac -b:a <bitrate>`: Transcode audio to AAC at specified bitrate
  * - `-f mp4`: Output MP4 container format
  * - `-movflags frag_keyframe+empty_moov+default_base_moof`: Streaming-friendly fMP4 flags
+ * - `-flush_packets 1`: Flush output immediately after each packet to minimize latency
  * - `pipe:1`: Write output to stdout
  * @param audioBitrate - Audio bitrate in bits per second (e.g., 256000 for 256 kbps).
  * @param onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
  * @param streamId - Stream identifier for logging.
+ * @param comment - Optional comment metadata (channel name or domain) to embed in the output.
  * @returns FFmpeg process wrapper with stdin, stdout, and kill function.
  */
-export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => void, streamId?: string): FFmpegProcess {
+export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => void, streamId?: string, comment?: string): FFmpegProcess {
 
   // Use the cached FFmpeg path from resolveFFmpegPath(). This should always be set because isFFmpegAvailable() is called during startup, which populates the cache.
   // If somehow not set, fall back to "ffmpeg" and let spawn handle the error.
@@ -182,9 +209,17 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
     "-c:a", aacEncoder,
     "-b:a", String(audioBitrate),
     "-f", "mp4",
-    "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-    "pipe:1"
+    "-movflags", "frag_keyframe+empty_moov+default_base_moof+skip_sidx+skip_trailer",
+    "-flush_packets", "1"
   ];
+
+  // Add metadata comment if provided. This embeds "PrismCast - <channel>" in the output for identification.
+  if(comment) {
+
+    ffmpegArgs.push("-metadata", "comment=PrismCast - " + comment);
+  }
+
+  ffmpegArgs.push("pipe:1");
 
   const ffmpeg = spawn(ffmpegPath, ffmpegArgs, {
 

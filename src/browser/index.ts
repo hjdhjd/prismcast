@@ -6,7 +6,7 @@ import type { Browser, LaunchOptions, Page } from "puppeteer-core";
 import { LOG, evaluateWithAbort, formatError } from "../utils/index.js";
 import { getAllStreams, getStreamCount } from "../streaming/registry.js";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
-import { getStream, launch } from "puppeteer-stream";
+import { getExtensionPage, getStream, launch } from "puppeteer-stream";
 import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.js";
 import { setBrowserChrome, setMaxSupportedViewport } from "./display.js";
 import { CONFIG } from "../config/index.js";
@@ -677,12 +677,20 @@ export async function getCurrentBrowser(): Promise<Browser> {
     // Register a handler for browser disconnection. This ensures we clean up properly if the browser crashes or is closed unexpectedly.
     currentBrowser.on("disconnected", handleBrowserDisconnect);
 
-    // The streaming extension needs time to initialize after browser launch. It injects recording APIs into the browser context that puppeteer-stream uses
-    // to capture media. Without this delay, stream capture may fail silently or produce blank output.
-    await new Promise<void>((resolve) => {
+    // Poll for the puppeteer-stream extension to finish initializing. The extension injects a START_RECORDING function into its options page context. We poll
+    // for this function's existence rather than using a fixed delay, so the browser is ready as soon as the extension loads — typically 200-500ms rather than the
+    // full configured timeout. Uses getExtensionPage() from puppeteer-stream to locate the extension's options page.
+    try {
 
-      setTimeout(resolve, CONFIG.browser.initTimeout);
-    });
+      const extensionPage = await getExtensionPage(currentBrowser);
+
+      await extensionPage.waitForFunction("typeof START_RECORDING === 'function'", { timeout: CONFIG.browser.initTimeout });
+    } catch {
+
+      // If the extension page isn't found or START_RECORDING doesn't appear within the timeout, log a warning and proceed. The per-stream
+      // assertExtensionLoaded() in puppeteer-stream will retry before each capture attempt, so this isn't fatal.
+      LOG.warn("Extension did not initialize within %d ms. Streams may need additional time to start.", CONFIG.browser.initTimeout);
+    }
 
     // Detect display dimensions to determine maximum supported viewport. This must happen before we start streaming so the preset system can degrade to a
     // smaller preset if needed.

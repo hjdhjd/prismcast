@@ -25,9 +25,7 @@ import { getStream } from "./registry.js";
  * Note: Stream lifecycle (creation, cleanup) is managed by the registry. This module focuses solely on segment storage operations.
  */
 
-// ─────────────────────────────────────────────────────────────
-// Segment Management
-// ─────────────────────────────────────────────────────────────
+// Segment Management.
 
 /**
  * Stores a media segment received from the segmenter. Enforces the segment count limit by removing the oldest segment when necessary. This is for .m4s media segments,
@@ -79,9 +77,7 @@ export function getSegment(streamId: number, filename: string): Buffer | undefin
   return stream.hls.segments.get(filename);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Init Segment Management
-// ─────────────────────────────────────────────────────────────
+// Init Segment Management.
 
 /**
  * Stores the fMP4 initialization segment for a stream. The init segment contains codec configuration and is sent once at stream start. Unlike media segments, it is
@@ -130,9 +126,7 @@ export function getInitSegment(streamId: number): Buffer | undefined {
   return stream.hls.initSegment ?? undefined;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Playlist Management
-// ─────────────────────────────────────────────────────────────
+// Playlist Management.
 
 /**
  * Updates the playlist content for a stream. If this is the first playlist, signals that the stream is ready.
@@ -192,9 +186,7 @@ export async function waitForInitSegment(streamId: number, timeout: number): Pro
   return waitForReady(streamId, async (stream) => stream.hls.initSegmentReady, timeout);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Internal Helpers
-// ─────────────────────────────────────────────────────────────
+// Internal Helpers.
 
 /**
  * Races a readiness promise from a stream's HLS state against a timeout. Returns true if the promise resolves before the timeout, false if the timeout fires first or

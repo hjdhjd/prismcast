@@ -2,8 +2,8 @@
  *
  * video.ts: Video context and playback handling for PrismCast.
  */
+import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError } from "../utils/index.js";
 import type { Frame, Page } from "puppeteer-core";
-import { LOG, delay, evaluateWithAbort, formatError } from "../utils/index.js";
 import type { ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.js";
 import { CONFIG } from "../config/index.js";
 import { selectChannel } from "./channelSelection.js";
@@ -429,44 +429,66 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
   // Wait for an iframe element to appear in the page DOM. This ensures the site has created the embedded player container.
   await page.waitForSelector("iframe", { timeout: CONFIG.streaming.videoTimeout });
 
-  // Give the iframe content time to initialize. Complex embedded players (Brightcove, JW Player, etc.) often load additional resources and scripts after the
-  // iframe element appears. Without this delay, we might find an empty iframe that hasn't yet loaded its video content.
-  await delay(CONFIG.playback.iframeInitDelay);
+  // Poll for a video element to appear in any iframe. Complex embedded players (Brightcove, JW Player, etc.) load additional resources and scripts after the
+  // iframe element appears, so the video may not be immediately available. We retry the search with brief pauses, using the configured delay as the overall
+  // timeout ceiling. This replaces a fixed delay with early exit — if the video appears quickly, we proceed immediately.
+  const deadline = Date.now() + CONFIG.playback.iframeInitDelay;
 
-  // Search through all frames to find one containing a video element. The page.frames() array includes the main frame and all nested iframes.
-  const frames = page.frames();
+  let iframeSearchComplete = false;
+  let lastFrameCount = 0;
 
-  for(const frame of frames) {
+  while(!iframeSearchComplete && (Date.now() < deadline)) {
 
-    // Skip the main frame since we're looking for video in iframes, not the main page.
-    if(frame === page.mainFrame()) {
+    const pageFrames = page.frames();
 
-      continue;
+    lastFrameCount = pageFrames.length;
+
+    for(const frame of pageFrames) {
+
+      // Skip the main frame since we're looking for video in iframes, not the main page.
+      if(frame === page.mainFrame()) {
+
+        continue;
+      }
+
+      try {
+
+        // Check if this frame contains a video element. We use a short timeout (2 seconds) to prevent a single hanging frame from consuming the polling budget.
+        // eslint-disable-next-line no-await-in-loop
+        const hasVideo = await evaluateWithAbort(frame, (): boolean => {
+
+          return !!document.querySelector("video");
+        }, undefined, 2000);
+
+        if(hasVideo) {
+
+          return frame;
+        }
+      } catch(error) {
+
+        // AbortError means stream was terminated — stop polling immediately.
+        if(error instanceof EvaluateAbortError) {
+
+          iframeSearchComplete = true;
+
+          break;
+        }
+
+        // Other errors (cross-origin, detached frame) — skip this frame and continue searching.
+      }
     }
 
-    try {
+    // Brief pause before re-checking. 200ms intervals provide responsive polling without excessive CDP overhead.
+    if(!iframeSearchComplete && (Date.now() < deadline)) {
 
-      // Check if this frame contains a video element. We execute a simple query in the frame's document context.
       // eslint-disable-next-line no-await-in-loop
-      const hasVideo = await evaluateWithAbort(frame, (): boolean => {
-
-        return !!document.querySelector("video");
-      });
-
-      if(hasVideo) {
-
-        return frame;
-      }
-    } catch(_error) {
-
-      // Some frames may not be accessible due to cross-origin restrictions (CORS). This is expected for third-party analytics or ad iframes. We silently
-      // skip these and continue searching. Also handles AbortError if stream is terminated during search.
+      await delay(200);
     }
   }
 
   // If no iframe contains a video, fall back to the main page. This is a potential issue for iframe-handling profiles since we expected the video to be in an
   // iframe. Log a warning and verify the main page actually has a video element.
-  LOG.warn("No iframe contained video element. Falling back to main page context (searched %s frames).", frames.length - 1);
+  LOG.warn("No iframe contained video element. Falling back to main page context (searched %s frames).", Math.max(0, lastFrameCount - 1));
 
   // Check if the main page actually contains a video element.
   try {
@@ -1082,15 +1104,13 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
   const context = await findVideoContext(page, profile);
 
   // For clickToPlay sites (typically Brightcove players), we need to click the video element to start playback. These players require user interaction to begin
-  // playing, even with autoplay enabled.
+  // playing, even with autoplay enabled. No post-click delay is needed — waitForVideoReady() polls for readyState >= 3, which inherently waits for the click to
+  // take effect.
   if(profile.clickToPlay) {
 
     try {
 
       await page.click("video");
-
-      // Wait for the click to take effect before checking ready state. The player needs time to process the click and begin loading media.
-      await delay(CONFIG.playback.clickToPlayDelay);
     } catch(clickError) {
 
       LOG.warn("Could not click video to initiate playback: %s.", formatError(clickError));

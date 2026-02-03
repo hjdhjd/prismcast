@@ -24,9 +24,7 @@ import type { RecoveryMetrics } from "./monitor.js";
  * - Concurrent stream limit enforcement
  */
 
-// ─────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────
+// Types.
 
 /**
  * HLS segment and playlist storage for a stream. This includes the fMP4 initialization segment (codec configuration), media segments (.m4s files), and the current
@@ -132,9 +130,7 @@ export interface StreamRegistryEntry {
   url: string;
 }
 
-// ─────────────────────────────────────────────────────────────
-// State
-// ─────────────────────────────────────────────────────────────
+// State.
 
 // The unified stream registry. Maps numeric stream IDs to stream entries.
 const streamRegistry = new Map<number, StreamRegistryEntry>();
@@ -142,9 +138,7 @@ const streamRegistry = new Map<number, StreamRegistryEntry>();
 // Counter for generating unique stream IDs. Incremented for each new stream.
 let streamIdCounter = 0;
 
-// ─────────────────────────────────────────────────────────────
-// Public API
-// ─────────────────────────────────────────────────────────────
+// Public API.
 
 /**
  * Gets the next unique stream ID by incrementing the counter. Each call returns a new, higher ID that has never been used before in this process lifetime.
@@ -252,9 +246,7 @@ export function createHLSState(): HLSState {
   };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Memory Usage
-// ─────────────────────────────────────────────────────────────
+// Memory Usage.
 
 /**
  * Memory usage breakdown for a stream's HLS segment storage.

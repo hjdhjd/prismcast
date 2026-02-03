@@ -1,17 +1,17 @@
-#docker buildx build --platform linux/amd64 -f Dockerfile -t bnhf/prismcast:latest -t bnhf/prismcast:2026.01.29 . --push --no-cache
+# docker buildx build --platform linux/amd64 -f Dockerfile -t bnhf/prismcast:latest -t bnhf/prismcast:2026.01.29 . --push --no-cache
 FROM node:22-slim
 
-# Prevent interactive prompts during package installation
+# Prevent interactive prompts during package installation.
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies, Chrome dependencies, x11vnc, and noVNC
+# Install system dependencies, Chrome dependencies, x11vnc, and noVNC.
 RUN apt-get update && apt-get install -y \
-    # Basic utilities
+    # Basic utilities.
     curl \
     wget \
     gnupg \
     ca-certificates \
-    # Xvfb and X11 utilities
+    # Xvfb and X11 utilities.
     xvfb \
     x11vnc \
     x11-xkb-utils \
@@ -20,9 +20,9 @@ RUN apt-get update && apt-get install -y \
     xfonts-scalable \
     x11-apps \
     xauth \
-    # noVNC for web-based VNC access
+    # noVNC for web-based VNC access.
     novnc \
-    # Chrome dependencies (comprehensive list from cc4c)
+    # Chrome dependencies (comprehensive list from cc4c).
     gconf-service \
     libasound2 \
     libatk1.0-0 \
@@ -61,55 +61,53 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     lsb-release \
     xdg-utils \
-    # Fonts for proper rendering
+    # Fonts for proper rendering.
     fonts-liberation \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
     fonts-thai-tlwg \
     fonts-kacst \
     fonts-freefont-ttf \
-    # Process management
+    # Process management.
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Google Chrome (not Chromium - required by PrismCast)
+# Install Google Chrome. Chromium is not supported — PrismCast requires Google Chrome for the puppeteer-stream extension.
 RUN wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
     && apt-get update \
     && apt-get install -y /tmp/google-chrome.deb \
     && rm /tmp/google-chrome.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PrismCast globally
+# Install PrismCast globally from npm.
 RUN npm install -g prismcast
 
-# Copy logo files (missing from npm package until next release)
-COPY prismcast.png prismcast.svg /usr/local/lib/node_modules/prismcast/
-
-# Create Chrome wrapper script with --no-sandbox for container environments
+# Create a Chrome wrapper script that passes --no-sandbox for container environments. Chrome refuses to run as root without this flag.
 RUN echo '#!/bin/bash\nexec /usr/bin/google-chrome-stable --no-sandbox --disable-setuid-sandbox "$@"' > /usr/local/bin/chrome-no-sandbox \
     && chmod +x /usr/local/bin/chrome-no-sandbox
 
-# Create startup script
+# Copy the startup script into the container.
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Create directory for VNC password (optional)
+# Create the VNC password directory. Users can mount a password file here for authenticated VNC access.
 RUN mkdir -p /root/.vnc
 
-# Environment variables
+# Set environment variables for the virtual display, Chrome binary, and Puppeteer.
 ENV DISPLAY=:99
 ENV CHROME_BIN=/usr/local/bin/chrome-no-sandbox
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# Expose ports
-# 5589 - PrismCast web UI and streaming
-# 6080 - noVNC web interface for Chrome access
-# 5004 - HDHomeRun Emulation
-EXPOSE 5589 6080 5004
+# Expose all ports the container listens on.
+# 5589 - PrismCast web UI and streaming.
+# 5900 - VNC server for direct VNC client access.
+# 6080 - noVNC web interface for browser-based Chrome access.
+# 5004 - HDHomeRun emulation.
+EXPOSE 5589 5900 6080 5004
 
-# Health check
+# Health check verifies that the PrismCast web server is responding.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s \
     CMD wget -q --spider http://localhost:5589/health || exit 1
 
-# Use the entrypoint script
+# Use the entrypoint script to start Xvfb, x11vnc, noVNC, and PrismCast.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

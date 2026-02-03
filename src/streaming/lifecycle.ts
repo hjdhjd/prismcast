@@ -5,12 +5,14 @@
 import { LOG, formatDuration, formatError, getAbortController, unregisterAbortController } from "../utils/index.js";
 import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./monitor.js";
 import { getStream, unregisterStream } from "./registry.js";
+import type { KeyframeStats } from "./fmp4Segmenter.js";
 import type { Nullable } from "../types/index.js";
 import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./monitor.js";
 import { clearClients } from "./clients.js";
 import { clearShowName } from "./showInfo.js";
 import { emitStreamRemoved } from "./statusEmitter.js";
+import { formatKeyframeStatsSummary } from "./fmp4Segmenter.js";
 import { isGracefulShutdown } from "../browser/index.js";
 
 /*
@@ -31,9 +33,7 @@ import { isGracefulShutdown } from "../browser/index.js";
  * avoid circular dependencies with the browser module.
  */
 
-// ─────────────────────────────────────────────────────────────
-// State
-// ─────────────────────────────────────────────────────────────
+// State.
 
 /**
  * Map of channel names to their active HLS stream IDs. Used to share streams between multiple clients requesting the same channel. This is kept separate from the
@@ -46,9 +46,7 @@ const channelToStreamId = new Map<string, number>();
  */
 const terminationInitiated = new Set<number>();
 
-// ─────────────────────────────────────────────────────────────
-// Channel Mapping Functions
-// ─────────────────────────────────────────────────────────────
+// Channel Mapping Functions.
 
 /**
  * Gets the stream ID for a channel, if one exists.
@@ -79,9 +77,7 @@ export function deleteChannelStreamId(channelName: string): void {
   channelToStreamId.delete(channelName);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Termination State Functions
-// ─────────────────────────────────────────────────────────────
+// Termination State Functions.
 
 /**
  * Checks if termination has been initiated for a stream.
@@ -93,9 +89,7 @@ export function isTerminationInitiated(streamId: number): boolean {
   return terminationInitiated.has(streamId);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Capture Stream Cleanup
-// ─────────────────────────────────────────────────────────────
+// Capture Stream Cleanup.
 
 /**
  * Destroys the raw capture stream to ensure chrome.tabCapture releases the capture. This MUST be called before closing the page to prevent capture state corruption.
@@ -117,9 +111,7 @@ function destroyCaptureStream(rawCaptureStream: Nullable<Readable>): void {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Stream Termination
-// ─────────────────────────────────────────────────────────────
+// Stream Termination.
 
 /**
  * Terminates a stream, cleaning up all resources. This is the authoritative termination function that all code paths should use for consistent cleanup.
@@ -174,9 +166,12 @@ export function terminateStream(streamId: number, channelName: string, reason: s
     streamInfo.ffmpegProcess.kill();
   }
 
-  // Stop the segmenter.
+  // Capture keyframe statistics before stopping the segmenter. The stats are a snapshot of the accumulated state, so they remain valid after stop() is called.
+  let keyframeStats: Nullable<KeyframeStats> = null;
+
   if(streamInfo?.segmenter) {
 
+    keyframeStats = streamInfo.segmenter.getKeyframeStats();
     streamInfo.segmenter.stop();
   }
 
@@ -235,10 +230,18 @@ export function terminateStream(streamId: number, channelName: string, reason: s
   const reasonSuffix = (reason === "no active clients") ? "" : " (" + reason + ")";
   const streamLog = LOG.withStreamId(streamIdStr);
 
-  // Include recovery summary if metrics are available and there were recovery attempts.
-  if(recoveryMetrics && (getTotalRecoveryAttempts(recoveryMetrics) > 0)) {
+  // Include recovery summary and keyframe statistics in the termination log when available.
+  const keyframeSummary = keyframeStats ? formatKeyframeStatsSummary(keyframeStats) : "";
+
+  if(recoveryMetrics && (getTotalRecoveryAttempts(recoveryMetrics) > 0) && keyframeSummary) {
+
+    streamLog.info("Stream ended after %s%s. %s %s", formatDuration(durationMs), reasonSuffix, formatRecoveryMetricsSummary(recoveryMetrics), keyframeSummary);
+  } else if(recoveryMetrics && (getTotalRecoveryAttempts(recoveryMetrics) > 0)) {
 
     streamLog.info("Stream ended after %s%s. %s", formatDuration(durationMs), reasonSuffix, formatRecoveryMetricsSummary(recoveryMetrics));
+  } else if(keyframeSummary) {
+
+    streamLog.info("Stream ended after %s%s. %s", formatDuration(durationMs), reasonSuffix, keyframeSummary);
   } else {
 
     streamLog.info("Stream ended after %s%s.", formatDuration(durationMs), reasonSuffix);

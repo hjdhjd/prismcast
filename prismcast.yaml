@@ -2,7 +2,7 @@ services:
   prismcast:
     # 2026.02.02
     # GitHub home for this project with setup instructions: https://github.com/hjdhjd/prismcast.
-    # Docker container home for this project : https://hub.docker.cm/r/bnhf/prismcast.
+    # Docker container home for this project: https://hub.docker.com/r/bnhf/prismcast.
     image: bnhf/prismcast:${TAG:-latest}
     container_name: prismcast
     hostname: prismcast

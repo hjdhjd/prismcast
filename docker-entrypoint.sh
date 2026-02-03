@@ -4,7 +4,7 @@
 
 set -e
 
-# Configuration with defaults
+# Set configuration defaults for the virtual display, VNC, and noVNC.
 DISPLAY_NUM=${DISPLAY_NUM:-99}
 SCREEN_WIDTH=${SCREEN_WIDTH:-1920}
 SCREEN_HEIGHT=${SCREEN_HEIGHT:-1080}
@@ -21,72 +21,71 @@ echo "  VNC Port: ${VNC_PORT}"
 echo "  noVNC Port: ${NOVNC_PORT}"
 echo "  PrismCast Port: 5589"
 
-# Cleanup function
+# Graceful shutdown handler. We terminate PrismCast first because it has its own shutdown handler that closes the browser and active streams cleanly. After
+# PrismCast exits, we kill the remaining background services (Xvfb, x11vnc, noVNC, tail).
 cleanup() {
-    echo "Shutting down..."
-    # Kill PrismCast gracefully first (it has its own shutdown handler)
-    if [ -n "$PRISMCAST_PID" ]; then
-        kill -TERM $PRISMCAST_PID 2>/dev/null || true
-        wait $PRISMCAST_PID 2>/dev/null || true
-    fi
-    # Kill remaining background jobs
-    kill $(jobs -p) 2>/dev/null || true
-    exit 0
+  echo "Shutting down..."
+  if [ -n "$PRISMCAST_PID" ]; then
+    kill -TERM $PRISMCAST_PID 2>/dev/null || true
+    wait $PRISMCAST_PID 2>/dev/null || true
+  fi
+  kill $(jobs -p) 2>/dev/null || true
+  exit 0
 }
 trap cleanup SIGTERM SIGINT
 
-# Clean up stale X11 lock files from previous runs (fixes restart issues)
+# Remove stale X11 lock files from previous container runs. Without this, Xvfb refuses to start after an unclean shutdown.
 rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM}
 
-# Start Xvfb (virtual framebuffer)
+# Start Xvfb (virtual framebuffer).
 echo "Starting Xvfb..."
 Xvfb ${DISPLAY} -screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH} &
 XVFB_PID=$!
 sleep 2
 
-# Verify Xvfb started
+# Verify that Xvfb started successfully.
 if ! kill -0 $XVFB_PID 2>/dev/null; then
-    echo "ERROR: Xvfb failed to start"
-    exit 1
+  echo "ERROR: Xvfb failed to start."
+  exit 1
 fi
-echo "Xvfb started successfully"
+echo "Xvfb started successfully."
 
-# Start x11vnc (VNC server for the virtual display)
+# Start x11vnc (VNC server for the virtual display).
 echo "Starting x11vnc..."
 if [ -f /root/.vnc/passwd ]; then
-    # Use password if configured
-    x11vnc -display ${DISPLAY} -forever -shared -rfbauth /root/.vnc/passwd -rfbport ${VNC_PORT} -quiet &
+  # Use an existing VNC password file if one has been configured.
+  x11vnc -display ${DISPLAY} -forever -shared -rfbauth /root/.vnc/passwd -rfbport ${VNC_PORT} -quiet &
 else
-    # No password (use NOVNC_PASSWORD env var to set one)
-    if [ -n "$NOVNC_PASSWORD" ]; then
-        x11vnc -storepasswd "$NOVNC_PASSWORD" /root/.vnc/passwd
-        x11vnc -display ${DISPLAY} -forever -shared -rfbauth /root/.vnc/passwd -rfbport ${VNC_PORT} -quiet &
-    else
-        x11vnc -display ${DISPLAY} -forever -shared -nopw -rfbport ${VNC_PORT} -quiet &
-    fi
+  # No existing password file. If NOVNC_PASSWORD is set, create one from the environment variable. Otherwise, run without authentication.
+  if [ -n "$NOVNC_PASSWORD" ]; then
+    x11vnc -storepasswd "$NOVNC_PASSWORD" /root/.vnc/passwd
+    x11vnc -display ${DISPLAY} -forever -shared -rfbauth /root/.vnc/passwd -rfbport ${VNC_PORT} -quiet &
+  else
+    x11vnc -display ${DISPLAY} -forever -shared -nopw -rfbport ${VNC_PORT} -quiet &
+  fi
 fi
 X11VNC_PID=$!
 sleep 1
 
-# Verify x11vnc started
+# Verify that x11vnc started successfully.
 if ! kill -0 $X11VNC_PID 2>/dev/null; then
-    echo "ERROR: x11vnc failed to start"
-    exit 1
+  echo "ERROR: x11vnc failed to start."
+  exit 1
 fi
-echo "x11vnc started successfully"
+echo "x11vnc started successfully."
 
-# Start noVNC (web-based VNC client)
+# Start noVNC (web-based VNC client).
 echo "Starting noVNC..."
 /usr/share/novnc/utils/novnc_proxy --vnc localhost:${VNC_PORT} --listen ${NOVNC_PORT} &
 NOVNC_PID=$!
 sleep 1
 
-# Verify noVNC started
+# Verify that noVNC started successfully.
 if ! kill -0 $NOVNC_PID 2>/dev/null; then
-    echo "ERROR: noVNC failed to start"
-    exit 1
+  echo "ERROR: noVNC failed to start."
+  exit 1
 fi
-echo "noVNC started successfully"
+echo "noVNC started successfully."
 
 echo ""
 echo "=============================================="
@@ -95,38 +94,38 @@ echo "  PrismCast UI at:    http://localhost:5589"
 echo "=============================================="
 echo ""
 
-# Start PrismCast (logs to file by default)
+# Start PrismCast in the background. PrismCast logs to a file by default.
 echo "Starting PrismCast..."
 LOGFILE="/root/.prismcast/prismcast.log"
 
-# Ensure the log directory exists
+# Ensure the log directory exists before PrismCast starts writing to it.
 mkdir -p /root/.prismcast
 
-# Start PrismCast in the background
+# Launch PrismCast, forwarding any command-line arguments from docker run.
 prismcast "$@" &
 PRISMCAST_PID=$!
 
-# Wait for the log file to be created (max 10 seconds)
+# Wait for PrismCast to create its log file (up to 10 seconds).
 for i in {1..20}; do
-    if [ -f "$LOGFILE" ]; then
-        break
-    fi
-    sleep 0.5
+  if [ -f "$LOGFILE" ]; then
+    break
+  fi
+  sleep 0.5
 done
 
-# Tail the log file to stdout for Portainer/Docker logs (only new entries)
+# Tail the log file to stdout so that Portainer and docker logs can display PrismCast output. We use -n 0 to skip existing log entries and only show new ones.
 if [ -f "$LOGFILE" ]; then
-    tail -n 0 -f "$LOGFILE" &
-    TAIL_PID=$!
+  tail -n 0 -f "$LOGFILE" &
+  TAIL_PID=$!
 fi
 
-# Wait for PrismCast to exit
+# Wait for PrismCast to exit.
 wait $PRISMCAST_PID
 EXIT_CODE=$?
 
-# Clean up tail process
+# Clean up the tail process if it was started.
 if [ -n "$TAIL_PID" ]; then
-    kill $TAIL_PID 2>/dev/null || true
+  kill $TAIL_PID 2>/dev/null || true
 fi
 
 exit $EXIT_CODE

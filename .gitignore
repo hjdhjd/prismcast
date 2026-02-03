@@ -86,9 +86,10 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variables file
+# dotenv environment variables file.
 .env
 .env.test
+prismcast.env
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

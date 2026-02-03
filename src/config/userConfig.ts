@@ -96,7 +96,8 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
     },
     {
 
-      description: "Delay after browser launch for the puppeteer-stream extension to initialize. Increase if streams start with blank frames.",
+      description: "Maximum wait after browser launch for the puppeteer-stream extension to initialize. The system polls for readiness and proceeds " +
+        "early when ready. Increase if streams start with blank frames.",
       displayDivisor: 1000,
       displayUnit: "seconds",
       envVar: "BROWSER_INIT_TIMEOUT",
@@ -248,7 +249,8 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
     },
     {
 
-      description: "Delay after clicking video element to initiate playback on Brightcove-based players.",
+      description: "Delay after clicking video element to initiate playback on Brightcove-based players. Currently unused — waitForVideoReady() " +
+        "handles the wait automatically.",
       displayDivisor: 1000,
       displayUnit: "seconds",
       envVar: "CLICK_TO_PLAY_DELAY",

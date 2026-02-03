@@ -15,9 +15,7 @@ import { getStream } from "./registry.js";
  * channelToStreamId in lifecycle.ts — a lookup index maintained alongside the registry but owned by a different module.
  */
 
-// ─────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────
+// Types.
 
 /**
  * Client type classification by protocol.
@@ -63,23 +61,17 @@ export interface ClientSummary {
   total: number;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────
+// Constants.
 
 // HLS clients that have not sent a playlist request within this window are considered disconnected and removed during the next summary query.
 const HLS_CLIENT_TTL = 30000;
 
-// ─────────────────────────────────────────────────────────────
-// State
-// ─────────────────────────────────────────────────────────────
+// State.
 
 // Per-stream client maps. Outer key is numeric stream ID, inner key is a composite string "protocol:address".
 const clientMaps = new Map<number, Map<string, StreamClient>>();
 
-// ─────────────────────────────────────────────────────────────
-// Registration
-// ─────────────────────────────────────────────────────────────
+// Registration.
 
 /**
  * Normalizes an IP address by stripping the IPv6-mapped IPv4 prefix. This prevents the same client from appearing twice when Express reports the address as
@@ -154,9 +146,7 @@ export function unregisterClient(streamId: number, clientAddress: string, protoc
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Summary
-// ─────────────────────────────────────────────────────────────
+// Summary.
 
 /**
  * Returns an aggregated client summary for a stream. Performs lazy TTL cleanup of stale HLS clients as a side effect — entries that have not been refreshed within
@@ -215,9 +205,7 @@ export function getClientSummary(streamId: number): ClientSummary {
   return { clients: result, total: clients.size };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Cleanup
-// ─────────────────────────────────────────────────────────────
+// Cleanup.
 
 /**
  * Removes all client tracking data for a stream. Called during stream termination to prevent memory leaks.

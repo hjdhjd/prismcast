@@ -64,14 +64,16 @@ If you're already using Chrome Capture for Channels and it's working well for yo
 
 ## Requirements
 
-- **macOS** - PrismCast is developed and tested on macOS. Linux and Windows may work but are untested.
-- **Node.js 22** or later
-- **Google Chrome** (PrismCast will try to find it automatically, or you can specify the path)
+- **macOS, Linux, or Windows** - PrismCast is developed on macOS and also runs on Linux (natively or via Docker) and Windows.
+- **Node.js 22** or later (not required for Docker deployment)
+- **Google Chrome** (PrismCast will try to find it automatically, or you can specify the path; included in the Docker image)
 - **Channels DVR**, **Plex**, or any client that can consume HLS or MPEG-TS streams
 
 ## Installation
 
-The recommended approach is to install PrismCast globally and run it as a system service:
+PrismCast can be installed as a Node.js package or deployed as a Docker container. For Docker, see [Docker / Container Deployment](#docker--container-deployment) below.
+
+The recommended approach for native installation is to install PrismCast globally and run it as a system service:
 
 ```sh
 npm install -g prismcast
@@ -145,84 +147,99 @@ Configuration is stored in `~/.prismcast/config.json` and your TV provider sessi
 
 **macOS** is the primary development and testing platform. PrismCast is thoroughly tested on macOS and should work reliably there.
 
-**Linux and Windows** have built-in support (including service installation), but these platforms are not actively tested. If you'd like to use PrismCast on Linux or Windows, you're welcome to try it, but please understand that you may encounter issues that haven't been discovered yet. Bug reports and pull requests for these platforms are always appreciated!
+**Linux** is supported both natively and via Docker. The Docker image includes everything needed to run PrismCast (Chrome, virtual display, VNC access) and is the recommended approach for Linux server deployments. Native Linux installation works with Node.js and Google Chrome installed manually.
+
+**Windows** is supported and users have reported success running PrismCast on Windows 11. Windows is not the primary development platform, so bug reports and pull requests are always appreciated.
 
 ## Docker / Container Deployment
 
-> **Note:** Docker deployment is untested. The following guidance is based on the requirements of the underlying technologies (Chrome, Puppeteer) and the approach used by similar projects like [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels). Feedback and contributions welcome!
+PrismCast provides a prebuilt Docker image with everything included: Google Chrome, a virtual display (Xvfb), VNC access, and a browser-based noVNC interface for managing TV provider authentication. The image is available on [Docker Hub](https://hub.docker.com/r/bnhf/prismcast).
 
-PrismCast can run in a Docker container, but requires some specific configuration because it needs a browser with a display.
+### Quick Start with Docker Compose
 
-### Requirements
+The repository includes a ready-to-use Docker Compose file. This is the recommended approach for Docker deployments.
 
-- **Google Chrome** (not Chromium) - PrismCast uses Chrome-specific APIs for media capture
-- **Virtual display** - Chrome needs a display; use Xvfb or expose VNC for remote access
-- **Shared memory** - Chrome requires adequate shared memory (`--shm-size=1g` recommended)
-- **Persistent storage** - Mount a volume for `~/.prismcast` to preserve TV provider logins across container restarts
+1. Download the compose file and environment template:
 
-### Example Dockerfile
-
-```dockerfile
-FROM node:22-slim
-
-# Install Chrome and Xvfb
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    xvfb \
-    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install PrismCast
-RUN npm install -g prismcast
-
-# Set Chrome path
-ENV CHROME_BIN=/usr/bin/google-chrome-stable
-
-# Expose the web interface and HDHomeRun emulation port
-EXPOSE 5589 5004
-
-# Run with virtual framebuffer
-CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1920x1080x24", "prismcast"]
+```bash
+curl -O https://raw.githubusercontent.com/hjdhjd/prismcast/main/prismcast.yaml
+curl -O https://raw.githubusercontent.com/hjdhjd/prismcast/main/prismcast.env.example
 ```
 
-### Running the Container
+2. Optionally, copy the environment template and customize it:
+
+```bash
+cp prismcast.env.example prismcast.env
+```
+
+3. Start the container:
+
+```bash
+docker compose -f prismcast.yaml up -d
+```
+
+4. Open `http://localhost:5589` for the PrismCast web interface and `http://localhost:6080/vnc.html` for browser-based VNC access to Chrome.
+
+### Quick Start with Docker Run
+
+If you prefer not to use Docker Compose:
 
 ```bash
 docker run -d \
   --name prismcast \
   --shm-size=1g \
   -p 5589:5589 \
+  -p 5900:5900 \
+  -p 6080:6080 \
   -p 5004:5004 \
   -v prismcast-data:/root/.prismcast \
-  your-prismcast-image
+  bnhf/prismcast:latest
 ```
 
-### Authentication Considerations
+### Ports
 
-TV provider authentication requires interacting with the Chrome browser. Options include:
+| Port | Service | Description |
+|------|---------|-------------|
+| 5589 | PrismCast | Web interface and HLS/MPEG-TS streaming |
+| 5900 | VNC | Direct VNC access to the Chrome browser |
+| 6080 | noVNC | Browser-based VNC access (no VNC client needed) |
+| 5004 | HDHomeRun | HDHomeRun emulation for Plex |
 
-1. **VNC access** - Add a VNC server to your container and expose port 5900 for remote desktop access during login
-2. **Pre-authenticated volume** - Authenticate on a local machine, then copy the `~/.prismcast/chromedata` directory into your container volume
-3. **X11 forwarding** - Forward the display to your local machine during initial setup
+### TV Provider Authentication
+
+TV provider authentication requires interacting with the Chrome browser running inside the container. The container includes two built-in options:
+
+1. **noVNC (recommended)** - Open `http://localhost:6080/vnc.html` in any browser for a web-based view of the Chrome instance. No VNC client needed. Use this to complete TV provider logins, then return to the PrismCast web interface and click "Done" on the channel.
+2. **VNC** - Connect any VNC client to `localhost:5900` for direct access. Set the `NOVNC_PASSWORD` environment variable to require a password for VNC connections.
+
+Your TV provider sessions are stored in the persistent volume and survive container restarts.
 
 ### Display Resolution
 
-The Xvfb resolution must match or exceed your configured quality preset:
+The virtual display resolution must match or exceed your configured quality preset. The default is 1920x1080, which supports all presets up to 1080p High. Adjust `SCREEN_WIDTH` and `SCREEN_HEIGHT` if you need a different resolution.
 
-| Preset | Minimum Xvfb Resolution |
-|--------|------------------------|
+| Preset | Minimum Resolution |
+|--------|-------------------|
 | 480p | 854x480 |
 | 720p / 720p High | 1280x720 |
 | 1080p / 1080p High | 1920x1080 |
 | 4K | 3840x2160 |
 
-### Environment Variables
+### Container Environment Variables
 
-PrismCast can be configured entirely via environment variables, which is ideal for containerized deployments:
+The container accepts environment variables for both the virtual display and PrismCast itself. Display variables are set in the compose file's `environment:` section or via `-e` flags with `docker run`. PrismCast variables can be set the same way.
+
+**Display and VNC:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISPLAY_NUM` | 99 | X11 display number |
+| `SCREEN_WIDTH` | 1920 | Virtual display width in pixels |
+| `SCREEN_HEIGHT` | 1080 | Virtual display height in pixels |
+| `SCREEN_DEPTH` | 24 | Virtual display color depth |
+| `NOVNC_PASSWORD` | (none) | Password for VNC/noVNC access. If unset, VNC is open without authentication. |
+
+**PrismCast:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -242,20 +259,28 @@ PrismCast can be configured entirely via environment variables, which is ideal f
 | `HLS_IDLE_TIMEOUT` | 30000 | Idle stream timeout in milliseconds |
 | `MAX_CONCURRENT_STREAMS` | 10 | Maximum simultaneous streams |
 
-Example with environment variables:
+### Persistent Storage
+
+The compose file mounts a Docker volume at `/root/.prismcast`, which stores:
+
+- **Configuration** - `config.json` with all PrismCast settings
+- **Custom channels** - `channels.json` with user-defined channel definitions
+- **Chrome profile** - TV provider login sessions and cookies
+- **Logs** - `prismcast.log` for troubleshooting
+
+This volume persists across container restarts and image updates. Back up this volume to preserve your configuration and login sessions.
+
+### Building from Source
+
+If you prefer to build the Docker image yourself:
 
 ```bash
-docker run -d \
-  --name prismcast \
-  --shm-size=1g \
-  -p 5589:5589 \
-  -p 5004:5004 \
-  -v prismcast-data:/root/.prismcast \
-  -e QUALITY_PRESET=1080p \
-  -e VIDEO_BITRATE=15000000 \
-  -e MAX_CONCURRENT_STREAMS=5 \
-  your-prismcast-image
+git clone https://github.com/hjdhjd/prismcast.git
+cd prismcast
+docker buildx build --platform linux/amd64 -f Dockerfile -t prismcast:local .
 ```
+
+Then use `prismcast:local` as the image name in your compose file or `docker run` command.
 
 ## Contributing
 

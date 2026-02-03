@@ -1391,7 +1391,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Profile reference section (hidden by default, toggled via link in profile dropdown hint).
   lines.push(generateProfileReference(profiles));
 
-  // Channels table. Disabled predefined channels are hidden by default and revealed via the "Show disabled" toggle.
+  // Channels table. Disabled predefined channels are hidden by default and revealed via the "Show disabled" toggle. The wrapper div enables horizontal scrolling on
+  // small screens.
+  lines.push("<div class=\"channel-table-wrapper\">");
   lines.push("<table class=\"channel-table hide-disabled\">");
   lines.push("<thead>");
   lines.push("<tr>");
@@ -1419,6 +1421,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   lines.push("</tbody>");
   lines.push("</table>");
+  lines.push("</div>");
 
   // Embed channel selector data for datalist population. The client-side JavaScript uses this to offer known selector suggestions when the URL matches a
   // multi-channel site like Disney+ or USA Network.
