@@ -344,18 +344,10 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
     "-hide_banner",
     "-loglevel", "warning",
     "-i", "pipe:0"
-  ];
-
-  // Add seek parameter if configured (skip X seconds to bypass tuning screens)
-  if(CONFIG.streaming.seekSeconds > 0) {
-    ffmpegArgs.push("-ss", String(CONFIG.streaming.seekSeconds));
-  }
-
-  ffmpegArgs.push(
     "-c", "copy",
     "-f", "mpegts",
     "pipe:1"
-  );
+  ];
 
   const ffmpeg = spawn(ffmpegBin, ffmpegArgs, {
 
