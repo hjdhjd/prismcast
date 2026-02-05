@@ -277,10 +277,6 @@ export interface StreamingConfig {
   // Increase for sites with slow-loading video players or heavy pre-roll content. Environment variable: VIDEO_TIMEOUT. Default: 10000ms. Valid range:
   // 1000-600000.
   videoTimeout: number;
-
-  // Seek between 1-10 seconds into the start of the stream to bypass inital tuning video being passed onto the client. Environment variable: FFMPEG_SEEK_SECONDS.
-  // Default: 0. Valid Range 1-10.
-  seekSeconds: number;
 }
 
 /**
@@ -751,6 +747,7 @@ export interface StreamListResponse {
  * - "none": No channel selection needed (single-channel sites). This is the default.
  * - "thumbnailRow": Find channel by matching image URL slug, click adjacent element on the same row. Used by USA Network.
  * - "tileClick": Find channel tile by matching image URL slug, click tile, then click play button on modal. Used by Disney+ live channels.
+ * - "tileClickDirect": Find channel tile by matching image URL slug, click tile and expect immediate video playback. Used by Kayo Sports.
  */
 export type ChannelSelectionStrategy = "none" | "tileClick" | "tileClickDirect" | "thumbnailRow";
 

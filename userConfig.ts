@@ -560,16 +560,6 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       path: "streaming.videoTimeout",
       type: "integer",
       unit: "ms"
-    },
-    {
-      description: "Skip the first X seconds of video to bypass tuning screens. 0 disables seeking.",
-      envVar: "FFMPEG_SEEK_SECONDS",
-      label: "FFmpeg Seek Seconds",
-      max: 10,
-      min: 0,
-      path: "streaming.seekSeconds",
-      type: "integer",
-      unit: "seconds"
     }
   ]
 };
@@ -662,7 +652,6 @@ export interface UserStreamingConfig {
   qualityPreset?: string;
   videoBitsPerSecond?: number;
   videoTimeout?: number;
-  seekSeconds?: number;
 }
 
 /**
@@ -922,8 +911,7 @@ export const DEFAULTS: Config = {
     navigationTimeout: 10000,
     qualityPreset: "720p-high",
     videoBitsPerSecond: 12000000,
-    videoTimeout: 10000,
-    seekSeconds: 0
+    videoTimeout: 10000
   }
 };
 

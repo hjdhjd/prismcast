@@ -11,7 +11,6 @@ import ffmpegForHomebridge from "ffmpeg-for-homebridge";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { CONFIG } from "../config/index.js";
 
 // The ffmpeg-for-homebridge package has incorrect type definitions (declares named export but JS uses default export). Cast to the correct type.
 const ffmpegPath = ffmpegForHomebridge as unknown as string | undefined;
@@ -205,22 +204,14 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
-    "-i", "pipe:0"
-  ];
-
-  // Add seek parameter if configured (skip X seconds to bypass tuning screens)
-  if(CONFIG.streaming.seekSeconds > 0) {
-    ffmpegArgs.push("-ss", String(CONFIG.streaming.seekSeconds));
-  }
-
-  ffmpegArgs.push(
+    "-i", "pipe:0",
     "-c:v", "copy",
     "-c:a", aacEncoder,
     "-b:a", String(audioBitrate),
     "-f", "mp4",
     "-movflags", "frag_keyframe+empty_moov+default_base_moof+skip_sidx+skip_trailer",
     "-flush_packets", "1"
-  );
+  ];
 
   // Add metadata comment if provided. This embeds "PrismCast - <channel>" in the output for identification.
   if(comment) {
@@ -343,7 +334,8 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
-    "-i", "pipe:0"
+    "-f", "mp4",
+    "-i", "pipe:0",
     "-c", "copy",
     "-f", "mpegts",
     "pipe:1"
