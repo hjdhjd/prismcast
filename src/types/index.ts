@@ -328,10 +328,22 @@ export interface Config {
  */
 
 /**
+ * UI category for profile grouping in dropdowns and reference documentation. Profiles are grouped by their fullscreen mechanism and special characteristics.
+ * - "api": Profiles using the JavaScript fullscreen API (including embedded iframe and click-to-play variants).
+ * - "keyboard": Profiles using keyboard shortcuts (typically the 'f' key) for fullscreen.
+ * - "multiChannel": Multi-channel profiles requiring a channel selector for tile or thumbnail-based channel selection.
+ * - "special": Special-purpose profiles like static page capture.
+ */
+export type ProfileCategory = "api" | "keyboard" | "multiChannel" | "special";
+
+/**
  * Site profile definition with optional flags. All flags are optional because profiles can inherit from other profiles, and only the flags that differ from the
  * parent need to be specified. The DEFAULT_SITE_PROFILE provides baseline values for any flags not set through inheritance.
  */
 export interface SiteProfile {
+
+  // UI category for grouping this profile in dropdowns and reference documentation. This is metadata only - it's stripped during profile resolution.
+  category?: ProfileCategory;
 
   // Configuration for channel selection behavior on multi-channel sites. When set, determines how to find and click the desired channel in the site's UI. The
   // strategy property specifies the algorithm used to locate the channel element.

@@ -2,7 +2,7 @@
  *
  * profiles.ts: Site profiles and domain mappings for PrismCast.
  */
-import type { ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
+import type { ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
 import { CHANNELS } from "../channels/index.js";
 
 /*
@@ -64,11 +64,12 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // because these sites serve video directly in the main page and have persistent connections that prevent network idle.
   apiMultiVideo: {
 
+    category: "multiChannel",
     channelSelection: { strategy: "tileClick" },
-    description: "Multi-channel live TV pages requiring tile-based channel selection with API fullscreen.",
+    description: "Multi-channel sites with tile-based channel grid. Requires Channel Selector set to the CSS selector for the channel tile.",
     extends: "fullscreenApi",
     selectReadyVideo: true,
-    summary: "Multi-channel live TV (tile selection)"
+    summary: "Multi-channel (tile selection, needs selector)"
   },
 
   // Profile for sites using the Brightcove player platform. Brightcove players require waiting for network activity to settle before the video player is fully
@@ -76,6 +77,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // it's ready. Uses the JavaScript fullscreen API rather than keyboard shortcuts because Brightcove intercepts keyboard events.
   brightcove: {
 
+    category: "api",
     description: "Brightcove player sites requiring network idle wait and API fullscreen.",
     extends: "fullscreenApi",
     summary: "Brightcove players (network wait)",
@@ -86,6 +88,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // selectReadyVideo flag ensures we find the video with actual content rather than an ad placeholder. Combines iframe handling with API-based fullscreen.
   embeddedDynamicMultiVideo: {
 
+    category: "api",
     description: "Iframe-embedded players with multiple video elements requiring network idle wait.",
     extends: "embeddedPlayer",
     selectReadyVideo: true,
@@ -97,6 +100,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // to isolate ad content and use programmatic fullscreen rather than keyboard shortcuts. This profile combines iframe handling with API-based fullscreen.
   embeddedPlayer: {
 
+    category: "api",
     description: "Intermediate base profile for iframe-embedded players using fullscreen API.",
     extends: "fullscreenApi",
     needsIframeHandling: true,
@@ -108,6 +112,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // preventing the site from re-muting the video.
   embeddedVolumeLock: {
 
+    category: "api",
     description: "Iframe-embedded players that aggressively mute audio after page load.",
     extends: "embeddedPlayer",
     lockVolumeProperties: true,
@@ -119,6 +124,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // handling and reliably enters fullscreen mode.
   fullscreenApi: {
 
+    category: "api",
     description: "Base profile for sites requiring the JavaScript fullscreen API.",
     summary: "Sites needing JavaScript fullscreen",
     useRequestFullscreen: true
@@ -128,6 +134,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // load their player and content. The waitForNetworkIdle flag ensures we don't try to interact with the player until all initial network requests have completed.
   keyboardDynamic: {
 
+    category: "keyboard",
     description: "Keyboard fullscreen sites requiring network idle wait for dynamic content loading.",
     extends: "keyboardFullscreen",
     summary: "Dynamic sites ('f' key fullscreen)",
@@ -139,17 +146,19 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // idle wait behavior. Uses thumbnailRow strategy for channel selection (find channel by thumbnail image URL, click adjacent show entry).
   keyboardDynamicMultiVideo: {
 
+    category: "multiChannel",
     channelSelection: { strategy: "thumbnailRow" },
-    description: "Multi-channel keyboard players requiring network idle wait and video selection.",
+    description: "Multi-channel sites with thumbnail row layout. Requires Channel Selector set to the channel's thumbnail image URL.",
     extends: "keyboardDynamic",
     selectReadyVideo: true,
-    summary: "Multi-channel dynamic players"
+    summary: "Multi-channel (thumbnail row, needs selector)"
   },
 
   // Base profile for sites that respond to the f key for fullscreen toggle. This is the most common fullscreen mechanism, following YouTube-style keyboard
   // shortcuts. The f key is sent as a keyboard event to the page, triggering the player's built-in fullscreen toggle. This works with most standard video players.
   keyboardFullscreen: {
 
+    category: "keyboard",
     description: "Base profile for sites that respond to the f key for fullscreen toggle.",
     fullscreenKey: "f",
     summary: "Standard 'f' key fullscreen"
@@ -159,6 +168,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // through all frames to find it. Once found, the player responds to the standard f key for fullscreen.
   keyboardIframe: {
 
+    category: "keyboard",
     description: "Keyboard fullscreen sites with video embedded in iframes.",
     extends: "keyboardFullscreen",
     needsIframeHandling: true,
@@ -169,6 +179,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // the video element that has actually loaded playable data (readyState >= 3) rather than just taking the first video element.
   keyboardMultiVideo: {
 
+    category: "keyboard",
     description: "Keyboard fullscreen sites with multiple video elements requiring ready-state selection.",
     extends: "keyboardFullscreen",
     selectReadyVideo: true,
@@ -179,6 +190,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // diagnostic pages. The noVideo flag tells the streaming code not to wait for a video element or set up playback monitoring - just capture whatever is displayed.
   staticPage: {
 
+    category: "special",
     description: "Base profile for non-video pages captured as static visual content.",
     noVideo: true,
     summary: "Static pages (no video)"
@@ -343,10 +355,10 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
     resolved = { ...resolved, ...parent };
   }
 
-  // Apply current profile properties, excluding metadata fields that should not be inherited. The description and extends properties are for documentation and
-  // inheritance specification only - they should not appear in the resolved profile.
+  // Apply current profile properties, excluding metadata fields that should not be in the resolved profile. The category, description, extends, and summary
+  // properties are for UI categorization, documentation, inheritance specification, and UI display only.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { description: _description, extends: _extends, ...profileFlags } = profile;
+  const { category: _category, description: _description, extends: _extends, summary: _summary, ...profileFlags } = profile;
 
   resolved = { ...resolved, ...profileFlags };
 
@@ -542,9 +554,12 @@ export function validateProfiles(): void {
  */
 
 /**
- * Profile information for UI display, including name, description, and summary.
+ * Profile information for UI display, including name, description, category, and summary.
  */
 export interface ProfileInfo {
+
+  // UI category for grouping in dropdowns and reference documentation.
+  category: ProfileCategory;
 
   // Human-readable description of the profile's purpose.
   description: string;
@@ -557,8 +572,8 @@ export interface ProfileInfo {
 }
 
 /**
- * Returns all profiles with their descriptions and summaries, sorted alphabetically by name. Used by the channel configuration UI to populate the profile
- * dropdown with tooltips and the profile reference section.
+ * Returns all profiles with their descriptions, categories, and summaries, sorted alphabetically by name. Used by the channel configuration UI to populate the
+ * profile dropdown with tooltips and the profile reference section.
  * @returns Array of profile info objects.
  */
 export function getProfiles(): ProfileInfo[] {
@@ -569,6 +584,7 @@ export function getProfiles(): ProfileInfo[] {
 
     return {
 
+      category: profile.category ?? "special",
       description: profile.description ?? "",
       name,
       summary: profile.summary ?? profile.description ?? ""
