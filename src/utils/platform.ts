@@ -8,10 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import url from "node:url";
 
-/*
- * PLATFORM DETECTION UTILITIES
- *
- * These utilities provide platform detection and service-related functionality. The isRunningAsService() function checks for an environment variable set by the
+/* These utilities provide platform detection and service-related functionality. The isRunningAsService() function checks for an environment variable set by the
  * service definition, allowing the application to adapt its restart behavior based on whether it's managed by a service manager or running standalone.
  */
 

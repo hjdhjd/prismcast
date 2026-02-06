@@ -16,24 +16,21 @@ import { emitStreamHealthChanged } from "./statusEmitter.js";
 import { getClientSummary } from "./clients.js";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 
-/*
- * PLAYBACK HEALTH MONITORING
- *
- * Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor watches
+/* Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor watches
  * for these failures and attempts recovery. This is essential for unattended DVR recording where the user cannot manually intervene.
  *
  * The monitor runs on a configurable interval (default: 2 seconds) and performs these checks:
  *
- * 1. VIDEO PROGRESSION: Compares currentTime to previous check. If currentTime has not advanced by at least STALL_THRESHOLD (0.1 seconds), the video is considered
+ * 1. Video progression: Compares currentTime to previous check. If currentTime has not advanced by at least STALL_THRESHOLD (0.1 seconds), the video is considered
  *    stalled. However, a single stall is not enough to trigger recovery - we require STALL_COUNT_THRESHOLD (2) consecutive stalls to avoid reacting to momentary
  *    hiccups.
  *
- * 2. BUFFERING DETECTION: Checks readyState and networkState to detect active buffering. Live streams occasionally buffer due to network conditions, so we allow a
+ * 2. Buffering detection: Checks readyState and networkState to detect active buffering. Live streams occasionally buffer due to network conditions, so we allow a
  *    BUFFERING_GRACE_PERIOD (default 10 seconds) before declaring a stall. This prevents unnecessary recovery during normal buffering.
  *
- * 3. VOLUME ENFORCEMENT: Some sites aggressively mute videos (e.g., France24). The monitor checks and restores volume on every interval to ensure audio capture.
+ * 3. Volume enforcement: Some sites aggressively mute videos (e.g., France24). The monitor checks and restores volume on every interval to ensure audio capture.
  *
- * 4. ISSUE-AWARE RECOVERY: When issues are detected, recovery is tailored to the issue type:
+ * 4. Issue-aware recovery: When issues are detected, recovery is tailored to the issue type:
  *    - Paused issues: Try Level 1 (play/unmute) first, then escalate to Level 2 if that fails
  *    - Buffering issues: Skip Level 1 (ineffective for buffering) and go directly to Level 2
  *    - If Level 2 has already been attempted, skip to Level 3 (second L2 attempts always fail)
@@ -43,13 +40,13 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
  *    - Level 2: Reload video source (first attempt has ~58% success rate)
  *    - Level 3: Full page navigation (always succeeds)
  *
- * 5. CIRCUIT BREAKER: If too many failures occur within a time window (default: 10 failures in 5 minutes), the stream is considered fundamentally broken and the
+ * 5. Circuit breaker: If too many failures occur within a time window (default: 10 failures in 5 minutes), the stream is considered fundamentally broken and the
  *    circuit breaker trips, terminating the stream. This prevents endless recovery attempts that consume resources.
  *
- * 6. ESCALATION RESET: After SUSTAINED_PLAYBACK_REQUIRED (60 seconds) of healthy playback, the escalation level resets to 0, the source reload tracking clears,
+ * 6. Escalation reset: After SUSTAINED_PLAYBACK_REQUIRED (60 seconds) of healthy playback, the escalation level resets to 0, the source reload tracking clears,
  *    and the circuit breaker resets. This allows a stream that recovered to start fresh, rather than immediately escalating to aggressive recovery on the next issue.
  *
- * 7. WINDOW RE-MINIMIZE: Recovery actions (especially fullscreen) can cause the browser window to un-minimize. After the recovery grace period passes and the first
+ * 7. Window re-minimize: Recovery actions (especially fullscreen) can cause the browser window to un-minimize. After the recovery grace period passes and the first
  *    healthy check occurs, the window is re-minimized to reduce GPU usage. This happens sooner than the escalation reset (~5-10 seconds vs 60 seconds) because we
  *    don't need to wait for sustained playback to determine the window can be minimized.
  *
@@ -57,10 +54,7 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
  * reference to the new video context.
  */
 
-/*
- * RECOVERY METRICS
- *
- * The monitor tracks recovery statistics throughout the stream's lifetime. These metrics are returned when the monitor is stopped and included in the stream
+/* The monitor tracks recovery statistics throughout the stream's lifetime. These metrics are returned when the monitor is stopped and included in the stream
  * termination log for analytics and troubleshooting.
  */
 
@@ -107,10 +101,7 @@ const RECOVERY_METHODS = {
 // Type for recovery method values.
 type RecoveryMethodValue = typeof RECOVERY_METHODS[keyof typeof RECOVERY_METHODS];
 
-/*
- * RECOVERY METRICS FIELD MAPPING
- *
- * These mappings connect recovery method names to their corresponding counter fields in RecoveryMetrics. Using a mapping pattern instead of if/else chains:
+/* These mappings connect recovery method names to their corresponding counter fields in RecoveryMetrics. Using a mapping pattern instead of if/else chains:
  * - Reduces code duplication in recordRecoveryAttempt() and recordRecoverySuccess()
  * - Makes adding new recovery methods trivial (add one entry to each map)
  * - Ensures consistency between attempt and success counting

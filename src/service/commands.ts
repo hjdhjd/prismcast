@@ -24,10 +24,7 @@ interface StreamsResponse {
   }>;
 }
 
-/*
- * SERVICE COMMAND HANDLERS
- *
- * These handlers implement the `prismcast service` subcommands for installing, uninstalling, and checking the status of PrismCast as a system service. Each handler
+/* These handlers implement the `prismcast service` subcommands for installing, uninstalling, and checking the status of PrismCast as a system service. Each handler
  * prints its output directly to the console and exits with an appropriate status code.
  */
 

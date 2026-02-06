@@ -4,10 +4,7 @@
  */
 import type { Nullable } from "../types/index.js";
 
-/*
- * DISPLAY DIMENSION CACHE
- *
- * This module provides a simple cache for display-related dimensions detected during browser initialization. Two sets of values are cached:
+/* This module provides a simple cache for display-related dimensions detected during browser initialization. Two sets of values are cached:
  *
  * 1. Maximum supported viewport: The largest viewport that fits on the display after accounting for browser chrome. Used by the preset system to determine if the
  *    configured preset needs to be degraded.

@@ -8,10 +8,7 @@ import { buildChannelMap } from "./channelMap.js";
 import { getAllStreams } from "../streaming/registry.js";
 import { getPackageVersion } from "../utils/index.js";
 
-/*
- * HDHOMERUN DISCOVERY AND STATUS ENDPOINTS
- *
- * These endpoints implement the HDHomeRun HTTP API that Plex and other clients use to identify, configure, and monitor tuners. Plex does not auto-detect emulated
+/* These endpoints implement the HDHomeRun HTTP API that Plex and other clients use to identify, configure, and monitor tuners. Plex does not auto-detect emulated
  * tuners on non-standard ports — users must manually enter the address (IP:port) in Plex's DVR setup. The core discovery endpoints are device.xml (UPnP device
  * description), discover.json (device identity), lineup.json (channel lineup), and lineup_status.json (scan status). Additional endpoints include lineup.post
  * (scan control acknowledgement) and status.json (real-time tuner activity for monitoring dashboards).

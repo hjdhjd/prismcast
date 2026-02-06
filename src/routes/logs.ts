@@ -11,10 +11,7 @@ import path from "path";
 
 const { promises: fsPromises } = fs;
 
-/*
- * LOG ENTRY TYPES
- *
- * Log entries are parsed from the log file format: [YYYY/MM/DD HH:MM:ss.l] [LEVEL] message
+/* Log entries are parsed from the log file format: [YYYY/MM/DD HH:MM:ss.l] [LEVEL] message
  * The level prefix is present for debug, warn, and error entries; info entries have no prefix.
  */
 
@@ -33,10 +30,7 @@ interface LogsResponse {
   total: number;
 }
 
-/*
- * LOG FILE PARSING
- *
- * The log file uses a consistent format that can be parsed with a regular expression. Each line starts with a bracketed timestamp, optionally followed by a bracketed
+/* The log file uses a consistent format that can be parsed with a regular expression. Each line starts with a bracketed timestamp, optionally followed by a bracketed
  * level indicator, then the message content. Log files may contain ANSI color codes for terminal viewing, which are stripped before parsing.
  */
 
@@ -153,10 +147,7 @@ async function readLogEntries(lines: number, levelFilter?: string): Promise<Logs
   }
 }
 
-/*
- * LOGS ENDPOINT
- *
- * The /logs endpoint provides access to recent application log entries. It supports query parameters for filtering and limiting results, and returns JSON data
+/* The /logs endpoint provides access to recent application log entries. It supports query parameters for filtering and limiting results, and returns JSON data
  * suitable for both API consumption and the landing page log viewer.
  */
 
@@ -191,10 +182,7 @@ export function setupLogsEndpoint(app: Express): void {
     }
   });
 
-  /*
-   * SSE LOG STREAM ENDPOINT
-   *
-   * The /logs/stream endpoint provides real-time log entries via Server-Sent Events. Connected clients receive log entries as they are written, eliminating the need
+  /* The /logs/stream endpoint provides real-time log entries via Server-Sent Events. Connected clients receive log entries as they are written, eliminating the need
    * for polling. The connection remains open until the client disconnects.
    */
 

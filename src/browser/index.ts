@@ -22,10 +22,7 @@ import { terminateStream } from "../streaming/lifecycle.js";
 
 const { promises: fsPromises } = fs;
 
-/*
- * APPLICATION STATE
- *
- * Global variables maintain the application's runtime state across all operations. We minimize global state where possible, but some values must be shared across
+/* Global variables maintain the application's runtime state across all operations. We minimize global state where possible, but some values must be shared across
  * the application lifecycle:
  *
  * - currentBrowser: The shared browser instance. All streaming sessions use a single Chrome process to avoid the overhead of launching multiple browsers. This is
@@ -73,10 +70,7 @@ export function setGracefulShutdown(value: boolean): void {
   gracefulShutdownInProgress = value;
 }
 
-/*
- * MANAGED PAGE TRACKING
- *
- * We track pages that PrismCast creates to distinguish them from pages that might be opened by other means (manually by the user, by site popups, etc.). Only pages we
+/* We track pages that PrismCast creates to distinguish them from pages that might be opened by other means (manually by the user, by site popups, etc.). Only pages we
  * create should be subject to stale page cleanup. This prevents the cleanup from interfering with pages the user opened for debugging or pages created by
  * streaming sites for authentication flows.
  *
@@ -98,10 +92,7 @@ const managedPageIds = new Set<string>();
 // the configured grace period before being closed. This prevents race conditions where pages are briefly untracked during initialization or cleanup transitions.
 const potentiallyStalePages = new Map<string, number>();
 
-/*
- * LOGIN MODE STATE
- *
- * Login mode allows users to authenticate with TV providers directly from the PrismCast web UI. When login mode is active:
+/* Login mode allows users to authenticate with TV providers directly from the PrismCast web UI. When login mode is active:
  *
  * - A dedicated login tab is open in the browser showing the channel's URL
  * - The browser window is un-minimized so the user can interact with it
@@ -271,10 +262,7 @@ export async function ensureDataDirectory(): Promise<void> {
   }
 }
 
-/*
- * BROWSER MANAGEMENT
- *
- * These functions handle the Chrome browser lifecycle: startup, cleanup, and instance management. The browser is a shared resource used by all streaming sessions,
+/* These functions handle the Chrome browser lifecycle: startup, cleanup, and instance management. The browser is a shared resource used by all streaming sessions,
  * so careful lifecycle management is essential for reliability. Key considerations:
  *
  * - Single browser instance: We use one Chrome process for all streams to minimize resource overhead. Each stream gets its own tab (page) within that browser.
@@ -910,10 +898,7 @@ export async function closeBrowser(): Promise<void> {
   killStaleChrome();
 }
 
-/*
- * LOGIN MODE
- *
- * These functions manage the login mode workflow, allowing users to authenticate with TV providers through the browser. The workflow is:
+/* These functions manage the login mode workflow, allowing users to authenticate with TV providers through the browser. The workflow is:
  *
  * 1. User clicks "Login" on a channel in the web UI
  * 2. startLoginMode() opens a new tab with the channel's URL and un-minimizes the browser
@@ -1080,10 +1065,7 @@ export function getLoginStatus(): LoginStatus {
   };
 }
 
-/*
- * STALE PAGE CLEANUP
- *
- * Over time, browser pages (tabs) may accumulate if cleanup fails during stream termination. This can happen due to race conditions, errors during cleanup, or
+/* Over time, browser pages (tabs) may accumulate if cleanup fails during stream termination. This can happen due to race conditions, errors during cleanup, or
  * edge cases in stream lifecycle management. Each orphaned page consumes memory and may continue running JavaScript, so we periodically clean them up.
  *
  * The cleanup has several safeguards to prevent closing pages that shouldn't be closed:
@@ -1267,10 +1249,7 @@ export function stopStalePageCleanup(): void {
   }
 }
 
-/*
- * EXTENSION PREPARATION
- *
- * When running as a packaged executable (created by the `pkg` tool), the application is bundled into a single binary. Node modules like puppeteer-stream are
+/* When running as a packaged executable (created by the `pkg` tool), the application is bundled into a single binary. Node modules like puppeteer-stream are
  * included in the bundle, but Chrome cannot load extensions from within the packaged binary - it needs actual files on the filesystem.
  *
  * To solve this, we extract the puppeteer-stream extension files to the application's data directory during startup. This happens only when process.pkg is

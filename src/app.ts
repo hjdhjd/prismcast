@@ -22,20 +22,14 @@ import { setupRoutes } from "./routes/index.js";
 import { terminateStream } from "./streaming/lifecycle.js";
 import { validateProfiles } from "./config/profiles.js";
 
-/*
- * LOGGING MODE
- *
- * The logging mode is set at startup based on the --console CLI flag. When console logging is enabled, timestamps are added via console-stamp and output goes to
+/* The logging mode is set at startup based on the --console CLI flag. When console logging is enabled, timestamps are added via console-stamp and output goes to
  * stdout/stderr. When file logging is used (the default), output goes to ~/.prismcast/prismcast.log.
  */
 
 // Track whether console logging is enabled, set during startServer().
 let usingConsoleLogging = false;
 
-/*
- * APPLICATION STATE
- *
- * The HTTP server instance is stored globally so it can be closed during graceful shutdown.
+/* The HTTP server instance is stored globally so it can be closed during graceful shutdown.
  */
 
 let server: Nullable<Server> = null;
@@ -72,10 +66,7 @@ function stopIdleCleanup(): void {
   }
 }
 
-/*
- * GRACEFUL SHUTDOWN
- *
- * When the process receives a termination signal, we close all active streams and the browser before exiting. This ensures resources are released cleanly.
+/* When the process receives a termination signal, we close all active streams and the browser before exiting. This ensures resources are released cleanly.
  */
 
 /**
@@ -153,10 +144,7 @@ function setupGracefulShutdown(): void {
   });
 }
 
-/*
- * APPLICATION BUILDER
- *
- * The buildApp function creates and configures the Express application with all middleware and routes. This is separated from the server startup to allow for
+/* The buildApp function creates and configures the Express application with all middleware and routes. This is separated from the server startup to allow for
  * testing and flexibility in deployment.
  */
 
@@ -306,10 +294,7 @@ async function buildApp(): Promise<Express> {
   return app;
 }
 
-/*
- * SERVER STARTUP
- *
- * The startServer function initializes and starts the HTTP server. It validates configuration, cleans up stale processes, warms up the browser, and starts the
+/* The startServer function initializes and starts the HTTP server. It validates configuration, cleans up stale processes, warms up the browser, and starts the
  * Express application.
  */
 

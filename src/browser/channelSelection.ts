@@ -7,10 +7,7 @@ import { LOG, delay, evaluateWithAbort } from "../utils/index.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
 
-/*
- * CHANNEL SELECTION SYSTEM
- *
- * Multi-channel streaming sites (like USA Network) present multiple channels on a single page, with a program guide for each channel. Users must select which
+/* Multi-channel streaming sites (like USA Network) present multiple channels on a single page, with a program guide for each channel. Users must select which
  * channel they want to watch by clicking on a show in the guide. This module provides a strategy-based system for automating that channel selection.
  *
  * The strategy pattern allows different sites to have different selection mechanisms:
@@ -21,10 +18,7 @@ import type { Page } from "puppeteer-core";
  * delegates to the appropriate strategy based on the profile configuration.
  */
 
-/*
- * HELPER FUNCTIONS
- *
- * These utilities are shared across channel selection strategies. They handle common operations like finding elements, scrolling, and clicking.
+/* These utilities are shared across channel selection strategies. They handle common operations like finding elements, scrolling, and clicking.
  */
 
 /**
@@ -44,10 +38,7 @@ async function scrollAndClick(page: Page, target: ClickTarget): Promise<boolean>
   return true;
 }
 
-/*
- * CHANNEL SELECTION STRATEGIES
- *
- * Each strategy implements a different approach to finding and selecting channels. Strategies are self-contained functions that can be tested independently.
+/* Each strategy implements a different approach to finding and selecting channels. Strategies are self-contained functions that can be tested independently.
  */
 
 /**
@@ -340,10 +331,7 @@ async function tileClickStrategy(page: Page, channelSlug: string): Promise<Chann
   return { success: true };
 }
 
-/*
- * MAIN ENTRY POINT
- *
- * The selectChannel() function is the public API for channel selection. It delegates to the appropriate strategy based on the profile configuration.
+/* The selectChannel() function is the public API for channel selection. It delegates to the appropriate strategy based on the profile configuration.
  */
 
 /**

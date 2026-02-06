@@ -10,10 +10,7 @@ import type { Page } from "puppeteer-core";
 import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./monitor.js";
 
-/*
- * STREAM REGISTRY
- *
- * The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser state,
+/* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser state,
  * HLS segment storage, and the segmenter reference. This consolidation prevents data desync issues that could occur with separate Maps for each concern.
  *
  * The registry enables:

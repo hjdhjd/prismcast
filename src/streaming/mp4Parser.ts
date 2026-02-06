@@ -3,10 +3,7 @@
  * mp4Parser.ts: Low-level MP4 box parsing for PrismCast.
  */
 
-/*
- * MP4 BOX PARSING
- *
- * MP4 files consist of a sequence of "boxes" (also called "atoms"). Each box has a simple structure:
+/* MP4 files consist of a sequence of "boxes" (also called "atoms"). Each box has a simple structure:
  *
  * - 4 bytes: size (big-endian uint32) - total box size including header
  * - 4 bytes: type (4 ASCII characters, e.g., 'ftyp', 'moov', 'moof', 'mdat')
@@ -15,8 +12,6 @@
  * Special case: when size == 1, the next 8 bytes contain a 64-bit extended size.
  *
  * This parser handles streaming input - data arrives in chunks, and we buffer incomplete boxes until we have enough data to emit a complete box.
- *
- * NESTED BOX PARSING
  *
  * Container boxes like moof and traf contain child boxes in their payload. The iterateChildBoxes() function walks these children, and detectMoofKeyframe() uses it to
  * parse traf -> tfhd/trun structures for keyframe detection. This supports the fMP4 segmenter's ability to track keyframe frequency and verify that segments start with

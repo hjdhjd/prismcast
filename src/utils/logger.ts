@@ -8,10 +8,7 @@ import { format } from "util";
 import { getStreamId } from "./streamContext.js";
 import { writeLogEntry } from "./fileLogger.js";
 
-/*
- * ANSI COLOR CODES
- *
- * Terminal color codes for log output formatting. Warnings appear in yellow and errors in red, making it easy to spot issues when scanning log output. The reset
+/* Terminal color codes for log output formatting. Warnings appear in yellow and errors in red, making it easy to spot issues when scanning log output. The reset
  * code restores the default color after each colored message to prevent color bleeding into subsequent output.
  */
 
@@ -23,10 +20,7 @@ const ANSI_COLORS = {
   yellow: "\x1b[33m"
 };
 
-/*
- * LOGGING MODE
- *
- * The logger can operate in two modes: console mode (output to stdout/stderr with colors) or file mode (output to ~/.prismcast/prismcast.log). By default, file mode
+/* The logger can operate in two modes: console mode (output to stdout/stderr with colors) or file mode (output to ~/.prismcast/prismcast.log). By default, file mode
  * is used. Console mode is enabled via the --console CLI flag for Docker deployments or interactive debugging.
  */
 
@@ -51,10 +45,7 @@ export function isConsoleLogging(): boolean {
   return useConsoleLogging;
 }
 
-/*
- * DEBUG MODE
- *
- * Debug logging is disabled by default to reduce noise. When enabled via the --debug CLI flag, LOG.debug() messages are included in output. This is useful for
+/* Debug logging is disabled by default to reduce noise. When enabled via the --debug CLI flag, LOG.debug() messages are included in output. This is useful for
  * troubleshooting FFmpeg issues, timing problems, and other low-level concerns that aren't relevant during normal operation.
  */
 
@@ -79,10 +70,7 @@ export function isDebugLogging(): boolean {
   return debugEnabled;
 }
 
-/*
- * LOGGING UTILITIES
- *
- * The LOG object provides a centralized logging interface with color-coded output and printf-style format strings. All methods accept a format string followed by
+/* The LOG object provides a centralized logging interface with color-coded output and printf-style format strings. All methods accept a format string followed by
  * optional arguments, using Node's util.format() for interpolation. Supported format specifiers include %s (string), %d (number), %j (JSON), and %o (object).
  *
  * Stream context is automatically detected via AsyncLocalStorage. When running within a stream context (established by runWithStreamContext()), log messages are

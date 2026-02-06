@@ -23,10 +23,7 @@ import { createHash } from "node:crypto";
 import { registerClient } from "./clients.js";
 import { triggerShowNameUpdate } from "./showInfo.js";
 
-/*
- * HLS STREAMING
- *
- * This module handles HLS (HTTP Live Streaming) output using fMP4 (fragmented MP4) segments. HLS mode uses MP4/AAC capture from puppeteer-stream, which is then
+/* This module handles HLS (HTTP Live Streaming) output using fMP4 (fragmented MP4) segments. HLS mode uses MP4/AAC capture from puppeteer-stream, which is then
  * segmented natively without any external dependencies. The overall flow is:
  *
  * 1. Client requests playlist at /hls/:name/stream.m3u8 (predefined channel) or /play?url=...&profile=... (ad-hoc URL)

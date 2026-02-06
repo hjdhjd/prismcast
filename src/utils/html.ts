@@ -3,10 +3,7 @@
  * html.ts: HTML utilities for PrismCast.
  */
 
-/*
- * HTML ESCAPING
- *
- * This utility provides HTML escaping for safely embedding dynamic content in HTML responses.
+/* This utility provides HTML escaping for safely embedding dynamic content in HTML responses.
  */
 
 /**

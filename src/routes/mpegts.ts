@@ -5,10 +5,7 @@
 import type { Express } from "express";
 import { handleMpegTsStream } from "../streaming/mpegts.js";
 
-/*
- * MPEG-TS ROUTES
- *
- * This module registers the HTTP route for MPEG-TS streaming:
+/* This module registers the HTTP route for MPEG-TS streaming:
  *
  * - GET /stream/:name - Returns a continuous MPEG-TS byte stream for a channel (starts stream if needed)
  *

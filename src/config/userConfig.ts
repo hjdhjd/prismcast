@@ -11,10 +11,7 @@ import path from "node:path";
 
 const { promises: fsPromises } = fs;
 
-/*
- * USER CONFIGURATION FILE
- *
- * PrismCast stores user configuration in ~/.prismcast/config.json. This file allows users to customize settings without using environment variables. The
+/* PrismCast stores user configuration in ~/.prismcast/config.json. This file allows users to customize settings without using environment variables. The
  * configuration system uses a layered approach:
  *
  * 1. Hard-coded defaults (defined in DEFAULTS)
@@ -25,10 +22,7 @@ const { promises: fsPromises } = fs;
  * convenience. The web UI at /config provides a user-friendly interface for editing the config file.
  */
 
-/*
- * SETTING METADATA
- *
- * Each configurable setting has metadata describing its type, valid range, environment variable name, and human-readable description. This metadata is used by the
+/* Each configurable setting has metadata describing its type, valid range, environment variable name, and human-readable description. This metadata is used by the
  * /config web UI to render appropriate form fields and validation, and by the validation system to check values before saving.
  */
 
@@ -564,10 +558,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
   ]
 };
 
-/*
- * USER CONFIG TYPES
- *
- * The user config file stores partial configuration - only the settings that differ from defaults. All fields are optional because missing fields use defaults.
+/* The user config file stores partial configuration - only the settings that differ from defaults. All fields are optional because missing fields use defaults.
  */
 
 /**
@@ -705,10 +696,7 @@ export interface UserConfigLoadResult {
   parseErrorMessage?: string;
 }
 
-/*
- * CONFIG FILE PATH
- *
- * The config file is stored in the same data directory as the Chrome profile (~/.prismcast).
+/* The config file is stored in the same data directory as the Chrome profile (~/.prismcast).
  */
 
 const dataDir = path.join(os.homedir(), ".prismcast");
@@ -723,10 +711,7 @@ export function getConfigFilePath(): string {
   return configFilePath;
 }
 
-/*
- * CONFIG FILE OPERATIONS
- *
- * These functions handle reading and writing the config file. All operations are async and handle errors gracefully.
+/* These functions handle reading and writing the config file. All operations are async and handle errors gracefully.
  */
 
 /**
@@ -786,10 +771,7 @@ export async function saveUserConfig(config: UserConfig): Promise<void> {
   LOG.info("Configuration saved to %s.", configFilePath);
 }
 
-/*
- * ENVIRONMENT VARIABLE DETECTION
- *
- * These functions detect which settings are overridden by environment variables, so the UI can disable those fields and show appropriate warnings.
+/* These functions detect which settings are overridden by environment variables, so the UI can disable those fields and show appropriate warnings.
  */
 
 /**
@@ -816,10 +798,7 @@ export function getEnvOverrides(): Map<string, string> {
   return overrides;
 }
 
-/*
- * CONFIGURATION MERGING
- *
- * These functions merge defaults, user config, and environment overrides into the final CONFIG object.
+/* These functions merge defaults, user config, and environment overrides into the final CONFIG object.
  */
 
 /**
@@ -1070,10 +1049,7 @@ export function mergeConfiguration(userConfig: UserConfig): Config {
   return config;
 }
 
-/*
- * UI TAB CONFIGURATION
- *
- * The configuration UI uses a simplified two-tab structure: Settings (common options) and Advanced (expert tuning). Rather than annotating every setting with UI
+/* The configuration UI uses a simplified two-tab structure: Settings (common options) and Advanced (expert tuning). Rather than annotating every setting with UI
  * placement, we explicitly list the Settings tab contents and derive everything else.
  *
  * Architecture:
@@ -1301,10 +1277,7 @@ export function getAdvancedSections(): AdvancedSection[] {
     }));
 }
 
-/*
- * DEFAULT VALUE FILTERING
- *
- * When saving user configuration, we only want to persist values that differ from defaults. This keeps the config file clean and makes it easy to see what the user has
+/* When saving user configuration, we only want to persist values that differ from defaults. This keeps the config file clean and makes it easy to see what the user has
  * actually customized. It also ensures that when defaults change in a new version, users automatically get the new defaults for settings they haven't explicitly set.
  */
 

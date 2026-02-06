@@ -7,10 +7,7 @@ import { DEFAULTS, loadUserConfig, mergeConfiguration } from "./userConfig.js";
 import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.js";
 import { LOG } from "../utils/index.js";
 
-/*
- * CONFIGURATION
- *
- * The CONFIG object centralizes all tunable parameters for the application. Configuration uses a layered approach with the following priority (highest to lowest):
+/* The CONFIG object centralizes all tunable parameters for the application. Configuration uses a layered approach with the following priority (highest to lowest):
  *
  * 1. Environment variables (SCREAMING_SNAKE_CASE naming)
  * 2. User config file (~/.prismcast/config.json)
@@ -81,10 +78,7 @@ export function getDefaults(): Config {
   return JSON.parse(JSON.stringify(DEFAULTS)) as Config;
 }
 
-/*
- * CONFIGURATION VALIDATION
- *
- * Before starting the server, we validate all configuration values to catch errors early. Invalid configurations like negative timeouts or out-of-range bitrates
+/* Before starting the server, we validate all configuration values to catch errors early. Invalid configurations like negative timeouts or out-of-range bitrates
  * would cause subtle runtime failures that are difficult to diagnose. By validating upfront, we provide clear error messages and prevent the server from starting
  * in a misconfigured state.
  *

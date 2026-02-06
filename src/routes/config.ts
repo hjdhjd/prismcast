@@ -22,10 +22,7 @@ import { getPresetOptionsWithDegradation } from "../config/presets.js";
 import { getProfiles } from "../config/profiles.js";
 import { getStreamCount } from "../streaming/registry.js";
 
-/*
- * CONFIGURATION WEB INTERFACE
- *
- * The /config endpoint provides a user-friendly web interface for editing PrismCast settings. Users can adjust values, see defaults, and understand what each
+/* The /config endpoint provides a user-friendly web interface for editing PrismCast settings. Users can adjust values, see defaults, and understand what each
  * setting does without editing JSON files directly. Changes require a server restart to take effect.
  *
  * The UI shows:
@@ -114,10 +111,7 @@ function scheduleServerRestart(reason: string): RestartResult {
   };
 }
 
-/*
- * CHANNEL FORM HELPERS
- *
- * These helper functions generate HTML for channel form fields. They are used by both the add and edit forms to reduce code duplication and ensure consistent
+/* These helper functions generate HTML for channel form fields. They are used by both the add and edit forms to reduce code duplication and ensure consistent
  * styling and behavior.
  */
 

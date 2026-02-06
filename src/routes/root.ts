@@ -12,10 +12,7 @@ import { getUITabs } from "../config/userConfig.js";
 import { resolveBaseUrl } from "./playlist.js";
 import { resolveProfile } from "../config/profiles.js";
 
-/*
- * LANDING PAGE
- *
- * The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface with five sections:
+/* The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface with five sections:
  *
  * 1. Overview - Introduction to PrismCast and Quick Start instructions
  * 2. Playlist - The full M3U playlist with copy functionality

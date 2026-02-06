@@ -883,10 +883,10 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
 /**
  * Ensures the video is displayed fullscreen with verification and retry logic. This function orchestrates the fullscreen process:
  *
- * 1. INITIAL ATTEMPT: Apply CSS styles and trigger fullscreen API
- * 2. VERIFY: Check if video is filling the viewport
- * 3. SIMPLE RETRY: If verification fails, wait and retry the same approach (timing issues are common)
- * 4. ESCALATE: If simple retries fail, apply aggressive fullscreen techniques
+ * 1. Initial attempt: Apply CSS styles and trigger fullscreen API
+ * 2. Verify: Check if video is filling the viewport
+ * 3. Simple retry: If verification fails, wait and retry the same approach (timing issues are common)
+ * 4. Escalate: If simple retries fail, apply aggressive fullscreen techniques
  *
  * The retry approach handles the common case where fullscreen fails due to timing - the page may still be initializing when we first attempt. Escalation to
  * aggressive techniques is a last resort that may break site functionality but ensures video fills the viewport.
@@ -1048,12 +1048,12 @@ export async function ensurePlayback(
  * stream setup and recovery. Having one authoritative function ensures consistent behavior and prevents code divergence between setup and recovery paths.
  *
  * The tuning process:
- * 1. NAVIGATE: Load the target URL using site-appropriate wait conditions
- * 2. SELECT CHANNEL: For multi-channel players, click the desired channel in the UI
- * 3. FIND VIDEO: Locate the video element (which may be in an iframe)
- * 4. CLICK TO PLAY: For Brightcove-style players, click the video to start playback
- * 5. WAIT FOR READY: Ensure the video has buffered enough data to play
- * 6. ENSURE PLAYBACK: Start playback, unmute, and apply fullscreen styling
+ * 1. Navigate: Load the target URL using site-appropriate wait conditions
+ * 2. Select channel: For multi-channel players, click the desired channel in the UI
+ * 3. Find video: Locate the video element (which may be in an iframe)
+ * 4. Click to play: For Brightcove-style players, click the video to start playback
+ * 5. Wait for ready: Ensure the video has buffered enough data to play
+ * 6. Ensure playback: Start playback, unmute, and apply fullscreen styling
  *
  * Note: Stream context for logging is automatically retrieved from AsyncLocalStorage. Callers should wrap their stream handling code in runWithStreamContext() to
  * ensure log messages include the stream ID prefix.

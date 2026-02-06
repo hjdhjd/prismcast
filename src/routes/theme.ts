@@ -3,10 +3,7 @@
  * theme.ts: Centralized theme system with CSS custom properties for PrismCast UI.
  */
 
-/*
- * THEME SYSTEM
- *
- * This module provides a centralized color and styling system for all PrismCast web pages. It uses CSS custom properties (variables) to enable consistent theming
+/* This module provides a centralized color and styling system for all PrismCast web pages. It uses CSS custom properties (variables) to enable consistent theming
  * and automatic dark mode support via the prefers-color-scheme media query.
  *
  * Color tokens are organized semantically:

@@ -5,10 +5,7 @@
 import { handleHLSPlaylist, handleHLSSegment } from "../streaming/hls.js";
 import type { Express } from "express";
 
-/*
- * HLS ROUTES
- *
- * This module registers the HTTP routes for HLS streaming:
+/* This module registers the HTTP routes for HLS streaming:
  *
  * - GET /hls/:name/stream.m3u8 - Returns the HLS playlist for a channel (starts stream if needed)
  * - GET /hls/:name/:segment - Returns a specific segment file (init.mp4 or segmentN.m4s)

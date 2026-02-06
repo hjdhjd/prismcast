@@ -12,10 +12,7 @@ import express from "express";
 import { formatError } from "../utils/errors.js";
 import { setupHdhrEndpoints } from "./discover.js";
 
-/*
- * HDHOMERUN EMULATION SERVER
- *
- * When HDHomeRun emulation is enabled, PrismCast runs a separate Express server that responds to HDHomeRun API requests from Plex. This server is intentionally
+/* When HDHomeRun emulation is enabled, PrismCast runs a separate Express server that responds to HDHomeRun API requests from Plex. This server is intentionally
  * lightweight — it only serves device discovery and lineup metadata. All actual video streaming flows through PrismCast's main HTTP server via the HLS URLs in
  * the lineup response.
  *

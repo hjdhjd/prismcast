@@ -10,10 +10,7 @@ import type { MP4Box } from "./mp4Parser.js";
 import type { Nullable } from "../types/index.js";
 import type { Readable } from "node:stream";
 
-/*
- * FMP4 SEGMENTATION
- *
- * This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is:
+/* This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is:
  *
  * 1. Receive MP4 data from puppeteer-stream (H.264 + AAC from either native capture or FFmpeg transcoding)
  * 2. Parse MP4 box structure to identify:

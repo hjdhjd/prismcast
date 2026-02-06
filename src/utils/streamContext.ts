@@ -4,10 +4,7 @@
  */
 import { AsyncLocalStorage } from "async_hooks";
 
-/*
- * STREAM CONTEXT
- *
- * This module provides an AsyncLocalStorage-based context that automatically propagates through async/await chains. When a stream request is handled, we establish a
+/* This module provides an AsyncLocalStorage-based context that automatically propagates through async/await chains. When a stream request is handled, we establish a
  * context containing the stream ID and other metadata. All code executed within that async context can retrieve this information without explicit parameter passing.
  *
  * This is particularly useful for logging - log statements anywhere in the call chain automatically include the stream ID prefix without functions needing to accept

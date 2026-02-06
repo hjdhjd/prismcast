@@ -6,10 +6,7 @@ import type { Express, Request, Response } from "express";
 import { endLoginMode, getLoginStatus, startLoginMode } from "../browser/index.js";
 import { getResolvedChannel, resolveProviderKey } from "../config/providers.js";
 
-/*
- * AUTHENTICATION ROUTES
- *
- * These routes manage the login workflow for TV provider authentication. Many streaming channels require users to authenticate with their TV provider (cable,
+/* These routes manage the login workflow for TV provider authentication. Many streaming channels require users to authenticate with their TV provider (cable,
  * satellite, or streaming service) before content can be accessed.
  *
  * The login flow works as follows:

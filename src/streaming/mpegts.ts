@@ -10,10 +10,7 @@ import { CONFIG } from "../config/index.js";
 import { ensureChannelStream } from "./hls.js";
 import { waitForInitSegment } from "./hlsSegments.js";
 
-/*
- * MPEG-TS STREAMING
- *
- * This module provides a continuous MPEG-TS byte stream from the same capture pipeline used for HLS. It is designed for HDHomeRun-compatible clients (such as Plex)
+/* This module provides a continuous MPEG-TS byte stream from the same capture pipeline used for HLS. It is designed for HDHomeRun-compatible clients (such as Plex)
  * that expect raw MPEG-TS when tuning a channel. The existing capture → segmenter → HLS segments flow is unchanged. Each MPEG-TS client gets its own FFmpeg remuxer
  * that converts stored fMP4 segments to MPEG-TS with codec copy (no transcoding).
  *

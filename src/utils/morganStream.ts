@@ -7,10 +7,7 @@ import df from "dateformat";
 import { isConsoleLogging } from "./logger.js";
 import { writeLogEntry } from "./fileLogger.js";
 
-/*
- * MORGAN STREAM ADAPTER
- *
- * Morgan HTTP request logger needs a writable stream to output log entries. By default, Morgan writes to stdout. This adapter routes Morgan output to either the
+/* Morgan HTTP request logger needs a writable stream to output log entries. By default, Morgan writes to stdout. This adapter routes Morgan output to either the
  * console or the file logger based on the current logging mode, ensuring HTTP request logs follow the same path as application logs.
  *
  * Timestamps are added here rather than in the Morgan format string to ensure consistency: the file logger adds timestamps via writeLogEntry(), so we add them

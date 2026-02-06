@@ -8,10 +8,7 @@ import type { Nullable } from "../types/index.js";
 import { fileURLToPath } from "url";
 import { readFile } from "fs/promises";
 
-/*
- * STATIC ASSETS
- *
- * This module serves static assets like the logo and favicon. The assets are read from the project root directory at startup and cached in memory for efficient
+/* This module serves static assets like the logo and favicon. The assets are read from the project root directory at startup and cached in memory for efficient
  * serving.
  */
 

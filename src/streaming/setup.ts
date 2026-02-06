@@ -18,10 +18,7 @@ import { pipeline } from "node:stream/promises";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 import { tuneToChannel } from "../browser/video.js";
 
-/*
- * STREAM SETUP
- *
- * This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
+/* This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
  *
  * 1. createPageWithCapture(): Creates a browser page, starts media capture, navigates to the URL, and sets up video playback. This is the reusable core that both
  *    initial stream setup and tab replacement recovery use.

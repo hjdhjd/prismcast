@@ -7,10 +7,7 @@ import { CONFIG } from "../config/index.js";
 import { getAllChannels } from "../config/userChannels.js";
 import { resolveProfile } from "../config/profiles.js";
 
-/*
- * PLAYLIST GENERATION
- *
- * The playlist endpoint generates an M3U playlist in Channels DVR format. The playlist includes all configured video channels with their stream URLs dynamically
+/* The playlist endpoint generates an M3U playlist in Channels DVR format. The playlist includes all configured video channels with their stream URLs dynamically
  * constructed from the request host header so the playlist works regardless of how the server is accessed.
  */
 

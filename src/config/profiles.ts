@@ -277,10 +277,7 @@ export const DOMAIN_TO_PROFILE: Record<string, string> = {
   "youtube.com": "keyboardDynamic"
 };
 
-/*
- * DEFAULT SITE PROFILE
- *
- * The default profile provides baseline behavior for sites not explicitly listed in the domain mapping or channel definitions. These settings work for most
+/* The default profile provides baseline behavior for sites not explicitly listed in the domain mapping or channel definitions. These settings work for most
  * standard HTML5 video players that follow common conventions. Each flag is explicitly set to its default value for documentation purposes and to ensure
  * predictable behavior - we don't rely on implicit defaults.
  *

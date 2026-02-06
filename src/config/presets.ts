@@ -5,10 +5,7 @@
 import type { Config, Nullable } from "../types/index.js";
 import { getMaxSupportedViewport } from "../browser/display.js";
 
-/*
- * VIDEO QUALITY PRESETS
- *
- * Presets define video quality profiles that determine capture resolution (viewport) and provide default values for bitrate and frame rate. The selected preset is
+/* Presets define video quality profiles that determine capture resolution (viewport) and provide default values for bitrate and frame rate. The selected preset is
  * stored in configuration and determines the viewport dimensions at runtime.
  *
  * Viewport is derived from the preset via getPresetViewport() and is not stored in CONFIG. For runtime operations that need display-aware viewport dimensions, use
@@ -155,10 +152,7 @@ export function getPresetViewport(config: Config): { height: number; width: numb
   };
 }
 
-/*
- * DISPLAY-AWARE PRESET SELECTION
- *
- * When the configured preset requires a viewport larger than the user's display can accommodate, we gracefully degrade to the largest supported preset. This ensures
+/* When the configured preset requires a viewport larger than the user's display can accommodate, we gracefully degrade to the largest supported preset. This ensures
  * video capture works correctly even when the user has configured a resolution their display cannot support.
  *
  * The effective preset system:

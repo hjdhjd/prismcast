@@ -5,10 +5,7 @@
 import type { Express } from "express";
 import { handlePlayStream } from "../streaming/hls.js";
 
-/*
- * PLAY ROUTE
- *
- * This module registers the HTTP route for ad-hoc URL streaming:
+/* This module registers the HTTP route for ad-hoc URL streaming:
  *
  * - GET /play?url=<url>&profile=<name> - Starts an HLS stream for an arbitrary URL and redirects to the HLS playlist path.
  *

@@ -7,10 +7,7 @@ import { LOG } from "../utils/index.js";
 import type { StreamRegistryEntry } from "./registry.js";
 import { getStream } from "./registry.js";
 
-/*
- * HLS SEGMENT STORAGE
- *
- * This module provides functions for storing and retrieving HLS segments, playlists, and init segments. All data is stored in the stream registry's HLSState, which is
+/* This module provides functions for storing and retrieving HLS segments, playlists, and init segments. All data is stored in the stream registry's HLSState, which is
  * the single source of truth for stream data. Key responsibilities:
  *
  * 1. Store init segment, media segments, and playlists per stream

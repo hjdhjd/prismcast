@@ -9,10 +9,7 @@ import { CONFIG } from "../config/index.js";
 import { getBrowserChrome } from "./display.js";
 import { getEffectiveViewport } from "../config/presets.js";
 
-/*
- * CDP SESSION HELPERS
- *
- * The Chrome DevTools Protocol (CDP) provides low-level access to Chrome's internal state and capabilities. While Puppeteer abstracts most common operations, some
+/* The Chrome DevTools Protocol (CDP) provides low-level access to Chrome's internal state and capabilities. While Puppeteer abstracts most common operations, some
  * features require direct CDP access:
  *
  * - Window management: Setting window size, position, and state (minimized, maximized, fullscreen). Puppeteer's viewport API controls the content area, but we

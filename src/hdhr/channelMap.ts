@@ -5,10 +5,7 @@
 import { getAllChannels } from "../config/userChannels.js";
 import { resolveProfile } from "../config/profiles.js";
 
-/*
- * CHANNEL NUMBER MAPPING
- *
- * HDHomeRun devices use numeric channel numbers (GuideNumber) for each channel. Plex requires these for EPG (electronic program guide) matching. PrismCast uses
+/* HDHomeRun devices use numeric channel numbers (GuideNumber) for each channel. Plex requires these for EPG (electronic program guide) matching. PrismCast uses
  * string keys (e.g., "cnn", "nbc") for channels, so we need a mapping layer.
  *
  * Channels can optionally specify an explicit channelNumber for precise EPG alignment. Channels without an explicit number get auto-assigned a number starting

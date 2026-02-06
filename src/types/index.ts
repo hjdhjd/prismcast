@@ -11,10 +11,7 @@ import type { RecoveryMetrics } from "../streaming/monitor.js";
  */
 export type Nullable<T> = T | null;
 
-/*
- * CONFIGURATION TYPES
- *
- * These interfaces define the structure of the application configuration. The Config interface is the root configuration object, with nested interfaces for each
+/* These interfaces define the structure of the application configuration. The Config interface is the root configuration object, with nested interfaces for each
  * functional area. All configuration values are loaded from environment variables with sensible defaults. The configuration is validated at startup to catch
  * misconfigurations before the server begins accepting connections.
  */
@@ -315,10 +312,7 @@ export interface Config {
   streaming: StreamingConfig;
 }
 
-/*
- * SITE PROFILE TYPES
- *
- * Site profiles define behavior patterns for different streaming site implementations. Television network streaming sites vary widely in their player
+/* Site profiles define behavior patterns for different streaming site implementations. Television network streaming sites vary widely in their player
  * implementations: some use keyboard shortcuts for fullscreen, others require the JavaScript Fullscreen API; some embed video in iframes, others place it directly
  * in the page; some auto-mute videos and fight attempts to unmute them. The profile system captures these behavioral differences as configuration rather than
  * code, making it easy to add support for new sites by defining their characteristics.
@@ -457,10 +451,7 @@ export interface ProfileResolutionResult {
   profileName: string;
 }
 
-/*
- * CHANNEL TYPES
- *
- * Channels map short URL-friendly names to streaming site URLs with optional metadata. The channel name appears in stream URLs (e.g., /stream/nbc) and must be
+/* Channels map short URL-friendly names to streaming site URLs with optional metadata. The channel name appears in stream URLs (e.g., /stream/nbc) and must be
  * URL-safe. Channel definitions can override profile settings for specific channels and provide metadata for M3U playlist generation.
  */
 
@@ -524,10 +515,7 @@ export interface ChannelListingEntry {
  */
 export type ChannelMap = Record<string, Channel>;
 
-/*
- * PROVIDER GROUP TYPES
- *
- * Provider groups allow multiple streaming providers to offer the same content (e.g., ESPN via ESPN.com or Disney+). Channels are grouped by key prefix convention:
+/* Provider groups allow multiple streaming providers to offer the same content (e.g., ESPN via ESPN.com or Disney+). Channels are grouped by key prefix convention:
  * a key like "espn-disneyplus" is a variant of "espn" because it starts with "espn-" and "espn" exists as a channel. The canonical key (the base key without
  * suffix) is the default provider.
  */
@@ -551,10 +539,7 @@ export interface ProviderGroup {
   }>;
 }
 
-/*
- * STREAM TYPES
- *
- * These types track active streaming sessions throughout their lifecycle. When a stream request arrives, we create a StreamInfo object to track the session's
+/* These types track active streaming sessions throughout their lifecycle. When a stream request arrives, we create a StreamInfo object to track the session's
  * state. This allows the /streams endpoint to list active streams, the graceful shutdown handler to close streams cleanly, and the stream handler to coordinate
  * cleanup when streams end.
  */
@@ -585,10 +570,7 @@ export interface StreamInfo {
   url: string;
 }
 
-/*
- * VIDEO STATE TYPES
- *
- * These types represent the state of HTML5 video elements as reported by the browser. The playback health monitor periodically evaluates video state to detect
+/* These types represent the state of HTML5 video elements as reported by the browser. The playback health monitor periodically evaluates video state to detect
  * problems and trigger recovery. Understanding these values is essential for diagnosing playback issues.
  */
 
@@ -634,10 +616,7 @@ export interface VideoState {
  */
 export type VideoSelectorType = "selectFirstVideo" | "selectReadyVideo";
 
-/*
- * URL VALIDATION TYPES
- *
- * Before navigating to user-provided URLs, we validate them to prevent security issues (like file:// access) and provide clear error messages for malformed URLs.
+/* Before navigating to user-provided URLs, we validate them to prevent security issues (like file:// access) and provide clear error messages for malformed URLs.
  * Validation runs before any browser interaction to fail fast with helpful feedback.
  */
 
@@ -658,10 +637,7 @@ export interface UrlValidationResult {
  */
 export type UrlValidation = UrlValidationResult;
 
-/*
- * HEALTH CHECK TYPES
- *
- * The /health endpoint returns detailed status information for monitoring and debugging. This includes browser connection state, memory usage, stream counts, and
+/* The /health endpoint returns detailed status information for monitoring and debugging. This includes browser connection state, memory usage, stream counts, and
  * configuration summary. External monitoring systems can poll this endpoint to detect problems.
  */
 
@@ -741,10 +717,7 @@ export interface HealthStatus {
   version: string;
 }
 
-/*
- * STREAM LIST TYPES
- *
- * The /streams endpoint returns information about all active streams, allowing operators to monitor what's currently streaming and terminate specific streams if
+/* The /streams endpoint returns information about all active streams, allowing operators to monitor what's currently streaming and terminate specific streams if
  * needed.
  */
 
@@ -784,10 +757,7 @@ export interface StreamListResponse {
   streams: StreamListItem[];
 }
 
-/*
- * CHANNEL SELECTION TYPES
- *
- * For multi-channel streaming sites (like USA Network), we need to interact with the site's channel selector UI to switch to the desired channel. The channel
+/* For multi-channel streaming sites (like USA Network), we need to interact with the site's channel selector UI to switch to the desired channel. The channel
  * selection system uses a strategy pattern to support different site implementations. Each strategy encapsulates the logic for finding and clicking the correct
  * channel element.
  */
@@ -843,10 +813,7 @@ export interface TuneResult {
   context: Frame | Page;
 }
 
-/*
- * CDP WINDOW TYPES
- *
- * Chrome DevTools Protocol operations for window management. We use CDP to resize and minimize browser windows to match viewport dimensions and reduce GPU usage
+/* Chrome DevTools Protocol operations for window management. We use CDP to resize and minimize browser windows to match viewport dimensions and reduce GPU usage
  * when the visual output isn't needed.
  */
 

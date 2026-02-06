@@ -6,10 +6,7 @@ import { formatError, isSessionClosedError } from "./errors.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "./logger.js";
 
-/*
- * RETRY LOGIC
- *
- * The retry system provides resilient operation execution with exponential backoff and jitter. When operations fail due to transient issues like network hiccups or
+/* The retry system provides resilient operation execution with exponential backoff and jitter. When operations fail due to transient issues like network hiccups or
  * slow page loads, the system automatically retries with increasing delays. The exponential backoff prevents overwhelming struggling services, while jitter prevents
  * multiple clients from synchronizing their retry attempts.
  */

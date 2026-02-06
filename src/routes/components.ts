@@ -4,10 +4,7 @@
  */
 import { escapeHtml } from "../utils/index.js";
 
-/*
- * UI COMPONENTS
- *
- * This module provides reusable HTML component generators for consistent UI across PrismCast. Each component returns an HTML string that can be included in page
+/* This module provides reusable HTML component generators for consistent UI across PrismCast. Each component returns an HTML string that can be included in page
  * generation. Components use CSS custom properties from theme.ts for styling, ensuring automatic dark mode support.
  */
 

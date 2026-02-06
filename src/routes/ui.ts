@@ -4,10 +4,7 @@
  */
 import { generateThemeStyles } from "./theme.js";
 
-/*
- * SHARED UI COMPONENTS
- *
- * This module provides reusable UI components used across PrismCast web pages. It ensures consistent styling and behavior between the landing page and
+/* This module provides reusable UI components used across PrismCast web pages. It ensures consistent styling and behavior between the landing page and
  * configuration page by extracting common CSS and JavaScript patterns. All styles use CSS custom properties from theme.ts for automatic dark mode support.
  */
 

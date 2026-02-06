@@ -4,10 +4,7 @@
  */
 import type { Nullable } from "../types/index.js";
 
-/*
- * M3U PARSING
- *
- * This module provides utilities for parsing M3U playlist files and extracting channel information. The parser handles extended M3U format with #EXTINF tags and extracts
+/* This module provides utilities for parsing M3U playlist files and extracting channel information. The parser handles extended M3U format with #EXTINF tags and extracts
  * relevant attributes like tvg-name, tvg-id, and tvc-guide-stationid.
  *
  * Standard M3U format:

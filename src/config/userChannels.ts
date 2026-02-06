@@ -13,10 +13,7 @@ import path from "node:path";
 
 const { promises: fsPromises } = fs;
 
-/*
- * USER CHANNELS FILE
- *
- * PrismCast allows users to define custom channels in ~/.prismcast/channels.json. These user channels are merged with the predefined channels from the source code,
+/* PrismCast allows users to define custom channels in ~/.prismcast/channels.json. These user channels are merged with the predefined channels from the source code,
  * with user channels taking precedence when there are key conflicts. This allows users to:
  *
  * 1. Add new channels not included in the default set
@@ -27,10 +24,7 @@ const { promises: fsPromises } = fs;
  * immediately for new stream requests.
  */
 
-/*
- * USER CHANNEL TYPES
- *
- * User channels have the same structure as predefined channels. The UserChannel type is equivalent to Channel but defined here for clarity in the context of user
+/* User channels have the same structure as predefined channels. The UserChannel type is equivalent to Channel but defined here for clarity in the context of user
  * configuration.
  */
 
@@ -62,10 +56,7 @@ export interface UserChannelsLoadResult {
   providerSelections: Record<string, string>;
 }
 
-/*
- * CHANNELS FILE PATH
- *
- * The channels file is stored in the same data directory as the config file (~/.prismcast).
+/* The channels file is stored in the same data directory as the config file (~/.prismcast).
  */
 
 const dataDir = path.join(os.homedir(), ".prismcast");
@@ -80,10 +71,7 @@ export function getUserChannelsFilePath(): string {
   return channelsFilePath;
 }
 
-/*
- * CHANNELS FILE OPERATIONS
- *
- * These functions handle reading and writing the channels file. All operations are async and handle errors gracefully.
+/* These functions handle reading and writing the channels file. All operations are async and handle errors gracefully.
  */
 
 // Module-level storage for loaded user channels. This is populated at startup and used by getAllChannels().
@@ -276,10 +264,7 @@ export async function resetUserChannels(): Promise<void> {
   }
 }
 
-/*
- * CHANNEL INITIALIZATION
- *
- * User channels are loaded at server startup and stored in module-level state. This avoids repeated file reads during request handling.
+/* User channels are loaded at server startup and stored in module-level state. This avoids repeated file reads during request handling.
  */
 
 /**
@@ -330,10 +315,7 @@ function getMergedChannelMap(): ChannelMap {
   return result;
 }
 
-/*
- * CHANNEL LISTING AND MERGING
- *
- * The getChannelListing() function is the single source of truth for merging predefined channels with user channels. It returns enriched entries with source
+/* The getChannelListing() function is the single source of truth for merging predefined channels with user channels. It returns enriched entries with source
  * classification and enabled status. All other channel retrieval functions that need merged data build on top of it.
  */
 
@@ -459,10 +441,7 @@ export function isOverrideChannel(key: string): boolean {
   return isPredefinedChannel(key) && isUserChannel(key);
 }
 
-/*
- * DISABLED PREDEFINED CHANNELS
- *
- * Users can disable predefined channels to exclude them from the playlist and block streaming. Disabled channels appear grayed out in the UI with an option to
+/* Users can disable predefined channels to exclude them from the playlist and block streaming. Disabled channels appear grayed out in the UI with an option to
  * re-enable. This is useful for users who don't want certain predefined channels cluttering their channel list.
  */
 
@@ -517,10 +496,7 @@ export function isChannelAvailable(key: string): boolean {
   return key in getAllChannels();
 }
 
-/*
- * CHANNEL VALIDATION
- *
- * These functions validate channel data before saving.
+/* These functions validate channel data before saving.
  */
 
 /**
@@ -800,10 +776,7 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
   return { channels, errors, valid: errors.length === 0 };
 }
 
-/*
- * PROVIDER SELECTION PERSISTENCE
- *
- * Provider selections are stored in the channels.json file alongside user channels. When a selection changes, we save the entire file (channels + selections)
+/* Provider selections are stored in the channels.json file alongside user channels. When a selection changes, we save the entire file (channels + selections)
  * to persist the change.
  */
 

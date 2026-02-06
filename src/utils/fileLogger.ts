@@ -10,10 +10,7 @@ import path from "node:path";
 
 const { promises: fsPromises } = fs;
 
-/*
- * FILE LOGGER
- *
- * The file logger provides persistent logging to ~/.prismcast/prismcast.log with automatic size-based trimming. When the log file exceeds the configured maximum
+/* The file logger provides persistent logging to ~/.prismcast/prismcast.log with automatic size-based trimming. When the log file exceeds the configured maximum
  * size, it is trimmed to half the maximum size, keeping only complete lines (the most recent logs are preserved). This approach prevents unbounded log growth while
  * maintaining recent history for troubleshooting.
  *
@@ -25,10 +22,7 @@ const { promises: fsPromises } = fs;
  * 4. Timestamps - Uses the same format as console-stamp for consistency: yyyy/mm/dd HH:MM:ss.l
  */
 
-/*
- * MODULE STATE
- *
- * The file logger maintains state for the log file path, write buffer, and size tracking. State is initialized when initializeFileLogger() is called during server
+/* The file logger maintains state for the log file path, write buffer, and size tracking. State is initialized when initializeFileLogger() is called during server
  * startup.
  */
 
@@ -59,9 +53,7 @@ let disabledAt = 0;
 // Maximum log file size, set during initialization.
 let maxLogSize = 1048576;
 
-/*
- * CONFIGURATION CONSTANTS
- */
+// Configuration Constants.
 
 // Interval in milliseconds between buffer flushes.
 const FLUSH_INTERVAL_MS = 1000;
@@ -72,18 +64,13 @@ const SIZE_CHECK_FREQUENCY = 100;
 // Duration in milliseconds to disable logging after a write error before retrying.
 const ERROR_RETRY_DELAY_MS = 60000;
 
-/*
- * ANSI COLOR CODES
- *
- * Terminal color codes for log file output. These match the colors used in console mode so that viewing the log file with terminal commands (tail -f, less -R, cat)
+/* Terminal color codes for log file output. These match the colors used in console mode so that viewing the log file with terminal commands (tail -f, less -R, cat)
  * shows the same color scheme as console output.
  */
 
 const ANSI_RESET = "\x1b[0m";
 
-/*
- * INITIALIZATION
- */
+// Initialization.
 
 /**
  * Initializes the file logger. Creates the log file if it does not exist. Must be called after the data directory is ensured to exist.
@@ -135,9 +122,7 @@ export async function initializeFileLogger(maxSize: number): Promise<void> {
   }
 }
 
-/*
- * LOG ENTRY WRITING
- */
+// Log Entry Writing.
 
 /**
  * Writes a log entry to the buffer. Entries are flushed to disk periodically.
@@ -183,9 +168,7 @@ export function writeLogEntry(level: string, message: string, color?: string): v
   }
 }
 
-/*
- * BUFFER FLUSHING
- */
+// Buffer Flushing.
 
 /**
  * Flushes the write buffer to disk asynchronously. Called periodically by the flush timer.
@@ -245,9 +228,7 @@ export function flushLogBufferSync(): void {
   }
 }
 
-/*
- * SIZE MANAGEMENT
- */
+// Size Management.
 
 /**
  * Checks the actual file size and trims if it exceeds the maximum.
@@ -339,9 +320,7 @@ async function trimLogFile(): Promise<void> {
   }
 }
 
-/*
- * SHUTDOWN
- */
+// Shutdown.
 
 /**
  * Shuts down the file logger, flushing any remaining buffer synchronously.

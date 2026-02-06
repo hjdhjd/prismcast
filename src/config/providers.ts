@@ -6,10 +6,7 @@ import type { Channel, ChannelMap, ProviderGroup } from "../types/index.js";
 import { LOG } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 
-/*
- * PROVIDER GROUPS
- *
- * Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
+/* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
  * Grouping convention: Channels are grouped by key pattern. A key like "espn-disneyplus" is a variant of "espn" because it starts with "espn-" and "espn" exists as a
  * channel. The canonical key (the base key without suffix) is the default provider.

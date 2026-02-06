@@ -11,10 +11,7 @@ import fs from "node:fs";
 
 const { promises: fsPromises } = fs;
 
-/*
- * SERVICE FILE GENERATORS
- *
- * These generators create platform-specific service definitions that allow PrismCast to run as a managed service. Each generator produces the appropriate
+/* These generators create platform-specific service definitions that allow PrismCast to run as a managed service. Each generator produces the appropriate
  * configuration format for its service manager (launchd plist for macOS, systemd unit for Linux, Task Scheduler task for Windows).
  *
  * Key features of generated services:
@@ -69,10 +66,7 @@ export interface ServiceGenerator {
   uninstall(): Promise<void>;
 }
 
-/*
- * MACOS LAUNCHD GENERATOR
- *
- * Generates a launchd property list (plist) file for macOS. The plist is installed to ~/Library/LaunchAgents/ and configured with:
+/* Generates a launchd property list (plist) file for macOS. The plist is installed to ~/Library/LaunchAgents/ and configured with:
  * - RunAtLoad: Start when user logs in
  * - KeepAlive: Restart automatically if the process exits
  * - StandardOutPath/StandardErrorPath: Capture stdout/stderr to ~/.prismcast/logs/
@@ -274,10 +268,7 @@ function createLaunchdGenerator(): ServiceGenerator {
   };
 }
 
-/*
- * LINUX SYSTEMD GENERATOR
- *
- * Generates a systemd user service unit file for Linux. The unit is installed to ~/.config/systemd/user/ and configured with:
+/* Generates a systemd user service unit file for Linux. The unit is installed to ~/.config/systemd/user/ and configured with:
  * - Restart=always: Restart automatically if the process exits
  * - RestartSec=5: Wait 5 seconds before restarting
  * - WantedBy=default.target: Start when user session begins
@@ -433,10 +424,7 @@ function createSystemdGenerator(): ServiceGenerator {
   };
 }
 
-/*
- * WINDOWS TASK SCHEDULER GENERATOR
- *
- * Uses Windows Task Scheduler via schtasks.exe to create a task that runs at user logon. Unlike launchd and systemd, Task Scheduler doesn't have built-in process
+/* Uses Windows Task Scheduler via schtasks.exe to create a task that runs at user logon. Unlike launchd and systemd, Task Scheduler doesn't have built-in process
  * supervision, so we configure the task to restart on failure. A marker file is used to track installation state.
  */
 
@@ -577,10 +565,7 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
   };
 }
 
-/*
- * GENERATOR FACTORY
- *
- * Returns the appropriate service generator for the current platform.
+/* Returns the appropriate service generator for the current platform.
  */
 
 /**

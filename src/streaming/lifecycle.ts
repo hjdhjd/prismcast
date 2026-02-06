@@ -15,10 +15,7 @@ import { emitStreamRemoved } from "./statusEmitter.js";
 import { formatKeyframeStatsSummary } from "./fmp4Segmenter.js";
 import { isGracefulShutdown } from "../browser/index.js";
 
-/*
- * STREAM LIFECYCLE
- *
- * This module provides the authoritative stream termination logic. All code paths that need to terminate a stream should call terminateStream() from this module. This
+/* This module provides the authoritative stream termination logic. All code paths that need to terminate a stream should call terminateStream() from this module. This
  * ensures consistent cleanup behavior including:
  *
  * - Stopping the segmenter

@@ -7,21 +7,18 @@ import type { Nullable } from "../types/index.js";
 import { getAllChannels } from "../config/userChannels.js";
 import { getAllStreams } from "./registry.js";
 
-/*
- * SHOW INFO POLLING
- *
- * This module integrates with the Channels DVR API to retrieve the names of shows for active streams. Show names are determined from two sources:
+/* This module integrates with the Channels DVR API to retrieve the names of shows for active streams. Show names are determined from two sources:
  *
  * 1. Active recordings (/dvr/jobs) - If Channels DVR is recording a channel, we get the show name from the recording job
  * 2. Program guide (/devices/{id}/guide/now) - For live viewing without recording, we fall back to the current program from the guide
  *
  * The polling mechanism uses a two-phase approach — discovery and lookup:
  *
- * 1. DISCOVERY: Every 30 seconds, try each unique client address as a potential Channels DVR server by calling getDeviceMappings(). If a host has matching M3U
+ * 1. Discovery: Every 30 seconds, try each unique client address as a potential Channels DVR server by calling getDeviceMappings(). If a host has matching M3U
  *    devices, cache it as the last known DVR host. Device mappings are cached for 5 minutes, so non-DVR hosts (e.g., Plex IPs) only incur a network timeout on the
  *    first attempt and every 5 minutes thereafter.
  *
- * 2. LOOKUP: Use the cached DVR host for show name and logo lookups across ALL active streams, regardless of which client initiated them. This enables Plex-initiated
+ * 2. Lookup: Use the cached DVR host for show name and logo lookups across ALL active streams, regardless of which client initiated them. This enables Plex-initiated
  *    streams to display show names and logos from the Channels DVR guide, as long as any Channels DVR connection has been seen at some point.
  *
  * Caching strategy:

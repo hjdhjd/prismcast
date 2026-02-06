@@ -7,10 +7,7 @@ import { CONFIG } from "./config/index.js";
 import { handleServiceCommand } from "./service/index.js";
 import { startServer } from "./app.js";
 
-/*
- * GLOBAL ERROR HANDLERS
- *
- * These handlers catch unhandled promise rejections and uncaught exceptions to prevent the process from crashing. For a livestreaming server, process stability is
+/* These handlers catch unhandled promise rejections and uncaught exceptions to prevent the process from crashing. For a livestreaming server, process stability is
  * critical - a single unhandled error should not terminate all active streams. The handlers log the error and allow the process to continue. Individual stream
  * failures are handled by circuit breakers, and actual browser crashes are handled by the browser's disconnected event.
  */
@@ -25,10 +22,7 @@ process.on("uncaughtException", (error: Error): void => {
   LOG.error("Uncaught exception: %s.", formatError(error));
 });
 
-/*
- * CLI ARGUMENT PARSING
- *
- * The entry point supports basic command-line arguments for common operations like changing the port, showing help, and displaying the version.
+/* The entry point supports basic command-line arguments for common operations like changing the port, showing help, and displaying the version.
  */
 
 /**
@@ -126,10 +120,7 @@ function parseArgs(): ParsedArgs {
   return { consoleLogging, debugLogging };
 }
 
-/*
- * SUBCOMMAND DETECTION
- *
- * Check for subcommands before parsing flags. Subcommands are handled separately and exit after completion.
+/* Check for subcommands before parsing flags. Subcommands are handled separately and exit after completion.
  */
 
 const rawArgs = process.argv.slice(2);
@@ -150,10 +141,7 @@ if(subcommand === "service") {
   });
 } else {
 
-  /*
-   * ENTRY POINT
-   *
-   * The main entry point parses command-line arguments, starts the server, and handles any fatal errors that occur during initialization. If startup fails, we exit
+  /* The main entry point parses command-line arguments, starts the server, and handles any fatal errors that occur during initialization. If startup fails, we exit
    * with a non-zero code to signal the failure to process managers.
    */
 

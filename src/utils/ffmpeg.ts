@@ -15,10 +15,7 @@ import { spawn } from "node:child_process";
 // The ffmpeg-for-homebridge package has incorrect type definitions (declares named export but JS uses default export). Cast to the correct type.
 const ffmpegPath = ffmpegForHomebridge as unknown as string | undefined;
 
-/*
- * FFMPEG TRANSCODING
- *
- * When using WebM capture mode, Chrome's MediaRecorder outputs WebM container with H264 video and Opus audio. For HLS compatibility, we need fMP4 container with
+/* When using WebM capture mode, Chrome's MediaRecorder outputs WebM container with H264 video and Opus audio. For HLS compatibility, we need fMP4 container with
  * H264 video and AAC audio. FFmpeg handles this conversion:
  *
  * - Video: Passed through unchanged (copy codec) - no quality loss, minimal CPU
@@ -29,10 +26,7 @@ const ffmpegPath = ffmpegForHomebridge as unknown as string | undefined;
  * segmenter.
  */
 
-/*
- * FFMPEG PATH RESOLUTION
- *
- * FFmpeg can be located in several places depending on how it was installed. We check in order of preference:
+/* FFmpeg can be located in several places depending on how it was installed. We check in order of preference:
  * 1. Channels DVR bundled FFmpeg:
  *    - macOS: ~/Library/Application Support/ChannelsDVR/latest/ffmpeg
  *    - Windows: C:\ProgramData\channelsdvr\latest\ffmpeg.exe

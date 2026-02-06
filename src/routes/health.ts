@@ -11,10 +11,7 @@ import type { ClientType } from "../streaming/clients.js";
 import type { HealthStatus } from "../types/index.js";
 import { getClientSummary } from "../streaming/clients.js";
 
-/*
- * HEALTH CHECK
- *
- * The health endpoint provides detailed metrics about the application status including browser connection, memory usage, and active stream counts. This is useful
+/* The health endpoint provides detailed metrics about the application status including browser connection, memory usage, and active stream counts. This is useful
  * for monitoring and alerting systems. Returns HTTP 503 when unhealthy to allow load balancers and monitoring systems to detect problems via status code.
  */
 

@@ -4,10 +4,7 @@
  */
 import crypto from "node:crypto";
 
-/*
- * HDHOMERUN DEVICE ID
- *
- * HDHomeRun devices are identified by an 8-character hex string (32 bits). The checksum is computed using an XOR-based algorithm from the libhdhomerun reference
+/* HDHomeRun devices are identified by an 8-character hex string (32 bits). The checksum is computed using an XOR-based algorithm from the libhdhomerun reference
  * implementation (hdhomerun_discover_validate_device_id in hdhomerun_discover.c). The checksum ensures that mistyped or corrupted device IDs are detected. Plex
  * validates this checksum when discovering tuners, so we must generate conformant IDs.
  *

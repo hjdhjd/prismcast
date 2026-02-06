@@ -16,10 +16,7 @@ import { setupPlaylistEndpoint } from "./playlist.js";
 import { setupRootEndpoint } from "./root.js";
 import { setupStreamsEndpoint } from "./streams.js";
 
-/*
- * ROUTE SETUP
- *
- * This module aggregates all route setup functions and provides a single function to configure all HTTP endpoints on the Express application.
+/* This module aggregates all route setup functions and provides a single function to configure all HTTP endpoints on the Express application.
  */
 
 /**

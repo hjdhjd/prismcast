@@ -3,10 +3,7 @@
  * errors.ts: Error formatting and handling utilities for PrismCast.
  */
 
-/*
- * ERROR FORMATTING UTILITIES
- *
- * These utilities provide consistent error handling and formatting throughout the application. The formatError function extracts meaningful messages from various
+/* These utilities provide consistent error handling and formatting throughout the application. The formatError function extracts meaningful messages from various
  * error types, while isSessionClosedError helps identify unrecoverable browser state errors that should abort retry loops.
  */
 
