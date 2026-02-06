@@ -11,7 +11,7 @@ import { LOG, escapeHtml, formatError, generateChannelKey, isRunningAsService, p
 import { getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError,
   isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile,
   validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
-import type { Nullable } from "../types/index.js";
+import type { Nullable, ProfileCategory } from "../types/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
@@ -183,6 +183,23 @@ function generateTextField(id: string, name: string, label: string, value: strin
 }
 
 /**
+ * Groups profiles by their declared category for UI display. Each profile declares its own category (api, keyboard, multiChannel, special) and this helper
+ * simply filters by that field. The display order (api, keyboard, special, multiChannel) is determined by the caller.
+ * @param profiles - List of available profiles with category, descriptions, and summaries.
+ * @returns Object with profiles grouped by category.
+ */
+function categorizeProfiles(profiles: ProfileInfo[]): Record<ProfileCategory, ProfileInfo[]> {
+
+  return {
+
+    api: profiles.filter((p) => (p.category === "api")),
+    keyboard: profiles.filter((p) => (p.category === "keyboard")),
+    multiChannel: profiles.filter((p) => (p.category === "multiChannel")),
+    special: profiles.filter((p) => (p.category === "special"))
+  };
+}
+
+/**
  * Generates HTML for the profile dropdown field with descriptions as tooltips and summaries inline.
  * @param id - The select element ID.
  * @param selectedProfile - The currently selected profile (empty string for autodetect).
@@ -193,21 +210,73 @@ function generateTextField(id: string, name: string, label: string, value: strin
 function generateProfileDropdown(id: string, selectedProfile: string, profiles: ProfileInfo[], showHint = true): string[] {
 
   const lines: string[] = [];
+  const groups = categorizeProfiles(profiles);
+
+  // Helper to generate option elements for a profile.
+  const renderOption = (profile: ProfileInfo): string => {
+
+    const selected = (profile.name === selectedProfile) ? " selected" : "";
+    const title = profile.description ? " title=\"" + escapeHtml(profile.description) + "\"" : "";
+    const displayText = profile.summary ? profile.name + " \u2014 " + profile.summary : profile.name;
+
+    return "<option value=\"" + escapeHtml(profile.name) + "\"" + title + selected + ">" + escapeHtml(displayText) + "</option>";
+  };
 
   lines.push("<div class=\"form-row\">");
   lines.push("<label for=\"" + id + "\">Profile</label>");
   lines.push("<select class=\"form-select field-wide\" id=\"" + id + "\" name=\"profile\">");
   lines.push("<option value=\"\">Autodetect (Recommended)</option>");
 
-  for(const profile of profiles) {
+  // Fullscreen API profiles (most common).
+  if(groups.api.length > 0) {
 
-    const selected = (profile.name === selectedProfile) ? " selected" : "";
-    const title = profile.description ? " title=\"" + escapeHtml(profile.description) + "\"" : "";
+    lines.push("<optgroup label=\"Fullscreen API\">");
 
-    // Show "name — summary" format for better discoverability.
-    const displayText = profile.summary ? profile.name + " \u2014 " + profile.summary : profile.name;
+    for(const profile of groups.api) {
 
-    lines.push("<option value=\"" + escapeHtml(profile.name) + "\"" + title + selected + ">" + escapeHtml(displayText) + "</option>");
+      lines.push(renderOption(profile));
+    }
+
+    lines.push("</optgroup>");
+  }
+
+  // Keyboard fullscreen profiles.
+  if(groups.keyboard.length > 0) {
+
+    lines.push("<optgroup label=\"Keyboard Fullscreen\">");
+
+    for(const profile of groups.keyboard) {
+
+      lines.push(renderOption(profile));
+    }
+
+    lines.push("</optgroup>");
+  }
+
+  // Special profiles.
+  if(groups.special.length > 0) {
+
+    lines.push("<optgroup label=\"Special\">");
+
+    for(const profile of groups.special) {
+
+      lines.push(renderOption(profile));
+    }
+
+    lines.push("</optgroup>");
+  }
+
+  // Multi-channel profiles (at the end).
+  if(groups.multiChannel.length > 0) {
+
+    lines.push("<optgroup label=\"Multi-Channel (needs selector)\">");
+
+    for(const profile of groups.multiChannel) {
+
+      lines.push(renderOption(profile));
+    }
+
+    lines.push("</optgroup>");
   }
 
   lines.push("</select>");
@@ -233,11 +302,7 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
 
   const lines: string[] = [];
 
-  // Group profiles by category based on name prefix for automatic categorization.
-  const keyboardProfiles = profiles.filter((p) => p.name.startsWith("keyboard"));
-  const embeddedProfiles = profiles.filter((p) => p.name.startsWith("embedded"));
-  const apiProfiles = profiles.filter((p) => p.name.startsWith("api") || (p.name === "fullscreenApi") || (p.name === "brightcove"));
-  const specialProfiles = profiles.filter((p) => p.name === "staticPage");
+  const groups = categorizeProfiles(profiles);
 
   lines.push("<div id=\"profile-reference\" class=\"profile-reference\" style=\"display: none;\">");
   lines.push("<div class=\"profile-reference-header\">");
@@ -247,15 +312,15 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
   lines.push("<p class=\"reference-intro\">Profiles configure how PrismCast interacts with different video players. Autodetect uses predefined ");
   lines.push("profiles for known sites. If video doesn't play or fullscreen fails, use this reference to experiment with different profiles.</p>");
 
-  // Keyboard fullscreen profiles.
-  if(keyboardProfiles.length > 0) {
+  // Fullscreen API profiles (most common).
+  if(groups.api.length > 0) {
 
     lines.push("<div class=\"profile-category\">");
-    lines.push("<h4>Keyboard Fullscreen Profiles</h4>");
-    lines.push("<p class=\"category-desc\">For sites that use the 'f' key to toggle fullscreen mode.</p>");
+    lines.push("<h4>Fullscreen API Profiles</h4>");
+    lines.push("<p class=\"category-desc\">For single-channel sites that require JavaScript's requestFullscreen() API instead of keyboard shortcuts.</p>");
     lines.push("<dl class=\"profile-list\">");
 
-    for(const profile of keyboardProfiles) {
+    for(const profile of groups.api) {
 
       lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
       lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
@@ -265,15 +330,15 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
     lines.push("</div>");
   }
 
-  // Fullscreen API profiles.
-  if((apiProfiles.length > 0) || (embeddedProfiles.length > 0)) {
+  // Keyboard fullscreen profiles.
+  if(groups.keyboard.length > 0) {
 
     lines.push("<div class=\"profile-category\">");
-    lines.push("<h4>Fullscreen API Profiles</h4>");
-    lines.push("<p class=\"category-desc\">For sites that require JavaScript's requestFullscreen() API instead of keyboard shortcuts.</p>");
+    lines.push("<h4>Keyboard Fullscreen Profiles</h4>");
+    lines.push("<p class=\"category-desc\">For single-channel sites that use the 'f' key to toggle fullscreen mode.</p>");
     lines.push("<dl class=\"profile-list\">");
 
-    for(const profile of [ ...apiProfiles, ...embeddedProfiles ]) {
+    for(const profile of groups.keyboard) {
 
       lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
       lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
@@ -284,14 +349,33 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
   }
 
   // Special profiles.
-  if(specialProfiles.length > 0) {
+  if(groups.special.length > 0) {
 
     lines.push("<div class=\"profile-category\">");
     lines.push("<h4>Special Profiles</h4>");
     lines.push("<p class=\"category-desc\">For non-standard use cases like static pages without video.</p>");
     lines.push("<dl class=\"profile-list\">");
 
-    for(const profile of specialProfiles) {
+    for(const profile of groups.special) {
+
+      lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
+      lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
+    }
+
+    lines.push("</dl>");
+    lines.push("</div>");
+  }
+
+  // Multi-channel profiles (requires channel selector) - at the end since these are more advanced.
+  if(groups.multiChannel.length > 0) {
+
+    lines.push("<div class=\"profile-category\">");
+    lines.push("<h4>Multi-Channel Profiles</h4>");
+    lines.push("<p class=\"category-desc\">For sites that host multiple live channels on a single page. These profiles require a channel selector ");
+    lines.push("to identify which channel to tune to. Set the Channel Selector field in Advanced Options when using these profiles.</p>");
+    lines.push("<dl class=\"profile-list\">");
+
+    for(const profile of groups.multiChannel) {
 
       lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
       lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
