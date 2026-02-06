@@ -282,12 +282,16 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
     return;
   }
 
+  const clickSelector = req.query.clickSelector as string | undefined;
+  const clickToPlay = req.query.clickToPlay === "true";
   const profileOverride = req.query.profile as string | undefined;
   const selector = req.query.selector as string | undefined;
 
-  // Generate a deterministic synthetic key from the trimmed URL, profile, and selector. Including the profile and selector ensures that the same URL with different
-  // profiles or different channel selectors produces separate streams. The newline delimiter is safe since URLs cannot contain literal newlines.
-  const channelName = "play-" + createHash("sha256").update(url + "\n" + (profileOverride ?? "") + "\n" + (selector ?? "")).digest("hex").slice(0, 8);
+  // Generate a deterministic synthetic key from the trimmed URL, profile, selector, clickToPlay, and clickSelector. Including these ensures that the same URL with
+  // different options produces separate streams. The newline delimiter is safe since URLs cannot contain literal newlines.
+  const channelName = "play-" + createHash("sha256").update(
+    url + "\n" + (profileOverride ?? "") + "\n" + (selector ?? "") + "\n" + (clickToPlay ? "1" : "") + "\n" + (clickSelector ?? "")
+  ).digest("hex").slice(0, 8);
 
   // Check for an existing stream.
   const streamId = getChannelStreamId(channelName);
@@ -334,7 +338,7 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
   // Start a new ad-hoc stream. initializeStream handles placeholder management, capture setup, segmenter creation, and event emission.
   try {
 
-    const newStreamId = await initializeStream({ channelName, channelSelector: selector, clientAddress, profileOverride, url });
+    const newStreamId = await initializeStream({ channelName, channelSelector: selector, clickSelector, clickToPlay, clientAddress, profileOverride, url });
 
     if(newStreamId === null) {
 
@@ -610,6 +614,12 @@ interface InitializeStreamOptions {
   // Client IP address for Channels DVR API integration.
   clientAddress: Nullable<string>;
 
+  // Click selector for play button overlays on ad-hoc streams. When set, also enables clickToPlay behavior.
+  clickSelector?: string;
+
+  // Whether to click an element to start playback. When true without clickSelector, clicks the video element.
+  clickToPlay?: boolean;
+
   // Profile name to override auto-detection, from query parameter.
   profileOverride?: string;
 
@@ -630,7 +640,7 @@ interface InitializeStreamOptions {
  */
 async function initializeStream(options: InitializeStreamOptions): Promise<number | null> {
 
-  const { channel, channelName, channelSelector, clientAddress, profileOverride, url } = options;
+  const { channel, channelName, channelSelector, clickSelector, clickToPlay, clientAddress, profileOverride, url } = options;
 
   // Create a placeholder to prevent duplicate stream starts while we're setting up.
   const placeholderStreamId = -1;
@@ -673,6 +683,8 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
         channel,
         channelName: channel ? channelName : undefined,
         channelSelector: channel ? undefined : channelSelector,
+        clickSelector: channel ? undefined : clickSelector,
+        clickToPlay: channel ? undefined : clickToPlay,
         onTabReplacementFactory: tabReplacementFactory,
         profileOverride,
         url

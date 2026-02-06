@@ -1082,17 +1082,20 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
   // through frames to find the one containing the video element.
   const context = await findVideoContext(page, profile);
 
-  // For clickToPlay sites (typically Brightcove players), we need to click the video element to start playback. These players require user interaction to begin
-  // playing, even with autoplay enabled. No post-click delay is needed — waitForVideoReady() polls for readyState >= 3, which inherently waits for the click to
-  // take effect.
+  // For clickToPlay sites, we need to click an element to start playback. These players require user interaction to begin playing, even with autoplay enabled. If
+  // clickSelector is set, we click that element (typically a play button overlay); otherwise we click the video element directly.
   if(profile.clickToPlay) {
+
+    const clickTarget = profile.clickSelector ?? "video";
 
     try {
 
-      await page.click("video");
+      // Wait for the click target to appear in the DOM. Play button overlays may be rendered after initial page load.
+      await context.waitForSelector(clickTarget, { timeout: CONFIG.streaming.videoTimeout });
+      await context.click(clickTarget);
     } catch(clickError) {
 
-      LOG.warn("Could not click video to initiate playback: %s.", formatError(clickError));
+      LOG.warn("Could not click %s to initiate playback: %s.", clickTarget, formatError(clickError));
     }
   }
 

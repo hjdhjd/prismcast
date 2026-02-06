@@ -353,8 +353,12 @@ export interface SiteProfile {
   // identifiers. The value typically comes from the channel definition rather than the profile itself.
   channelSelector?: Nullable<string>;
 
+  // CSS selector for the element to click when clickToPlay is true. Some sites have a play button overlay rather than a clickable video element. When set, this
+  // selector is clicked instead of the video element. When not set, the video element itself is clicked.
+  clickSelector?: Nullable<string>;
+
   // Whether the video player requires a click to start playback. Brightcove-based players commonly require this. When true, the stream handler clicks the video
-  // element after page load and before waiting for the video to become ready. This simulates user interaction to satisfy autoplay policies.
+  // element (or clickSelector target) after page load and before waiting for the video to become ready. This simulates user interaction to satisfy autoplay policies.
   clickToPlay?: boolean;
 
   // Human-readable description of the profile for documentation purposes. This field is stripped during profile resolution and not included in the resolved
@@ -411,6 +415,9 @@ export interface ResolvedSiteProfile {
 
   // The channel slug to match when selecting a channel, or null if not applicable.
   channelSelector: Nullable<string>;
+
+  // CSS selector for the element to click when clickToPlay is true, or null to click the video element.
+  clickSelector: Nullable<string>;
 
   // Whether to click the video element to initiate playback.
   clickToPlay: boolean;

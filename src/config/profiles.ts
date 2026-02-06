@@ -48,7 +48,10 @@ import { CHANNELS } from "../channels/index.js";
  * - keyboardMultiVideo: Keyboard fullscreen + multi-video selection (extends keyboardFullscreen)
  * - keyboardIframe: Keyboard fullscreen + iframe handling (extends keyboardFullscreen)
  * - keyboardDynamicMultiVideo: Keyboard + network idle + multi-video selection (extends keyboardDynamic)
+ * - clickToPlayKeyboard: Click to start playback + keyboard fullscreen (extends keyboardFullscreen)
  * - brightcove: Brightcove players using API fullscreen + network idle wait (extends fullscreenApi)
+ * - clickToPlayApi: Click to start playback + API fullscreen (extends fullscreenApi)
+ * - disneyNow: DisneyNOW player with play button overlay + multi-video (extends clickToPlayApi)
  * - embeddedPlayer: Iframe-based players using fullscreen API (extends fullscreenApi)
  * - apiMultiVideo: API fullscreen + multi-video + tile-based channel selection (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
@@ -82,6 +85,39 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     extends: "fullscreenApi",
     summary: "Brightcove players (network wait)",
     waitForNetworkIdle: true
+  },
+
+  // Profile for sites that require clicking to start playback. Some players don't autoplay and need user interaction to begin. Uses the JavaScript fullscreen API.
+  // Set clickSelector in the profile or channel definition to specify a play button element; otherwise clicks the video element directly.
+  clickToPlayApi: {
+
+    category: "api",
+    clickToPlay: true,
+    description: "Sites requiring a click to start playback, using the JavaScript fullscreen API. Use clickSelector for play button overlays.",
+    extends: "fullscreenApi",
+    summary: "Click-to-play (API fullscreen)"
+  },
+
+  // Profile for sites that require clicking to start playback, using keyboard 'f' for fullscreen. Use this when clickToPlayApi doesn't work for fullscreen but the
+  // site responds to the 'f' key. Set clickSelector in the profile or channel definition to specify a play button element.
+  clickToPlayKeyboard: {
+
+    category: "keyboard",
+    clickToPlay: true,
+    description: "Sites requiring a click to start playback, using the 'f' key for fullscreen. Use clickSelector for play button overlays.",
+    extends: "keyboardFullscreen",
+    summary: "Click-to-play ('f' key fullscreen)"
+  },
+
+  // Profile for DisneyNOW (disneynow.com) which has a play button overlay that must be clicked to start playback and multiple video elements on the page.
+  disneyNow: {
+
+    category: "api",
+    clickSelector: ".overlay__button button",
+    description: "DisneyNOW player with play button overlay and multiple video elements.",
+    extends: "clickToPlayApi",
+    selectReadyVideo: true,
+    summary: "DisneyNOW player"
   },
 
   // Profile for iframe-embedded players that also have multiple video elements (ads, placeholders, main content) and need network activity to settle. The
@@ -217,7 +253,9 @@ export const DOMAIN_TO_PROFILE: Record<string, string> = {
   "cbs.com": "keyboardIframe",
   "cnbc.com": "fullscreenApi",
   "cnn.com": "fullscreenApi",
+  "disneynow.com": "disneyNow",
   "disneyplus.com": "apiMultiVideo",
+  "espn.com": "keyboardMultiVideo",
   "foodnetwork.com": "fullscreenApi",
   "foxbusiness.com": "embeddedDynamicMultiVideo",
   "foxnews.com": "embeddedDynamicMultiVideo",
@@ -265,6 +303,9 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
 
   // No channel selector - this is only used for multi-channel player pages.
   channelSelector: null,
+
+  // No click selector - when clickToPlay is true, click the video element by default.
+  clickSelector: null,
 
   // Don't click to play - most sites start automatically or via other mechanisms.
   clickToPlay: false,

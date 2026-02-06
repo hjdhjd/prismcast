@@ -90,6 +90,12 @@ export interface StreamSetupOptions {
   // channel.channelSelector via getProfileForChannel.
   channelSelector?: string;
 
+  // Click selector for play button overlays. Only used for ad-hoc streams. For predefined channels, the selector comes from the profile definition.
+  clickSelector?: string;
+
+  // Whether to click an element to start playback. Only used for ad-hoc streams. For predefined channels, this comes from the profile definition.
+  clickToPlay?: boolean;
+
   // Whether to treat this as a static page without video.
   noVideo?: boolean;
 
@@ -655,7 +661,7 @@ async function resolveRedirectUrl(url: string): Promise<string | null> {
  */
 export async function setupStream(options: StreamSetupOptions, onCircuitBreak: () => void): Promise<StreamSetupResult> {
 
-  const { channel, channelName, channelSelector, noVideo, onTabReplacementFactory, profileOverride, url } = options;
+  const { channel, channelName, channelSelector, clickSelector, clickToPlay, noVideo, onTabReplacementFactory, profileOverride, url } = options;
 
   // Generate stream identifiers early so all log messages include them.
   const streamId = generateStreamId(channelName, url);
@@ -727,6 +733,13 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     if(channelSelector) {
 
       profile = { ...profile, channelSelector };
+    }
+
+    // Merge the ad-hoc clickToPlay and clickSelector options into the profile. clickSelector implies clickToPlay. For ad-hoc streams, these enable clicking an
+    // element to start playback - either the video element (clickToPlay alone) or a play button overlay (clickToPlay + clickSelector).
+    if(clickToPlay || clickSelector) {
+
+      profile = { ...profile, clickToPlay: true, ...(clickSelector ? { clickSelector } : {}) };
     }
 
     // Compute the metadata comment for FFmpeg. Prefer the friendly channel name, fall back to the channel key, or extract the domain from the URL.
