@@ -10,14 +10,14 @@ import {
   buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel, validateVideoElement
 } from "../browser/video.js";
 import { getChannelLogo, getShowName } from "./showInfo.js";
-import { getStream, getStreamMemoryUsage } from "./registry.js";
+import { getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.js";
 import { CONFIG } from "../config/index.js";
 import { emitStreamHealthChanged } from "./statusEmitter.js";
 import { getClientSummary } from "./clients.js";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 
-/* Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor watches
- * for these failures and attempts recovery. This is essential for unattended DVR recording where the user cannot manually intervene.
+/* Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor
+ * watches for these failures and attempts recovery. This is essential for unattended DVR recording where the user cannot manually intervene.
  *
  * The monitor runs on a configurable interval (default: 2 seconds) and performs these checks:
  *
@@ -31,14 +31,14 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
  * 3. Volume enforcement: Some sites aggressively mute videos (e.g., France24). The monitor checks and restores volume on every interval to ensure audio capture.
  *
  * 4. Issue-aware recovery: When issues are detected, recovery is tailored to the issue type:
- *    - Paused issues: Try Level 1 (play/unmute) first, then escalate to Level 2 if that fails
- *    - Buffering issues: Skip Level 1 (ineffective for buffering) and go directly to Level 2
- *    - If Level 2 has already been attempted, skip to Level 3 (second L2 attempts always fail)
+ *    - Paused issues: Try Level 1 (play/unmute) first, then escalate to Level 2 if that fails.
+ *    - Buffering issues: Skip Level 1 (ineffective for buffering) and go directly to Level 2.
+ *    - If Level 2 has already been attempted, skip to Level 3 (second L2 attempts always fail).
  *
  *    Recovery levels:
- *    - Level 1: Basic play/unmute and fullscreen (only for paused issues)
- *    - Level 2: Reload video source (first attempt has ~58% success rate)
- *    - Level 3: Full page navigation (always succeeds)
+ *    - Level 1: Basic play/unmute and fullscreen (only for paused issues).
+ *    - Level 2: Reload video source (first attempt has ~58% success rate).
+ *    - Level 3: Full page navigation (always succeeds).
  *
  * 5. Circuit breaker: If too many failures occur within a time window (default: 10 failures in 5 minutes), the stream is considered fundamentally broken and the
  *    circuit breaker trips, terminating the stream. This prevents endless recovery attempts that consume resources.
@@ -101,11 +101,9 @@ const RECOVERY_METHODS = {
 // Type for recovery method values.
 type RecoveryMethodValue = typeof RECOVERY_METHODS[keyof typeof RECOVERY_METHODS];
 
-/* These mappings connect recovery method names to their corresponding counter fields in RecoveryMetrics. Using a mapping pattern instead of if/else chains:
- * - Reduces code duplication in recordRecoveryAttempt() and recordRecoverySuccess()
- * - Makes adding new recovery methods trivial (add one entry to each map)
- * - Ensures consistency between attempt and success counting
- * - Provides type safety via the RecoveryMetrics interface
+/* These mappings connect recovery method names to their corresponding counter fields in RecoveryMetrics. Using a mapping pattern instead of if/else chains reduces
+ * code duplication, makes adding new recovery methods trivial (add one entry to each map), ensures consistency between attempt and success counting, and provides
+ * type safety via the RecoveryMetrics interface.
  */
 
 // Maps recovery method names to their attempt counter field names.
@@ -598,6 +596,18 @@ export function monitorPlaybackHealth(
   // always fails and leaves the video at readyState=0. When this flag is true and recovery is needed, we skip L2 and go directly to L3 (page reload).
   let sourceReloadAttempted = false;
 
+  // Segment production monitoring state. After L2/L3 recovery, we track whether segments are actually being produced. If recovery reports success but the capture
+  // pipeline is dead (MediaRecorder stopped producing data), we need to escalate to tab replacement.
+  let preRecoverySegmentIndex: Nullable<number> = null;      // Segment index when recovery started, used to detect if new segments are produced.
+  let segmentWaitStartTime: Nullable<number> = null;         // Timestamp when we started waiting for segment production after recovery grace period.
+  let segmentProductionStalled = false;                       // Flag indicating segment production has stalled after recovery.
+
+  // Continuous segment size monitoring state. Detects spontaneous capture pipeline death (no preceding recovery event) by checking segment sizes. Dead pipelines
+  // produce tiny segments (18 bytes observed) while the video element appears healthy. This complements post-recovery index monitoring.
+  let lastCheckedSegmentIndex = 0;                            // Last segment index we inspected (to detect new segments).
+  let consecutiveTinySegments = 0;                            // Count of consecutive tiny segments.
+  let wasInTinySegmentState = false;                          // For detecting spontaneous recovery (tiny→valid transition without explicit recovery).
+
   // Track whether the browser window needs to be re-minimized after recovery. Recovery actions (especially ensureFullscreen) can cause the window to un-minimize.
   // We set this flag when recovery is triggered and clear it after the recovery grace period passes and we see a healthy check.
   let pendingReMinimize = false;
@@ -638,6 +648,17 @@ export function monitorPlaybackHealth(
   // Recovery grace period. After a recovery action, we wait before checking for new issues to give the action time to take effect. L1 (play/unmute) is a quick
   // action. L2 (source reload) and L3 (page reload) need more time for rebuffering/navigation.
   const recoveryGracePeriods = [ 0, 3000, 10000, 10000 ];  // L0, L1, L2, L3 in milliseconds.
+
+  // Segment stall timeout. After L2/L3 recovery completes, if no new segments are produced within this timeout, the capture pipeline is considered dead and we
+  // escalate directly to tab replacement. This catches the case where recovery reports success but the MediaRecorder/FFmpeg pipeline has silently died.
+  const SEGMENT_STALL_TIMEOUT = 10000;  // 10 seconds.
+
+  // Tiny segment detection thresholds. Used for continuous segment size monitoring to detect dead capture pipelines. When video capture dies but audio continues,
+  // segments contain only audio data (~400KB for 3-second segments at 130Kbps AAC). Valid segments with video are 5-10MB. The 2MB threshold catches both completely
+  // dead captures (18 bytes) and audio-only captures (~400KB) while providing a 2.5x safety margin against false positives on valid segments.
+  const TINY_SEGMENT_THRESHOLD = 2097152; // 2MB - segments below this indicate dead or degraded capture.
+  const TINY_SEGMENT_COUNT_TRIGGER = 10;  // Trigger recovery after 10 consecutive tiny segments (~20 seconds with 2-second segments).
+
   let recoveryGraceUntil = 0;
 
   // Pre-compute the selector type string for video element selection. This is passed to evaluate() calls.
@@ -746,6 +767,142 @@ export function monitorPlaybackHealth(
     recoveryInProgress = false;
 
     emitStatusUpdate();
+  }
+
+  /**
+   * Resets all segment monitoring state variables. Called after successful recovery or sustained healthy playback to clear tracking for both post-recovery index
+   * monitoring and continuous size monitoring.
+   */
+  function resetSegmentMonitoringState(): void {
+
+    preRecoverySegmentIndex = null;
+    segmentWaitStartTime = null;
+    segmentProductionStalled = false;
+    consecutiveTinySegments = 0;
+    wasInTinySegmentState = false;
+    lastCheckedSegmentIndex = getStream(streamInfo.numericStreamId)?.segmenter?.getSegmentIndex() ?? 0;
+  }
+
+  /**
+   * Resets all failure/retry counters to zero. Called after successful tab replacement or page navigation to give the stream a fresh start.
+   */
+  function resetRecoveryCounters(): void {
+
+    consecutiveTimeouts = 0;
+    consecutiveNavigationFailures = 0;
+    videoNotFoundCount = 0;
+    stallCount = 0;
+  }
+
+  /**
+   * Resets escalation level and related flags. Called after successful recovery to allow the stream to start from level 0 on future issues.
+   */
+  function resetEscalationState(): void {
+
+    escalationLevel = 0;
+    sourceReloadAttempted = false;
+  }
+
+  /**
+   * Sets the recovery grace period and re-minimize flag after a recovery action. The grace period prevents the monitor from immediately detecting new issues while the
+   * recovery action takes effect.
+   * @param level - The recovery level (1-3) to determine grace period duration.
+   */
+  function setRecoveryGracePeriod(level: number): void {
+
+    pendingReMinimize = true;
+    recoveryGraceUntil = Date.now() + recoveryGracePeriods[level];
+  }
+
+  /**
+   * Tab replacement result type. Indicates whether the replacement succeeded, failed (but stream continues), or terminated (circuit breaker tripped).
+   */
+  type TabReplacementOutcome = { outcome: "success" } | { outcome: "failed" } | { outcome: "terminated" };
+
+  /**
+   * Handles tab replacement failure by checking the circuit breaker. If the breaker trips, terminates the stream. Returns the appropriate outcome for the caller.
+   * @param context - Description of the failure for logging.
+   * @returns The tab replacement outcome (failed or terminated).
+   */
+  function handleTabReplacementFailure(context: string): TabReplacementOutcome {
+
+    const cbResult = checkCircuitBreaker(circuitBreaker, Date.now());
+
+    if(cbResult.shouldTrip) {
+
+      LOG.error("Circuit breaker tripped after %s. Stream appears fundamentally broken.", context);
+
+      clearInterval(interval);
+      onCircuitBreak();
+
+      return { outcome: "terminated" };
+    }
+
+    return { outcome: "failed" };
+  }
+
+  /**
+   * Executes tab replacement recovery with full error handling. This unified helper handles all tab replacement triggers (tiny segments, stalled capture, unresponsive
+   * tab) consistently, including metrics recording, success/failure logging, circuit breaker checks, and state resets.
+   * @param issueType - Description of what triggered the replacement (for logging and UI display).
+   * @returns The tab replacement outcome.
+   */
+  async function executeTabReplacement(issueType: string): Promise<TabReplacementOutcome> {
+
+    // Guard: caller should ensure onTabReplacement exists, but TypeScript needs explicit narrowing.
+    if(!onTabReplacement) {
+
+      return { outcome: "failed" };
+    }
+
+    recoveryInProgress = true;
+    totalRecoveryAttempts++;
+    lastRecoveryTime = Date.now();
+    lastIssueType = issueType;
+    lastIssueTime = Date.now();
+
+    recordRecoveryAttempt(metrics, RECOVERY_METHODS.tabReplacement);
+
+    try {
+
+      const result = await onTabReplacement();
+
+      if(result) {
+
+        // Success: update references and reset state.
+        currentPage = result.page;
+        currentContext = result.context;
+
+        const duration = formatRecoveryDuration(metrics.currentRecoveryStartTime ?? Date.now());
+
+        LOG.info("Recovered in %s via %s.", duration, RECOVERY_METHODS.tabReplacement);
+
+        recordRecoverySuccess(metrics, RECOVERY_METHODS.tabReplacement);
+
+        // Full state reset for fresh tab.
+        resetRecoveryCounters();
+        resetEscalationState();
+        resetSegmentMonitoringState();
+        setRecoveryGracePeriod(3);
+        resetCircuitBreaker(circuitBreaker);
+
+        return { outcome: "success" };
+      }
+
+      // Failure: null result from callback.
+      LOG.warn("Tab replacement unsuccessful.");
+
+      return handleTabReplacementFailure("tab replacement unsuccessful");
+    } catch(error) {
+
+      // Error: exception during replacement.
+      LOG.warn("Tab replacement failed: %s.", formatError(error));
+
+      return handleTabReplacementFailure("tab replacement error");
+    } finally {
+
+      finalizeTabReplacement();
+    }
   }
 
   /**
@@ -1076,11 +1233,10 @@ export function monitorPlaybackHealth(
 
             recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
 
-            // Reset escalation and source reload tracking after successful recovery.
-            escalationLevel = 0;
-            consecutiveNavigationFailures = 0;
-            videoNotFoundCount = 0;
-            sourceReloadAttempted = false;
+            // Reset state after successful page navigation recovery.
+            resetRecoveryCounters();
+            resetEscalationState();
+            resetSegmentMonitoringState();
           } else {
 
             consecutiveNavigationFailures++;
@@ -1144,6 +1300,89 @@ export function monitorPlaybackHealth(
         const withinRecoveryGrace = now < recoveryGraceUntil;
 
         /*
+         * Segment production monitoring. After L2/L3 recovery completes (grace period ends), we verify that segments are actually being produced. If recovery reported
+         * success but the capture pipeline is dead (MediaRecorder stopped producing data, FFmpeg stdin idle), segments will stop flowing while the video element
+         * appears healthy. This catches the 20+ minute freeze bug where PrismCast reports "Recovered" but Channels DVR receives no data.
+         */
+        if((preRecoverySegmentIndex !== null) && !withinRecoveryGrace) {
+
+          // Start the segment wait timer when recovery grace period ends.
+          segmentWaitStartTime ??= now;
+
+          // Check if segments are flowing by comparing current index to pre-recovery index.
+          const entry = getStream(streamInfo.numericStreamId);
+          const currentSegmentIndex = entry?.segmenter?.getSegmentIndex() ?? null;
+
+          if((currentSegmentIndex !== null) && (currentSegmentIndex > preRecoverySegmentIndex)) {
+
+            // Segments are flowing - recovery actually succeeded. Clear tracking state.
+            preRecoverySegmentIndex = null;
+            segmentWaitStartTime = null;
+            segmentProductionStalled = false;
+          } else if((now - segmentWaitStartTime) > SEGMENT_STALL_TIMEOUT) {
+
+            // No new segments for SEGMENT_STALL_TIMEOUT after recovery grace period. The capture pipeline is dead.
+            LOG.warn("No segments produced for %ss after recovery. Capture pipeline appears dead.", SEGMENT_STALL_TIMEOUT / 1000);
+
+            segmentProductionStalled = true;
+          }
+        }
+
+        /*
+         * Continuous segment size monitoring. Runs on every healthy interval to detect spontaneous capture pipeline death (no preceding recovery event). Dead pipelines
+         * produce tiny segments (18 bytes observed) while the video element appears healthy. This catches failures that post-recovery index monitoring misses because
+         * there's no recovery to trigger monitoring.
+         */
+        const sizeCheckEntry = getStream(streamInfo.numericStreamId);
+        const currentSegmentIndex = sizeCheckEntry?.segmenter?.getSegmentIndex() ?? 0;
+
+        if((currentSegmentIndex > lastCheckedSegmentIndex) && sizeCheckEntry) {
+
+          // A new segment was produced. Check its size.
+          const segmentSize = getLastSegmentSize(sizeCheckEntry) ?? 0;
+
+          if(segmentSize < TINY_SEGMENT_THRESHOLD) {
+
+            consecutiveTinySegments++;
+            wasInTinySegmentState = true;
+
+            if(consecutiveTinySegments >= TINY_SEGMENT_COUNT_TRIGGER) {
+
+              LOG.warn("Detected %d consecutive tiny segments (%d bytes). Capture pipeline appears dead.", consecutiveTinySegments, segmentSize);
+
+              // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentProductionStalled.
+              if(onTabReplacement && !recoveryInProgress) {
+
+                const tabResult = await executeTabReplacement("tiny segments");
+
+                if(tabResult.outcome === "terminated") {
+
+                  return;
+                }
+              } else if(!onTabReplacement) {
+
+                // No tab replacement callback - set stalled flag for circuit breaker.
+                segmentProductionStalled = true;
+              }
+            }
+          } else {
+
+            // Valid segment size. Check for spontaneous recovery from tiny segment state. We don't mark discontinuity here - only tab replacement marks discontinuity.
+            // Self-healing may be transient and not require decoder reset.
+            if(wasInTinySegmentState) {
+
+              LOG.debug("Segment production self-healed (%d bytes).", segmentSize);
+            }
+
+            // Reset tiny segment tracking.
+            consecutiveTinySegments = 0;
+            wasInTinySegmentState = false;
+          }
+
+          lastCheckedSegmentIndex = currentSegmentIndex;
+        }
+
+        /*
        * Re-minimize check. After recovery, the browser window may have been un-minimized by fullscreen actions. As soon as the stream is healthy (progressing without
        * issues), we re-minimize to reduce GPU usage.
        */
@@ -1174,9 +1413,11 @@ export function monitorPlaybackHealth(
        * - Video ended (live streams shouldn't end)
        * - Video is paused and not just buffering
        * - Video is stalled for too long (stallCount exceeds threshold and not in buffering grace)
+       * - Segment production has stalled after recovery (capture pipeline dead)
        */
         const needsRecovery = !withinRecoveryGrace && (state.error || state.ended || (state.paused && !withinBufferingGrace) ||
-                            (!isProgressing && !withinBufferingGrace && (stallCount > CONFIG.playback.stallCountThreshold)));
+                            (!isProgressing && !withinBufferingGrace && (stallCount > CONFIG.playback.stallCountThreshold)) ||
+                            segmentProductionStalled);
 
         /*
        * Escalation reset. After sustained healthy playback (SUSTAINED_PLAYBACK_REQUIRED, default 60 seconds), we reset the escalation level and circuit breaker.
@@ -1198,16 +1439,13 @@ export function monitorPlaybackHealth(
 
           if((escalationLevel > 0) && (healthyDuration > CONFIG.playback.sustainedPlaybackRequired)) {
 
-            escalationLevel = 0;
-
             // Clear buffering state. The bufferingStartTime may persist through recovery cycles due to networkState === 2 (NETWORK_LOADING) being true for live streams
             // even during healthy playback. Since we have confirmed 60 seconds of progression, the stream is definitively not buffering.
             bufferingStartTime = null;
 
-            // Reset source reload tracking. The stream is healthy now, so if a future issue occurs, we should try L2 (source reload) again before escalating to L3.
-            sourceReloadAttempted = false;
-
-            // Reset circuit breaker on sustained healthy playback. The stream has proven it can work, so we give it a fresh start.
+            // Reset escalation, segment tracking, and circuit breaker. Sustained healthy playback confirms the stream works.
+            resetEscalationState();
+            resetSegmentMonitoringState();
             resetCircuitBreaker(circuitBreaker);
           }
         }
@@ -1220,6 +1458,19 @@ export function monitorPlaybackHealth(
        * - If L2 has already been attempted, skip to L3 (page reload) since a second L2 always fails
        */
         if(needsRecovery) {
+
+          /*
+           * Segment production stall handling. When we detect that segments stopped flowing after L2/L3 recovery, the capture pipeline is dead and normal recovery
+           * won't help. We skip the escalation ladder and go directly to tab replacement if available.
+           */
+          if(segmentProductionStalled && onTabReplacement) {
+
+            LOG.warn("Capture pipeline stalled after recovery. Escalating directly to %s...", RECOVERY_METHODS.tabReplacement);
+
+            await executeTabReplacement("capture pipeline stalled");
+
+            return;
+          }
 
           // Check circuit breaker for too many failures. The helper handles incrementing, window checks, and resetting if outside the window.
           const cbResult = checkCircuitBreaker(circuitBreaker, now);
@@ -1293,6 +1544,16 @@ export function monitorPlaybackHealth(
 
           // Record this recovery attempt in metrics.
           recordRecoveryAttempt(metrics, recoveryMethod);
+
+          // For L2/L3 recovery, record the current segment index so we can verify segments are flowing after recovery completes.
+          if(escalationLevel >= 2) {
+
+            const entry = getStream(streamInfo.numericStreamId);
+
+            preRecoverySegmentIndex = entry?.segmenter?.getSegmentIndex() ?? null;
+            segmentWaitStartTime = null;  // Will be set after recovery grace period ends.
+            segmentProductionStalled = false;
+          }
 
           // Mark recovery in progress to prevent overlapping recovery attempts.
           recoveryInProgress = true;
@@ -1380,10 +1641,10 @@ export function monitorPlaybackHealth(
 
                     recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
 
-                    // Reset escalation and source reload tracking after successful page navigation. The stream is working again with a fresh page.
-                    escalationLevel = 0;
-                    consecutiveNavigationFailures = 0;
-                    sourceReloadAttempted = false;
+                    // Reset state after successful page navigation recovery.
+                    resetRecoveryCounters();
+                    resetEscalationState();
+                    resetSegmentMonitoringState();
                   } else {
 
                     consecutiveNavigationFailures++;
@@ -1434,76 +1695,7 @@ export function monitorPlaybackHealth(
 
             LOG.warn("Tab unresponsive. Attempting %s...", RECOVERY_METHODS.tabReplacement);
 
-            recoveryInProgress = true;
-            totalRecoveryAttempts++;
-            lastRecoveryTime = Date.now();
-            lastIssueType = "tab unresponsive";
-            lastIssueTime = Date.now();
-
-            recordRecoveryAttempt(metrics, RECOVERY_METHODS.tabReplacement);
-
-            try {
-
-              const result = await onTabReplacement();
-
-              if(result) {
-
-                // Tab replacement succeeded - update our references.
-                currentPage = result.page;
-                currentContext = result.context;
-
-                // Log success with timing.
-                const duration = formatRecoveryDuration(metrics.currentRecoveryStartTime ?? Date.now());
-
-                LOG.info("Recovered in %s via %s.", duration, RECOVERY_METHODS.tabReplacement);
-
-                recordRecoverySuccess(metrics, RECOVERY_METHODS.tabReplacement);
-
-                // Reset recovery state since we have a fresh tab.
-                consecutiveTimeouts = 0;
-                escalationLevel = 0;
-                sourceReloadAttempted = false;
-                consecutiveNavigationFailures = 0;
-                videoNotFoundCount = 0;
-                pendingReMinimize = true;
-                recoveryGraceUntil = Date.now() + recoveryGracePeriods[3];
-              } else {
-
-                // Tab replacement failed - check circuit breaker.
-                LOG.warn("Tab replacement unsuccessful.");
-
-                const cbResult = checkCircuitBreaker(circuitBreaker, Date.now());
-
-                if(cbResult.shouldTrip) {
-
-                  LOG.error("Circuit breaker tripped after tab replacement failure. Stream appears fundamentally broken.");
-
-                  clearInterval(interval);
-                  onCircuitBreak();
-
-                  return;
-                }
-              }
-            } catch(replacementError) {
-
-              LOG.warn("Tab replacement failed: %s.", formatError(replacementError));
-
-              const cbResult = checkCircuitBreaker(circuitBreaker, Date.now());
-
-              if(cbResult.shouldTrip) {
-
-                LOG.error("Circuit breaker tripped after tab replacement error.");
-
-                clearInterval(interval);
-                onCircuitBreak();
-
-                return;
-              }
-            } finally {
-
-              // Clear recovery flag and emit status. The finally block ensures cleanup happens on all paths including circuit breaker returns.
-              finalizeTabReplacement();
-            }
+            await executeTabReplacement("tab unresponsive");
 
             return;
           }

@@ -10,14 +10,9 @@ import type { MP4Box } from "./mp4Parser.js";
 import type { Nullable } from "../types/index.js";
 import type { Readable } from "node:stream";
 
-/* This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is:
- *
- * 1. Receive MP4 data from puppeteer-stream (H.264 + AAC from either native capture or FFmpeg transcoding)
- * 2. Parse MP4 box structure to identify:
- *    - ftyp + moov: Initialization segment (codec configuration)
- *    - moof + mdat pairs: Media fragments
- * 3. Store init segment and accumulate media fragments into segments
- * 4. Generate and update the m3u8 playlist
+/* This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is: (1) receive MP4 data from puppeteer-stream (H.264 + AAC from
+ * either native capture or FFmpeg transcoding), (2) parse MP4 box structure to identify ftyp + moov (initialization segment) and moof + mdat pairs (media fragments),
+ * (3) store init segment and accumulate media fragments into segments, and (4) generate and update the m3u8 playlist.
  *
  * Keyframe detection is available for diagnostics by setting KEYFRAME_DEBUG to true. When enabled, each moof's traf/trun sample flags are parsed (ISO 14496-12) to
  * determine whether fragments start with sync samples (keyframes). Statistics are logged at stream termination and per-segment warnings are emitted for segments that
@@ -86,6 +81,9 @@ export interface FMP4SegmenterResult {
 
   // Returns a snapshot of the current keyframe detection statistics.
   getKeyframeStats: () => KeyframeStats;
+
+  // Get the size in bytes of the last segment stored. Used by the monitor to detect dead capture pipelines producing empty segments.
+  getLastSegmentSize: () => number;
 
   // Get the current segment index. Used by tab replacement to continue numbering from where the old segmenter left off.
   getSegmentIndex: () => number;
@@ -160,6 +158,9 @@ interface SegmenterState {
 
   // Whether the segmenter has been stopped.
   stopped: boolean;
+
+  // Size in bytes of the last segment stored. Used by the monitor to detect dead capture pipelines producing empty segments.
+  lastSegmentSize: number;
 
   // Running total of keyframe intervals in milliseconds. Used with keyframeCount to compute the average.
   totalKeyframeIntervalMs: number;
@@ -242,6 +243,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     initBoxes: [],
     keyframeCount: 0,
     lastKeyframeTime: null,
+    lastSegmentSize: 0,
     maxKeyframeIntervalMs: 0,
     minKeyframeIntervalMs: Infinity,
     nonKeyframeCount: 0,
@@ -336,8 +338,9 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     const segmentData = Buffer.concat(state.fragmentBuffer);
     const segmentName = [ "segment", String(state.segmentIndex), ".m4s" ].join("");
 
-    // Store the segment.
+    // Store the segment and update size for health monitoring.
     storeSegment(streamId, segmentName, segmentData);
+    state.lastSegmentSize = segmentData.length;
 
     // Increment segment index and mark the first segment as emitted.
     state.segmentIndex++;
@@ -579,6 +582,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       nonKeyframeCount: state.nonKeyframeCount,
       segmentsWithoutLeadingKeyframe: state.segmentsWithoutLeadingKeyframe
     }),
+
+    getLastSegmentSize: (): number => state.lastSegmentSize,
 
     getSegmentIndex: (): number => state.segmentIndex,
 

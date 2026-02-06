@@ -10,15 +10,10 @@ import type { Page } from "puppeteer-core";
 import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./monitor.js";
 
-/* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser state,
- * HLS segment storage, and the segmenter reference. This consolidation prevents data desync issues that could occur with separate Maps for each concern.
- *
- * The registry enables:
- * - The /streams endpoint to list all active streams
- * - The /health endpoint to report stream counts
- * - Graceful shutdown to terminate all streams
- * - Browser disconnect handling to clean up orphaned streams
- * - Concurrent stream limit enforcement
+/* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser
+ * state, HLS segment storage, and the segmenter reference. This consolidation prevents data desync issues that could occur with separate Maps for each concern. The
+ * registry enables the /streams endpoint to list all active streams, the /health endpoint to report stream counts, graceful shutdown to terminate all streams,
+ * browser disconnect handling to clean up orphaned streams, and concurrent stream limit enforcement.
  */
 
 // Types.
@@ -299,4 +294,17 @@ export function getTotalSegmentMemory(): number {
   }
 
   return total;
+}
+
+// Segment Health.
+
+/**
+ * Gets the size in bytes of the last segment stored for a stream. Used by the monitor to detect dead capture pipelines that produce empty segments (18 bytes observed)
+ * while the video element appears healthy.
+ * @param entry - The stream registry entry to query.
+ * @returns Segment size in bytes, or null if no segmenter exists.
+ */
+export function getLastSegmentSize(entry: StreamRegistryEntry): number | null {
+
+  return entry.segmenter?.getLastSegmentSize() ?? null;
 }
