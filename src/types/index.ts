@@ -478,12 +478,17 @@ export interface Channel {
   channelSelector?: string;
 
   // Human-readable channel name displayed in the M3U playlist. This is what users see in their channel guide. Use proper capitalization and include network
-  // suffixes like "HD" or regional identifiers like "(Pacific)" where appropriate.
-  name: string;
+  // suffixes like "HD" or regional identifiers like "(Pacific)" where appropriate. Required for canonical channels; variants inherit from their canonical entry.
+  name?: string;
 
   // Profile name to use for this channel, overriding URL-based profile detection. Use this when a site's behavior doesn't match what would be inferred from its
   // domain, or when a specific channel needs different handling than others on the same site.
   profile?: string;
+
+  // UI label for provider selection dropdown when multiple providers offer the same content. Channels are grouped by key prefix convention — a key like
+  // "espn-disneyplus" is a variant of "espn" because it starts with "espn-" and "espn" exists as a channel. Variant channels inherit `name` and `stationId`
+  // from the canonical entry unless explicitly overridden.
+  provider?: string;
 
   // Gracenote station ID for electronic program guide integration. When set, this ID is included in the M3U playlist as the tvc-guide-stationid attribute,
   // allowing Channels DVR to fetch program guide data for the channel.
@@ -518,6 +523,33 @@ export interface ChannelListingEntry {
  * request URLs.
  */
 export type ChannelMap = Record<string, Channel>;
+
+/*
+ * PROVIDER GROUP TYPES
+ *
+ * Provider groups allow multiple streaming providers to offer the same content (e.g., ESPN via ESPN.com or Disney+). Channels are grouped by key prefix convention:
+ * a key like "espn-disneyplus" is a variant of "espn" because it starts with "espn-" and "espn" exists as a channel. The canonical key (the base key without
+ * suffix) is the default provider.
+ */
+
+/**
+ * Represents a group of provider variants for the same content. Used by the UI to display provider selection dropdowns for multi-provider channels.
+ */
+export interface ProviderGroup {
+
+  // The canonical channel key (without suffix), which is the default provider. Example: "espn" for the ESPN channel group.
+  canonicalKey: string;
+
+  // List of all provider variants including the canonical entry. Each variant has a key (channel key) and label (provider property value for UI display).
+  variants: Array<{
+
+    // Channel key for this provider variant. Example: "espn" or "espn-disneyplus".
+    key: string;
+
+    // UI label from the channel's `provider` property. Example: "ESPN.com" or "Disney+".
+    label: string;
+  }>;
+}
 
 /*
  * STREAM TYPES

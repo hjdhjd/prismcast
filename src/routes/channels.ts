@@ -58,12 +58,12 @@ export function setupChannelsEndpoint(app: Express): void {
 
     for(const entry of listing) {
 
-      // Build the response entry with required fields.
+      // Build the response entry with required fields. Canonical channels always have name; fallback to key is defensive.
       const channelEntry: ChannelEntry = {
 
         enabled: entry.enabled,
         key: entry.key,
-        name: entry.channel.name,
+        name: entry.channel.name ?? entry.key,
         source: entry.source,
         url: entry.channel.url
       };

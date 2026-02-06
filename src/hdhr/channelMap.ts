@@ -70,7 +70,7 @@ export function buildChannelMap(): ChannelMapEntry[] {
       entries.push({
 
         key,
-        name: channel.name,
+        name: channel.name ?? key,
         number: channel.channelNumber,
         stationId: channel.stationId
       });
@@ -103,7 +103,7 @@ export function buildChannelMap(): ChannelMapEntry[] {
     entries.push({
 
       key,
-      name: channel.name,
+      name: channel.name ?? key,
       number: nextNumber,
       stationId: channel.stationId
     });

@@ -3,6 +3,7 @@
  * userChannels.ts: User channel file management for PrismCast.
  */
 import type { Channel, ChannelListingEntry, ChannelMap } from "../types/index.js";
+import { buildProviderGroups, getProviderSelections, isProviderVariant, setProviderSelections } from "./providers.js";
 import { CONFIG } from "./index.js";
 import { LOG } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
@@ -56,6 +57,9 @@ export interface UserChannelsLoadResult {
 
   // Error message if parseError is true.
   parseErrorMessage?: string;
+
+  // Provider selections loaded from the file (canonical key → provider key).
+  providerSelections: Record<string, string>;
 }
 
 /*
@@ -107,7 +111,8 @@ export function getChannelsParseErrorMessage(): string | undefined {
 
 /**
  * Loads user channels from the channels file. Returns an empty map if the file doesn't exist, and sets parseError if the file exists but contains invalid JSON.
- * @returns The loaded channels with parse status.
+ * The file can contain a special `providerSelections` key with user's provider preferences, which is extracted separately from channels.
+ * @returns The loaded channels with parse status and provider selections.
  */
 export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
@@ -117,35 +122,61 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
     try {
 
-      const channels = JSON.parse(content) as UserChannelMap;
+      const parsed = JSON.parse(content) as Record<string, unknown>;
 
-      return { channels, parseError: false };
+      // Extract providerSelections if present — it's not a channel, it's metadata.
+      const providerSelections: Record<string, string> = {};
+      const channels: UserChannelMap = {};
+
+      for(const [ key, value ] of Object.entries(parsed)) {
+
+        if(key === "providerSelections") {
+
+          // Copy provider selections if it's an object.
+          if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
+
+            for(const [ selKey, selValue ] of Object.entries(value)) {
+
+              if(typeof selValue === "string") {
+
+                providerSelections[selKey] = selValue;
+              }
+            }
+          }
+        } else if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
+
+          // It's a channel definition.
+          channels[key] = value as Channel;
+        }
+      }
+
+      return { channels, parseError: false, providerSelections };
     } catch(parseError) {
 
       const message = (parseError instanceof Error) ? parseError.message : String(parseError);
 
       LOG.warn("Invalid JSON in channels file %s: %s. Using predefined channels only.", channelsFilePath, message);
 
-      return { channels: {}, parseError: true, parseErrorMessage: message };
+      return { channels: {}, parseError: true, parseErrorMessage: message, providerSelections: {} };
     }
   } catch(error) {
 
     // File doesn't exist - this is normal, use predefined channels only.
     if((error as NodeJS.ErrnoException).code === "ENOENT") {
 
-      return { channels: {}, parseError: false };
+      return { channels: {}, parseError: false, providerSelections: {} };
     }
 
     // Other read errors - log and use predefined channels.
     LOG.warn("Failed to read channels file %s: %s. Using predefined channels only.", channelsFilePath, (error instanceof Error) ? error.message : String(error));
 
-    return { channels: {}, parseError: false };
+    return { channels: {}, parseError: false, providerSelections: {} };
   }
 }
 
 /**
  * Saves user channels to the channels file and updates the in-memory cache. Changes take effect immediately for new stream requests without requiring a server
- * restart. Creates the data directory if it doesn't exist.
+ * restart. Creates the data directory if it doesn't exist. Provider selections are also saved if any exist.
  * @param channels - The channels to save.
  * @throws If the file cannot be written.
  */
@@ -155,12 +186,29 @@ export async function saveUserChannels(channels: UserChannelMap): Promise<void> 
   await fsPromises.mkdir(dataDir, { recursive: true });
 
   // Sort channels by key for consistent output.
-  const sortedChannels: UserChannelMap = {};
+  const sortedChannels: Record<string, Channel | Record<string, string>> = {};
   const sortedKeys = Object.keys(channels).sort();
 
   for(const key of sortedKeys) {
 
     sortedChannels[key] = channels[key];
+  }
+
+  // Include provider selections if any exist.
+  const selections = getProviderSelections();
+
+  if(Object.keys(selections).length > 0) {
+
+    // Sort provider selections for consistent output.
+    const sortedSelections: Record<string, string> = {};
+    const selectionKeys = Object.keys(selections).sort();
+
+    for(const key of selectionKeys) {
+
+      sortedSelections[key] = selections[key];
+    }
+
+    sortedChannels.providerSelections = sortedSelections;
   }
 
   // Write channels with pretty formatting for readability.
@@ -169,7 +217,10 @@ export async function saveUserChannels(channels: UserChannelMap): Promise<void> 
   await fsPromises.writeFile(channelsFilePath, content + "\n", "utf-8");
 
   // Update in-memory cache so changes take effect immediately for new stream requests.
-  loadedUserChannels = { ...sortedChannels };
+  loadedUserChannels = { ...channels };
+
+  // Refresh provider groups so channelsRef reflects the new channel data. This ensures getResolvedChannel() returns correct data after modifications.
+  buildProviderGroups(getMergedChannelMap());
 
   // Clear any previous parse error since we're writing valid data.
   userChannelsParseError = false;
@@ -232,7 +283,7 @@ export async function resetUserChannels(): Promise<void> {
  */
 
 /**
- * Initializes user channels by loading them from the file. This should be called once at server startup.
+ * Initializes user channels by loading them from the file. This should be called once at server startup. Also builds provider groups and loads provider selections.
  */
 export async function initializeUserChannels(): Promise<void> {
 
@@ -241,6 +292,14 @@ export async function initializeUserChannels(): Promise<void> {
   loadedUserChannels = result.channels;
   userChannelsParseError = result.parseError;
   userChannelsParseErrorMessage = result.parseErrorMessage;
+
+  // Load provider selections from the file.
+  setProviderSelections(result.providerSelections);
+
+  // Build the merged channels map and then build provider groups.
+  const mergedChannels = getMergedChannelMap();
+
+  buildProviderGroups(mergedChannels);
 
   const userCount = Object.keys(loadedUserChannels).length;
   const predefinedCount = Object.keys(PREDEFINED_CHANNELS).length;
@@ -253,6 +312,22 @@ export async function initializeUserChannels(): Promise<void> {
 
     LOG.info("Loaded %d channels.", totalCount);
   }
+}
+
+/**
+ * Returns the merged channel map (predefined + user) without filtering by enabled status or provider variants. Used internally for building provider groups.
+ * @returns The complete merged channel map.
+ */
+function getMergedChannelMap(): ChannelMap {
+
+  const result: ChannelMap = { ...PREDEFINED_CHANNELS };
+
+  for(const [ key, channel ] of Object.entries(loadedUserChannels)) {
+
+    result[key] = channel;
+  }
+
+  return result;
 }
 
 /*
@@ -273,6 +348,11 @@ export async function initializeUserChannels(): Promise<void> {
  *
  * The enabled field reflects whether the channel is available for streaming. Predefined-only channels can be disabled via configuration; user and override
  * channels are always enabled.
+ *
+ * Provider variants (non-canonical keys in provider groups) are filtered out from this listing — they are accessed via the provider selection mechanism instead.
+ *
+ * IMPORTANT: This function preserves object references from PREDEFINED_CHANNELS and loadedUserChannels. The provider system (providers.ts) relies on this behavior
+ * to detect user overrides via reference comparison. Do not clone channel objects when building the listing.
  * @returns Sorted array of channel listing entries.
  */
 export function getChannelListing(): ChannelListingEntry[] {
@@ -281,6 +361,12 @@ export function getChannelListing(): ChannelListingEntry[] {
   const listing: ChannelListingEntry[] = [];
 
   for(const key of allKeys) {
+
+    // Skip provider variants — they're accessed via provider selection, not as separate channels.
+    if(isProviderVariant(key)) {
+
+      continue;
+    }
 
     const isPredefined = key in PREDEFINED_CHANNELS;
     const isUser = key in loadedUserChannels;
@@ -712,4 +798,21 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
   }
 
   return { channels, errors, valid: errors.length === 0 };
+}
+
+/*
+ * PROVIDER SELECTION PERSISTENCE
+ *
+ * Provider selections are stored in the channels.json file alongside user channels. When a selection changes, we save the entire file (channels + selections)
+ * to persist the change.
+ */
+
+/**
+ * Saves the current provider selections to the channels file. This triggers a full file save including all user channels.
+ * @throws If the file cannot be written.
+ */
+export async function saveProviderSelections(): Promise<void> {
+
+  // Simply save the user channels — the saveUserChannels function includes provider selections automatically.
+  await saveUserChannels(loadedUserChannels);
 }

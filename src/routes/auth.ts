@@ -4,7 +4,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { endLoginMode, getLoginStatus, startLoginMode } from "../browser/index.js";
-import { getChannel } from "../channels/index.js";
+import { getResolvedChannel, resolveProviderKey } from "../config/providers.js";
 
 /*
  * AUTHENTICATION ROUTES
@@ -74,7 +74,9 @@ export function setupAuthEndpoint(app: Express): void {
 
     if(body.channel) {
 
-      const channel = getChannel(body.channel);
+      // Resolve provider selection and get the channel. This respects both user-defined channel overrides and provider selections (e.g., Disney+ vs ESPN.com).
+      const resolvedKey = resolveProviderKey(body.channel);
+      const channel = getResolvedChannel(resolvedKey);
 
       if(!channel) {
 

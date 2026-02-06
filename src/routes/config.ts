@@ -8,10 +8,12 @@ import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getConfigFilePath
   loadUserConfig, saveUserConfig, setNestedValue } from "../config/userConfig.js";
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, formatError, generateChannelKey, isRunningAsService, parseM3U } from "../utils/index.js";
-import { getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError,
-  isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile,
-  validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
 import type { Nullable, ProfileCategory } from "../types/index.js";
+import { extractDomain, getCanonicalKey, getProviderGroup, getProviderSelection, getResolvedChannel, hasMultipleProviders, isProviderVariant,
+  resolveProviderKey, setProviderSelection } from "../config/providers.js";
+import { getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError,
+  isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName,
+  validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
@@ -473,7 +475,7 @@ function generateChannelSelectorData(): string {
     const hostname = new URL(channel.url).hostname;
 
     byDomain[hostname] ??= [];
-    byDomain[hostname].push({ label: channel.name, value: channel.channelSelector });
+    byDomain[hostname].push({ label: channel.name ?? channel.channelSelector, value: channel.channelSelector });
   }
 
   // Sort entries within each domain alphabetically by label for consistent ordering in the datalist dropdown.
@@ -517,9 +519,17 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
     return { displayRow: "", editRow: null };
   }
 
+  // Resolve the selected provider's channel data for display purposes (profile column). This ensures the profile shown reflects the currently selected provider.
+  const resolvedKey = resolveProviderKey(key);
+  const resolvedChannel = getResolvedChannel(resolvedKey);
+  const displayChannel = resolvedChannel ?? channel;
+
   const isUser = isUserChannel(key);
   const isPredefined = isPredefinedChannel(key);
   const isDisabled = isPredefinedChannelDisabled(key);
+
+  // Check if this channel has multiple providers.
+  const providerGroup = getProviderGroup(key);
 
   // Generate display row. User channels get one CSS class, disabled predefined get another.
   const displayLines: string[] = [];
@@ -539,9 +549,34 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
 
   displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + ">");
   displayLines.push("<td><code>" + escapeHtml(key) + "</code></td>");
-  displayLines.push("<td>" + escapeHtml(channel.name) + "</td>");
-  displayLines.push("<td class=\"channel-url\" title=\"" + escapeHtml(channel.url) + "\">" + escapeHtml(channel.url) + "</td>");
-  displayLines.push("<td>" + (channel.profile ? escapeHtml(channel.profile) : "<em>auto</em>") + "</td>");
+  displayLines.push("<td>" + escapeHtml(channel.name ?? key) + "</td>");
+
+  // Source column: dropdown for multi-provider channels, static domain text for single-provider.
+  displayLines.push("<td>");
+
+  if(hasMultipleProviders(key) && providerGroup) {
+
+    // Multi-provider: show dropdown.
+    const currentSelection = getProviderSelection(key) ?? key;
+
+    displayLines.push("<select class=\"provider-select\" data-channel=\"" + escapeHtml(key) + "\" onchange=\"updateProviderSelection(this)\">");
+
+    for(const variant of providerGroup.variants) {
+
+      const selected = (variant.key === currentSelection) ? " selected" : "";
+
+      displayLines.push("<option value=\"" + escapeHtml(variant.key) + "\"" + selected + ">" + escapeHtml(variant.label) + "</option>");
+    }
+
+    displayLines.push("</select>");
+  } else {
+
+    // Single-provider: show domain text.
+    displayLines.push(escapeHtml(extractDomain(channel.url)));
+  }
+
+  displayLines.push("</td>");
+  displayLines.push("<td>" + (displayChannel.profile ? escapeHtml(displayChannel.profile) : "<em>auto</em>") + "</td>");
 
   // Actions column.
   displayLines.push("<td>");
@@ -594,7 +629,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
     editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapeHtml(key) + "\">");
 
     // Channel name.
-    editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", channel.name, {
+    editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", channel.name ?? key, {
 
       hint: "Friendly name shown in the playlist and UI.",
       required: true
@@ -1310,11 +1345,11 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
 export function generateChannelsPanel(channelMessage?: string, channelError?: boolean, editingChannelKey?: string, showAddForm?: boolean,
   formErrors?: Map<string, string>, formValues?: Map<string, string>): string {
 
-  // Get all channels including disabled predefined ones. User channels override predefined.
+  // Get all channels including disabled predefined ones. User channels override predefined. Filter out provider variants — only canonical keys are shown in the UI.
   const userChannels = getUserChannels();
   const predefinedChannels = getPredefinedChannels();
   const allChannelKeys = new Set([ ...Object.keys(predefinedChannels), ...Object.keys(userChannels) ]);
-  const channelKeys = [...allChannelKeys].sort();
+  const channelKeys = [...allChannelKeys].filter((key) => !isProviderVariant(key)).sort();
   const profiles = getProfiles();
   const disabledPredefined = getDisabledPredefinedChannels();
   const predefinedCount = Object.keys(predefinedChannels).length;
@@ -1483,7 +1518,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<tr>");
   lines.push("<th class=\"col-key\">Key</th>");
   lines.push("<th class=\"col-name\">Name</th>");
-  lines.push("<th class=\"col-url\">URL</th>");
+  lines.push("<th class=\"col-source\">Source</th>");
   lines.push("<th class=\"col-profile\">Profile</th>");
   lines.push("<th class=\"col-actions\">Actions</th>");
   lines.push("</tr>");
@@ -2147,6 +2182,74 @@ export function setupConfigEndpoint(app: Express): void {
 
       LOG.error("Failed to toggle predefined channel: %s", formatError(error));
       res.status(500).json({ error: "Failed to toggle channel: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/provider - Update provider selection for a multi-provider channel.
+  app.post("/config/provider", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { channel?: string; provider?: string };
+      const channelKey = body.channel?.trim();
+      const providerKey = body.provider?.trim();
+
+      // Validate channel key is provided.
+      if(!channelKey) {
+
+        res.status(400).json({ error: "Channel key is required.", success: false });
+
+        return;
+      }
+
+      // Validate provider key is provided.
+      if(!providerKey) {
+
+        res.status(400).json({ error: "Provider key is required.", success: false });
+
+        return;
+      }
+
+      // Canonicalize the channel key to ensure selections are stored under the canonical key, not variant keys.
+      const canonicalKey = getCanonicalKey(channelKey);
+
+      // Validate the channel has provider options.
+      const providerGroup = getProviderGroup(canonicalKey);
+
+      if(!providerGroup) {
+
+        res.status(400).json({ error: "Channel '" + canonicalKey + "' does not have multiple providers.", success: false });
+
+        return;
+      }
+
+      // Validate the provider key is valid for this channel.
+      const validProviderKeys = providerGroup.variants.map((v) => v.key);
+
+      if(!validProviderKeys.includes(providerKey)) {
+
+        res.status(400).json({ error: "Invalid provider '" + providerKey + "' for channel '" + canonicalKey + "'.", success: false });
+
+        return;
+      }
+
+      // Update the provider selection.
+      setProviderSelection(canonicalKey, providerKey);
+
+      // Save to disk.
+      await saveProviderSelections();
+
+      // Get the resolved channel to return its profile for UI update.
+      const resolvedChannel = getResolvedChannel(providerKey);
+      const profile = resolvedChannel?.profile ?? null;
+
+      LOG.info("Provider selection for '%s' changed to '%s'.", canonicalKey, providerKey);
+
+      res.json({ channel: canonicalKey, profile, provider: providerKey, success: true });
+    } catch(error) {
+
+      LOG.error("Failed to update provider selection: %s", formatError(error));
+      res.status(500).json({ error: "Failed to update provider: " + formatError(error), success: false });
     }
   });
 

@@ -67,7 +67,7 @@ export function generatePlaylistContent(baseUrl: string): string {
     }
 
     // We use the channel key as the channel-id and the friendly name for display. HLS URLs are used for Channels DVR compatibility.
-    const displayName = channel.name;
+    const displayName = channel.name ?? name;
     const streamUrl = baseUrl + "/hls/" + name + "/stream.m3u8";
 
     // Build the EXTINF line with required channel-id attribute and tvg-name for the friendly display name. Include tvc-guide-stationid for Gracenote guide data

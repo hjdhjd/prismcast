@@ -12,6 +12,7 @@ import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setC
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
 import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
 import { getInitSegment, getPlaylist, getSegment, waitForPlaylist } from "./hlsSegments.js";
+import { getResolvedChannel, resolveProviderKey } from "../config/providers.js";
 import { CONFIG } from "../config/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { StreamRegistryEntry } from "./registry.js";
@@ -49,6 +50,9 @@ import { triggerShowNameUpdate } from "./showInfo.js";
  * This is the shared entry point for both HLS and MPEG-TS handlers. It handles channel validation, login mode blocking, and concurrent startup deduplication. The
  * existing-stream check runs first so that ad-hoc streams (started via /play with synthetic keys) can be served without requiring a predefined channel definition.
  *
+ * For channels with multiple providers (e.g., ESPN via ESPN.com or Disney+), the user's provider selection is resolved before looking up the channel definition.
+ * The stream is registered under the canonical key (channelName) for deduplication, but uses the resolved provider's URL and settings.
+ *
  * @param channelName - The channel key (or synthetic ad-hoc key) to stream.
  * @param req - Express request object (for profile override and client IP).
  * @param res - Express response object (for error responses).
@@ -82,12 +86,26 @@ export async function ensureChannelStream(channelName: string, req: Request, res
     return null;
   }
 
-  const channels = getAllChannels();
-  const channel = channels[channelName];
+  // Resolve provider selection. For multi-provider channels, this returns the user's selected provider key (e.g., "espn-disneyplus"). For single-provider channels
+  // or if no selection exists, it returns the canonical key unchanged.
+  const resolvedKey = resolveProviderKey(channelName);
+
+  // Get the resolved channel with inheritance applied. For provider variants, this merges the variant's properties with inherited properties from the canonical
+  // entry (name, stationId).
+  const channel = getResolvedChannel(resolvedKey);
+
+  // Fall back to getAllChannels if the resolved channel doesn't exist (e.g., for ad-hoc streams or non-grouped channels).
+  const effectiveChannel = channel ?? getAllChannels()[channelName];
+
+  // Log a warning if a provider selection resolved to a missing variant (e.g., variant was removed from channels after selection was saved).
+  if(!channel && (resolvedKey !== channelName)) {
+
+    LOG.warn("Provider '%s' not found for channel '%s'. Using default provider.", resolvedKey, channelName);
+  }
 
   // Runtime check needed even though TypeScript thinks channel is always defined (Record indexing quirk).
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!channel) {
+  if(!effectiveChannel) {
 
     res.status(404).send("Channel not found.");
 
@@ -106,7 +124,9 @@ export async function ensureChannelStream(channelName: string, req: Request, res
     return null;
   }
 
-  const newStreamId = await startHLSStream(channelName, channel.url, req, res);
+  // Start the stream using the resolved channel's URL. The stream is registered under channelName (canonical key) for deduplication, but uses the resolved
+  // provider's definition.
+  const newStreamId = await startHLSStream(channelName, effectiveChannel.url, req, res, effectiveChannel);
 
   if(newStreamId === null) {
 
@@ -810,19 +830,18 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
 // Channel Stream Startup.
 
 /**
- * Starts a new HLS stream for a predefined channel. Looks up the channel definition, then delegates to initializeStream() for the actual setup. Error responses are
- * sent directly to the client, including HDHomeRun-specific headers for capacity errors.
+ * Starts a new HLS stream for a predefined channel. Delegates to initializeStream() for the actual setup. Error responses are sent directly to the client, including
+ * HDHomeRun-specific headers for capacity errors.
  *
- * @param channelName - The channel key.
- * @param url - The URL to stream.
+ * @param channelName - The channel key (canonical key for stream registration and deduplication).
+ * @param url - The URL to stream (from the resolved provider).
  * @param req - Express request object (for profile override and client IP).
  * @param res - Express response object (for error responses).
+ * @param channel - The resolved channel definition (with inheritance applied for provider variants).
  * @returns The stream ID if successful, null if an error occurred (error response already sent).
  */
-async function startHLSStream(channelName: string, url: string, req: Request, res: Response): Promise<number | null> {
+async function startHLSStream(channelName: string, url: string, req: Request, res: Response, channel?: Channel): Promise<number | null> {
 
-  const channels = getAllChannels();
-  const channel = channels[channelName];
   const profileOverride = req.query.profile as string | undefined;
   const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
 
