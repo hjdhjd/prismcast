@@ -371,6 +371,11 @@ export interface SiteProfile {
   // after playback begins. Set to null to disable keyboard fullscreen and rely on CSS-based fullscreen styling instead.
   fullscreenKey?: Nullable<string>;
 
+  // CSS selector for a fullscreen button element to click. When set, this button is clicked before attempting keyboard or API fullscreen methods. This is useful
+  // for sites that have a native fullscreen button in their player UI (e.g., a "MAXIMIZE" button). The element is verified to exist before clicking, so toggle
+  // buttons that disappear after activation are handled gracefully.
+  fullscreenSelector?: Nullable<string>;
+
   // Whether to override the video element's volume properties to prevent auto-muting. Some sites (like France 24) aggressively mute videos and fight attempts to
   // unmute them by resetting volume on every state change. When true, we use Object.defineProperty to intercept volume property access and force the video to
   // remain unmuted. This is a heavyweight intervention used only when necessary.
@@ -418,6 +423,9 @@ export interface ResolvedSiteProfile {
 
   // Keyboard key for fullscreen, or null to use CSS-based fullscreen.
   fullscreenKey: Nullable<string>;
+
+  // CSS selector for a fullscreen button to click, or null if not applicable.
+  fullscreenSelector: Nullable<string>;
 
   // Whether to override volume properties to prevent auto-muting.
   lockVolumeProperties: boolean;
@@ -765,16 +773,26 @@ export interface StreamListResponse {
 /**
  * Available channel selection strategies. Each strategy implements a different approach to finding and selecting channels in a multi-channel player UI.
  *
+ * - "guideGrid": Find channel by exact-matching image alt text, click nearest clickable ancestor. Optionally clicks a tab to reveal the list first. Used by Hulu
+ *   Live TV.
  * - "none": No channel selection needed (single-channel sites). This is the default.
  * - "thumbnailRow": Find channel by matching image URL slug, click adjacent element on the same row. Used by USA Network.
  * - "tileClick": Find channel tile by matching image URL slug, click tile, then click play button on modal. Used by Disney+ live channels.
  */
-export type ChannelSelectionStrategy = "none" | "thumbnailRow" | "tileClick";
+export type ChannelSelectionStrategy = "guideGrid" | "none" | "thumbnailRow" | "tileClick";
 
 /**
  * Configuration for channel selection behavior within a site profile.
  */
 export interface ChannelSelectionConfig {
+
+  // CSS selector for a tab or button to click to reveal the channel list before selection. Some sites hide the channel list behind a tab (e.g., a "Channels" tab
+  // in a guide grid). When set, this element is clicked before searching for channel images. Only used by the guideGrid strategy.
+  listSelector?: string;
+
+  // CSS selector for a play button that must be clicked after selecting a channel entry. Some sites show a playback action overlay after channel selection instead
+  // of immediately starting playback. When set, this element is waited for and clicked after the channel entry click. Only used by the guideGrid strategy.
+  playSelector?: string;
 
   // The strategy to use for finding and clicking channel elements.
   strategy: ChannelSelectionStrategy;

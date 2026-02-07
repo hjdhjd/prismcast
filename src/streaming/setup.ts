@@ -16,7 +16,7 @@ import { getEffectiveViewport } from "../config/presets.js";
 import { monitorPlaybackHealth } from "./monitor.js";
 import { pipeline } from "node:stream/promises";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
-import { tuneToChannel } from "../browser/video.js";
+import { initializePlayback, navigateToPage } from "../browser/video.js";
 
 /* This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
  *
@@ -339,7 +339,7 @@ export function validateStreamUrl(url: string | undefined): UrlValidation {
  * - Creating a new browser page with CSP bypass
  * - Initializing media capture (native fMP4 or WebM+FFmpeg)
  * - Navigating to the URL with retry
- * - Setting up video playback via tuneToChannel()
+ * - Setting up video playback via navigateToPage() + initializePlayback()
  *
  * The caller is responsible for:
  * - Creating the segmenter and piping captureStream to it
@@ -562,18 +562,36 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     if(profile.noVideo === false) {
 
-      // Since we don't pass an earlySuccessCheck, retryOperation will always return the value (not void). The type assertion is safe.
-      const tuneResult = await retryOperation(
-        async (): Promise<{ context: Frame | Page }> => {
+      // Phase 1: Navigate to the page with retry. The 10-second navigationTimeout is appropriate for page loads, and retryOperation correctly reloads the page on
+      // genuine navigation failures. Navigation is wrapped in retryOperation separately from channel selection so the timeout does not race with the internal click
+      // retry loops in channel selection strategies (guideGrid can take 15-20 seconds for binary search + click retries).
+      await retryOperation(
+        async (): Promise<void> => {
 
-          return tuneToChannel(page, url, profile);
+          await navigateToPage(page, url, profile);
         },
         CONFIG.streaming.maxNavigationRetries,
         CONFIG.streaming.navigationTimeout,
         "page navigation for " + url,
         undefined,
         () => page.isClosed()
-      ) as { context: Frame | Page };
+      );
+
+      // Phase 2: Channel selection + video setup. Runs after navigation succeeds with no outer timeout racing against internal click retries. Each sub-step
+      // (selectChannel, waitForVideoReady, etc.) has its own internal timeout via videoTimeout and click retry constants. A 30-second safety-net timeout prevents
+      // pathological hangs if multiple internal timeouts chain sequentially.
+      const PLAYBACK_INIT_TIMEOUT = 30000;
+
+      const tuneResult = await Promise.race([
+        initializePlayback(page, profile),
+        new Promise<never>((_, reject) => {
+
+          setTimeout(() => {
+
+            reject(new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms."));
+          }, PLAYBACK_INIT_TIMEOUT);
+        })
+      ]);
 
       context = tuneResult.context;
     } else {
@@ -583,7 +601,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     }
   } catch(error) {
 
-    // Clean up on navigation failure. Destroy the raw capture stream first to ensure chrome.tabCapture releases the capture.
+    // Clean up on navigation or playback initialization failure. Destroy the raw capture stream first to ensure chrome.tabCapture releases the capture.
     if(!rawCaptureStream.destroyed) {
 
       rawCaptureStream.destroy();

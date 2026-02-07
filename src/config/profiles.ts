@@ -54,6 +54,7 @@ import { CHANNELS } from "../channels/index.js";
  * - disneyNow: DisneyNOW player with play button overlay + multi-video (extends clickToPlayApi)
  * - embeddedPlayer: Iframe-based players using fullscreen API (extends fullscreenApi)
  * - apiMultiVideo: API fullscreen + multi-video + tile-based channel selection (extends fullscreenApi)
+ * - huluLive: Hulu Live TV with guide grid channel selection + fullscreen button (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
  *
@@ -166,6 +167,23 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     useRequestFullscreen: true
   },
 
+  // Profile for Hulu Live TV which presents a guide grid of live channels. The channel list is revealed by clicking a tab (listSelector), then the desired channel
+  // is found by matching img.alt text. Uses the fullscreen API (inherited from fullscreenApi) plus a dedicated fullscreen button selector for the player's native
+  // maximize control. Requires selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses waitForNetworkIdle because
+  // Hulu's SPA has heavy async initialization that often prevents the load event from firing within the retryOperation timeout; the graceful networkidle2 fallback
+  // in navigateToPage() allows execution to continue to channel selection even when background requests are still pending.
+  huluLive: {
+
+    category: "multiChannel",
+    channelSelection: { listSelector: "#CHANNELS", playSelector: "[data-testid=\"generic-tile-thumbnail\"]", strategy: "guideGrid" },
+    description: "Hulu Live TV with guide grid channel selection. Requires Channel Selector set to the channel name matching the guide grid image alt text.",
+    extends: "fullscreenApi",
+    fullscreenSelector: "[aria-label=\"Maximize\"]",
+    selectReadyVideo: true,
+    summary: "Hulu Live TV (guide grid, needs selector)",
+    waitForNetworkIdle: true
+  },
+
   // Profile for sites that use keyboard fullscreen and also need time for network activity to settle before the player is fully initialized. These sites dynamically
   // load their player and content. The waitForNetworkIdle flag ensures we don't try to interact with the player until all initial network requests have completed.
   keyboardDynamic: {
@@ -262,6 +280,7 @@ export const DOMAIN_TO_PROFILE: Record<string, string> = {
   "foxsports.com": "fullscreenApi",
   "france24.com": "embeddedVolumeLock",
   "hbomax.com": "fullscreenApi",
+  "hulu.com": "huluLive",
   "ms.now": "keyboardDynamic",
   "nationalgeographic.com": "keyboardDynamicMultiVideo",
   "nbc.com": "keyboardDynamic",
@@ -309,6 +328,9 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
 
   // No fullscreen key - many players work without explicit fullscreen.
   fullscreenKey: null,
+
+  // No fullscreen button selector - most sites don't have a dedicated fullscreen button to click.
+  fullscreenSelector: null,
 
   // Don't lock volume properties - most sites don't aggressively mute.
   lockVolumeProperties: false,
