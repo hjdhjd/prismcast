@@ -3,7 +3,8 @@
  * providers.ts: Provider group management for multi-provider channels.
  */
 import type { Channel, ChannelMap, ProviderGroup } from "../types/index.js";
-import { LOG } from "../utils/index.js";
+import { LOG, extractDomain } from "../utils/index.js";
+import { DOMAIN_CONFIG } from "./profiles.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 
 /* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
@@ -109,11 +110,11 @@ export function buildProviderGroups(channels: ChannelMap): void {
       const predefined = PREDEFINED_CHANNELS[canonicalKey];
 
       variants.push({ key: canonicalKey, label: "Custom (" + extractDomain(canonical.url) + ")" });
-      variants.push({ key: canonicalKey + PREDEFINED_SUFFIX, label: predefined.provider ?? extractDomain(predefined.url) });
+      variants.push({ key: canonicalKey + PREDEFINED_SUFFIX, label: predefined.provider ?? getProviderDisplayName(predefined.url) });
     } else {
 
       // Normal case: canonical is the predefined version (or a new user-defined channel with no predefined equivalent).
-      variants.push({ key: canonicalKey, label: canonical.provider ?? extractDomain(canonical.url) });
+      variants.push({ key: canonicalKey, label: canonical.provider ?? getProviderDisplayName(canonical.url) });
     }
 
     variantKeys.sort();
@@ -122,7 +123,7 @@ export function buildProviderGroups(channels: ChannelMap): void {
 
       const variant = channels[variantKey];
 
-      variants.push({ key: variantKey, label: variant.provider ?? extractDomain(variant.url) });
+      variants.push({ key: variantKey, label: variant.provider ?? getProviderDisplayName(variant.url) });
     }
 
     const group: ProviderGroup = { canonicalKey, variants };
@@ -167,7 +168,7 @@ export function buildProviderGroups(channels: ChannelMap): void {
     const predefined = PREDEFINED_CHANNELS[key];
     const variants: ProviderGroup["variants"] = [
       { key, label: "Custom (" + extractDomain(userChannel.url) + ")" },
-      { key: key + PREDEFINED_SUFFIX, label: predefined.provider ?? extractDomain(predefined.url) }
+      { key: key + PREDEFINED_SUFFIX, label: predefined.provider ?? getProviderDisplayName(predefined.url) }
     ];
 
     const group: ProviderGroup = { canonicalKey: key, variants };
@@ -178,21 +179,22 @@ export function buildProviderGroups(channels: ChannelMap): void {
 }
 
 /**
- * Extracts the domain from a URL for display purposes (provider labels, source column).
- * @param url - The URL to extract the domain from.
- * @returns The hostname without "www." prefix, or the original URL if parsing fails.
+ * Resolves a URL to a friendly provider display name. Checks DOMAIN_CONFIG for a provider name matching the URL's concise domain, falling back to the raw domain
+ * string if no provider name is configured. Use this when displaying provider sources in the UI (source column, provider labels) where a friendly name like "Hulu"
+ * is preferred over a raw domain like "hulu.com".
+ * @param url - The URL to resolve a provider display name for.
+ * @returns The provider display name, or the concise domain if no provider name is configured.
  */
-export function extractDomain(url: string): string {
+export function getProviderDisplayName(url: string): string {
 
-  try {
+  const domain = extractDomain(url);
 
-    const hostname = new URL(url).hostname;
+  // Check DOMAIN_CONFIG for a friendly provider name. The eslint disable is needed because TypeScript's Record indexing doesn't capture that the key may not
+  // exist at runtime.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  const provider = DOMAIN_CONFIG[domain]?.provider;
 
-    return hostname.replace(/^www\./, "");
-  } catch {
-
-    return url;
-  }
+  return provider ?? domain;
 }
 
 /**

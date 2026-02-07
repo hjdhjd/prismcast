@@ -484,9 +484,8 @@ export interface Channel {
   // domain, or when a specific channel needs different handling than others on the same site.
   profile?: string;
 
-  // UI label for provider selection dropdown when multiple providers offer the same content. Channels are grouped by key prefix convention — a key like
-  // "espn-disneyplus" is a variant of "espn" because it starts with "espn-" and "espn" exists as a channel. Variant channels inherit `name` and `stationId`
-  // from the canonical entry unless explicitly overridden.
+  // Display name override for the provider selection dropdown. Normally auto-derived from the URL domain via DOMAIN_CONFIG in config/profiles.ts (e.g., a
+  // hulu.com URL automatically resolves to "Hulu"). Only needed when a channel's display name should differ from the domain-level default.
   provider?: string;
 
   // Gracenote station ID for electronic program guide integration. When set, this ID is included in the M3U playlist as the tvc-guide-stationid attribute,
@@ -536,13 +535,13 @@ export interface ProviderGroup {
   // The canonical channel key (without suffix), which is the default provider. Example: "espn" for the ESPN channel group.
   canonicalKey: string;
 
-  // List of all provider variants including the canonical entry. Each variant has a key (channel key) and label (provider property value for UI display).
+  // List of all provider variants including the canonical entry. Each variant has a key (channel key) and a display label for the UI.
   variants: Array<{
 
     // Channel key for this provider variant. Example: "espn" or "espn-disneyplus".
     key: string;
 
-    // UI label from the channel's `provider` property. Example: "ESPN.com" or "Disney+".
+    // UI display label derived from channel.provider (if set) or auto-resolved from the URL domain via getProviderDisplayName(). Example: "ESPN.com" or "Disney+".
     label: string;
   }>;
 }

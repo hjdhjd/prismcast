@@ -4,7 +4,7 @@
  */
 import type { Channel, Nullable, ResolvedSiteProfile, UrlValidation } from "../types/index.js";
 import type { Frame, Page } from "puppeteer-core";
-import { LOG, delay, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg } from "../utils/index.js";
+import { LOG, delay, extractDomain, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg } from "../utils/index.js";
 import type { MonitorStreamInfo, RecoveryMetrics, TabReplacementResult } from "./monitor.js";
 import { closeBrowser, getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
@@ -235,22 +235,6 @@ function generateRequestId(): string {
 }
 
 /**
- * Extracts the domain from a URL, removing the www. prefix for cleaner display. Returns undefined if the URL cannot be parsed.
- * @param url - The URL to extract the domain from.
- * @returns The domain without www. prefix, or undefined if parsing fails.
- */
-function extractDomain(url: string): string | undefined {
-
-  try {
-
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-
-    return undefined;
-  }
-}
-
-/**
  * Generates a concise stream identifier for logging purposes. The identifier combines the channel name or hostname with a unique request ID, making it easy to
  * trace related log messages. We prefer the channel name when available because it's more meaningful than a hostname.
  * @param channelName - The channel name if streaming a named channel.
@@ -267,20 +251,10 @@ export function generateStreamId(channelName: string | undefined, url: string | 
     return [ channelName, "-", requestId ].join("");
   }
 
-  // For direct URL requests, extract the hostname for the prefix.
+  // For direct URL requests, use the concise domain as the prefix.
   if(url) {
 
-    const domain = extractDomain(url);
-
-    if(domain) {
-
-      return [ domain, "-", requestId ].join("");
-    }
-
-    // If URL parsing fails, use a truncated version of the URL. This handles malformed URLs gracefully.
-    const truncated = url.length > 20 ? [ url.substring(0, 20), "..." ].join("") : url;
-
-    return [ truncated, "-", requestId ].join("");
+    return [ extractDomain(url), "-", requestId ].join("");
   }
 
   // Fallback when neither channel name nor URL is available. This shouldn't happen in normal operation but provides a valid ID for edge cases.

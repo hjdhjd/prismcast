@@ -159,10 +159,11 @@ function generateStatusScript(): string {
     "  return timeStr;",
     "}",
 
-    // Extract domain from URL for display.
+    // Extract concise domain from URL for display (last two hostname parts). Mirrors the server-side extractDomain() in utils/format.ts.
     "function getDomain(url) {",
     "  try {",
-    "    return new URL(url).hostname;",
+    "    var parts = new URL(url).hostname.split('.');",
+    "    return parts.length > 2 ? parts.slice(-2).join('.') : parts.join('.');",
     "  } catch (e) {",
     "    return url;",
     "  }",

@@ -9,7 +9,7 @@ import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getConfigFilePath
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, formatError, generateChannelKey, isRunningAsService, parseM3U } from "../utils/index.js";
 import type { Nullable, ProfileCategory } from "../types/index.js";
-import { extractDomain, getCanonicalKey, getProviderGroup, getProviderSelection, getResolvedChannel, hasMultipleProviders, isProviderVariant,
+import { getCanonicalKey, getProviderDisplayName, getProviderGroup, getProviderSelection, getResolvedChannel, hasMultipleProviders, isProviderVariant,
   resolveProviderKey, setProviderSelection } from "../config/providers.js";
 import { getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError,
   isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName,
@@ -565,8 +565,8 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
     displayLines.push("</select>");
   } else {
 
-    // Single-provider: show domain text.
-    displayLines.push(escapeHtml(extractDomain(channel.url)));
+    // Single-provider: show provider name if set, otherwise the domain.
+    displayLines.push(escapeHtml(channel.provider ?? getProviderDisplayName(channel.url)));
   }
 
   displayLines.push("</td>");

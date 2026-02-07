@@ -4,6 +4,7 @@
  */
 import type { ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
 import { CHANNELS } from "../channels/index.js";
+import { extractDomain } from "../utils/index.js";
 
 /*
  * Streaming sites implement their video players in wildly different ways. Some use standard HTML5 video with keyboard shortcuts, others embed players in iframes,
@@ -16,8 +17,9 @@ import { CHANNELS } from "../channels/index.js";
  *    "extends" property, allowing us to define base profiles for common patterns (like "keyboardFullscreen" for sites using the f key) and then extend them with
  *    site-specific variations.
  *
- * 2. DOMAIN_TO_PROFILE: A mapping from domain patterns to profile names. When streaming a URL, we check if it matches any known domain and use the corresponding
- *    profile. This is the primary mechanism for automatically selecting the right behavior.
+ * 2. DOMAIN_CONFIG: A mapping from domain patterns to site profiles and provider display names. When streaming a URL, we check if it matches any known domain and
+ *    use the corresponding profile. Provider display names give friendly labels (e.g., "Hulu" instead of "hulu.com") for the UI source column and provider
+ *    dropdowns. This is the primary mechanism for automatically selecting the right behavior and generating friendly display names.
  *
  * 3. Channel-level profile hints: Individual channel definitions can specify an explicit profile name, overriding URL-based detection. This is useful when a
  *    channel's URL doesn't match the expected domain pattern, or when the same domain serves multiple channel types that need different handling.
@@ -251,49 +253,66 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   }
 };
 
-/*
- * This mapping associates domain patterns with profile names for automatic profile detection. When resolving a profile for a URL, we check if the URL contains any
- * of these domain strings. Using string containment rather than exact hostname matching allows us to handle:
- *
- * - Subdomains: "www.nbc.com" matches "nbc.com"
- * - Path-based matching: "example.com/live" would match "example.com"
- * - Regional variations: "nbc.com.au" would match "nbc.com"
- *
- * The mapping is checked in Object.keys() order, so more specific domains should be listed if there's potential overlap. For example, if "news.site.com" and
- * "site.com" both existed, the first matching entry would be used.
- *
- * Domains not listed here will use DEFAULT_SITE_PROFILE, which works for most standard video players. Only add entries here when a site requires specific handling.
+/**
+ * Domain-level configuration associating domain patterns with site profiles and provider display names. Each entry can specify a site profile for behavior
+ * configuration and/or a provider display name for friendly UI labels.
  */
-export const DOMAIN_TO_PROFILE: Record<string, string> = {
+export interface DomainConfig {
 
-  "abc.com": "keyboardMultiVideo",
-  "c-span.org": "brightcove",
-  "cbs.com": "keyboardIframe",
-  "cnbc.com": "fullscreenApi",
-  "cnn.com": "fullscreenApi",
-  "disneynow.com": "disneyNow",
-  "disneyplus.com": "apiMultiVideo",
-  "espn.com": "keyboardMultiVideo",
-  "foodnetwork.com": "fullscreenApi",
-  "foxbusiness.com": "embeddedDynamicMultiVideo",
-  "foxnews.com": "embeddedDynamicMultiVideo",
-  "foxsports.com": "fullscreenApi",
-  "france24.com": "embeddedVolumeLock",
-  "hbomax.com": "fullscreenApi",
-  "hulu.com": "huluLive",
-  "ms.now": "keyboardDynamic",
-  "nationalgeographic.com": "keyboardDynamicMultiVideo",
-  "nbc.com": "keyboardDynamic",
-  "paramountplus.com": "fullscreenApi",
-  "sling.com": "embeddedVolumeLock",
-  "tbs.com": "fullscreenApi",
-  "tntdrama.com": "fullscreenApi",
-  "usanetwork.com": "keyboardDynamicMultiVideo",
-  "vh1.com": "fullscreenApi",
-  "weatherscan.net": "staticPage",
-  "windy.com": "staticPage",
-  "wttw.com": "fullscreenApi",
-  "youtube.com": "keyboardDynamic"
+  // Site profile name for automatic profile detection. When a URL matches this domain, the specified profile is used to configure site-specific behavior
+  // (fullscreen method, iframe handling, etc.). Omit for domains that only need a display name.
+  profile?: string;
+
+  // Friendly provider name shown in the UI source column and provider labels. When set, this name is used instead of the raw domain string (e.g., "Hulu" instead
+  // of "hulu.com"). Omit to fall back to the concise domain extracted from the URL.
+  provider?: string;
+}
+
+/* This mapping associates concise domain keys with site profiles and provider display names. Keys are second-level domains (e.g., "nbc.com", "foodnetwork.com") that
+ * match the output of extractDomain() — the last two hostname parts of a URL. Both getProfileForUrl() and getProviderDisplayName() use extractDomain() to derive
+ * the lookup key, ensuring consistent matching semantics across profile resolution and display name resolution.
+ *
+ * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains without a provider entry will display the
+ * concise domain string (e.g., "hulu.com") in the UI.
+ */
+export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
+
+  "abc.com": { profile: "keyboardMultiVideo", provider: "ABC.com" },
+  "aetv.com": { provider: "A&E" },
+  "bet.com": { profile: "fullscreenApi", provider: "BET.com" },
+  "c-span.org": { profile: "brightcove", provider: "C-SPAN.org" },
+  "cbs.com": { profile: "keyboardIframe", provider: "CBS.com" },
+  "cnbc.com": { profile: "fullscreenApi", provider: "CNBC.com" },
+  "cnn.com": { profile: "fullscreenApi", provider: "CNN.com" },
+  "disneynow.com": { profile: "disneyNow", provider: "DisneyNOW" },
+  "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+" },
+  "espn.com": { profile: "keyboardMultiVideo", provider: "ESPN.com" },
+  "foodnetwork.com": { profile: "fullscreenApi", provider: "Food Network" },
+  "foxbusiness.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox Business" },
+  "foxnews.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox News" },
+  "foxsports.com": { profile: "fullscreenApi", provider: "Fox Sports" },
+  "france24.com": { profile: "embeddedVolumeLock", provider: "France 24" },
+  "fyi.tv": { provider: "FYI" },
+  "golfchannel.com": { profile: "fullscreenApi", provider: "Golf Channel" },
+  "hbomax.com": { profile: "fullscreenApi", provider: "HBO Max" },
+  "history.com": { provider: "History.com" },
+  "hulu.com": { profile: "huluLive", provider: "Hulu" },
+  "lakeshorepbs.org": { profile: "embeddedPlayer", provider: "Lakeshore PBS" },
+  "ms.now": { profile: "keyboardDynamic", provider: "MSNOW" },
+  "mylifetime.com": { provider: "Lifetime" },
+  "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", provider: "Nat Geo" },
+  "nbc.com": { profile: "keyboardDynamic", provider: "NBC.com" },
+  "paramountplus.com": { profile: "fullscreenApi", provider: "Paramount+" },
+  "sling.com": { profile: "embeddedVolumeLock", provider: "Sling TV" },
+  "tbs.com": { profile: "fullscreenApi", provider: "TBS.com" },
+  "tntdrama.com": { profile: "fullscreenApi", provider: "TNT" },
+  "trutv.com": { profile: "fullscreenApi", provider: "truTV" },
+  "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network" },
+  "vh1.com": { profile: "fullscreenApi", provider: "VH1.com" },
+  "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
+  "windy.com": { profile: "staticPage", provider: "Windy" },
+  "wttw.com": { profile: "fullscreenApi", provider: "WTTW" },
+  "youtube.com": { profile: "keyboardDynamic", provider: "YouTube" }
 };
 
 /* The default profile provides baseline behavior for sites not explicitly listed in the domain mapping or channel definitions. These settings work for most
@@ -329,7 +348,7 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
   // No fullscreen key - many players work without explicit fullscreen.
   fullscreenKey: null,
 
-  // No fullscreen button selector - most sites don't have a dedicated fullscreen button to click.
+  // No fullscreen button selector - most sites don't have a dedicated fullscreen button we need to click.
   fullscreenSelector: null,
 
   // Don't lock volume properties - most sites don't aggressively mute.
@@ -358,7 +377,7 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
  * Resolution order (highest to lowest priority):
  *
  * 1. Channel's explicit profile property (if specified)
- * 2. URL-based detection via DOMAIN_TO_PROFILE
+ * 2. URL-based detection via DOMAIN_CONFIG
  * 3. DEFAULT_SITE_PROFILE
  *
  * Within a profile, inheritance works as follows:
@@ -426,12 +445,9 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
 }
 
 /**
- * Resolves the site profile for a given URL by checking the domain against DOMAIN_TO_PROFILE. This function handles partial domain matching to support subdomains
- * and path variations. Falls back to the default profile if no matching domain is found.
- *
- * The matching is done by checking if the URL contains the domain string anywhere. This is simpler than hostname extraction and handles edge cases like URLs with
- * unusual formatting.
- *
+ * Resolves the site profile for a given URL by extracting the concise domain and looking it up in DOMAIN_CONFIG. Uses the same extractDomain() function as
+ * getProviderDisplayName() to ensure both profile resolution and display name resolution match on the same key. Falls back to the default profile if no matching
+ * domain is found or the matching domain has no profile configured.
  * @param url - The URL to resolve a profile for.
  * @returns The site profile containing behavior flags.
  */
@@ -443,19 +459,15 @@ export function getProfileForUrl(url: string | undefined): ProfileResolutionResu
     return { profile: { ...DEFAULT_SITE_PROFILE }, profileName: "default" };
   }
 
-  // Check each known domain pattern to see if the URL contains it. The first match wins, so more specific domains should be listed first in DOMAIN_TO_PROFILE
-  // if there's potential overlap.
-  for(const domain of Object.keys(DOMAIN_TO_PROFILE)) {
+  // Extract the concise domain (last two hostname parts) and look up the configuration.
+  const config = DOMAIN_CONFIG[extractDomain(url)] as DomainConfig | undefined;
 
-    if(url.indexOf(domain) !== -1) {
+  if(config?.profile) {
 
-      const profileName = DOMAIN_TO_PROFILE[domain];
-
-      return { profile: resolveProfile(profileName), profileName };
-    }
+    return { profile: resolveProfile(config.profile), profileName: config.profile };
   }
 
-  // No matching domain found - use the default profile.
+  // No matching domain found (or domain has no profile) - use the default profile.
   return { profile: { ...DEFAULT_SITE_PROFILE }, profileName: "default" };
 }
 
@@ -579,14 +591,17 @@ export function validateProfiles(): void {
     }
   }
 
-  // Validate all domain-to-profile mappings reference existing profiles. This catches typos in DOMAIN_TO_PROFILE.
-  for(const [ domain, domainProfileName ] of Object.entries(DOMAIN_TO_PROFILE)) {
+  // Validate all domain-to-profile mappings reference existing profiles. This catches typos in DOMAIN_CONFIG profile entries.
+  for(const [ domain, config ] of Object.entries(DOMAIN_CONFIG)) {
 
-    const domainProfile = SITE_PROFILES[domainProfileName] as SiteProfile | undefined;
+    if(config.profile) {
 
-    if(!domainProfile) {
+      const domainProfile = SITE_PROFILES[config.profile] as SiteProfile | undefined;
 
-      errors.push([ "Domain ", domain, " references non-existent profile: ", domainProfileName ].join(""));
+      if(!domainProfile) {
+
+        errors.push([ "Domain ", domain, " references non-existent profile: ", config.profile ].join(""));
+      }
     }
   }
 
