@@ -269,7 +269,7 @@ function generateStatusScript(): string {
     "    var isExpanded = expandedStreams[id];",
     "    var chevron = isExpanded ? '&#9660;' : '&#9654;';",
     "    var rowTint = getRowTint(s.health);",
-    "    var channelText = s.channel || getDomain(s.url);",
+    "    var channelText = s.channel || s.providerName || getDomain(s.url);",
     "    var channelDisplay = s.logoUrl",
     "      ? '<img src=\"' + s.logoUrl + '\" class=\"channel-logo\" alt=\"' + channelText + '\" title=\"' + channelText + '\" ' +",
     "        'onerror=\"this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'inline\\'\">' +",

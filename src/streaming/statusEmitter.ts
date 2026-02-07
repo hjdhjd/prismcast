@@ -36,6 +36,7 @@ export interface StreamStatus {
   memoryBytes: number;
   networkState: number;
   pageReloadsInWindow: number;
+  providerName: string;
   readyState: number;
   recoveryAttempts: number;
   showName: string;
@@ -97,6 +98,7 @@ statusEmitter.setMaxListeners(100);
 export function createInitialStreamStatus(options: {
   channelName: Nullable<string>;
   numericStreamId: number;
+  providerName: string;
   startTime: Date;
   url: string;
 }): StreamStatus {
@@ -119,6 +121,7 @@ export function createInitialStreamStatus(options: {
     memoryBytes: 0,
     networkState: 0,
     pageReloadsInWindow: 0,
+    providerName: options.providerName,
     readyState: 0,
     recoveryAttempts: 0,
     showName: "",
