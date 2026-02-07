@@ -501,7 +501,9 @@ function generateApiReferenceContent(): string {
     "<tr>",
     "<td class=\"endpoint\"><code>GET /play</code></td>",
     "<td>Stream any URL without creating a channel definition. Pass the URL as <code>?url=&lt;url&gt;</code>. " +
-    "Advanced: <code>&amp;profile=</code> overrides auto-detection, <code>&amp;selector=</code> picks a channel on multi-channel sites.</td>",
+    "Advanced: <code>&amp;profile=</code> overrides auto-detection, <code>&amp;selector=</code> picks a channel on multi-channel sites, " +
+    "<code>&amp;clickToPlay=true</code> clicks the video to start playback, <code>&amp;clickSelector=</code> specifies a play button element to click " +
+    "(implies clickToPlay).</td>",
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>GET /stream/:name</code></td>",

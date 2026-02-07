@@ -691,6 +691,28 @@ export async function triggerFullscreen(
   selectorType: VideoSelectorType
 ): Promise<void> {
 
+  // Try clicking a fullscreen button if configured. This fires before keyboard and API methods because clicking the site's own fullscreen control is the most
+  // reliable approach — it uses the site's native mechanism. The element existence check guards against toggle buttons that have changed state or disappeared
+  // (e.g., after the player is already maximized). Keyboard and API methods serve as fallbacks below.
+  if(profile.fullscreenSelector) {
+
+    try {
+
+      const buttonExists = await page.$(profile.fullscreenSelector);
+
+      if(buttonExists) {
+
+        await page.click(profile.fullscreenSelector);
+
+        // Brief delay for the site's fullscreen animation to complete before subsequent checks.
+        await delay(300);
+      }
+    } catch(error) {
+
+      LOG.warn("Could not click fullscreen button %s: %s.", profile.fullscreenSelector, formatError(error));
+    }
+  }
+
   // Try keyboard shortcut if configured. The fullscreenKey is typically "f" for most video players.
   if(profile.fullscreenKey) {
 
@@ -1044,38 +1066,61 @@ export async function ensurePlayback(
 }
 
 /**
- * Tunes to a channel by navigating to the URL and initializing video playback. This is the single source of truth for channel initialization, used by both initial
- * stream setup and recovery. Having one authoritative function ensures consistent behavior and prevents code divergence between setup and recovery paths.
+ * Dismisses any stale overlay or modal that may be covering the guide grid. After a failed click attempt on the on-now cell, the playback overlay or entity modal
+ * can remain open, obscuring the guide and preventing subsequent channel selection attempts from locating guide rows. Pressing Escape closes most modal overlays
+ * in React-based SPAs.
+ * @param page - The Puppeteer page object.
+ */
+async function dismissGuideOverlay(page: Page): Promise<void> {
+
+  try {
+
+    await page.keyboard.press("Escape");
+
+    // Brief delay for the overlay dismiss animation to complete and the guide grid to re-render.
+    await delay(500);
+  } catch(error) {
+
+    // Overlay dismissal is best-effort. The overlay may not exist, or the page may be in a state where keyboard input is ignored.
+    LOG.debug("Could not dismiss guide overlay: %s.", formatError(error));
+  }
+}
+
+/**
+ * Performs all post-navigation channel initialization: selects the channel, finds the video context, clicks to play if needed, waits for video readiness, and
+ * ensures playback with fullscreen styling. This function is separated from navigateToPage() so that retryOperation() in setup.ts can wrap only navigation with a
+ * timeout, while channel selection and video setup run with their own internal time budgets (click retry loops, videoTimeout, etc.) without being killed by the
+ * navigation timeout.
  *
- * The tuning process:
- * 1. Navigate: Load the target URL using site-appropriate wait conditions
- * 2. Select channel: For multi-channel players, click the desired channel in the UI
- * 3. Find video: Locate the video element (which may be in an iframe)
- * 4. Click to play: For Brightcove-style players, click the video to start playback
- * 5. Wait for ready: Ensure the video has buffered enough data to play
- * 6. Ensure playback: Start playback, unmute, and apply fullscreen styling
- *
- * Note: Stream context for logging is automatically retrieved from AsyncLocalStorage. Callers should wrap their stream handling code in runWithStreamContext() to
- * ensure log messages include the stream ID prefix.
+ * For guideGrid channel selection failures, the function attempts a single retry after dismissing any stale overlay that may be covering the guide grid. This
+ * handles the case where a failed click attempt left an overlay open, causing subsequent locateOnNowCell calls to fail.
  *
  * @param page - The Puppeteer page object.
- * @param url - The URL to navigate to.
  * @param profile - The site profile containing all behavior flags.
  * @returns The video context (frame or page) for subsequent monitoring.
  */
-export async function tuneToChannel(page: Page, url: string, profile: ResolvedSiteProfile): Promise<TuneResult> {
-
-  // Navigate to the target URL. This handles timeout and network errors, returning when the page is loaded. The navigation strategy (networkidle vs load event)
-  // is determined by the profile's waitForNetworkIdle flag.
-  await navigateToPage(page, url, profile);
+export async function initializePlayback(page: Page, profile: ResolvedSiteProfile): Promise<TuneResult> {
 
   // For multi-channel players (like usanetwork.com/live with multiple channels), select the desired channel from the UI. The selectChannel function checks the
   // profile's channelSelection strategy and channelSelector to determine if/how to select a channel.
-  const channelResult = await selectChannel(page, profile);
+  let channelResult = await selectChannel(page, profile);
 
   if(!channelResult.success) {
 
-    LOG.warn("Channel selection may have failed: %s.", channelResult.reason ?? "Unknown reason");
+    // For guideGrid strategy, a stale overlay from a previous failed click attempt may be covering the guide. Dismiss it and retry channel selection once.
+    if(profile.channelSelection.strategy === "guideGrid") {
+
+      LOG.warn("Guide grid channel selection failed: %s. Dismissing overlay and retrying.", channelResult.reason ?? "Unknown reason");
+
+      await dismissGuideOverlay(page);
+
+      channelResult = await selectChannel(page, profile);
+    }
+
+    if(!channelResult.success) {
+
+      LOG.warn("Channel selection may have failed: %s.", channelResult.reason ?? "Unknown reason");
+    }
   }
 
   // Find the video context, which may be an iframe for embedded players. Some streaming sites embed their video player in an iframe, requiring us to search
@@ -1106,4 +1151,34 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
   await ensurePlayback(page, context, profile, 1);
 
   return { context };
+}
+
+/**
+ * Tunes to a channel by navigating to the URL and initializing video playback. This is the single source of truth for channel initialization, used by both initial
+ * stream setup and recovery. Having one authoritative function ensures consistent behavior and prevents code divergence between setup and recovery paths.
+ *
+ * The tuning process:
+ * 1. Navigate: Load the target URL using site-appropriate wait conditions
+ * 2. Select channel: For multi-channel players, click the desired channel in the UI
+ * 3. Find video: Locate the video element (which may be in an iframe)
+ * 4. Click to play: For Brightcove-style players, click the video to start playback
+ * 5. Wait for ready: Ensure the video has buffered enough data to play
+ * 6. Ensure playback: Start playback, unmute, and apply fullscreen styling
+ *
+ * Note: Stream context for logging is automatically retrieved from AsyncLocalStorage. Callers should wrap their stream handling code in runWithStreamContext() to
+ * ensure log messages include the stream ID prefix.
+ *
+ * @param page - The Puppeteer page object.
+ * @param url - The URL to navigate to.
+ * @param profile - The site profile containing all behavior flags.
+ * @returns The video context (frame or page) for subsequent monitoring.
+ */
+export async function tuneToChannel(page: Page, url: string, profile: ResolvedSiteProfile): Promise<TuneResult> {
+
+  // Navigate to the target URL. This handles timeout and network errors, returning when the page is loaded. The navigation strategy (networkidle vs load event)
+  // is determined by the profile's waitForNetworkIdle flag.
+  await navigateToPage(page, url, profile);
+
+  // Perform all post-navigation initialization: channel selection, video context resolution, click to play, video readiness, and fullscreen.
+  return initializePlayback(page, profile);
 }
