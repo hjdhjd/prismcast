@@ -71,9 +71,25 @@ If you're already using Chrome Capture for Channels and it's working well for yo
 
 ## Installation
 
-PrismCast can be installed as a Node.js package or deployed as a Docker container. For Docker, see [Docker / Container Deployment](#docker--container-deployment) below.
+PrismCast can be installed via Homebrew on macOS, as a Node.js package on any platform, or deployed as a Docker container. For Docker, see [Docker / Container Deployment](#docker--container-deployment) below.
 
-The recommended approach for native installation is to install PrismCast globally and run it as a system service:
+### Homebrew (macOS)
+
+The easiest way to install PrismCast on macOS:
+
+```sh
+brew install hjdhjd/prismcast/prismcast
+```
+
+To update to the latest version:
+
+```sh
+brew upgrade prismcast
+```
+
+### npm (All Platforms)
+
+PrismCast can also be installed globally as a Node.js package:
 
 ```sh
 npm install -g prismcast
@@ -153,7 +169,7 @@ Configuration is stored in `~/.prismcast/config.json` and your TV provider sessi
 
 ## Docker / Container Deployment
 
-PrismCast provides a prebuilt Docker image with everything included: Google Chrome, a virtual display (Xvfb), VNC access, and a browser-based noVNC interface for managing TV provider authentication. The image is available on [Docker Hub](https://hub.docker.com/r/bnhf/prismcast).
+PrismCast provides a prebuilt Docker image with everything included: Google Chrome, a virtual display (Xvfb), VNC access, and a browser-based noVNC interface for managing TV provider authentication. The image is available on [GitHub Container Registry](https://github.com/hjdhjd/prismcast/pkgs/container/prismcast).
 
 ### Quick Start with Docker Compose
 
@@ -193,7 +209,7 @@ docker run -d \
   -p 6080:6080 \
   -p 5004:5004 \
   -v prismcast-data:/root/.prismcast \
-  bnhf/prismcast:latest
+  ghcr.io/hjdhjd/prismcast:latest
 ```
 
 ### Ports
