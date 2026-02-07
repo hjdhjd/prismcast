@@ -4,7 +4,7 @@
  */
 import type { Channel, ChannelMap, ProviderGroup } from "../types/index.js";
 import { LOG, extractDomain } from "../utils/index.js";
-import { DOMAIN_CONFIG } from "./profiles.js";
+import { DOMAIN_CONFIG } from "./sites.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 
 /* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
