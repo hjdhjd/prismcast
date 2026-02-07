@@ -9,14 +9,15 @@ import type { MonitorStreamInfo, RecoveryMetrics, TabReplacementResult } from ".
 import { closeBrowser, getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.js";
+import { initializePlayback, navigateToPage } from "../browser/video.js";
 import { CONFIG } from "../config/index.js";
 import type { FFmpegProcess } from "../utils/index.js";
 import type { Readable } from "node:stream";
 import { getEffectiveViewport } from "../config/presets.js";
+import { getProviderDisplayName } from "../config/providers.js";
 import { monitorPlaybackHealth } from "./monitor.js";
 import { pipeline } from "node:stream/promises";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
-import { initializePlayback, navigateToPage } from "../browser/video.js";
 
 /* This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
  *
@@ -135,6 +136,9 @@ export interface StreamSetupResult {
 
   // The name of the resolved profile (e.g., "keyboardDynamic", "fullscreenApi", "default").
   profileName: string;
+
+  // Friendly provider display name derived from the URL domain via DOMAIN_CONFIG (e.g., "Hulu" for hulu.com). Used for SSE status display.
+  providerName: string;
 
   // The raw capture stream from puppeteer-stream. Must be destroyed before closing the page.
   rawCaptureStream: Readable;
@@ -734,6 +738,9 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     // Compute the metadata comment for FFmpeg. Prefer the friendly channel name, fall back to the channel key, or extract the domain from the URL.
     const metadataComment = channel?.name ?? channelName ?? extractDomain(url);
 
+    // Compute the friendly provider display name once for use in both the monitor and the setup result.
+    const providerName = getProviderDisplayName(url);
+
     // Create the tab replacement handler if a factory was provided. This is done after profile resolution so the handler has access to the final profile.
     const onTabReplacement = onTabReplacementFactory ? onTabReplacementFactory(numericStreamId, streamId, profile, metadataComment) : undefined;
 
@@ -802,6 +809,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
       channelName: channel?.name ?? null,
       numericStreamId,
+      providerName,
       startTime
     };
 
@@ -863,6 +871,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       page,
       profile,
       profileName,
+      providerName,
       rawCaptureStream,
       startTime,
       stopMonitor,

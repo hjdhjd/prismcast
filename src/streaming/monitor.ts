@@ -545,6 +545,7 @@ export interface MonitorStreamInfo {
 
   channelName: Nullable<string>;
   numericStreamId: number;
+  providerName: string;
   startTime: Date;
 }
 
@@ -748,6 +749,7 @@ export function monitorPlaybackHealth(
       memoryBytes,
       networkState: lastVideoState?.networkState ?? 0,
       pageReloadsInWindow: pageReloadTimestamps.length,
+      providerName: streamInfo.providerName,
       readyState: lastVideoState?.readyState ?? 0,
       recoveryAttempts: totalRecoveryAttempts,
       showName: getShowName(streamInfo.numericStreamId),

@@ -811,6 +811,7 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
 
         channelName: channel?.name ?? null,
         numericStreamId: setup.numericStreamId,
+        providerName: setup.providerName,
         startTime: setup.startTime,
         url: setup.url
       }));
