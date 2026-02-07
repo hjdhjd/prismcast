@@ -251,11 +251,21 @@ export function validateConfiguration(): void {
     errors.push(hlsIdleTimeoutError);
   }
 
+  // Force FFmpeg capture mode. Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of continuous recording. Until a future Chrome
+  // release resolves this, native capture mode is disabled entirely.
+  if(CONFIG.streaming.captureMode !== "ffmpeg") {
+
+    LOG.warn("Native capture mode is disabled due to a Chrome fMP4 MediaRecorder bug. Forcing FFmpeg capture mode.");
+
+    CONFIG.streaming.captureMode = "ffmpeg";
+  }
+
   // Validate HDHomeRun configuration when enabled.
   if(CONFIG.hdhr.enabled) {
 
-    // HDHR requires FFmpeg for MPEG-TS remuxing. In native mode, FFmpeg is not guaranteed to be available. Disable HDHR and warn the operator.
-    if(CONFIG.streaming.captureMode === "native") {
+    // HDHR requires FFmpeg for MPEG-TS remuxing. In native mode, FFmpeg is not guaranteed to be available. Disable HDHR and warn the operator. The string cast
+    // suppresses TS2367 because captureMode is currently forced to "ffmpeg" above — this guard will become reachable again when native mode is re-enabled.
+    if((CONFIG.streaming.captureMode as string) === "native") {
 
       CONFIG.hdhr.enabled = false;
 

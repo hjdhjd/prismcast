@@ -887,7 +887,7 @@ function getFieldWidthClass(setting: SettingMetadata): string {
 function generateSettingField(setting: SettingMetadata, currentValue: unknown, defaultValue: unknown, envOverride: string | undefined,
   validationError?: string): string {
 
-  const isDisabled = envOverride !== undefined;
+  const isDisabled = (envOverride !== undefined) || (setting.disabledReason !== undefined);
   const inputId = setting.path.replace(/\./g, "-");
   const hasError = validationError !== undefined;
   const isModified = !isDisabled && !isEqualToDefault(currentValue, defaultValue);
@@ -942,7 +942,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
   lines.push(escapeHtml(setting.label));
 
-  if(isDisabled) {
+  if(envOverride !== undefined) {
 
     lines.push("<span class=\"env-badge\">ENV</span>");
   }
@@ -1130,6 +1130,12 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
   // Add description.
   lines.push("<div class=\"form-description\">" + escapeHtml(setting.description) + "</div>");
+
+  // Add disabled reason warning when a setting is locked out due to an upstream issue.
+  if(setting.disabledReason) {
+
+    lines.push("<div class=\"form-warning\">" + escapeHtml(setting.disabledReason) + "</div>");
+  }
 
   // Add inline message for degraded preset.
   if(selectedPresetDegradedTo) {
