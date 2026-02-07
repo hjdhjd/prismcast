@@ -39,6 +39,10 @@ export interface SettingMetadata {
   // UI. The field values are still submitted during save to avoid losing custom values when the parent toggle is temporarily disabled.
   dependsOn?: string;
 
+  // When set, the field is disabled in the UI and this message is shown as a warning explaining why. The setting's value is forced to its default and cannot be
+  // changed by the user. Used for temporarily disabling options due to upstream issues (e.g., Chrome bugs).
+  disabledReason?: string;
+
   // Divisor for converting stored value to display value (e.g., 1000 to convert ms to seconds). When set, the UI displays value/displayDivisor and stores
   // submittedValue*displayDivisor.
   displayDivisor?: number;
@@ -457,6 +461,8 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
 
       description: "FFmpeg (recommended) provides reliable capture for long recordings. Native mode captures directly from Chrome without an external " +
         "process, but may require stream recovery after 20-30 minutes of continuous use.",
+      disabledReason: "Native capture mode is temporarily disabled due to a Chrome bug that causes fMP4 MediaRecorder to produce corrupt output after " +
+        "20-30 minutes of continuous recording. FFmpeg mode is required until a future Chrome release resolves this issue.",
       envVar: "CAPTURE_MODE",
       label: "Capture Mode",
       path: "streaming.captureMode",
