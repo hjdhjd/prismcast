@@ -544,7 +544,7 @@ function generateApiReferenceContent(): string {
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>DELETE /streams/:id</code></td>",
-    "<td>Terminate a specific stream by its numeric ID. Returns 204 on success, 404 if not found.</td>",
+    "<td>Terminate a specific stream by its numeric ID. Returns 200 on success, 404 if not found.</td>",
     "</tr>",
     "</table>",
     "</div>",
