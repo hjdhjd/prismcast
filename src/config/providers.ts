@@ -4,8 +4,8 @@
  */
 import type { Channel, ChannelMap, ProviderGroup } from "../types/index.js";
 import { LOG, extractDomain } from "../utils/index.js";
-import { DOMAIN_CONFIG } from "./sites.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
+import { getDomainConfig } from "./sites.js";
 
 /* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
@@ -179,22 +179,16 @@ export function buildProviderGroups(channels: ChannelMap): void {
 }
 
 /**
- * Resolves a URL to a friendly provider display name. Checks DOMAIN_CONFIG for a provider name matching the URL's concise domain, falling back to the raw domain
- * string if no provider name is configured. Use this when displaying provider sources in the UI (source column, provider labels) where a friendly name like "Hulu"
- * is preferred over a raw domain like "hulu.com".
+ * Resolves a URL to a friendly provider display name. Checks DOMAIN_CONFIG via getDomainConfig() for a provider name, trying the full hostname first for
+ * subdomain-specific overrides before falling back to the concise domain. Returns the raw domain string if no provider name is configured.
  * @param url - The URL to resolve a provider display name for.
  * @returns The provider display name, or the concise domain if no provider name is configured.
  */
 export function getProviderDisplayName(url: string): string {
 
-  const domain = extractDomain(url);
+  const config = getDomainConfig(url);
 
-  // Check DOMAIN_CONFIG for a friendly provider name. The eslint disable is needed because TypeScript's Record indexing doesn't capture that the key may not
-  // exist at runtime.
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  const provider = DOMAIN_CONFIG[domain]?.provider;
-
-  return provider ?? domain;
+  return config?.provider ?? extractDomain(url);
 }
 
 /**

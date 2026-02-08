@@ -2,14 +2,13 @@
  *
  * profiles.ts: Site profile resolution and validation for PrismCast.
  */
-import { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES } from "./sites.js";
+import { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig } from "./sites.js";
 import type { ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
 import { CHANNELS } from "../channels/index.js";
 import type { DomainConfig } from "./sites.js";
-import { extractDomain } from "../utils/index.js";
 
 // Re-export site data so existing consumers can import from either module.
-export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES };
+export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig };
 export type { DomainConfig };
 
 /*
@@ -87,9 +86,9 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
 }
 
 /**
- * Resolves the site profile for a given URL by extracting the concise domain and looking it up in DOMAIN_CONFIG. Uses the same extractDomain() function as
- * getProviderDisplayName() to ensure both profile resolution and display name resolution match on the same key. Falls back to the default profile if no matching
- * domain is found or the matching domain has no profile configured.
+ * Resolves the site profile for a given URL by looking it up in DOMAIN_CONFIG via getDomainConfig(), which tries the full hostname first for subdomain-specific
+ * overrides before falling back to the concise domain. Falls back to the default profile if no matching domain is found or the matching domain has no profile
+ * configured.
  * @param url - The URL to resolve a profile for.
  * @returns The site profile containing behavior flags.
  */
@@ -101,8 +100,8 @@ export function getProfileForUrl(url: string | undefined): ProfileResolutionResu
     return { profile: { ...DEFAULT_SITE_PROFILE }, profileName: "default" };
   }
 
-  // Extract the concise domain (last two hostname parts) and look up the configuration.
-  const config = DOMAIN_CONFIG[extractDomain(url)] as DomainConfig | undefined;
+  // Look up the domain configuration, trying the full hostname first for subdomain-specific overrides (e.g., "tv.youtube.com" before "youtube.com").
+  const config = getDomainConfig(url);
 
   // Resolve the profile from the domain configuration, falling back to the default profile for unrecognized domains or domains without a profile entry.
   const profile = config?.profile ? resolveProfile(config.profile) : { ...DEFAULT_SITE_PROFILE };
@@ -169,7 +168,7 @@ export function getProfileForChannel(channel: { channelSelector?: string; profil
   // path above, getProfileForUrl() already merges these — the re-application here is idempotent. For the explicit-profile path, this fills the gap.
   if(channel.url) {
 
-    const domainConfig = DOMAIN_CONFIG[extractDomain(channel.url)] as DomainConfig | undefined;
+    const domainConfig = getDomainConfig(channel.url);
 
     if(domainConfig?.maxContinuousPlayback !== undefined) {
 

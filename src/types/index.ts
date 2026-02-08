@@ -782,8 +782,9 @@ export interface StreamListResponse {
  * - "none": No channel selection needed (single-channel sites). This is the default.
  * - "thumbnailRow": Find channel by matching image URL slug, click adjacent element on the same row. Used by USA Network.
  * - "tileClick": Find channel tile by matching image URL slug, click tile, then click play button on modal. Used by Disney+ live channels.
+ * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
-export type ChannelSelectionStrategy = "guideGrid" | "none" | "thumbnailRow" | "tileClick";
+export type ChannelSelectionStrategy = "guideGrid" | "none" | "thumbnailRow" | "tileClick" | "youtubeGrid";
 
 /**
  * Configuration for channel selection behavior within a site profile.

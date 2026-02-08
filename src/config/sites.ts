@@ -3,6 +3,7 @@
  * sites.ts: Site profile definitions and domain-to-profile mappings for PrismCast.
  */
 import type { ResolvedSiteProfile, SiteProfile } from "../types/index.js";
+import { extractDomain } from "../utils/index.js";
 
 /*
  * Streaming sites implement their video players in wildly different ways. Some use standard HTML5 video with keyboard shortcuts, others embed players in iframes,
@@ -57,6 +58,7 @@ import type { ResolvedSiteProfile, SiteProfile } from "../types/index.js";
  * - huluLive: Hulu Live TV with guide grid channel selection + fullscreen button (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
+ * - youtubeTV: YouTube TV with non-virtualized EPG grid channel selection (extends fullscreenApi)
  *
  * Each profile includes a description field documenting its purpose. This is metadata only - it's stripped during profile resolution and exists purely for
  * documentation.
@@ -248,6 +250,21 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     description: "Base profile for non-video pages captured as static visual content.",
     noVideo: true,
     summary: "Static pages (no video)"
+  },
+
+  // Profile for YouTube TV (tv.youtube.com/live). The guide grid renders all ~256 channel rows in the DOM simultaneously (no virtualization), each containing a
+  // direct watch URL. The youtubeGrid strategy performs a single querySelector to find the target channel's watch link via aria-label, extracts the URL, and
+  // navigates directly — no scrolling, clicking, or timing workarounds needed. Uses selectReadyVideo because the watch page has ~36 video elements (live preview
+  // thumbnails from the guide) but only one active stream with readyState >= 3 and videoWidth > 0. Extends fullscreenApi because requestFullscreen() works
+  // directly on the active video element without gesture requirements.
+  youtubeTV: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "youtubeGrid" },
+    description: "YouTube TV with EPG grid channel selection. Use the guide name or a network name (e.g., NBC) for locals. PBS auto-resolves to major affiliates.",
+    extends: "fullscreenApi",
+    selectReadyVideo: true,
+    summary: "YouTube TV (guide grid, needs selector)"
   }
 };
 
@@ -270,9 +287,9 @@ export interface DomainConfig {
   provider?: string;
 }
 
-/* This mapping associates concise domain keys with site profiles and provider display names. Keys are second-level domains (e.g., "nbc.com", "foodnetwork.com") that
- * match the output of extractDomain() — the last two hostname parts of a URL. Both getProfileForUrl() and getProviderDisplayName() use extractDomain() to derive
- * the lookup key, ensuring consistent matching semantics across profile resolution and display name resolution.
+/* This mapping associates domain keys with site profiles and provider display names. Most keys are concise second-level domains (e.g., "nbc.com", "foodnetwork.com")
+ * matching the output of extractDomain(). Keys can also be full hostnames (e.g., "tv.youtube.com") for subdomain-specific overrides — getDomainConfig() tries the
+ * full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com" when the URL matches.
  *
  * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains without a provider entry will display the
  * concise domain string (e.g., "hulu.com") in the UI.
@@ -303,19 +320,49 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "ms.now": { profile: "keyboardDynamic", provider: "MSNOW" },
   "mylifetime.com": { profile: "fullscreenApi", provider: "Lifetime" },
   "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", provider: "Nat Geo" },
+  "nba.com": { profile: "fullscreenApi", provider: "NBA.com" },
   "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", provider: "NBC.com" },
   "paramountplus.com": { profile: "fullscreenApi", provider: "Paramount+" },
   "sling.com": { profile: "embeddedVolumeLock", provider: "Sling TV" },
   "tbs.com": { profile: "fullscreenApi", provider: "TBS.com" },
   "tntdrama.com": { profile: "fullscreenApi", provider: "TNT" },
   "trutv.com": { profile: "fullscreenApi", provider: "truTV" },
+  "tv.youtube.com": { profile: "youtubeTV", provider: "YouTube TV" },
   "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network (Grid)" },
   "vh1.com": { profile: "fullscreenApi", provider: "VH1.com" },
+  "watchhallmarktv.com": { profile: "fullscreenApi", provider: "Hallmark" },
   "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
   "windy.com": { profile: "staticPage", provider: "Windy" },
   "wttw.com": { profile: "fullscreenApi", provider: "WTTW" },
   "youtube.com": { profile: "keyboardDynamic", provider: "YouTube" }
 };
+
+/**
+ * Resolves a URL to its DOMAIN_CONFIG entry by trying the full hostname first for subdomain-specific overrides, then falling back to the concise domain (last two
+ * hostname parts). This allows entries like "tv.youtube.com" to override the base "youtube.com" entry when the URL matches the more-specific subdomain.
+ * @param url - The URL to resolve a domain configuration for.
+ * @returns The matching DomainConfig entry, or undefined if no match is found.
+ */
+export function getDomainConfig(url: string): DomainConfig | undefined {
+
+  try {
+
+    const hostname = new URL(url).hostname;
+
+    // Try the full hostname first for subdomain-specific overrides (e.g., "tv.youtube.com" before "youtube.com").
+    const hostnameMatch = DOMAIN_CONFIG[hostname] as DomainConfig | undefined;
+
+    if(hostnameMatch) {
+
+      return hostnameMatch;
+    }
+  } catch {
+
+    // Invalid URL — fall through to concise domain lookup.
+  }
+
+  return DOMAIN_CONFIG[extractDomain(url)] as DomainConfig | undefined;
+}
 
 /* The default profile provides baseline behavior for sites not explicitly listed in the domain mapping or channel definitions. These settings work for most
  * standard HTML5 video players that follow common conventions. Each flag is explicitly set to its default value for documentation purposes and to ensure

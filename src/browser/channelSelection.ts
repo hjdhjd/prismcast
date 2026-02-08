@@ -15,6 +15,7 @@ import type { Page } from "puppeteer-core";
  *   cell and play button (Hulu Live). Supports position-based inference for local affiliate call signs and a linear scan fallback.
  * - thumbnailRow: Find channel by matching image URL slug, click adjacent show entry on the same row (USA Network)
  * - tileClick: Find channel tile by matching image URL slug, click tile, then click play button on modal (Disney+ live)
+ * - youtubeGrid: Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly (YouTube TV)
  *
  * Each strategy is a self-contained function that takes the page and channel identifier, and returns a success/failure result. The main selectChannel() function
  * delegates to the appropriate strategy based on the profile configuration.
@@ -343,6 +344,131 @@ async function tileClickStrategy(page: Page, channelSlug: string): Promise<Chann
 
   // Click the play button to start live playback.
   await scrollAndClick(page, playTarget);
+
+  return { success: true };
+}
+
+/**
+ * YouTube TV grid strategy: finds a channel in the non-virtualized EPG grid at tv.youtube.com/live by querying the aria-label attribute on thumbnail endpoint
+ * elements. All ~256 channel rows are present in the DOM simultaneously, so a single querySelector locates the target channel. The strategy extracts the watch
+ * URL from the matching anchor element and navigates directly — no scrolling, clicking, or timing workarounds needed.
+ *
+ * The selection process:
+ * 1. Wait for ytu-epg-row elements to confirm the guide grid has loaded.
+ * 2. Find the target channel using a case-insensitive aria-label CSS selector.
+ * 3. Extract the href attribute and validate it starts with "watch/" (not "live" or "browse/").
+ * 4. Navigate to the full watch URL via page.goto().
+ * @param page - The Puppeteer page object.
+ * @param channelName - The channel name or network name to match against aria-label attributes (e.g., "CNN", "ESPN", "NBC" for local affiliates).
+ * @returns Result object with success status and optional failure reason.
+ */
+async function youtubeGridStrategy(page: Page, channelName: string): Promise<ChannelSelectorResult> {
+
+  // Wait for the EPG grid to render. All ~256 rows load simultaneously (no virtualization), so once any row exists, all channels are queryable.
+  try {
+
+    await page.waitForSelector("ytu-epg-row", { timeout: CONFIG.streaming.videoTimeout });
+  } catch {
+
+    return { reason: "YouTube TV guide grid did not load.", success: false };
+  }
+
+  // Known alternate channel names for affiliates that vary by market. CW appears as "WGN" in some markets. PBS affiliates appear under local call letters (e.g.,
+  // WTTW, KQED) rather than "PBS", so we list the major market call letters to cover most users. Each alternate is tried after the primary name fails both exact and
+  // prefix+digit matching. Users in smaller markets override via custom channel entries with their local call letters as the channelSelector.
+  const CHANNEL_ALTERNATES: Record<string, string[]> = {
+
+    "cw": ["WGN"],
+    "pbs": [
+      "GBH", "KAET", "KCET", "KCTS", "KERA", "KLCS", "KOCE", "KPBS", "KQED", "KRMA", "KUHT", "KVIE", "MPT", "NJ PBS", "THIRTEEN", "TPT", "WETA", "WGBH", "WHYY",
+      "WLIW", "WNED", "WNET", "WNIT", "WPBA", "WPBT", "WTTW", "WTVS", "WXEL"
+    ]
+  };
+
+  // Build the list of names to try: the primary name first, then any known alternates for markets where the affiliate uses a different name. The eslint disable is
+  // needed because TypeScript's Record indexing doesn't capture that the key may not exist at runtime.
+  const alternates = CHANNEL_ALTERNATES[channelName.toLowerCase()];
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  const namesToTry = alternates ? [ channelName, ...alternates ] : [channelName];
+
+  // Find the watch URL for the target channel. For each name in the list, first tries an exact case-insensitive aria-label match. If that fails, falls back to a
+  // prefix+digit match for local affiliates — YouTube TV displays locals as "{Network} {Number}" (e.g., "NBC 5", "ABC 7", "FOX 32"), so a channelSelector of "NBC"
+  // can automatically resolve to the user's local affiliate. The prefix fallback requires a space followed by a digit after the network name to avoid false positives
+  // like "NBC Sports Chicago".
+  const watchPath = await evaluateWithAbort(page, (names: string[]): string | null => {
+
+    // Helper to extract and validate a watch URL from an anchor element. Returns the href if it points to a streamable watch page, null otherwise.
+    const extractWatchHref = (anchor: HTMLAnchorElement | null): string | null => {
+
+      if(!anchor) {
+
+        return null;
+      }
+
+      const href = anchor.getAttribute("href");
+
+      // Validate the href points to a streamable watch page. Channels with "live" or "browse/" hrefs are premium add-ons or info pages that cannot be streamed.
+      if(!href || !href.startsWith("watch/")) {
+
+        return null;
+      }
+
+      return href;
+    };
+
+    // Try each name in order. The primary channel name is tried first, followed by any known alternates.
+    for(const name of names) {
+
+      // Try exact match first. The CSS "i" flag enables case-insensitive matching to handle variations in capitalization between the channel selector and the guide.
+      const exactSelector = "ytu-endpoint.tenx-thumb[aria-label=\"watch " + name + "\" i] a";
+      const exactResult = extractWatchHref(document.querySelector(exactSelector) as HTMLAnchorElement | null);
+
+      if(exactResult) {
+
+        return exactResult;
+      }
+
+      // Fallback: prefix + digit match for local affiliates. Find all thumbnails whose aria-label starts with "watch {Name} " and filter to those where the next
+      // character is a digit, matching the "{Network} {Number}" pattern (e.g., "NBC 5", "ABC 7") while excluding unrelated channels (e.g., "NBC Sports Chicago").
+      const prefixSelector = "ytu-endpoint.tenx-thumb[aria-label^=\"watch " + name + " \" i] a";
+      const candidates = document.querySelectorAll(prefixSelector);
+      const prefix = "watch " + name + " ";
+
+      for(const candidate of Array.from(candidates)) {
+
+        const parent = candidate.closest("ytu-endpoint.tenx-thumb");
+        const label = parent?.getAttribute("aria-label") ?? "";
+        const suffix = label.slice(prefix.length);
+
+        // Accept only if the remainder starts with a digit — this is the local affiliate channel number.
+        if((suffix.length > 0) && (suffix.charCodeAt(0) >= 48) && (suffix.charCodeAt(0) <= 57)) {
+
+          return extractWatchHref(candidate as HTMLAnchorElement);
+        }
+      }
+    }
+
+    return null;
+  }, [namesToTry]);
+
+  if(!watchPath) {
+
+    return { reason: "Channel " + channelName + " not found in YouTube TV guide or is not streamable.", success: false };
+  }
+
+  // Navigate directly to the watch URL. This auto-starts playback without any click interaction needed.
+  const watchUrl = "https://tv.youtube.com/" + watchPath;
+
+  LOG.info("Navigating to YouTube TV watch URL for %s.", channelName);
+
+  try {
+
+    await page.goto(watchUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+  } catch(error) {
+
+    return { reason: "Failed to navigate to YouTube TV watch page: " + formatError(error) + ".", success: false };
+  }
 
   return { success: true };
 }
@@ -1043,9 +1169,9 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
 
   // Poll for the channel slug image to appear and fully load. We check both src match and load completion (img.complete + naturalWidth) to ensure the image is
   // actually rendered before proceeding. This prevents race conditions where the img element exists with the correct src but the browser hasn't finished fetching
-  // and rendering it, which can cause layout instability and click failures. We skip this polling for guideGrid because the channel list images are hidden behind a
-  // tab that the strategy clicks — polling here would always time out, wasting channelSelectorDelay before the strategy even begins.
-  if(channelSelection.strategy !== "guideGrid") {
+  // and rendering it, which can cause layout instability and click failures. We skip this polling for guideGrid (channel list images are hidden behind a tab) and
+  // youtubeGrid (channelSelector is a channel name, not an image URL slug).
+  if((channelSelection.strategy !== "guideGrid") && (channelSelection.strategy !== "youtubeGrid")) {
 
     try {
 
@@ -1085,6 +1211,13 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     case "tileClick": {
 
       result = await tileClickStrategy(page, channelSelector);
+
+      break;
+    }
+
+    case "youtubeGrid": {
+
+      result = await youtubeGridStrategy(page, channelSelector);
 
       break;
     }
