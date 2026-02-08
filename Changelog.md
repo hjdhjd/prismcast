@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.1 (2026-02-08)
+  * New feature: HBO Max provider support.
+  * New feature: YouTube TV provider support with automatic local affiliate resolution for broadcast networks and PBS.
+  * New feature: proactive page reload for sites with continuous playback limits (e.g., NBC.com).
+  * Fix: false positive dead capture detection on lower quality presets causing continuous tab replacement loops.
+  * Housekeeping.
+
 ## 1.2.0 (2026-02-07)
   * New feature: Homebrew tap for macOS installation (`brew install hjdhjd/prismcast/prismcast`). Upgrade it like any Homebrew package after that.
   * New feature: Automated Docker builds based on the contributions of @bnhf. Latest official release can always be installed from: `docker pull ghcr.io/hjdhjd/prismcast:latest`.
