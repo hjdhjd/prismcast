@@ -22,8 +22,9 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
  * The monitor runs on a configurable interval (default: 2 seconds) and performs these checks:
  *
  * 1. Video progression: Compares currentTime to previous check. If currentTime has not advanced by at least STALL_THRESHOLD (0.1 seconds), the video is considered
- *    stalled. However, a single stall is not enough to trigger recovery - we require STALL_COUNT_THRESHOLD (2) consecutive stalls to avoid reacting to momentary
- *    hiccups.
+ *    stalled. However, a single stall is not enough to trigger recovery - we require more than STALL_COUNT_THRESHOLD (default 2, so 3+) consecutive stalls to avoid
+ *    reacting to momentary hiccups. Pause detection uses the same threshold — the video.paused property must be true for more than STALL_COUNT_THRESHOLD consecutive
+ *    checks before triggering L1 recovery. This filters out transient rebuffer pauses where the player briefly pauses to refill its buffer and resumes on its own.
  *
  * 2. Buffering detection: Checks readyState and networkState to detect active buffering. Live streams occasionally buffer due to network conditions, so we allow a
  *    BUFFERING_GRACE_PERIOD (default 10 seconds) before declaring a stall. This prevents unnecessary recovery during normal buffering.
@@ -575,6 +576,11 @@ export function monitorPlaybackHealth(
   // hiccups. Reset to 0 when progression is detected.
   let stallCount = 0;
 
+  // Number of consecutive checks where the video reports paused state. Like stallCount, we require multiple consecutive paused checks (> stallCountThreshold) before
+  // triggering recovery. This filters out transient rebuffer pauses where the player briefly pauses itself to refill its buffer and resumes on its own. Without this
+  // hysteresis, every transient rebuffer pause triggers an unnecessary L1 recovery (play/unmute) that logs noise but does nothing useful.
+  let pauseCount = 0;
+
   // Current escalation level (0-4). Level 0 means no recovery needed. Each time recovery is triggered, this increments to try increasingly aggressive actions.
   // Resets to 0 after sustained healthy playback.
   let escalationLevel = 0;
@@ -655,9 +661,9 @@ export function monitorPlaybackHealth(
   const SEGMENT_STALL_TIMEOUT = 10000;  // 10 seconds.
 
   // Tiny segment detection thresholds. Used for continuous segment size monitoring to detect dead capture pipelines. When video capture dies but audio continues,
-  // segments contain only audio data (~400KB for 3-second segments at 130Kbps AAC). Valid segments with video are 5-10MB. The 2MB threshold catches both completely
-  // dead captures (18 bytes) and audio-only captures (~400KB) while providing a 2.5x safety margin against false positives on valid segments.
-  const TINY_SEGMENT_THRESHOLD = 2097152; // 2MB - segments below this indicate dead or degraded capture.
+  // segments contain only audio data. Audio is transcoded at a controlled bitrate (max 512Kbps), so audio-only segments are at most ~192KB for 3-second segments.
+  // The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset (480p/3Mbps ≈ 750KB/segment).
+  const TINY_SEGMENT_THRESHOLD = 512000; // 500KB - segments below this indicate dead or degraded capture.
   const TINY_SEGMENT_COUNT_TRIGGER = 10;  // Trigger recovery after 10 consecutive tiny segments (~20 seconds with 2-second segments).
 
   // Fixed margin in milliseconds before the maxContinuousPlayback limit at which a proactive reload is triggered. Two minutes provides enough time for page
@@ -801,6 +807,7 @@ export function monitorPlaybackHealth(
 
     consecutiveTimeouts = 0;
     consecutiveNavigationFailures = 0;
+    pauseCount = 0;
     videoNotFoundCount = 0;
     stallCount = 0;
   }
@@ -1421,14 +1428,27 @@ export function monitorPlaybackHealth(
         }
 
         /*
+       * Pause counter management. We increment pauseCount when video.paused is true and reset when it clears. This provides the same hysteresis as stall detection,
+       * filtering out transient rebuffer pauses (where the player briefly pauses to refill its buffer) while still catching genuine persistent pauses.
+       */
+        if(state.paused) {
+
+          pauseCount++;
+        } else {
+
+          pauseCount = 0;
+        }
+
+        /*
        * Recovery decision. We trigger recovery when any of these conditions are met AND we're not within the recovery grace period:
        * - Video has an error state
        * - Video ended (live streams shouldn't end)
-       * - Video is paused and not just buffering
+       * - Video is paused persistently (pauseCount exceeds threshold and not just buffering)
        * - Video is stalled for too long (stallCount exceeds threshold and not in buffering grace)
        * - Segment production has stalled after recovery (capture pipeline dead)
        */
-        const needsRecovery = !withinRecoveryGrace && (state.error || state.ended || (state.paused && !withinBufferingGrace) ||
+        const needsRecovery = !withinRecoveryGrace && (state.error || state.ended ||
+                            (state.paused && !withinBufferingGrace && (pauseCount > CONFIG.playback.stallCountThreshold)) ||
                             (!isProgressing && !withinBufferingGrace && (stallCount > CONFIG.playback.stallCountThreshold)) ||
                             segmentProductionStalled);
 
