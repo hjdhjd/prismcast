@@ -169,6 +169,18 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     useRequestFullscreen: true
   },
 
+  // Profile for HBO Max live channels (play.hbomax.com). The HBO brand page contains a "Distribution Channels" rail showing all 5 live linear channels (HBO, HBO
+  // Hits, HBO Drama, HBO Comedy, HBO Movies) as tiles. The hboGrid strategy discovers the HBO tab URL from the homepage menu bar, navigates to it, then scrapes the
+  // channel rail for the watch URL matching the channelSelector name. Extends fullscreenApi for requestFullscreen() behavior inherited by the watch page.
+  hboMax: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "hboGrid" },
+    description: "HBO Max with live channel rail selection. Set Channel Selector to the channel name (e.g., HBO, HBO Hits).",
+    extends: "fullscreenApi",
+    summary: "HBO Max (live channels, needs selector)"
+  },
+
   // Profile for Hulu Live TV which presents a guide grid of live channels. The channel list is revealed by clicking a tab (listSelector), then the desired channel
   // is found by matching img.alt text. Uses the fullscreen API (inherited from fullscreenApi) plus a dedicated fullscreen button selector for the player's native
   // maximize control. Requires selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses waitForNetworkIdle because
@@ -313,7 +325,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "france24.com": { profile: "embeddedVolumeLock", provider: "France 24" },
   "fyi.tv": { profile: "fullscreenApi", provider: "FYI" },
   "golfchannel.com": { profile: "fullscreenApi", provider: "Golf Channel" },
-  "hbomax.com": { profile: "fullscreenApi", provider: "HBO Max" },
+  "hbomax.com": { profile: "hboMax", provider: "HBO Max" },
   "history.com": { profile: "fullscreenApi", provider: "History.com" },
   "hulu.com": { profile: "huluLive", provider: "Hulu (Grid)" },
   "lakeshorepbs.org": { profile: "embeddedPlayer", provider: "Lakeshore PBS" },

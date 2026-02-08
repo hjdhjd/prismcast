@@ -12,7 +12,7 @@ import { setBrowserChrome, setMaxSupportedViewport } from "./display.js";
 import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
 import type { SystemStatus } from "../streaming/statusEmitter.js";
-import { clearGuideCache } from "./channelSelection.js";
+import { clearChannelSelectionCaches } from "./channelSelection.js";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.js";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
@@ -591,8 +591,8 @@ function handleBrowserDisconnect(): void {
   currentBrowser = null;
   currentChromeVersion = null;
 
-  // Clear the guide grid row number cache. The guide layout may change between browser sessions, so cached row positions could be stale.
-  clearGuideCache();
+  // Clear all channel selection caches. Cached state (guide row positions, discovered page URLs) may be stale in a new browser session.
+  clearChannelSelectionCaches();
 
   // Clear login state if login mode was active. We clear directly rather than calling endLoginMode() because the browser is already gone and we don't want to
   // attempt any browser operations.

@@ -13,6 +13,8 @@ import type { Page } from "puppeteer-core";
  * The strategy pattern allows different sites to have different selection mechanisms:
  * - guideGrid: Scroll a virtualized channel grid to the target channel via binary search on document.documentElement.scrollTop, then click the on-now program
  *   cell and play button (Hulu Live). Supports position-based inference for local affiliate call signs and a linear scan fallback.
+ * - hboGrid: Discover the HBO tab page URL from the homepage menu bar, scrape the live channel tile rail for a matching channel name, and navigate to the
+ *   extracted watch URL. Caches the tab URL across tunes with stale-cache fallback rediscovery (HBO Max).
  * - thumbnailRow: Find channel by matching image URL slug, click adjacent show entry on the same row (USA Network)
  * - tileClick: Find channel tile by matching image URL slug, click tile, then click play button on modal (Disney+ live)
  * - youtubeGrid: Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly (YouTube TV)
@@ -21,17 +23,23 @@ import type { Page } from "puppeteer-core";
  * delegates to the appropriate strategy based on the profile configuration.
  */
 
+// Base URLs for provider strategies that navigate to watch pages. Centralizing these avoids scattering the same origin string across scraper functions, navigation
+// calls, and URL construction sites within each strategy.
+const HBO_MAX_BASE_URL = "https://play.hbomax.com";
+const YOUTUBE_TV_BASE_URL = "https://tv.youtube.com";
+
 // Guide grid row number cache. Maps lowercased, trimmed channel names from data-testid attributes to their row numbers (from sr-only text). Populated passively
 // during binary search iterations and used for direct-scroll optimization on subsequent tunes. Session-scoped — cleared when the browser restarts.
 const guideRowCache = new Map<string, number>();
 
 /**
- * Clears the guide grid row number cache. Called by handleBrowserDisconnect() in browser/index.ts when the browser restarts, since the guide layout may change
- * between sessions.
+ * Clears all channel selection caches. Called by handleBrowserDisconnect() in browser/index.ts when the browser restarts, since cached state (guide row positions,
+ * discovered page URLs) may be stale in a new browser session.
  */
-export function clearGuideCache(): void {
+export function clearChannelSelectionCaches(): void {
 
   guideRowCache.clear();
+  hboTabUrl = null;
 }
 
 /* These utilities are shared across channel selection strategies. They handle common operations like finding elements, scrolling, and clicking.
@@ -458,7 +466,7 @@ async function youtubeGridStrategy(page: Page, channelName: string): Promise<Cha
   }
 
   // Navigate directly to the watch URL. This auto-starts playback without any click interaction needed.
-  const watchUrl = "https://tv.youtube.com/" + watchPath;
+  const watchUrl = YOUTUBE_TV_BASE_URL + "/" + watchPath;
 
   LOG.info("Navigating to YouTube TV watch URL for %s.", channelName);
 
@@ -468,6 +476,260 @@ async function youtubeGridStrategy(page: Page, channelName: string): Promise<Cha
   } catch(error) {
 
     return { reason: "Failed to navigate to YouTube TV watch page: " + formatError(error) + ".", success: false };
+  }
+
+  return { success: true };
+}
+
+// Module-level cache for the HBO tab page URL discovered from the homepage menu bar. Cleared on browser disconnect (via clearChannelSelectionCaches) and inline
+// when the cached URL turns out to be stale (the channel rail is not found at the cached URL).
+let hboTabUrl: string | null = null;
+
+/**
+ * Scrapes the HBO tab URL from the homepage menu bar. The HBO brand page is linked via an `a[aria-label="H B O"]` element in the top navigation. The href attribute
+ * contains a relative path like `/channel/c0d1f27a-...` which we combine with the base URL to form the full page URL.
+ * @param page - The Puppeteer page object, expected to be on the HBO Max homepage.
+ * @returns The full HBO tab page URL, or null if the tab link was not found.
+ */
+async function scrapeHboTabUrl(page: Page): Promise<string | null> {
+
+  // Wait for the HBO tab link to appear in the menu bar. The homepage is a single-page application that renders the navigation dynamically after the initial HTML
+  // shell loads. Without this wait, the evaluate call below would run against an incomplete DOM and fail to find the tab link.
+  const HBO_TAB_SELECTOR = "a[aria-label=\"H B O\"]";
+
+  try {
+
+    await page.waitForSelector(HBO_TAB_SELECTOR, { timeout: 5000 });
+  } catch {
+
+    return null;
+  }
+
+  const href = await evaluateWithAbort(page, (selector: string): string | null => {
+
+    const tab = document.querySelector(selector) as HTMLAnchorElement | null;
+
+    if(!tab) {
+
+      return null;
+    }
+
+    return tab.getAttribute("href");
+  }, [HBO_TAB_SELECTOR]);
+
+  if(!href) {
+
+    return null;
+  }
+
+  return HBO_MAX_BASE_URL + href;
+}
+
+/**
+ * Result of scraping the HBO channel rail on the tab page. Distinguishes between the rail not being found (stale URL, wrong page) and the rail being found but the
+ * target channel not existing within it.
+ */
+interface HboRailResult {
+
+  railFound: boolean;
+  watchPath: string | null;
+}
+
+/**
+ * Scrapes the HBO Channels tile rail on the HBO tab page for a watch URL matching the given channel name. The rail section contains tiles for each live channel,
+ * each with a backup text `<p aria-hidden="true">` element containing the channel name and an `<a>` with href pointing to the watch page.
+ * @param page - The Puppeteer page object, expected to be on the HBO tab page.
+ * @param channelName - The channel name to match (e.g., "HBO", "HBO Hits"). Case-insensitive.
+ * @returns Object with `railFound` indicating whether the rail section was present, and `watchPath` containing the relative watch URL if the channel was found.
+ */
+async function scrapeHboChannelRail(page: Page, channelName: string): Promise<HboRailResult> {
+
+  const HBO_RAIL_SELECTOR = "section[data-testid=\"hbo-page-rail-distribution-channels-us_rail\"]";
+
+  // Wait for the distribution channels rail section to appear. If it doesn't appear, the tab URL may be stale or the page structure changed.
+  try {
+
+    await page.waitForSelector(HBO_RAIL_SELECTOR, { timeout: CONFIG.streaming.videoTimeout });
+  } catch {
+
+    return { railFound: false, watchPath: null };
+  }
+
+  // The rail uses lazy loading via IntersectionObserver — tile content only populates when the rail is visible in the viewport. The rail section element appears
+  // immediately with skeleton PhantomTile placeholders, but the actual channel tiles (with names and watch URLs) are fetched asynchronously after the rail scrolls
+  // into view. We scroll the rail into view and then wait for anchor elements to appear, indicating the tiles have loaded.
+  await page.evaluate((selector: string): void => {
+
+    document.querySelector(selector)?.scrollIntoView({ behavior: "instant", block: "center" });
+  }, HBO_RAIL_SELECTOR);
+
+  try {
+
+    await page.waitForSelector(HBO_RAIL_SELECTOR + " a", { timeout: 5000 });
+  } catch {
+
+    return { railFound: false, watchPath: null };
+  }
+
+  // Scrape the rail for the target channel's watch URL. Each tile in the rail contains an anchor with the watch URL and a backup text paragraph with the channel name.
+  const watchPath = await evaluateWithAbort(page, (selector: string, target: string): string | null => {
+
+    const rail = document.querySelector(selector);
+
+    if(!rail) {
+
+      return null;
+    }
+
+    const targetLower = target.toLowerCase();
+    const anchors = rail.querySelectorAll("a");
+
+    for(const anchor of Array.from(anchors)) {
+
+      // The channel name appears in a <p aria-hidden="true"> element within the tile. This is the backup text that displays the channel name when the tile
+      // image fails to load.
+      const nameEl = anchor.querySelector("p[aria-hidden=\"true\"]");
+
+      if(!nameEl) {
+
+        continue;
+      }
+
+      const name = nameEl.textContent.trim().toLowerCase();
+
+      if(name !== targetLower) {
+
+        continue;
+      }
+
+      const href = anchor.getAttribute("href");
+
+      // Validate that the href points to a live channel watch page. Watch URLs follow the pattern /channel/watch/{channelUUID}/{programUUID}.
+      if(href && href.includes("/channel/watch/")) {
+
+        return href;
+      }
+    }
+
+    return null;
+  }, [ HBO_RAIL_SELECTOR, channelName ]);
+
+  return { railFound: true, watchPath };
+}
+
+/**
+ * HBO grid strategy: discovers the HBO channels tab URL from the homepage menu bar, navigates to the tab page, scrapes the live channel rail for the target channel's
+ * watch URL, and navigates to it. Caches the tab URL across tunes and falls back to rediscovery if the cached URL is stale (rail not found at the cached location).
+ *
+ * The strategy handles three navigations per tune:
+ * 1. Homepage (already loaded by navigateToPage) → scrape menu bar for tab URL (or use cache)
+ * 2. Tab page → scrape channel rail for watch URL
+ * 3. Watch page → video playback begins
+ *
+ * When the cached tab URL is stale (rail section not found), the strategy clears the cache, navigates back to the homepage, rediscovers the tab URL, and retries.
+ * This fallback triggers at most once per tune attempt.
+ * @param page - The Puppeteer page object, expected to be on the HBO Max homepage.
+ * @param channelName - The channel name to find in the rail (e.g., "HBO", "HBO Hits").
+ * @returns Result object with success status and optional failure reason.
+ */
+async function hboGridStrategy(page: Page, channelName: string): Promise<ChannelSelectorResult> {
+
+  let usedCache = false;
+
+  // Phase 1: Navigate to the HBO tab page. Use cached URL if available, otherwise discover it from the homepage menu bar.
+  if(hboTabUrl) {
+
+    usedCache = true;
+
+    LOG.debug("Using cached HBO tab URL: %s.", hboTabUrl);
+  } else {
+
+    const discovered = await scrapeHboTabUrl(page);
+
+    if(!discovered) {
+
+      return { reason: "HBO tab not found in homepage menu bar. HBO Max subscription may not be active.", success: false };
+    }
+
+    hboTabUrl = discovered;
+
+    LOG.debug("Discovered HBO tab URL: %s.", hboTabUrl);
+  }
+
+  try {
+
+    await page.goto(hboTabUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+  } catch(error) {
+
+    return { reason: "Failed to navigate to HBO tab page: " + formatError(error) + ".", success: false };
+  }
+
+  // Phase 2: Scrape the channel rail for the target channel's watch URL.
+  let railResult = await scrapeHboChannelRail(page, channelName);
+
+  // Fallback: if the rail was not found and we used a cached URL, the cache may be stale. Clear it, navigate back to the homepage, rediscover the tab URL, and retry.
+  if(!railResult.railFound && usedCache) {
+
+    LOG.info("HBO channel rail not found at cached URL. Rediscovering tab URL from homepage.");
+
+    hboTabUrl = null;
+
+    try {
+
+      await page.goto(HBO_MAX_BASE_URL, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+    } catch(error) {
+
+      return { reason: "Failed to navigate back to HBO Max homepage: " + formatError(error) + ".", success: false };
+    }
+
+    const rediscovered = await scrapeHboTabUrl(page);
+
+    if(!rediscovered) {
+
+      return { reason: "HBO tab not found in homepage menu bar after cache invalidation.", success: false };
+    }
+
+    hboTabUrl = rediscovered;
+
+    LOG.debug("Rediscovered HBO tab URL: %s.", hboTabUrl);
+
+    try {
+
+      await page.goto(hboTabUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+    } catch(error) {
+
+      return { reason: "Failed to navigate to rediscovered HBO tab page: " + formatError(error) + ".", success: false };
+    }
+
+    railResult = await scrapeHboChannelRail(page, channelName);
+
+    if(!railResult.railFound) {
+
+      return { reason: "HBO channel rail not found at rediscovered URL. Site structure may have changed.", success: false };
+    }
+  }
+
+  if(!railResult.railFound) {
+
+    return { reason: "HBO channel rail not found on tab page.", success: false };
+  }
+
+  if(!railResult.watchPath) {
+
+    return { reason: "Channel " + channelName + " not found in HBO channel rail.", success: false };
+  }
+
+  // Phase 3: Navigate to the watch URL to start playback.
+  const watchUrl = HBO_MAX_BASE_URL + railResult.watchPath;
+
+  LOG.info("Navigating to HBO Max watch URL for %s.", channelName);
+
+  try {
+
+    await page.goto(watchUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+  } catch(error) {
+
+    return { reason: "Failed to navigate to HBO Max watch page: " + formatError(error) + ".", success: false };
   }
 
   return { success: true };
@@ -1169,9 +1431,9 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
 
   // Poll for the channel slug image to appear and fully load. We check both src match and load completion (img.complete + naturalWidth) to ensure the image is
   // actually rendered before proceeding. This prevents race conditions where the img element exists with the correct src but the browser hasn't finished fetching
-  // and rendering it, which can cause layout instability and click failures. We skip this polling for guideGrid (channel list images are hidden behind a tab) and
-  // youtubeGrid (channelSelector is a channel name, not an image URL slug).
-  if((channelSelection.strategy !== "guideGrid") && (channelSelection.strategy !== "youtubeGrid")) {
+  // and rendering it, which can cause layout instability and click failures. We skip this polling for guideGrid (channel list images are hidden behind a tab),
+  // hboGrid (channelSelector is a channel name, not an image URL slug), and youtubeGrid (same reason as hboGrid).
+  if((channelSelection.strategy !== "guideGrid") && (channelSelection.strategy !== "hboGrid") && (channelSelection.strategy !== "youtubeGrid")) {
 
     try {
 
@@ -1197,6 +1459,13 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     case "guideGrid": {
 
       result = await guideGridStrategy(page, channelSelector, channelSelection);
+
+      break;
+    }
+
+    case "hboGrid": {
+
+      result = await hboGridStrategy(page, channelSelector);
 
       break;
     }

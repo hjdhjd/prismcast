@@ -13,8 +13,9 @@ import type { ChannelMap } from "../types/index.js";
  * - profile: Site behavior profile (optional). Use "auto" or omit to auto-detect from URL domain. See config/profiles.ts for available profiles.
  * - stationId: Gracenote station ID for guide data (optional). Local affiliates (ABC, CBS, NBC) vary by region.
  * - channelSelector: Channel identifier for multi-channel pages. For thumbnailRow/tileClick profiles, this is a slug matched against image URLs. For guideGrid
- *   (huluLive), this is the exact channel name matched against image alt text. For youtubeGrid (youtubeTV), this is the channel name from the YouTube TV guide or a
- *   network name (e.g., NBC) for local affiliates.
+ *   (huluLive), this is the exact channel name matched against image alt text. For hboGrid (hboMax), this is the channel name matched against the live channel rail
+ *   tile text (e.g., HBO, HBO Hits). For youtubeGrid (youtubeTV), this is the channel name from the YouTube TV guide or a network name (e.g., NBC) for local
+ *   affiliates.
  * - provider: Display name override for the provider selection dropdown (optional). Normally auto-derived from the URL domain via DOMAIN_CONFIG in
  *   config/profiles.ts. Only needed when a channel's display name should differ from the domain-level default.
  *
@@ -163,6 +164,16 @@ export const CHANNELS: ChannelMap = {
   hallmarkmystery: { name: "Hallmark Mystery", stationId: "46710", url: "https://www.watchhallmarktv.com/playback/item/hmmlive" },
   "hallmarkmystery-hulu": { channelSelector: "Hallmark Mystery", url: "https://www.hulu.com/live" },
   "hallmarkmystery-yttv": { channelSelector: "Hallmark Mystery", url: "https://tv.youtube.com/live" },
+  hbo: { channelSelector: "HBO", name: "HBO", stationId: "19548", url: "https://play.hbomax.com" },
+  "hbo-yttv": { channelSelector: "HBO East", url: "https://tv.youtube.com/live" },
+  hbocomedy: { channelSelector: "HBO Comedy", name: "HBO Comedy", stationId: "59839", url: "https://play.hbomax.com" },
+  "hbocomedy-yttv": { channelSelector: "HBO Comedy East", url: "https://tv.youtube.com/live" },
+  hbodrama: { channelSelector: "HBO Drama", name: "HBO Drama", stationId: "59363", url: "https://play.hbomax.com" },
+  "hbodrama-yttv": { channelSelector: "HBO Drama East", url: "https://tv.youtube.com/live" },
+  hbohits: { channelSelector: "HBO Hits", name: "HBO Hits", stationId: "59368", url: "https://play.hbomax.com" },
+  "hbohits-yttv": { channelSelector: "HBO Hits East", url: "https://tv.youtube.com/live" },
+  hbomovies: { channelSelector: "HBO Movies", name: "HBO Movies", stationId: "59845", url: "https://play.hbomax.com" },
+  "hbomovies-yttv": { channelSelector: "HBO Movies East", url: "https://tv.youtube.com/live" },
   hgtv: { name: "HGTV", stationId: "49788", url: "https://watch.foodnetwork.com/channel/hgtv" },
   "hgtv-hulu": { channelSelector: "HGTV", url: "https://www.hulu.com/live" },
   "hgtv-yttv": { channelSelector: "HGTV", url: "https://tv.youtube.com/live" },
