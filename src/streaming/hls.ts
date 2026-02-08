@@ -804,7 +804,9 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
       const captureMode = CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg" : "Native";
       const displayName = channel?.name ?? url;
 
-      LOG.info("Streaming %s (%s, %s).", displayName, setup.profileName, captureMode);
+      const tuneTime = ((Date.now() - setup.startTime.getTime()) / 1000).toFixed(1);
+
+      LOG.info("Streaming %s (%s, %s). Tuned in %ss.", displayName, setup.profileName, captureMode, tuneTime);
 
       // Emit stream added event.
       emitStreamAdded(createInitialStreamStatus({

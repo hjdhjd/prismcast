@@ -380,7 +380,7 @@ async function youtubeGridStrategy(page: Page, channelName: string): Promise<Cha
 
     "cw": ["WGN"],
     "pbs": [
-      "GBH", "KAET", "KCET", "KCTS", "KERA", "KLCS", "KOCE", "KPBS", "KQED", "KRMA", "KUHT", "KVIE", "MPT", "NJ PBS", "THIRTEEN", "TPT", "WETA", "WGBH", "WHYY",
+      "GBH", "KAET", "KBTC", "KCET", "KCTS", "KERA", "KLCS", "KOCE", "KPBS", "KQED", "KRMA", "KUHT", "KVIE", "MPT", "NJ PBS", "THIRTEEN", "TPT", "WETA", "WGBH", "WHYY",
       "WLIW", "WNED", "WNET", "WNIT", "WPBA", "WPBT", "WTTW", "WTVS", "WXEL"
     ]
   };
@@ -1097,9 +1097,9 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
   // Maximum number of on-now cell click attempts. The first click may not register if React hasn't finished hydrating the guide's event handlers.
   const MAX_CLICK_ATTEMPTS = 3;
 
-  // Shorter timeout for the play button on non-final attempts. Long enough for the overlay to appear if the click registered, but short enough to retry quickly
-  // rather than waiting the full videoTimeout on each attempt.
-  const RETRY_PLAY_TIMEOUT = 3000;
+  // Shorter timeout for the play button on non-final attempts. When a click registers, the play button appears in under 10ms — this timeout only determines how
+  // quickly we detect a missed click and retry. Keeping it low saves ~2s per failed attempt compared to the previous 3000ms value.
+  const RETRY_PLAY_TIMEOUT = 1000;
 
   // Delay between click retries. Gives React additional time to finish hydrating event handlers.
   const CLICK_RETRY_DELAY = 1500;
