@@ -660,7 +660,16 @@ export function monitorPlaybackHealth(
   const TINY_SEGMENT_THRESHOLD = 2097152; // 2MB - segments below this indicate dead or degraded capture.
   const TINY_SEGMENT_COUNT_TRIGGER = 10;  // Trigger recovery after 10 consecutive tiny segments (~20 seconds with 2-second segments).
 
+  // Fixed margin in milliseconds before the maxContinuousPlayback limit at which a proactive reload is triggered. Two minutes provides enough time for page
+  // navigation and video reinitialization to complete before the site enforces its cutoff.
+  const PROACTIVE_RELOAD_MARGIN_MS = 120000;
+
   let recoveryGraceUntil = 0;
+
+  // Timestamp of the most recent full page navigation. Used to calculate elapsed continuous playback for proactive reload when maxContinuousPlayback is configured.
+  // Initialized to Date.now() because the monitor starts immediately after tuneToChannel() succeeds in stream setup, meaning a page load just completed. Reset
+  // after any successful page navigation recovery or tab replacement, but NOT after source reloads (L2) which preserve the page's JavaScript context.
+  let lastPageNavigationTime = Date.now();
 
   // Pre-compute the selector type string for video element selection. This is passed to evaluate() calls.
   const selectorType = buildVideoSelectorType(profile);
@@ -882,6 +891,7 @@ export function monitorPlaybackHealth(
         recordRecoverySuccess(metrics, RECOVERY_METHODS.tabReplacement);
 
         // Full state reset for fresh tab.
+        lastPageNavigationTime = Date.now();
         resetRecoveryCounters();
         resetEscalationState();
         resetSegmentMonitoringState();
@@ -1236,6 +1246,7 @@ export function monitorPlaybackHealth(
             recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
 
             // Reset state after successful page navigation recovery.
+            lastPageNavigationTime = Date.now();
             resetRecoveryCounters();
             resetEscalationState();
             resetSegmentMonitoringState();
@@ -1453,6 +1464,83 @@ export function monitorPlaybackHealth(
         }
 
         /*
+       * Proactive page reload. Some streaming sites enforce a maximum continuous playback duration (e.g., NBC.com cuts streams after 4 hours). When a domain
+       * configures maxContinuousPlayback, we proactively reload the page before the site's limit expires to maintain uninterrupted streaming. The reload triggers
+       * PROACTIVE_RELOAD_MARGIN_MS (2 minutes) before the configured limit, giving enough time for page navigation and video reinitialization.
+       *
+       * This check runs only when playback is healthy (escalationLevel === 0), not within a recovery grace period, and progressing normally. If recovery is already
+       * in progress, the ongoing recovery will eventually perform a page navigation if needed. The page reload rate limit is also checked to avoid consuming reload
+       * budget that error recovery needs. The timer resets after any successful full page navigation (proactive or recovery-triggered).
+       */
+        if((profile.maxContinuousPlayback !== null) && (escalationLevel === 0) && !withinRecoveryGrace && isProgressing && !state.paused && !state.error &&
+          !state.ended) {
+
+          const maxPlaybackMs = profile.maxContinuousPlayback * 3600000;
+          const elapsedMs = now - lastPageNavigationTime;
+
+          if(elapsedMs >= (maxPlaybackMs - PROACTIVE_RELOAD_MARGIN_MS)) {
+
+            const elapsedHours = (elapsedMs / 3600000).toFixed(1);
+
+            LOG.info("Proactive reload after %sh of continuous playback (site limit: %sh). Reloading page to prevent stream cutoff.",
+              elapsedHours, String(profile.maxContinuousPlayback));
+
+            recoveryInProgress = true;
+
+            // Check page reload rate limit before attempting. Proactive reload is best-effort maintenance — if the reload budget is exhausted from recent error
+            // recoveries, we gracefully yield. If the site eventually cuts the stream, normal error recovery handles it.
+            const reloadWindow = now - CONFIG.playback.pageReloadWindow;
+
+            pageReloadTimestamps = pageReloadTimestamps.filter((ts) => ts > reloadWindow);
+
+            if(pageReloadTimestamps.length >= CONFIG.playback.maxPageReloads) {
+
+              LOG.warn("Proactive reload deferred — page navigation rate limit reached (%s in %s minutes).",
+                CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
+
+              // Set a grace period to prevent this deferral from re-triggering every 2 seconds while the rate limit remains in effect. The 10-second L3 grace
+              // period spaces out re-checks, and the rate-limit window (default 15 minutes) will eventually expire old timestamps to allow the proactive reload. We
+              // set recoveryGraceUntil directly rather than calling setRecoveryGracePeriod() because no recovery action was performed — the window state is unchanged
+              // and pendingReMinimize should not be set.
+              recoveryGraceUntil = now + recoveryGracePeriods[3];
+              recoveryInProgress = false;
+
+              emitStatusUpdate();
+
+              return;
+            }
+
+            pageReloadTimestamps.push(now);
+
+            const recoveryResult = await performPageNavigationRecovery();
+
+            // Page navigation disrupted the video stream. Mark a discontinuity so HLS clients resynchronize their decoders.
+            markStreamDiscontinuity();
+            setRecoveryGracePeriod(3);
+
+            if(recoveryResult.success && recoveryResult.newContext) {
+
+              currentContext = recoveryResult.newContext;
+              lastPageNavigationTime = Date.now();
+
+              LOG.info("Proactive reload completed successfully.");
+
+              resetRecoveryCounters();
+              resetSegmentMonitoringState();
+            } else {
+
+              LOG.warn("Proactive reload unsuccessful. Will retry after recovery grace period.");
+            }
+
+            recoveryInProgress = false;
+
+            emitStatusUpdate();
+
+            return;
+          }
+        }
+
+        /*
        * Recovery execution. When recovery is needed, we update circuit breaker state, determine the appropriate recovery level based on issue type and history, and
        * execute the recovery action. The recovery system is issue-aware:
        * - Paused issues try L1 (play/unmute) first since it works ~50% of the time for paused state
@@ -1644,6 +1732,7 @@ export function monitorPlaybackHealth(
                     recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
 
                     // Reset state after successful page navigation recovery.
+                    lastPageNavigationTime = Date.now();
                     resetRecoveryCounters();
                     resetEscalationState();
                     resetSegmentMonitoringState();

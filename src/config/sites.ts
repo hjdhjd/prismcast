@@ -257,6 +257,10 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
  */
 export interface DomainConfig {
 
+  // Maximum continuous playback duration in hours before the site enforces a stream cutoff. When set, the playback monitor proactively reloads the page before this
+  // limit expires to maintain uninterrupted streaming. Fractional values are supported (e.g., 1.5 for 90 minutes). Omit for sites that allow indefinite playback.
+  maxContinuousPlayback?: number;
+
   // Site profile name for automatic profile detection. When a URL matches this domain, the specified profile is used to configure site-specific behavior
   // (fullscreen method, iframe handling, etc.). Omit for domains that only need a display name.
   profile?: string;
@@ -283,7 +287,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "cnbc.com": { profile: "fullscreenApi", provider: "CNBC.com" },
   "cnn.com": { profile: "fullscreenApi", provider: "CNN.com" },
   "disneynow.com": { profile: "disneyNow", provider: "DisneyNOW" },
-  "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+" },
+  "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+ (Grid)" },
   "espn.com": { profile: "keyboardMultiVideo", provider: "ESPN.com" },
   "foodnetwork.com": { profile: "fullscreenApi", provider: "Food Network" },
   "foxbusiness.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox Business" },
@@ -294,18 +298,18 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "golfchannel.com": { profile: "fullscreenApi", provider: "Golf Channel" },
   "hbomax.com": { profile: "fullscreenApi", provider: "HBO Max" },
   "history.com": { profile: "fullscreenApi", provider: "History.com" },
-  "hulu.com": { profile: "huluLive", provider: "Hulu" },
+  "hulu.com": { profile: "huluLive", provider: "Hulu (Grid)" },
   "lakeshorepbs.org": { profile: "embeddedPlayer", provider: "Lakeshore PBS" },
   "ms.now": { profile: "keyboardDynamic", provider: "MSNOW" },
   "mylifetime.com": { profile: "fullscreenApi", provider: "Lifetime" },
   "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", provider: "Nat Geo" },
-  "nbc.com": { profile: "keyboardDynamic", provider: "NBC.com" },
+  "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", provider: "NBC.com" },
   "paramountplus.com": { profile: "fullscreenApi", provider: "Paramount+" },
   "sling.com": { profile: "embeddedVolumeLock", provider: "Sling TV" },
   "tbs.com": { profile: "fullscreenApi", provider: "TBS.com" },
   "tntdrama.com": { profile: "fullscreenApi", provider: "TNT" },
   "trutv.com": { profile: "fullscreenApi", provider: "truTV" },
-  "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network" },
+  "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network (Grid)" },
   "vh1.com": { profile: "fullscreenApi", provider: "VH1.com" },
   "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
   "windy.com": { profile: "staticPage", provider: "Windy" },
@@ -351,6 +355,9 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
 
   // Don't lock volume properties - most sites don't aggressively mute.
   lockVolumeProperties: false,
+
+  // No continuous playback limit - most sites allow indefinite streaming.
+  maxContinuousPlayback: null,
 
   // Don't search iframes - assume video is in main page DOM.
   needsIframeHandling: false,

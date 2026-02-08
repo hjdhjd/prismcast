@@ -430,6 +430,11 @@ export interface ResolvedSiteProfile {
   // Whether to override volume properties to prevent auto-muting.
   lockVolumeProperties: boolean;
 
+  // Maximum continuous playback duration in hours before the site enforces a stream cutoff, or null if the site allows indefinite playback. When set, the monitor
+  // proactively reloads the page before this limit expires to maintain uninterrupted streaming. Only full page navigations reset the timer — source reloads do not.
+  // This value is sourced from DOMAIN_CONFIG rather than site profiles because it represents a site policy, not a player behavior characteristic.
+  maxContinuousPlayback: Nullable<number>;
+
   // Whether to search iframes for the video element.
   needsIframeHandling: boolean;
 

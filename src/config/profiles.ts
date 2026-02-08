@@ -104,13 +104,19 @@ export function getProfileForUrl(url: string | undefined): ProfileResolutionResu
   // Extract the concise domain (last two hostname parts) and look up the configuration.
   const config = DOMAIN_CONFIG[extractDomain(url)] as DomainConfig | undefined;
 
-  if(config?.profile) {
+  // Resolve the profile from the domain configuration, falling back to the default profile for unrecognized domains or domains without a profile entry.
+  const profile = config?.profile ? resolveProfile(config.profile) : { ...DEFAULT_SITE_PROFILE };
+  const profileName = config?.profile ?? "default";
 
-    return { profile: resolveProfile(config.profile), profileName: config.profile };
+  // Merge domain-level properties that represent site policies rather than player behaviors. maxContinuousPlayback is a site-imposed session limit, not a player
+  // characteristic, so it lives in DOMAIN_CONFIG rather than in site profiles. Note: getProfileForChannel() performs this same merge for the explicit-profile path
+  // where this function is bypassed. If adding new domain-level policies here, update getProfileForChannel() as well.
+  if(config?.maxContinuousPlayback !== undefined) {
+
+    profile.maxContinuousPlayback = config.maxContinuousPlayback;
   }
 
-  // No matching domain found (or domain has no profile) - use the default profile.
-  return { profile: { ...DEFAULT_SITE_PROFILE }, profileName: "default" };
+  return { profile, profileName };
 }
 
 /**
@@ -156,6 +162,19 @@ export function getProfileForChannel(channel: { channelSelector?: string; profil
 
     profile = { ...DEFAULT_SITE_PROFILE };
     profileName = "default";
+  }
+
+  // Merge domain-level site policies that apply regardless of how the profile was resolved. These represent site-imposed constraints (like session duration limits)
+  // rather than player behaviors, so they must always be applied based on the channel's URL even when the player profile is explicitly overridden. For the URL-based
+  // path above, getProfileForUrl() already merges these — the re-application here is idempotent. For the explicit-profile path, this fills the gap.
+  if(channel.url) {
+
+    const domainConfig = DOMAIN_CONFIG[extractDomain(channel.url)] as DomainConfig | undefined;
+
+    if(domainConfig?.maxContinuousPlayback !== undefined) {
+
+      profile = { ...profile, maxContinuousPlayback: domainConfig.maxContinuousPlayback };
+    }
   }
 
   // Merge channel-specific properties into the profile. Currently only channelSelector is supported, which specifies a CSS selector for the channel button in
