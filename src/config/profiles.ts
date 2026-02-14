@@ -6,6 +6,7 @@ import { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig } f
 import type { ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
 import { CHANNELS } from "../channels/index.js";
 import type { DomainConfig } from "./sites.js";
+import { extractDomain } from "../utils/index.js";
 
 // Re-export site data so existing consumers can import from either module.
 export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig };
@@ -161,6 +162,20 @@ export function getProfileForChannel(channel: { channelSelector?: string; profil
 
     profile = { ...DEFAULT_SITE_PROFILE };
     profileName = "default";
+  }
+
+  // If the resolved profile requires channel selection (strategy other than "none") but the channel has no channelSelector, the hostname-specific domain entry
+  // (e.g., watch.sling.com → slingLive) is not appropriate for this direct-URL channel. Fall back to the concise domain entry (e.g., sling.com →
+  // embeddedVolumeLock) which provides generic player handling for direct URLs on the same service.
+  if((profile.channelSelection.strategy !== "none") && !channel.channelSelector && channel.url) {
+
+    const conciseConfig = DOMAIN_CONFIG[extractDomain(channel.url)] as DomainConfig | undefined;
+
+    if(conciseConfig?.profile && (conciseConfig.profile !== profileName)) {
+
+      profile = resolveProfile(conciseConfig.profile);
+      profileName = conciseConfig.profile;
+    }
   }
 
   // Merge domain-level site policies that apply regardless of how the profile was resolved. These represent site-imposed constraints (like session duration limits)

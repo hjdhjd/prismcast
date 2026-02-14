@@ -58,6 +58,7 @@ import { extractDomain } from "../utils/index.js";
  * - huluLive: Hulu Live TV with guide grid channel selection + fullscreen button (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
+ * - slingLive: Sling TV with virtualized A-Z guide grid channel selection (extends fullscreenApi)
  * - youtubeTV: YouTube TV with non-virtualized EPG grid channel selection (extends fullscreenApi)
  *
  * Each profile includes a description field documenting its purpose. This is metadata only - it's stripped during profile resolution and exists purely for
@@ -72,7 +73,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     category: "multiChannel",
     channelSelection: { strategy: "tileClick" },
-    description: "Multi-channel sites with tile-based channel grid. Requires Channel Selector set to the CSS selector for the channel tile.",
+    description: "Multi-channel sites with tile-based channel grid. Set Channel Selector to a unique string from the channel's tile image URL.",
     extends: "fullscreenApi",
     selectReadyVideo: true,
     summary: "Multi-channel (tile selection, needs selector)"
@@ -190,7 +191,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     category: "multiChannel",
     channelSelection: { listSelector: "#CHANNELS", playSelector: "[data-testid=\"generic-tile-thumbnail\"]", strategy: "guideGrid" },
-    description: "Hulu Live TV with guide grid channel selection. Requires Channel Selector set to the channel name matching the guide grid image alt text.",
+    description: "Hulu Live TV with guide grid channel selection. Set Channel Selector to the channel's internal guide name (may differ from logo).",
     extends: "fullscreenApi",
     fullscreenSelector: "[aria-label=\"Maximize\"]",
     selectReadyVideo: true,
@@ -216,7 +217,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     category: "multiChannel",
     channelSelection: { strategy: "thumbnailRow" },
-    description: "Multi-channel sites with thumbnail row layout. Requires Channel Selector set to the channel's thumbnail image URL.",
+    description: "Multi-channel sites with thumbnail row layout. Set Channel Selector to a unique string from the channel's thumbnail image URL.",
     extends: "keyboardDynamic",
     selectReadyVideo: true,
     summary: "Multi-channel (thumbnail row, needs selector)"
@@ -254,6 +255,20 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Multi-video sites ('f' key fullscreen)"
   },
 
+  // Profile for Sling TV (watch.sling.com) live guide grid. The A-Z guide at /dashboard/grid_guide/grid_guide_a_z renders a virtualized grid of ~638 rows
+  // (120px each) with channel identification via data-testid="channel-{NAME}" attributes. The slingGrid strategy performs binary search on .guide-cell scrollTop
+  // to locate the target channel, then clicks the on-now program cell which navigates to a player page where a single <video> element auto-plays. Extends
+  // fullscreenApi for requestFullscreen() behavior. Does not use waitForNetworkIdle — the strategy's own waitForSelector on channel entries is the readiness
+  // signal, and the SPA's persistent connections would delay network idle unnecessarily.
+  slingLive: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "slingGrid" },
+    description: "Sling TV with guide grid channel selection. Set Channel Selector to the channel's internal guide name (may differ from logo).",
+    extends: "fullscreenApi",
+    summary: "Sling TV (guide grid, needs selector)"
+  },
+
   // Profile for non-video pages that should be captured as static visual content. Examples include weather displays (weatherscan.net), maps (windy.com), and
   // diagnostic pages. The noVideo flag tells the streaming code not to wait for a video element or set up playback monitoring - just capture whatever is displayed.
   staticPage: {
@@ -273,7 +288,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
     category: "multiChannel",
     channelSelection: { strategy: "youtubeGrid" },
-    description: "YouTube TV with EPG grid channel selection. Use the guide name or a network name (e.g., NBC) for locals. PBS auto-resolves to major affiliates.",
+    description: "YouTube TV with EPG grid channel selection. Set Channel Selector to the channel name as shown in the guide (e.g., CNN, ESPN, NBC).",
     extends: "fullscreenApi",
     selectReadyVideo: true,
     summary: "YouTube TV (guide grid, needs selector)"
@@ -294,14 +309,15 @@ export interface DomainConfig {
   // (fullscreen method, iframe handling, etc.). Omit for domains that only need a display name.
   profile?: string;
 
-  // Friendly provider name shown in the UI source column and provider labels. When set, this name is used instead of the raw domain string (e.g., "Hulu" instead
-  // of "hulu.com"). Omit to fall back to the concise domain extracted from the URL.
+  // Friendly provider name shown in the UI source column. When set, this name is used instead of the raw domain string (e.g., "Hulu" instead of "hulu.com"). Omit
+  // to fall back to the concise domain extracted from the URL.
   provider?: string;
 }
 
-/* This mapping associates domain keys with site profiles and provider display names. Most keys are concise second-level domains (e.g., "nbc.com", "foodnetwork.com")
- * matching the output of extractDomain(). Keys can also be full hostnames (e.g., "tv.youtube.com") for subdomain-specific overrides — getDomainConfig() tries the
- * full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com" when the URL matches.
+/* This mapping associates domain keys with site profiles and provider display names. Most keys are concise second-level domains (e.g., "nbc.com",
+ * "foodnetwork.com") matching the output of extractDomain(). Keys can also be full hostnames (e.g., "tv.youtube.com") for subdomain-specific overrides —
+ * getDomainConfig() tries the full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com" when the URL
+ * matches.
  *
  * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains without a provider entry will display the
  * concise domain string (e.g., "hulu.com") in the UI.
@@ -316,7 +332,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "cnbc.com": { profile: "fullscreenApi", provider: "CNBC.com" },
   "cnn.com": { profile: "fullscreenApi", provider: "CNN.com" },
   "disneynow.com": { profile: "disneyNow", provider: "DisneyNOW" },
-  "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+ (Grid)" },
+  "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+" },
   "espn.com": { profile: "keyboardMultiVideo", provider: "ESPN.com" },
   "foodnetwork.com": { profile: "fullscreenApi", provider: "Food Network" },
   "foxbusiness.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox Business" },
@@ -327,7 +343,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "golfchannel.com": { profile: "fullscreenApi", provider: "Golf Channel" },
   "hbomax.com": { profile: "hboMax", provider: "HBO Max" },
   "history.com": { profile: "fullscreenApi", provider: "History.com" },
-  "hulu.com": { profile: "huluLive", provider: "Hulu (Grid)" },
+  "hulu.com": { profile: "huluLive", provider: "Hulu (Live Guide)" },
   "lakeshorepbs.org": { profile: "embeddedPlayer", provider: "Lakeshore PBS" },
   "ms.now": { profile: "keyboardDynamic", provider: "MSNOW" },
   "mylifetime.com": { profile: "fullscreenApi", provider: "Lifetime" },
@@ -340,8 +356,9 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "tntdrama.com": { profile: "fullscreenApi", provider: "TNT" },
   "trutv.com": { profile: "fullscreenApi", provider: "truTV" },
   "tv.youtube.com": { profile: "youtubeTV", provider: "YouTube TV" },
-  "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network (Grid)" },
+  "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network" },
   "vh1.com": { profile: "fullscreenApi", provider: "VH1.com" },
+  "watch.sling.com": { profile: "slingLive", provider: "Sling TV (Live Guide)" },
   "watchhallmarktv.com": { profile: "fullscreenApi", provider: "Hallmark" },
   "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
   "windy.com": { profile: "staticPage", provider: "Windy" },

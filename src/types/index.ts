@@ -782,11 +782,13 @@ export interface StreamListResponse {
  * - "hboGrid": Discover the HBO tab page URL from the homepage menu bar, scrape the live channel tile rail for a matching channel name, and navigate to the watch
  *   URL. Caches the tab URL across tunes with stale-cache fallback. Used by HBO Max.
  * - "none": No channel selection needed (single-channel sites). This is the default.
+ * - "slingGrid": Find channel by data-testid in a virtualized A-Z guide grid, scroll via binary search on .guide-cell scrollTop, click the on-now program
+ *   cell. Used by Sling TV.
  * - "thumbnailRow": Find channel by matching image URL slug, click adjacent element on the same row. Used by USA Network.
  * - "tileClick": Find channel tile by matching image URL slug, click tile, then click play button on modal. Used by Disney+ live channels.
  * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
-export type ChannelSelectionStrategy = "guideGrid" | "hboGrid" | "none" | "thumbnailRow" | "tileClick" | "youtubeGrid";
+export type ChannelSelectionStrategy = "guideGrid" | "hboGrid" | "none" | "slingGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
 
 /**
  * Configuration for channel selection behavior within a site profile.

@@ -6,6 +6,7 @@ import { type ChannelSelectionProfile, type ChannelSelectorResult, type ClickTar
 import { LOG, delay } from "../utils/index.js";
 import { clearHboCache, hboGridStrategy } from "./tuning/hbo.js";
 import { clearHuluCache, guideGridStrategy } from "./tuning/hulu.js";
+import { clearSlingCache, slingGridStrategy } from "./tuning/sling.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
 import { thumbnailRowStrategy } from "./tuning/thumbnailRow.js";
@@ -28,6 +29,7 @@ const strategies: Record<string, ChannelStrategyFn> = {
 
   guideGrid: guideGridStrategy,
   hboGrid: hboGridStrategy,
+  slingGrid: slingGridStrategy,
   thumbnailRow: thumbnailRowStrategy,
   tileClick: tileClickStrategy,
   youtubeGrid: youtubeGridStrategy
@@ -41,6 +43,7 @@ export function clearChannelSelectionCaches(): void {
 
   clearHboCache();
   clearHuluCache();
+  clearSlingCache();
 }
 
 /**
@@ -97,8 +100,8 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
   // Poll for the channel slug image to appear and fully load. We check both src match and load completion (img.complete + naturalWidth) to ensure the image is
   // actually rendered before proceeding. This prevents race conditions where the img element exists with the correct src but the browser hasn't finished fetching
   // and rendering it, which can cause layout instability and click failures. We skip this polling for guideGrid (channel list images are hidden behind a tab),
-  // hboGrid (channelSelector is a channel name, not an image URL slug), and youtubeGrid (same reason as hboGrid).
-  const skipImagePolling = [ "guideGrid", "hboGrid", "youtubeGrid" ];
+  // hboGrid (channelSelector is a channel name, not an image URL slug), slingGrid (same reason as hboGrid), and youtubeGrid (same reason as hboGrid).
+  const skipImagePolling = [ "guideGrid", "hboGrid", "slingGrid", "youtubeGrid" ];
 
   if(!skipImagePolling.includes(channelSelection.strategy)) {
 
