@@ -75,7 +75,7 @@ PrismCast can be installed via Homebrew on macOS, as a Node.js package on any pl
 
 ### Homebrew (macOS)
 
-The easiest way to install PrismCast on macOS:
+The recommended way to install PrismCast on macOS:
 
 ```sh
 brew install hjdhjd/prismcast/prismcast
@@ -95,6 +95,12 @@ PrismCast can also be installed globally as a Node.js package:
 npm install -g prismcast
 ```
 
+To upgrade to the latest version:
+
+```sh
+npm install -g prismcast
+```
+
 Once installed, you can start PrismCast with:
 
 ```sh
@@ -102,6 +108,8 @@ prismcast
 ```
 
 ### Running as a Service
+
+After upgrading PrismCast via Homebrew or npm, restart the service to pick up the new version: `prismcast service restart`.
 
 For the best experience, install PrismCast as a service that starts automatically at login:
 
@@ -285,6 +293,23 @@ The compose file mounts a Docker volume at `/root/.prismcast`, which stores:
 - **Logs** - `prismcast.log` for troubleshooting
 
 This volume persists across container restarts and image updates. Back up this volume to preserve your configuration and login sessions.
+
+### Updating
+
+To update to the latest PrismCast image using Docker Compose:
+
+```bash
+docker compose -f prismcast.yaml pull
+docker compose -f prismcast.yaml up -d
+```
+
+If you use `docker run`, pull the latest image and recreate the container:
+
+```bash
+docker pull ghcr.io/hjdhjd/prismcast:latest
+```
+
+Then re-run your original `docker run` command. The persistent volume preserves your configuration, channels, and login sessions across updates.
 
 ### Building from Source
 

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.0 (2026-02-14)
+  * New feature: Fox.com provider support.
+  * New feature: Sling TV provider support with automatic local affiliate resolution for broadcast networks.
+  * New feature: provider filtering. Choose which subscription services are active in your environment and filter channels accordingly.
+  * Improvement: streaming startup and playback recovery performance optimizations.
+  * Improvement: stream resiliency and recovery improvements.
+  * Improvement: additions and refinements to predefined channels.
+  * Improvement: UI refinements.
+  * Housekeeping.
+
 ## 1.2.1 (2026-02-08)
   * New feature: HBO Max provider support.
   * New feature: YouTube TV provider support with automatic local affiliate resolution for broadcast networks and PBS.
