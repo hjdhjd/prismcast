@@ -1934,7 +1934,7 @@ export function monitorPlaybackHealth(
           emitStatusUpdate();
         }
       }
-    }).catch((outerError) => {
+    }).catch((outerError: unknown) => {
 
       // Log errors that escape the inner try/catch. In normal operation we should not reach here - if we do, there's a bug to investigate.
       LOG.warn("Monitor tick error escaped inner try/catch: %s.", formatError(outerError));

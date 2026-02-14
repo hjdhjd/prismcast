@@ -175,8 +175,7 @@ export function emitStreamHealthChanged(status: StreamStatus): void {
 export function emitSystemStatusChanged(status: SystemStatus): void {
 
   // Only emit if something meaningful changed.
-  if(!cachedSystemStatus ||
-     (cachedSystemStatus.browser.connected !== status.browser.connected) ||
+  if((cachedSystemStatus?.browser.connected !== status.browser.connected) ||
      (cachedSystemStatus.streams.active !== status.streams.active)) {
 
     cachedSystemStatus = status;
@@ -238,10 +237,10 @@ export function removeStreamStatus(streamId: number): void {
  */
 export function subscribeToStatus(callback: (event: StatusEventType, data: StreamStatus | SystemStatus | StatusSnapshot | { id: number }) => void): () => void {
 
-  const streamAddedHandler = (data: StreamStatus): void => callback("streamAdded", data);
-  const streamRemovedHandler = (data: { id: number }): void => callback("streamRemoved", data);
-  const streamHealthChangedHandler = (data: StreamStatus): void => callback("streamHealthChanged", data);
-  const systemStatusChangedHandler = (data: SystemStatus): void => callback("systemStatusChanged", data);
+  const streamAddedHandler = (data: StreamStatus): void => { callback("streamAdded", data); };
+  const streamRemovedHandler = (data: { id: number }): void => { callback("streamRemoved", data); };
+  const streamHealthChangedHandler = (data: StreamStatus): void => { callback("streamHealthChanged", data); };
+  const systemStatusChangedHandler = (data: SystemStatus): void => { callback("systemStatusChanged", data); };
 
   statusEmitter.on("streamAdded", streamAddedHandler);
   statusEmitter.on("streamRemoved", streamRemovedHandler);

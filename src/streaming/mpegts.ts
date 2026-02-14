@@ -190,7 +190,7 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
   // Get the stream from the registry and verify it's still alive with a valid init segment.
   const stream = getStream(streamId);
 
-  if(!stream || !stream.hls.initSegment) {
+  if(!stream?.hls.initSegment) {
 
     if(!res.headersSent) {
 
@@ -221,7 +221,7 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
 
   // We declare cleanup as a let initialized to a no-op so the error callback and stdin error handler can reference it before the real implementation is assigned. It
   // is reassigned to the real cleanup function immediately after all handlers are defined, before any asynchronous events can fire.
-  let cleanup: () => void = () => {};
+  let cleanup: () => void = () => { /* No-op until real cleanup is assigned below. */ };
 
   // Spawn an FFmpeg process to remux fMP4 to MPEG-TS. The process reads concatenated fMP4 (init segment + media segments) from stdin and outputs a continuous
   // MPEG-TS stream on stdout. Video (H264) and audio (AAC) are copied without transcoding.

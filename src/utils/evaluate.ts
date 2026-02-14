@@ -132,7 +132,7 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
 
   // Attach a no-op catch to suppress unhandled rejection warnings. When we abort or timeout, the underlying CDP call is still pending and will eventually resolve or
   // reject. Without this, we'd get unhandled rejection warnings when the CDP call completes after we've moved on.
-  evaluatePromise.catch(() => {});
+  evaluatePromise.catch(() => { /* Suppress unhandled rejection from pending CDP calls after abort/timeout. */ });
 
   // Create the timeout promise.
   const timeoutPromise = new Promise<never>((_, reject) => {

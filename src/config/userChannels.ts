@@ -232,7 +232,7 @@ export async function deleteUserChannel(key: string): Promise<void> {
   }
 
   // Remove the channel.
-  delete result.channels[key];
+  Reflect.deleteProperty(result.channels, key);
 
   // Save the modified channels.
   await saveUserChannels(result.channels);

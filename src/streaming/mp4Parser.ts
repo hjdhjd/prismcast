@@ -651,7 +651,7 @@ function extractTrunTotalDuration(data: Buffer, offset: number, size: number, de
  */
 export function rewriteMoofTimestamps(moofData: Buffer, trackTimestamps: Map<number, bigint>): Map<number, bigint> {
 
-  const trafDurations: Map<number, bigint> = new Map();
+  const trafDurations = new Map<number, bigint>();
 
   // Walk the moof's child boxes looking for traf (track fragment) boxes.
   iterateChildBoxes(moofData, (type, data, offset, size) => {
@@ -756,7 +756,7 @@ export function rewriteMoofTimestamps(moofData: Buffer, trackTimestamps: Map<num
  */
 export function parseMoovTimescales(moovData: Buffer): Map<number, number> {
 
-  const result: Map<number, number> = new Map();
+  const result = new Map<number, number>();
 
   // Walk the moov's child boxes looking for trak (track) boxes.
   iterateChildBoxes(moovData, (type, data, offset, size) => {

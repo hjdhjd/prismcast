@@ -52,7 +52,7 @@ interface SlingReadResult {
 async function readSlingChannelsAndLocate(page: Page, targetName: Nullable<string>): Promise<SlingReadResult> {
 
   const raw = await page.evaluate((target: Nullable<string>): Nullable<{
-    channels: Array<{ name: string; rowIndex: number }>;
+    channels: { name: string; rowIndex: number }[];
     clickTarget: Nullable<{ x: number; y: number }>;
     matchedName: Nullable<string>;
   }> => {
@@ -65,7 +65,7 @@ async function readSlingChannelsAndLocate(page: Page, targetName: Nullable<strin
     }
 
     const prefix = "channel-";
-    const channels: Array<{ name: string; rowIndex: number }> = [];
+    const channels: { name: string; rowIndex: number }[] = [];
     let clickTarget: Nullable<{ x: number; y: number }> = null;
     let matchedName: Nullable<string> = null;
 
@@ -80,7 +80,7 @@ async function readSlingChannelsAndLocate(page: Page, targetName: Nullable<strin
 
       if(rowContainer) {
 
-        const classMatch = rowContainer.className.match(/gridGuideRow-(\d+)/);
+        const classMatch = /gridGuideRow-(\d+)/.exec(rowContainer.className);
 
         if(classMatch) {
 

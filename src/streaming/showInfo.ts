@@ -274,7 +274,7 @@ async function updateShowNames(): Promise<void> {
   }
 
   // Collect all stream entries for lookup and unique client addresses for DVR host discovery.
-  const allStreamEntries: Array<{ channelKey: string; id: number }> = [];
+  const allStreamEntries: { channelKey: string; id: number }[] = [];
   const discoveryHosts = new Set<string>();
 
   for(const stream of streams) {
@@ -324,7 +324,7 @@ async function updateShowNames(): Promise<void> {
  * @param host - The DVR server hostname or IP address.
  * @param hostStreams - Array of streams from this host with their channel keys.
  */
-async function updateShowNamesForHost(host: string, hostStreams: Array<{ channelKey: string; id: number }>): Promise<void> {
+async function updateShowNamesForHost(host: string, hostStreams: { channelKey: string; id: number }[]): Promise<void> {
 
   // Ensure we have fresh device mappings.
   const mappings = await getDeviceMappings(host);
@@ -556,7 +556,7 @@ async function fetchFromDvr<T>(host: string, path: string): Promise<T[]> {
   try {
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => { controller.abort(); }, API_TIMEOUT_MS);
 
     const response = await fetch(url, {
 

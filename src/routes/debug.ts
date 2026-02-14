@@ -19,7 +19,7 @@ import { generateBaseStyles, generatePageWrapper } from "./ui.js";
 interface CategoryGroup {
 
   // Children categories (the part after the colon, or the full name for standalone items).
-  children: Array<{ category: string; description: string }>;
+  children: { category: string; description: string }[];
 
   // The group prefix (e.g., "browser", "streaming"). For standalone categories, this equals the category name.
   prefix: string;
@@ -34,7 +34,7 @@ interface CategoryGroup {
  */
 function buildCategoryGroups(): CategoryGroup[] {
 
-  const groupMap = new Map<string, Array<{ category: string; description: string }>>();
+  const groupMap = new Map<string, { category: string; description: string }[]>();
 
   for(const entry of DEBUG_CATEGORIES) {
 
@@ -356,7 +356,8 @@ export function setupDebugEndpoint(app: Express): void {
   // POST /debug — Applies a new debug filter pattern and redirects back to the page.
   app.post("/debug", (req: Request, res: Response): void => {
 
-    const pattern = typeof req.body?.pattern === "string" ? req.body.pattern.trim() : "";
+    const body = req.body as Record<string, unknown>;
+    const pattern = typeof body.pattern === "string" ? body.pattern.trim() : "";
     const previousPattern = getCurrentPattern();
 
     initDebugFilter(pattern);

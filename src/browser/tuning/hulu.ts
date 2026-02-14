@@ -37,7 +37,7 @@ interface RenderedChannel {
  */
 async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChannel[]>> {
 
-  const channels = await page.evaluate((): Nullable<Array<{ name: string; rowNumber: number }>> => {
+  const channels = await page.evaluate((): Nullable<{ name: string; rowNumber: number }[]> => {
 
     const containers = document.querySelectorAll("[data-testid^=\"live-guide-channel-kyber-\"]");
 
@@ -47,7 +47,7 @@ async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChanne
     }
 
     const prefix = "live-guide-channel-kyber-";
-    const results: Array<{ name: string; rowNumber: number }> = [];
+    const results: { name: string; rowNumber: number }[] = [];
 
     for(const el of Array.from(containers)) {
 
@@ -64,7 +64,7 @@ async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChanne
 
         if(srOnly) {
 
-          const match = srOnly.textContent.match(/row (\d+) of/);
+          const match = /row (\d+) of/.exec(srOnly.textContent);
 
           if(match) {
 
@@ -264,7 +264,7 @@ async function waitForPlayButton(page: Page, playSelector: Nullable<string> | un
     // Wait two animation frames for React to flush pending state updates. The play button may be visible in the DOM before React's concurrent mode has committed
     // the channel selection state to the component's event handlers. Without this, clicking immediately can trigger playback of the previously-selected channel
     // rather than the one we just chose. The double-rAF pattern synchronizes with the browser's rendering pipeline rather than using a fixed delay.
-    await page.evaluate(async () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await page.evaluate(async () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => { resolve(); }))));
 
     // Get the play button's coordinates for a real mouse click. Like the on-now cell click, we use page.mouse.click() to generate the full pointer event chain
     // rather than a bare DOM .click().
@@ -436,7 +436,7 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
     }
   }
 
-  return { reason: "Play button did not appear after " + MAX_CLICK_ATTEMPTS + " on-now cell click attempts for " + channelName + ".", success: false };
+  return { reason: "Play button did not appear after " + String(MAX_CLICK_ATTEMPTS) + " on-now cell click attempts for " + channelName + ".", success: false };
 }
 
 /**
@@ -476,7 +476,7 @@ export async function guideGridStrategy(page: Page, profile: ChannelSelectionPro
     try {
 
       await page.waitForSelector(listSelector, { timeout: CONFIG.streaming.videoTimeout, visible: true });
-      await page.$eval(listSelector, (el) => (el as HTMLElement).click());
+      await page.$eval(listSelector, (el) => { (el as HTMLElement).click(); });
 
       // Brief delay for the tab switch animation and virtualizer initialization.
       await delay(300);
@@ -511,7 +511,7 @@ export async function guideGridStrategy(page: Page, profile: ChannelSelectionPro
         try {
 
           // eslint-disable-next-line no-await-in-loop
-          await page.$eval(listSelector, (el) => (el as HTMLElement).click());
+          await page.$eval(listSelector, (el) => { (el as HTMLElement).click(); });
 
           // eslint-disable-next-line no-await-in-loop
           await delay(500);

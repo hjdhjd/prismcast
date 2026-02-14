@@ -29,13 +29,13 @@ import { PREDEFINED_CHANNELS } from "../channels/index.js";
 const PREDEFINED_SUFFIX = ":predefined";
 
 // Module-level storage for provider groups, keyed by canonical channel key.
-const providerGroups: Map<string, ProviderGroup> = new Map();
+const providerGroups = new Map<string, ProviderGroup>();
 
 // Reference to the channels map for inheritance resolution.
 let channelsRef: ChannelMap = {};
 
 // User's provider selections, keyed by canonical channel key. Values are the selected provider key (e.g., "espn-disneyplus").
-let providerSelections: Record<string, string> = {};
+let providerSelections = new Map<string, string>();
 
 // Provider Tag System.
 
@@ -111,7 +111,7 @@ export function getChannelProviderTags(canonicalKey: string): string[] {
  * have a providerTag, with any trailing parenthetical stripped (e.g., "Hulu (Live Guide)" becomes "Hulu").
  * @returns Array of { displayName, tag } objects sorted alphabetically by display name, with "direct" always first.
  */
-export function getAllProviderTags(): Array<{ displayName: string; tag: string }> {
+export function getAllProviderTags(): { displayName: string; tag: string }[] {
 
   const tags = new Set<string>();
 
@@ -151,7 +151,7 @@ export function getAllProviderTags(): Array<{ displayName: string; tag: string }
   }
 
   // Build result with display names.
-  const result: Array<{ displayName: string; tag: string }> = [];
+  const result: { displayName: string; tag: string }[] = [];
 
   for(const tag of tags) {
 
@@ -444,7 +444,7 @@ export function getCanonicalKey(key: string): string {
  */
 export function setProviderSelections(selections: Record<string, string>): void {
 
-  providerSelections = { ...selections };
+  providerSelections = new Map(Object.entries(selections));
 }
 
 /**
@@ -453,7 +453,7 @@ export function setProviderSelections(selections: Record<string, string>): void 
  */
 export function getProviderSelections(): Record<string, string> {
 
-  return { ...providerSelections };
+  return Object.fromEntries(providerSelections);
 }
 
 /**
@@ -463,7 +463,7 @@ export function getProviderSelections(): Record<string, string> {
  */
 export function getProviderSelection(canonicalKey: string): string | undefined {
 
-  return providerSelections[canonicalKey];
+  return providerSelections.get(canonicalKey);
 }
 
 /**
@@ -476,10 +476,10 @@ export function setProviderSelection(canonicalKey: string, providerKey: string):
   // If selecting the canonical (default), remove the selection instead of storing it.
   if(providerKey === canonicalKey) {
 
-    delete providerSelections[canonicalKey];
+    providerSelections.delete(canonicalKey);
   } else {
 
-    providerSelections[canonicalKey] = providerKey;
+    providerSelections.set(canonicalKey, providerKey);
   }
 }
 
@@ -492,7 +492,7 @@ export function setProviderSelection(canonicalKey: string, providerKey: string):
  */
 export function resolveProviderKey(canonicalKey: string): string {
 
-  const selection = providerSelections[canonicalKey];
+  const selection = providerSelections.get(canonicalKey);
 
   // No selection stored — use the canonical key (default provider).
   if(!selection) {
@@ -536,7 +536,7 @@ export function resolveProviderKey(canonicalKey: string): string {
   // Selection is invalid (provider removed). Clear it and log a warning.
   LOG.warn("Provider selection '%s' for channel '%s' no longer exists. Using default.", selection, canonicalKey);
 
-  delete providerSelections[canonicalKey];
+  providerSelections.delete(canonicalKey);
 
   return canonicalKey;
 }

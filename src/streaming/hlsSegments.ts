@@ -50,7 +50,12 @@ export function storeSegment(streamId: number, filename: string, data: Buffer): 
   // Enforce segment limit by removing oldest segments. JavaScript Maps maintain insertion order, so the first key is always the oldest segment.
   while(stream.hls.segments.size > CONFIG.hls.maxSegments) {
 
-    const oldestKey = stream.hls.segments.keys().next().value as string;
+    const oldestKey = stream.hls.segments.keys().next().value;
+
+    if(oldestKey === undefined) {
+
+      break;
+    }
 
     stream.hls.segments.delete(oldestKey);
   }
@@ -212,7 +217,7 @@ async function waitForReady(streamId: number, getPromise: (stream: StreamRegistr
 
   const timeoutPromise = new Promise<boolean>((resolve) => {
 
-    setTimeout(() => resolve(false), timeout);
+    setTimeout(() => { resolve(false); }, timeout);
   });
 
   const readyPromise = getPromise(stream).then(() => true);

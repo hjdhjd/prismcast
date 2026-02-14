@@ -321,7 +321,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     totalKeyframeIntervalMs: 0,
     trackExpectedDurations: new Map(),
     trackTimescales: new Map(),
-    trackTimestamps: initialTrackTimestamps ? new Map(initialTrackTimestamps) : new Map(),
+    trackTimestamps: initialTrackTimestamps ? new Map(initialTrackTimestamps) : new Map<number, bigint>(),
     zeroDurationWarned: new Set()
   };
 
@@ -371,7 +371,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       // a hot restart with continuation).
       const duration = state.segmentDurations.get(i) ?? CONFIG.hls.segmentDuration;
 
-      lines.push([ "#EXTINF:", String(duration.toFixed(3)), "," ].join(""));
+      lines.push([ "#EXTINF:", duration.toFixed(3), "," ].join(""));
       lines.push([ "segment", String(i), ".m4s" ].join(""));
     }
 

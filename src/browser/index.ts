@@ -174,7 +174,7 @@ export async function emitCurrentSystemStatus(): Promise<void> {
 
   try {
 
-    if(currentBrowser && currentBrowser.isConnected()) {
+    if(currentBrowser?.connected) {
 
       const pages = await currentBrowser.pages();
 
@@ -191,7 +191,7 @@ export async function emitCurrentSystemStatus(): Promise<void> {
 
     browser: {
 
-      connected: !!currentBrowser && currentBrowser.isConnected(),
+      connected: !!currentBrowser && currentBrowser.connected,
       pageCount
     },
     memory: {
@@ -715,9 +715,9 @@ function handleBrowserDisconnect(): void {
  */
 export async function getCurrentBrowser(): Promise<Browser> {
 
-  // Fast path: if we have a browser and it's still connected, return it immediately. The isConnected() check verifies the DevTools Protocol connection is
+  // Fast path: if we have a browser and it's still connected, return it immediately. The connected property verifies the DevTools Protocol connection is
   // still alive.
-  if(currentBrowser && currentBrowser.isConnected()) {
+  if(currentBrowser?.connected) {
 
     return currentBrowser;
   }
@@ -831,7 +831,7 @@ export function getChromeVersion(): Nullable<string> {
  */
 export function isBrowserConnected(): boolean {
 
-  return !!currentBrowser && currentBrowser.isConnected();
+  return !!currentBrowser && currentBrowser.connected;
 }
 
 /**
@@ -845,7 +845,7 @@ export function isBrowserConnected(): boolean {
 export async function minimizeBrowserWindow(): Promise<void> {
 
   // Guard against calling this when no browser is running.
-  if(!currentBrowser || !currentBrowser.isConnected()) {
+  if(!currentBrowser?.connected) {
 
     return;
   }
@@ -909,7 +909,7 @@ export async function minimizeBrowserWindow(): Promise<void> {
 export async function getBrowserPages(): Promise<Page[]> {
 
   // Guard against calling this when no browser is running.
-  if(!currentBrowser || !currentBrowser.isConnected()) {
+  if(!currentBrowser?.connected) {
 
     return [];
   }
@@ -954,13 +954,13 @@ export async function closeBrowser(): Promise<void> {
   // Stage 1: Try graceful close with a timeout. We use Promise.race to avoid hanging indefinitely if Chrome is unresponsive.
   let closedGracefully = false;
 
-  if(browserRef.isConnected()) {
+  if(browserRef.connected) {
 
     try {
 
       await Promise.race([
         browserRef.close(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Browser close timed out")), 5000))
+        new Promise((_, reject) => setTimeout(() => { reject(new Error("Browser close timed out")); }, 5000))
       ]);
 
       closedGracefully = true;
@@ -1031,7 +1031,7 @@ export async function startLoginMode(url: string): Promise<{ error?: string; suc
   }
 
   // Ensure browser is available.
-  if(!currentBrowser || !currentBrowser.isConnected()) {
+  if(!currentBrowser?.connected) {
 
     return { error: "Browser is not connected.", success: false };
   }
@@ -1136,7 +1136,7 @@ export async function endLoginMode(): Promise<void> {
   loginStartTime = null;
 
   // Re-minimize the browser window.
-  if(wasActive && currentBrowser && currentBrowser.isConnected()) {
+  if(wasActive && currentBrowser?.connected) {
 
     await minimizeBrowserWindow();
   }
@@ -1200,7 +1200,7 @@ export function getLoginStatus(): LoginStatus {
 export async function cleanupStalePages(): Promise<void> {
 
   // Guard against calling this when no browser is running.
-  if(!currentBrowser || !currentBrowser.isConnected()) {
+  if(!currentBrowser?.connected) {
 
     return;
   }
@@ -1236,7 +1236,7 @@ export async function cleanupStalePages(): Promise<void> {
     // - It has a managed page ID (was created by PrismCast)
     // - It is not associated with any active stream
     // - It has been stale for longer than the grace period
-    const candidatePages: Array<{ page: Page; pageId: string }> = [];
+    const candidatePages: { page: Page; pageId: string }[] = [];
 
     // Track which managed page IDs we've seen in the current browser pages. Used for cleanup of stale tracking data.
     const currentManagedIds = new Set<string>();
@@ -1337,7 +1337,7 @@ export async function cleanupStalePages(): Promise<void> {
  */
 export function startStalePageCleanup(): void {
 
-  stalePageCleanupInterval = setInterval(cleanupStalePages, CONFIG.recovery.stalePageCleanupInterval);
+  stalePageCleanupInterval = setInterval(() => { void cleanupStalePages(); }, CONFIG.recovery.stalePageCleanupInterval);
 }
 
 /**
@@ -1367,7 +1367,7 @@ export function stopStalePageCleanup(): void {
 function checkBrowserRestart(): void {
 
   // Skip if the server is shutting down, login mode is active, or the browser is not connected.
-  if(gracefulShutdownInProgress || loginModeActive || !currentBrowser || !currentBrowser.isConnected() || !browserLaunchTime) {
+  if(gracefulShutdownInProgress || loginModeActive || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
 
     return;
   }
@@ -1418,7 +1418,7 @@ async function executeBrowserRestart(): Promise<void> {
 
   // Final guard: re-check all preconditions. Conditions may have changed during the quiet period (e.g., a stream started just before the timer fired, login
   // mode was activated, or the browser disconnected on its own).
-  if(gracefulShutdownInProgress || loginModeActive || (getStreamCount() > 0) || !currentBrowser || !currentBrowser.isConnected() || !browserLaunchTime) {
+  if(gracefulShutdownInProgress || loginModeActive || (getStreamCount() > 0) || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
 
     LOG.debug("browser", "Browser restart aborted — preconditions no longer met.");
 

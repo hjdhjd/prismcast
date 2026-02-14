@@ -12,7 +12,7 @@ declare namespace NodeJS {
 
       defaultEntrypoint: string;
       entrypoint: string;
-      path: { [key: string]: string };
+      path: Record<string, string>;
     };
   }
 }

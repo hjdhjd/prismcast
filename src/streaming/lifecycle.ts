@@ -192,7 +192,7 @@ export function terminateStream(streamId: number, channelName: string, reason: s
     // Close the browser page. Skip during graceful shutdown since closeBrowser() will close all pages and we'd get spurious "Target closed" errors.
     if(!isGracefulShutdown() && !streamInfo.page.isClosed()) {
 
-      streamInfo.page.close().catch((error) => {
+      streamInfo.page.close().catch((error: unknown) => {
 
         LOG.debug("streaming:hls", "Error closing page for stream %s: %s.", streamId, formatError(error));
       });

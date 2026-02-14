@@ -279,9 +279,9 @@ export const LOG = {
           logWithLevel("debug", ANSI_COLORS.cyan, message, args, streamId, category);
         }
       },
-      error: (message: string, ...args: unknown[]): void => logWithLevel("error", ANSI_COLORS.red, message, args, streamId),
-      info: (message: string, ...args: unknown[]): void => logWithLevel("info", "", message, args, streamId),
-      warn: (message: string, ...args: unknown[]): void => logWithLevel("warn", ANSI_COLORS.yellow, message, args, streamId)
+      error: (message: string, ...args: unknown[]): void => { logWithLevel("error", ANSI_COLORS.red, message, args, streamId); },
+      info: (message: string, ...args: unknown[]): void => { logWithLevel("info", "", message, args, streamId); },
+      warn: (message: string, ...args: unknown[]): void => { logWithLevel("warn", ANSI_COLORS.yellow, message, args, streamId); }
     };
   }
 };

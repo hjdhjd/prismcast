@@ -62,19 +62,19 @@ function parseLogLine(line: string): Nullable<LogEntry> {
 
   // Strip ANSI color codes before parsing.
   const cleanLine = stripAnsiCodes(line);
-  const match = cleanLine.match(LOG_LINE_PATTERN);
+  const match = LOG_LINE_PATTERN.exec(cleanLine);
 
   if(!match) {
 
     return null;
   }
 
-  const [ , timestamp, levelStr, message ] = match;
+  const [ , timestamp, levelStr, message ] = match as unknown as [string, string, string | undefined, string];
 
   let level: "debug" | "error" | "info" | "warn" = "info";
   let categoryTag: string | undefined;
 
-  if(levelStr && levelStr.startsWith("DEBUG")) {
+  if(levelStr?.startsWith("DEBUG")) {
 
     level = "debug";
 

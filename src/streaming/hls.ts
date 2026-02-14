@@ -647,7 +647,7 @@ function createTabReplacementHandler(
 
       LOG.debug("recovery:tab", "Closing unresponsive page for tab replacement.");
 
-      oldPage.close().catch((error) => {
+      oldPage.close().catch((error: unknown) => {
 
         LOG.debug("recovery:tab", "Page close error during tab replacement: %s.", formatError(error));
       });

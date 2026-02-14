@@ -67,20 +67,20 @@
     "express": "5.2.1",
     "ffmpeg-for-homebridge": "2.2.1",
     "morgan": "1.10.1",
-    "puppeteer-core": "24.37.2",
+    "puppeteer-core": "24.37.3",
     "puppeteer-stream": "3.0.21"
   },
   "devDependencies": {
-    "@stylistic/eslint-plugin": "5.7.1",
+    "@stylistic/eslint-plugin": "5.8.0",
     "@types/dateformat": "5.0.3",
     "@types/express": "5.0.6",
     "@types/morgan": "1.9.10",
-    "@types/node": "25.2.1",
+    "@types/node": "25.2.3",
     "eslint": "9.39.2",
-    "homebridge-plugin-utils": "1.31.0",
+    "homebridge-plugin-utils": "1.32.0",
     "nodemon": "3.1.11",
     "shx": "0.4.0",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.54.0"
+    "typescript-eslint": "8.55.0"
   }
 }

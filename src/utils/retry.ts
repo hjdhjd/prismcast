@@ -32,7 +32,7 @@ export async function retryOperation<T>(
   description: string,
   earlySuccessCheck?: () => Promise<boolean>,
   shouldAbort?: () => boolean
-): Promise<T | void> {
+): Promise<T | undefined> {
 
   let lastError: unknown = null;
 

@@ -207,8 +207,8 @@ export function updateLastAccess(id: number): void {
  */
 export function createHLSState(): HLSState {
 
-  let signalInitSegmentReady: () => void = () => {};
-  let signalPlaylistReady: () => void = () => {};
+  let signalInitSegmentReady: () => void = () => { /* No-op until promise assigns the real resolver. */ };
+  let signalPlaylistReady: () => void = () => { /* No-op until promise assigns the real resolver. */ };
 
   const initSegmentReady = new Promise<void>((resolve) => {
 

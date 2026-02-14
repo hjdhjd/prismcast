@@ -548,14 +548,14 @@ export interface ProviderGroup {
   canonicalKey: string;
 
   // List of all provider variants including the canonical entry. Each variant has a key (channel key) and a display label for the UI.
-  variants: Array<{
+  variants: {
 
     // Channel key for this provider variant. Example: "espn" or "espn-disneyplus".
     key: string;
 
     // UI display label derived from channel.provider (if set) or auto-resolved from the URL domain via getProviderDisplayName(). Example: "ESPN.com" or "Disney+".
     label: string;
-  }>;
+  }[];
 }
 
 /* These types track active streaming sessions throughout their lifecycle. When a stream request arrives, we create a StreamInfo object to track the session's

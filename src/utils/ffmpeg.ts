@@ -307,8 +307,8 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 
     kill,
     process: ffmpeg,
-    stdin: ffmpeg.stdin as Writable,
-    stdout: ffmpeg.stdout as Readable
+    stdin: ffmpeg.stdin,
+    stdout: ffmpeg.stdout
   };
 }
 
@@ -426,8 +426,8 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
 
     kill,
     process: ffmpeg,
-    stdin: ffmpeg.stdin as Writable,
-    stdout: ffmpeg.stdout as Readable
+    stdin: ffmpeg.stdin,
+    stdout: ffmpeg.stdout
   };
 }
 

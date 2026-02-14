@@ -36,7 +36,7 @@ export async function thumbnailRowStrategy(page: Page, profile: ChannelSelection
     for(const img of Array.from(images)) {
 
       // Channel thumbnails have URLs containing the channel slug pattern. Match against the src URL.
-      if(img.src && img.src.includes(slug)) {
+      if(img.src.includes(slug)) {
 
         const imgRect = img.getBoundingClientRect();
 

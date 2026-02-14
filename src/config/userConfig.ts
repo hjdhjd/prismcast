@@ -1349,8 +1349,8 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
     return false;
   }
 
-  // Compare as strings for consistent comparison across types (handles number/string coercion).
-  return String(value) === String(defaultValue);
+  // Compare as strings for consistent comparison across types (handles number/string coercion). Config values are always primitives.
+  return String(value as string | number | boolean) === String(defaultValue as string | number | boolean);
 }
 
 /**

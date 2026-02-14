@@ -73,7 +73,7 @@ export async function youtubeGridStrategy(page: Page, profile: ChannelSelectionP
       const href = anchor.getAttribute("href");
 
       // Validate the href points to a streamable watch page. Channels with "live" or "browse/" hrefs are premium add-ons or info pages that cannot be streamed.
-      if(!href || !href.startsWith("watch/")) {
+      if(!href?.startsWith("watch/")) {
 
         return null;
       }

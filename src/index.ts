@@ -133,10 +133,10 @@ if(subcommand === "service") {
   handleServiceCommand(rawArgs.slice(1)).then((exitCode) => {
 
     process.exit(exitCode);
-  }).catch((error: Error) => {
+  }).catch((error: unknown) => {
 
     // eslint-disable-next-line no-console
-    console.error("Service command failed: " + (error.message || String(error)));
+    console.error("Service command failed: " + formatError(error));
 
     process.exit(1);
   });
@@ -160,7 +160,7 @@ if(subcommand === "service") {
     setDebugLogging(true);
   }
 
-  startServer(parsedArgs.consoleLogging).catch((error: Error): void => {
+  startServer(parsedArgs.consoleLogging).catch((error: unknown): void => {
 
     LOG.error("Fatal startup error occurred: %s.", formatError(error));
 

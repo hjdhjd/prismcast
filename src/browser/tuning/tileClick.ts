@@ -36,7 +36,7 @@ export async function tileClickStrategy(page: Page, profile: ChannelSelectionPro
 
     for(const img of Array.from(images)) {
 
-      if(img.src && img.src.includes(slug)) {
+      if(img.src.includes(slug)) {
 
         const imgRect = img.getBoundingClientRect();
 

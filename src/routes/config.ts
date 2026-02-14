@@ -94,13 +94,11 @@ function scheduleServerRestart(reason: string): RestartResult {
   }
 
   // No active streams - restart immediately. Close the browser first to avoid orphan Chrome processes.
-  setTimeout(async () => {
+  setTimeout(() => {
 
     LOG.info("Exiting for service manager restart %s.", reason);
 
-    await closeBrowser();
-
-    process.exit(0);
+    void closeBrowser().then(() => { process.exit(0); }).catch(() => { process.exit(1); });
   }, 500);
 
   return {
@@ -490,7 +488,7 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
  */
 function generateChannelSelectorData(): string {
 
-  const byDomain: Record<string, Array<{ label: string; value: string }>> = {};
+  const byDomain: Record<string, { label: string; value: string }[]> = {};
 
   for(const channel of Object.values(PREDEFINED_CHANNELS)) {
 
@@ -739,7 +737,13 @@ function formatValueForDisplay(value: unknown, settingType?: string): string {
     return String(value);
   }
 
-  return String(value);
+  if(typeof value === "string") {
+
+    return value;
+  }
+
+  // Config values are always primitives (string, number, boolean). Numbers and strings are handled above.
+  return String(value as boolean);
 }
 
 /**
@@ -1059,7 +1063,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     } else {
 
       // Standard dropdown for non-preset fields.
-      for(const validValue of setting.validValues as string[]) {
+      for(const validValue of setting.validValues ?? []) {
 
         // For boolean types, compare string validValue with stringified currentValue to handle boolean-to-string comparison.
         const isSelected = (setting.type === "boolean") ?
@@ -1077,7 +1081,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     // Render boolean as a checkbox. A hidden input with value "false" precedes the checkbox so that unchecking submits "false" rather than omitting the field
     // entirely (which would cause the server to skip it and fall back to the default).
     const isChecked = (currentValue === true) || (currentValue === "true");
-    const defaultStr = String(defaultValue ?? false);
+    const defaultStr = defaultValue ? "true" : "false";
 
     lines.push("<input type=\"hidden\" name=\"" + setting.path + "\" value=\"false\">");
 
@@ -1210,7 +1214,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     defaultDisplay = formatValueForDisplay(displayDefault, setting.type);
   } else {
 
-    defaultDisplay = String(displayDefault);
+    defaultDisplay = displayDefault;
   }
 
   // Format the unit with correct pluralization based on the default value.
@@ -1864,7 +1868,7 @@ export function setupConfigEndpoint(app: Express): void {
           }
 
           // Parse the value (convert from display units to storage units if needed).
-          const parsedValue = parseFormValue(setting, String(rawValue));
+          const parsedValue = parseFormValue(setting, String(rawValue as string | number | boolean));
 
           // Validate the value.
           const validationError = validateSettingValue(setting, parsedValue);
@@ -2045,13 +2049,11 @@ export function setupConfigEndpoint(app: Express): void {
     res.json({ message: "Server is restarting...", success: true });
 
     // Close the browser first to avoid orphan Chrome processes.
-    setTimeout(async () => {
+    setTimeout(() => {
 
       LOG.info("Exiting for forced service manager restart.");
 
-      await closeBrowser();
-
-      process.exit(0);
+      void closeBrowser().then(() => { process.exit(0); }).catch(() => { process.exit(1); });
     }, 500);
   });
 
@@ -2096,7 +2098,7 @@ export function setupConfigEndpoint(app: Express): void {
       const channelCount = Object.keys(validationResult.channels).length;
 
       // Send success response. Changes take effect immediately due to hot-reloading in saveUserChannels().
-      res.json({ message: "Imported " + channelCount + " channel" + (channelCount === 1 ? "" : "s") + " successfully.", success: true });
+      res.json({ message: "Imported " + String(channelCount) + " channel" + (channelCount === 1 ? "" : "s") + " successfully.", success: true });
     } catch(error) {
 
       LOG.error("Failed to import channels: %s", formatError(error));
@@ -2474,7 +2476,7 @@ export function setupConfigEndpoint(app: Express): void {
 
         if(!knownTags.has(tag)) {
 
-          res.status(400).json({ error: "Unknown provider tag: " + String(tag), success: false });
+          res.status(400).json({ error: "Unknown provider tag: " + tag, success: false });
 
           return;
         }
@@ -2674,7 +2676,7 @@ export function setupConfigEndpoint(app: Express): void {
           return;
         }
 
-        delete result.channels[key];
+        Reflect.deleteProperty(result.channels, key);
 
         await saveUserChannels(result.channels);
 
@@ -2694,6 +2696,14 @@ export function setupConfigEndpoint(app: Express): void {
       if((action !== "add") && (action !== "edit")) {
 
         res.status(400).json({ message: "Invalid channel action.", success: false });
+
+        return;
+      }
+
+      // Key is required for both add and edit actions.
+      if(!key) {
+
+        res.status(400).json({ message: "Channel key is required.", success: false });
 
         return;
       }
@@ -2737,7 +2747,7 @@ export function setupConfigEndpoint(app: Express): void {
       // Validate key (only for add action, not edit).
       if(action === "add") {
 
-        const keyError = validateChannelKey(key ?? "", true);
+        const keyError = validateChannelKey(key, true);
 
         if(keyError) {
 
@@ -2822,7 +2832,7 @@ export function setupConfigEndpoint(app: Express): void {
       }
 
       // Add or update the channel.
-      result.channels[key as string] = channel;
+      result.channels[key] = channel;
 
       await saveUserChannels(result.channels);
 
@@ -2831,7 +2841,7 @@ export function setupConfigEndpoint(app: Express): void {
       LOG.info("User channel '%s' %s.", key, actionLabel);
 
       // Generate HTML for the channel row so the client can update the DOM without a full page reload.
-      const rowHtml = generateChannelRowHtml(key as string, profiles);
+      const rowHtml = generateChannelRowHtml(key, profiles);
 
       // Return success response with HTML for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
       res.json({

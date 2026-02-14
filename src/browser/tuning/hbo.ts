@@ -140,7 +140,7 @@ async function scrapeHboChannelRail(page: Page, channelName: string): Promise<Hb
       const href = anchor.getAttribute("href");
 
       // Validate that the href points to a live channel watch page. Watch URLs follow the pattern /channel/watch/{channelUUID}/{programUUID}.
-      if(href && href.includes("/channel/watch/")) {
+      if(href?.includes("/channel/watch/")) {
 
         return href;
       }

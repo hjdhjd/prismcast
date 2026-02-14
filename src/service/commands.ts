@@ -16,12 +16,12 @@ interface StreamsResponse {
 
   count: number;
   limit: number;
-  streams: Array<{
+  streams: {
     channel: Nullable<string>;
     duration: number;
     id: number;
     url: string;
-  }>;
+  }[];
 }
 
 /* These handlers implement the `prismcast service` subcommands for installing, uninstalling, and checking the status of PrismCast as a system service. Each handler
@@ -57,7 +57,7 @@ function formatDuration(seconds: number): string {
 
   if(seconds < 60) {
 
-    return seconds + "s";
+    return String(seconds) + "s";
   }
 
   if(seconds < 3600) {
@@ -65,13 +65,13 @@ function formatDuration(seconds: number): string {
     const minutes = Math.floor(seconds / 60);
     const secs = seconds % 60;
 
-    return secs > 0 ? minutes + "m " + secs + "s" : minutes + "m";
+    return secs > 0 ? String(minutes) + "m " + String(secs) + "s" : String(minutes) + "m";
   }
 
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
 
-  return minutes > 0 ? hours + "h " + minutes + "m" : hours + "h";
+  return minutes > 0 ? String(hours) + "h " + String(minutes) + "m" : String(hours) + "h";
 }
 
 /**
@@ -84,9 +84,9 @@ async function fetchActiveStreams(port: number): Promise<Nullable<StreamsRespons
   try {
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const timeoutId = setTimeout(() => { controller.abort(); }, 3000);
 
-    const response = await fetch("http://127.0.0.1:" + port + "/streams", { signal: controller.signal });
+    const response = await fetch("http://127.0.0.1:" + String(port) + "/streams", { signal: controller.signal });
 
     clearTimeout(timeoutId);
 
@@ -465,10 +465,10 @@ export async function handleStatus(): Promise<number> {
       print("Active streams:  (server not responding)");
     } else if(streamsData.count === 0) {
 
-      print("Active streams:  0/" + streamsData.limit);
+      print("Active streams:  0/" + String(streamsData.limit));
     } else {
 
-      print("Active streams:  " + streamsData.count + "/" + streamsData.limit);
+      print("Active streams:  " + String(streamsData.count) + "/" + String(streamsData.limit));
 
       for(const stream of streamsData.streams) {
 
@@ -482,7 +482,7 @@ export async function handleStatus(): Promise<number> {
             name = new URL(stream.url).hostname.replace(/^www\./, "");
           } catch {
 
-            name = "Stream " + stream.id;
+            name = "Stream " + String(stream.id);
           }
         }
 

@@ -358,7 +358,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // Capture queue release function, hoisted here so both the try and catch blocks can access it. Initialized in the try block when the queue entry is created.
   // The once-guard prevents double-releasing from multiple code paths (success handler, catch block, timeout).
   let captureQueueReleased = false;
-  let releaseCaptureQueue: () => void = () => {};
+  let releaseCaptureQueue: () => void = () => { /* No-op until queue entry assigns the real release function. */ };
 
   const releaseCaptureOnce = (): void => {
 
@@ -439,14 +439,14 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
         throw new Error("Browser crashed too many times during capture initialization.");
       }
 
-      return createPageWithCapture({ ...options, _pageClosedRetries: retryCount + 1 });
+      return await createPageWithCapture({ ...options, _pageClosedRetries: retryCount + 1 });
     }
 
     const streamPromise = getStream(page, streamOptions);
 
     // Release the queue on success only. On failure, the catch block handles the release. The rejection handler is a no-op to suppress unhandled rejection
     // warnings; the actual error handling happens in the catch block below.
-    void streamPromise.then(() => releaseCaptureOnce(), () => {});
+    void streamPromise.then(() => { releaseCaptureOnce(); }, () => { /* Suppress unhandled rejection; actual error handling is in the catch block below. */ });
 
     const timeoutPromise = new Promise<never>((_, reject) => {
 
@@ -498,7 +498,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
       // Pipe the WebM capture stream to FFmpeg's stdin using pipeline() for proper cleanup. When FFmpeg is killed during tab replacement, pipeline() automatically
       // destroys the source stream, preventing "write after end" errors that would occur with .pipe().
-      pipeline(stream as unknown as Readable, ffmpeg.stdin).catch((error) => {
+      pipeline(stream as unknown as Readable, ffmpeg.stdin).catch((error: unknown) => {
 
         const errorMessage = formatError(error);
 
@@ -514,7 +514,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
         if(onFFmpegError) {
 
-          onFFmpegError(error);
+          onFFmpegError(error instanceof Error ? error : new Error(String(error)));
         }
       });
 
@@ -537,7 +537,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     if(!page.isClosed()) {
 
-      page.close().catch(() => {});
+      page.close().catch(() => { /* Fire-and-forget during error cleanup. */ });
     }
 
     const errorMessage = formatError(error);
@@ -568,7 +568,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   try {
 
-    if(profile.noVideo === false) {
+    if(!profile.noVideo) {
 
       // Phase 1: Navigate to the page with retry. The 10-second navigationTimeout is appropriate for page loads, and retryOperation correctly reloads the page on
       // genuine navigation failures. Navigation is wrapped in retryOperation separately from channel selection so the timeout does not race with the internal click
@@ -625,12 +625,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     if(!page.isClosed()) {
 
-      page.close().catch(() => {});
+      page.close().catch(() => { /* Fire-and-forget during error cleanup. */ });
     }
 
     // Re-minimize the browser window. Navigation may have un-minimized it (new tab activation on macOS), and without this the window stays visible after the
     // failed attempt. Fire-and-forget since we're about to throw.
-    minimizeBrowserWindow().catch(() => {});
+    minimizeBrowserWindow().catch(() => { /* Fire-and-forget; we're about to throw. */ });
 
     throw error;
   }
@@ -887,7 +887,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       // Close the browser page (fire-and-forget to avoid blocking on stuck pages).
       if(!page.isClosed()) {
 
-        page.close().catch((error) => {
+        page.close().catch((error: unknown) => {
 
           LOG.debug("streaming:setup", "Page close error during cleanup: %s.", formatError(error));
         });
@@ -1003,7 +1003,7 @@ export async function verifyCaptureSystem(): Promise<void> {
 
     if(!page.isClosed()) {
 
-      page.close().catch(() => {});
+      page.close().catch(() => { /* Fire-and-forget during error cleanup. */ });
     }
 
     // Stale capture state is unrecoverable. The error occurs inside puppeteer-stream's second lock section, which has no try/finally — the internal mutex is
