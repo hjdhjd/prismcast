@@ -614,6 +614,24 @@ function generateApiReferenceContent(): string {
     "<td class=\"endpoint\"><code>POST /config/channels/toggle-all-predefined</code></td>",
     "<td>Enable or disable all predefined channels. Body: <code>{ \"enabled\": true }</code></td>",
     "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config/provider</code></td>",
+    "<td>Update provider selection for a multi-provider channel. Body: <code>{ \"channel\": \"nbc\", \"provider\": \"nbc-hulu\" }</code></td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config/provider-filter</code></td>",
+    "<td>Set enabled provider tags. Body: <code>{ \"enabledProviders\": [\"hulu\", \"yttv\"] }</code>. Empty array disables filter.</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config/provider-bulk-assign</code></td>",
+    "<td>Assign a provider to all multi-provider channels. Body: <code>{ \"provider\": \"hulu\" }</code>. " +
+    "Returns <code>{ affected, previousSelections, selections }</code></td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config/provider-bulk-restore</code></td>",
+    "<td>Restore previous provider selections (undo bulk assign). Body: <code>{ \"selections\": { \"nbc\": \"nbc-hulu\", \"fox\": null } }</code>. " +
+    "A <code>null</code> value restores the channel to its default provider.</td>",
+    "</tr>",
     "</table>",
     "</div>",
 
@@ -890,9 +908,6 @@ function generateConfigContent(): string {
   const tabs = getUITabs();
   const lines: string[] = [];
 
-  // Status message area for AJAX feedback.
-  lines.push("<div id=\"config-status\" class=\"config-status\" style=\"display: none;\"></div>");
-
   // Environment variable warning if applicable.
   if(hasEnvOverrides()) {
 
@@ -1009,32 +1024,45 @@ function generateConfigSubtabScript(): string {
     "    }",
     "  }",
 
-    // Timeout handle for auto-dismissing success messages.
-    "  var statusTimeout = null;",
-
-    // Show status message. Success messages auto-dismiss after 5 seconds.
-    "  function showStatus(message, type) {",
-    "    var status = document.getElementById('config-status');",
-    "    if (!status) return;",
-    "    if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }",
-    "    status.textContent = message;",
-    "    status.className = 'config-status ' + (type || 'info');",
-    "    status.style.opacity = '1';",
-    "    status.style.display = 'block';",
-    "    status.scrollIntoView({ behavior: 'smooth', block: 'nearest' });",
-    "    if (type === 'success') {",
-    "      statusTimeout = setTimeout(function() { hideStatus(); }, 10000);",
+    // Show a toast notification. Auto-dismiss durations: success/info = 5s, warning = 8s, error = no auto-dismiss. Optional action: { label, onclick } appends an
+    // inline button between the message text and the close button.
+    "  function showToast(message, type, duration, action) {",
+    "    var container = document.getElementById('toast-container');",
+    "    if (!container) return;",
+    "    var toast = document.createElement('div');",
+    "    toast.className = 'toast ' + (type || 'info');",
+    "    toast.textContent = message;",
+    "    toast.setAttribute('role', (type === 'error' || type === 'warning') ? 'alert' : 'status');",
+    "    if (action && action.label) {",
+    "      var actionBtn = document.createElement('button');",
+    "      actionBtn.type = 'button';",
+    "      actionBtn.className = 'toast-action';",
+    "      actionBtn.textContent = action.label;",
+    "      actionBtn.onclick = function() { if (action.onclick) action.onclick(); dismissToast(toast); };",
+    "      toast.appendChild(actionBtn);",
     "    }",
+    "    var closeBtn = document.createElement('button');",
+    "    closeBtn.type = 'button';",
+    "    closeBtn.className = 'toast-close';",
+    "    closeBtn.textContent = '\\u00d7';",
+    "    closeBtn.onclick = function() { dismissToast(toast); };",
+    "    toast.appendChild(closeBtn);",
+    "    container.appendChild(toast);",
+    "    var ms = duration !== undefined ? duration : type === 'error' ? 0 : type === 'warning' ? 8000 : 5000;",
+    "    if (ms > 0) { setTimeout(function() { dismissToast(toast); }, ms); }",
     "  }",
 
-    // Hide status message with fade-out effect.
-    "  function hideStatus() {",
-    "    var status = document.getElementById('config-status');",
-    "    if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }",
-    "    if (status) {",
-    "      status.style.opacity = '0';",
-    "      setTimeout(function() { status.style.display = 'none'; }, 300);",
-    "    }",
+    // Dismiss a toast with slide-out animation.
+    "  function dismissToast(toast) {",
+    "    if (toast.classList.contains('toast-exit')) return;",
+    "    toast.classList.add('toast-exit');",
+    "    toast.addEventListener('animationend', function() { if (toast.parentNode) toast.parentNode.removeChild(toast); });",
+    "  }",
+
+    // Queue a toast to appear after the next page reload.
+    "  function showToastAfterReload(message, type) {",
+    "    sessionStorage.setItem('pendingToast', JSON.stringify({ message: message, type: type || 'success' }));",
+    "    location.reload();",
     "  }",
 
     // Interval handle for restart polling.
@@ -1066,7 +1094,7 @@ function generateConfigSubtabScript(): string {
     "  window.cancelPendingRestart = function() {",
     "    pendingRestart = false;",
     "    document.getElementById('restart-dialog').style.display = 'none';",
-    "    showStatus('Restart cancelled. Changes will apply on next restart.', 'info');",
+    "    showToast('Restart cancelled. Changes will apply on next restart.', 'info');",
     "  };",
 
     // Force immediate restart despite active streams.
@@ -1084,7 +1112,7 @@ function generateConfigSubtabScript(): string {
     "        }",
     "      })",
     "      .catch(function(err) {",
-    "        showStatus('Failed to restart: ' + err.message, 'error');",
+    "        showToast('Failed to restart: ' + err.message, 'error');",
     "      });",
     "  };",
 
@@ -1097,7 +1125,7 @@ function generateConfigSubtabScript(): string {
     "        }",
     "      })",
     "      .catch(function() {",
-    "        showStatus('Failed to trigger restart. Please restart manually.', 'error');",
+    "        showToast('Failed to trigger restart. Please restart manually.', 'error');",
     "      });",
     "  }",
 
@@ -1105,7 +1133,7 @@ function generateConfigSubtabScript(): string {
     "  function waitForServerRestart() {",
     "    var attempts = 0;",
     "    var maxAttempts = 30;",
-    "    showStatus('Restarting server...', 'info');",
+    "    showToast('Restarting server...', 'info', 0);",
     "    if (restartPollInterval) { clearInterval(restartPollInterval); }",
     "    restartPollInterval = setInterval(function() {",
     "      attempts++;",
@@ -1114,17 +1142,14 @@ function generateConfigSubtabScript(): string {
     "          if (response.ok) {",
     "            clearInterval(restartPollInterval);",
     "            restartPollInterval = null;",
-    "            showStatus('Server restarted. Reloading...', 'success');",
-    "            setTimeout(function() { window.location.reload(); }, 500);",
+    "            showToastAfterReload('Server restarted.', 'success');",
     "          }",
     "        })",
     "        .catch(function() {",
     "          if (attempts >= maxAttempts) {",
     "            clearInterval(restartPollInterval);",
     "            restartPollInterval = null;",
-    "            showStatus('Server did not restart within 30 seconds. Please check the server manually.', 'error');",
-    "          } else {",
-    "            showStatus('Restarting server... (' + attempts + 's)', 'info');",
+    "            showToast('Server did not restart within 30 seconds. Please check the server manually.', 'error');",
     "          }",
     "        });",
     "    }, 1000);",
@@ -1178,7 +1203,7 @@ function generateConfigSubtabScript(): string {
     "    if (modal) { modal.style.display = 'none'; }",
     "  };",
 
-    // Check for updates manually.
+    // Check for updates manually. Updates the version link in-place when a new version is found.
     "  window.checkForUpdates = function() {",
     "    var btn = document.querySelector('.version-check');",
     "    if (!btn || btn.classList.contains('checking')) return;",
@@ -1187,10 +1212,12 @@ function generateConfigSubtabScript(): string {
     "      .then(function(res) { return res.json(); })",
     "      .then(function(data) {",
     "        btn.classList.remove('checking');",
-    "        if (data.updateAvailable) {",
-    // Only reload if update wasn't already visible (need to fetch changelog modal).
-    "          var alreadyShowing = document.querySelector('.version-update');",
-    "          if (!alreadyShowing) { location.reload(); }",
+    "        if (data.updateAvailable && data.latestVersion) {",
+    "          var link = document.querySelector('.version-container .version');",
+    "          if (link && !link.classList.contains('version-update')) {",
+    "            link.textContent = 'v' + data.currentVersion + ' \\u2192 v' + data.latestVersion;",
+    "            link.classList.add('version-update');",
+    "          }",
     "        } else {",
     "          btn.classList.add('up-to-date');",
     "          setTimeout(function() { btn.classList.remove('up-to-date'); }, 2000);",
@@ -1336,7 +1363,7 @@ function generateConfigSubtabScript(): string {
     "        updateDependentFields(cbInputs[j].id);",
     "      }",
     "    }",
-    "    showStatus('Settings reset to defaults. Click ' + (isServiceMode ? 'Save & Restart' : 'Save Settings') + ' to apply changes.', 'info');",
+    "    showToast('Settings reset to defaults. Click ' + (isServiceMode ? 'Save & Restart' : 'Save Settings') + ' to apply changes.', 'info');",
     "  };",
 
     // Toggle collapsible section in Advanced tab.
@@ -1401,13 +1428,12 @@ function generateConfigSubtabScript(): string {
     "        updateDependentFields(cbInputs[j].id);",
     "      }",
     "    }",
-    "    showStatus('All settings reset to defaults. Click ' + (isServiceMode ? 'Save & Restart' : 'Save Settings') + ' to apply changes.', 'info');",
+    "    showToast('All settings reset to defaults. Click ' + (isServiceMode ? 'Save & Restart' : 'Save Settings') + ' to apply changes.', 'info');",
     "  };",
 
     // Submit settings form via AJAX.
     "  window.submitSettingsForm = function(event) {",
     "    event.preventDefault();",
-    "    hideStatus();",
     "    clearFieldErrors();",
     "    var form = document.getElementById('settings-form');",
     "    var saveBtn = document.getElementById('save-btn');",
@@ -1442,18 +1468,18 @@ function generateConfigSubtabScript(): string {
     "            waitForServerRestart();",
     "          }",
     "        } else {",
-    "          showStatus(result.data.message || 'Configuration saved.', 'info');",
+    "          showToast(result.data.message || 'Configuration saved.', 'info');",
     "        }",
     "      } else if (result.data.errors) {",
     "        displayFieldErrors(result.data.errors);",
-    "        showStatus('Please correct the errors below.', 'error');",
+    "        showToast('Please correct the errors below.', 'error');",
     "      } else {",
-    "        showStatus(result.data.message || 'Failed to save configuration.', 'error');",
+    "        showToast(result.data.message || 'Failed to save configuration.', 'error');",
     "      }",
     "    })",
     "    .catch(function(err) {",
     "      if (saveBtn) saveBtn.classList.remove('loading');",
-    "      showStatus('Failed to save configuration: ' + err.message, 'error');",
+    "      showToast('Failed to save configuration: ' + err.message, 'error');",
     "    });",
     "    return false;",
     "  };",
@@ -1472,7 +1498,7 @@ function generateConfigSubtabScript(): string {
     "        document.body.removeChild(a);",
     "        window.URL.revokeObjectURL(url);",
     "      })",
-    "      .catch(function(err) { alert('Failed to export configuration: ' + err.message); });",
+    "      .catch(function(err) { showToast('Failed to export configuration: ' + err.message, 'error'); });",
     "  };",
 
     // Import configuration from file.
@@ -1492,7 +1518,7 @@ function generateConfigSubtabScript(): string {
     "          .then(function(response) { return response.json().then(function(data) { return { ok: response.ok, data: data }; }); })",
     "          .then(function(result) {",
     "            if (result.ok && result.data.success) {",
-    "              alert(result.data.message || 'Configuration imported.');",
+    "              showToast(result.data.message || 'Configuration imported.', 'success');",
     "              if (result.data.willRestart) {",
     "                if (result.data.deferred) {",
     "                  showPendingRestartDialog(result.data.activeStreams);",
@@ -1504,10 +1530,10 @@ function generateConfigSubtabScript(): string {
     "              throw new Error(result.data.message || result.data.error || 'Import failed');",
     "            }",
     "          })",
-    "          .catch(function(err) { alert('Failed to import configuration: ' + err.message); });",
+    "          .catch(function(err) { showToast('Failed to import configuration: ' + err.message, 'error'); });",
     "        }",
     "      } catch (err) {",
-    "        alert('Invalid JSON file: ' + err.message);",
+    "        showToast('Invalid JSON file: ' + err.message, 'error');",
     "      }",
     "      fileInput.value = '';",
     "    };",
@@ -1528,7 +1554,7 @@ function generateConfigSubtabScript(): string {
     "        document.body.removeChild(a);",
     "        window.URL.revokeObjectURL(url);",
     "      })",
-    "      .catch(function(err) { alert('Failed to export channels: ' + err.message); });",
+    "      .catch(function(err) { showToast('Failed to export channels: ' + err.message, 'error'); });",
     "  };",
 
     // Import channels from file.
@@ -1547,16 +1573,15 @@ function generateConfigSubtabScript(): string {
     "          })",
     "          .then(function(response) {",
     "            if (response.ok) {",
-    "              alert('Channels imported successfully.');",
-    "              window.location.reload();",
+    "              showToastAfterReload('Channels imported successfully.', 'success');",
     "            } else {",
     "              return response.text().then(function(text) { throw new Error(text); });",
     "            }",
     "          })",
-    "          .catch(function(err) { alert('Failed to import channels: ' + err.message); });",
+    "          .catch(function(err) { showToast('Failed to import channels: ' + err.message, 'error'); });",
     "        }",
     "      } catch (err) {",
-    "        alert('Invalid JSON file: ' + err.message);",
+    "        showToast('Invalid JSON file: ' + err.message, 'error');",
     "      }",
     "      fileInput.value = '';",
     "    };",
@@ -1590,13 +1615,13 @@ function generateConfigSubtabScript(): string {
     "            }",
     "            if (data.errors.length > 5) msg += '  ... and ' + (data.errors.length - 5) + ' more\\n';",
     "          }",
-    "          alert(msg);",
-    "          if (data.imported > 0 || data.replaced > 0) window.location.reload();",
+    "          if (data.imported > 0 || data.replaced > 0) { showToastAfterReload(msg, 'success'); }",
+    "          else { showToast(msg, 'success'); }",
     "        } else {",
-    "          alert('M3U import failed: ' + (data.error || 'Unknown error'));",
+    "          showToast('M3U import failed: ' + (data.error || 'Unknown error'), 'error');",
     "        }",
     "      })",
-    "      .catch(function(err) { alert('Failed to import M3U: ' + err.message); });",
+    "      .catch(function(err) { showToast('Failed to import M3U: ' + err.message, 'error'); });",
     "      fileInput.value = '';",
     "    };",
     "    reader.readAsText(file);",
@@ -1770,7 +1795,6 @@ function generateConfigSubtabScript(): string {
     "    var formData = new FormData(form);",
     "    var data = {};",
     "    for (var pair of formData.entries()) { data[pair[0]] = pair[1]; }",
-    "    showStatus('Saving channel...', 'info');",
     "    fetch('/config/channels', {",
     "      method: 'POST',",
     "      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },",
@@ -1779,7 +1803,7 @@ function generateConfigSubtabScript(): string {
     "    .then(function(response) { return response.json().then(function(d) { return { ok: response.ok, data: d }; }); })",
     "    .then(function(result) {",
     "      if (result.ok && result.data.success) {",
-    "        showStatus(result.data.message, 'success');",
+    "        showToast(result.data.message, 'success');",
     "        if (result.data.html) {",
     "          insertChannelRow(result.data.html, result.data.key);",
     "          if (action === 'add') {",
@@ -1788,24 +1812,23 @@ function generateConfigSubtabScript(): string {
     "            hideEditForm(result.data.key);",
     "          }",
     "        } else {",
-    "          window.location.reload();",
+    "          showToast('Channel saved. Reload to see changes.', 'info');",
     "        }",
     "      } else if (result.data.errors) {",
     "        var errorMsgs = [];",
     "        for (var field in result.data.errors) { errorMsgs.push(field + ': ' + result.data.errors[field]); }",
-    "        showStatus('Validation errors: ' + errorMsgs.join(', '), 'error');",
+    "        showToast('Validation errors: ' + errorMsgs.join(', '), 'error');",
     "      } else {",
-    "        showStatus(result.data.message || 'Failed to save channel.', 'error');",
+    "        showToast(result.data.message || 'Failed to save channel.', 'error');",
     "      }",
     "    })",
-    "    .catch(function(err) { showStatus('Failed to save channel: ' + err.message, 'error'); });",
+    "    .catch(function(err) { showToast('Failed to save channel: ' + err.message, 'error'); });",
     "    return false;",
     "  };",
 
     // Delete channel via AJAX.
     "  window.deleteChannel = function(key) {",
     "    if (!confirm('Delete channel ' + key + '?')) return;",
-    "    showStatus('Deleting channel...', 'info');",
     "    fetch('/config/channels', {",
     "      method: 'POST',",
     "      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },",
@@ -1814,22 +1837,21 @@ function generateConfigSubtabScript(): string {
     "    .then(function(response) { return response.json().then(function(d) { return { ok: response.ok, data: d }; }); })",
     "    .then(function(result) {",
     "      if (result.ok && result.data.success) {",
-    "        showStatus(result.data.message, 'success');",
+    "        showToast(result.data.message, 'success');",
     "        if (result.data.html) {",
     "          insertChannelRow(result.data.html, result.data.key || key);",
     "        } else {",
     "          removeChannelRow(result.data.key || key);",
     "        }",
     "      } else {",
-    "        showStatus(result.data.message || 'Failed to delete channel.', 'error');",
+    "        showToast(result.data.message || 'Failed to delete channel.', 'error');",
     "      }",
     "    })",
-    "    .catch(function(err) { showStatus('Failed to delete channel: ' + err.message, 'error'); });",
+    "    .catch(function(err) { showToast('Failed to delete channel: ' + err.message, 'error'); });",
     "  };",
 
     // Toggle a single predefined channel's enabled/disabled state.
     "  window.togglePredefinedChannel = function(key, enable) {",
-    "    showStatus((enable ? 'Enabling' : 'Disabling') + ' channel...', 'info');",
     "    fetch('/config/channels/toggle-predefined', {",
     "      method: 'POST',",
     "      headers: { 'Content-Type': 'application/json' },",
@@ -1838,20 +1860,40 @@ function generateConfigSubtabScript(): string {
     "    .then(function(response) { return response.json(); })",
     "    .then(function(result) {",
     "      if (result.success) {",
-    "        showStatus('Channel ' + key + ' ' + (enable ? 'enabled' : 'disabled') + '.', 'success');",
+    "        showToast('Channel ' + key + ' ' + (enable ? 'enabled' : 'disabled') + '.', 'success');",
     "        updateChannelRowDisabledState(key, !enable);",
     "      } else {",
-    "        showStatus(result.error || 'Failed to toggle channel.', 'error');",
+    "        showToast(result.error || 'Failed to toggle channel.', 'error');",
     "      }",
     "    })",
-    "    .catch(function(err) { showStatus('Failed to toggle channel: ' + err.message, 'error'); });",
+    "    .catch(function(err) { showToast('Failed to toggle channel: ' + err.message, 'error'); });",
     "  };",
+
+    // Update a channel row's provider selection and profile cell in-place. Syncs the HTML selected attribute so filterChannelRows() restore logic works correctly.
+    // We iterate _allOptions (if present) rather than querySelectorAll because filtered-out options are removed from the DOM but still tracked in the array.
+    "  function updateChannelProviderUI(channelKey, variant, profile) {",
+    "    var row = document.getElementById('display-row-' + channelKey);",
+    "    if (!row) return;",
+    "    var sel = row.querySelector('.provider-select');",
+    "    if (sel) {",
+    "      sel.value = variant;",
+    "      var allOpts = sel._allOptions || Array.prototype.slice.call(sel.querySelectorAll('option'));",
+    "      for (var oi = 0; oi < allOpts.length; oi++) {",
+    "        if (allOpts[oi].value === variant) { allOpts[oi].setAttribute('selected', ''); }",
+    "        else { allOpts[oi].removeAttribute('selected'); }",
+    "      }",
+    "    }",
+    "    var profileCell = row.cells[3];",
+    "    if (profileCell) {",
+    "      if (profile) { profileCell.textContent = profile; }",
+    "      else { profileCell.innerHTML = '<em>auto</em>'; }",
+    "    }",
+    "  }",
 
     // Update provider selection for a multi-provider channel.
     "  window.updateProviderSelection = function(selectElement) {",
     "    var channelKey = selectElement.getAttribute('data-channel');",
     "    var providerKey = selectElement.value;",
-    "    showStatus('Updating provider...', 'info');",
     "    fetch('/config/provider', {",
     "      method: 'POST',",
     "      headers: { 'Content-Type': 'application/json' },",
@@ -1860,26 +1902,17 @@ function generateConfigSubtabScript(): string {
     "    .then(function(response) { return response.json(); })",
     "    .then(function(result) {",
     "      if (result.success) {",
-    "        showStatus('Provider updated. New streams will use the selected provider.', 'success');",
-    "        var row = document.getElementById('display-row-' + channelKey);",
-    "        if (row) {",
-    "          var profileCell = row.cells[3];",
-    "          if (result.profile) {",
-    "            profileCell.textContent = result.profile;",
-    "          } else {",
-    "            profileCell.innerHTML = '<em>auto</em>';",
-    "          }",
-    "        }",
+    "        showToast('Provider updated. New streams will use the selected provider.', 'success');",
+    "        updateChannelProviderUI(channelKey, providerKey, result.profile);",
     "      } else {",
-    "        showStatus(result.error || 'Failed to update provider.', 'error');",
+    "        showToast(result.error || 'Failed to update provider.', 'error');",
     "      }",
     "    })",
-    "    .catch(function(err) { showStatus('Failed to update provider: ' + err.message, 'error'); });",
+    "    .catch(function(err) { showToast('Failed to update provider: ' + err.message, 'error'); });",
     "  };",
 
     // Toggle all predefined channels' enabled/disabled state.
     "  window.toggleAllPredefined = function(enable) {",
-    "    showStatus((enable ? 'Enabling' : 'Disabling') + ' all predefined channels...', 'info');",
     "    fetch('/config/channels/toggle-all-predefined', {",
     "      method: 'POST',",
     "      headers: { 'Content-Type': 'application/json' },",
@@ -1888,17 +1921,23 @@ function generateConfigSubtabScript(): string {
     "    .then(function(response) { return response.json(); })",
     "    .then(function(result) {",
     "      if (result.success) {",
-    "        showStatus('All predefined channels ' + (enable ? 'enabled' : 'disabled') + '.', 'success');",
-    "        window.location.reload();",
+    "        showToast('All predefined channels ' + (enable ? 'enabled' : 'disabled') + '.', 'success');",
+    "        var rows = document.querySelectorAll('tr[id^=\"display-row-\"]:not(.user-channel)');",
+    "        for (var i = 0; i < rows.length; i++) {",
+    "          var rowKey = rows[i].id.replace('display-row-', '');",
+    "          setRowDisabledState(rowKey, !enable);",
+    "        }",
+    "        updateBulkToggleButton();",
+    "        updateDisabledCount();",
     "      } else {",
-    "        showStatus(result.error || 'Failed to toggle channels.', 'error');",
+    "        showToast(result.error || 'Failed to toggle channels.', 'error');",
     "      }",
     "    })",
-    "    .catch(function(err) { showStatus('Failed to toggle channels: ' + err.message, 'error'); });",
+    "    .catch(function(err) { showToast('Failed to toggle channels: ' + err.message, 'error'); });",
     "  };",
 
-    // Update a channel row's disabled state without full page reload.
-    "  function updateChannelRowDisabledState(key, disabled) {",
+    // Set a channel row's disabled state without triggering count updates. Used by toggleAllPredefined for efficient bulk updates.
+    "  function setRowDisabledState(key, disabled) {",
     "    var row = document.getElementById('display-row-' + key);",
     "    if (!row) return;",
     "    var btnGroup = row.querySelector('.btn-group');",
@@ -1918,17 +1957,22 @@ function generateConfigSubtabScript(): string {
     "      row.classList.remove('channel-disabled');",
     "      var enableBtn = btnGroup.querySelector('.btn-enable');",
     "      if (enableBtn) {",
-    "        var loginBtn = document.createElement('button');",
-    "        loginBtn.type = 'button';",
-    "        loginBtn.className = 'btn btn-secondary btn-sm';",
-    "        loginBtn.setAttribute('onclick', \"startChannelLogin('\" + key + \"')\");",
-    "        loginBtn.textContent = 'Login';",
-    "        btnGroup.insertBefore(loginBtn, enableBtn);",
+    "        var newLoginBtn = document.createElement('button');",
+    "        newLoginBtn.type = 'button';",
+    "        newLoginBtn.className = 'btn btn-secondary btn-sm';",
+    "        newLoginBtn.setAttribute('onclick', \"startChannelLogin('\" + key + \"')\");",
+    "        newLoginBtn.textContent = 'Login';",
+    "        btnGroup.insertBefore(newLoginBtn, enableBtn);",
     "        enableBtn.className = 'btn btn-disable btn-sm';",
     "        enableBtn.textContent = 'Disable';",
     "        enableBtn.setAttribute('onclick', \"togglePredefinedChannel('\" + key + \"', false)\");",
     "      }",
     "    }",
+    "  }",
+
+    // Update a single channel row's disabled state and refresh counts. Used by individual togglePredefinedChannel.
+    "  function updateChannelRowDisabledState(key, disabled) {",
+    "    setRowDisabledState(key, disabled);",
     "    updateBulkToggleButton();",
     "    updateDisabledCount();",
     "  };",
@@ -1949,13 +1993,219 @@ function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Update the disabled channel count shown in the toolbar toggle label.
+    // Update the disabled channel count shown in the toolbar toggle label. Uses a union selector to avoid double-counting rows that are both disabled and
+    // provider-unavailable.
     "  function updateDisabledCount() {",
     "    var countEl = document.getElementById('disabled-count');",
     "    if (!countEl) return;",
-    "    var disabledRows = document.querySelectorAll('tr.channel-disabled:not(.user-channel)');",
-    "    countEl.textContent = String(disabledRows.length);",
+    "    var hiddenRows = document.querySelectorAll('tr.channel-disabled:not(.user-channel), tr.channel-unavailable');",
+    "    countEl.textContent = String(hiddenRows.length);",
     "  };",
+
+    // Provider filter: toggle a provider tag on/off.
+    "  window.toggleProviderTag = function(checkbox) {",
+    "    var menu = checkbox.closest('.provider-dropdown-menu');",
+    "    if (!menu) return;",
+    "    var checkboxes = menu.querySelectorAll('input[type=\"checkbox\"]:not(:disabled)');",
+    "    var enabledTags = [];",
+    "    for (var i = 0; i < checkboxes.length; i++) {",
+    "      if (checkboxes[i].checked) enabledTags.push(checkboxes[i].getAttribute('data-tag'));",
+    "    }",
+
+    // If all checkboxes are checked, clear the filter (empty array = no filter).
+    "    var allCheckboxes = menu.querySelectorAll('input[type=\"checkbox\"]');",
+    "    var allChecked = true;",
+    "    for (var j = 0; j < allCheckboxes.length; j++) {",
+    "      if (!allCheckboxes[j].checked && !allCheckboxes[j].disabled) { allChecked = false; break; }",
+    "    }",
+    "    if (allChecked) enabledTags = [];",
+
+    // POST to server.
+    "    fetch('/config/provider-filter', {",
+    "      method: 'POST',",
+    "      headers: { 'Content-Type': 'application/json' },",
+    "      body: JSON.stringify({ enabledProviders: enabledTags })",
+    "    })",
+    "    .then(function(r) { return r.json(); })",
+    "    .then(function(result) {",
+    "      if (result.success) {",
+    "        updateProviderChips(enabledTags);",
+    "        filterChannelRows(enabledTags);",
+    "        updateBulkAssignOptions(enabledTags);",
+    "        updateProviderFilterButton(enabledTags);",
+    "        updateDisabledCount();",
+    "      }",
+    "    })",
+    "    .catch(function(err) { showToast('Failed to update filter: ' + err.message, 'error'); });",
+    "  };",
+
+    // Remove a provider chip (uncheck the tag and update).
+    "  window.removeProviderChip = function(tag) {",
+    "    var menu = document.querySelector('.provider-dropdown-menu');",
+    "    if (!menu) return;",
+    "    var cb = menu.querySelector('input[data-tag=\"' + tag + '\"]');",
+    "    if (cb) { cb.checked = false; toggleProviderTag(cb); }",
+    "  };",
+
+    // Update the provider filter button text.
+    "  function updateProviderFilterButton(enabledTags) {",
+    "    var btn = document.getElementById('provider-filter-btn');",
+    "    if (!btn) return;",
+    "    btn.innerHTML = (enabledTags.length > 0) ? 'Filtered &#9662;' : 'All Providers &#9662;';",
+    "  };",
+
+    // Rebuild the provider chips from the enabled tags.
+    "  function updateProviderChips(enabledTags) {",
+    "    var container = document.getElementById('provider-chips');",
+    "    if (!container) return;",
+    "    container.innerHTML = '';",
+    "    if (enabledTags.length === 0) return;",
+    "    var menu = document.querySelector('.provider-dropdown-menu');",
+    "    for (var i = 0; i < enabledTags.length; i++) {",
+    "      var tag = enabledTags[i];",
+    "      if (tag === 'direct') continue;",
+    "      var label = tag;",
+    "      if (menu) {",
+    "        var cb = menu.querySelector('input[data-tag=\"' + tag + '\"]');",
+    "        if (cb && cb.parentElement) label = cb.parentElement.textContent.trim();",
+    "      }",
+    "      var chip = document.createElement('span');",
+    "      chip.className = 'provider-chip';",
+    "      chip.setAttribute('data-tag', tag);",
+    "      chip.innerHTML = label + '<button type=\"button\" class=\"chip-close\" onclick=\"removeProviderChip(\\'' + tag + '\\')\">\\u00d7</button>';",
+    "      container.appendChild(chip);",
+    "    }",
+    "  };",
+
+    // Filter channel rows based on enabled provider tags. Toggles the channel-unavailable class on each row and updates Source column content. Filtered-out options
+    // are removed from the DOM entirely rather than hidden — Safari ignores both the hidden attribute and display:none on option elements because they are rendered by
+    // the OS native widget. All options (visible and removed) are stored in a _allOptions array on each select for reinsertion when the filter changes. Selection
+    // restore priority: (1) the saved choice (HTML selected attribute, kept in sync by updateProviderSelection), (2) the previous visual selection, (3) first option.
+    "  function filterChannelRows(enabledTags) {",
+    "    var rows = document.querySelectorAll('tr[data-provider-tags]');",
+    "    for (var i = 0; i < rows.length; i++) {",
+    "      var tags = rows[i].getAttribute('data-provider-tags').split(',');",
+    "      var available = true;",
+    "      if (enabledTags.length > 0) {",
+    "        available = false;",
+    "        for (var j = 0; j < tags.length; j++) {",
+    "          if (tags[j] === 'direct' || enabledTags.indexOf(tags[j]) !== -1) { available = true; break; }",
+    "        }",
+    "      }",
+    "      if (available) { rows[i].classList.remove('channel-unavailable'); }",
+    "      else { rows[i].classList.add('channel-unavailable'); }",
+
+    // Update Source column elements: toggle between the no-provider label and the provider content (select or static name).
+    "      var label = rows[i].querySelector('.no-provider-label');",
+    "      var sel = rows[i].querySelector('.provider-select');",
+    "      var name = rows[i].querySelector('.provider-name');",
+    "      if (label) label.style.display = available ? 'none' : '';",
+    "      if (name) name.style.display = available ? '' : 'none';",
+    "      if (sel) {",
+    "        sel.style.display = available ? '' : 'none';",
+
+    // On first call, snapshot all options (including server-hidden ones) into a persistent array.
+    "        if (!sel._allOptions) { sel._allOptions = Array.prototype.slice.call(sel.querySelectorAll('option')); }",
+    "        var prevValue = sel.value;",
+    "        sel.innerHTML = '';",
+    "        var serverDefault = null;",
+    "        var prevExists = false;",
+    "        for (var k = 0; k < sel._allOptions.length; k++) {",
+    "          var opt = sel._allOptions[k];",
+    "          var oTag = opt.getAttribute('data-provider-tag');",
+    "          var show = (enabledTags.length === 0) || oTag === 'direct' || enabledTags.indexOf(oTag) !== -1;",
+    "          if (show) {",
+    "            sel.appendChild(opt);",
+    "            if (opt.hasAttribute('selected')) serverDefault = opt;",
+    "            if (opt.value === prevValue) prevExists = true;",
+    "          }",
+    "        }",
+    "        if (serverDefault) { sel.value = serverDefault.value; }",
+    "        else if (prevExists) { sel.value = prevValue; }",
+    "        else if (sel.options.length > 0) { sel.selectedIndex = 0; }",
+    "      }",
+    "    }",
+    "  };",
+
+    // Update bulk assign dropdown to only show enabled providers. Uses DOM removal like filterChannelRows because Safari ignores hidden/display:none on option
+    // elements. The snapshot filters by truthy .value to exclude the "Choose provider..." placeholder (value="") so it is never removed from the DOM.
+    "  function updateBulkAssignOptions(enabledTags) {",
+    "    var select = document.getElementById('bulk-assign');",
+    "    if (!select) return;",
+    "    if (!select._allOptions) {",
+    "      select._allOptions = [];",
+    "      var all = select.querySelectorAll('option');",
+    "      for (var a = 0; a < all.length; a++) { if (all[a].value) select._allOptions.push(all[a]); }",
+    "    }",
+    "    for (var i = 0; i < select._allOptions.length; i++) {",
+    "      var opt = select._allOptions[i];",
+    "      if (opt.parentNode === select) { select.removeChild(opt); }",
+    "    }",
+    "    for (var j = 0; j < select._allOptions.length; j++) {",
+    "      var opt2 = select._allOptions[j];",
+    "      if (enabledTags.length === 0 || opt2.value === 'direct' || enabledTags.indexOf(opt2.value) !== -1) {",
+    "        select.appendChild(opt2);",
+    "      }",
+    "    }",
+    "    select.value = '';",
+    "  };",
+
+    // Bulk assign all channels to a specific provider. Updates all dropdowns and profile cells in-place.
+    "  window.bulkAssignProvider = function(selectEl) {",
+    "    var providerTag = selectEl.value;",
+    "    if (!providerTag) return;",
+    "    selectEl.value = '';",
+    "    fetch('/config/provider-bulk-assign', {",
+    "      method: 'POST',",
+    "      headers: { 'Content-Type': 'application/json' },",
+    "      body: JSON.stringify({ provider: providerTag })",
+    "    })",
+    "    .then(function(r) { return r.json(); })",
+    "    .then(function(result) {",
+    "      if (result.success) {",
+    "        var msg = result.affected + ' of ' + result.total + ' channel(s) updated.';",
+    "        var undoAction = null;",
+    "        if (result.affected > 0 && result.previousSelections) {",
+    "          var prevSelections = result.previousSelections;",
+    "          undoAction = { label: 'Undo', onclick: function() { restoreBulkProviders(prevSelections); } };",
+    "        }",
+    "        showToast(msg, 'success', undoAction ? 10000 : undefined, undoAction);",
+    "        if (result.selections) {",
+    "          for (var key in result.selections) {",
+    "            var sel = result.selections[key];",
+    "            updateChannelProviderUI(key, sel.variant, sel.profile);",
+    "          }",
+    "        }",
+    "      } else {",
+    "        showToast(result.error || 'Failed to assign.', 'error');",
+    "      }",
+    "    })",
+    "    .catch(function(err) { showToast('Failed to assign: ' + err.message, 'error'); });",
+    "  };",
+
+    // Restore previous provider selections (undo bulk assign). Sends the previousSelections map to the server and updates the UI with the restored selections.
+    "  function restoreBulkProviders(prevSelections) {",
+    "    fetch('/config/provider-bulk-restore', {",
+    "      method: 'POST',",
+    "      headers: { 'Content-Type': 'application/json' },",
+    "      body: JSON.stringify({ selections: prevSelections })",
+    "    })",
+    "    .then(function(r) { return r.json(); })",
+    "    .then(function(result) {",
+    "      if (result.success) {",
+    "        showToast('Bulk assign reverted.', 'success');",
+    "        if (result.selections) {",
+    "          for (var key in result.selections) {",
+    "            var sel = result.selections[key];",
+    "            updateChannelProviderUI(key, sel.variant, sel.profile);",
+    "          }",
+    "        }",
+    "      } else {",
+    "        showToast(result.error || 'Failed to revert.', 'error');",
+    "      }",
+    "    })",
+    "    .catch(function(err) { showToast('Failed to revert: ' + err.message, 'error'); });",
+    "  }",
 
     // Close all open dropdown menus.
     "  function closeDropdowns() {",
@@ -2012,13 +2262,34 @@ function generateConfigSubtabScript(): string {
     "    } catch (e) {}",
     "  };",
 
-    // Initialize disabled channel toggle and URL input listeners on page load.
+    // Initialize disabled channel toggle, provider filter, URL input listeners, and pending toast on page load.
     "  (function() {",
+
+    // Show any toast queued by showToastAfterReload() before the last page reload.
+    "    var pending = sessionStorage.getItem('pendingToast');",
+    "    if (pending) {",
+    "      sessionStorage.removeItem('pendingToast');",
+    "      try { var pt = JSON.parse(pending); showToast(pt.message, pt.type); } catch (e) {}",
+    "    }",
     "    if (localStorage.getItem('prismcast-show-disabled-channels') === 'true') {",
     "      var table = document.querySelector('.channel-table');",
     "      var checkbox = document.getElementById('show-disabled-toggle');",
     "      if (table) table.classList.remove('hide-disabled');",
     "      if (checkbox) checkbox.checked = true;",
+    "    }",
+
+    // Run filterChannelRows on page load when a provider filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on
+    // option elements. This initial pass removes those options from the DOM to enforce the filter.
+    "    var menu = document.querySelector('.provider-dropdown-menu');",
+    "    if (menu) {",
+    "      var cbs = menu.querySelectorAll('input[type=\"checkbox\"]:not(:disabled)');",
+    "      var tags = [];",
+    "      var allChecked = true;",
+    "      for (var ci = 0; ci < cbs.length; ci++) {",
+    "        if (cbs[ci].checked) { tags.push(cbs[ci].getAttribute('data-tag')); }",
+    "        else { allChecked = false; }",
+    "      }",
+    "      if (!allChecked) { filterChannelRows(tags); updateBulkAssignOptions(tags); }",
     "    }",
     "    var addUrlInput = document.getElementById('add-url');",
     "    if (addUrlInput) {",
@@ -2032,7 +2303,6 @@ function generateConfigSubtabScript(): string {
 
     // Start login mode for a channel. Opens browser window and shows modal.
     "  window.startChannelLogin = function(channel) {",
-    "    showStatus('Starting login...', 'info');",
     "    fetch('/auth/login', {",
     "      method: 'POST',",
     "      headers: { 'Content-Type': 'application/json' },",
@@ -2041,14 +2311,14 @@ function generateConfigSubtabScript(): string {
     "    .then(function(response) { return response.json(); })",
     "    .then(function(result) {",
     "      if (result.success) {",
-    "        showStatus('Browser window opened. Complete authentication.', 'info');",
+    "        showToast('Browser window opened. Complete authentication.', 'info');",
     "        showLoginModal();",
     "        startLoginStatusPolling();",
     "      } else {",
-    "        showStatus(result.error || 'Failed to start login.', 'error');",
+    "        showToast(result.error || 'Failed to start login.', 'error');",
     "      }",
     "    })",
-    "    .catch(function(err) { showStatus('Failed to start login: ' + err.message, 'error'); });",
+    "    .catch(function(err) { showToast('Failed to start login: ' + err.message, 'error'); });",
     "  };",
 
     // End login mode. Closes browser tab and hides modal.
@@ -2057,9 +2327,9 @@ function generateConfigSubtabScript(): string {
     "    fetch('/auth/done', { method: 'POST' })",
     "    .then(function() {",
     "      hideLoginModal();",
-    "      showStatus('Authentication complete.', 'success');",
+    "      showToast('Authentication complete.', 'success');",
     "    })",
-    "    .catch(function(err) { showStatus('Error ending login: ' + err.message, 'error'); hideLoginModal(); });",
+    "    .catch(function(err) { showToast('Error ending login: ' + err.message, 'error'); hideLoginModal(); });",
     "  };",
 
     // Show the login modal.
@@ -2084,7 +2354,7 @@ function generateConfigSubtabScript(): string {
     "        if (!status.active) {",
     "          stopLoginStatusPolling();",
     "          hideLoginModal();",
-    "          showStatus('Login session ended.', 'info');",
+    "          showToast('Login session ended.', 'info');",
     "        }",
     "      })",
     "      .catch(function() { });",
@@ -2251,6 +2521,41 @@ function generateLandingPageStyles(): string {
     ".channel-table tr.channel-disabled code { color: var(--text-tertiary); }",
     ".channel-table.hide-disabled tr.channel-disabled { display: none; }",
 
+    // Provider-filtered channel row styling. Uses reduced opacity and italic text to distinguish from manually disabled rows. The compound selector ensures that rows
+    // which are both disabled and provider-filtered render at the disabled-level opacity (0.5) rather than the more aggressive unavailable-level opacity (0.4).
+    ".channel-table tr.channel-unavailable { opacity: 0.4; font-style: italic; }",
+    ".channel-table tr.channel-unavailable td { color: var(--text-tertiary); }",
+    ".channel-table tr.channel-unavailable.channel-disabled { opacity: 0.5; }",
+    ".channel-table.hide-disabled tr.channel-unavailable { display: none; }",
+    ".no-provider-label { color: var(--text-tertiary); font-size: 12px; }",
+
+    // Provider filter toolbar layout.
+    ".provider-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }",
+    ".provider-toolbar .toolbar-group { display: flex; align-items: center; gap: 6px; }",
+    ".provider-toolbar .toolbar-label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }",
+    ".provider-toolbar .toolbar-spacer { flex: 1; }",
+
+    // Provider dropdown multi-select.
+    ".provider-dropdown-menu { min-width: 200px; max-height: 300px; overflow-y: auto; }",
+    ".provider-option { display: flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--text-primary); }",
+    ".provider-option:hover { background: var(--surface-sunken); }",
+    ".provider-option input[type=\"checkbox\"] { margin: 0; }",
+
+    // Provider chips.
+    ".provider-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }",
+    ".provider-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface-elevated); border: 1px solid var(--border-default); ",
+    "border-radius: 12px; padding: 2px 8px 2px 10px; font-size: 12px; color: var(--text-secondary); min-height: 24px; }",
+    ".chip-close { background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; color: var(--text-muted); ",
+    "transition: color 0.2s; }",
+    ".chip-close:hover { color: var(--text-primary); }",
+
+    // Bulk assign dropdown.
+    ".bulk-assign-select { font-size: 13px; padding: 4px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-md); ",
+    "background: var(--surface-default); color: var(--text-primary); cursor: pointer; }",
+
+    // Responsive: stack provider toolbar groups vertically on small screens.
+    "@media (max-width: 768px) { .provider-toolbar { flex-direction: column; align-items: flex-start; } }",
+
     // Enable/Disable button styling.
     ".btn-enable { background: var(--status-success-bg); color: var(--status-success-text); border: 1px solid var(--status-success-border); }",
     ".btn-enable:hover { background: var(--status-success-border); }",
@@ -2258,7 +2563,7 @@ function generateLandingPageStyles(): string {
     ".btn-disable:hover { border-color: var(--text-secondary); }",
 
     // Channel toolbar with operation buttons and display controls.
-    ".channel-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 15px; }",
+    ".channel-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; margin-bottom: 15px; }",
     ".channel-toolbar .toolbar-group { display: flex; align-items: center; gap: 6px; }",
     ".channel-toolbar .toolbar-spacer { flex: 1; }",
     ".channel-toolbar .toggle-label { font-size: 12px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 4px; ",
@@ -2304,6 +2609,7 @@ function generateLandingPageStyles(): string {
     ".profile-list dt { font-family: var(--font-mono); font-size: 13px; font-weight: 600; margin-top: 10px; color: var(--text-primary); }",
     ".profile-list dt:first-child { margin-top: 0; }",
     ".profile-list dd { color: var(--text-secondary); font-size: 13px; margin: 4px 0 0 0; }",
+    ".selector-guide-heading { margin-top: 20px !important; border-top: 1px solid var(--border-default); padding-top: 16px; }",
 
     // Other landing page styles.
     ".endpoint code { font-size: 13px; }",
@@ -2358,12 +2664,36 @@ function generateLandingPageStyles(): string {
     "font-size: 14px; cursor: pointer; transition: all 0.15s ease; }",
     ".btn-danger:hover { opacity: 0.9; }",
 
-    // Status message styling for AJAX feedback. Includes transition for smooth fade-out on auto-dismiss.
-    ".config-status { padding: 15px; border-radius: var(--radius-lg); margin-bottom: 20px; transition: opacity 0.3s ease; }",
-    ".config-status.success { background: var(--status-success-bg); border: 1px solid var(--status-success-border); color: var(--status-success-text); }",
-    ".config-status.error { background: var(--status-error-bg); border: 1px solid var(--status-error-border); color: var(--status-error-text); }",
-    ".config-status.info { background: var(--status-info-bg, #e0f2fe); border: 1px solid var(--status-info-border, #7dd3fc); ",
-    "color: var(--status-info-text, #0369a1); }",
+    // Toast notification container: fixed top-right, above all modals.
+    ".toast-container { position: fixed; top: 20px; right: 20px; z-index: 1001; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }",
+
+    // Individual toast: themed colors, slide-in animation, close button.
+    ".toast { padding: 12px 36px 12px 16px; border-radius: var(--radius-md); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); min-width: 280px; max-width: 420px; ",
+    "font-size: 13px; line-height: 1.4; white-space: pre-line; position: relative; pointer-events: auto; animation: toastIn 0.3s ease-out; }",
+    ".toast.toast-exit { animation: toastOut 0.3s ease-in forwards; }",
+
+    // Type variants using existing theme status variables.
+    ".toast.success { background: var(--status-success-bg); border: 1px solid var(--status-success-border); color: var(--status-success-text); }",
+    ".toast.error { background: var(--status-error-bg); border: 1px solid var(--status-error-border); color: var(--status-error-text); }",
+    ".toast.warning { background: var(--status-warning-bg); border: 1px solid var(--status-warning-border); color: var(--status-warning-text); }",
+    ".toast.info { background: var(--status-info-bg); border: 1px solid var(--status-info-border); color: var(--status-info-text); }",
+
+    // Close button positioned top-right within each toast.
+    ".toast-close { position: absolute; top: 8px; right: 8px; background: none; border: none; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; ",
+    "color: inherit; opacity: 0.6; }",
+    ".toast-close:hover { opacity: 1; }",
+
+    // Action button for toasts with an undo or similar inline action.
+    ".toast-action { display: inline-block; margin-left: 8px; padding: 2px 10px; border: 1px solid currentColor; border-radius: var(--radius-sm); ",
+    "background: none; color: inherit; cursor: pointer; font-size: 12px; font-weight: 600; opacity: 0.8; vertical-align: baseline; }",
+    ".toast-action:hover { opacity: 1; background: rgba(0, 0, 0, 0.1); }",
+
+    // Toast slide animations.
+    "@keyframes toastIn { from { transform: translateX(120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }",
+    "@keyframes toastOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(120%); opacity: 0; } }",
+
+    // Responsive: full-width toasts on narrow screens.
+    "@media (max-width: 768px) { .toast-container { left: 20px; right: 20px; } .toast { min-width: 0; max-width: none; } }",
 
     // Loading state for buttons.
     ".btn.loading { opacity: 0.7; pointer-events: none; }",
@@ -2531,7 +2861,8 @@ export function setupRootEndpoint(app: Express): void {
 
     // Build the body content.
     const changelogModal = generateChangelogModal();
-    const bodyContent = [ header, tabBar, tabPanels, restartModal, changelogModal ].join("\n");
+    const bodyContent = [ header, tabBar, tabPanels, restartModal, changelogModal,
+      "<div id=\"toast-container\" class=\"toast-container\"></div>" ].join("\n");
 
     // Generate scripts: tab switching, config subtab handling, then status SSE for header updates.
     const scripts = [

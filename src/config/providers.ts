@@ -3,9 +3,9 @@
  * providers.ts: Provider group management for multi-provider channels.
  */
 import type { Channel, ChannelMap, ProviderGroup } from "../types/index.js";
+import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
-import { getDomainConfig } from "./sites.js";
 
 /* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
@@ -36,6 +36,204 @@ let channelsRef: ChannelMap = {};
 
 // User's provider selections, keyed by canonical channel key. Values are the selected provider key (e.g., "espn-disneyplus").
 let providerSelections: Record<string, string> = {};
+
+// Provider Tag System.
+
+// Module-level state for the provider filter. Empty array means "no filter" (all providers shown). Non-empty means only these tags are active.
+let enabledProviders: string[] = [];
+
+/**
+ * Gets the provider tag for a channel key. For variant keys (e.g., "espn-hulu"), extracts the suffix after the canonical prefix (e.g., "hulu"). For canonical keys,
+ * looks up the URL domain via getDomainConfig() and reads the providerTag field, falling back to "direct" if not found.
+ * @param key - The channel key.
+ * @returns The provider tag string.
+ */
+export function getProviderTagForChannel(key: string): string {
+
+  const group = providerGroups.get(key);
+
+  // For variant keys, the suffix after the canonical key (minus the hyphen) IS the tag.
+  if(group && (group.canonicalKey !== key)) {
+
+    const suffix = key.slice(group.canonicalKey.length + 1);
+
+    return suffix;
+  }
+
+  // For canonical keys, derive from the URL domain via DOMAIN_CONFIG.
+  const channel = channelsRef[key] ?? PREDEFINED_CHANNELS[key];
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!channel) {
+
+    return "direct";
+  }
+
+  const config = getDomainConfig(channel.url);
+
+  return config?.providerTag ?? "direct";
+}
+
+/**
+ * Returns all provider tags for a channel (canonical tag + all variant suffix tags). Used to determine which providers offer this channel.
+ * @param canonicalKey - The canonical channel key.
+ * @returns Array of provider tag strings.
+ */
+export function getChannelProviderTags(canonicalKey: string): string[] {
+
+  const tags = new Set<string>();
+
+  // Add the canonical entry's tag.
+  tags.add(getProviderTagForChannel(canonicalKey));
+
+  // Add tags for all variants.
+  const group = providerGroups.get(canonicalKey);
+
+  if(group) {
+
+    for(const variant of group.variants) {
+
+      // Skip predefined suffix variants — they share the canonical's tag.
+      if(variant.key.endsWith(PREDEFINED_SUFFIX)) {
+
+        continue;
+      }
+
+      tags.add(getProviderTagForChannel(variant.key));
+    }
+  }
+
+  return [...tags];
+}
+
+/**
+ * Scans all provider groups and collects unique provider tags with display names. Display names are derived from the provider field in DOMAIN_CONFIG entries that
+ * have a providerTag, with any trailing parenthetical stripped (e.g., "Hulu (Live Guide)" becomes "Hulu").
+ * @returns Array of { displayName, tag } objects sorted alphabetically by display name, with "direct" always first.
+ */
+export function getAllProviderTags(): Array<{ displayName: string; tag: string }> {
+
+  const tags = new Set<string>();
+
+  // Scan all channels (not just grouped ones) to find all provider tags.
+  const allKeys = new Set([ ...Object.keys(channelsRef), ...Object.keys(PREDEFINED_CHANNELS) ]);
+
+  for(const key of allKeys) {
+
+    // Skip variant keys — they are covered by getChannelProviderTags() on the canonical.
+    const group = providerGroups.get(key);
+
+    if(group && (group.canonicalKey !== key)) {
+
+      continue;
+    }
+
+    const channelTags = getChannelProviderTags(key);
+
+    for(const tag of channelTags) {
+
+      tags.add(tag);
+    }
+  }
+
+  // Build a tag → display name map from DOMAIN_CONFIG's provider fields, stripping any trailing parenthetical (e.g., "Hulu (Live Guide)" → "Hulu"). First match wins
+  // for each tag.
+  const tagDisplayNames = new Map<string, string>();
+
+  tagDisplayNames.set("direct", "Direct");
+
+  for(const config of Object.values(DOMAIN_CONFIG)) {
+
+    if(config.providerTag && config.provider && !tagDisplayNames.has(config.providerTag)) {
+
+      tagDisplayNames.set(config.providerTag, config.provider.replace(/\s*\(.*\)$/, ""));
+    }
+  }
+
+  // Build result with display names.
+  const result: Array<{ displayName: string; tag: string }> = [];
+
+  for(const tag of tags) {
+
+    result.push({ displayName: tagDisplayNames.get(tag) ?? tag, tag });
+  }
+
+  // Sort alphabetically by display name, but keep "direct" first.
+  result.sort((a, b) => {
+
+    if(a.tag === "direct") {
+
+      return -1;
+    }
+
+    if(b.tag === "direct") {
+
+      return 1;
+    }
+
+    return a.displayName.localeCompare(b.displayName);
+  });
+
+  return result;
+}
+
+/**
+ * Gets the current enabled provider tags.
+ * @returns Copy of the enabled providers array. Empty means no filter (all shown).
+ */
+export function getEnabledProviders(): string[] {
+
+  return [...enabledProviders];
+}
+
+/**
+ * Sets the enabled provider tags. Empty array means "no filter" (all providers shown).
+ * @param tags - The provider tags to enable.
+ */
+export function setEnabledProviders(tags: string[]): void {
+
+  enabledProviders = [...tags];
+}
+
+/**
+ * Checks if a provider tag is currently enabled. Returns true if the tag is enabled, if no filter is active (empty set), or if the tag is "direct".
+ * @param tag - The provider tag to check.
+ * @returns True if the provider is available.
+ */
+export function isProviderTagEnabled(tag: string): boolean {
+
+  // No filter active — all providers are enabled.
+  if(enabledProviders.length === 0) {
+
+    return true;
+  }
+
+  // "direct" is always enabled.
+  if(tag === "direct") {
+
+    return true;
+  }
+
+  return enabledProviders.includes(tag);
+}
+
+/**
+ * Centralized availability check for the provider filter. Returns true if the channel has at least one variant whose provider tag is enabled.
+ * @param canonicalKey - The canonical channel key.
+ * @returns True if the channel passes the provider filter.
+ */
+export function isChannelAvailableByProvider(canonicalKey: string): boolean {
+
+  // No filter active — all channels are available.
+  if(enabledProviders.length === 0) {
+
+    return true;
+  }
+
+  const tags = getChannelProviderTags(canonicalKey);
+
+  return tags.some((tag) => isProviderTagEnabled(tag));
+}
 
 /**
  * Checks if a channel in the merged map is a user override of a predefined channel. This uses object reference comparison — getAllChannels() spreads
@@ -287,7 +485,8 @@ export function setProviderSelection(canonicalKey: string, providerKey: string):
 
 /**
  * Resolves a canonical channel key to the actual channel key based on user selection. If the user has selected a specific provider for this channel, returns that
- * provider's key. Otherwise returns the canonical key (default provider).
+ * provider's key. Otherwise returns the canonical key (default provider). When the provider filter is active, falls back to the first enabled variant if the stored
+ * selection's provider is filtered out.
  * @param canonicalKey - The canonical channel key.
  * @returns The resolved provider key to use for streaming.
  */
@@ -297,6 +496,12 @@ export function resolveProviderKey(canonicalKey: string): string {
 
   // No selection stored — use the canonical key (default provider).
   if(!selection) {
+
+    // If the canonical's provider tag is filtered out, find the first enabled variant.
+    if((enabledProviders.length > 0) && !isProviderTagEnabled(getProviderTagForChannel(canonicalKey))) {
+
+      return findFirstEnabledVariant(canonicalKey) ?? canonicalKey;
+    }
 
     return canonicalKey;
   }
@@ -319,7 +524,12 @@ export function resolveProviderKey(canonicalKey: string): string {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   } else if(channelsRef[selection]) {
 
-    // Normal selection — validate it exists in the merged channels.
+    // Normal selection — validate it exists in the merged channels. If its provider tag is filtered out, find the first enabled variant instead.
+    if((enabledProviders.length > 0) && !isProviderTagEnabled(getProviderTagForChannel(selection))) {
+
+      return findFirstEnabledVariant(canonicalKey) ?? selection;
+    }
+
     return selection;
   }
 
@@ -329,6 +539,37 @@ export function resolveProviderKey(canonicalKey: string): string {
   delete providerSelections[canonicalKey];
 
   return canonicalKey;
+}
+
+/**
+ * Finds the first enabled variant for a channel when the current selection's provider is filtered out. Iterates the group's variants and returns the first whose
+ * provider tag is enabled.
+ * @param canonicalKey - The canonical channel key.
+ * @returns The first enabled variant key, or undefined if none are enabled.
+ */
+function findFirstEnabledVariant(canonicalKey: string): string | undefined {
+
+  const group = providerGroups.get(canonicalKey);
+
+  if(!group) {
+
+    return undefined;
+  }
+
+  for(const variant of group.variants) {
+
+    if(variant.key.endsWith(PREDEFINED_SUFFIX)) {
+
+      continue;
+    }
+
+    if(isProviderTagEnabled(getProviderTagForChannel(variant.key))) {
+
+      return variant.key;
+    }
+  }
+
+  return undefined;
 }
 
 /**

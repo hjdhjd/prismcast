@@ -9,11 +9,12 @@ import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getConfigFilePath
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, formatError, generateChannelKey, isRunningAsService, parseM3U } from "../utils/index.js";
 import type { Nullable, ProfileCategory } from "../types/index.js";
-import { getCanonicalKey, getProviderDisplayName, getProviderGroup, getProviderSelection, getResolvedChannel, hasMultipleProviders, isProviderVariant,
-  resolveProviderKey, setProviderSelection } from "../config/providers.js";
-import { getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError,
-  isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName,
-  validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
+import { getAllProviderTags, getCanonicalKey, getChannelProviderTags, getEnabledProviders, getProviderDisplayName, getProviderGroup, getProviderSelection,
+  getProviderTagForChannel, getResolvedChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolveProviderKey, setEnabledProviders,
+  setProviderSelection } from "../config/providers.js";
+import { getChannelListing, getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannels, getUserChannels, getUserChannelsFilePath,
+  hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, saveProviderSelections, saveUserChannels, validateChannelKey,
+  validateChannelName, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
@@ -378,6 +379,37 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
     }
 
     lines.push("</dl>");
+
+    // Per-strategy guidance for finding Channel Selector values. Organized by strategy type since the same strategy can be used across multiple profiles.
+    lines.push("<h4 class=\"selector-guide-heading\">Finding Your Channel Selector</h4>");
+    lines.push("<p class=\"category-desc\">Predefined channels already have Channel Selector values set. For custom channels, the value depends on the ");
+    lines.push("profile's strategy type:</p>");
+    lines.push("<dl class=\"profile-list\">");
+    lines.push("<dt>apiMultiVideo, keyboardDynamicMultiVideo (image URL)</dt>");
+    lines.push("<dd>Right-click the channel's image on the site \u2192 Inspect Element \u2192 find the &lt;img&gt; tag \u2192 copy a unique portion ");
+    lines.push("of the <code>src</code> URL that identifies the channel (e.g., \"espn\" from a URL containing \"poster_linear_espn_none\").</dd>");
+    lines.push("<dt>foxLive (station code)</dt>");
+    lines.push("<dd>Inspect a channel logo in the guide \u2192 find the <code>&lt;button&gt;</code> inside <code>GuideChannelLogo</code> \u2192 use ");
+    lines.push("the <code>title</code> attribute value (e.g., BTN, FOXD2C, FS1, FS2, FWX).</dd>");
+    lines.push("<dt>hboMax (channel name)</dt>");
+    lines.push("<dd>Inspect a channel tile in the HBO rail \u2192 find the <code>&lt;p aria-hidden=\"true\"&gt;</code> element \u2192 use the text ");
+    lines.push("content (e.g., HBO, HBO Comedy, HBO Drama, HBO Hits, HBO Movies).</dd>");
+    lines.push("<dt>huluLive (channel name)</dt>");
+    lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with ");
+    lines.push("<code>live-guide-channel-kyber-</code> \u2192 use the portion after that prefix. The name may differ from the logo shown ");
+    lines.push("(e.g., the full name rather than an abbreviation). For local affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast ");
+    lines.push("resolves the local station automatically.</dd>");
+    lines.push("<dt>slingLive (channel name)</dt>");
+    lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with <code>channel-</code> ");
+    lines.push("\u2192 use the portion after that prefix. The name may differ from the logo shown (e.g., \"FOX Sports 1\" not \"FS1\"). For local ");
+    lines.push("affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast resolves the local station automatically.</dd>");
+    lines.push("<dt>youtubeTV (channel name)</dt>");
+    lines.push("<dd>Inspect a channel thumbnail in the guide \u2192 find the <code>aria-label</code> attribute on the ");
+    lines.push("<code>ytu-endpoint</code> element \u2192 use the name after \"watch \" (e.g., <code>aria-label=\"watch CNN\"</code> \u2192 CNN). ");
+    lines.push("For locals, use the network name (e.g., NBC) \u2014 affiliates like \"NBC 5\" are resolved automatically. PBS resolves to the ");
+    lines.push("local affiliate in major markets.</dd>");
+    lines.push("</dl>");
+
     lines.push("</div>");
   }
 
@@ -420,7 +452,8 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
   // Channel selector.
   const channelSelectorHint = showHints ?
     "Identifies which channel to select on sites that host multiple live streams. Known values are suggested when the URL matches a supported site. " +
-    "For other sites, right-click a channel image → Inspect → copy a unique portion of the image src URL." :
+    "For guide-based profiles (Fox, HBO Max, Hulu, Sling, YouTube TV), use the channel name or station code from the guide. " +
+    "For image-based profiles, right-click a channel image \u2192 Inspect \u2192 copy a unique portion of the image src URL." :
     undefined;
 
   lines.push(...generateTextField(
@@ -521,11 +554,15 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
   const isUser = isUserChannel(key);
   const isPredefined = isPredefinedChannel(key);
   const isDisabled = isPredefinedChannelDisabled(key);
+  const isAvailableByProvider = isChannelAvailableByProvider(key);
 
   // Check if this channel has multiple providers.
   const providerGroup = getProviderGroup(key);
 
-  // Generate display row. User channels get one CSS class, disabled predefined get another.
+  // Build the provider tags data attribute for client-side filtering.
+  const providerTags = getChannelProviderTags(key).join(",");
+
+  // Generate display row. User channels get one CSS class, disabled predefined get another, provider-filtered get a third.
   const displayLines: string[] = [];
   const rowClasses: string[] = [];
 
@@ -539,34 +576,52 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
     rowClasses.push("channel-disabled");
   }
 
+  if(!isAvailableByProvider) {
+
+    rowClasses.push("channel-unavailable");
+  }
+
   const rowClassAttr = (rowClasses.length > 0) ? " class=\"" + rowClasses.join(" ") + "\"" : "";
 
-  displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + ">");
+  displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + " data-provider-tags=\"" + escapeHtml(providerTags) + "\">");
   displayLines.push("<td><code>" + escapeHtml(key) + "</code></td>");
   displayLines.push("<td>" + escapeHtml(channel.name ?? key) + "</td>");
 
-  // Source column: dropdown for multi-provider channels, static domain text for single-provider.
+  // Source column: dropdown for multi-provider channels, static provider name for single-provider. Both states always render a hidden "No available providers" label
+  // alongside the provider content so that client-side filterChannelRows() can toggle between them without a page reload.
   displayLines.push("<td>");
+
+  const labelHidden = isAvailableByProvider ? " style=\"display:none\"" : "";
+  const contentHidden = isAvailableByProvider ? "" : " style=\"display:none\"";
+
+  displayLines.push("<em class=\"no-provider-label\"" + labelHidden + ">No available providers</em>");
 
   if(hasMultipleProviders(key) && providerGroup) {
 
-    // Multi-provider: show dropdown.
+    // Multi-provider: render ALL variants with data-provider-tag attributes so client-side JS can filter options when the provider selection changes. Filtered-out
+    // options get the hidden attribute for immediate filtering in Chrome. Safari ignores hidden on option elements, so the page-load JS init calls filterChannelRows()
+    // to remove them from the DOM.
     const currentSelection = getProviderSelection(key) ?? key;
 
-    displayLines.push("<select class=\"provider-select\" data-channel=\"" + escapeHtml(key) + "\" onchange=\"updateProviderSelection(this)\">");
+    displayLines.push("<select class=\"provider-select\" data-channel=\"" + escapeHtml(key) + "\" onchange=\"updateProviderSelection(this)\"" +
+      contentHidden + ">");
 
     for(const variant of providerGroup.variants) {
 
       const selected = (variant.key === currentSelection) ? " selected" : "";
+      const tag = getProviderTagForChannel(variant.key);
+      const optionHidden = !isProviderTagEnabled(tag) ? " hidden" : "";
 
-      displayLines.push("<option value=\"" + escapeHtml(variant.key) + "\"" + selected + ">" + escapeHtml(variant.label) + "</option>");
+      displayLines.push("<option value=\"" + escapeHtml(variant.key) + "\" data-provider-tag=\"" + escapeHtml(tag) + "\"" + selected + optionHidden + ">" +
+        escapeHtml(variant.label) + "</option>");
     }
 
     displayLines.push("</select>");
   } else {
 
-    // Single-provider: show provider name if set, otherwise the domain.
-    displayLines.push(escapeHtml(channel.provider ?? getProviderDisplayName(channel.url)));
+    // Single-provider: wrap the provider name in a span so client-side JS can toggle it with the no-provider label.
+    displayLines.push("<span class=\"provider-name\"" + contentHidden + ">" +
+      escapeHtml(channel.provider ?? getProviderDisplayName(channel.url)) + "</span>");
   }
 
   displayLines.push("</td>");
@@ -608,7 +663,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
   const displayRow = displayLines.join("\n");
 
   // Generate edit form row for user channels.
-  let editRow: string | null = null;
+  let editRow: Nullable<string> = null;
 
   if(isUser) {
 
@@ -1333,6 +1388,94 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
 }
 
 /**
+ * Generates the provider filter toolbar HTML with a multi-select dropdown, dismissable chips, and a bulk-assign dropdown.
+ * @returns HTML string for the provider filter toolbar.
+ */
+export function generateProviderFilterToolbar(): string {
+
+  const allTags = getAllProviderTags();
+  const enabled = getEnabledProviders();
+  const hasFilter = enabled.length > 0;
+  const lines: string[] = [];
+
+  lines.push("<div class=\"provider-toolbar\">");
+
+  // Left group: Provider filter dropdown and chips.
+  lines.push("<div class=\"toolbar-group\">");
+  lines.push("<span class=\"toolbar-label\">Providers:</span>");
+  lines.push("<div class=\"dropdown provider-dropdown\">");
+
+  const buttonText = hasFilter ? "Filtered" : "All Providers";
+
+  lines.push("<button type=\"button\" class=\"btn btn-sm\" id=\"provider-filter-btn\" onclick=\"toggleDropdown(this)\">" + buttonText + " &#9662;</button>");
+  lines.push("<div class=\"dropdown-menu provider-dropdown-menu\">");
+
+  for(const tagInfo of allTags) {
+
+    const isDirectTag = tagInfo.tag === "direct";
+    const isChecked = isDirectTag || !hasFilter || enabled.includes(tagInfo.tag);
+    const checkedAttr = isChecked ? " checked" : "";
+    const disabledAttr = isDirectTag ? " disabled" : "";
+
+    lines.push("<label class=\"provider-option\">");
+    lines.push("<input type=\"checkbox\" data-tag=\"" + escapeHtml(tagInfo.tag) + "\"" + checkedAttr + disabledAttr +
+      " onchange=\"toggleProviderTag(this)\"> " + escapeHtml(tagInfo.displayName));
+    lines.push("</label>");
+  }
+
+  lines.push("</div>");
+  lines.push("</div>");
+
+  // Chips container for active filter tags.
+  lines.push("<div class=\"provider-chips\" id=\"provider-chips\">");
+
+  if(hasFilter) {
+
+    for(const tag of enabled) {
+
+      if(tag === "direct") {
+
+        continue;
+      }
+
+      const displayName = allTags.find((t) => t.tag === tag)?.displayName ?? tag;
+
+      lines.push("<span class=\"provider-chip\" data-tag=\"" + escapeHtml(tag) + "\">" + escapeHtml(displayName) +
+        "<button type=\"button\" class=\"chip-close\" onclick=\"removeProviderChip('" + escapeHtml(tag) + "')\">&times;</button></span>");
+    }
+  }
+
+  lines.push("</div>");
+  lines.push("</div>");
+
+  // Spacer.
+  lines.push("<div class=\"toolbar-spacer\"></div>");
+
+  // Right group: Bulk assign dropdown.
+  lines.push("<div class=\"toolbar-group\">");
+  lines.push("<span class=\"toolbar-label\">Set all channels to:</span>");
+  lines.push("<select class=\"form-select bulk-assign-select\" id=\"bulk-assign\" onchange=\"bulkAssignProvider(this)\">");
+  lines.push("<option value=\"\" disabled selected>Choose provider...</option>");
+
+  // Render all provider options so the client-side _allOptions snapshot captures them for reinsertion when the filter changes. Filtered-out options get the hidden
+  // attribute for immediate filtering in Chrome. Safari ignores hidden on option elements, so the page-load JS init calls updateBulkAssignOptions() to remove them
+  // from the DOM.
+  for(const tagInfo of allTags) {
+
+    const optionHidden = (hasFilter && !enabled.includes(tagInfo.tag) && (tagInfo.tag !== "direct")) ? " hidden" : "";
+
+    lines.push("<option value=\"" + escapeHtml(tagInfo.tag) + "\"" + optionHidden + ">" + escapeHtml(tagInfo.displayName) + "</option>");
+  }
+
+  lines.push("</select>");
+  lines.push("</div>");
+
+  lines.push("</div>");
+
+  return lines.join("\n");
+}
+
+/**
  * Generates the Channels panel HTML content.
  * @param channelMessage - Optional message to display (success or error).
  * @param channelError - If true, display as error; otherwise as success.
@@ -1345,19 +1488,16 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
 export function generateChannelsPanel(channelMessage?: string, channelError?: boolean, editingChannelKey?: string, showAddForm?: boolean,
   formErrors?: Map<string, string>, formValues?: Map<string, string>): string {
 
-  // Get all channels including disabled predefined ones. User channels override predefined. Filter out provider variants — only canonical keys are shown in the UI.
-  const userChannels = getUserChannels();
-  const predefinedChannels = getPredefinedChannels();
-  const allChannelKeys = new Set([ ...Object.keys(predefinedChannels), ...Object.keys(userChannels) ]);
-  const channelKeys = [...allChannelKeys].filter((key) => !isProviderVariant(key)).sort();
+  // Get the canonical channel listing (provider variants already filtered out, sorted by key). This is the single source of truth for merged channel data —
+  // it handles predefined/user merging, disabled state, and provider availability.
+  const listing = getChannelListing();
   const profiles = getProfiles();
   const disabledPredefined = getDisabledPredefinedChannels();
-  const predefinedCount = Object.keys(predefinedChannels).length;
+  const predefinedCount = Object.keys(getPredefinedChannels()).length;
   const allDisabled = disabledPredefined.length === predefinedCount;
 
-  // Count predefined channels that are actually disabled in the DOM — excludes those overridden by user channels, since overridden channels render as user channel
-  // rows rather than disabled predefined rows.
-  const visibleDisabledCount = disabledPredefined.filter((key) => !isUserChannel(key)).length;
+  // Count channels hidden from the default view: disabled predefined channels OR channels with no available providers.
+  const totalHiddenCount = listing.filter((entry) => !entry.enabled || !entry.availableByProvider).length;
 
   const lines: string[] = [];
 
@@ -1404,7 +1544,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   }
 
   lines.push("<label class=\"toggle-label\"><input type=\"checkbox\" id=\"show-disabled-toggle\" onchange=\"toggleDisabledVisibility()\"> ",
-    "Show disabled (<span id=\"disabled-count\">" + String(visibleDisabledCount) + "</span>)</label>");
+    "Show disabled (<span id=\"disabled-count\">" + String(totalHiddenCount) + "</span>)</label>");
   lines.push("</div>");
   lines.push("</div>");
 
@@ -1507,6 +1647,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</form>");
   lines.push("</div>"); // End add-channel-form.
 
+  // Provider filter toolbar with multi-select dropdown, chips, and bulk assign. Placed after the add channel form so the form flows directly from its trigger button.
+  lines.push(generateProviderFilterToolbar());
+
   // Profile reference section (hidden by default, toggled via link in profile dropdown hint).
   lines.push(generateProfileReference(profiles));
 
@@ -1526,9 +1669,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<tbody>");
 
   // Generate rows for all channels using the shared row generator.
-  for(const key of channelKeys) {
+  for(const entry of listing) {
 
-    const rowHtml = generateChannelRowHtml(key, profiles);
+    const rowHtml = generateChannelRowHtml(entry.key, profiles);
 
     lines.push(rowHtml.displayRow);
 
@@ -2305,6 +2448,192 @@ export function setupConfigEndpoint(app: Express): void {
 
       LOG.error("Failed to toggle all predefined channels: %s", formatError(error));
       res.status(500).json({ error: "Failed to toggle channels: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/provider-filter - Update the provider filter (enabled provider tags).
+  app.post("/config/provider-filter", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { enabledProviders?: string[] };
+      const tags = body.enabledProviders;
+
+      // Validate tags is an array.
+      if(!Array.isArray(tags)) {
+
+        res.status(400).json({ error: "enabledProviders must be an array.", success: false });
+
+        return;
+      }
+
+      // Validate all tags are known.
+      const knownTags = new Set(getAllProviderTags().map((t) => t.tag));
+
+      for(const tag of tags) {
+
+        if(!knownTags.has(tag)) {
+
+          res.status(400).json({ error: "Unknown provider tag: " + String(tag), success: false });
+
+          return;
+        }
+      }
+
+      // Update module-level state.
+      setEnabledProviders(tags);
+
+      // Update runtime CONFIG.
+      CONFIG.channels.enabledProviders = [...tags];
+
+      // Save to config file.
+      const configResult = await loadUserConfig();
+      const userConfig = configResult.config;
+
+      userConfig.channels ??= {};
+      userConfig.channels.enabledProviders = tags;
+
+      await saveUserConfig(filterDefaults(userConfig));
+
+      LOG.info("Provider filter updated: %s.", tags.length > 0 ? tags.join(", ") : "all providers");
+
+      res.json({ enabledProviders: tags, success: true });
+    } catch(error) {
+
+      LOG.error("Failed to update provider filter: %s", formatError(error));
+      res.status(500).json({ error: "Failed to update provider filter: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/provider-bulk-assign - Set all channels to a specific provider.
+  app.post("/config/provider-bulk-assign", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { provider?: string };
+      const providerTag = body.provider?.trim();
+
+      // Validate provider tag.
+      if(!providerTag) {
+
+        res.status(400).json({ error: "Provider tag is required.", success: false });
+
+        return;
+      }
+
+      let affected = 0;
+      const previousSelections: Record<string, Nullable<string>> = {};
+      const selections: Record<string, { profile: Nullable<string>; variant: string }> = {};
+
+      // Iterate all channels and set those with a matching variant.
+      const listing = getChannelListing();
+
+      for(const entry of listing) {
+
+        const group = getProviderGroup(entry.key);
+
+        if(!group || (group.variants.length <= 1)) {
+
+          continue;
+        }
+
+        // Find a variant matching the requested provider tag.
+        const matchingVariant = group.variants.find((v) => (getProviderTagForChannel(v.key) === providerTag));
+
+        if(matchingVariant) {
+
+          // Snapshot the current selection before overwriting so the client can offer undo.
+          const currentVariant = getProviderSelection(entry.key);
+
+          previousSelections[entry.key] = currentVariant ?? null;
+
+          setProviderSelection(entry.key, matchingVariant.key);
+          affected++;
+
+          // Collect the resolved profile name for client-side UI update.
+          const resolvedChannel = getResolvedChannel(matchingVariant.key);
+
+          selections[entry.key] = { profile: resolvedChannel?.profile ?? null, variant: matchingVariant.key };
+        }
+      }
+
+      // Save to disk.
+      await saveProviderSelections();
+
+      LOG.info("Bulk assign to '%s': %d of %d channels affected.", providerTag, affected, listing.length);
+
+      res.json({ affected, previousSelections, selections, success: true, total: listing.length });
+    } catch(error) {
+
+      LOG.error("Failed to bulk assign provider: %s", formatError(error));
+      res.status(500).json({ error: "Failed to bulk assign provider: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/provider-bulk-restore - Restore previous provider selections (undo bulk assign).
+  app.post("/config/provider-bulk-restore", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { selections?: Record<string, Nullable<string>> };
+      const previousSelections = body.selections;
+
+      if(!previousSelections || (typeof previousSelections !== "object")) {
+
+        res.status(400).json({ error: "Selections map is required.", success: false });
+
+        return;
+      }
+
+      let restored = 0;
+      const selections: Record<string, { profile: Nullable<string>; variant: string }> = {};
+
+      for(const [ key, variantKey ] of Object.entries(previousSelections)) {
+
+        const group = getProviderGroup(key);
+
+        if(!group) {
+
+          continue;
+        }
+
+        // A null value means the channel was using the default (canonical) selection. Restoring by setting the selection to the canonical key clears the override.
+        if(variantKey === null) {
+
+          setProviderSelection(key, key);
+
+        } else {
+
+          // Validate the variant belongs to this channel's provider group before restoring.
+          const isValid = group.variants.some((v) => (v.key === variantKey));
+
+          if(!isValid) {
+
+            continue;
+          }
+
+          setProviderSelection(key, variantKey);
+        }
+
+        restored++;
+
+        // Build the same selection response format as bulk assign for client-side UI updates.
+        const effectiveKey = variantKey ?? key;
+        const resolvedChannel = getResolvedChannel(effectiveKey);
+
+        selections[key] = { profile: resolvedChannel?.profile ?? null, variant: effectiveKey };
+      }
+
+      // Save to disk.
+      await saveProviderSelections();
+
+      LOG.info("Bulk restore: %d channel(s) reverted.", restored);
+
+      res.json({ restored, selections, success: true });
+    } catch(error) {
+
+      LOG.error("Failed to bulk restore providers: %s", formatError(error));
+      res.status(500).json({ error: "Failed to bulk restore providers: " + formatError(error), success: false });
     }
   });
 

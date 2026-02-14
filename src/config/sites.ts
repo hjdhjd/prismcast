@@ -327,18 +327,25 @@ export interface DomainConfig {
   // (fullscreen method, iframe handling, etc.). Omit for domains that only need a display name.
   profile?: string;
 
-  // Friendly provider name shown in the UI source column. When set, this name is used instead of the raw domain string (e.g., "Hulu" instead of "hulu.com"). Omit
-  // to fall back to the concise domain extracted from the URL.
+  // Provider filter tag for subscription services. Channels whose canonical URL matches a domain with this field are identified as belonging to this subscription
+  // service for filtering purposes. Domains that share a tag (e.g., "watch.sling.com" and a hypothetical "sling.com" variant) are treated as the same provider.
+  // Omit for network-owned sites (abc.com, nbc.com, espn.com, etc.) — they are implicitly tagged "direct".
+  providerTag?: string;
+
+  // Friendly provider name shown in the UI source column, provider dropdowns, and labels. When set, this name is used instead of the raw domain string (e.g.,
+  // "Hulu" instead of "hulu.com"). Additionally, entries with providerTag derive their filter UI display name from this field by stripping any trailing
+  // parenthetical (e.g., "Hulu (Live Guide)" becomes "Hulu" in the filter). Omit to fall back to the concise domain extracted from the URL.
   provider?: string;
 }
 
-/* This mapping associates domain keys with site profiles and provider display names. Most keys are concise second-level domains (e.g., "nbc.com",
- * "foodnetwork.com") matching the output of extractDomain(). Keys can also be full hostnames (e.g., "tv.youtube.com") for subdomain-specific overrides —
- * getDomainConfig() tries the full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com" when the URL
- * matches.
+/* This mapping associates domain keys with site profiles, provider display names, and provider filter tags. Most keys are concise second-level domains
+ * (e.g., "nbc.com", "foodnetwork.com") matching the output of extractDomain(). Keys can also be full hostnames (e.g., "tv.youtube.com") for subdomain-specific
+ * overrides — getDomainConfig() tries the full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com"
+ * when the URL matches.
  *
  * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains without a provider entry will display the
- * concise domain string (e.g., "hulu.com") in the UI.
+ * concise domain string (e.g., "hulu.com") in the UI. Entries with a providerTag participate in the provider filter system — channels whose canonical URL maps to
+ * a tagged domain are identified as belonging to that subscription service rather than being tagged as "direct" (free network sites).
  */
 export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
 
@@ -350,34 +357,34 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "cnbc.com": { profile: "fullscreenApi", provider: "CNBC.com" },
   "cnn.com": { profile: "fullscreenApi", provider: "CNN.com" },
   "disneynow.com": { profile: "disneyNow", provider: "DisneyNOW" },
-  "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+" },
+  "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+", providerTag: "disneyplus" },
   "espn.com": { profile: "keyboardMultiVideo", provider: "ESPN.com" },
   "foodnetwork.com": { profile: "fullscreenApi", provider: "Food Network" },
-  "fox.com": { loginUrl: "https://www.fox.com", profile: "foxLive", provider: "Fox" },
+  "fox.com": { loginUrl: "https://www.fox.com", profile: "foxLive", provider: "Fox", providerTag: "foxcom" },
   "foxbusiness.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox Business" },
   "foxnews.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox News" },
   "foxsports.com": { profile: "fullscreenApi", provider: "Fox Sports" },
   "france24.com": { profile: "embeddedVolumeLock", provider: "France 24" },
   "fyi.tv": { profile: "fullscreenApi", provider: "FYI" },
   "golfchannel.com": { profile: "fullscreenApi", provider: "Golf Channel" },
-  "hbomax.com": { profile: "hboMax", provider: "HBO Max" },
+  "hbomax.com": { profile: "hboMax", provider: "HBO Max", providerTag: "hbomax" },
   "history.com": { profile: "fullscreenApi", provider: "History.com" },
-  "hulu.com": { profile: "huluLive", provider: "Hulu (Live Guide)" },
+  "hulu.com": { profile: "huluLive", provider: "Hulu (Live Guide)", providerTag: "hulu" },
   "lakeshorepbs.org": { profile: "embeddedPlayer", provider: "Lakeshore PBS" },
   "ms.now": { profile: "keyboardDynamic", provider: "MSNOW" },
   "mylifetime.com": { profile: "fullscreenApi", provider: "Lifetime" },
   "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", provider: "Nat Geo" },
   "nba.com": { profile: "fullscreenApi", provider: "NBA.com" },
   "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", provider: "NBC.com" },
-  "paramountplus.com": { profile: "fullscreenApi", provider: "Paramount+" },
+  "paramountplus.com": { profile: "fullscreenApi", provider: "Paramount+", providerTag: "paramountplus" },
   "sling.com": { profile: "embeddedVolumeLock", provider: "Sling TV" },
   "tbs.com": { profile: "fullscreenApi", provider: "TBS.com" },
   "tntdrama.com": { profile: "fullscreenApi", provider: "TNT" },
   "trutv.com": { profile: "fullscreenApi", provider: "truTV" },
-  "tv.youtube.com": { profile: "youtubeTV", provider: "YouTube TV" },
-  "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network" },
+  "tv.youtube.com": { profile: "youtubeTV", provider: "YouTube TV", providerTag: "yttv" },
+  "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network", providerTag: "usa" },
   "vh1.com": { profile: "fullscreenApi", provider: "VH1.com" },
-  "watch.sling.com": { profile: "slingLive", provider: "Sling TV (Live Guide)" },
+  "watch.sling.com": { profile: "slingLive", provider: "Sling TV (Live Guide)", providerTag: "sling" },
   "watchhallmarktv.com": { profile: "fullscreenApi", provider: "Hallmark" },
   "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
   "windy.com": { profile: "staticPage", provider: "Windy" },

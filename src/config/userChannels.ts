@@ -3,7 +3,8 @@
  * userChannels.ts: User channel file management for PrismCast.
  */
 import type { Channel, ChannelListingEntry, ChannelMap } from "../types/index.js";
-import { buildProviderGroups, getProviderSelections, isProviderVariant, setProviderSelections } from "./providers.js";
+import { buildProviderGroups, getAllProviderTags, getProviderSelections, isChannelAvailableByProvider, isProviderVariant, setEnabledProviders,
+  setProviderSelections } from "./providers.js";
 import { CONFIG } from "./index.js";
 import { LOG } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
@@ -281,10 +282,33 @@ export async function initializeUserChannels(): Promise<void> {
   // Load provider selections from the file.
   setProviderSelections(result.providerSelections);
 
+  // Load enabled providers from the configuration, validating that each tag is recognized. Invalid tags (e.g., from hand-edited config.json typos) are stripped
+  // silently after logging a warning. Validation must happen after buildProviderGroups() because getAllProviderTags() depends on the groups being built.
+  const configuredProviders = CONFIG.channels.enabledProviders;
+
   // Build the merged channels map and then build provider groups.
   const mergedChannels = getMergedChannelMap();
 
   buildProviderGroups(mergedChannels);
+
+  // Now that provider groups are built, validate the configured provider tags. Strip any unrecognized tags and warn.
+  if(configuredProviders.length > 0) {
+
+    const knownTags = new Set(getAllProviderTags().map((t) => t.tag));
+    const validTags = configuredProviders.filter((tag) => knownTags.has(tag));
+    const invalidTags = configuredProviders.filter((tag) => !knownTags.has(tag));
+
+    if(invalidTags.length > 0) {
+
+      LOG.warn("Ignoring unrecognized provider tags in configuration: %s.", invalidTags.join(", "));
+    }
+
+    setEnabledProviders(validTags);
+    CONFIG.channels.enabledProviders = validTags;
+  } else {
+
+    setEnabledProviders(configuredProviders);
+  }
 
   const userCount = Object.keys(loadedUserChannels).length;
   const predefinedCount = Object.keys(PREDEFINED_CHANNELS).length;
@@ -369,6 +393,7 @@ export function getChannelListing(): ChannelListingEntry[] {
 
     listing.push({
 
+      availableByProvider: isChannelAvailableByProvider(key),
       channel: isUser ? loadedUserChannels[key] : PREDEFINED_CHANNELS[key],
       enabled: !isPredefinedChannelDisabled(key),
       key,
@@ -393,7 +418,7 @@ export function getAllChannels(): ChannelMap {
 
   for(const entry of getChannelListing()) {
 
-    if(entry.enabled) {
+    if(entry.enabled && entry.availableByProvider) {
 
       result[entry.key] = entry.channel;
     }

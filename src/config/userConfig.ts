@@ -54,7 +54,7 @@ export interface SettingMetadata {
   displayUnit?: string;
 
   // Environment variable that can override this setting, or null if not overridable.
-  envVar: string | null;
+  envVar: Nullable<string>;
 
   // Human-readable label for form fields.
   label: string;
@@ -496,8 +496,8 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       description: "Target frame rate. 60fps is ideal for sports; 30fps works for most TV content.",
       envVar: "FRAME_RATE",
       label: "Frame Rate",
-      max: 120,
-      min: 15,
+      max: 60,
+      min: 30,
       path: "streaming.frameRate",
       type: "integer",
       unit: "fps"
@@ -658,6 +658,9 @@ export interface UserChannelsConfig {
 
   // List of predefined channel keys that are disabled.
   disabledPredefined?: string[];
+
+  // Provider tags that are enabled for filtering. Empty means no filter.
+  enabledProviders?: string[];
 }
 
 /**
@@ -820,7 +823,8 @@ export const DEFAULTS: Config = {
 
   channels: {
 
-    disabledPredefined: []
+    disabledPredefined: [],
+    enabledProviders: []
   },
 
   hdhr: {
@@ -1026,6 +1030,11 @@ export function mergeConfiguration(userConfig: UserConfig): Config {
   if(Array.isArray(userConfig.channels?.disabledPredefined)) {
 
     config.channels.disabledPredefined = [...userConfig.channels.disabledPredefined];
+  }
+
+  if(Array.isArray(userConfig.channels?.enabledProviders)) {
+
+    config.channels.enabledProviders = [...userConfig.channels.enabledProviders];
   }
 
   if((typeof userConfig.hdhr?.deviceId === "string") && (userConfig.hdhr.deviceId.length > 0)) {
@@ -1385,6 +1394,13 @@ export function filterDefaults(config: UserConfig): UserConfig {
   if(Array.isArray(configChannelsDisabled) && (configChannelsDisabled.length > 0)) {
 
     setNestedValue(filtered, "channels.disabledPredefined", configChannelsDisabled);
+  }
+
+  const configEnabledProviders = getNestedValue(config, "channels.enabledProviders") as string[] | undefined;
+
+  if(Array.isArray(configEnabledProviders) && (configEnabledProviders.length > 0)) {
+
+    setNestedValue(filtered, "channels.enabledProviders", configEnabledProviders);
   }
 
   const configDeviceId = getNestedValue(config, "hdhr.deviceId") as string | undefined;

@@ -166,6 +166,10 @@ export interface ChannelsConfig {
 
   // List of predefined channel keys that are disabled. Disabled channels are excluded from the playlist and cannot be streamed.
   disabledPredefined: string[];
+
+  // Provider tags that are enabled for filtering. Empty array means no filter (all providers shown). Non-empty means only channels with at least one matching
+  // provider variant are included in the playlist and guide.
+  enabledProviders: string[];
 }
 
 /**
@@ -507,6 +511,9 @@ export interface Channel {
  * single source of truth for merged channel data across the codebase.
  */
 export interface ChannelListingEntry {
+
+  // Whether the channel has at least one provider variant available given the current provider filter. When false, the channel is hidden from the playlist and guide.
+  availableByProvider: boolean;
 
   // The channel definition with all properties (name, url, profile, etc.).
   channel: Channel;
