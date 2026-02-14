@@ -304,8 +304,10 @@ async function waitForPlayButton(page: Page, playSelector: Nullable<string> | un
 }
 
 /**
- * Clicks the on-now program cell and waits for the play button, retrying on failure. If the play button doesn't appear after clicking the on-now cell
- * (indicating the click didn't register), retries the full sequence after a brief delay.
+ * Clicks the on-now program cell and waits for the play button with navigation verification, retrying on failure. Handles two distinct failure modes: (1) the
+ * on-now cell click doesn't register because React hasn't fully hydrated event handlers — the play button never appears; (2) the play button appears and is
+ * clicked but the click is silently swallowed — navigation to the player page doesn't occur. Both failures are detected by waitForPlayButton and trigger a
+ * retry of the full on-now cell and play button sequence after a brief delay.
  * @param page - The Puppeteer page object.
  * @param clickTarget - The lowercased, trimmed channel name to locate in the guide grid.
  * @param playSelector - The CSS selector for the play button, or undefined if no play button is needed.
@@ -324,6 +326,9 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
   // Delay between click retries. Gives React additional time to finish hydrating event handlers.
   const CLICK_RETRY_DELAY = 1500;
 
+  // Track the last click coordinates for diagnostic logging on failure.
+  let lastClickCoords: Nullable<ClickTarget> = null;
+
   for(let attempt = 0; attempt < MAX_CLICK_ATTEMPTS; attempt++) {
 
     // eslint-disable-next-line no-await-in-loop
@@ -333,6 +338,8 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
 
       return { reason: "Found channel " + channelName + " but could not locate on-now program cell.", success: false };
     }
+
+    lastClickCoords = onNowTarget;
 
     // eslint-disable-next-line no-await-in-loop
     await scrollAndClick(page, onNowTarget);
@@ -356,6 +363,76 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
 
       // eslint-disable-next-line no-await-in-loop
       await delay(CLICK_RETRY_DELAY);
+    }
+  }
+
+  // All click attempts exhausted. Run diagnostics to capture the page state at the moment of failure. This information is critical for debugging intermittent
+  // guide interaction failures where the on-now cell is found but clicking it never produces the play button modal.
+  if(lastClickCoords) {
+
+    try {
+
+      const diagnostics = await evaluateWithAbort(page, (x: number, y: number, target: string): {
+        elementStack: string[];
+        hydrated: boolean;
+        onNowFound: boolean;
+        pageAge: number;
+      } => {
+
+        // What elements are at the click coordinates, from topmost to bottommost? If something other than the on-now cell is intercepting clicks, it will
+        // appear first in this list.
+        const elements = document.elementsFromPoint(x, y);
+        const elementStack = elements.slice(0, 5).map((el) => {
+
+          const tag = el.tagName.toLowerCase();
+          const id = el.id ? ("#" + el.id) : "";
+          const cls = el.className && (typeof el.className === "string") ? ("." + el.className.trim().split(/\s+/).slice(0, 2).join(".")) : "";
+          const testId = el.getAttribute("data-testid") ?? "";
+          const testIdStr = testId ? ("[data-testid=\"" + testId + "\"]") : "";
+
+          return tag + id + cls + testIdStr;
+        });
+
+        // Check whether the on-now cell has React internal properties, which indicates React has hydrated the element and attached event handlers. React
+        // attaches __reactFiber$ and __reactProps$ properties to hydrated elements. If these are absent, the element is rendered but not interactive.
+        let hydrated = false;
+        let onNowFound = false;
+        const prefix = "live-guide-channel-kyber-";
+        const containers = document.querySelectorAll("[data-testid^=\"" + prefix + "\"]");
+
+        for(const el of Array.from(containers)) {
+
+          const testid = el.getAttribute("data-testid") ?? "";
+          const name = testid.slice(prefix.length).trim().replace(/\s+/g, " ").toLowerCase();
+
+          if(name === target) {
+
+            const row = el.closest("[data-testid=\"live-guide-row\"]");
+
+            if(row) {
+
+              const onNow = row.querySelector(".LiveGuideProgram--first");
+
+              if(onNow) {
+
+                onNowFound = true;
+                hydrated = Object.keys(onNow).some((k) => k.startsWith("__reactFiber") || k.startsWith("__reactProps"));
+              }
+            }
+
+            break;
+          }
+        }
+
+        return { elementStack, hydrated, onNowFound, pageAge: Math.round(performance.now()) };
+      }, [ lastClickCoords.x, lastClickCoords.y, clickTarget ]);
+
+      LOG.warn("Guide click diagnostics for %s: pageAge=%sms, onNowCell=%s, reactHydrated=%s, elementsAtClick=[%s].",
+        channelName, diagnostics.pageAge, diagnostics.onNowFound ? "present" : "missing",
+        diagnostics.hydrated ? "yes" : "no", diagnostics.elementStack.join(" > "));
+    } catch(error) {
+
+      LOG.warn("Could not collect guide click diagnostics for %s: %s.", channelName, formatError(error));
     }
   }
 
