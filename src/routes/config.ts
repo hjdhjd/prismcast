@@ -769,6 +769,12 @@ function toDisplayValue(value: unknown, setting: SettingMetadata): Nullable<numb
     return Number(displayValue.toFixed(precision));
   }
 
+  // Boolean values pass through as strings for display.
+  if(typeof value === "boolean") {
+
+    return String(value);
+  }
+
   return value as number | string;
 }
 
