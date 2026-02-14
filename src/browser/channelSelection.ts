@@ -7,6 +7,7 @@ import { LOG, delay } from "../utils/index.js";
 import { clearHboCache, hboGridStrategy } from "./tuning/hbo.js";
 import { clearHuluCache, guideGridStrategy } from "./tuning/hulu.js";
 import { clearSlingCache, slingGridStrategy } from "./tuning/sling.js";
+import { CHANNELS } from "../channels/index.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
 import { foxGridStrategy } from "./tuning/fox.js";
@@ -77,6 +78,88 @@ export function normalizeChannelName(name: string): string {
 }
 
 /**
+ * Logs available channel names from a provider's guide grid when channel selection fails. Produces an actionable log message listing channel names that users can
+ * use as `channelSelector` values in user-defined channels. When `presetSuffix` is provided, channels already covered by built-in preset definitions are filtered
+ * out so users see only channels that require manual configuration. When omitted (small channel sets like Fox or HBO), all channels are logged unfiltered.
+ * @param options - Diagnostic dump configuration.
+ * @param options.additionalKnownNames - Extra names to exclude from the filtered list (e.g., CHANNEL_ALTERNATES values for YTTV).
+ * @param options.availableChannels - Sorted list of channel names discovered in the guide grid.
+ * @param options.channelName - The channelSelector value that failed to match, for the log message.
+ * @param options.guideUrl - The URL of the provider's guide page, included in the log message so users know what to set as the channel URL.
+ * @param options.presetSuffix - Key suffix to filter preset channels (e.g., "-yttv", "-hulu"). Omit for small unfiltered channel sets.
+ * @param options.providerName - Human-readable provider name for the log message (e.g., "YouTube TV", "Hulu").
+ */
+export function logAvailableChannels(options: {
+  additionalKnownNames?: string[];
+  availableChannels: string[];
+  channelName: string;
+  guideUrl: string;
+  presetSuffix?: string;
+  providerName: string;
+}): void {
+
+  const { additionalKnownNames, availableChannels, channelName, guideUrl, presetSuffix, providerName } = options;
+
+  if(availableChannels.length === 0) {
+
+    return;
+  }
+
+  let filteredChannels: string[];
+  let countLabel: string;
+
+  if(presetSuffix) {
+
+    // Collect all channelSelector values from preset channels with this suffix, lowercased for case-insensitive comparison.
+    const knownSelectors: string[] = Object.entries(CHANNELS)
+      .filter(([key]) => key.endsWith(presetSuffix))
+      .map(([ , ch ]) => (ch.channelSelector ?? "").toLowerCase())
+      .filter((s) => s.length > 0);
+
+    // Include additional known names (e.g., CHANNEL_ALTERNATES values for YTTV) so those are also filtered out.
+    if(additionalKnownNames) {
+
+      for(const name of additionalKnownNames) {
+
+        knownSelectors.push(name.toLowerCase());
+      }
+    }
+
+    // Filter to channels not matched by any known selector. A channel is "covered" if a preset would find it via exact match (with parenthetical suffix stripped)
+    // or prefix+digit match. This mirrors the strategy's own matching tiers so users see only channels that genuinely need manual configuration.
+    filteredChannels = availableChannels.filter((name) => {
+
+      const lower = name.toLowerCase();
+      const stripped = lower.replace(/ \(.*\)$/, "");
+
+      return !knownSelectors.some((sel) => {
+
+        return (stripped === sel) ||
+          (lower.startsWith(sel + " ") && (lower.length > sel.length + 1) && (lower.charCodeAt(sel.length + 1) >= 48) && (lower.charCodeAt(sel.length + 1) <= 57));
+      });
+    });
+
+    countLabel = "uncovered (" + String(filteredChannels.length) + " of " + String(availableChannels.length) + ")";
+  } else {
+
+    // No preset suffix — log all available channels unfiltered. Used for small channel sets (Fox, HBO) where the full list is actionable without filtering.
+    filteredChannels = availableChannels;
+    countLabel = String(filteredChannels.length);
+  }
+
+  if(filteredChannels.length === 0) {
+
+    return;
+  }
+
+  LOG.warn(
+    "Channel \"%s\" not found in %s guide. Create a user-defined channel with one of the names below as the Channel Selector and %s as the URL. " +
+    "Available channels (%s): %s.",
+    channelName, providerName, guideUrl, countLabel, filteredChannels.join(", ")
+  );
+}
+
+/**
  * Selects a channel from a multi-channel player UI using the strategy specified in the profile. This is the main entry point for channel selection, called by
  * tuneToChannel() after page navigation.
  *
@@ -136,11 +219,6 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
   }
 
   const result = await strategyFn(page, profile);
-
-  if(!result.success) {
-
-    LOG.warn("Failed to select %s from channel guide: %s", profile.channelSelector, result.reason ?? "Unknown reason.");
-  }
 
   return result;
 }

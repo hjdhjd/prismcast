@@ -1121,7 +1121,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
     if(!channelResult.success) {
 
-      LOG.warn("Channel selection may have failed: %s.", channelResult.reason ?? "Unknown reason");
+      throw new Error("Channel selection failed: " + (channelResult.reason ?? "Unknown reason."));
     }
   }
 

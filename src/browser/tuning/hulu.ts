@@ -4,7 +4,7 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, Nullable } from "../../types/index.js";
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.js";
-import { normalizeChannelName, scrollAndClick } from "../channelSelection.js";
+import { logAvailableChannels, normalizeChannelName, scrollAndClick } from "../channelSelection.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 
@@ -749,6 +749,22 @@ export async function guideGridStrategy(page: Page, profile: ChannelSelectionPro
   }
 
   if(!found) {
+
+    // Log available channels from the guide row cache to help users identify the correct channelSelector value. The cache accumulates all channel names encountered
+    // during binary search and linear scan, so it contains most or all channels even though the virtualized grid only renders ~13 at a time.
+    const availableChannels = Array.from(guideRowCache.keys()).sort();
+
+    if(availableChannels.length > 0) {
+
+      logAvailableChannels({
+
+        availableChannels,
+        channelName,
+        guideUrl: "https://www.hulu.com/live-tv",
+        presetSuffix: "-hulu",
+        providerName: "Hulu"
+      });
+    }
 
     return { reason: "Could not find channel " + channelName + " in guide grid.", success: false };
   }

@@ -6,6 +6,7 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, Nullable } from ".
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
+import { logAvailableChannels } from "../channelSelection.js";
 
 // Base URL for HBO Max watch page navigation and tab URL construction.
 const HBO_MAX_BASE_URL = "https://play.hbomax.com";
@@ -251,6 +252,39 @@ export async function hboGridStrategy(page: Page, profile: ChannelSelectionProfi
   }
 
   if(!railResult.watchPath) {
+
+    // Best-effort diagnostic: collect all channel names from the rail so the user can see what values are valid for channelSelector.
+    try {
+
+      const availableChannels = await evaluateWithAbort(page, (): string[] => {
+
+        const rail = document.querySelector("section[data-testid=\"hbo-page-rail-distribution-channels-us_rail\"]");
+
+        if(!rail) {
+
+          return [];
+        }
+
+        return Array.from(rail.querySelectorAll("p[aria-hidden=\"true\"]"))
+          .map((p) => (p.textContent || "").trim())
+          .filter((n) => n.length > 0)
+          .sort();
+      }, []);
+
+      if(availableChannels.length > 0) {
+
+        logAvailableChannels({
+
+          availableChannels,
+          channelName,
+          guideUrl: "https://play.hbomax.com",
+          providerName: "HBO Max"
+        });
+      }
+    } catch {
+
+      // Diagnostic dump is best-effort.
+    }
 
     return { reason: "Channel " + channelName + " not found in HBO channel rail.", success: false };
   }

@@ -6,6 +6,7 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, Nullable } from ".
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 import { evaluateWithAbort } from "../../utils/index.js";
+import { logAvailableChannels } from "../channelSelection.js";
 
 /**
  * Fox.com grid strategy: finds a channel in the non-virtualized guide grid at fox.com/live/channels by matching the station code (button title attribute) on
@@ -48,6 +49,32 @@ export async function foxGridStrategy(page: Page, profile: ChannelSelectionProfi
       stationCode
     );
   } catch {
+
+    // Best-effort diagnostic: collect all available station codes from the guide grid so the user can see what values are valid for channelSelector.
+    try {
+
+      const availableChannels = await evaluateWithAbort(page, (): string[] => {
+
+        return Array.from(document.querySelectorAll("[data-testid=\"GuideChannelLogo\"] button"))
+          .map((btn) => btn.getAttribute("title") ?? "")
+          .filter((t) => t.length > 0)
+          .sort();
+      }, []);
+
+      if(availableChannels.length > 0) {
+
+        logAvailableChannels({
+
+          availableChannels,
+          channelName: stationCode,
+          guideUrl: "https://www.fox.com/live/channels",
+          providerName: "Fox"
+        });
+      }
+    } catch {
+
+      // Diagnostic dump is best-effort.
+    }
 
     return { reason: "Station code " + stationCode + " not found in Fox.com guide grid.", success: false };
   }

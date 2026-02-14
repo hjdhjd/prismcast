@@ -4,9 +4,9 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, Nullable } from "../../types/index.js";
 import { LOG, delay, formatError } from "../../utils/index.js";
+import { logAvailableChannels, normalizeChannelName } from "../channelSelection.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
-import { normalizeChannelName } from "../channelSelection.js";
 
 // Sling TV guide grid row index cache. Maps normalized channel names (from data-testid="channel-{NAME}" attributes) to their row indices extracted from the
 // parent .guide-row-container CSS class (gridGuideRow-{N}). Separate from the Hulu guideRowCache because Sling uses a different row index system (CSS class-based)
@@ -414,6 +414,21 @@ export async function slingGridStrategy(page: Page, profile: ChannelSelectionPro
   }
 
   if(!foundClickTarget) {
+
+    // Log available channels from the row cache to help users identify the correct channelSelector value. The cache contains channels seen during binary search
+    // iterations and any prior tune attempts in this session — a partial but often actionable subset of Sling's ~636 channel catalog.
+    const availableChannels = Array.from(slingRowCache.keys()).sort();
+
+    if(availableChannels.length > 0) {
+
+      logAvailableChannels({
+
+        availableChannels,
+        channelName,
+        guideUrl: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z",
+        providerName: "Sling TV"
+      });
+    }
 
     return { reason: "Could not find channel " + channelName + " in Sling TV guide grid.", success: false };
   }

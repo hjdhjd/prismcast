@@ -6,9 +6,23 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, Nullable } from ".
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
+import { logAvailableChannels } from "../channelSelection.js";
 
 // Base URL for YouTube TV watch page navigation.
 const YOUTUBE_TV_BASE_URL = "https://tv.youtube.com";
+
+// Known alternate channel names for affiliates that vary by market. CW appears as "WGN" in some markets. PBS affiliates appear under local call letters (e.g.,
+// WTTW, KQED) or branded names (e.g., "Cascade PBS", "Lakeshore PBS") rather than "PBS", so we list the major market call letters and branded names to cover most
+// users. Each alternate is tried after the primary name fails both exact and prefix+digit matching. Users in smaller markets override via custom channel entries with
+// their local call letters as the channelSelector.
+const CHANNEL_ALTERNATES: Record<string, string[]> = {
+
+  "cw": ["WGN"],
+  "pbs": [
+    "Cascade PBS", "GBH", "KAET", "KBTC", "KCET", "KCTS", "KERA", "KLCS", "KOCE", "KPBS", "KQED", "KRMA", "KUHT", "KVIE", "Lakeshore PBS", "MPT", "NJ PBS",
+    "THIRTEEN", "TPT", "WETA", "WGBH", "WHYY", "WLIW", "WNED", "WNET", "WNIT", "WPBA", "WPBT", "WTTW", "WTVS", "WXEL"
+  ]
+};
 
 /**
  * YouTube TV grid strategy: finds a channel in the non-virtualized EPG grid at tv.youtube.com/live by querying the aria-label attribute on thumbnail endpoint
@@ -37,18 +51,6 @@ export async function youtubeGridStrategy(page: Page, profile: ChannelSelectionP
     return { reason: "YouTube TV guide grid did not load.", success: false };
   }
 
-  // Known alternate channel names for affiliates that vary by market. CW appears as "WGN" in some markets. PBS affiliates appear under local call letters (e.g.,
-  // WTTW, KQED) rather than "PBS", so we list the major market call letters to cover most users. Each alternate is tried after the primary name fails both exact and
-  // prefix+digit matching. Users in smaller markets override via custom channel entries with their local call letters as the channelSelector.
-  const CHANNEL_ALTERNATES: Record<string, string[]> = {
-
-    "cw": ["WGN"],
-    "pbs": [
-      "GBH", "KAET", "KBTC", "KCET", "KCTS", "KERA", "KLCS", "KOCE", "KPBS", "KQED", "KRMA", "KUHT", "KVIE", "MPT", "NJ PBS", "THIRTEEN", "TPT", "WETA", "WGBH", "WHYY",
-      "WLIW", "WNED", "WNET", "WNIT", "WPBA", "WPBT", "WTTW", "WTVS", "WXEL"
-    ]
-  };
-
   // Build the list of names to try: the primary name first, then any known alternates for markets where the affiliate uses a different name. The eslint disable is
   // needed because TypeScript's Record indexing doesn't capture that the key may not exist at runtime.
   const alternates = CHANNEL_ALTERNATES[channelName.toLowerCase()];
@@ -56,10 +58,13 @@ export async function youtubeGridStrategy(page: Page, profile: ChannelSelectionP
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   const namesToTry = alternates ? [ channelName, ...alternates ] : [channelName];
 
-  // Find the watch URL for the target channel. For each name in the list, first tries an exact case-insensitive aria-label match. If that fails, falls back to a
-  // prefix+digit match for local affiliates — YouTube TV displays locals as "{Network} {Number}" (e.g., "NBC 5", "ABC 7", "FOX 32"), so a channelSelector of "NBC"
-  // can automatically resolve to the user's local affiliate. The prefix fallback requires a space followed by a digit after the network name to avoid false positives
-  // like "NBC Sports Chicago".
+  // Find the watch URL for the target channel. For each name in the list, we try three matching tiers:
+  //
+  // 1. Exact match: aria-label="watch {Name}" (case-insensitive).
+  // 2. Prefix+digit: aria-label starts with "watch {Name} " followed by a digit. This catches local affiliates displayed as "{Network} {Number}" (e.g., "NBC 5",
+  //    "ABC 7", "FOX 32") while excluding unrelated channels (e.g., "NBC Sports Chicago").
+  // 3. Parenthetical suffix: aria-label starts with "watch {Name} (" to match timezone/region variants like "Magnolia Network (Pacific)" or
+  //    "The Filipino Channel (Pacific)".
   const watchPath = await evaluateWithAbort(page, (names: string[]): Nullable<string> => {
 
     // Helper to extract and validate a watch URL from an anchor element. Returns the href if it points to a streamable watch page, null otherwise.
@@ -84,7 +89,7 @@ export async function youtubeGridStrategy(page: Page, profile: ChannelSelectionP
     // Try each name in order. The primary channel name is tried first, followed by any known alternates.
     for(const name of names) {
 
-      // Try exact match first. The CSS "i" flag enables case-insensitive matching to handle variations in capitalization between the channel selector and the guide.
+      // Tier 1: Exact match. The CSS "i" flag enables case-insensitive matching to handle variations in capitalization between the channel selector and the guide.
       const exactSelector = "ytu-endpoint.tenx-thumb[aria-label=\"watch " + name + "\" i] a";
       const exactResult = extractWatchHref(document.querySelector(exactSelector) as Nullable<HTMLAnchorElement>);
 
@@ -93,7 +98,7 @@ export async function youtubeGridStrategy(page: Page, profile: ChannelSelectionP
         return exactResult;
       }
 
-      // Fallback: prefix + digit match for local affiliates. Find all thumbnails whose aria-label starts with "watch {Name} " and filter to those where the next
+      // Tier 2: Prefix + digit match for local affiliates. Find all thumbnails whose aria-label starts with "watch {Name} " and filter to those where the next
       // character is a digit, matching the "{Network} {Number}" pattern (e.g., "NBC 5", "ABC 7") while excluding unrelated channels (e.g., "NBC Sports Chicago").
       const prefixSelector = "ytu-endpoint.tenx-thumb[aria-label^=\"watch " + name + " \" i] a";
       const candidates = document.querySelectorAll(prefixSelector);
@@ -111,6 +116,16 @@ export async function youtubeGridStrategy(page: Page, profile: ChannelSelectionP
           return extractWatchHref(candidate as HTMLAnchorElement);
         }
       }
+
+      // Tier 3: Parenthetical suffix match for timezone/region variants. Channels like "Magnolia Network (Pacific)" or "The Filipino Channel (Pacific)" have the
+      // base name followed by a space and a parenthetical. The CSS selector matches aria-labels starting with "watch {Name} (" to catch these variants.
+      const parenSelector = "ytu-endpoint.tenx-thumb[aria-label^=\"watch " + name + " (\" i] a";
+      const parenResult = extractWatchHref(document.querySelector(parenSelector) as Nullable<HTMLAnchorElement>);
+
+      if(parenResult) {
+
+        return parenResult;
+      }
     }
 
     return null;
@@ -118,7 +133,49 @@ export async function youtubeGridStrategy(page: Page, profile: ChannelSelectionP
 
   if(!watchPath) {
 
-    return { reason: "Channel " + channelName + " not found in YouTube TV guide or is not streamable.", success: false };
+    // Channel not found. Query all available channel names from the guide grid and log them as a diagnostic to help users identify their market's channel names
+    // and create user-defined channels with the correct channelSelector value.
+    try {
+
+      const availableChannels = await evaluateWithAbort(page, (): string[] => {
+
+        return Array.from(document.querySelectorAll("ytu-endpoint.tenx-thumb[aria-label]"))
+          .map((el) => {
+
+            const label = el.getAttribute("aria-label") ?? "";
+
+            return label.startsWith("watch ") ? label.slice(6) : "";
+          })
+          .filter((name) => name.length > 0)
+          .sort();
+      }, []);
+
+      // Build additional known names from CHANNEL_ALTERNATES values so they are also filtered out of the diagnostic list.
+      const additionalKnownNames: string[] = [];
+
+      for(const alts of Object.values(CHANNEL_ALTERNATES)) {
+
+        for(const alt of alts) {
+
+          additionalKnownNames.push(alt);
+        }
+      }
+
+      logAvailableChannels({
+
+        additionalKnownNames,
+        availableChannels,
+        channelName,
+        guideUrl: "https://tv.youtube.com/live",
+        presetSuffix: "-yttv",
+        providerName: "YouTube TV"
+      });
+    } catch {
+
+      // Diagnostic dump is best-effort. Don't let it mask the real channel selection failure.
+    }
+
+    return { reason: "Channel \"" + channelName + "\" not found in YouTube TV guide.", success: false };
   }
 
   // Navigate directly to the watch URL. This auto-starts playback without any click interaction needed.
@@ -136,3 +193,4 @@ export async function youtubeGridStrategy(page: Page, profile: ChannelSelectionP
 
   return { success: true };
 }
+
