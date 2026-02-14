@@ -238,6 +238,10 @@ function getRecoveryMethod(level: number): string {
 /**
  * Records a recovery attempt in the metrics. Uses the ATTEMPT_FIELDS mapping to find the correct counter field, eliminating the need for if/else chains. This
  * makes adding new recovery methods trivial - just add an entry to ATTEMPT_FIELDS.
+ *
+ * Note: Tab replacement calls this once per logical attempt even though it may internally retry the onTabReplacement callback. The retry is an implementation
+ * detail of executeTabReplacement, not a separate recovery attempt from the monitor's perspective. The circuit breaker likewise records one failure per logical
+ * attempt, not per callback invocation.
  * @param metrics - The metrics object to update.
  * @param method - The recovery method being attempted.
  */
@@ -860,8 +864,70 @@ export function monitorPlaybackHealth(
   }
 
   /**
+   * Applies successful tab replacement state. Updates page and context references, logs recovery duration, records metrics, and resets all failure/escalation state
+   * for the fresh tab. Consolidated here so the try and catch paths in executeTabReplacement share a single implementation.
+   * @param result - The successful tab replacement result containing the new page and context.
+   */
+  function applyTabReplacementSuccess(result: TabReplacementResult): void {
+
+    currentPage = result.page;
+    currentContext = result.context;
+
+    const duration = formatRecoveryDuration(metrics.currentRecoveryStartTime ?? Date.now());
+
+    LOG.info("Recovered in %s via %s.", duration, RECOVERY_METHODS.tabReplacement);
+
+    recordRecoverySuccess(metrics, RECOVERY_METHODS.tabReplacement);
+
+    // Full state reset for fresh tab.
+    lastPageNavigationTime = Date.now();
+    resetRecoveryCounters();
+    resetEscalationState();
+    resetSegmentMonitoringState();
+    setRecoveryGracePeriod(3);
+    resetCircuitBreaker(circuitBreaker);
+  }
+
+  /**
+   * Handles tab replacement failure after all retry attempts are exhausted. Clears stale recovery metrics (preventing ghost "Recovered" logs from the
+   * deferred-success check), runs the circuit breaker, and detects zombie streams where the old page was destroyed but no replacement was created.
+   * @param context - Description of the failure for circuit breaker logging.
+   * @returns The tab replacement outcome (failed or terminated).
+   */
+  function handleExhaustedTabReplacement(context: string): TabReplacementOutcome {
+
+    // Clear stale recovery metrics so the deferred-success check does not falsely log "Recovered" from leftover state set by recordRecoveryAttempt.
+    metrics.currentRecoveryStartTime = null;
+    metrics.currentRecoveryMethod = null;
+
+    LOG.warn("Tab replacement unsuccessful after retry.");
+
+    const failureOutcome = handleTabReplacementFailure(context);
+
+    // If the circuit breaker did not trip but the old page is gone (handler destroyed it before createPageWithCapture failed), the stream is unrecoverable. The
+    // next monitor tick would silently clear the interval via currentPage.isClosed() with no termination log, no status emission, and no cleanup — creating a
+    // zombie entry in the registry. Terminate explicitly instead.
+    if((failureOutcome.outcome === "failed") && currentPage.isClosed()) {
+
+      LOG.error("Tab replacement failed and old page is closed. Stream is unrecoverable. Terminating stream.");
+
+      clearInterval(interval);
+      onCircuitBreak();
+
+      return { outcome: "terminated" };
+    }
+
+    return failureOutcome;
+  }
+
+  /**
    * Executes tab replacement recovery with full error handling. This unified helper handles all tab replacement triggers (tiny segments, stalled capture, unresponsive
    * tab) consistently, including metrics recording, success/failure logging, circuit breaker checks, and state resets.
+   *
+   * On failure, retries onTabReplacement once before giving up. The handler destroys old resources (capture, segmenter, FFmpeg, page) before calling
+   * createPageWithCapture, so a retry is the only chance to save the stream when the first attempt fails. All handler cleanup steps are idempotent on retry:
+   * rawCaptureStream.destroyed guard, segmenter stop() checks state.stopped, FFmpeg kill() checks ffmpeg.killed, page close checks !oldPage.isClosed(), and
+   * unregisterManagedPage is idempotent.
    * @param issueType - Description of what triggered the replacement (for logging and UI display).
    * @returns The tab replacement outcome.
    */
@@ -883,41 +949,52 @@ export function monitorPlaybackHealth(
 
     try {
 
-      const result = await onTabReplacement();
+      let result = await onTabReplacement();
+
+      // First attempt failed — retry once. See idempotency notes in the JSDoc above.
+      if(!result) {
+
+        LOG.debug("Tab replacement attempt 1/2 failed. Retrying...");
+
+        try {
+
+          result = await onTabReplacement();
+        } catch(retryError) {
+
+          LOG.debug("Tab replacement attempt 2/2 failed: %s.", formatError(retryError));
+        }
+      }
 
       if(result) {
 
-        // Success: update references and reset state.
-        currentPage = result.page;
-        currentContext = result.context;
-
-        const duration = formatRecoveryDuration(metrics.currentRecoveryStartTime ?? Date.now());
-
-        LOG.info("Recovered in %s via %s.", duration, RECOVERY_METHODS.tabReplacement);
-
-        recordRecoverySuccess(metrics, RECOVERY_METHODS.tabReplacement);
-
-        // Full state reset for fresh tab.
-        lastPageNavigationTime = Date.now();
-        resetRecoveryCounters();
-        resetEscalationState();
-        resetSegmentMonitoringState();
-        setRecoveryGracePeriod(3);
-        resetCircuitBreaker(circuitBreaker);
+        applyTabReplacementSuccess(result);
 
         return { outcome: "success" };
       }
 
-      // Failure: null result from callback.
-      LOG.warn("Tab replacement unsuccessful.");
-
-      return handleTabReplacementFailure("tab replacement unsuccessful");
+      return handleExhaustedTabReplacement("tab replacement unsuccessful");
     } catch(error) {
 
-      // Error: exception during replacement.
-      LOG.warn("Tab replacement failed: %s.", formatError(error));
+      // Unexpected error (not from onTabReplacement — those are caught internally by the handler in hls.ts and return null). Guard against registry corruption,
+      // getStream failures, or other unexpected errors.
+      LOG.debug("Tab replacement attempt 1/2 failed: %s. Retrying...", formatError(error));
 
-      return handleTabReplacementFailure("tab replacement error");
+      try {
+
+        const retryResult = await onTabReplacement();
+
+        if(retryResult) {
+
+          applyTabReplacementSuccess(retryResult);
+
+          return { outcome: "success" };
+        }
+      } catch(retryError) {
+
+        LOG.debug("Tab replacement attempt 2/2 failed: %s.", formatError(retryError));
+      }
+
+      return handleExhaustedTabReplacement("tab replacement error");
     } finally {
 
       finalizeTabReplacement();
@@ -1370,15 +1447,13 @@ export function monitorPlaybackHealth(
 
               LOG.warn("Detected %d consecutive tiny segments (%d bytes). Capture pipeline appears dead.", consecutiveTinySegments, segmentSize);
 
-              // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentProductionStalled.
+              // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentProductionStalled. Return unconditionally after tab
+              // replacement (matching stalled-capture and unresponsive-tab triggers) to avoid falling through the rest of the tick with stale pre-replacement state.
               if(onTabReplacement && !recoveryInProgress) {
 
-                const tabResult = await executeTabReplacement("tiny segments");
+                await executeTabReplacement("tiny segments");
 
-                if(tabResult.outcome === "terminated") {
-
-                  return;
-                }
+                return;
               } else if(!onTabReplacement) {
 
                 // No tab replacement callback - set stalled flag for circuit breaker.
@@ -1698,7 +1773,7 @@ export function monitorPlaybackHealth(
               // itself is broken (e.g., network issues, site blocking).
               if(consecutiveNavigationFailures >= 2) {
 
-                LOG.error("Page navigation has failed %s consecutive times. Falling back to source reload recovery.",
+                LOG.warn("Page navigation has failed %s consecutive times. Falling back to source reload recovery.",
                   consecutiveNavigationFailures);
 
                 escalationLevel = 2;
@@ -1719,7 +1794,7 @@ export function monitorPlaybackHealth(
 
                 if(pageReloadTimestamps.length >= CONFIG.playback.maxPageReloads) {
 
-                  LOG.error("Exceeded maximum page navigations (%s in %s minutes). Falling back to source reload.",
+                  LOG.warn("Exceeded maximum page navigations (%s in %s minutes). Falling back to source reload.",
                     CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
                   escalationLevel = 2;
