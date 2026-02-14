@@ -191,11 +191,13 @@ function createLaunchdGenerator(): ServiceGenerator {
       }
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async isInstalled(): Promise<boolean> {
 
-      return await Promise.resolve(fs.existsSync(this.getInstallPath()));
+      return fs.existsSync(this.getInstallPath());
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async isRunning(): Promise<boolean> {
 
       try {
@@ -207,10 +209,10 @@ function createLaunchdGenerator(): ServiceGenerator {
         const pid = result.trim().split("\t")[0];
 
         // PID is "-" when loaded but process not running, or a number when actually running.
-        return await Promise.resolve((pid !== "-") && !isNaN(Number(pid)));
+        return (pid !== "-") && !isNaN(Number(pid));
       } catch {
 
-        return await Promise.resolve(false);
+        return false;
       }
     },
 
@@ -218,6 +220,7 @@ function createLaunchdGenerator(): ServiceGenerator {
 
     serviceManager: "launchd",
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async start(): Promise<void> {
 
       const installPath = this.getInstallPath();
@@ -233,17 +236,14 @@ function createLaunchdGenerator(): ServiceGenerator {
 
       // Explicitly start the service. This handles the case where the plist is loaded but the process isn't running (e.g., after a crash).
       execSync("launchctl start " + SERVICE_ID, { stdio: "pipe" });
-
-      await Promise.resolve();
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async stop(): Promise<void> {
 
       const installPath = this.getInstallPath();
 
       execSync("launchctl unload \"" + installPath + "\"", { stdio: "pipe" });
-
-      await Promise.resolve();
     },
 
     async uninstall(): Promise<void> {
@@ -349,21 +349,23 @@ function createSystemdGenerator(): ServiceGenerator {
       execSync("systemctl --user start prismcast.service", { stdio: "pipe" });
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async isInstalled(): Promise<boolean> {
 
-      return await Promise.resolve(fs.existsSync(this.getInstallPath()));
+      return fs.existsSync(this.getInstallPath());
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async isRunning(): Promise<boolean> {
 
       try {
 
         const result = execSync("systemctl --user is-active prismcast.service", { encoding: "utf8", stdio: "pipe" });
 
-        return await Promise.resolve(result.trim() === "active");
+        return result.trim() === "active";
       } catch {
 
-        return await Promise.resolve(false);
+        return false;
       }
     },
 
@@ -371,18 +373,16 @@ function createSystemdGenerator(): ServiceGenerator {
 
     serviceManager: "systemd",
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async start(): Promise<void> {
 
       execSync("systemctl --user start prismcast.service", { stdio: "pipe" });
-
-      await Promise.resolve();
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async stop(): Promise<void> {
 
       execSync("systemctl --user stop prismcast.service", { stdio: "pipe" });
-
-      await Promise.resolve();
     },
 
     async uninstall(): Promise<void> {
@@ -499,29 +499,31 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
       }
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async isInstalled(): Promise<boolean> {
 
       try {
 
         execSync("schtasks /Query /TN \"" + taskName + "\"", { stdio: "pipe" });
 
-        return await Promise.resolve(true);
+        return true;
       } catch {
 
-        return await Promise.resolve(false);
+        return false;
       }
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async isRunning(): Promise<boolean> {
 
       try {
 
         const result = execSync("schtasks /Query /TN \"" + taskName + "\" /FO CSV /NH", { encoding: "utf8", stdio: "pipe" });
 
-        return await Promise.resolve(result.includes("Running"));
+        return result.includes("Running");
       } catch {
 
-        return await Promise.resolve(false);
+        return false;
       }
     },
 
@@ -529,18 +531,16 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
 
     serviceManager: "windows-scheduler",
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async start(): Promise<void> {
 
       execSync("schtasks /Run /TN \"" + taskName + "\"", { stdio: "pipe" });
-
-      await Promise.resolve();
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async stop(): Promise<void> {
 
       execSync("schtasks /End /TN \"" + taskName + "\"", { stdio: "pipe" });
-
-      await Promise.resolve();
     },
 
     async uninstall(): Promise<void> {

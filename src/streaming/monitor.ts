@@ -2,7 +2,7 @@
  *
  * monitor.ts: Playback health monitoring for PrismCast.
  */
-import { EvaluateTimeoutError, LOG, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext } from "../utils/index.js";
+import { EvaluateTimeoutError, LOG, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext, startTimer } from "../utils/index.js";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.js";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.js";
@@ -202,17 +202,23 @@ function formatRecoveryDuration(startTime: number): string {
  */
 function getIssueDescription(category: "paused" | "buffering" | "other"): string {
 
-  if(category === "paused") {
+  switch(category) {
 
-    return "paused";
+    case "paused": {
+
+      return "paused";
+    }
+
+    case "buffering": {
+
+      return "buffering";
+    }
+
+    default: {
+
+      return "stalled";
+    }
   }
-
-  if(category === "buffering") {
-
-    return "buffering";
-  }
-
-  return "stalled";
 }
 
 /**
@@ -222,17 +228,23 @@ function getIssueDescription(category: "paused" | "buffering" | "other"): string
  */
 function getRecoveryMethod(level: number): string {
 
-  if(level === 1) {
+  switch(level) {
 
-    return RECOVERY_METHODS.playUnmute;
+    case 1: {
+
+      return RECOVERY_METHODS.playUnmute;
+    }
+
+    case 2: {
+
+      return RECOVERY_METHODS.sourceReload;
+    }
+
+    default: {
+
+      return RECOVERY_METHODS.pageNavigation;
+    }
   }
-
-  if(level === 2) {
-
-    return RECOVERY_METHODS.sourceReload;
-  }
-
-  return RECOVERY_METHODS.pageNavigation;
 }
 
 /**
@@ -562,7 +574,7 @@ export function monitorPlaybackHealth(
   streamId: string,
   streamInfo: MonitorStreamInfo,
   onCircuitBreak: () => void,
-  onTabReplacement?: () => Promise<TabReplacementResult | null>
+  onTabReplacement?: () => Promise<Nullable<TabReplacementResult>>
 ): () => RecoveryMetrics {
 
   /*
@@ -945,6 +957,8 @@ export function monitorPlaybackHealth(
     lastIssueType = issueType;
     lastIssueTime = Date.now();
 
+    const tabRecoveryElapsed = startTimer();
+
     recordRecoveryAttempt(metrics, RECOVERY_METHODS.tabReplacement);
 
     try {
@@ -954,14 +968,14 @@ export function monitorPlaybackHealth(
       // First attempt failed — retry once. See idempotency notes in the JSDoc above.
       if(!result) {
 
-        LOG.debug("Tab replacement attempt 1/2 failed. Retrying...");
+        LOG.debug("recovery:tab", "Tab replacement attempt 1/2 failed. Retrying...");
 
         try {
 
           result = await onTabReplacement();
         } catch(retryError) {
 
-          LOG.debug("Tab replacement attempt 2/2 failed: %s.", formatError(retryError));
+          LOG.debug("recovery:tab", "Tab replacement attempt 2/2 failed: %s.", formatError(retryError));
         }
       }
 
@@ -977,7 +991,7 @@ export function monitorPlaybackHealth(
 
       // Unexpected error (not from onTabReplacement — those are caught internally by the handler in hls.ts and return null). Guard against registry corruption,
       // getStream failures, or other unexpected errors.
-      LOG.debug("Tab replacement attempt 1/2 failed: %s. Retrying...", formatError(error));
+      LOG.debug("recovery:tab", "Tab replacement attempt 1/2 failed: %s. Retrying...", formatError(error));
 
       try {
 
@@ -991,11 +1005,13 @@ export function monitorPlaybackHealth(
         }
       } catch(retryError) {
 
-        LOG.debug("Tab replacement attempt 2/2 failed: %s.", formatError(retryError));
+        LOG.debug("recovery:tab", "Tab replacement attempt 2/2 failed: %s.", formatError(retryError));
       }
 
       return handleExhaustedTabReplacement("tab replacement error");
     } finally {
+
+      LOG.debug("timing:recovery", "Tab replacement completed. Total: %sms.", tabRecoveryElapsed());
 
       finalizeTabReplacement();
     }
@@ -1013,6 +1029,8 @@ export function monitorPlaybackHealth(
    */
   async function performPageNavigationRecovery(): Promise<PageNavigationRecoveryResult> {
 
+    const navRecoveryElapsed = startTimer();
+
     // Track page count before navigation to detect unexpected new tabs (popups, ads).
     const browser = currentPage.browser();
     const pageCountBefore = (await browser.pages()).length;
@@ -1028,16 +1046,16 @@ export function monitorPlaybackHealth(
 
       if(pageCountAfter > pageCountBefore) {
 
-        LOG.warn("Detected %s new tab(s) created during navigation.", pageCountAfter - pageCountBefore);
+        LOG.debug("recovery:nav", "Detected %s new tab(s) created during navigation.", pageCountAfter - pageCountBefore);
       }
 
       // Validate that we're on the expected page.
       const currentUrl = currentPage.url();
       const expectedHostname = new URL(url).hostname;
 
-      if(currentUrl.indexOf(expectedHostname) === -1) {
+      if(!currentUrl.includes(expectedHostname)) {
 
-        LOG.warn("Page URL after navigation (%s) does not match expected hostname.", currentUrl);
+        LOG.debug("recovery:nav", "Page URL after navigation (%s) does not match expected hostname.", currentUrl);
       }
 
       // Validate that the video element is accessible and has reasonable state.
@@ -1045,15 +1063,21 @@ export function monitorPlaybackHealth(
 
       if(validationState.found) {
 
+        LOG.debug("timing:recovery", "Page navigation recovery succeeded. Total: %sms.", navRecoveryElapsed());
+
         return { newContext, success: true };
       }
 
       LOG.warn("Page navigation completed but video element not found in new context.");
 
+      LOG.debug("timing:recovery", "Page navigation recovery failed (no video). Total: %sms.", navRecoveryElapsed());
+
       return { success: false };
     } catch(error) {
 
       LOG.warn("Failed to reinitialize video after page navigation: %s.", formatError(error));
+
+      LOG.debug("timing:recovery", "Page navigation recovery failed (error). Total: %sms.", navRecoveryElapsed());
 
       return { success: false };
     }
@@ -1132,7 +1156,7 @@ export function monitorPlaybackHealth(
 
           if(isContextDestroyed) {
 
-            LOG.warn("Video context was invalidated (frame detached). Will re-search for video.");
+            LOG.debug("recovery:context", "Video context was invalidated (frame detached). Will re-search for video.");
             contextInvalidated = true;
           } else {
 
@@ -1147,7 +1171,7 @@ export function monitorPlaybackHealth(
         // If context was invalidated (frame detached), immediately try to find the video in a new context.
         if(contextInvalidated) {
 
-          LOG.info("Re-searching for video after context invalidation.");
+          LOG.debug("recovery:context", "Re-searching for video after context invalidation.");
 
           try {
 
@@ -1232,7 +1256,7 @@ export function monitorPlaybackHealth(
           // After 2+ failures, try re-searching frames to see if video moved to a different context.
           if(videoNotFoundCount === 2) {
 
-            LOG.info("Re-searching frames for video element.");
+            LOG.debug("recovery:context", "Re-searching frames for video element.");
 
             try {
 
@@ -1466,7 +1490,7 @@ export function monitorPlaybackHealth(
             // Self-healing may be transient and not require decoder reset.
             if(wasInTinySegmentState) {
 
-              LOG.debug("Segment production self-healed (%d bytes).", segmentSize);
+              LOG.debug("recovery:segments", "Segment production self-healed (%d bytes).", segmentSize);
             }
 
             // Reset tiny segment tracking.
@@ -1483,7 +1507,7 @@ export function monitorPlaybackHealth(
        */
         if(pendingReMinimize && isProgressing && !state.paused && !state.error && !state.ended) {
 
-          LOG.debug("Re-minimizing browser window after successful recovery.");
+          LOG.debug("recovery", "Re-minimizing browser window after successful recovery.");
 
           pendingReMinimize = false;
 
@@ -1897,7 +1921,7 @@ export function monitorPlaybackHealth(
 
         if(errorMessage.includes("aborted")) {
 
-          LOG.debug("Monitor check aborted: %s.", errorMessage);
+          LOG.debug("recovery", "Monitor check aborted: %s.", errorMessage);
         } else {
 
           LOG.error("Monitor check failed: %s.", errorMessage);

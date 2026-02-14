@@ -3,7 +3,7 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { LOG, evaluateWithAbort, formatError } from "../utils/index.js";
+import { LOG, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
 import { getAllStreams, getStreamCount } from "../streaming/registry.js";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
@@ -43,6 +43,14 @@ let currentBrowser: Nullable<Browser> = null;
 // health endpoint to report the active Chrome version.
 let currentChromeVersion: Nullable<string> = null;
 
+// Timestamp (Date.now()) when the current browser instance was launched. Used by the opportunistic restart check to determine browser age. Cleared when the
+// browser disconnects.
+let browserLaunchTime: Nullable<number> = null;
+
+// Launch mutex. When a browser launch is in progress, this holds the pending promise so that concurrent callers piggyback on the same launch instead of
+// starting a second Chrome process. Cleared in a finally block once the launch settles.
+let browserLaunchPromise: Nullable<Promise<Browser>> = null;
+
 // The data directory stores Chrome's profile data and the streaming extension files. This is always ~/.prismcast, which provides a consistent location for
 // user-specific data regardless of how PrismCast is run.
 const dataDir = path.join(os.homedir(), ".prismcast");
@@ -50,6 +58,27 @@ const dataDir = path.join(os.homedir(), ".prismcast");
 // The stale page cleanup interval handle, stored so we can clear it during graceful shutdown. The interval periodically checks for browser pages that are not
 // associated with active streams and closes them to prevent resource exhaustion.
 let stalePageCleanupInterval: Nullable<ReturnType<typeof setInterval>> = null;
+
+/* Opportunistic browser restart state. Chrome accumulates memory pressure, GPU process issues, and general flakiness over multi-hour sessions with continuous
+ * media playback. We proactively restart Chrome after it has been running for BROWSER_MAX_AGE, waiting for a quiet period with zero active streams before
+ * executing the restart. After the restart, a fresh browser is launched immediately so it is ready for the next stream request.
+ */
+
+// Maximum browser uptime before considering a restart (6 hours).
+const BROWSER_MAX_AGE = 6 * 60 * 60 * 1000;
+
+// Duration of the quiet period (zero streams) required before executing the restart (5 minutes).
+const BROWSER_RESTART_QUIET_PERIOD = 5 * 60 * 1000;
+
+// How often to check whether the browser qualifies for a restart (30 seconds).
+const BROWSER_RESTART_CHECK_INTERVAL = 30_000;
+
+// Timer handle for the quiet period countdown. When set, the browser has exceeded BROWSER_MAX_AGE and we are waiting for BROWSER_RESTART_QUIET_PERIOD to
+// elapse with zero active streams. Cancelled if a stream starts during the quiet period.
+let restartQuietTimer: Nullable<ReturnType<typeof setTimeout>> = null;
+
+// Interval handle for the periodic restart eligibility check.
+let restartCheckInterval: Nullable<ReturnType<typeof setInterval>> = null;
 
 // Flag indicating that the browser is being closed intentionally via closeBrowser(). When true, the disconnect handler skips error logging and stream termination
 // since these are handled by the shutdown code path. This prevents false "unexpected disconnect" errors during graceful shutdown.
@@ -254,7 +283,7 @@ export async function ensureDataDirectory(): Promise<void> {
 
     await fsPromises.mkdir(dataDir, { recursive: true });
 
-    LOG.info("Data directory ready: %s.", dataDir);
+    LOG.debug("browser", "Data directory ready: %s.", dataDir);
   } catch(error) {
 
     LOG.error("Failed to create data directory %s: %s.", dataDir, formatError(error));
@@ -279,9 +308,13 @@ export async function ensureDataDirectory(): Promise<void> {
  */
 
 /**
- * Terminates any Chrome processes that are still using our profile directory from previous runs. Chrome locks its profile directory while running, and if a
- * previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. This function uses pkill to find and terminate any
- * Chrome processes whose command line contains our profile directory path.
+ * Terminates any Chrome processes that are still using our profile directory from previous runs and waits for them to fully exit. Chrome locks its profile
+ * directory while running, and if a previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. This function
+ * uses pkill to find and terminate any Chrome processes whose command line contains our profile directory path, then polls pgrep to verify the processes have
+ * actually exited before returning.
+ *
+ * Waiting for exit is critical during service restarts. Without it, the new Chrome can launch while the old one is still releasing its profile lock and
+ * tabCapture extension state, causing stale capture errors that cascade into startup failures.
  *
  * This is called at startup before launching the browser to ensure a clean slate. It's safe to call even when no stale processes exist - pkill returns a non-zero
  * exit code when no processes match, which we ignore.
@@ -297,12 +330,36 @@ export function killStaleChrome(): void {
     // directory. The command is wrapped in quotes to handle paths with spaces.
     execSync([ "pkill -f \"", profileDir, "\"" ].join(""));
 
-    LOG.info("Killed stale Chromium instances using %s.", profileDir);
+    LOG.debug("browser", "Killed stale Chrome instances using %s.", profileDir);
   } catch(_error) {
 
     // When pkill finds no matching processes, it returns a non-zero exit code. This is expected when there are no stale processes from a clean shutdown. We
-    // silently ignore this expected case.
+    // silently ignore this expected case and skip the wait-for-exit polling below.
+    return;
   }
+
+  // Poll until the killed processes have fully exited. pgrep returns exit code 0 when matching processes exist and non-zero when none remain. We poll every
+  // 200ms for up to 5 seconds. This ensures Chrome has released its profile directory lock and tabCapture extension state before we launch a new instance.
+  const maxWaitMs = 5000;
+  const pollIntervalMs = 200;
+  const deadline = Date.now() + maxWaitMs;
+
+  while(Date.now() < deadline) {
+
+    try {
+
+      execSync([ "pgrep -f \"", profileDir, "\"" ].join(""), { stdio: "ignore" });
+
+      // Processes still exist. Wait and check again.
+      execSync([ "sleep ", String(pollIntervalMs / 1000) ].join(""));
+    } catch(_error) {
+
+      // pgrep returned non-zero — no matching processes remain. Chrome has fully exited.
+      return;
+    }
+  }
+
+  LOG.warn("Stale Chrome processes did not exit within %sms. Proceeding anyway.", maxWaitMs);
 }
 
 /**
@@ -540,7 +597,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
     setBrowserChrome(dimensions.chromeWidth, dimensions.chromeHeight);
     setMaxSupportedViewport(maxWidth, maxHeight);
 
-    LOG.debug("Display detection complete: screen %s\u00d7%s, chrome %s\u00d7%s, max viewport %s\u00d7%s.",
+    LOG.debug("browser", "Display detection complete: screen %s\u00d7%s, chrome %s\u00d7%s, max viewport %s\u00d7%s.",
       dimensions.availWidth, dimensions.availHeight,
       dimensions.chromeWidth, dimensions.chromeHeight,
       maxWidth, maxHeight);
@@ -587,9 +644,17 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
  */
 function handleBrowserDisconnect(): void {
 
-  // Clear the browser reference and cached version so getCurrentBrowser() will launch a new instance on the next call.
+  // Clear the browser reference, launch timestamp, and cached version so getCurrentBrowser() will launch a new instance on the next call.
   currentBrowser = null;
+  browserLaunchTime = null;
   currentChromeVersion = null;
+
+  // Cancel any pending restart quiet timer since the browser is already gone.
+  if(restartQuietTimer) {
+
+    clearTimeout(restartQuietTimer);
+    restartQuietTimer = null;
+  }
 
   // Clear all channel selection caches. Cached state (guide row positions, discovered page URLs) may be stale in a new browser session.
   clearChannelSelectionCaches();
@@ -642,6 +707,7 @@ function handleBrowserDisconnect(): void {
  *
  * - Returning the existing browser if it's still connected
  * - Launching a new browser if none exists or the previous one disconnected
+ * - Serializing concurrent callers so only one launch occurs at a time
  * - Waiting for the puppeteer-stream extension to initialize
  * - Setting up disconnect handlers for crash recovery
  * @returns The browser instance.
@@ -656,7 +722,36 @@ export async function getCurrentBrowser(): Promise<Browser> {
     return currentBrowser;
   }
 
-  // We need to launch a new browser. This happens on first stream request, after a browser crash, or during server warmup.
+  // If a launch is already in progress (e.g., from the restart path or a concurrent stream request), piggyback on that promise instead of starting a second
+  // Chrome process. Two concurrent launches with the same profile directory would contend on Chrome's profile lock.
+  if(browserLaunchPromise) {
+
+    return browserLaunchPromise;
+  }
+
+  // We need to launch a new browser. Store the promise so concurrent callers can piggyback on this launch.
+  browserLaunchPromise = launchBrowser();
+
+  try {
+
+    return await browserLaunchPromise;
+  } finally {
+
+    browserLaunchPromise = null;
+  }
+}
+
+/**
+ * Launches a new browser instance and performs post-launch initialization (extension readiness, display detection, version capture). This is the inner launch
+ * function called by getCurrentBrowser() and serialized by the browserLaunchPromise mutex.
+ * @returns The browser instance.
+ * @throws If the browser cannot be launched.
+ */
+async function launchBrowser(): Promise<Browser> {
+
+  const browserElapsed = startTimer();
+
+  // This happens on first stream request, after a browser crash, during server warmup, or during an opportunistic restart.
   try {
 
     const options = buildLaunchOptions();
@@ -667,6 +762,8 @@ export async function getCurrentBrowser(): Promise<Browser> {
 
     // Register a handler for browser disconnection. This ensures we clean up properly if the browser crashes or is closed unexpectedly.
     currentBrowser.on("disconnected", handleBrowserDisconnect);
+
+    LOG.debug("timing:browser", "Chrome process spawned. (+%sms)", browserElapsed());
 
     // Poll for the puppeteer-stream extension to finish initializing. The extension injects a START_RECORDING function into its options page context. We poll
     // for this function's existence rather than using a fixed delay, so the browser is ready as soon as the extension loads — typically 200-500ms rather than the
@@ -683,17 +780,24 @@ export async function getCurrentBrowser(): Promise<Browser> {
       LOG.warn("Extension did not initialize within %d ms. Streams may need additional time to start.", CONFIG.browser.initTimeout);
     }
 
+    LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
+
     // Detect display dimensions to determine maximum supported viewport. This must happen before we start streaming so the preset system can degrade to a
     // smaller preset if needed.
     await detectDisplayDimensions(currentBrowser);
+
+    LOG.debug("timing:browser", "Display detection complete. (+%sms)", browserElapsed());
 
     // Log the Chrome version for diagnostic reference. This helps correlate browser behavior changes (tab unresponsiveness, memory pressure, capture issues)
     // with specific Chrome releases.
     const chromeVersion = await currentBrowser.version();
 
+    browserLaunchTime = Date.now();
     currentChromeVersion = chromeVersion;
 
     LOG.info("Chrome ready: %s.", chromeVersion);
+
+    LOG.debug("timing:browser", "Browser ready. Total: %sms.", browserElapsed());
 
     // Emit system status update for SSE subscribers.
     await emitCurrentSystemStatus();
@@ -701,8 +805,9 @@ export async function getCurrentBrowser(): Promise<Browser> {
 
     LOG.error("Failed to launch browser: %s.", formatError(error));
 
-    // Clear the browser reference and cached version on failure so the next call will attempt to launch again.
+    // Clear the browser reference, launch timestamp, and cached version on failure so the next call will attempt to launch again.
     currentBrowser = null;
+    browserLaunchTime = null;
     currentChromeVersion = null;
 
     throw error;
@@ -793,7 +898,7 @@ export async function minimizeBrowserWindow(): Promise<void> {
     }
 
     // Resizing/minimizing is not critical - log a warning but don't fail the operation.
-    LOG.warn("Could not resize and minimize browser window: %s.", formatError(error));
+    LOG.debug("browser", "Could not resize and minimize browser window: %s.", formatError(error));
   }
 }
 
@@ -836,8 +941,9 @@ export async function closeBrowser(): Promise<void> {
 
   const browserRef = currentBrowser;
 
-  // Clear the reference and cached version early to prevent any new operations from using it.
+  // Clear the reference, launch timestamp, and cached version early to prevent any new operations from using it.
   currentBrowser = null;
+  browserLaunchTime = null;
   currentChromeVersion = null;
 
   if(!browserRef) {
@@ -867,7 +973,7 @@ export async function closeBrowser(): Promise<void> {
         LOG.warn("Browser did not close within 5 seconds. Forcing termination.");
       } else {
 
-        LOG.debug("Browser close error: %s.", message);
+        LOG.debug("browser", "Browser close error: %s.", message);
       }
     }
   } else {
@@ -885,11 +991,11 @@ export async function closeBrowser(): Promise<void> {
       if(browserProcess && !browserProcess.killed) {
 
         browserProcess.kill("SIGKILL");
-        LOG.debug("Sent SIGKILL to browser process.");
+        LOG.debug("browser", "Sent SIGKILL to browser process.");
       }
     } catch(error) {
 
-      LOG.debug("Browser process kill error: %s.", formatError(error));
+      LOG.debug("browser", "Browser process kill error: %s.", formatError(error));
     }
   }
 
@@ -1216,12 +1322,12 @@ export async function cleanupStalePages(): Promise<void> {
     // Log only if we actually closed something, to avoid log spam from idle cleanup runs.
     if(closedCount > 0) {
 
-      LOG.info("Cleaned up %s stale page(s).", closedCount);
+      LOG.debug("browser", "Cleaned up %s stale page(s).", closedCount);
     }
   } catch(error) {
 
     // Cleanup failure is not critical - log a warning and try again next interval.
-    LOG.warn("Stale page cleanup failed: %s.", formatError(error));
+    LOG.debug("browser", "Stale page cleanup failed: %s.", formatError(error));
   }
 }
 
@@ -1245,6 +1351,135 @@ export function stopStalePageCleanup(): void {
     clearInterval(stalePageCleanupInterval);
 
     stalePageCleanupInterval = null;
+  }
+}
+
+/* Opportunistic browser restart functions. The check runs on a 30-second interval and, when the browser exceeds BROWSER_MAX_AGE with zero active streams, starts
+ * a quiet period timer. The quiet timer is cancelled if a stream starts, ensuring active viewers are never disrupted. When the timer expires, the browser is
+ * closed and immediately re-launched.
+ */
+
+/**
+ * Checks whether the browser qualifies for an opportunistic restart. Called periodically by the restart check interval. The check skips when any of these
+ * conditions hold: graceful shutdown in progress, login mode active, browser not connected, browser age below threshold. If active streams exist, any pending
+ * quiet timer is cancelled (streams started during the quiet period reset the countdown). Otherwise a quiet timer is started if one is not already running.
+ */
+function checkBrowserRestart(): void {
+
+  // Skip if the server is shutting down, login mode is active, or the browser is not connected.
+  if(gracefulShutdownInProgress || loginModeActive || !currentBrowser || !currentBrowser.isConnected() || !browserLaunchTime) {
+
+    return;
+  }
+
+  // Skip if the browser has not exceeded the maximum age.
+  const age = Date.now() - browserLaunchTime;
+
+  if(age < BROWSER_MAX_AGE) {
+
+    return;
+  }
+
+  // If there are active streams, cancel any pending quiet timer and return. Streams that start during the quiet period reset the countdown.
+  if(getStreamCount() > 0) {
+
+    if(restartQuietTimer) {
+
+      LOG.debug("browser", "Browser restart quiet period cancelled — streams are active.");
+
+      clearTimeout(restartQuietTimer);
+      restartQuietTimer = null;
+    }
+
+    return;
+  }
+
+  // No active streams and the browser is old enough. Start the quiet timer if one is not already running.
+  if(!restartQuietTimer) {
+
+    LOG.debug("browser", "Browser uptime exceeds threshold. Quiet period started — restart will proceed if no streams start within %s minutes.",
+      Math.round(BROWSER_RESTART_QUIET_PERIOD / 60000));
+
+    restartQuietTimer = setTimeout(() => {
+
+      void executeBrowserRestart();
+    }, BROWSER_RESTART_QUIET_PERIOD);
+  }
+}
+
+/**
+ * Executes the opportunistic browser restart after the quiet period has elapsed. Performs a final guard check before proceeding, then closes the browser and
+ * immediately re-launches a fresh instance.
+ */
+async function executeBrowserRestart(): Promise<void> {
+
+  // Clear the timer handle.
+  restartQuietTimer = null;
+
+  // Final guard: re-check all preconditions. Conditions may have changed during the quiet period (e.g., a stream started just before the timer fired, login
+  // mode was activated, or the browser disconnected on its own).
+  if(gracefulShutdownInProgress || loginModeActive || (getStreamCount() > 0) || !currentBrowser || !currentBrowser.isConnected() || !browserLaunchTime) {
+
+    LOG.debug("browser", "Browser restart aborted — preconditions no longer met.");
+
+    return;
+  }
+
+  const age = Date.now() - browserLaunchTime;
+  const hours = Math.floor(age / 3600000);
+  const minutes = Math.floor((age % 3600000) / 60000);
+
+  LOG.info("Restarting browser for scheduled maintenance (uptime: %sh %sm).", hours, minutes);
+
+  try {
+
+    // closeBrowser() sets gracefulShutdownInProgress = true internally and performs multi-stage graceful close.
+    await closeBrowser();
+
+    // Reset the flag since the server is NOT shutting down — only the browser is restarting.
+    setGracefulShutdown(false);
+
+    // Launch a fresh browser instance so it is ready for the next stream request.
+    await getCurrentBrowser();
+
+    // Minimize the new window to reduce GPU usage and desktop clutter.
+    await minimizeBrowserWindow();
+
+    LOG.info("Browser restart complete. Fresh instance is ready.");
+  } catch(error) {
+
+    LOG.error("Browser restart failed: %s.", formatError(error));
+
+    // Ensure the graceful shutdown flag is cleared even on failure so new stream requests can still launch a browser.
+    setGracefulShutdown(false);
+  }
+}
+
+/**
+ * Starts the periodic browser restart eligibility check. This should be called once during server startup, after the browser is initialized. The interval runs
+ * indefinitely until stopBrowserRestartChecking() is called (typically during graceful shutdown).
+ */
+export function startBrowserRestartChecking(): void {
+
+  restartCheckInterval = setInterval(checkBrowserRestart, BROWSER_RESTART_CHECK_INTERVAL);
+}
+
+/**
+ * Stops the browser restart checking interval and cancels any pending quiet timer. This should be called during graceful shutdown to prevent a restart from
+ * racing with server shutdown.
+ */
+export function stopBrowserRestartChecking(): void {
+
+  if(restartCheckInterval) {
+
+    clearInterval(restartCheckInterval);
+    restartCheckInterval = null;
+  }
+
+  if(restartQuietTimer) {
+
+    clearTimeout(restartQuietTimer);
+    restartQuietTimer = null;
   }
 }
 
@@ -1313,7 +1548,7 @@ export async function prepareExtension(): Promise<void> {
       }
     }
 
-    LOG.info("Extension files prepared successfully.");
+    LOG.debug("browser", "Extension files prepared successfully.");
   } catch(error) {
 
     LOG.error("Extension preparation failed: %s.", formatError(error));

@@ -2,6 +2,7 @@
  *
  * index.ts: Utility module exports for PrismCast.
  */
+export * from "./debugFilter.js";
 export * from "./delay.js";
 export * from "./errors.js";
 export * from "./evaluate.js";

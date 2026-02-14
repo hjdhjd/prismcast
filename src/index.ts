@@ -2,7 +2,7 @@
  *
  * index.ts: Entry point for PrismCast.
  */
-import { LOG, formatError, getPackageVersion, setDebugLogging } from "./utils/index.js";
+import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.js";
 import { CONFIG } from "./config/index.js";
 import { handleServiceCommand } from "./service/index.js";
 import { startServer } from "./app.js";
@@ -55,6 +55,7 @@ function printUsage(): void {
   console.log("  FRAME_RATE          Target frame rate");
   console.log("  CHROME_BIN          Path to Chrome executable");
   console.log("  LOG_MAX_SIZE        Maximum log file size in bytes (default: 1048576)");
+  console.log("  PRISMCAST_DEBUG     Debug category filter (e.g., 'tuning:hulu', 'recovery', '*,-streaming:segmenter')");
   /* eslint-enable no-console */
 }
 
@@ -147,8 +148,14 @@ if(subcommand === "service") {
 
   const parsedArgs = parseArgs();
 
-  // Enable debug logging before starting the server so debug messages during startup are captured.
-  if(parsedArgs.debugLogging) {
+  // Enable debug logging before starting the server so debug messages during startup are captured. The PRISMCAST_DEBUG environment variable takes precedence over
+  // the --debug CLI flag, allowing fine-grained category selection.
+  const debugEnv = process.env.PRISMCAST_DEBUG;
+
+  if(debugEnv) {
+
+    initDebugFilter(debugEnv);
+  } else if(parsedArgs.debugLogging) {
 
     setDebugLogging(true);
   }

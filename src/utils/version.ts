@@ -115,7 +115,7 @@ async function fetchLatestVersion(): Promise<Nullable<string>> {
     return latest ? normalizeVersion(latest) : null;
   } catch(error) {
 
-    LOG.debug("Failed to fetch latest version from npm: %s.", formatError(error));
+    LOG.debug("config", "Failed to fetch latest version from npm: %s.", formatError(error));
 
     return null;
   }
@@ -139,7 +139,7 @@ async function fetchChangelogContent(): Promise<Nullable<string>> {
     return await response.text();
   } catch(error) {
 
-    LOG.debug("Failed to fetch changelog from GitHub: %s.", formatError(error));
+    LOG.debug("config", "Failed to fetch changelog from GitHub: %s.", formatError(error));
 
     return null;
   }
@@ -299,15 +299,8 @@ export function startUpdateChecking(currentVersion: string): void {
   // Do an initial check.
   void checkForUpdates(current);
 
-  // Set up periodic checking. We use an if statement rather than ??= to ensure setInterval is only called when needed (lazy evaluation).
-  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing, logical-assignment-operators
-  if(!updateCheckInterval) {
-
-    updateCheckInterval = setInterval(() => {
-
-      void checkForUpdates(current);
-    }, UPDATE_CHECK_INTERVAL);
-  }
+  // Set up periodic checking.
+  updateCheckInterval ??= setInterval(() => void checkForUpdates(current), UPDATE_CHECK_INTERVAL);
 }
 
 /**

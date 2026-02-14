@@ -74,7 +74,7 @@ export async function withCDPSession<T>(
 
     // "No target with given id" is a common error that occurs when the page closes during our operation. This is expected during stream termination and
     // shouldn't be logged as a warning since it's not actionable. We also check if the page is closed, as errors during page closure are expected.
-    if((message.indexOf("No target with given id") === -1) && !page.isClosed()) {
+    if(!message.includes("No target with given id") && !page.isClosed()) {
 
       LOG.warn("CDP operation failed: %s.", message);
     }

@@ -39,7 +39,7 @@ let approximateSize = 0;
 let writeCount = 0;
 
 // Timer for periodic buffer flushing.
-let flushTimer: ReturnType<typeof setInterval> | null = null;
+let flushTimer: Nullable<ReturnType<typeof setInterval>> = null;
 
 // Flag indicating whether the file logger is initialized and operational.
 let isInitialized = false;
@@ -129,8 +129,9 @@ export async function initializeFileLogger(maxSize: number): Promise<void> {
  * @param level - Log level ("info", "warn", "error", "debug").
  * @param message - The formatted log message.
  * @param color - Optional ANSI color code to apply to the level prefix and message.
+ * @param categoryTag - Optional debug category tag (e.g., "recovery:tab"). Appended to the level prefix as [DEBUG:category].
  */
-export function writeLogEntry(level: string, message: string, color?: string): void {
+export function writeLogEntry(level: string, message: string, color?: string, categoryTag?: string): void {
 
   if(!isInitialized || !logFilePath) {
 
@@ -151,7 +152,8 @@ export function writeLogEntry(level: string, message: string, color?: string): v
 
   // Format the log entry with timestamp and level. Apply ANSI color if provided.
   const timestamp = df(new Date(), "yyyy/mm/dd HH:MM:ss.l");
-  const levelPrefix = (level === "info") ? "" : [ "[", level.toUpperCase(), "] " ].join("");
+  const levelTag = categoryTag ? [ level.toUpperCase(), ":", categoryTag ].join("") : level.toUpperCase();
+  const levelPrefix = (level === "info") ? "" : [ "[", levelTag, "] " ].join("");
   const colorStart = color ?? "";
   const colorEnd = color ? ANSI_RESET : "";
   const entry = [ "[", timestamp, "] ", colorStart, levelPrefix, message, colorEnd, "\n" ].join("");

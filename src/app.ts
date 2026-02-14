@@ -4,9 +4,10 @@
  */
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.js";
 import type { Express, NextFunction, Request, Response } from "express";
-import { LOG, createMorganStream, formatError, getPackageVersion, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.js";
+import { LOG, createMorganStream, formatError, getPackageVersion, isDebugLogging, resolveFFmpegPath, setConsoleLogging, startUpdateChecking,
+  stopUpdateChecking } from "./utils/index.js";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
-  startStalePageCleanup, stopStalePageCleanup } from "./browser/index.js";
+  startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { startHdhrServer, stopHdhrServer } from "./hdhr/index.js";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
@@ -94,6 +95,7 @@ function setupGracefulShutdown(): void {
 
     // Stop cleanup and polling intervals.
     stopHdhrServer();
+    stopBrowserRestartChecking();
     stopStalePageCleanup();
     stopIdleCleanup();
     stopShowInfoPolling();
@@ -341,6 +343,20 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
     await initializeFileLogger(CONFIG.logging.maxSize);
   }
 
+  // Log the debug filter status after the file logger is ready so the message is captured.
+  if(isDebugLogging()) {
+
+    const debugEnv = process.env.PRISMCAST_DEBUG;
+
+    if(debugEnv) {
+
+      LOG.info("Debug logging enabled with filter: %s.", debugEnv);
+    } else {
+
+      LOG.info("Debug logging enabled for all categories.");
+    }
+  }
+
   // Check FFmpeg availability if using FFmpeg capture mode. This must be after file logger initialization so the log message is captured.
   if(CONFIG.streaming.captureMode === "ffmpeg") {
 
@@ -392,6 +408,9 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
 
   // Start stale page cleanup.
   startStalePageCleanup();
+
+  // Start browser restart checking.
+  startBrowserRestartChecking();
 
   // Start idle cleanup.
   startIdleCleanup();

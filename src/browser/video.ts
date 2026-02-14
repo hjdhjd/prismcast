@@ -2,9 +2,9 @@
  *
  * video.ts: Video context and playback handling for PrismCast.
  */
-import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError } from "../utils/index.js";
+import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
 import type { Frame, Page } from "puppeteer-core";
-import type { ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.js";
+import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.js";
 import { CONFIG } from "../config/index.js";
 import { selectChannel } from "./channelSelection.js";
 
@@ -96,11 +96,11 @@ export interface VideoStateInfo {
  * @param selectorType - The video selector type for finding the element.
  * @returns The video state or null if no video found.
  */
-export async function getVideoState(context: Frame | Page, selectorType: VideoSelectorType): Promise<VideoStateInfo | null> {
+export async function getVideoState(context: Frame | Page, selectorType: VideoSelectorType): Promise<Nullable<VideoStateInfo>> {
 
-  return evaluateWithAbort(context, (type: string): VideoStateInfo | null => {
+  return evaluateWithAbort(context, (type: string): Nullable<VideoStateInfo> => {
 
-    let video: HTMLVideoElement | null | undefined;
+    let video: Nullable<HTMLVideoElement> | undefined;
 
     if(type === "selectReadyVideo") {
 
@@ -142,7 +142,7 @@ export async function enforceVideoVolume(context: Frame | Page, selectorType: Vi
 
   await evaluateWithAbort(context, (type: string): void => {
 
-    let video: HTMLVideoElement | null | undefined;
+    let video: Nullable<HTMLVideoElement> | undefined;
 
     if(type === "selectReadyVideo") {
 
@@ -185,7 +185,7 @@ export async function validateVideoElement(context: Frame | Page, selectorType: 
 
   return evaluateWithAbort(context, (type: string): VideoValidationResult => {
 
-    let video: HTMLVideoElement | null | undefined;
+    let video: Nullable<HTMLVideoElement> | undefined;
 
     if(type === "selectReadyVideo") {
 
@@ -272,7 +272,7 @@ export async function reloadVideoSource(context: Frame | Page, selectorType: Vid
 
   await evaluateWithAbort(context, (type: string): void => {
 
-    let video: HTMLVideoElement | null | undefined;
+    let video: Nullable<HTMLVideoElement> | undefined;
 
     if(type === "selectReadyVideo") {
 
@@ -307,7 +307,7 @@ export async function startVideoPlayback(context: Frame | Page, selectorType: Vi
 
   await evaluateWithAbort(context, (type: string): void => {
 
-    let video: HTMLVideoElement | null | undefined;
+    let video: Nullable<HTMLVideoElement> | undefined;
 
     if(type === "selectReadyVideo") {
 
@@ -559,7 +559,7 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
   await evaluateWithAbort(context, (type: string): void => {
 
     // Find the video element using the appropriate selection strategy.
-    let video: HTMLVideoElement | null | undefined;
+    let video: Nullable<HTMLVideoElement> | undefined;
 
     if(type === "selectReadyVideo") {
 
@@ -609,7 +609,7 @@ export async function lockVolumeProperties(context: Frame | Page, selectorType: 
     await evaluateWithAbort(context, (type: string): void => {
 
       // Find the video element.
-      let video: HTMLVideoElement | null | undefined;
+      let video: Nullable<HTMLVideoElement> | undefined;
 
       if(type === "selectReadyVideo") {
 
@@ -661,7 +661,7 @@ export async function lockVolumeProperties(context: Frame | Page, selectorType: 
       (video as HTMLVideoElement & { __volumeLocked?: boolean }).__volumeLocked = true;
     }, [selectorType]);
 
-    LOG.info("Volume properties locked successfully.");
+    LOG.debug("browser:video", "Volume properties locked successfully.");
   } catch(error) {
 
     // Volume locking is not critical to stream function - log a warning but don't fail the operation. Also handles AbortError if stream is terminated.
@@ -727,7 +727,7 @@ export async function triggerFullscreen(
       await evaluateWithAbort(context, (type: string): void => {
 
         // Find the video element.
-        let video: HTMLVideoElement | null | undefined;
+        let video: Nullable<HTMLVideoElement> | undefined;
 
         if(type === "selectReadyVideo") {
 
@@ -751,7 +751,7 @@ export async function triggerFullscreen(
       }, [selectorType]);
     } catch(error) {
 
-      LOG.warn("Could not trigger fullscreen: %s.", formatError(error));
+      LOG.debug("browser:video", "Could not trigger fullscreen: %s.", formatError(error));
     }
   }
 }
@@ -778,7 +778,7 @@ async function verifyFullscreen(context: Frame | Page, selectorType: VideoSelect
     return await evaluateWithAbort(context, (type: string): boolean => {
 
       // Find the video element using the appropriate selection strategy.
-      let video: HTMLVideoElement | null | undefined;
+      let video: Nullable<HTMLVideoElement> | undefined;
 
       if(type === "selectReadyVideo") {
 
@@ -838,7 +838,7 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
   await evaluateWithAbort(context, (type: string): void => {
 
     // Find the video element using the appropriate selection strategy.
-    let video: HTMLVideoElement | null | undefined;
+    let video: Nullable<HTMLVideoElement> | undefined;
 
     if(type === "selectReadyVideo") {
 
@@ -951,7 +951,7 @@ export async function ensureFullscreen(
 
       if(attempt > 1) {
 
-        LOG.info("Fullscreen succeeded on attempt %s.", attempt);
+        LOG.debug("browser:video", "Fullscreen succeeded on attempt %s.", attempt);
       }
 
       return;
@@ -960,7 +960,7 @@ export async function ensureFullscreen(
     // Fullscreen verification failed. If we have retries remaining, wait and try again.
     if(attempt < maxSimpleRetries) {
 
-      LOG.warn("Fullscreen verification failed (attempt %s/%s). Retrying after %sms.", attempt, maxSimpleRetries, retryDelay);
+      LOG.debug("browser:video", "Fullscreen verification failed (attempt %s/%s). Retrying after %sms.", attempt, maxSimpleRetries, retryDelay);
 
       // eslint-disable-next-line no-await-in-loop
       await delay(retryDelay);
@@ -985,7 +985,7 @@ export async function ensureFullscreen(
 
   if(finalCheck) {
 
-    LOG.info("Fullscreen succeeded after aggressive techniques.");
+    LOG.debug("browser:video", "Fullscreen succeeded after aggressive techniques.");
   } else {
 
     LOG.warn("Fullscreen could not be verified even after aggressive techniques. Video may not fill viewport.");
@@ -1082,7 +1082,7 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
   } catch(error) {
 
     // Overlay dismissal is best-effort. The overlay may not exist, or the page may be in a state where keyboard input is ignored.
-    LOG.debug("Could not dismiss guide overlay: %s.", formatError(error));
+    LOG.debug("browser:video", "Could not dismiss guide overlay: %s.", formatError(error));
   }
 }
 
@@ -1100,6 +1100,8 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
  * @returns The video context (frame or page) for subsequent monitoring.
  */
 export async function initializePlayback(page: Page, profile: ResolvedSiteProfile): Promise<TuneResult> {
+
+  const elapsed = startTimer();
 
   // For multi-channel players (like usanetwork.com/live with multiple channels), select the desired channel from the UI. The selectChannel function checks the
   // profile's channelSelection strategy and channelSelector to determine if/how to select a channel.
@@ -1123,9 +1125,13 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
     }
   }
 
+  LOG.debug("timing:tune", "Channel selection complete. (+%sms)", elapsed());
+
   // Find the video context, which may be an iframe for embedded players. Some streaming sites embed their video player in an iframe, requiring us to search
   // through frames to find the one containing the video element.
   const context = await findVideoContext(page, profile);
+
+  LOG.debug("timing:tune", "Video context found. (+%sms)", elapsed());
 
   // For clickToPlay sites, we need to click an element to start playback. These players require user interaction to begin playing, even with autoplay enabled. If
   // clickSelector is set, we click that element (typically a play button overlay); otherwise we click the video element directly.
@@ -1138,6 +1144,8 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
       // Wait for the click target to appear in the DOM. Play button overlays may be rendered after initial page load.
       await context.waitForSelector(clickTarget, { timeout: CONFIG.streaming.videoTimeout });
       await context.click(clickTarget);
+
+      LOG.debug("timing:tune", "Click-to-play complete. (+%sms)", elapsed());
     } catch(clickError) {
 
       LOG.warn("Could not click %s to initiate playback: %s.", clickTarget, formatError(clickError));
@@ -1147,8 +1155,12 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
   // Wait for video to be ready (readyState >= 3). This ensures enough data is buffered for playback to begin smoothly.
   await waitForVideoReady(context, profile);
 
+  LOG.debug("timing:tune", "Video ready. (+%sms)", elapsed());
+
   // Ensure playback is started, unmuted, and fullscreen. This applies CSS styling, triggers native fullscreen, and enforces volume settings.
   await ensurePlayback(page, context, profile, 1);
+
+  LOG.debug("timing:tune", "Playback ensured. (+%sms)", elapsed());
 
   return { context };
 }
@@ -1175,10 +1187,18 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
  */
 export async function tuneToChannel(page: Page, url: string, profile: ResolvedSiteProfile): Promise<TuneResult> {
 
+  const tuneElapsed = startTimer();
+
   // Navigate to the target URL. This handles timeout and network errors, returning when the page is loaded. The navigation strategy (networkidle vs load event)
   // is determined by the profile's waitForNetworkIdle flag.
   await navigateToPage(page, url, profile);
 
+  LOG.debug("timing:tune", "Navigation complete. (+%sms)", tuneElapsed());
+
   // Perform all post-navigation initialization: channel selection, video context resolution, click to play, video readiness, and fullscreen.
-  return initializePlayback(page, profile);
+  const result = await initializePlayback(page, profile);
+
+  LOG.debug("timing:tune", "Tune complete. Total: %sms.", tuneElapsed());
+
+  return result;
 }

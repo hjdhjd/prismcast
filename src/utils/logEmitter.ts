@@ -10,6 +10,7 @@ import { EventEmitter } from "events";
 
 export interface LogEntry {
 
+  categoryTag?: string;
   level: "debug" | "error" | "info" | "warn";
   message: string;
   timestamp: string;

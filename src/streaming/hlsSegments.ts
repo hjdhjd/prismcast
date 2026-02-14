@@ -37,7 +37,7 @@ export function storeSegment(streamId: number, filename: string, data: Buffer): 
 
   if(!stream) {
 
-    LOG.warn( "Attempted to store segment for unknown stream %s.", streamId);
+    LOG.debug("streaming:hls", "Attempted to store segment for unknown stream %s.", streamId);
 
     return;
   }
@@ -88,7 +88,7 @@ export function storeInitSegment(streamId: number, data: Buffer): void {
 
   if(!stream) {
 
-    LOG.warn( "Attempted to store init segment for unknown stream %s.", streamId);
+    LOG.debug("streaming:hls", "Attempted to store init segment for unknown stream %s.", streamId);
 
     return;
   }
@@ -103,6 +103,10 @@ export function storeInitSegment(streamId: number, data: Buffer): void {
   if(isFirstInit) {
 
     stream.hls.signalInitSegmentReady();
+
+    const elapsed = ((Date.now() - stream.startTime.getTime()) / 1000).toFixed(3);
+
+    LOG.debug("timing:startup", "Init segment ready in %ss.", elapsed);
   }
 }
 
@@ -136,7 +140,7 @@ export function updatePlaylist(streamId: number, content: string): void {
 
   if(!stream) {
 
-    LOG.warn( "Attempted to update playlist for unknown stream %s.", streamId);
+    LOG.debug("streaming:hls", "Attempted to update playlist for unknown stream %s.", streamId);
 
     return;
   }
@@ -148,6 +152,10 @@ export function updatePlaylist(streamId: number, content: string): void {
   if(isFirstPlaylist) {
 
     stream.hls.signalPlaylistReady();
+
+    const elapsed = ((Date.now() - stream.startTime.getTime()) / 1000).toFixed(3);
+
+    LOG.debug("timing:startup", "First playlist ready in %ss.", elapsed);
   }
 }
 

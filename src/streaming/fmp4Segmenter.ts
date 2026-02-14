@@ -491,7 +491,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           state.maxKeyframeIntervalMs = intervalMs;
         }
 
-        LOG.debug( "Keyframe detected, interval: %dms.", intervalMs);
+        LOG.debug("streaming:segmenter", "Keyframe detected, interval: %dms.", intervalMs);
       }
 
       state.lastKeyframeTime = now;
@@ -564,11 +564,11 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
             if(state.trackTimescales.size === 0) {
 
-              LOG.debug( "No track timescales found in moov. EXTINF will use wall-clock fallback.");
+              LOG.debug("streaming:segmenter", "No track timescales found in moov. EXTINF will use wall-clock fallback.");
             }
           } catch {
 
-            LOG.debug( "Failed to parse moov timescales. EXTINF will use wall-clock fallback.");
+            LOG.debug("streaming:segmenter", "Failed to parse moov timescales. EXTINF will use wall-clock fallback.");
           }
 
           // Log init segment details for debugging timescale or codec issues.
@@ -579,7 +579,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
             timescaleEntries.push("track " + String(trackId) + "=" + String(timescale));
           }
 
-          LOG.debug( "Init segment received: %d bytes, version=%d, timescales=[%s].",
+          LOG.debug("streaming:segmenter", "Init segment received: %d bytes, version=%d, timescales=[%s].",
             initData.length, state.initVersion, timescaleEntries.join(", "));
 
           // Suppress the discontinuity marker when codec parameters are unchanged (byte-identical init). This avoids an unnecessary decoder flush on the client.
@@ -632,7 +632,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
               state.zeroDurationWarned.add(trackId);
 
-              LOG.debug( "Zero duration in moof traf for track %d.", trackId);
+              LOG.debug("streaming:segmenter", "Zero duration in moof traf for track %d.", trackId);
             }
 
             continue;
@@ -659,14 +659,14 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
             effectiveDuration = expected;
 
-            LOG.debug( "Clamped abnormal trun duration for track %d: %s units (expected ~%s, baselines=%d).",
+            LOG.debug("streaming:segmenter", "Clamped abnormal trun duration for track %d: %s units (expected ~%s, baselines=%d).",
               trackId, String(duration), String(expected), state.trackExpectedDurations.size);
           } else if(!state.trackExpectedDurations.has(trackId)) {
 
             // Establish baseline from the first valid moof per track. The baseline is never updated afterward — see trackExpectedDurations comment in SegmenterState.
             state.trackExpectedDurations.set(trackId, duration);
 
-            LOG.debug( "Anchored baseline for track %d: %s units (segment %d).", trackId, String(duration), state.segmentIndex);
+            LOG.debug("streaming:segmenter", "Anchored baseline for track %d: %s units (segment %d).", trackId, String(duration), state.segmentIndex);
           }
 
           // Accumulate the effective duration for media-time EXTINF computation. This stays synchronized with the trackTimestamps counter that drives
@@ -677,7 +677,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         }
       } catch {
 
-        LOG.debug( "Failed to rewrite moof timestamps.");
+        LOG.debug("streaming:segmenter", "Failed to rewrite moof timestamps.");
       }
 
       // When keyframe debugging is enabled, parse traf/trun sample flags to detect whether this moof starts with a keyframe. Wrapped in try/catch for failure

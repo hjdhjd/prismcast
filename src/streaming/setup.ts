@@ -4,7 +4,7 @@
  */
 import type { Channel, Nullable, ResolvedSiteProfile, UrlValidation } from "../types/index.js";
 import type { Frame, Page } from "puppeteer-core";
-import { LOG, delay, extractDomain, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg } from "../utils/index.js";
+import { LOG, delay, extractDomain, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.js";
 import type { MonitorStreamInfo, RecoveryMetrics, TabReplacementResult } from "./monitor.js";
 import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
@@ -334,6 +334,7 @@ export function validateStreamUrl(url: string | undefined): UrlValidation {
  */
 export async function createPageWithCapture(options: CreatePageWithCaptureOptions): Promise<CreatePageWithCaptureResult> {
 
+  const captureElapsed = startTimer();
   const { comment, onFFmpegError, profile, streamId, url } = options;
 
   // Create browser page.
@@ -482,7 +483,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
         if(errorMessage.includes("EPIPE")) {
 
-          LOG.debug("FFmpeg stdout pipe closed: %s.", errorMessage);
+          LOG.debug("streaming:ffmpeg", "FFmpeg stdout pipe closed: %s.", errorMessage);
         } else {
 
           LOG.error("FFmpeg stdout pipe error: %s.", errorMessage);
@@ -637,6 +638,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // Resize and minimize window.
   await resizeAndMinimizeWindow(page, !profile.noVideo);
 
+  LOG.debug("timing:startup", "Page with capture ready. Total: %sms.", captureElapsed());
+
   return {
 
     captureStream: outputStream,
@@ -658,7 +661,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
  * @param url - The URL to resolve.
  * @returns The final URL after following all redirects, or null on any error.
  */
-async function resolveRedirectUrl(url: string): Promise<string | null> {
+async function resolveRedirectUrl(url: string): Promise<Nullable<string>> {
 
   try {
 
@@ -720,7 +723,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
           profileResult = redirectResult;
 
-          LOG.info("Resolved redirect for profile detection: %s → %s (%s).", urlToResolve, resolvedUrl, redirectResult.profileName);
+          LOG.debug("streaming:setup", "Resolved redirect for profile detection: %s → %s (%s).", urlToResolve, resolvedUrl, redirectResult.profileName);
         }
       }
     }
@@ -742,7 +745,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         profile = resolveProfile(profileOverride);
         profileName = profileOverride;
 
-        LOG.info("Profile overridden to '%s' via query parameter.", profileOverride);
+        LOG.debug("streaming:setup", "Profile overridden to '%s' via query parameter.", profileOverride);
       } else {
 
         LOG.warn("Unknown profile override '%s', using resolved profile.", profileOverride);
@@ -886,7 +889,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
         page.close().catch((error) => {
 
-          LOG.warn("Page close error during cleanup: %s.", formatError(error));
+          LOG.debug("streaming:setup", "Page close error during cleanup: %s.", formatError(error));
         });
       }
 

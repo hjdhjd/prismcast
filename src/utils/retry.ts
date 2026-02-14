@@ -46,7 +46,7 @@ export async function retryOperation<T>(
 
     if(attempt > 1) {
 
-      LOG.info("Retrying %s (attempt %s of %s).", description, attempt, maxAttempts);
+      LOG.debug("retry", "Retrying %s (attempt %s of %s).", description, attempt, maxAttempts);
     }
 
     try {
@@ -69,14 +69,14 @@ export async function retryOperation<T>(
       // If the page or session was closed, retrying is pointless. Abort immediately without warning since we're not going to retry.
       if(isSessionClosedError(error)) {
 
-        LOG.info("Page was closed, aborting retries for %s.", description);
+        LOG.debug("retry", "Page was closed, aborting retries for %s.", description);
 
         throw error;
       }
 
       // For timeout errors, check if the operation actually succeeded despite the timeout. This handles cases where the page loaded and video started playing, but
       // some wait condition like networkidle2 never completed. We check this before logging a warning because if early success passes, there's nothing to warn about.
-      if(earlySuccessCheck && (formatError(error).indexOf("timed out") !== -1)) {
+      if(earlySuccessCheck && formatError(error).includes("timed out")) {
 
         try {
 

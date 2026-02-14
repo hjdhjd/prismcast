@@ -251,7 +251,7 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 
     if(message.length > 0) {
 
-      LOG.debug( "%sFFmpeg: %s", logPrefix, message);
+      LOG.debug("streaming:ffmpeg", "%sFFmpeg: %s", logPrefix, message);
     }
   });
 
@@ -374,7 +374,7 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
 
     if(message.length > 0) {
 
-      LOG.debug( "%sMPEG-TS remuxer: %s", logPrefix, message);
+      LOG.debug("streaming:ffmpeg", "%sMPEG-TS remuxer: %s", logPrefix, message);
     }
   });
 

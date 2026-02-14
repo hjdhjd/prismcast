@@ -3,7 +3,7 @@
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
 import type { Channel, Nullable, ResolvedSiteProfile } from "../types/index.js";
-import { LOG, delay, formatError, runWithStreamContext } from "../utils/index.js";
+import { LOG, delay, formatError, runWithStreamContext, startTimer } from "../utils/index.js";
 import type { Request, Response } from "express";
 import { StreamSetupError, createPageWithCapture, setupStream } from "./setup.js";
 import { createHLSState, getAllStreams, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.js";
@@ -508,6 +508,15 @@ async function sendPlaylistResponse(streamId: number, clientAddress: string, res
       return;
     }
 
+    // Log the time from stream start to first playlist delivery. This only fires for the initial playlist wait, not for subsequent playlist polls.
+    const stream = getStream(streamId);
+
+    if(stream) {
+
+      const elapsed = ((Date.now() - stream.startTime.getTime()) / 1000).toFixed(3);
+
+      LOG.debug("timing:hls", "Playlist delivered to client in %ss.", elapsed);
+    }
   }
 
   updateLastAccess(streamId);
@@ -551,7 +560,7 @@ function sendSegment(data: Buffer, res: Response): void {
  */
 function cleanupOrphanedSetup(segmenter: FMP4SegmenterResult): void {
 
-  LOG.warn("Stream was terminated during setup. Stopping orphaned segmenter.");
+  LOG.debug("streaming:setup", "Stream was terminated during setup. Stopping orphaned segmenter.");
   segmenter.stop();
 }
 
@@ -587,12 +596,14 @@ function createTabReplacementHandler(
 
   return async (): Promise<Nullable<TabReplacementResult>> => {
 
+    const tabElapsed = startTimer();
+
     // Get the current stream entry.
     const stream = getStream(numericStreamId);
 
     if(!stream) {
 
-      LOG.warn("Tab replacement requested but stream %s no longer exists.", streamId);
+      LOG.debug("recovery:tab", "Tab replacement requested but stream %s no longer exists.", streamId);
 
       return null;
     }
@@ -609,21 +620,21 @@ function createTabReplacementHandler(
     // getStream() call would hang with "Cannot capture a tab with an active stream" error.
     if(stream.rawCaptureStream && !stream.rawCaptureStream.destroyed) {
 
-      LOG.debug("Destroying old capture stream for tab replacement.");
+      LOG.debug("recovery:tab", "Destroying old capture stream for tab replacement.");
       stream.rawCaptureStream.destroy();
     }
 
     // Stop the current segmenter if it exists.
     if(stream.segmenter) {
 
-      LOG.debug("Stopping current segmenter for tab replacement.");
+      LOG.debug("recovery:tab", "Stopping current segmenter for tab replacement.");
       stream.segmenter.stop();
     }
 
     // Stop the FFmpeg process if it exists.
     if(stream.ffmpegProcess) {
 
-      LOG.debug("Stopping FFmpeg process for tab replacement.");
+      LOG.debug("recovery:tab", "Stopping FFmpeg process for tab replacement.");
       stream.ffmpegProcess.kill();
     }
 
@@ -634,13 +645,15 @@ function createTabReplacementHandler(
 
     if(!oldPage.isClosed()) {
 
-      LOG.debug("Closing unresponsive page for tab replacement.");
+      LOG.debug("recovery:tab", "Closing unresponsive page for tab replacement.");
 
       oldPage.close().catch((error) => {
 
-        LOG.warn("Page close error during tab replacement: %s.", formatError(error));
+        LOG.debug("recovery:tab", "Page close error during tab replacement: %s.", formatError(error));
       });
     }
+
+    LOG.debug("timing:tab", "Old tab cleanup complete. (+%sms)", tabElapsed());
 
     // Create a new page with capture.
     let captureResult;
@@ -661,10 +674,12 @@ function createTabReplacementHandler(
       });
     } catch(error) {
 
-      LOG.error("Failed to create new page during tab replacement: %s.", formatError(error));
+      LOG.warn("Failed to create new page during tab replacement: %s.", formatError(error));
 
       return null;
     }
+
+    LOG.debug("timing:tab", "New page with capture created. (+%sms)", tabElapsed());
 
     // Create a new segmenter for the new capture stream. Continue from the current segment index for playlist continuity, pass the per-track timestamp counters
     // for monotonic baseMediaDecodeTime, and mark the first segment with a discontinuity tag so clients know the stream parameters may have changed.
@@ -715,6 +730,8 @@ function createTabReplacementHandler(
     stream.segmenter = newSegmenter;
 
     LOG.info("Tab replacement complete. New capture started with segment continuity.");
+
+    LOG.debug("timing:tab", "Tab replacement complete. Total: %sms.", tabElapsed());
 
     return {
 

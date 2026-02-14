@@ -304,7 +304,7 @@ export function getTotalSegmentMemory(): number {
  * @param entry - The stream registry entry to query.
  * @returns Segment size in bytes, or null if no segmenter exists.
  */
-export function getLastSegmentSize(entry: StreamRegistryEntry): number | null {
+export function getLastSegmentSize(entry: StreamRegistryEntry): Nullable<number> {
 
   return entry.segmenter?.getLastSegmentSize() ?? null;
 }

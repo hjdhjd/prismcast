@@ -194,7 +194,7 @@ export function terminateStream(streamId: number, channelName: string, reason: s
 
       streamInfo.page.close().catch((error) => {
 
-        LOG.warn("Error closing page for stream %s: %s.", streamId, formatError(error));
+        LOG.debug("streaming:hls", "Error closing page for stream %s: %s.", streamId, formatError(error));
       });
     }
   }

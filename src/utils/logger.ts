@@ -2,6 +2,7 @@
  *
  * logger.ts: Logging utilities with color-coded output for PrismCast.
  */
+import { initDebugFilter, isAnyDebugEnabled, isCategoryEnabled } from "./debugFilter.js";
 import type { LogEntry } from "./logEmitter.js";
 import { emitLogEntry } from "./logEmitter.js";
 import { format } from "util";
@@ -45,29 +46,26 @@ export function isConsoleLogging(): boolean {
   return useConsoleLogging;
 }
 
-/* Debug logging is disabled by default to reduce noise. When enabled via the --debug CLI flag, LOG.debug() messages are included in output. This is useful for
- * troubleshooting FFmpeg issues, timing problems, and other low-level concerns that aren't relevant during normal operation.
+/* Debug logging is controlled by the category-based filter system in debugFilter.ts. The --debug CLI flag enables all categories (equivalent to
+ * PRISMCAST_DEBUG=*), while the PRISMCAST_DEBUG environment variable allows fine-grained category selection.
  */
 
-// Flag indicating whether debug logging is enabled.
-let debugEnabled = false;
-
 /**
- * Enables or disables debug logging. When enabled, LOG.debug() messages are included in output.
- * @param enabled - True to enable debug logging, false to disable.
+ * Enables or disables debug logging. When called with true, initializes the debug filter with wildcard (*) to enable all categories.
+ * @param enabled - True to enable all debug logging, false to disable.
  */
 export function setDebugLogging(enabled: boolean): void {
 
-  debugEnabled = enabled;
+  initDebugFilter(enabled ? "*" : "");
 }
 
 /**
- * Returns whether debug logging is currently enabled.
- * @returns True if debug logging is enabled, false otherwise.
+ * Returns whether any debug logging is currently enabled.
+ * @returns True if any debug categories are enabled, false otherwise.
  */
 export function isDebugLogging(): boolean {
 
-  return debugEnabled;
+  return isAnyDebugEnabled();
 }
 
 /* The LOG object provides a centralized logging interface with color-coded output and printf-style format strings. All methods accept a format string followed by
@@ -101,8 +99,9 @@ function formatTimestamp(): string {
  * Emits a log entry to SSE subscribers for real-time streaming.
  * @param level - The log level.
  * @param message - The formatted message.
+ * @param categoryTag - Optional debug category tag for category-filtered debug messages.
  */
-function emitToSubscribers(level: LogEntry["level"], message: string): void {
+function emitToSubscribers(level: LogEntry["level"], message: string, categoryTag?: string): void {
 
   const entry: LogEntry = {
 
@@ -111,30 +110,61 @@ function emitToSubscribers(level: LogEntry["level"], message: string): void {
     timestamp: formatTimestamp()
   };
 
+  if(categoryTag) {
+
+    entry.categoryTag = categoryTag;
+  }
+
   emitLogEntry(entry);
 }
 
 /**
  * Core logging implementation shared by all log levels. Handles stream ID prefixing, SSE emission, and output routing.
- * @param level - The log level (error, warn, info).
+ * @param level - The log level (error, warn, info, debug).
  * @param color - ANSI color code for console output (empty string for no color).
  * @param message - The format string.
  * @param args - Format arguments.
  * @param explicitStreamId - Optional explicit stream ID (used by withStreamId helper).
+ * @param categoryTag - Optional debug category tag for category-filtered debug messages.
  */
-function logWithLevel(level: LogEntry["level"], color: string, message: string, args: unknown[], explicitStreamId?: string): void {
+function logWithLevel(level: LogEntry["level"], color: string, message: string, args: unknown[], explicitStreamId?: string, categoryTag?: string): void {
 
   const streamId = explicitStreamId ?? getStreamId();
   const formatted = args.length > 0 ? format(message, ...args) : message;
   const logMessage = streamId ? [ "[", streamId, "] ", formatted ].join("") : formatted;
 
   // Emit to SSE subscribers for real-time streaming.
-  emitToSubscribers(level, logMessage);
+  emitToSubscribers(level, logMessage, categoryTag);
 
   if(useConsoleLogging) {
 
-    // eslint-disable-next-line no-console
-    const consoleMethod = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
+    /* eslint-disable no-console */
+    let consoleMethod;
+
+    switch(level) {
+
+      case "error": {
+
+        consoleMethod = console.error;
+
+        break;
+      }
+
+      case "warn": {
+
+        consoleMethod = console.warn;
+
+        break;
+      }
+
+      default: {
+
+        consoleMethod = console.log;
+
+        break;
+      }
+    }
+    /* eslint-enable no-console */
 
     if(streamId && color) {
 
@@ -151,7 +181,7 @@ function logWithLevel(level: LogEntry["level"], color: string, message: string, 
     }
   } else {
 
-    writeLogEntry(level, logMessage, color || undefined);
+    writeLogEntry(level, logMessage, color || undefined, categoryTag);
   }
 }
 
@@ -160,7 +190,7 @@ function logWithLevel(level: LogEntry["level"], color: string, message: string, 
  */
 interface BoundLogger {
 
-  debug: (message: string, ...args: unknown[]) => void;
+  debug: (category: string, message: string, ...args: unknown[]) => void;
   error: (message: string, ...args: unknown[]) => void;
   info: (message: string, ...args: unknown[]) => void;
   warn: (message: string, ...args: unknown[]) => void;
@@ -169,21 +199,22 @@ interface BoundLogger {
 export const LOG = {
 
   /**
-   * Logs a debug message in cyan. Debug messages are only output when debug mode is enabled via the --debug CLI flag. Use this for verbose diagnostic information
-   * that would clutter normal logs, such as FFmpeg output, timing details, or internal state dumps.
+   * Logs a debug message in cyan, filtered by category. Debug messages are only output when the specified category is enabled via the PRISMCAST_DEBUG environment
+   * variable or the --debug CLI flag (which enables all categories). Use this for verbose diagnostic information that would clutter normal logs.
    *
    * Stream ID is automatically included if running within a stream context (established by runWithStreamContext()).
+   * @param category - The debug category (e.g., "tuning:hulu", "recovery:tab", "streaming:segmenter").
    * @param message - The format string (supports %s, %d, %j, %o).
    * @param args - Values to interpolate into the format string.
    */
-  debug: function(message: string, ...args: unknown[]): void {
+  debug: function(category: string, message: string, ...args: unknown[]): void {
 
-    if(!debugEnabled) {
+    if(!isAnyDebugEnabled() || !isCategoryEnabled(category)) {
 
       return;
     }
 
-    logWithLevel("debug", ANSI_COLORS.cyan, message, args);
+    logWithLevel("debug", ANSI_COLORS.cyan, message, args, undefined, category);
   },
 
   /**
@@ -241,11 +272,11 @@ export const LOG = {
 
     return {
 
-      debug: (message: string, ...args: unknown[]): void => {
+      debug: (category: string, message: string, ...args: unknown[]): void => {
 
-        if(debugEnabled) {
+        if(isAnyDebugEnabled() && isCategoryEnabled(category)) {
 
-          logWithLevel("debug", ANSI_COLORS.cyan, message, args, streamId);
+          logWithLevel("debug", ANSI_COLORS.cyan, message, args, streamId, category);
         }
       },
       error: (message: string, ...args: unknown[]): void => logWithLevel("error", ANSI_COLORS.red, message, args, streamId),

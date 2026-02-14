@@ -17,6 +17,7 @@ const { promises: fsPromises } = fs;
 
 interface LogEntry {
 
+  categoryTag?: string;
   level: "debug" | "error" | "info" | "warn";
   message: string;
   timestamp: string;
@@ -38,8 +39,9 @@ interface LogsResponse {
 // eslint-disable-next-line no-control-regex
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 
-// Pattern to match log entries: [timestamp] optional [LEVEL] message
-const LOG_LINE_PATTERN = /^\[(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] (?:\[(WARN|ERROR|DEBUG)\] )?(.*)$/;
+// Pattern to match log entries: [timestamp] optional [LEVEL] or [LEVEL:category] message. The category suffix handles the new DEBUG:category format while
+// remaining backward-compatible with plain [DEBUG] entries from older log files.
+const LOG_LINE_PATTERN = /^\[(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] (?:\[(WARN|ERROR|DEBUG(?::[^\]]+)?)\] )?(.*)$/;
 
 /**
  * Strips ANSI escape codes from a string. Used to clean log file lines that may contain terminal color codes.
@@ -70,10 +72,20 @@ function parseLogLine(line: string): Nullable<LogEntry> {
   const [ , timestamp, levelStr, message ] = match;
 
   let level: "debug" | "error" | "info" | "warn" = "info";
+  let categoryTag: string | undefined;
 
-  if(levelStr === "DEBUG") {
+  if(levelStr && levelStr.startsWith("DEBUG")) {
 
     level = "debug";
+
+    // Extract the category suffix from "DEBUG:tuning:hulu" → "tuning:hulu". This preserves category information for web UI rendering so file-loaded entries
+    // display the same [DEBUG:category] badge as live SSE entries.
+    const colonIndex = levelStr.indexOf(":");
+
+    if(colonIndex !== -1) {
+
+      categoryTag = levelStr.substring(colonIndex + 1);
+    }
   } else if(levelStr === "WARN") {
 
     level = "warn";
@@ -82,7 +94,14 @@ function parseLogLine(line: string): Nullable<LogEntry> {
     level = "error";
   }
 
-  return { level, message, timestamp };
+  const entry: LogEntry = { level, message, timestamp };
+
+  if(categoryTag) {
+
+    entry.categoryTag = categoryTag;
+  }
+
+  return entry;
 }
 
 /**

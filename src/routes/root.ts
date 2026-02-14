@@ -842,7 +842,12 @@ function generateLogsContent(): string {
     "  var cls = 'log-entry';",
     "  if(entry.level === 'error') { cls += ' log-error'; }",
     "  else if(entry.level === 'warn') { cls += ' log-warn'; }",
-    "  var levelBadge = entry.level !== 'info' ? '[' + entry.level.toUpperCase() + '] ' : '';",
+    "  else if(entry.level === 'debug') { cls += ' log-debug'; }",
+    "  var levelBadge = '';",
+    "  if(entry.level !== 'info') {",
+    "    var tag = entry.categoryTag ? entry.level.toUpperCase() + ':' + entry.categoryTag : entry.level.toUpperCase();",
+    "    levelBadge = '[' + escapeHtml(tag) + '] ';",
+    "  }",
     "  return '<div class=\"' + cls + '\">[' + escapeHtml(entry.timestamp) + '] ' + levelBadge + escapeHtml(entry.message) + '</div>';",
     "}",
 
@@ -2563,6 +2568,7 @@ function generateLandingPageStyles(): string {
     ".log-entry { color: var(--dark-text-secondary); }",
     ".log-error { color: var(--dark-text-error); }",
     ".log-warn { color: var(--dark-text-warn); }",
+    ".log-debug { color: var(--dark-text-debug); }",
     ".log-muted { color: var(--dark-text-muted); }",
     ".log-connecting { color: var(--dark-text-muted); }",
 

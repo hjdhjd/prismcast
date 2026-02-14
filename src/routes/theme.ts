@@ -143,6 +143,7 @@ export function generateThemeStyles(): string {
     "  --dark-text-muted: #999999;",
     "  --dark-text-error: #f44747;",
     "  --dark-text-warn: #dcdcaa;",
+    "  --dark-text-debug: #4ec9b0;",
     "  --dark-border: #3d3d3d;",
     "  --dark-scrollbar-track: #2d2d2d;",
     "  --dark-scrollbar-thumb: #555555;",
