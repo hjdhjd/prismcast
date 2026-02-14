@@ -58,6 +58,7 @@ import { extractDomain } from "../utils/index.js";
  * - huluLive: Hulu Live TV with guide grid channel selection + fullscreen button (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
+ * - foxLive: Fox.com live guide grid with station code channel selection (extends fullscreenApi)
  * - slingLive: Sling TV with virtualized A-Z guide grid channel selection (extends fullscreenApi)
  * - youtubeTV: YouTube TV with non-virtualized EPG grid channel selection (extends fullscreenApi)
  *
@@ -157,6 +158,19 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     extends: "embeddedPlayer",
     lockVolumeProperties: true,
     summary: "Embedded players that auto-mute"
+  },
+
+  // Profile for Fox.com live channel guide grid. The guide page presents all channels in a non-virtualized grid with station codes in the channel logo button
+  // titles (e.g., FOXD2C, FNC, FS1). The channelSelector property matches against these station codes. Clicking the channel logo button is an SPA state
+  // transition — the player at the top of the page switches channels without navigation. The grid renders dynamically after page load, so the strategy waits
+  // for GuideChannelContainer elements before scanning.
+  foxLive: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "foxGrid" },
+    description: "Fox.com live channel guide. Set Channel Selector to the station code (e.g., BTN, FOXD2C, FS1).",
+    extends: "fullscreenApi",
+    summary: "Fox Live (guide grid, needs selector)"
   },
 
   // Base profile for sites that require the JavaScript fullscreen API (element.requestFullscreen()) instead of keyboard shortcuts. Many modern players intercept
@@ -301,6 +315,10 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
  */
 export interface DomainConfig {
 
+  // URL to navigate to for authentication. Some sites show different login options on their homepage vs their player page. When set, the auth route navigates to
+  // this URL instead of the channel's streaming URL. Omit for sites where the streaming URL is also the correct login page.
+  loginUrl?: string;
+
   // Maximum continuous playback duration in hours before the site enforces a stream cutoff. When set, the playback monitor proactively reloads the page before this
   // limit expires to maintain uninterrupted streaming. Fractional values are supported (e.g., 1.5 for 90 minutes). Omit for sites that allow indefinite playback.
   maxContinuousPlayback?: number;
@@ -335,6 +353,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+" },
   "espn.com": { profile: "keyboardMultiVideo", provider: "ESPN.com" },
   "foodnetwork.com": { profile: "fullscreenApi", provider: "Food Network" },
+  "fox.com": { loginUrl: "https://www.fox.com", profile: "foxLive", provider: "Fox" },
   "foxbusiness.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox Business" },
   "foxnews.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox News" },
   "foxsports.com": { profile: "fullscreenApi", provider: "Fox Sports" },

@@ -12,10 +12,11 @@ import type { ChannelMap } from "../types/index.js";
  * - url: Streaming site URL.
  * - profile: Site behavior profile (optional). Use "auto" or omit to auto-detect from URL domain. See config/profiles.ts for available profiles.
  * - stationId: Gracenote station ID for guide data (optional). Local affiliates (ABC, CBS, NBC) vary by region.
- * - channelSelector: Channel identifier for multi-channel pages. For thumbnailRow/tileClick profiles, this is a slug matched against image URLs. For guideGrid
- *   (huluLive), this is the exact channel name matched against image alt text. For hboGrid (hboMax), this is the channel name matched against the live channel
- *   rail tile text (e.g., HBO, HBO Hits). For slingGrid (slingLive), this is the channel name as it appears in the Sling TV guide grid data-testid attributes.
- *   For youtubeGrid (youtubeTV), this is the channel name from the YouTube TV guide or a network name (e.g., NBC) for local affiliates.
+ * - channelSelector: Channel identifier for multi-channel pages. For thumbnailRow/tileClick profiles, this is a slug matched against image URLs. For foxGrid
+ *   (foxLive), this is the station code matched against GuideChannelLogo button titles (e.g., FOXD2C, FNC, FS1). For guideGrid (huluLive), this is the exact
+ *   channel name matched against image alt text. For hboGrid (hboMax), this is the channel name matched against the live channel rail tile text (e.g., HBO, HBO
+ *   Hits). For slingGrid (slingLive), this is the channel name as it appears in the Sling TV guide grid data-testid attributes. For youtubeGrid (youtubeTV), this
+ *   is the channel name from the YouTube TV guide or a network name (e.g., NBC) for local affiliates.
  * - provider: Display name override for the provider selection dropdown (optional). Normally auto-derived from the URL domain via DOMAIN_CONFIG in
  *   config/profiles.ts. Only needed when a channel's display name should differ from the domain-level default.
  *
@@ -46,6 +47,7 @@ export const CHANNELS: ChannelMap = {
   "bet-sling": { channelSelector: "BET", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "bet-yttv": { channelSelector: "BET", url: "https://tv.youtube.com/live" },
   bigten: { name: "Big 10", stationId: "58321", url: "https://www.foxsports.com/live/btn" },
+  "bigten-foxcom": { channelSelector: "BTN", url: "https://www.fox.com/live/channels" },
   "bigten-hulu": { channelSelector: "Big Ten Network", url: "https://www.hulu.com/live" },
   bravo: { name: "Bravo", stationId: "58625", url: "https://www.nbc.com/live?brand=bravo&callsign=bravo_east" },
   "bravo-hulu": { channelSelector: "Bravo", url: "https://www.hulu.com/live" },
@@ -135,9 +137,11 @@ export const CHANNELS: ChannelMap = {
   "espnu-hulu": { channelSelector: "ESPNU", url: "https://www.hulu.com/live" },
   "espnu-yttv": { channelSelector: "ESPNU", url: "https://tv.youtube.com/live" },
   fbc: { name: "Fox Business", stationId: "58718", url: "https://www.foxbusiness.com/video/5640669329001" },
+  "fbc-foxcom": { channelSelector: "FBN", url: "https://www.fox.com/live/channels" },
   "fbc-hulu": { channelSelector: "Fox Business", url: "https://www.hulu.com/live" },
   "fbc-yttv": { channelSelector: "Fox Business", url: "https://tv.youtube.com/live" },
   fnc: { name: "Fox News", stationId: "60179", url: "https://www.foxnews.com/video/5614615980001" },
+  "fnc-foxcom": { channelSelector: "FNC", url: "https://www.fox.com/live/channels" },
   "fnc-hulu": { channelSelector: "Fox News", url: "https://www.hulu.com/live" },
   "fnc-sling": { channelSelector: "Fox News", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "fnc-yttv": { channelSelector: "Fox News", url: "https://tv.youtube.com/live" },
@@ -145,20 +149,24 @@ export const CHANNELS: ChannelMap = {
   "food-hulu": { channelSelector: "Food Network", url: "https://www.hulu.com/live" },
   "food-sling": { channelSelector: "Food Network", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "food-yttv": { channelSelector: "Food Network", url: "https://tv.youtube.com/live" },
-  fox: { channelSelector: "Fox", name: "Fox", url: "https://www.hulu.com/live" },
+  fox: { channelSelector: "FOXD2C", name: "Fox", url: "https://www.fox.com/live/channels" },
+  "fox-hulu": { channelSelector: "Fox", url: "https://www.hulu.com/live" },
   "fox-sling": { channelSelector: "FOX", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "fox-yttv": { channelSelector: "FOX", url: "https://tv.youtube.com/live" },
   foxdeportes: { name: "Fox Deportes", stationId: "72189", url: "https://www.foxsports.com/live/foxdep" },
+  "foxdeportes-foxcom": { channelSelector: "FOXD", url: "https://www.fox.com/live/channels" },
   foxsoccerplus: { name: "Fox Soccer Plus", stationId: "66879", url: "https://www.foxsports.com/live/fsp" },
   france24: { name: "France 24", stationId: "60961", url: "https://www.france24.com/en/live" },
   "france24-sling": { channelSelector: "France 24 (English)", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   france24fr: { name: "France 24 (French)", stationId: "58685", url: "https://www.france24.com/fr/direct" },
   "france24fr-sling": { channelSelector: "France 24", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   fs1: { name: "FS1", stationId: "82547", url: "https://www.foxsports.com/live/fs1" },
+  "fs1-foxcom": { channelSelector: "FS1", url: "https://www.fox.com/live/channels" },
   "fs1-hulu": { channelSelector: "FS1", url: "https://www.hulu.com/live" },
   "fs1-sling": { channelSelector: "FOX Sports 1", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "fs1-yttv": { channelSelector: "FS1", url: "https://tv.youtube.com/live" },
   fs2: { name: "FS2", stationId: "59305", url: "https://www.foxsports.com/live/fs2" },
+  "fs2-foxcom": { channelSelector: "FS2", url: "https://www.fox.com/live/channels" },
   "fs2-hulu": { channelSelector: "FS2", url: "https://www.hulu.com/live" },
   "fs2-yttv": { channelSelector: "FS2", url: "https://tv.youtube.com/live" },
   fx: { name: "FX", stationId: "58574", url: "https://abc.com/watch-live/93256af4-5e80-4558-aa2e-2bdfffa119a0" },

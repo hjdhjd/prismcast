@@ -777,6 +777,7 @@ export interface StreamListResponse {
 /**
  * Available channel selection strategies. Each strategy implements a different approach to finding and selecting channels in a multi-channel player UI.
  *
+ * - "foxGrid": Find channel by station code in a non-virtualized guide grid, click the channel logo button via DOM .click(). Used by Fox.com.
  * - "guideGrid": Find channel by exact-matching image alt text, click nearest clickable ancestor. Optionally clicks a tab to reveal the list first. Used by Hulu
  *   Live TV.
  * - "hboGrid": Discover the HBO tab page URL from the homepage menu bar, scrape the live channel tile rail for a matching channel name, and navigate to the watch
@@ -788,7 +789,7 @@ export interface StreamListResponse {
  * - "tileClick": Find channel tile by matching image URL slug, click tile, then click play button on modal. Used by Disney+ live channels.
  * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
-export type ChannelSelectionStrategy = "guideGrid" | "hboGrid" | "none" | "slingGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
+export type ChannelSelectionStrategy = "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
 
 /**
  * Configuration for channel selection behavior within a site profile.

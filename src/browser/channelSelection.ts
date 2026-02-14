@@ -9,6 +9,7 @@ import { clearHuluCache, guideGridStrategy } from "./tuning/hulu.js";
 import { clearSlingCache, slingGridStrategy } from "./tuning/sling.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
+import { foxGridStrategy } from "./tuning/fox.js";
 import { thumbnailRowStrategy } from "./tuning/thumbnailRow.js";
 import { tileClickStrategy } from "./tuning/tileClick.js";
 import { youtubeGridStrategy } from "./tuning/youtubeTv.js";
@@ -27,6 +28,7 @@ type ChannelStrategyFn = (page: Page, profile: ChannelSelectionProfile) => Promi
 // Strategy dispatch registry. Maps strategy names from ChannelSelectionStrategy to their implementation functions.
 const strategies: Record<string, ChannelStrategyFn> = {
 
+  foxGrid: foxGridStrategy,
   guideGrid: guideGridStrategy,
   hboGrid: hboGridStrategy,
   slingGrid: slingGridStrategy,
@@ -99,9 +101,10 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
 
   // Poll for the channel slug image to appear and fully load. We check both src match and load completion (img.complete + naturalWidth) to ensure the image is
   // actually rendered before proceeding. This prevents race conditions where the img element exists with the correct src but the browser hasn't finished fetching
-  // and rendering it, which can cause layout instability and click failures. We skip this polling for guideGrid (channel list images are hidden behind a tab),
-  // hboGrid (channelSelector is a channel name, not an image URL slug), slingGrid (same reason as hboGrid), and youtubeGrid (same reason as hboGrid).
-  const skipImagePolling = [ "guideGrid", "hboGrid", "slingGrid", "youtubeGrid" ];
+  // and rendering it, which can cause layout instability and click failures. We skip this polling for foxGrid (channelSelector is a station code, not an image
+  // URL slug), guideGrid (channel list images are hidden behind a tab), hboGrid (channelSelector is a channel name, not an image URL slug), slingGrid (same
+  // reason as hboGrid), and youtubeGrid (same reason as hboGrid).
+  const skipImagePolling = [ "foxGrid", "guideGrid", "hboGrid", "slingGrid", "youtubeGrid" ];
 
   if(!skipImagePolling.includes(channelSelection.strategy)) {
 
