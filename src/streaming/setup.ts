@@ -6,7 +6,7 @@ import type { Channel, Nullable, ResolvedSiteProfile, UrlValidation } from "../t
 import type { Frame, Page } from "puppeteer-core";
 import { LOG, delay, extractDomain, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg } from "../utils/index.js";
 import type { MonitorStreamInfo, RecoveryMetrics, TabReplacementResult } from "./monitor.js";
-import { closeBrowser, getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
+import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.js";
 import { initializePlayback, navigateToPage } from "../browser/video.js";
@@ -55,10 +55,9 @@ const WEBM_FFMPEG_MIME_TYPE = "video/webm;codecs=h264,opus";
 // concurrently with other captures without issue.
 let captureQueue: Promise<void> = Promise.resolve();
 
-// Stale capture recovery. Chrome's tabCapture can retain stale state after a crash, causing "Cannot capture a tab with an active stream" errors on fresh launches.
-// When detected, we restart Chrome entirely to clear the state. Limited to 3 attempts per server lifetime to prevent infinite loops.
-const MAX_STALE_CAPTURE_RECOVERY_ATTEMPTS = 3;
-let staleCaptureRecoveryAttempts = 0;
+// Maximum number of times createPageWithCapture() will retry when it detects that the page was closed while waiting in the capture queue (e.g., due to a browser
+// crash). An explicit guard prevents unbounded recursion.
+const MAX_PAGE_CLOSED_RETRIES = 3;
 
 // Types.
 
@@ -71,7 +70,7 @@ export type TabReplacementHandlerFactory = (
   streamId: string,
   profile: ResolvedSiteProfile,
   metadataComment: string | undefined
-) => () => Promise<TabReplacementResult | null>;
+) => () => Promise<Nullable<TabReplacementResult>>;
 
 /**
  * Options for setting up a stream.
@@ -193,6 +192,10 @@ export interface CreatePageWithCaptureOptions {
 
   // The URL to navigate to and capture.
   url: string;
+
+  // Internal retry counter for page-closed-during-queue recovery. Callers should not set this — it is incremented automatically when createPageWithCapture()
+  // retries after detecting a dead page from a browser crash that occurred while waiting in the capture queue.
+  _pageClosedRetries?: number;
 }
 
 /**
@@ -351,6 +354,20 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   let rawCaptureStream: Nullable<Readable> = null;
   let ffmpegProcess: Nullable<FFmpegProcess> = null;
 
+  // Capture queue release function, hoisted here so both the try and catch blocks can access it. Initialized in the try block when the queue entry is created.
+  // The once-guard prevents double-releasing from multiple code paths (success handler, catch block, timeout).
+  let captureQueueReleased = false;
+  let releaseCaptureQueue: () => void = () => {};
+
+  const releaseCaptureOnce = (): void => {
+
+    if(!captureQueueReleased) {
+
+      captureQueueReleased = true;
+      releaseCaptureQueue();
+    }
+  };
+
   // Initialize media stream capture.
   try {
 
@@ -368,7 +385,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
           maxFrameRate: 60,
           maxHeight: getEffectiveViewport(CONFIG).height,
           maxWidth: getEffectiveViewport(CONFIG).width,
-          minFrameRate: CONFIG.streaming.frameRate,
+          minFrameRate: Math.max(30, Math.min(60, CONFIG.streaming.frameRate)),
           minHeight: getEffectiveViewport(CONFIG).height,
           minWidth: getEffectiveViewport(CONFIG).width
         }
@@ -376,10 +393,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     } as unknown as Parameters<typeof getStream>[1];
 
     // Serialize capture initialization. Wait for any previous capture to finish before calling getStream(), because Chrome's tabCapture extension rejects
-    // concurrent initialization attempts. The lock is released when getStream() resolves or rejects (not when our timeout fires), because Chrome's extension state
-    // is what matters. If our timeout fires while getStream() is still in-flight, the catch block closes the page, which causes the pending getStream() to reject,
-    // which releases the lock and allows the next queued capture to proceed.
-    let releaseCaptureQueue: () => void = () => {};
+    // concurrent initialization attempts. On success, the lock is released immediately so the next caller can proceed. On failure, the lock is held until the
+    // catch block decides what to do — the catch block releases the lock after handling the error.
     const previousCapture = captureQueue;
 
     captureQueue = new Promise<void>((resolve) => {
@@ -404,15 +419,33 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     } catch(error) {
 
       // Release our queue position so subsequent captures aren't blocked by our failure.
-      releaseCaptureQueue();
+      releaseCaptureOnce();
 
       throw error;
     }
 
+    // After the queue wait, verify our page is still connected. If Chrome crashed while we were waiting, our page is dead and we need to start over with a
+    // fresh page on the new browser. Release our queue position first so subsequent callers aren't blocked.
+    if(page.isClosed()) {
+
+      releaseCaptureOnce();
+      unregisterManagedPage(page);
+
+      const retryCount = options._pageClosedRetries ?? 0;
+
+      if(retryCount >= MAX_PAGE_CLOSED_RETRIES) {
+
+        throw new Error("Browser crashed too many times during capture initialization.");
+      }
+
+      return createPageWithCapture({ ...options, _pageClosedRetries: retryCount + 1 });
+    }
+
     const streamPromise = getStream(page, streamOptions);
 
-    // Release the queue when getStream() completes, regardless of success or failure. This is independent of our application timeout below.
-    void streamPromise.then(() => releaseCaptureQueue(), () => releaseCaptureQueue());
+    // Release the queue on success only. On failure, the catch block handles the release. The rejection handler is a no-op to suppress unhandled rejection
+    // warnings; the actual error handling happens in the catch block below.
+    void streamPromise.then(() => releaseCaptureOnce(), () => {});
 
     const timeoutPromise = new Promise<never>((_, reject) => {
 
@@ -506,29 +539,25 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       page.close().catch(() => {});
     }
 
-    // Check for stale capture state error. This occurs after a crash when Chrome's tabCapture retains state from the previous process. Restarting Chrome clears
-    // the stale state. We limit recovery attempts to prevent infinite loops if the issue persists.
     const errorMessage = formatError(error);
 
-    if(errorMessage.includes("Cannot capture a tab with an active stream") && (staleCaptureRecoveryAttempts < MAX_STALE_CAPTURE_RECOVERY_ATTEMPTS)) {
+    // Stale capture state is unrecoverable. The "Cannot capture a tab with an active stream" error occurs inside puppeteer-stream's second lock section, which
+    // has no try/finally. The internal mutex is permanently leaked — all subsequent getStream() calls will hang on it. Chrome restart cannot fix module-level
+    // state, so the only recourse is a full process restart. Release the capture queue so other callers aren't left hanging, then exit.
+    if(errorMessage.includes("Cannot capture a tab with an active stream")) {
 
-      staleCaptureRecoveryAttempts++;
+      LOG.error("Stale capture state detected. puppeteer-stream's internal capture mutex is now permanently locked. The capture system is unrecoverable. " +
+        "Exiting so the service manager can restart with a clean module state.");
 
-      LOG.warn("Stale capture state detected (attempt %d/%d). Restarting Chrome to clear state.",
-        staleCaptureRecoveryAttempts, MAX_STALE_CAPTURE_RECOVERY_ATTEMPTS);
+      releaseCaptureOnce();
 
-      // Kill Chrome entirely to clear all tabCapture state.
-      await closeBrowser();
+      setTimeout(() => process.exit(1), 100);
 
-      // Wait for Chrome to fully exit before relaunching.
-      await delay(1500);
-
-      // Relaunch Chrome. getCurrentBrowser() creates a fresh instance since closeBrowser() cleared the reference.
-      await getCurrentBrowser();
-
-      // Retry the capture with a fresh browser.
-      return createPageWithCapture(options);
+      throw error;
     }
+
+    // For non-stale errors, release the capture queue so subsequent callers can proceed.
+    releaseCaptureOnce();
 
     throw error;
   }
@@ -556,9 +585,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       );
 
       // Phase 2: Channel selection + video setup. Runs after navigation succeeds with no outer timeout racing against internal click retries. Each sub-step
-      // (selectChannel, waitForVideoReady, etc.) has its own internal timeout via videoTimeout and click retry constants. A 30-second safety-net timeout prevents
-      // pathological hangs if multiple internal timeouts chain sequentially.
-      const PLAYBACK_INIT_TIMEOUT = 30000;
+      // (selectChannel, waitForVideoReady, etc.) has its own internal timeout via videoTimeout and click retry constants. For guideGrid strategies, a channel
+      // selection failure triggers an overlay dismiss and retry, which doubles the channel selection time budget. The 45-second safety-net timeout accommodates
+      // this retry while still preventing pathological hangs if multiple internal timeouts chain sequentially.
+      const PLAYBACK_INIT_TIMEOUT = 45000;
 
       const tuneResult = await Promise.race([
         initializePlayback(page, profile),
@@ -596,6 +626,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
       page.close().catch(() => {});
     }
+
+    // Re-minimize the browser window. Navigation may have un-minimized it (new tab activation on macOS), and without this the window stays visible after the
+    // failed attempt. Fire-and-forget since we're about to throw.
+    minimizeBrowserWindow().catch(() => {});
 
     throw error;
   }
@@ -879,4 +913,109 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       url
     };
   });
+}
+
+// Startup Capture Verification.
+
+/**
+ * Verifies that Chrome's capture system is functional before the server starts accepting requests. This detects stale tabCapture state left over from a previous
+ * Chrome process — common during quick service restarts where the old process hasn't fully exited before the new one launches. Without this probe, the first stream
+ * request would trigger the runtime stale capture handler, which exits the process because the puppeteer-stream mutex is permanently leaked.
+ *
+ * The probe creates a temporary page, attempts a short capture, and tears down both cleanly. A 500ms delay after destroying the capture stream allows
+ * puppeteer-stream's fire-and-forget STOP_RECORDING chain to complete before closing the page, preventing the stale capture cascade on the first real request.
+ *
+ * If stale capture state is detected, the process exits immediately — Chrome restart cannot fix the leaked mutex, only a fresh process can.
+ */
+export async function verifyCaptureSystem(): Promise<void> {
+
+  const PROBE_TIMEOUT = 5000;
+
+  const browser = await getCurrentBrowser();
+  const page = await browser.newPage();
+
+  registerManagedPage(page);
+
+  try {
+
+    // Use the same capture MIME type and viewport constraints as the runtime. The stale state error occurs at the tabCapture API level before encoding matters,
+    // but matching the runtime configuration ensures the probe exercises the exact same getStream() parameters.
+    const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
+    const captureMimeType = useFFmpeg ? WEBM_FFMPEG_MIME_TYPE : NATIVE_FMP4_MIME_TYPE;
+
+    const streamOptions = {
+
+      audio: true,
+      mimeType: captureMimeType,
+      video: true,
+      videoConstraints: {
+
+        mandatory: {
+
+          maxFrameRate: 30,
+          maxHeight: getEffectiveViewport(CONFIG).height,
+          maxWidth: getEffectiveViewport(CONFIG).width,
+          minFrameRate: 30,
+          minHeight: getEffectiveViewport(CONFIG).height,
+          minWidth: getEffectiveViewport(CONFIG).width
+        }
+      }
+    } as unknown as Parameters<typeof getStream>[1];
+
+    const stream = await Promise.race([
+      getStream(page, streamOptions),
+      new Promise<never>((_, reject) => {
+
+        setTimeout(() => {
+
+          reject(new Error("Capture probe timed out."));
+        }, PROBE_TIMEOUT);
+      })
+    ]);
+
+    // Capture succeeded — the system is functional. Destroy the stream before closing the page to ensure chrome.tabCapture releases the capture cleanly.
+    const readable = stream as unknown as Readable;
+
+    readable.destroy();
+
+    // Wait for puppeteer-stream's capture cleanup chain to complete. readable.destroy() triggers STOP_RECORDING via the close handler, but the call is
+    // fire-and-forget. The async chain (STOP_RECORDING → recorder.stop() → onstop → track.stop()) must finish before closing the page, or Chrome's tabCapture
+    // state may linger and cause "Cannot capture a tab with an active stream" errors on the first real stream request.
+    await delay(500);
+
+    unregisterManagedPage(page);
+
+    if(!page.isClosed()) {
+
+      await page.close();
+    }
+
+    LOG.info("Capture system verified successfully.");
+  } catch(error) {
+
+    const errorMessage = formatError(error);
+
+    // Clean up the test page.
+    unregisterManagedPage(page);
+
+    if(!page.isClosed()) {
+
+      page.close().catch(() => {});
+    }
+
+    // Stale capture state is unrecoverable. The error occurs inside puppeteer-stream's second lock section, which has no try/finally — the internal mutex is
+    // permanently leaked. All subsequent getStream() calls will hang on it. Chrome restart cannot fix module-level state, so exit and let the service manager
+    // restart with a clean process.
+    if(errorMessage.includes("Cannot capture a tab with an active stream")) {
+
+      LOG.error("Startup probe detected stale capture state. puppeteer-stream's internal capture mutex is now permanently locked. Exiting so the service " +
+        "manager can restart with a clean module state.");
+
+      process.exit(1);
+    }
+
+    // Non-stale error. Fail immediately — retrying without restarting Chrome won't change anything, and a non-stale getStream() failure at startup indicates a
+    // fundamental problem (extension not loaded, Chrome misconfigured, etc.).
+    throw new Error("Capture system verification failed: " + errorMessage);
+  }
 }

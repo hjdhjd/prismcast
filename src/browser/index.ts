@@ -643,7 +643,6 @@ function handleBrowserDisconnect(): void {
  * - Returning the existing browser if it's still connected
  * - Launching a new browser if none exists or the previous one disconnected
  * - Waiting for the puppeteer-stream extension to initialize
- * - Minimizing the browser window to reduce GPU usage
  * - Setting up disconnect handlers for crash recovery
  * @returns The browser instance.
  * @throws If the browser cannot be launched.
@@ -687,10 +686,6 @@ export async function getCurrentBrowser(): Promise<Browser> {
     // Detect display dimensions to determine maximum supported viewport. This must happen before we start streaming so the preset system can degrade to a
     // smaller preset if needed.
     await detectDisplayDimensions(currentBrowser);
-
-    // Minimize the browser window to reduce GPU usage and desktop clutter. The browser must be visible (not headless) for capture to work, but minimizing
-    // it reduces resource consumption. CDP allows us to control window state without affecting capture.
-    await minimizeBrowserWindow();
 
     // Log the Chrome version for diagnostic reference. This helps correlate browser behavior changes (tab unresponsiveness, memory pressure, capture issues)
     // with specific Chrome releases.
