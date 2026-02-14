@@ -805,6 +805,20 @@ export interface ChannelSelectionConfig {
   strategy: ChannelSelectionStrategy;
 }
 
+// Narrowed profile type for strategy functions. When selectChannel() validates that channelSelector is non-null, it narrows the profile to this type so
+// strategy functions receive a guaranteed non-null channelSelector without needing non-null assertions.
+export interface ChannelSelectionProfile extends ResolvedSiteProfile {
+
+  channelSelector: string;
+}
+
+// Type guard that proves channelSelector is a non-empty string. Matches the original !channelSelector truthiness check, which rejects both null and empty string.
+// Used by the coordinator before dispatching to strategy functions.
+export function isChannelSelectionProfile(profile: ResolvedSiteProfile): profile is ChannelSelectionProfile {
+
+  return (profile.channelSelector !== null) && (profile.channelSelector.length > 0);
+}
+
 /**
  * Result of attempting to select a channel from a multi-channel player UI.
  */
