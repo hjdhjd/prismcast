@@ -30,7 +30,10 @@ function generateHeaderStatusHtml(): string {
   return [
     "<div id=\"system-status\" class=\"header-status\">",
     "<span id=\"system-health\"><span class=\"status-dot\" style=\"color: var(--text-muted);\">&#9679;</span> Connecting...</span>",
-    "<span id=\"stream-count\">-</span>",
+    "<div class=\"dropdown stream-popover\">",
+    "<span id=\"stream-count\" onclick=\"toggleStreamPopover()\">-</span>",
+    "<div class=\"dropdown-menu\" id=\"stream-popover-menu\"></div>",
+    "</div>",
     "</div>"
   ].join("\n");
 }
@@ -124,6 +127,8 @@ function generateStatusScript(): string {
     "var streamData = {};",
     "var systemData = null;",
     "var expandedStreams = {};",
+    "var healthColorVars = { healthy: 'var(--stream-healthy)', buffering: 'var(--stream-buffering)', recovering: 'var(--stream-recovering)', ",
+    "  stalled: 'var(--stream-stalled)', error: 'var(--stream-error)' };",
 
     // Format duration in human readable format.
     "function formatDuration(seconds) {",
@@ -169,6 +174,17 @@ function generateStatusScript(): string {
     "  }",
     "}",
 
+    // Build channel display HTML with an optional logo image. When a logo URL is available, renders an img element with an onerror fallback that hides the
+    // image and reveals a text span. The logoClass and textClass parameters allow callers to apply context-specific sizing.
+    "function channelDisplayHtml(logoUrl, name, logoClass, textClass) {",
+    "  if(logoUrl) {",
+    "    return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"' + name + '\" title=\"' + name + '\" ' +",
+    "      'onerror=\"this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'inline\\'\">' +",
+    "      '<span class=\"' + textClass + '\" style=\"display:none\">' + name + '</span>';",
+    "  }",
+    "  return '<span class=\"' + textClass + '\">' + name + '</span>';",
+    "}",
+
     // Get row background color based on health status. Uses CSS variables for theme support.
     "function getRowTint(health) {",
     "  var tints = {",
@@ -184,8 +200,6 @@ function generateStatusScript(): string {
     // Get health badge HTML using CSS variables for theme-aware colors. NOTE: Escalation level semantics defined in monitor.ts.
     // L1=play/unmute, L2=seek, L3=source reload, L4=page navigation.
     "function getHealthBadge(health, level) {",
-    "  var colorVars = { healthy: 'var(--stream-healthy)', buffering: 'var(--stream-buffering)', recovering: 'var(--stream-recovering)', ",
-    "    stalled: 'var(--stream-stalled)', error: 'var(--stream-error)' };",
     "  var label = '';",
     "  if (health === 'healthy') { label = 'Healthy'; }",
     "  else if (health === 'buffering') { label = 'Buffering'; }",
@@ -199,7 +213,7 @@ function generateStatusScript(): string {
     "    else { label = 'Recovering'; }",
     "  }",
     "  else { label = health; }",
-    "  return '<span class=\"status-dot\" style=\"color: ' + (colorVars[health] || 'var(--text-muted)') + ';\">&#9679;</span> ' +",
+    "  return '<span class=\"status-dot\" style=\"color: ' + (healthColorVars[health] || 'var(--text-muted)') + ';\">&#9679;</span> ' +",
     "    '<span style=\"color: var(--text-secondary);\">' + label + '</span>';",
     "}",
 
@@ -217,10 +231,60 @@ function generateStatusScript(): string {
     "  var limit = systemData.streams.limit;",
     "  if(active === 0) {",
     "    streamEl.textContent = '0 streams';",
+    "    streamEl.classList.remove('clickable');",
+    "    var popMenu = document.getElementById('stream-popover-menu');",
+    "    if(popMenu) popMenu.classList.remove('show');",
     "  } else {",
     "    streamEl.textContent = active + '/' + limit + ' streams';",
+    "    streamEl.classList.add('clickable');",
     "  }",
     "}",
+
+    // Build the popover content from streamData. Populates the given menu element with one row per active stream.
+    "function buildStreamPopoverContent(menu) {",
+    "  var ids = Object.keys(streamData);",
+    "  var html = '';",
+    "  var now = Date.now();",
+    "  for(var i = 0; i < ids.length; i++) {",
+    "    var s = streamData[ids[i]];",
+    "    var color = healthColorVars[s.health] || 'var(--text-muted)';",
+    "    var name = s.channel || s.providerName || getDomain(s.url);",
+    "    var dur = Math.floor((now - new Date(s.startTime).getTime()) / 1000);",
+    "    var titleAttr = s.showName ? ' title=\"' + s.showName + '\"' : '';",
+    "    html += '<div class=\"stream-popover-row\"' + titleAttr + '>';",
+    "    html += '<span class=\"status-dot\" style=\"color: ' + color + ';\">&#9679;</span>';",
+    "    html += channelDisplayHtml(s.logoUrl, name, 'stream-popover-logo', 'stream-popover-channel');",
+    "    html += '<span class=\"stream-popover-duration\">' + formatDuration(dur) + '</span>';",
+    "    html += '</div>';",
+    "  }",
+    "  menu.innerHTML = html;",
+    "}",
+
+    // Update an already-open stream popover with current data. Called from SSE handlers and the duration interval.
+    "function updateStreamPopover() {",
+    "  var menu = document.getElementById('stream-popover-menu');",
+    "  if(!menu || !menu.classList.contains('show')) return;",
+    "  var ids = Object.keys(streamData);",
+    "  if(ids.length === 0) {",
+    "    menu.classList.remove('show');",
+    "    return;",
+    "  }",
+    "  buildStreamPopoverContent(menu);",
+    "}",
+
+    // Toggle the stream popover open or closed.
+    "window.toggleStreamPopover = function() {",
+    "  var ids = Object.keys(streamData);",
+    "  if(ids.length === 0) return;",
+    "  var menu = document.getElementById('stream-popover-menu');",
+    "  if(!menu) return;",
+    "  var isOpen = menu.classList.contains('show');",
+    "  closeDropdowns();",
+    "  if(!isOpen) {",
+    "    buildStreamPopoverContent(menu);",
+    "    menu.classList.add('show');",
+    "  }",
+    "};",
 
     // Format last issue for display.
     "function formatLastIssue(s) {",
@@ -270,11 +334,7 @@ function generateStatusScript(): string {
     "    var chevron = isExpanded ? '&#9660;' : '&#9654;';",
     "    var rowTint = getRowTint(s.health);",
     "    var channelText = s.channel || s.providerName || getDomain(s.url);",
-    "    var channelDisplay = s.logoUrl",
-    "      ? '<img src=\"' + s.logoUrl + '\" class=\"channel-logo\" alt=\"' + channelText + '\" title=\"' + channelText + '\" ' +",
-    "        'onerror=\"this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'inline\\'\">' +",
-    "        '<span class=\"channel-text\" style=\"display:none\">' + channelText + '</span>'",
-    "      : '<span class=\"channel-text\">' + channelText + '</span>';",
+    "    var channelDisplay = channelDisplayHtml(s.logoUrl, channelText, 'channel-logo', 'channel-text');",
     "    html += '<tr class=\"stream-row\" data-id=\"' + id + '\" onclick=\"toggleStreamDetails(' + id + ')\" style=\"background-color: ' + rowTint + ';\">';",
     "    html += '<td class=\"chevron\">' + chevron + '</td>';",
     "    var durationSpan = '<span class=\"stream-duration\" id=\"duration-' + id + '\">\\u00b7 ' + formatDuration(s.duration) + '</span>';",
@@ -327,6 +387,7 @@ function generateStatusScript(): string {
     "    var el = document.getElementById('duration-' + id);",
     "    if (el) el.textContent = '\\u00b7 ' + formatDuration(durationSec);",
     "  }",
+    "  updateStreamPopover();",
     "}",
 
     // Connect to SSE stream for status updates.
@@ -341,17 +402,20 @@ function generateStatusScript(): string {
     "    }",
     "    updateSystemStatus();",
     "    renderStreamsTable();",
+    "    updateStreamPopover();",
     "  });",
     "  statusEventSource.addEventListener('streamAdded', function(e) {",
     "    var s = JSON.parse(e.data);",
     "    streamData[s.id] = s;",
     "    renderStreamsTable();",
+    "    updateStreamPopover();",
     "  });",
     "  statusEventSource.addEventListener('streamRemoved', function(e) {",
     "    var data = JSON.parse(e.data);",
     "    delete streamData[data.id];",
     "    delete expandedStreams[data.id];",
     "    renderStreamsTable();",
+    "    updateStreamPopover();",
     "    if (typeof pendingRestart !== 'undefined' && pendingRestart) {",
     "      updateRestartDialogStatus();",
     "    }",
@@ -361,6 +425,7 @@ function generateStatusScript(): string {
     "    if (streamData[s.id]) {",
     "      streamData[s.id] = s;",
     "      renderStreamsTable();",
+    "      updateStreamPopover();",
     "    }",
     "  });",
     "  statusEventSource.addEventListener('systemStatusChanged', function(e) {",
@@ -2431,6 +2496,15 @@ function generateLandingPageStyles(): string {
     // Header status bar styles.
     ".header-status { display: flex; gap: 20px; align-items: center; font-size: 13px; color: var(--text-secondary); }",
     ".header-status span { white-space: nowrap; }",
+
+    // Stream count popover. Clickable when streams are active; popover drops from the right edge of the header.
+    "#stream-count.clickable { cursor: pointer; }",
+    "#stream-count.clickable:hover { color: var(--text-primary); }",
+    ".stream-popover .dropdown-menu { right: 0; left: auto; min-width: 220px; }",
+    ".stream-popover-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; white-space: nowrap; }",
+    ".stream-popover-logo { height: 18px; width: auto; max-width: 80px; vertical-align: middle; }",
+    ".stream-popover-channel { color: var(--text-primary); }",
+    ".stream-popover-duration { color: var(--text-muted); margin-left: auto; }",
 
     // Subtab styles for Configuration tab.
     ".subtab-bar { display: flex; border-bottom: 1px solid var(--border-default); margin-bottom: 20px; gap: 2px; flex-wrap: wrap; }",
