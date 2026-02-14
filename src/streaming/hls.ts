@@ -492,8 +492,13 @@ function createTabReplacementHandler(
       return null;
     }
 
-    // Get the current segment index from the old segmenter before stopping it. This allows the new segmenter to continue numbering from where we left off.
+    // Get the current init segment, segment index, and per-track timestamps from the old segmenter before stopping it. The init segment enables discontinuity
+    // suppression when codec parameters are unchanged, the segment index allows the new segmenter to continue numbering, and the track timestamps ensure monotonic
+    // baseMediaDecodeTime across capture restarts.
+    const currentInitSegment = stream.segmenter?.getInitSegment();
+    const currentInitVersion = stream.segmenter?.getInitVersion() ?? 0;
     const currentSegmentIndex = stream.segmenter?.getSegmentIndex() ?? 0;
+    const currentTrackTimestamps = stream.segmenter?.getTrackTimestamps();
 
     // Destroy the OLD capture stream first. This MUST happen before closing the page to ensure chrome.tabCapture releases the capture. Without this, the new
     // getStream() call would hang with "Cannot capture a tab with an active stream" error.
@@ -556,9 +561,11 @@ function createTabReplacementHandler(
       return null;
     }
 
-    // Create a new segmenter for the new capture stream. Continue from the current segment index for playlist continuity, and mark the first segment with a
-    // discontinuity tag so clients know the stream parameters may have changed.
+    // Create a new segmenter for the new capture stream. Continue from the current segment index for playlist continuity, pass the per-track timestamp counters
+    // for monotonic baseMediaDecodeTime, and mark the first segment with a discontinuity tag so clients know the stream parameters may have changed.
     const newSegmenter = createFMP4Segmenter({
+
+      initialTrackTimestamps: currentTrackTimestamps,
 
       onError: (error: Error) => {
 
@@ -580,13 +587,15 @@ function createTabReplacementHandler(
           return;
         }
 
-        LOG.warn("Segmenter stopped unexpectedly after tab replacement for %s.", channelName);
+        LOG.error("Segmenter stopped unexpectedly after tab replacement for %s.", channelName);
 
         terminateStream(numericStreamId, channelName, "stream ended unexpectedly after recovery");
         void emitCurrentSystemStatus();
       },
 
       pendingDiscontinuity: true,
+      previousInitSegment: currentInitSegment,
+      startingInitVersion: currentInitVersion,
       startingSegmentIndex: currentSegmentIndex,
       streamId: numericStreamId
     });
@@ -775,7 +784,7 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
             return;
           }
 
-          LOG.warn("Segmenter stopped unexpectedly for %s.", channelName);
+          LOG.error("Segmenter stopped unexpectedly for %s.", channelName);
 
           terminateStream(setup.numericStreamId, channelName, "stream ended unexpectedly");
           void emitCurrentSystemStatus();

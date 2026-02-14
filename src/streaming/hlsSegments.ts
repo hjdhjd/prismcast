@@ -37,7 +37,7 @@ export function storeSegment(streamId: number, filename: string, data: Buffer): 
 
   if(!stream) {
 
-    LOG.warn("Attempted to store segment for unknown stream %s.", streamId);
+    LOG.warn( "Attempted to store segment for unknown stream %s.", streamId);
 
     return;
   }
@@ -88,7 +88,7 @@ export function storeInitSegment(streamId: number, data: Buffer): void {
 
   if(!stream) {
 
-    LOG.warn("Attempted to store init segment for unknown stream %s.", streamId);
+    LOG.warn( "Attempted to store init segment for unknown stream %s.", streamId);
 
     return;
   }
@@ -136,7 +136,7 @@ export function updatePlaylist(streamId: number, content: string): void {
 
   if(!stream) {
 
-    LOG.warn("Attempted to update playlist for unknown stream %s.", streamId);
+    LOG.warn( "Attempted to update playlist for unknown stream %s.", streamId);
 
     return;
   }

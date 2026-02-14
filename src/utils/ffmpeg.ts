@@ -173,6 +173,8 @@ export interface FFmpegProcess {
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
+ * - `-flags low_delay`: Reduce codec-level buffering and disable frame reordering
+ * - `-probesize 16384`: Limit input probing to 16KB (Chrome's WebM header fits well under this) to minimize startup delay
  * - `-i pipe:0`: Read input from stdin
  * - `-c:v copy`: Copy video stream without re-encoding (H264 passthrough)
  * - `-c:a aac -b:a <bitrate>`: Transcode audio to AAC at specified bitrate
@@ -198,6 +200,9 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
+    "-fflags", "+nobuffer",
+    "-flags", "low_delay",
+    "-probesize", "16384",
     "-i", "pipe:0",
     "-c:v", "copy",
     "-c:a", aacEncoder,
@@ -246,7 +251,7 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 
     if(message.length > 0) {
 
-      LOG.debug("%sFFmpeg: %s", logPrefix, message);
+      LOG.debug( "%sFFmpeg: %s", logPrefix, message);
     }
   });
 
@@ -313,9 +318,12 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
+ * - `-flags low_delay`: Reduce codec-level buffering and disable frame reordering
+ * - `-probesize 16384`: Limit input probing to 16KB (fMP4 init segment is ~1.3KB) to minimize startup delay
  * - `-f mp4 -i pipe:0`: Read fragmented MP4 from stdin
  * - `-c copy`: Copy both video and audio codecs without transcoding
  * - `-f mpegts`: Output MPEG-TS container format
+ * - `-flush_packets 1`: Flush output immediately after each packet to minimize latency
  * - `pipe:1`: Write output to stdout
  * @param onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
  * @param streamId - Optional stream identifier for logging.
@@ -328,10 +336,13 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
+    "-flags", "low_delay",
+    "-probesize", "16384",
     "-f", "mp4",
     "-i", "pipe:0",
     "-c", "copy",
     "-f", "mpegts",
+    "-flush_packets", "1",
     "pipe:1"
   ];
 
@@ -363,7 +374,7 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
 
     if(message.length > 0) {
 
-      LOG.debug("%sMPEG-TS remuxer: %s", logPrefix, message);
+      LOG.debug( "%sMPEG-TS remuxer: %s", logPrefix, message);
     }
   });
 
