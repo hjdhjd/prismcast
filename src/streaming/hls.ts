@@ -38,49 +38,33 @@ import { triggerShowNameUpdate } from "./showInfo.js";
  * URL and profile, allowing them to use the same channelToStreamId deduplication mechanism as predefined channels.
  */
 
-// Public Endpoint Handlers.
+// Channel Validation.
 
 /**
- * Ensures a stream is running for a channel. If no stream exists, starts one. If a stream startup is in progress (placeholder), waits for it to complete. Returns the
- * stream ID if successful, or null if an error occurred (with the error response already sent to the client).
- *
- * This is the shared entry point for both HLS and MPEG-TS handlers. It handles channel validation, login mode blocking, and concurrent startup deduplication. The
- * existing-stream check runs first so that ad-hoc streams (started via /play with synthetic keys) can be served without requiring a predefined channel definition.
- *
- * For channels with multiple providers (e.g., ESPN via ESPN.com or Disney+), the user's provider selection is resolved before looking up the channel definition.
- * The stream is registered under the canonical key (channelName) for deduplication, but uses the resolved provider's URL and settings.
- *
- * @param channelName - The channel key (or synthetic ad-hoc key) to stream.
- * @param req - Express request object (for profile override and client IP).
- * @param res - Express response object (for error responses).
- * @returns The stream ID if a stream is running, or null if an error occurred.
+ * Result of channel validation. On success, contains the resolved channel and provider key. On failure, contains the HTTP error details. The body field carries
+ * either a plain string (for text error responses) or an object (for JSON error responses), so callers can use typeof to pick res.send() vs res.json().
  */
-export async function ensureChannelStream(channelName: string, req: Request, res: Response): Promise<number | null> {
+export type ValidateChannelResult =
+  { channel: Channel; resolvedKey: string; valid: true } |
+  { body: Record<string, string> | string; statusCode: number; valid: false };
 
-  // Check for an existing stream first. This must happen before channel validation so that ad-hoc streams (registered under synthetic keys like "play-a1b2c3d4") can
-  // be served by the standard HLS playlist handler without failing the "Channel not found" check. A stream in channelToStreamId was already validated when it was
-  // started, so no re-validation is needed.
-  const streamId = getChannelStreamId(channelName);
+// Login mode error body used by both validateChannel() and handlePlayStream() to ensure consistent response format.
+const LOGIN_MODE_BODY: Record<string, string> = { error: "Login in progress", message: "Please complete authentication before starting new streams." };
 
-  // If a stream is already running (not a placeholder), return it directly.
-  if((streamId !== undefined) && (streamId !== -1)) {
+/**
+ * Validates a channel name for streaming. Performs all fast, synchronous checks: disabled status, provider resolution, channel lookup, and login mode. Returns a
+ * discriminated union so callers can handle success and failure without coupling to Express response objects.
+ *
+ * This is extracted from ensureChannelStream() so it can be called by both HLS and MPEG-TS code paths without duplicating the validation logic.
+ *
+ * @param channelName - The channel key to validate.
+ * @returns Validation result with channel data on success, or error details on failure.
+ */
+export function validateChannel(channelName: string): ValidateChannelResult {
 
-    return streamId;
-  }
-
-  // If a placeholder (-1) exists, another request is already starting this stream. Poll until the real stream ID appears or we timeout.
-  if(streamId === -1) {
-
-    return awaitStreamReady(channelName, res);
-  }
-
-  // No existing stream — validate the channel and start a new one. Channel validation is only needed for new streams because existing streams were already validated
-  // at startup time.
   if(isPredefinedChannelDisabled(channelName)) {
 
-    res.status(404).send("Channel is disabled.");
-
-    return null;
+    return { body: "Channel is disabled.", statusCode: 404, valid: false };
   }
 
   // Resolve provider selection. For multi-provider channels, this returns the user's selected provider key (e.g., "espn-disneyplus"). For single-provider channels
@@ -104,26 +88,84 @@ export async function ensureChannelStream(channelName: string, req: Request, res
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if(!effectiveChannel) {
 
-    res.status(404).send("Channel not found.");
-
-    return null;
+    return { body: "Channel not found.", statusCode: 404, valid: false };
   }
 
   // Block new stream requests while login mode is active. This prevents the browser from being disrupted during authentication.
   if(isLoginModeActive()) {
 
-    res.status(503).json({
+    return { body: LOGIN_MODE_BODY, statusCode: 503, valid: false };
+  }
 
-      error: "Login in progress",
-      message: "Please complete authentication before starting new streams."
-    });
+  return { channel: effectiveChannel, resolvedKey, valid: true };
+}
+
+/**
+ * Sends a validation error response to the client. Handles both plain text bodies (via res.send) and object bodies (via res.json).
+ * @param validation - The failed validation result.
+ * @param res - Express response object.
+ */
+export function sendValidationError(validation: { body: Record<string, string> | string; statusCode: number }, res: Response): void {
+
+  if(typeof validation.body === "object") {
+
+    res.status(validation.statusCode).json(validation.body);
+  } else {
+
+    res.status(validation.statusCode).send(validation.body);
+  }
+}
+
+// Public Endpoint Handlers.
+
+/**
+ * Ensures a stream is running for a channel. If no stream exists, starts one. If a stream startup is in progress (-1 sentinel), waits for it to complete. Returns
+ * the stream ID if successful, or null if an error occurred (with the error response already sent to the client).
+ *
+ * The existing-stream check runs first so that ad-hoc streams (registered under synthetic keys like "play-a1b2c3d4") can be served without failing the
+ * "Channel not found" check.
+ *
+ * For channels with multiple providers (e.g., ESPN via ESPN.com or Disney+), the user's provider selection is resolved before looking up the channel definition.
+ * The stream is registered under the canonical key (channelName) for deduplication, but uses the resolved provider's URL and settings.
+ *
+ * @param channelName - The channel key (or synthetic ad-hoc key) to stream.
+ * @param req - Express request object (for profile override and client IP).
+ * @param res - Express response object (for error responses).
+ * @returns The stream ID if a stream is running, or null if an error occurred.
+ */
+export async function ensureChannelStream(channelName: string, req: Request, res: Response): Promise<Nullable<number>> {
+
+  // Check for an existing stream first. This must happen before channel validation so that ad-hoc streams (registered under synthetic keys like "play-a1b2c3d4") can
+  // be served by the standard HLS playlist handler without failing the "Channel not found" check. A stream in channelToStreamId was already validated when it was
+  // started, so no re-validation is needed.
+  const streamId = getChannelStreamId(channelName);
+
+  // If a stream is already running (not a startup-in-progress sentinel), return it directly.
+  if((streamId !== undefined) && (streamId !== -1)) {
+
+    return streamId;
+  }
+
+  // If a startup is in progress (-1 sentinel), another request is already starting this stream. Poll until the real stream ID appears or we timeout.
+  if(streamId === -1) {
+
+    return awaitStreamReady(channelName, res);
+  }
+
+  // No existing stream — validate the channel and start a new one. Channel validation is only needed for new streams because existing streams were already validated
+  // at startup time.
+  const validation = validateChannel(channelName);
+
+  if(!validation.valid) {
+
+    sendValidationError(validation, res);
 
     return null;
   }
 
   // Start the stream using the resolved channel's URL. The stream is registered under channelName (canonical key) for deduplication, but uses the resolved
   // provider's definition.
-  const newStreamId = await startHLSStream(channelName, effectiveChannel.url, req, res, effectiveChannel);
+  const newStreamId = await startHLSStream(channelName, validation.channel.url, req, res, validation.channel);
 
   if(newStreamId === null) {
 
@@ -135,7 +177,7 @@ export async function ensureChannelStream(channelName: string, req: Request, res
 }
 
 /**
- * Handles HLS playlist requests. Ensures a stream is running for the requested channel, waits for the first playlist to be produced, then returns it.
+ * Handles HLS playlist requests. Ensures a stream is running for the channel (blocking until ready if a new stream must start), then returns the playlist.
  *
  * Route: GET /hls/:name/stream.m3u8
  *
@@ -153,58 +195,16 @@ export async function handleHLSPlaylist(req: Request, res: Response): Promise<vo
     return;
   }
 
+  const clientAddress = req.ip ?? req.socket.remoteAddress ?? "unknown";
+
   const streamId = await ensureChannelStream(channelName, req, res);
 
   if(streamId === null) {
 
-    // Error response already sent by ensureChannelStream.
     return;
   }
 
-  // Capture client address for client tracking.
-  const clientAddress = req.ip ?? req.socket.remoteAddress ?? "unknown";
-
-  // If a playlist is already available, return it immediately.
-  const existingPlaylist = getPlaylist(streamId);
-
-  if(existingPlaylist) {
-
-    updateLastAccess(streamId);
-    registerClient(streamId, clientAddress, "hls");
-
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-    res.send(existingPlaylist);
-
-    return;
-  }
-
-  // Wait for the first playlist to be ready.
-  const playlistReady = await waitForPlaylist(streamId, CONFIG.streaming.navigationTimeout);
-
-  if(!playlistReady) {
-
-    res.setHeader("Retry-After", "5");
-    res.status(503).send("Stream is starting. Please retry.");
-
-    return;
-  }
-
-  const playlist = getPlaylist(streamId);
-
-  if(!playlist) {
-
-    res.status(500).send("Playlist not available.");
-
-    return;
-  }
-
-  updateLastAccess(streamId);
-  registerClient(streamId, clientAddress, "hls");
-
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-  res.send(playlist);
+  await sendPlaylistResponse(streamId, clientAddress, res);
 }
 
 /**
@@ -229,7 +229,7 @@ export function handleHLSSegment(req: Request, res: Response): void {
 
   const streamId = getChannelStreamId(channelName);
 
-  if(streamId === undefined) {
+  if((streamId === undefined) || (streamId === -1)) {
 
     res.status(404).send("Stream not found.");
 
@@ -249,10 +249,7 @@ export function handleHLSSegment(req: Request, res: Response): void {
     }
 
     updateLastAccess(streamId);
-
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Content-Type", "video/mp4");
-    res.send(initSegment);
+    sendSegment(initSegment, res);
 
     return;
   }
@@ -268,10 +265,7 @@ export function handleHLSSegment(req: Request, res: Response): void {
   }
 
   updateLastAccess(streamId);
-
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Content-Type", "video/mp4");
-  res.send(segment);
+  sendSegment(segment, res);
 }
 
 // Ad-Hoc Streaming.
@@ -321,7 +315,7 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
     return;
   }
 
-  // If a placeholder (-1) exists, another request is already starting this stream. Poll until the real stream ID appears or we timeout, then redirect.
+  // If a startup is in progress (-1 sentinel), another request is already starting this stream. Poll until the real stream ID appears or we timeout, then redirect.
   if(streamId === -1) {
 
     const resolvedId = await awaitStreamReady(channelName, res);
@@ -340,11 +334,7 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
   // Block new stream requests while login mode is active.
   if(isLoginModeActive()) {
 
-    res.status(503).json({
-
-      error: "Login in progress",
-      message: "Please complete authentication before starting new streams."
-    });
+    res.status(503).json(LOGIN_MODE_BODY);
 
     return;
   }
@@ -352,7 +342,7 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
   // Capture client IP for Channels DVR API integration.
   const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
 
-  // Start a new ad-hoc stream. initializeStream handles placeholder management, capture setup, segmenter creation, and event emission.
+  // Start a new ad-hoc stream. initializeStream handles capture setup, segmenter creation, and event emission.
   try {
 
     const newStreamId = await initializeStream({ channelName, channelSelector: selector, clickSelector, clickToPlay, clientAddress, profileOverride, url });
@@ -387,20 +377,18 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
   res.redirect(302, "/hls/" + channelName + "/stream.m3u8");
 }
 
-// Placeholder Polling.
+// Startup Polling.
 
 /**
- * Waits for a stream placeholder to resolve to a real stream ID. This is used when a second request arrives while the first is still starting the stream. The
- * placeholder (-1) in channelToStreamId signals that startup is in progress. We poll until the placeholder is replaced with a real stream ID, removed (startup
- * failed), or the timeout expires.
+ * Polls for a stream startup to complete. The -1 sentinel in channelToStreamId signals that startup is in progress. Returns the resolved stream ID on success, null
+ * if startup failed (sentinel removed), or undefined if the timeout expired while startup is still active.
  *
- * On failure, the appropriate error response is sent to the client and null is returned.
+ * This is the shared inner polling loop used by both awaitStreamReady() (which sends error responses) and awaitStreamReadySilent() (which does not).
  *
  * @param channelName - The channel name (or synthetic ad-hoc key) to poll.
- * @param res - Express response object for sending error responses on failure.
- * @returns The resolved stream ID on success, or null if startup failed or timed out (error response already sent).
+ * @returns The resolved stream ID, null if startup failed, or undefined if timed out.
  */
-async function awaitStreamReady(channelName: string, res: Response): Promise<number | null> {
+async function pollStreamReady(channelName: string): Promise<Nullable<number> | undefined> {
 
   const pollInterval = 200;
   const deadline = Date.now() + CONFIG.streaming.navigationTimeout;
@@ -412,10 +400,8 @@ async function awaitStreamReady(channelName: string, res: Response): Promise<num
 
     const streamId = getChannelStreamId(channelName);
 
-    // The startup failed and the placeholder was removed.
+    // The startup failed and the sentinel was removed.
     if(streamId === undefined) {
-
-      res.status(500).send("Stream startup failed.");
 
       return null;
     }
@@ -427,11 +413,130 @@ async function awaitStreamReady(channelName: string, res: Response): Promise<num
     }
   }
 
-  // Timed out waiting for the placeholder to resolve.
-  res.setHeader("Retry-After", "5");
-  res.status(503).send("Stream is starting. Please retry.");
+  // Timed out waiting for the startup to complete.
+  return undefined;
+}
 
-  return null;
+/**
+ * Waits for a stream startup to complete. This is used when a second request arrives while the first is still starting the stream. The -1 sentinel in
+ * channelToStreamId signals that startup is in progress. We poll until the sentinel is replaced with a real stream ID, removed (startup failed), or the
+ * timeout expires.
+ *
+ * On failure, the appropriate error response is sent to the client and null is returned.
+ *
+ * @param channelName - The channel name (or synthetic ad-hoc key) to poll.
+ * @param res - Express response object for sending error responses on failure.
+ * @returns The resolved stream ID on success, or null if startup failed or timed out (error response already sent).
+ */
+async function awaitStreamReady(channelName: string, res: Response): Promise<Nullable<number>> {
+
+  const result = await pollStreamReady(channelName);
+
+  // Startup failed (sentinel removed).
+  if(result === null) {
+
+    res.status(500).send("Stream startup failed.");
+
+    return null;
+  }
+
+  // Timed out.
+  if(result === undefined) {
+
+    res.setHeader("Retry-After", "5");
+    res.status(503).send("Stream is starting. Please retry.");
+
+    return null;
+  }
+
+  return result;
+}
+
+/**
+ * Waits for a stream startup to complete without sending any HTTP responses. Used by MPEG-TS when headers have already been flushed and error responses cannot be
+ * sent.
+ *
+ * @param channelName - The channel name (or synthetic ad-hoc key) to poll.
+ * @returns The resolved stream ID on success, or null if startup failed or timed out.
+ */
+export async function awaitStreamReadySilent(channelName: string): Promise<Nullable<number>> {
+
+  const result = await pollStreamReady(channelName);
+
+  // Both null (failed) and undefined (timed out) map to null for the silent variant.
+  if((result === null) || (result === undefined)) {
+
+    return null;
+  }
+
+  return result;
+}
+
+// Response Helpers.
+
+/**
+ * Sends the playlist for a stream, waiting for the first playlist if needed. Handles client registration and access tracking. This is the shared pattern used by
+ * multiple code paths in handleHLSPlaylist() to avoid duplicating the get-wait-check-register-send sequence.
+ * @param streamId - The numeric stream ID.
+ * @param clientAddress - Client address for tracking.
+ * @param res - Express response object.
+ */
+async function sendPlaylistResponse(streamId: number, clientAddress: string, res: Response): Promise<void> {
+
+  // Try to get an existing playlist first.
+  let playlist = getPlaylist(streamId);
+
+  // If no playlist yet, wait for the first one.
+  if(!playlist) {
+
+    const playlistReady = await waitForPlaylist(streamId, CONFIG.streaming.navigationTimeout);
+
+    if(!playlistReady) {
+
+      res.setHeader("Retry-After", "5");
+      res.status(503).send("Stream is starting. Please retry.");
+
+      return;
+    }
+
+    playlist = getPlaylist(streamId);
+
+    if(!playlist) {
+
+      res.status(500).send("Playlist not available.");
+
+      return;
+    }
+
+  }
+
+  updateLastAccess(streamId);
+  registerClient(streamId, clientAddress, "hls");
+  sendPlaylist(playlist, res);
+}
+
+/**
+ * Sends a playlist string as an HLS response with appropriate headers.
+ * @param playlist - The M3U8 playlist content.
+ * @param res - Express response object.
+ */
+function sendPlaylist(playlist: string, res: Response): void {
+
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+  res.send(playlist);
+}
+
+/**
+ * Sends a segment buffer as a video/mp4 response with appropriate headers.
+ * @param data - The segment data.
+ * @param res - Express response object.
+ */
+function sendSegment(data: Buffer, res: Response): void {
+
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Content-Type", "video/mp4");
+  res.send(data);
 }
 
 // Stream Lifecycle.
@@ -478,9 +583,9 @@ function createTabReplacementHandler(
   profile: ResolvedSiteProfile,
   metadataComment: string | undefined,
   onCircuitBreak: () => void
-): () => Promise<TabReplacementResult | null> {
+): () => Promise<Nullable<TabReplacementResult>> {
 
-  return async (): Promise<TabReplacementResult | null> => {
+  return async (): Promise<Nullable<TabReplacementResult>> => {
 
     // Get the current stream entry.
     const stream = getStream(numericStreamId);
@@ -634,7 +739,7 @@ interface InitializeStreamOptions {
   channelSelector?: string;
 
   // Key for channelToStreamId registration and cleanup. For predefined channels, this is the channel key (e.g., "nbc"). For ad-hoc streams, this is the synthetic
-  // hash key (e.g., "play-a1b2c3d4"). This value is used consistently for placeholder management, circuit breaker callbacks, tab replacement, and terminateStream.
+  // hash key (e.g., "play-a1b2c3d4"). This value is used consistently for circuit breaker callbacks, tab replacement, and terminateStream.
   channelName: string;
 
   // Client IP address for Channels DVR API integration.
@@ -654,24 +759,25 @@ interface InitializeStreamOptions {
 }
 
 /**
- * Initializes a new HLS stream. This is the shared stream startup logic used by both channel-based and ad-hoc streams. It handles placeholder management, browser
- * capture setup, segmenter creation, stream registration, and event emission.
+ * Initializes a new HLS stream. This is the shared stream startup logic used by both channel-based and ad-hoc streams. It handles browser capture setup, segmenter
+ * creation, stream registration, and event emission.
  *
- * On success, the stream is fully registered and producing segments. On failure, the placeholder is cleaned up and the error is re-thrown for the caller to handle
- * HTTP error responses appropriately (channel-based streams need HDHomeRun headers, ad-hoc streams do not).
+ * A -1 sentinel is set in channelToStreamId during setup to prevent duplicate stream starts. On success, the sentinel is replaced with the real stream ID. On
+ * failure, the sentinel is removed and the error is re-thrown for the caller to handle HTTP error responses appropriately (channel-based streams need HDHomeRun
+ * headers, ad-hoc streams do not).
  *
  * @param options - Stream initialization options.
  * @returns The stream ID on success, or null if the stream was terminated during the narrow setup window (orphaned setup race condition).
  * @throws StreamSetupError if setup fails, or Error for unexpected failures.
  */
-async function initializeStream(options: InitializeStreamOptions): Promise<number | null> {
+export async function initializeStream(options: InitializeStreamOptions): Promise<Nullable<number>> {
 
   const { channel, channelName, channelSelector, clickSelector, clickToPlay, clientAddress, profileOverride, url } = options;
 
-  // Create a placeholder to prevent duplicate stream starts while we're setting up.
-  const placeholderStreamId = -1;
+  // Set a -1 sentinel to prevent duplicate stream starts while we're setting up.
+  const startupSentinel = -1;
 
-  setChannelStreamId(channelName, placeholderStreamId);
+  setChannelStreamId(channelName, startupSentinel);
 
   let setup;
 
@@ -680,7 +786,7 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
 
     const streamId = getChannelStreamId(channelName);
 
-    if((streamId !== undefined) && (streamId !== placeholderStreamId)) {
+    if((streamId !== undefined) && (streamId !== startupSentinel)) {
 
       terminateStream(streamId, channelName, "too many errors");
       void emitCurrentSystemStatus();
@@ -719,7 +825,7 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
     );
   } catch(error) {
 
-    // Remove placeholder on failure and re-throw for the caller to handle error responses.
+    // Remove startup sentinel on failure and re-throw for the caller to handle error responses.
     deleteChannelStreamId(channelName);
 
     throw error;
@@ -728,7 +834,7 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
   // Update the channel mapping with the real stream ID.
   setChannelStreamId(channelName, setup.numericStreamId);
 
-  // Continue within stream context for consistent logging. The async is required by runWithStreamContext's signature.
+  // Continue within stream context for consistent logging.
   return runWithStreamContext(
     { channelName: channel?.name, streamId: setup.streamId, url: setup.url },
     // eslint-disable-next-line @typescript-eslint/require-await
@@ -849,7 +955,7 @@ async function initializeStream(options: InitializeStreamOptions): Promise<numbe
  * @param channel - The resolved channel definition (with inheritance applied for provider variants).
  * @returns The stream ID if successful, null if an error occurred (error response already sent).
  */
-async function startHLSStream(channelName: string, url: string, req: Request, res: Response, channel?: Channel): Promise<number | null> {
+async function startHLSStream(channelName: string, url: string, req: Request, res: Response, channel?: Channel): Promise<Nullable<number>> {
 
   const profileOverride = req.query.profile as string | undefined;
   const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
@@ -925,7 +1031,7 @@ function reclaimIdleStream(): boolean {
 
   const streams = getAllStreams();
   const now = Date.now();
-  let oldest: StreamRegistryEntry | null = null;
+  let oldest: Nullable<StreamRegistryEntry> = null;
 
   for(const stream of streams) {
 
