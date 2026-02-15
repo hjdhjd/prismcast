@@ -127,10 +127,10 @@ export function setupStreamsEndpoint(app: Express): void {
       res.write("data: " + JSON.stringify(data) + "\n\n");
     });
 
-    // Send a heartbeat comment every 30 seconds to keep the connection alive through proxies.
+    // Send a named heartbeat event every 30 seconds to keep the connection alive through proxies and allow clients to detect staleness.
     const heartbeatInterval = setInterval(() => {
 
-      res.write(": heartbeat\n\n");
+      res.write("event: heartbeat\ndata: \n\n");
     }, 30000);
 
     // Clean up when the client disconnects.
