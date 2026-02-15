@@ -1025,7 +1025,8 @@ export function mergeConfiguration(userConfig: UserConfig): Config {
   }
 
   /* These fields are stored in the user config file but are not part of CONFIG_METADATA because they are complex types (arrays, auto-generated strings) that don't
-   * fit the standard scalar setting model. When adding a new field here, you must also add corresponding preservation logic in filterDefaults() below.
+   * fit the standard scalar setting model. When adding a new field here, you must also add corresponding preservation logic in filterDefaults() below AND in the
+   * POST /config handler in routes/config.ts (which must carry forward these fields from the existing file so the settings form doesn't wipe them).
    */
   if(Array.isArray(userConfig.channels?.disabledPredefined)) {
 
@@ -1386,8 +1387,8 @@ export function filterDefaults(config: UserConfig): UserConfig {
     }
   }
 
-  /* Counterpart to the non-CONFIG_METADATA handling in mergeConfiguration() above. When adding a new complex field there, you must also add corresponding
-   * preservation logic here, otherwise the field will be lost when saving configuration.
+  /* Counterpart to the non-CONFIG_METADATA handling in mergeConfiguration() above. When adding a new complex field there, you must also add preservation logic
+   * here AND in the POST /config handler in routes/config.ts, otherwise the field will be lost when saving configuration.
    */
   const configChannelsDisabled = getNestedValue(config, "channels.disabledPredefined") as string[] | undefined;
 

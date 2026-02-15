@@ -1899,6 +1899,29 @@ export function setupConfigEndpoint(app: Express): void {
         return;
       }
 
+      // The settings form only submits CONFIG_METADATA scalar values. The config file also stores complex fields managed by their own endpoints: disabled channel
+      // list, enabled provider filter, and the auto-generated HDHomeRun device ID. We must preserve these from the existing file, otherwise saving settings wipes them.
+      const existingResult = await loadUserConfig();
+      const existingConfig = existingResult.config;
+
+      if(Array.isArray(existingConfig.channels?.disabledPredefined) && (existingConfig.channels.disabledPredefined.length > 0)) {
+
+        newConfig.channels ??= {};
+        newConfig.channels.disabledPredefined = existingConfig.channels.disabledPredefined;
+      }
+
+      if(Array.isArray(existingConfig.channels?.enabledProviders) && (existingConfig.channels.enabledProviders.length > 0)) {
+
+        newConfig.channels ??= {};
+        newConfig.channels.enabledProviders = existingConfig.channels.enabledProviders;
+      }
+
+      if((typeof existingConfig.hdhr?.deviceId === "string") && (existingConfig.hdhr.deviceId.length > 0)) {
+
+        newConfig.hdhr ??= {};
+        newConfig.hdhr.deviceId = existingConfig.hdhr.deviceId;
+      }
+
       // Filter out values that match defaults to keep the config file clean.
       const filteredConfig = filterDefaults(newConfig);
 
