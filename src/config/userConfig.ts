@@ -1124,8 +1124,7 @@ export interface AdvancedSection {
  */
 export type SettingsSection = AdvancedSection;
 
-/*
- * The settings "promoted" to the main Settings tab, organized into visual sections. These are the options most users might actually change. Everything else goes to
+/* The settings "promoted" to the main Settings tab, organized into visual sections. These are the options most users might actually change. Everything else goes to
  * the Advanced tab, grouped by storage category. Sections are displayed in array order.
  */
 const SETTINGS_TAB_SECTIONS: { displayName: string; id: string; paths: string[] }[] = [
@@ -1156,8 +1155,7 @@ const SETTINGS_TAB_SECTIONS: { displayName: string; id: string; paths: string[] 
   }
 ];
 
-/*
- * Display metadata for Advanced tab sections. The category field must match a key in CONFIG_METADATA. Entries are sorted alphabetically by category.
+/* Display metadata for Advanced tab sections. The category field must match a key in CONFIG_METADATA. Entries are sorted alphabetically by category.
  */
 const ADVANCED_SECTION_META: { category: string; displayName: string }[] = [
 

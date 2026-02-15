@@ -5,8 +5,7 @@
 import type { ResolvedSiteProfile, SiteProfile } from "../types/index.js";
 import { extractDomain } from "../utils/index.js";
 
-/*
- * Streaming sites implement their video players in wildly different ways. Some use standard HTML5 video with keyboard shortcuts, others embed players in iframes,
+/* Streaming sites implement their video players in wildly different ways. Some use standard HTML5 video with keyboard shortcuts, others embed players in iframes,
  * and many have unique quirks like auto-muting or requiring specific fullscreen methods. Rather than scattering site-specific conditionals throughout the streaming
  * code, we define "site profiles" that describe each site's behavior in a declarative way.
  *
@@ -35,8 +34,7 @@ import { extractDomain } from "../utils/index.js";
  * handling not covered by existing profiles.
  */
 
-/*
- * Each profile defines a set of behavior flags that control how we interact with the video player. Profiles are organized in an inheritance hierarchy based on
+/* Each profile defines a set of behavior flags that control how we interact with the video player. Profiles are organized in an inheritance hierarchy based on
  * behavior patterns rather than site ownership. This makes it easier to identify the right profile when adding new channels.
  *
  * Base profiles (no extends):

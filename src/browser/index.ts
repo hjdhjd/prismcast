@@ -416,8 +416,7 @@ export function buildLaunchOptions(): LaunchOptions {
 
   return {
 
-    /*
-     * Chrome command-line arguments. Each flag serves a specific purpose for reliable streaming:
+    /* Chrome command-line arguments. Each flag serves a specific purpose for reliable streaming:
      *
      * --allow-running-insecure-content: Some streaming sites serve mixed HTTP/HTTPS content. Without this flag, the browser blocks HTTP resources on HTTPS
      *   pages, which can break video players that load some assets over HTTP.
@@ -478,8 +477,7 @@ export function buildLaunchOptions(): LaunchOptions {
     // the window after launch to reduce GPU usage while still allowing capture.
     headless: false,
 
-    /*
-     * Prevent Puppeteer from adding certain default arguments that would interfere with streaming:
+    /* Prevent Puppeteer from adding certain default arguments that would interfere with streaming:
      *
      * --disable-component-extensions-with-background-pages: We need extension background pages for puppeteer-stream to function.
      *

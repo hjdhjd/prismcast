@@ -4,8 +4,7 @@
  */
 import type { ChannelMap } from "../types/index.js";
 
-/*
- * Map short channel names to streaming configurations. Users request streams via /stream/nbc instead of full URLs.
+/* Map short channel names to streaming configurations. Users request streams via /stream/nbc instead of full URLs.
  *
  * Channel properties:
  * - name: Display name shown in Channels DVR (required for canonical channels, inherited by variants).

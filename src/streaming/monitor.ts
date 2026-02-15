@@ -578,8 +578,7 @@ export function monitorPlaybackHealth(
   onTabReplacement?: () => Promise<Nullable<TabReplacementResult>>
 ): () => RecoveryMetrics {
 
-  /*
-   * Monitor state variables. These track the video's behavior over time and control recovery decisions.
+  /* Monitor state variables. These track the video's behavior over time and control recovery decisions.
    */
 
   // The current page reference. This can change after tab replacement recovery, when the old tab is closed and a new one is created. We use a mutable variable so we
@@ -1090,8 +1089,7 @@ export function monitorPlaybackHealth(
     }
   }
 
-  /*
-   * Main monitoring interval. This runs every MONITOR_INTERVAL milliseconds to check video state and trigger recovery when needed.
+  /* Main monitoring interval. This runs every MONITOR_INTERVAL milliseconds to check video state and trigger recovery when needed.
    *
    * IMPORTANT: Early returns must call emitStatusUpdate() before returning (except when the stream is terminating, e.g., page closed or circuit breaker tripped). This
    * ensures SSE clients always have current status data (duration, memory, health) even during recovery, buffering, or video search periods. Without this, the
@@ -1205,8 +1203,7 @@ export function monitorPlaybackHealth(
         // If re-search failed, let the normal "video not found" logic handle it.
         }
 
-        /*
-         * If no video element found, apply a grace period before triggering recovery. The video may be temporarily unavailable due to:
+        /* If no video element found, apply a grace period before triggering recovery. The video may be temporarily unavailable due to:
          * - readyState fluctuations (selectReadyVideo finds no video with readyState >= 3)
          * - Frame detachment/reattachment during page updates
          * - Momentary DOM changes during ad transitions
@@ -1385,8 +1382,7 @@ export function monitorPlaybackHealth(
         consecutiveTimeouts = 0;
         lastVideoState = state;
 
-        /*
-         * Volume enforcement. Some sites aggressively mute videos (e.g., France24 mutes on page visibility change, some sites mute for ads). We restore volume on
+        /* Volume enforcement. Some sites aggressively mute videos (e.g., France24 mutes on page visibility change, some sites mute for ads). We restore volume on
          * every check to ensure audio is captured.
          */
         if(state.muted || (state.volume < 1)) {
@@ -1394,23 +1390,20 @@ export function monitorPlaybackHealth(
           await enforceVideoVolume(currentContext, selectorType);
         }
 
-        /*
-         * Stall detection. We compare currentTime to the previous check to determine if the video is progressing. The STALL_THRESHOLD (0.1 seconds) allows for minor
+        /* Stall detection. We compare currentTime to the previous check to determine if the video is progressing. The STALL_THRESHOLD (0.1 seconds) allows for minor
          * timing variations while still detecting genuinely stalled videos.
          */
 
         // Video is progressing if: this is the first check (no previous time), OR currentTime has advanced by at least STALL_THRESHOLD since last check.
         const isProgressing = (lastTime === null) || (Math.abs(state.time - lastTime) >= CONFIG.playback.stallThreshold);
 
-        /*
-         * Buffering detection. True buffering occurs when the player needs more data (readyState < 3) AND is actively fetching it (networkState === 2). We use AND
+        /* Buffering detection. True buffering occurs when the player needs more data (readyState < 3) AND is actively fetching it (networkState === 2). We use AND
          * rather than OR because networkState === 2 is normal for live streams - data continuously arrives. Only when combined with insufficient data does it indicate
          * actual buffering.
          */
         const isBuffering = (state.readyState < 3) && (state.networkState === 2);
 
-        /*
-         * Buffering grace period tracking. When buffering starts, we record the timestamp. We only trigger recovery if buffering exceeds BUFFERING_GRACE_PERIOD. This
+        /* Buffering grace period tracking. When buffering starts, we record the timestamp. We only trigger recovery if buffering exceeds BUFFERING_GRACE_PERIOD. This
          * allows normal network buffering to resolve without intervention.
          */
         if(isBuffering && !bufferingStartTime) {
@@ -1427,8 +1420,7 @@ export function monitorPlaybackHealth(
         // Check if we're within the recovery grace period (recently performed a recovery action and waiting for it to take effect).
         const withinRecoveryGrace = now < recoveryGraceUntil;
 
-        /*
-         * Segment production monitoring. After L2/L3 recovery completes (grace period ends), we verify that segments are actually being produced. If recovery reported
+        /* Segment production monitoring. After L2/L3 recovery completes (grace period ends), we verify that segments are actually being produced. If recovery reported
          * success but the capture pipeline is dead (MediaRecorder stopped producing data, FFmpeg stdin idle), segments will stop flowing while the video element
          * appears healthy. This catches the 20+ minute freeze bug where PrismCast reports "Recovered" but Channels DVR receives no data.
          */
@@ -1456,8 +1448,7 @@ export function monitorPlaybackHealth(
           }
         }
 
-        /*
-         * Continuous segment size monitoring. Runs on every healthy interval to detect spontaneous capture pipeline death (no preceding recovery event). Dead pipelines
+        /* Continuous segment size monitoring. Runs on every healthy interval to detect spontaneous capture pipeline death (no preceding recovery event). Dead pipelines
          * produce tiny segments (18 bytes observed) while the video element appears healthy. This catches failures that post-recovery index monitoring misses because
          * there's no recovery to trigger monitoring.
          */
@@ -1508,8 +1499,7 @@ export function monitorPlaybackHealth(
           lastCheckedSegmentIndex = currentSegmentIndex;
         }
 
-        /*
-         * Re-minimize check. After recovery, the browser window may have been un-minimized by fullscreen actions. As soon as the stream is healthy (progressing without
+        /* Re-minimize check. After recovery, the browser window may have been un-minimized by fullscreen actions. As soon as the stream is healthy (progressing without
          * issues), we re-minimize to reduce GPU usage.
          */
         if(pendingReMinimize && isProgressing && !state.paused && !state.error && !state.ended) {
@@ -1521,8 +1511,7 @@ export function monitorPlaybackHealth(
           await resizeAndMinimizeWindow(currentPage, true);
         }
 
-        /*
-         * Fullscreen reinforcement. Some streaming sites (notably Hulu) revert the video to a mini-player or PiP layout in response to browser state changes such as
+        /* Fullscreen reinforcement. Some streaming sites (notably Hulu) revert the video to a mini-player or PiP layout in response to browser state changes such as
          * window minimization or visibility events. Because the video continues playing normally in the smaller frame, no existing recovery condition is triggered — the
          * health monitor sees healthy, progressing playback while the captured frame shows a small video in the corner of the viewport. We verify that the video fills
          * the viewport on every healthy tick and re-apply CSS fullscreen styling when it shrinks. The response is graduated: basic CSS first (sufficient for
@@ -1559,8 +1548,7 @@ export function monitorPlaybackHealth(
           }
         }
 
-        /*
-         * Stall counter management. We increment stallCount when the video is not progressing and not within buffering grace. We reset to 0 when progression resumes.
+        /* Stall counter management. We increment stallCount when the video is not progressing and not within buffering grace. We reset to 0 when progression resumes.
          * This hysteresis prevents reacting to single-frame hiccups.
          */
         if(!isProgressing && !withinBufferingGrace) {
@@ -1571,8 +1559,7 @@ export function monitorPlaybackHealth(
           stallCount = 0;
         }
 
-        /*
-         * Pause counter management. We increment pauseCount when video.paused is true and reset when it clears. This provides the same hysteresis as stall detection,
+        /* Pause counter management. We increment pauseCount when video.paused is true and reset when it clears. This provides the same hysteresis as stall detection,
          * filtering out transient rebuffer pauses (where the player briefly pauses to refill its buffer) while still catching genuine persistent pauses.
          */
         if(state.paused) {
@@ -1583,8 +1570,7 @@ export function monitorPlaybackHealth(
           pauseCount = 0;
         }
 
-        /*
-         * Recovery decision. We trigger recovery when any of these conditions are met AND we're not within the recovery grace period:
+        /* Recovery decision. We trigger recovery when any of these conditions are met AND we're not within the recovery grace period:
          * - Video has an error state
          * - Video ended (live streams shouldn't end)
          * - Video is paused persistently (pauseCount exceeds threshold and not just buffering)
@@ -1596,8 +1582,7 @@ export function monitorPlaybackHealth(
                             (!isProgressing && !withinBufferingGrace && (stallCount > CONFIG.playback.stallCountThreshold)) ||
                             segmentProductionStalled);
 
-        /*
-         * Escalation reset. After sustained healthy playback (SUSTAINED_PLAYBACK_REQUIRED, default 60 seconds), we reset the escalation level and circuit breaker.
+        /* Escalation reset. After sustained healthy playback (SUSTAINED_PLAYBACK_REQUIRED, default 60 seconds), we reset the escalation level and circuit breaker.
          * This allows a stream that recovered to start fresh, rather than immediately escalating to aggressive recovery on the next issue.
          */
         if(isProgressing && !state.paused && !state.ended && !state.error) {
@@ -1627,8 +1612,7 @@ export function monitorPlaybackHealth(
           }
         }
 
-        /*
-         * Proactive page reload. Some streaming sites enforce a maximum continuous playback duration (e.g., NBC.com cuts streams after 4 hours). When a domain
+        /* Proactive page reload. Some streaming sites enforce a maximum continuous playback duration (e.g., NBC.com cuts streams after 4 hours). When a domain
          * configures maxContinuousPlayback, we proactively reload the page before the site's limit expires to maintain uninterrupted streaming. The reload triggers
          * PROACTIVE_RELOAD_MARGIN_MS (2 minutes) before the configured limit, giving enough time for page navigation and video reinitialization.
          *
@@ -1704,8 +1688,7 @@ export function monitorPlaybackHealth(
           }
         }
 
-        /*
-         * Recovery execution. When recovery is needed, we update circuit breaker state, determine the appropriate recovery level based on issue type and history, and
+        /* Recovery execution. When recovery is needed, we update circuit breaker state, determine the appropriate recovery level based on issue type and history, and
          * execute the recovery action. The recovery system is issue-aware:
          * - Paused issues try L1 (play/unmute) first since it works ~50% of the time for paused state
          * - Buffering issues skip L1 and go directly to L2 (source reload) since L1 never helps buffering
@@ -1713,8 +1696,7 @@ export function monitorPlaybackHealth(
          */
         if(needsRecovery) {
 
-          /*
-           * Segment production stall handling. When we detect that segments stopped flowing after L2/L3 recovery, the capture pipeline is dead and normal recovery
+          /* Segment production stall handling. When we detect that segments stopped flowing after L2/L3 recovery, the capture pipeline is dead and normal recovery
            * won't help. We skip the escalation ladder and go directly to tab replacement if available.
            */
           if(segmentProductionStalled && onTabReplacement) {
@@ -1741,8 +1723,7 @@ export function monitorPlaybackHealth(
             return;
           }
 
-          /*
-         * Issue-aware escalation. Instead of blindly incrementing the level, we determine the appropriate level based on:
+          /* Issue-aware escalation. Instead of blindly incrementing the level, we determine the appropriate level based on:
          * 1. The type of issue (paused vs buffering vs other)
          * 2. Whether source reload (L2) has already been attempted in this page session
          * 3. The current escalation level
@@ -1814,8 +1795,7 @@ export function monitorPlaybackHealth(
 
           try {
 
-            /*
-           * Levels 1-2: In-page recovery. These levels are handled by ensurePlayback() which performs recovery actions without navigating the page.
+            /* Levels 1-2: In-page recovery. These levels are handled by ensurePlayback() which performs recovery actions without navigating the page.
            */
             if(escalationLevel <= 2) {
 
@@ -1834,8 +1814,7 @@ export function monitorPlaybackHealth(
               recoveryGraceUntil = now + recoveryGracePeriods[escalationLevel];
             } else {
 
-              /*
-             * Level 3: Page navigation recovery. This is the most aggressive recovery - we navigate to the URL again and reinitialize everything.
+              /* Level 3: Page navigation recovery. This is the most aggressive recovery - we navigate to the URL again and reinitialize everything.
              */
 
               // Safety check: If page navigation has failed twice consecutively, fall back to source reload. This prevents getting stuck in a loop when navigation
@@ -1986,8 +1965,7 @@ export function monitorPlaybackHealth(
     });
   }, CONFIG.playback.monitorInterval);
 
-  /*
-   * Return the cleanup function. The caller (stream handler) should call this when the stream ends to stop monitoring. Returns the recovery metrics for the
+  /* Return the cleanup function. The caller (stream handler) should call this when the stream ends to stop monitoring. Returns the recovery metrics for the
    * termination summary log.
    */
   return function(): RecoveryMetrics {

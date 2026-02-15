@@ -12,8 +12,7 @@ import { extractDomain } from "../utils/index.js";
 export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig };
 export type { DomainConfig };
 
-/*
- * Profile resolution is the process of determining which behavior flags to use for a given stream. The resolution process handles inheritance, merging parent and
+/* Profile resolution is the process of determining which behavior flags to use for a given stream. The resolution process handles inheritance, merging parent and
  * child profile properties, and falling back to defaults for unspecified flags.
  *
  * Resolution order (highest to lowest priority):
@@ -201,8 +200,7 @@ export function getProfileForChannel(channel: { channelSelector?: string; profil
   return { profile, profileName };
 }
 
-/*
- * Before starting the server, we validate all profile configurations to catch errors early. Invalid configurations would cause runtime failures that are difficult
+/* Before starting the server, we validate all profile configurations to catch errors early. Invalid configurations would cause runtime failures that are difficult
  * to diagnose:
  *
  * - Invalid profile references (typos in extends or profile properties)
@@ -299,8 +297,7 @@ export function validateProfiles(): void {
   }
 }
 
-/*
- * Helper functions for listing available profiles in the UI.
+/* Helper functions for listing available profiles in the UI.
  */
 
 /**
