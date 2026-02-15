@@ -1000,12 +1000,15 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile indicating fullscreen method.
  * @param selectorType - The video selector type for finding the element.
+ * @param skipNativeFullscreen - When true, skips Fullscreen API-specific actions (click-for-activation, native fullscreen verification, API retries). CSS styling
+ *   and keyboard shortcuts still run. Used during monitor recovery where user activation is unavailable and click-for-activation can interfere with playback.
  */
 export async function ensureFullscreen(
   page: Page,
   context: Frame | Page,
   profile: ResolvedSiteProfile,
-  selectorType: VideoSelectorType
+  selectorType: VideoSelectorType,
+  skipNativeFullscreen?: boolean
 ): Promise<void> {
 
   // Configuration for retry behavior. These values are tuned for typical page load timing.
@@ -1013,12 +1016,18 @@ export async function ensureFullscreen(
   const retryDelay = 500;
   const verifyDelay = 200;
 
+  // When skipNativeFullscreen is set, we skip all Fullscreen API-specific actions: click-for-activation (which can toggle playback state and interfere with
+  // recovery), native fullscreen verification (which always fails without user activation), and API retries. CSS styling + keyboard shortcuts still run normally.
+  // This is used during monitor recovery where the Fullscreen API cannot succeed (no user activation context) and the monitor's own lightweight fullscreen
+  // maintenance loop handles ongoing CSS reapplication.
+  const useNativeFullscreen = profile.useRequestFullscreen && !skipNativeFullscreen;
+
   for(let attempt = 1; attempt <= maxSimpleRetries; attempt++) {
 
     // On retry for fullscreenApi profiles, click the video to provide fresh user activation. The Fullscreen API requires a recent user gesture (transient
     // activation) to succeed — without it, requestFullscreen() is silently rejected. The initial attempt relies on activation from page navigation, but retries
     // need an explicit click.
-    if((attempt > 1) && profile.useRequestFullscreen) {
+    if((attempt > 1) && useNativeFullscreen) {
 
       // eslint-disable-next-line no-await-in-loop
       await clickVideoForActivation(page, context, selectorType);
@@ -1044,7 +1053,7 @@ export async function ensureFullscreen(
 
       // For profiles that use the Fullscreen API, also verify that native fullscreen is active. CSS styling alone makes verifyFullscreen() pass based on
       // dimensions, but the browser's native fullscreen mode is needed to hide the site's player chrome and overlays.
-      if(profile.useRequestFullscreen) {
+      if(useNativeFullscreen) {
 
         // eslint-disable-next-line no-await-in-loop
         const nativeActive = await isNativeFullscreenActive(context);
@@ -1085,7 +1094,7 @@ export async function ensureFullscreen(
   LOG.warn("Fullscreen failed after %s attempts. Escalating to aggressive fullscreen.", maxSimpleRetries);
 
   // Click for user activation before the aggressive attempt for fullscreenApi profiles.
-  if(profile.useRequestFullscreen) {
+  if(useNativeFullscreen) {
 
     await clickVideoForActivation(page, context, selectorType);
   }
@@ -1099,7 +1108,7 @@ export async function ensureFullscreen(
   }
 
   // Re-trigger the Fullscreen API after aggressive styling — the aggressive CSS ensures the video fills the viewport, and the API call hides site UI.
-  if(profile.useRequestFullscreen) {
+  if(useNativeFullscreen) {
 
     await triggerFullscreen(page, context, profile, selectorType);
   }
@@ -1117,7 +1126,7 @@ export async function ensureFullscreen(
   }
 
   // For fullscreenApi profiles, also verify native fullscreen is active after escalation.
-  if(profile.useRequestFullscreen) {
+  if(useNativeFullscreen) {
 
     const nativeActive = await isNativeFullscreenActive(context);
 
@@ -1133,6 +1142,20 @@ export async function ensureFullscreen(
 }
 
 /**
+ * Options for ensurePlayback() that control recovery behavior.
+ */
+interface EnsurePlaybackOptions {
+
+  /** The escalation level (1-2). Level 1 is basic play/unmute recovery. Level 2 adds video source reload. Defaults to 1. */
+  recoveryLevel?: number;
+
+  /** When true, skips native Fullscreen API actions (click-for-activation, API verification, API retries) during the fullscreen step. CSS styling and keyboard
+   * shortcuts still run. Used by the monitor during recovery where user activation is unavailable and click-for-activation can toggle playback state. The
+   * monitor's own lightweight fullscreen maintenance loop handles ongoing CSS reapplication independently. Defaults to false. */
+  skipNativeFullscreen?: boolean;
+}
+
+/**
  * Ensures the video is playing with proper audio settings. This is the core playback function that handles both initial setup and recovery from stalls. It is
  * designed to be idempotent - safe to call multiple times without adverse effects.
  *
@@ -1141,8 +1164,8 @@ export async function ensureFullscreen(
  * LEVEL 1 - Basic recovery (default):
  * - Set muted=false and volume=1
  * - Call play() if video is paused
- * - Ensure fullscreen with verification and retry (applies CSS, triggers fullscreen API/keyboard, verifies video fills viewport, escalates to aggressive
- *   techniques if needed)
+ * - Ensure fullscreen with CSS styling, keyboard shortcuts, and dimension verification. When skipNativeFullscreen is set, Fullscreen API-specific actions are
+ *   skipped because user activation is unavailable and click-for-activation can interfere with playback recovery.
  * - Lock volume properties if profile requires it
  *
  * LEVEL 2 - Reload video source:
@@ -1156,17 +1179,17 @@ export async function ensureFullscreen(
  * @param page - The Puppeteer page object.
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile containing all behavior flags.
- * @param recoveryLevel - The escalation level (1-2). Defaults to 1.
+ * @param options - Optional recovery configuration. Omit for initial tune (full fullscreen behavior, level 1).
  */
 export async function ensurePlayback(
   page: Page,
   context: Frame | Page,
   profile: ResolvedSiteProfile,
-  recoveryLevel?: number
+  options?: EnsurePlaybackOptions
 ): Promise<void> {
 
   const selectorType = buildVideoSelectorType(profile);
-  const level = recoveryLevel ?? 1;
+  const level = options?.recoveryLevel ?? 1;
 
   // LEVEL 2: Reload video source. This forces the player to completely reinitialize by clearing and restoring the src attribute. This can fix players stuck in
   // error states or with corrupted internal state.
@@ -1194,9 +1217,9 @@ export async function ensurePlayback(
     // Basic recovery errors are non-fatal - we continue with other actions.
   }
 
-  // Ensure fullscreen with verification and retry. This applies CSS styling, triggers native fullscreen, verifies the video fills the viewport, and retries
-  // with escalating techniques if needed.
-  await ensureFullscreen(page, context, profile, selectorType);
+  // Ensure fullscreen with verification and retry. This applies CSS styling, triggers native fullscreen, verifies the video fills the viewport, and retries with
+  // escalating techniques if needed.
+  await ensureFullscreen(page, context, profile, selectorType, options?.skipNativeFullscreen);
 
   // Apply volume locking if the profile requires it. This prevents the site from muting the video after we've set volume.
   if(profile.lockVolumeProperties) {
@@ -1298,7 +1321,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
   LOG.debug("timing:tune", "Video ready. (+%sms)", elapsed());
 
   // Ensure playback is started, unmuted, and fullscreen. This applies CSS styling, triggers native fullscreen, and enforces volume settings.
-  await ensurePlayback(page, context, profile, 1);
+  await ensurePlayback(page, context, profile);
 
   LOG.debug("timing:tune", "Playback ensured. (+%sms)", elapsed());
 

@@ -1819,7 +1819,7 @@ export function monitorPlaybackHealth(
            */
             if(escalationLevel <= 2) {
 
-              await ensurePlayback(currentPage, currentContext, profile, escalationLevel);
+              await ensurePlayback(currentPage, currentContext, profile, { recoveryLevel: escalationLevel, skipNativeFullscreen: true });
 
               // Track that source reload was attempted so we skip directly to L3 next time.
               if(escalationLevel === 2) {
