@@ -2,7 +2,7 @@
  *
  * hbo.ts: HBO Max channel selection strategy with tab URL caching and channel rail scraping.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, Nullable } from "../../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable } from "../../types/index.js";
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
@@ -15,12 +15,44 @@ const HBO_MAX_BASE_URL = "https://play.hbomax.com";
 // cached URL turns out to be stale (the channel rail is not found at the cached URL).
 let hboTabUrl: Nullable<string> = null;
 
+// Module-level cache for HBO watch URLs discovered during channel rail scraping. On the first tune to any HBO channel, the strategy performs a bulk scrape of all
+// channels from the HBO Channels tile rail, populating this cache with every channel's watch URL keyed by its lowercased name (e.g., "hbo", "hbo 2", "hbo hits").
+// Subsequent tunes resolve via resolveHboDirectUrl without loading the tab page. Cleared on browser disconnect via clearHboCache().
+const hboWatchUrlCache = new Map<string, string>();
+
 /**
- * Clears the HBO tab URL cache. Called by clearChannelSelectionCaches() in the coordinator when the browser restarts.
+ * Returns a cached HBO Max watch URL for the given channel selector, or null if no cached URL exists.
+ * @param channelSelector - The channel selector string (e.g., "HBO", "HBO Hits").
+ * @returns The cached watch URL or null.
  */
-export function clearHboCache(): void {
+function resolveHboDirectUrl(channelSelector: string): Nullable<string> {
+
+  const url = hboWatchUrlCache.get(channelSelector.toLowerCase()) ?? null;
+
+  if(url) {
+
+    LOG.debug("tuning:hbo", "HBO cache hit for %s: %s.", channelSelector, url);
+  }
+
+  return url;
+}
+
+/**
+ * Invalidates the cached HBO Max watch URL for the given channel selector. Called when a cached URL fails to produce a working stream.
+ * @param channelSelector - The channel selector string to invalidate.
+ */
+function invalidateHboDirectUrl(channelSelector: string): void {
+
+  hboWatchUrlCache.delete(channelSelector.toLowerCase());
+}
+
+/**
+ * Clears the HBO tab URL and watch URL caches. Called by clearChannelSelectionCaches() in the coordinator when the browser restarts.
+ */
+function clearHboCache(): void {
 
   hboTabUrl = null;
+  hboWatchUrlCache.clear();
 }
 
 /**
@@ -63,22 +95,22 @@ async function scrapeHboTabUrl(page: Page): Promise<Nullable<string>> {
   return HBO_MAX_BASE_URL + href;
 }
 
-// Result of scraping the HBO channel rail on the tab page. Distinguishes between the rail not being found (stale URL, wrong page) and the rail being found but the
-// target channel not existing within it.
+// Result of scraping the HBO channel rail on the tab page. Distinguishes between the rail not being found (stale URL, wrong page) and the rail being found with
+// its discovered channels.
 interface HboRailResult {
 
+  channels: { name: string; watchPath: string }[];
   railFound: boolean;
-  watchPath: Nullable<string>;
 }
 
 /**
- * Scrapes the HBO Channels tile rail on the HBO tab page for a watch URL matching the given channel name. The rail section contains tiles for each live channel,
- * each with a backup text `<p aria-hidden="true">` element containing the channel name and an `<a>` with href pointing to the watch page.
+ * Scrapes all channels from the HBO Channels tile rail on the HBO tab page. The rail section contains tiles for each live channel, each with a backup text
+ * `<p aria-hidden="true">` element containing the channel name and an `<a>` with href pointing to the watch page. Returns all discovered channels so the caller
+ * can populate the cache in bulk.
  * @param page - The Puppeteer page object, expected to be on the HBO tab page.
- * @param channelName - The channel name to match (e.g., "HBO", "HBO Hits"). Case-insensitive.
- * @returns Object with `railFound` indicating whether the rail section was present, and `watchPath` containing the relative watch URL if the channel was found.
+ * @returns Object with `railFound` indicating whether the rail section was present, and `channels` containing all discovered channel names and watch paths.
  */
-async function scrapeHboChannelRail(page: Page, channelName: string): Promise<HboRailResult> {
+async function scrapeHboChannelRail(page: Page): Promise<HboRailResult> {
 
   const HBO_RAIL_SELECTOR = "section[data-testid=\"hbo-page-rail-distribution-channels-us_rail\"]";
 
@@ -88,7 +120,7 @@ async function scrapeHboChannelRail(page: Page, channelName: string): Promise<Hb
     await page.waitForSelector(HBO_RAIL_SELECTOR, { timeout: CONFIG.streaming.videoTimeout });
   } catch {
 
-    return { railFound: false, watchPath: null };
+    return { channels: [], railFound: false };
   }
 
   // The rail uses lazy loading via IntersectionObserver — tile content only populates when the rail is visible in the viewport. The rail section element appears
@@ -104,26 +136,23 @@ async function scrapeHboChannelRail(page: Page, channelName: string): Promise<Hb
     await page.waitForSelector(HBO_RAIL_SELECTOR + " a", { timeout: 5000 });
   } catch {
 
-    return { railFound: false, watchPath: null };
+    return { channels: [], railFound: false };
   }
 
-  // Scrape the rail for the target channel's watch URL. Each tile in the rail contains an anchor with the watch URL and a backup text paragraph with the channel name.
-  const watchPath = await evaluateWithAbort(page, (selector: string, target: string): Nullable<string> => {
+  // Bulk scrape all channels from the rail. Each tile contains an anchor with the watch URL and a backup text paragraph with the channel name.
+  const channels = await evaluateWithAbort(page, (selector: string): { name: string; watchPath: string }[] => {
 
     const rail = document.querySelector(selector);
 
     if(!rail) {
 
-      return null;
+      return [];
     }
 
-    const targetLower = target.toLowerCase();
-    const anchors = rail.querySelectorAll("a");
+    const results: { name: string; watchPath: string }[] = [];
 
-    for(const anchor of Array.from(anchors)) {
+    for(const anchor of Array.from(rail.querySelectorAll("a"))) {
 
-      // The channel name appears in a <p aria-hidden="true"> element within the tile. This is the backup text that displays the channel name when the tile
-      // image fails to load.
       const nameEl = anchor.querySelector("p[aria-hidden=\"true\"]");
 
       if(!nameEl) {
@@ -131,9 +160,9 @@ async function scrapeHboChannelRail(page: Page, channelName: string): Promise<Hb
         continue;
       }
 
-      const name = nameEl.textContent.trim().toLowerCase();
+      const name = (nameEl.textContent || "").trim();
 
-      if(name !== targetLower) {
+      if(name.length === 0) {
 
         continue;
       }
@@ -143,23 +172,24 @@ async function scrapeHboChannelRail(page: Page, channelName: string): Promise<Hb
       // Validate that the href points to a live channel watch page. Watch URLs follow the pattern /channel/watch/{channelUUID}/{programUUID}.
       if(href?.includes("/channel/watch/")) {
 
-        return href;
+        results.push({ name, watchPath: href });
       }
     }
 
-    return null;
-  }, [ HBO_RAIL_SELECTOR, channelName ]);
+    return results;
+  }, [HBO_RAIL_SELECTOR]);
 
-  return { railFound: true, watchPath };
+  return { channels, railFound: true };
 }
 
 /**
- * HBO grid strategy: discovers the HBO channels tab URL from the homepage menu bar, navigates to the tab page, scrapes the live channel rail for the target channel's
- * watch URL, and navigates to it. Caches the tab URL across tunes and falls back to rediscovery if the cached URL is stale (rail not found at the cached location).
+ * HBO grid strategy: discovers the HBO channels tab URL from the homepage menu bar, navigates to the tab page, bulk scrapes the live channel rail for all channel
+ * watch URLs, and navigates to the target channel's URL. All discovered channels are cached so that subsequent tunes to any HBO channel resolve via resolveDirectUrl
+ * without loading the tab page.
  *
  * The strategy handles three navigations per tune:
  * 1. Homepage (already loaded by navigateToPage) → scrape menu bar for tab URL (or use cache)
- * 2. Tab page → scrape channel rail for watch URL
+ * 2. Tab page → bulk scrape channel rail for all watch URLs
  * 3. Watch page → video playback begins
  *
  * When the cached tab URL is stale (rail section not found), the strategy clears the cache, navigates back to the homepage, rediscovers the tab URL, and retries.
@@ -168,7 +198,7 @@ async function scrapeHboChannelRail(page: Page, channelName: string): Promise<Hb
  * @param profile - The resolved site profile with a non-null channelSelector (channel name, e.g., "HBO", "HBO Hits").
  * @returns Result object with success status and optional failure reason.
  */
-export async function hboGridStrategy(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
+async function hboGridStrategy(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
 
   const channelName = profile.channelSelector;
   let usedCache = false;
@@ -201,8 +231,8 @@ export async function hboGridStrategy(page: Page, profile: ChannelSelectionProfi
     return { reason: "Failed to navigate to HBO tab page: " + formatError(error) + ".", success: false };
   }
 
-  // Phase 2: Scrape the channel rail for the target channel's watch URL.
-  let railResult = await scrapeHboChannelRail(page, channelName);
+  // Phase 2: Bulk scrape the channel rail for all channel watch URLs.
+  let railResult = await scrapeHboChannelRail(page);
 
   // Fallback: if the rail was not found and we used a cached URL, the cache may be stale. Clear it, navigate back to the homepage, rediscover the tab URL, and retry.
   if(!railResult.railFound && usedCache) {
@@ -238,7 +268,7 @@ export async function hboGridStrategy(page: Page, profile: ChannelSelectionProfi
       return { reason: "Failed to navigate to rediscovered HBO tab page: " + formatError(error) + ".", success: false };
     }
 
-    railResult = await scrapeHboChannelRail(page, channelName);
+    railResult = await scrapeHboChannelRail(page);
 
     if(!railResult.railFound) {
 
@@ -251,47 +281,35 @@ export async function hboGridStrategy(page: Page, profile: ChannelSelectionProfi
     return { reason: "HBO channel rail not found on tab page.", success: false };
   }
 
-  if(!railResult.watchPath) {
+  // Populate the watch URL cache with all discovered channels. This makes every subsequent HBO tune a cache hit via resolveDirectUrl, skipping tab page navigation
+  // entirely.
+  for(const ch of railResult.channels) {
 
-    // Best-effort diagnostic: collect all channel names from the rail so the user can see what values are valid for channelSelector.
-    try {
+    const watchUrl = HBO_MAX_BASE_URL + ch.watchPath;
 
-      const availableChannels = await evaluateWithAbort(page, (): string[] => {
+    hboWatchUrlCache.set(ch.name.toLowerCase(), watchUrl);
 
-        const rail = document.querySelector("section[data-testid=\"hbo-page-rail-distribution-channels-us_rail\"]");
+    LOG.debug("tuning:hbo", "Cached HBO Max watch URL for %s: %s.", ch.name, watchUrl);
+  }
 
-        if(!rail) {
+  // Look up the target channel from the populated cache.
+  const watchUrl = hboWatchUrlCache.get(channelName.toLowerCase());
 
-          return [];
-        }
+  if(!watchUrl) {
 
-        return Array.from(rail.querySelectorAll("p[aria-hidden=\"true\"]"))
-          .map((p) => (p.textContent || "").trim())
-          .filter((n) => n.length > 0)
-          .sort();
-      }, []);
+    // Channel not found. Log available channels from the scraped rail data to help users identify valid channelSelector values.
+    logAvailableChannels({
 
-      if(availableChannels.length > 0) {
-
-        logAvailableChannels({
-
-          availableChannels,
-          channelName,
-          guideUrl: "https://play.hbomax.com",
-          providerName: "HBO Max"
-        });
-      }
-    } catch {
-
-      // Diagnostic dump is best-effort.
-    }
+      availableChannels: railResult.channels.map((ch) => ch.name).sort(),
+      channelName,
+      guideUrl: "https://play.hbomax.com",
+      providerName: "HBO Max"
+    });
 
     return { reason: "Channel " + channelName + " not found in HBO channel rail.", success: false };
   }
 
   // Phase 3: Navigate to the watch URL to start playback.
-  const watchUrl = HBO_MAX_BASE_URL + railResult.watchPath;
-
   LOG.debug("tuning:hbo", "Navigating to HBO Max watch URL for %s.", channelName);
 
   try {
@@ -304,3 +322,24 @@ export async function hboGridStrategy(page: Page, profile: ChannelSelectionProfi
 
   return { success: true };
 }
+
+/**
+ * Async wrapper around resolveHboDirectUrl for the ChannelStrategyEntry.resolveDirectUrl contract. The page parameter is unused because HBO watch URLs are
+ * resolved purely from the in-memory cache populated during the first channel rail scrape.
+ * @param channelSelector - The channel selector string (e.g., "HBO", "HBO Hits").
+ * @param _page - Unused. Present to satisfy the async resolveDirectUrl signature.
+ * @returns The cached watch URL or null.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/require-await
+async function resolveHboDirectUrlAsync(channelSelector: string, _page: Page): Promise<Nullable<string>> {
+
+  return resolveHboDirectUrl(channelSelector);
+}
+
+export const hboStrategy: ChannelStrategyEntry = {
+
+  clearCache: clearHboCache,
+  execute: hboGridStrategy,
+  invalidateDirectUrl: invalidateHboDirectUrl,
+  resolveDirectUrl: resolveHboDirectUrlAsync
+};

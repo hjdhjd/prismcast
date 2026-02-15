@@ -2,7 +2,7 @@
  *
  * fox.ts: Fox.com guide grid channel selection strategy.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, Nullable } from "../../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable } from "../../types/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 import { evaluateWithAbort } from "../../utils/index.js";
@@ -24,7 +24,7 @@ import { logAvailableChannels } from "../channelSelection.js";
  * @param profile - The resolved site profile with a non-null channelSelector (station code, e.g., "FOXD2C", "FNC", "FS1").
  * @returns Result object with success status and optional failure reason.
  */
-export async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
+async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
 
   const stationCode = profile.channelSelector;
 
@@ -117,3 +117,5 @@ export async function foxGridStrategy(page: Page, profile: ChannelSelectionProfi
 
   return { success: true };
 }
+
+export const foxStrategy: ChannelStrategyEntry = { execute: foxGridStrategy };

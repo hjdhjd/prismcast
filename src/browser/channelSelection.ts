@@ -2,51 +2,105 @@
  *
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
-import { type ChannelSelectionProfile, type ChannelSelectorResult, type ClickTarget, type ResolvedSiteProfile, isChannelSelectionProfile } from "../types/index.js";
+import type { ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable, ResolvedSiteProfile } from "../types/index.js";
 import { LOG, delay } from "../utils/index.js";
-import { clearHboCache, hboGridStrategy } from "./tuning/hbo.js";
-import { clearHuluCache, guideGridStrategy } from "./tuning/hulu.js";
-import { clearSlingCache, slingGridStrategy } from "./tuning/sling.js";
 import { CHANNELS } from "../channels/index.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
-import { foxGridStrategy } from "./tuning/fox.js";
+import { foxStrategy } from "./tuning/fox.js";
+import { hboStrategy } from "./tuning/hbo.js";
+import { huluStrategy } from "./tuning/hulu.js";
+import { isChannelSelectionProfile } from "../types/index.js";
+import { slingStrategy } from "./tuning/sling.js";
 import { thumbnailRowStrategy } from "./tuning/thumbnailRow.js";
 import { tileClickStrategy } from "./tuning/tileClick.js";
-import { youtubeGridStrategy } from "./tuning/youtubeTv.js";
+import { yttvStrategy } from "./tuning/youtubeTv.js";
 
 /* Multi-channel streaming sites (like USA Network) present multiple channels on a single page, with a program guide for each channel. Users must select which
  * channel they want to watch by clicking on a show in the guide. This module coordinates the dispatch to per-provider strategy functions in the tuning/ directory.
  *
- * Each strategy is a self-contained file under tuning/ that implements the ChannelStrategyFn signature. The coordinator handles pre-dispatch concerns (image
+ * Each strategy is a self-contained file under tuning/ that exports a single ChannelStrategyEntry object. The coordinator handles pre-dispatch concerns (image
  * polling, no-op checks) and post-dispatch logging. Strategy files may import scrollAndClick() and normalizeChannelName() from this coordinator — the circular
  * import is safe because all cross-module calls happen inside async functions long after module evaluation completes.
  */
 
-// Strategy function signature. All strategies take the Puppeteer page and a narrowed profile with guaranteed non-null channelSelector.
-type ChannelStrategyFn = (page: Page, profile: ChannelSelectionProfile) => Promise<ChannelSelectorResult>;
+/* Adding a new channel selection provider:
+ *
+ * 1. Create a new file in tuning/ implementing the strategy function with the ChannelStrategyHandler signature.
+ * 2. Export a single ChannelStrategyEntry object from the file. Set the hooks your provider needs:
+ *    - execute (required): The strategy function that selects the channel in the provider's guide UI.
+ *    - clearCache: If your strategy caches state (row positions, URLs), provide a function that clears it.
+ *    - resolveDirectUrl / invalidateDirectUrl: If your strategy discovers stable watch URLs that can be reused across tunes, provide cache lookup and invalidation.
+ *    - usesImageSlug: Set to true if channelSelector is an image URL slug requiring load polling before dispatch.
+ * 3. Import the entry here and add it to the strategies registry with the strategy name as the key.
+ * 4. Add the strategy name to the ChannelSelectionStrategy union type in types/index.ts.
+ * 5. Add a site profile entry in config/sites.ts that references the new strategy name.
+ *
+ * The coordinator handles all cross-cutting concerns (dispatch, cache clearing, direct URL resolution, image polling) through the ChannelStrategyEntry interface.
+ * Strategy files may import scrollAndClick(), normalizeChannelName(), and logAvailableChannels() from this module for shared utilities.
+ */
 
-// Strategy dispatch registry. Maps strategy names from ChannelSelectionStrategy to their implementation functions.
-const strategies: Record<string, ChannelStrategyFn> = {
+// Strategy dispatch registry. Maps strategy names from ChannelSelectionStrategy to their implementation entry. Adding a new provider requires a single entry here
+// — all cross-cutting concerns (cache clearing, direct URL resolution, image polling) are driven by the entry's hooks.
+const strategies: Record<string, ChannelStrategyEntry> = {
 
-  foxGrid: foxGridStrategy,
-  guideGrid: guideGridStrategy,
-  hboGrid: hboGridStrategy,
-  slingGrid: slingGridStrategy,
+  foxGrid: foxStrategy,
+  guideGrid: huluStrategy,
+  hboGrid: hboStrategy,
+  slingGrid: slingStrategy,
   thumbnailRow: thumbnailRowStrategy,
   tileClick: tileClickStrategy,
-  youtubeGrid: youtubeGridStrategy
+  youtubeGrid: yttvStrategy
 };
 
 /**
+ * Returns a direct watch URL for the channel specified in the profile, if one can be resolved. Looks up the strategy entry's resolveDirectUrl hook and calls it
+ * with the channelSelector and page. Returns null if the strategy has no resolver, the profile has no channelSelector, or the resolver returns null.
+ * @param profile - The resolved site profile.
+ * @param page - The Puppeteer page object, passed through to the strategy's resolver for response interception setup or API calls.
+ * @returns The direct watch URL or null.
+ */
+export async function resolveDirectUrl(profile: ResolvedSiteProfile, page: Page): Promise<Nullable<string>> {
+
+  const { channelSelection, channelSelector } = profile;
+
+  if(!channelSelector) {
+
+    return null;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  return await strategies[channelSelection.strategy]?.resolveDirectUrl?.(channelSelector, page) ?? null;
+}
+
+/**
+ * Invalidates the cached direct watch URL for the channel specified in the profile. Looks up the strategy entry's invalidateDirectUrl hook and calls it with
+ * the channelSelector. No-op if the strategy has no invalidator or the profile has no channelSelector.
+ * @param profile - The resolved site profile.
+ */
+export function invalidateDirectUrl(profile: ResolvedSiteProfile): void {
+
+  const { channelSelection, channelSelector } = profile;
+
+  if(!channelSelector) {
+
+    return;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  strategies[channelSelection.strategy]?.invalidateDirectUrl?.(channelSelector);
+}
+
+/**
  * Clears all channel selection caches. Called by handleBrowserDisconnect() in browser/index.ts when the browser restarts, since cached state (guide row positions,
- * discovered page URLs) may be stale in a new browser session.
+ * discovered page URLs, watch URLs) may be stale in a new browser session.
  */
 export function clearChannelSelectionCaches(): void {
 
-  clearHboCache();
-  clearHuluCache();
-  clearSlingCache();
+  for(const entry of Object.values(strategies)) {
+
+    entry.clearCache?.();
+  }
 }
 
 /**
@@ -164,7 +218,7 @@ export function logAvailableChannels(options: {
  * tuneToChannel() after page navigation.
  *
  * The function handles:
- * - Polling for channel slug image readiness before strategy dispatch
+ * - Polling for channel slug image readiness before strategy dispatch (when entry.usesImageSlug is true)
  * - Strategy dispatch based on profile.channelSelection.strategy
  * - No-op for single-channel sites (strategy "none" or no channelSelector)
  * - Logging of selection attempts and results
@@ -182,14 +236,22 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     return { success: true };
   }
 
+  // Look up the strategy entry before image polling so we can check entry.usesImageSlug.
+  const entry = strategies[channelSelection.strategy];
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!entry) {
+
+    LOG.warn("Unknown channel selection strategy: %s.", channelSelection.strategy);
+
+    return { reason: "Unknown channel selection strategy.", success: false };
+  }
+
   // Poll for the channel slug image to appear and fully load. We check both src match and load completion (img.complete + naturalWidth) to ensure the image is
   // actually rendered before proceeding. This prevents race conditions where the img element exists with the correct src but the browser hasn't finished fetching
-  // and rendering it, which can cause layout instability and click failures. We skip this polling for foxGrid (channelSelector is a station code, not an image
-  // URL slug), guideGrid (channel list images are hidden behind a tab), hboGrid (channelSelector is a channel name, not an image URL slug), slingGrid (same
-  // reason as hboGrid), and youtubeGrid (same reason as hboGrid).
-  const skipImagePolling = [ "foxGrid", "guideGrid", "hboGrid", "slingGrid", "youtubeGrid" ];
-
-  if(!skipImagePolling.includes(channelSelection.strategy)) {
+  // and rendering it, which can cause layout instability and click failures. Only run for strategies that use an image URL slug as their channelSelector
+  // (thumbnailRow, tileClick). Strategies using channel names or station codes skip this.
+  if(entry.usesImageSlug) {
 
     try {
 
@@ -208,17 +270,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
   }
 
   // Dispatch to the appropriate strategy via the registry.
-  const strategyFn = strategies[channelSelection.strategy];
-
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!strategyFn) {
-
-    LOG.warn("Unknown channel selection strategy: %s.", channelSelection.strategy);
-
-    return { reason: "Unknown channel selection strategy.", success: false };
-  }
-
-  const result = await strategyFn(page, profile);
+  const result = await entry.execute(page, profile);
 
   return result;
 }

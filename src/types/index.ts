@@ -842,6 +842,46 @@ export interface ChannelSelectorResult {
 }
 
 /**
+ * The strategy function signature. All strategies take the Puppeteer page and a narrowed profile with guaranteed non-null channelSelector.
+ */
+export type ChannelStrategyHandler = (page: Page, profile: ChannelSelectionProfile) => Promise<ChannelSelectorResult>;
+
+/**
+ * The complete contract for a channel selection strategy. Each provider file exports a single object implementing this interface. The coordinator accesses all
+ * provider behavior through these hooks — no strategy-specific imports or hardcoded strategy name checks outside the registry.
+ */
+export interface ChannelStrategyEntry {
+
+  /**
+   * Resets all module-level caches (row positions, discovered URLs, watch URLs). Called on browser restart when cached state may be stale.
+   */
+  clearCache?: () => void;
+
+  /**
+   * Selects the target channel in the provider's guide UI. Receives a Puppeteer page and a profile with a guaranteed non-null channelSelector. Must handle its
+   * own retry logic (e.g., overlay dismiss) and return a result indicating success or failure with a diagnostic reason.
+   */
+  execute: ChannelStrategyHandler;
+
+  /**
+   * Removes a cached watch URL after it failed to produce a working stream. Called by the coordinator when a cached direct navigation fails.
+   */
+  invalidateDirectUrl?: (channelSelector: string) => void;
+
+  /**
+   * Returns a watch URL for direct navigation, bypassing guide page loading. Implementations may perform async work such as fetching current asset IDs from
+   * provider APIs. The page parameter allows setting up response interception or accessing browser context when needed (e.g., cold cache setup).
+   */
+  resolveDirectUrl?: (channelSelector: string, page: Page) => Promise<Nullable<string>>;
+
+  /**
+   * Set to true when the channelSelector is an image URL slug that must be polled for load completion before strategy dispatch. The coordinator waits for an img
+   * element whose src contains the slug to reach loaded state.
+   */
+  usesImageSlug?: boolean;
+}
+
+/**
  * Coordinates for a click target, used when clicking channel selector elements.
  */
 export interface ClickTarget {

@@ -10,6 +10,7 @@ import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPag
 import { getNextStreamId, getStreamCount } from "./registry.js";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.js";
 import { initializePlayback, navigateToPage } from "../browser/video.js";
+import { invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.js";
 import { CONFIG } from "../config/index.js";
 import type { FFmpegProcess } from "../utils/index.js";
 import type { Readable } from "node:stream";
@@ -565,10 +566,19 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   // Navigate and set up playback. For noVideo profiles, just navigate without video setup.
   let context: Frame | Page;
+  let usedDirectUrl = false;
 
   try {
 
     if(!profile.noVideo) {
+
+      // Check for a direct watch URL. If available, navigate directly to it and skip channel selection, avoiding guide page navigation entirely. On failure,
+      // the cache entry is invalidated in the catch block so the outer retry loop (in streaming/hls.ts) re-invokes with the guide URL.
+      const directUrl = await resolveDirectUrl(profile, page);
+
+      usedDirectUrl = !!directUrl;
+
+      const navigationUrl = directUrl ?? url;
 
       // Phase 1: Navigate to the page with retry. The 10-second navigationTimeout is appropriate for page loads, and retryOperation correctly reloads the page on
       // genuine navigation failures. Navigation is wrapped in retryOperation separately from channel selection so the timeout does not race with the internal click
@@ -576,23 +586,24 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       await retryOperation(
         async (): Promise<void> => {
 
-          await navigateToPage(page, url, profile);
+          await navigateToPage(page, navigationUrl, profile);
         },
         CONFIG.streaming.maxNavigationRetries,
         CONFIG.streaming.navigationTimeout,
-        "page navigation for " + url,
+        "page navigation for " + navigationUrl,
         undefined,
         () => page.isClosed()
       );
 
-      // Phase 2: Channel selection + video setup. Runs after navigation succeeds with no outer timeout racing against internal click retries. Each sub-step
-      // (selectChannel, waitForVideoReady, etc.) has its own internal timeout via videoTimeout and click retry constants. For guideGrid strategies, a channel
-      // selection failure triggers an overlay dismiss and retry, which doubles the channel selection time budget. The 45-second safety-net timeout accommodates
-      // this retry while still preventing pathological hangs if multiple internal timeouts chain sequentially.
+      // Phase 2: Channel selection + video setup. When navigating to a cached direct URL, skip channel selection since the URL already targets the correct
+      // channel. Runs after navigation succeeds with no outer timeout racing against internal click retries. Each sub-step (selectChannel, waitForVideoReady,
+      // etc.) has its own internal timeout via videoTimeout and click retry constants. For guideGrid strategies, a channel selection failure triggers an overlay
+      // dismiss and retry, which doubles the channel selection time budget. The 45-second safety-net timeout accommodates this retry while still preventing
+      // pathological hangs if multiple internal timeouts chain sequentially.
       const PLAYBACK_INIT_TIMEOUT = 45000;
 
       const tuneResult = await Promise.race([
-        initializePlayback(page, profile),
+        initializePlayback(page, profile, usedDirectUrl),
         new Promise<never>((_, reject) => {
 
           setTimeout(() => {
@@ -609,6 +620,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       context = page;
     }
   } catch(error) {
+
+    // If a cached direct URL was used, invalidate it so the next attempt falls through to guide navigation.
+    if(usedDirectUrl) {
+
+      invalidateDirectUrl(profile);
+    }
 
     // Clean up on navigation or playback initialization failure. Destroy the raw capture stream first to ensure chrome.tabCapture releases the capture.
     if(!rawCaptureStream.destroyed) {

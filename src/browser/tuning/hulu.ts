@@ -2,7 +2,7 @@
  *
  * hulu.ts: Hulu Live TV guide grid channel selection strategy with binary search, position-based inference, and row caching.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, Nullable } from "../../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.js";
 import { logAvailableChannels, normalizeChannelName, scrollAndClick } from "../channelSelection.js";
 import { CONFIG } from "../../config/index.js";
@@ -15,7 +15,7 @@ const guideRowCache = new Map<string, number>();
 /**
  * Clears the Hulu guide row cache. Called by clearChannelSelectionCaches() in the coordinator when the browser restarts.
  */
-export function clearHuluCache(): void {
+function clearHuluCache(): void {
 
   guideRowCache.clear();
 }
@@ -462,7 +462,7 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
  * @param profile - The resolved site profile with a non-null channelSelector (channel name) and channelSelection config.
  * @returns Result object with success status and optional failure reason.
  */
-export async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
+async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
 
   const { channelSelection, channelSelector: channelName } = profile;
   const { listSelector, playSelector } = channelSelection;
@@ -772,3 +772,36 @@ export async function guideGridStrategy(page: Page, profile: ChannelSelectionPro
   // Click the on-now program cell and wait for the play button, with click retries to handle React hydration timing.
   return await clickOnNowCellAndPlay(page, clickTarget, playSelector, channelName);
 }
+
+/**
+ * Wraps guideGridStrategy with a single retry after dismissing any stale overlay that may be covering the guide grid. After a failed click attempt on the on-now
+ * cell, the playback overlay or entity modal can remain open, obscuring the guide and preventing subsequent channel selection attempts from locating guide rows.
+ * Pressing Escape closes most modal overlays in React-based SPAs.
+ * @param page - The Puppeteer page object.
+ * @param profile - The resolved site profile with a non-null channelSelector (channel name) and channelSelection config.
+ * @returns Result object with success status and optional failure reason.
+ */
+async function guideGridWithRetry(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
+
+  let result = await guideGridStrategy(page, profile);
+
+  if(!result.success) {
+
+    LOG.warn("Guide grid channel selection failed: %s. Dismissing overlay and retrying.", result.reason ?? "Unknown reason");
+
+    try {
+
+      await page.keyboard.press("Escape");
+      await delay(500);
+    } catch(error) {
+
+      LOG.debug("tuning:hulu", "Could not dismiss guide overlay: %s.", formatError(error));
+    }
+
+    result = await guideGridStrategy(page, profile);
+  }
+
+  return result;
+}
+
+export const huluStrategy: ChannelStrategyEntry = { clearCache: clearHuluCache, execute: guideGridWithRetry };

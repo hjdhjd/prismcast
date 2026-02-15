@@ -15,7 +15,8 @@ import { PREDEFINED_CHANNELS } from "../channels/index.js";
  * IMPORTANT: When adding channels, avoid hyphenated keys that would unintentionally match an existing channel. For example, if "cnn" exists, don't add
  * "cnn-international" as a separate channel — it would become a CNN variant. Use a non-hyphenated key like "cnni" instead.
  *
- * Inheritance: Provider variants inherit `name` and `stationId` from the canonical entry, so variants only need to specify what differs (url, profile, provider).
+ * Inheritance: Provider variants inherit `name` and `stationId` from the canonical entry (variant's own value takes precedence). `channelSelector` is NOT inherited
+ * — it is provider-specific (e.g., fox.com uses station codes like "FOXD2C" while Sling uses guide names like "FOX"), so each variant must define its own.
  *
  * User overrides: When a user defines a channel with the same key as a predefined channel, both versions appear in the provider dropdown. The user's custom version
  * is shown first (labeled "Custom") and is the default. The original predefined version uses a special key suffix (PREDEFINED_SUFFIX) to distinguish it from the
@@ -574,7 +575,7 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 
 /**
  * Gets a channel with inheritance applied. For provider variants, this merges the variant's properties with inherited properties from the canonical entry.
- * Inherited properties: `name`, `stationId`. Explicit properties on the variant take precedence.
+ * Inherited properties: `name`, `stationId` (variant takes precedence). `channelSelector` is not inherited — it is provider-specific.
  * @param key - The channel key (canonical or variant).
  * @returns The complete channel with inheritance applied, or undefined if the channel doesn't exist.
  */
@@ -616,7 +617,8 @@ export function getResolvedChannel(key: string): Channel | undefined {
     return channel;
   }
 
-  // Build the merged channel. Variant properties override canonical, but inherit name and stationId if not set.
+  // Build the merged channel. Variant properties override canonical, but inherit name and stationId if not set. channelSelector is NOT inherited — it is
+  // provider-specific (e.g., fox.com uses station codes like "FOXD2C" while Sling uses guide names like "FOX"), so each variant must define its own.
   return {
 
     ...channel,

@@ -5,8 +5,8 @@
 import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.js";
+import { invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.js";
 import { CONFIG } from "../config/index.js";
-import { selectChannel } from "./channelSelection.js";
 
 /* These functions manage the video element lifecycle for streaming capture. The key challenges we solve:
  *
@@ -1260,35 +1260,41 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
  *
  * @param page - The Puppeteer page object.
  * @param profile - The site profile containing all behavior flags.
+ * @param skipChannelSelection - When true, skip the channel selection phase entirely. Used when navigating directly to a cached watch URL that already targets
+ *   the correct channel — only video detection, playback, and fullscreen setup are needed.
  * @returns The video context (frame or page) for subsequent monitoring.
  */
-export async function initializePlayback(page: Page, profile: ResolvedSiteProfile): Promise<TuneResult> {
+export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, skipChannelSelection = false): Promise<TuneResult> {
 
   const elapsed = startTimer();
 
   // For multi-channel players (like usanetwork.com/live with multiple channels), select the desired channel from the UI. The selectChannel function checks the
-  // profile's channelSelection strategy and channelSelector to determine if/how to select a channel.
-  let channelResult = await selectChannel(page, profile);
+  // profile's channelSelection strategy and channelSelector to determine if/how to select a channel. Skipped when navigating directly to a cached watch URL,
+  // since the URL already targets the correct channel.
+  if(!skipChannelSelection) {
 
-  if(!channelResult.success) {
-
-    // For guideGrid strategy, a stale overlay from a previous failed click attempt may be covering the guide. Dismiss it and retry channel selection once.
-    if(profile.channelSelection.strategy === "guideGrid") {
-
-      LOG.warn("Guide grid channel selection failed: %s. Dismissing overlay and retrying.", channelResult.reason ?? "Unknown reason");
-
-      await dismissGuideOverlay(page);
-
-      channelResult = await selectChannel(page, profile);
-    }
+    let channelResult = await selectChannel(page, profile);
 
     if(!channelResult.success) {
 
-      throw new Error("Channel selection failed: " + (channelResult.reason ?? "Unknown reason."));
-    }
-  }
+      // For guideGrid strategy, a stale overlay from a previous failed click attempt may be covering the guide. Dismiss it and retry channel selection once.
+      if(profile.channelSelection.strategy === "guideGrid") {
 
-  LOG.debug("timing:tune", "Channel selection complete. (+%sms)", elapsed());
+        LOG.warn("Guide grid channel selection failed: %s. Dismissing overlay and retrying.", channelResult.reason ?? "Unknown reason");
+
+        await dismissGuideOverlay(page);
+
+        channelResult = await selectChannel(page, profile);
+      }
+
+      if(!channelResult.success) {
+
+        throw new Error("Channel selection failed: " + (channelResult.reason ?? "Unknown reason."));
+      }
+    }
+
+    LOG.debug("timing:tune", "Channel selection complete. (+%sms)", elapsed());
+  }
 
   // Find the video context, which may be an iframe for embedded players. Some streaming sites embed their video player in an iframe, requiring us to search
   // through frames to find the one containing the video element.
@@ -1333,6 +1339,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
  * stream setup and recovery. Having one authoritative function ensures consistent behavior and prevents code divergence between setup and recovery paths.
  *
  * The tuning process:
+ * 0. Check cache: If a direct watch URL is cached, navigate to it and skip channel selection. On failure, invalidate and fall through.
  * 1. Navigate: Load the target URL using site-appropriate wait conditions
  * 2. Select channel: For multi-channel players, click the desired channel in the UI
  * 3. Find video: Locate the video element (which may be in an iframe)
@@ -1352,8 +1359,34 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
 
   const tuneElapsed = startTimer();
 
-  // Navigate to the target URL. This handles timeout and network errors, returning when the page is loaded. The navigation strategy (networkidle vs load event)
-  // is determined by the profile's waitForNetworkIdle flag.
+  // Check for a direct watch URL. If available, navigate directly to it and skip channel selection, avoiding guide page navigation entirely. On failure,
+  // invalidate the cache entry and fall through to the normal guide-based flow.
+  const cachedUrl = await resolveDirectUrl(profile, page);
+
+  if(cachedUrl) {
+
+    try {
+
+      LOG.debug("timing:tune", "Using cached direct URL for %s.", profile.channelSelector ?? "unknown");
+
+      await navigateToPage(page, cachedUrl, profile);
+
+      LOG.debug("timing:tune", "Direct URL navigation complete. (+%sms)", tuneElapsed());
+
+      const result = await initializePlayback(page, profile, true);
+
+      LOG.debug("timing:tune", "Tune complete (cached). Total: %sms.", tuneElapsed());
+
+      return result;
+    } catch(error) {
+
+      invalidateDirectUrl(profile);
+
+      LOG.warn("Cached direct URL failed for %s: %s. Falling back to guide navigation.", profile.channelSelector ?? "unknown", formatError(error));
+    }
+  }
+
+  // Normal flow: navigate to the guide page URL and perform full channel selection.
   await navigateToPage(page, url, profile);
 
   LOG.debug("timing:tune", "Navigation complete. (+%sms)", tuneElapsed());

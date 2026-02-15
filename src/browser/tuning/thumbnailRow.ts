@@ -2,7 +2,7 @@
  *
  * thumbnailRow.ts: Thumbnail row channel selection strategy.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, Nullable } from "../../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 import { evaluateWithAbort } from "../../utils/index.js";
@@ -23,7 +23,7 @@ import { scrollAndClick } from "../channelSelection.js";
  * @param profile - The resolved site profile with a non-null channelSelector (image URL slug).
  * @returns Result object with success status and optional failure reason.
  */
-export async function thumbnailRowStrategy(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
+async function thumbnailRowStrategyFn(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
 
   const channelSlug = profile.channelSelector;
 
@@ -157,3 +157,5 @@ export async function thumbnailRowStrategy(page: Page, profile: ChannelSelection
 
   return { reason: "Channel thumbnail not found in page images.", success: false };
 }
+
+export const thumbnailRowStrategy: ChannelStrategyEntry = { execute: thumbnailRowStrategyFn, usesImageSlug: true };

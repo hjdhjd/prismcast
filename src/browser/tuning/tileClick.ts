@@ -2,7 +2,7 @@
  *
  * tileClick.ts: Tile click channel selection strategy (Disney+ live channels).
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, Nullable } from "../../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 import { evaluateWithAbort } from "../../utils/index.js";
@@ -23,7 +23,7 @@ import { scrollAndClick } from "../channelSelection.js";
  * @param profile - The resolved site profile with a non-null channelSelector (image URL slug).
  * @returns Result object with success status and optional failure reason.
  */
-export async function tileClickStrategy(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
+async function tileClickStrategyFn(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
 
   const channelSlug = profile.channelSelector;
 
@@ -151,3 +151,5 @@ export async function tileClickStrategy(page: Page, profile: ChannelSelectionPro
 
   return { success: true };
 }
+
+export const tileClickStrategy: ChannelStrategyEntry = { execute: tileClickStrategyFn, usesImageSlug: true };
