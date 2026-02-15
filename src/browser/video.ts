@@ -553,10 +553,11 @@ export async function waitForVideoReady(context: Frame | Page, profile: Resolved
  * - cursor: none - Hides the mouse cursor for cleaner capture
  * @param context - The frame or page containing the video element.
  * @param selectorType - The video selector type for finding the element.
+ * @param important - When true, applies styles with !important priority to override site JavaScript that actively fights style changes.
  */
-export async function applyVideoStyles(context: Frame | Page, selectorType: VideoSelectorType): Promise<void> {
+export async function applyVideoStyles(context: Frame | Page, selectorType: VideoSelectorType, important = false): Promise<void> {
 
-  await evaluateWithAbort(context, (type: string): void => {
+  await evaluateWithAbort(context, (type: string, useImportant: boolean): void => {
 
     // Find the video element using the appropriate selection strategy.
     let video: Nullable<HTMLVideoElement> | undefined;
@@ -578,17 +579,20 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
     }
 
     // Apply fullscreen-like styling via CSS. This is more reliable than the native fullscreen API because it doesn't require user gesture and can't be
-    // blocked by the site's CSP.
-    video.style.background = "black";
-    video.style.cursor = "none";
-    video.style.height = "100%";
-    video.style.left = "0";
-    video.style.objectFit = "contain";
-    video.style.position = "fixed";
-    video.style.top = "0";
-    video.style.width = "100%";
-    video.style.zIndex = "999000";
-  }, [selectorType]);
+    // blocked by the site's CSP. When important is true, we use setProperty with "important" priority to override site JavaScript that re-applies its own
+    // styles after our basic assignment.
+    const priority = useImportant ? "important" : "";
+
+    video.style.setProperty("background", "black", priority);
+    video.style.setProperty("cursor", "none", priority);
+    video.style.setProperty("height", "100%", priority);
+    video.style.setProperty("left", "0", priority);
+    video.style.setProperty("object-fit", "contain", priority);
+    video.style.setProperty("position", "fixed", priority);
+    video.style.setProperty("top", "0", priority);
+    video.style.setProperty("width", "100%", priority);
+    video.style.setProperty("z-index", "999000", priority);
+  }, [ selectorType, important ]);
 }
 
 /**
@@ -774,9 +778,9 @@ export async function triggerFullscreen(
  * other dimension to catch obviously broken cases.
  * @param context - The frame or page containing the video element.
  * @param selectorType - The video selector type for finding the element.
- * @returns True if the video appears to be fullscreen, false otherwise.
+ * @returns True if the video appears to be fullscreen, false if it does not, or null if the check could not be performed (e.g. context destroyed).
  */
-async function verifyFullscreen(context: Frame | Page, selectorType: VideoSelectorType): Promise<boolean> {
+export async function verifyFullscreen(context: Frame | Page, selectorType: VideoSelectorType): Promise<Nullable<boolean>> {
 
   try {
 
@@ -819,8 +823,8 @@ async function verifyFullscreen(context: Frame | Page, selectorType: VideoSelect
     }, [selectorType]);
   } catch(_error) {
 
-    // If we can't evaluate (page closed, frame detached), assume fullscreen failed.
-    return false;
+    // If we can't evaluate (page closed, frame detached), return null to signal that the check was inconclusive rather than reporting a false layout change.
+    return null;
   }
 }
 

@@ -7,7 +7,8 @@ import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.js";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.js";
 import {
-  buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel, validateVideoElement
+  applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
+  validateVideoElement, verifyFullscreen
 } from "../browser/video.js";
 import { getChannelLogo, getShowName } from "./showInfo.js";
 import { getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.js";
@@ -635,6 +636,11 @@ export function monitorPlaybackHealth(
   // We set this flag when recovery is triggered and clear it after the recovery grace period passes and we see a healthy check.
   let pendingReMinimize = false;
 
+  // Graduated fullscreen reinforcement counter. Counts consecutive ticks where verifyFullscreen() returns false. On tick 1 we apply basic CSS styles (sufficient
+  // for well-behaved sites like Hulu). On tick 2+ we escalate to !important priority to override sites that actively fight style changes. Reset to 0 when the
+  // video fills the viewport again.
+  let fullscreenReapplyCount = 0;
+
   // Flag indicating the cleanup function was called. When true, the next interval check will clear itself.
   let intervalCleared = false;
 
@@ -823,6 +829,7 @@ export function monitorPlaybackHealth(
 
     consecutiveTimeouts = 0;
     consecutiveNavigationFailures = 0;
+    fullscreenReapplyCount = 0;
     pauseCount = 0;
     videoNotFoundCount = 0;
     stallCount = 0;
@@ -1199,13 +1206,13 @@ export function monitorPlaybackHealth(
         }
 
         /*
-       * If no video element found, apply a grace period before triggering recovery. The video may be temporarily unavailable due to:
-       * - readyState fluctuations (selectReadyVideo finds no video with readyState >= 3)
-       * - Frame detachment/reattachment during page updates
-       * - Momentary DOM changes during ad transitions
-       *
-       * We distinguish between "no video element exists" and "video exists but not ready". The latter is treated as buffering and given more time.
-       */
+         * If no video element found, apply a grace period before triggering recovery. The video may be temporarily unavailable due to:
+         * - readyState fluctuations (selectReadyVideo finds no video with readyState >= 3)
+         * - Frame detachment/reattachment during page updates
+         * - Momentary DOM changes during ad transitions
+         *
+         * We distinguish between "no video element exists" and "video exists but not ready". The latter is treated as buffering and given more time.
+         */
         if(!state) {
 
           // Determine context type for diagnostic logging.
@@ -1379,33 +1386,33 @@ export function monitorPlaybackHealth(
         lastVideoState = state;
 
         /*
-       * Volume enforcement. Some sites aggressively mute videos (e.g., France24 mutes on page visibility change, some sites mute for ads). We restore volume on
-       * every check to ensure audio is captured.
-       */
+         * Volume enforcement. Some sites aggressively mute videos (e.g., France24 mutes on page visibility change, some sites mute for ads). We restore volume on
+         * every check to ensure audio is captured.
+         */
         if(state.muted || (state.volume < 1)) {
 
           await enforceVideoVolume(currentContext, selectorType);
         }
 
         /*
-       * Stall detection. We compare currentTime to the previous check to determine if the video is progressing. The STALL_THRESHOLD (0.1 seconds) allows for minor
-       * timing variations while still detecting genuinely stalled videos.
-       */
+         * Stall detection. We compare currentTime to the previous check to determine if the video is progressing. The STALL_THRESHOLD (0.1 seconds) allows for minor
+         * timing variations while still detecting genuinely stalled videos.
+         */
 
         // Video is progressing if: this is the first check (no previous time), OR currentTime has advanced by at least STALL_THRESHOLD since last check.
         const isProgressing = (lastTime === null) || (Math.abs(state.time - lastTime) >= CONFIG.playback.stallThreshold);
 
         /*
-       * Buffering detection. True buffering occurs when the player needs more data (readyState < 3) AND is actively fetching it (networkState === 2). We use AND
-       * rather than OR because networkState === 2 is normal for live streams - data continuously arrives. Only when combined with insufficient data does it indicate
-       * actual buffering.
-       */
+         * Buffering detection. True buffering occurs when the player needs more data (readyState < 3) AND is actively fetching it (networkState === 2). We use AND
+         * rather than OR because networkState === 2 is normal for live streams - data continuously arrives. Only when combined with insufficient data does it indicate
+         * actual buffering.
+         */
         const isBuffering = (state.readyState < 3) && (state.networkState === 2);
 
         /*
-       * Buffering grace period tracking. When buffering starts, we record the timestamp. We only trigger recovery if buffering exceeds BUFFERING_GRACE_PERIOD. This
-       * allows normal network buffering to resolve without intervention.
-       */
+         * Buffering grace period tracking. When buffering starts, we record the timestamp. We only trigger recovery if buffering exceeds BUFFERING_GRACE_PERIOD. This
+         * allows normal network buffering to resolve without intervention.
+         */
         if(isBuffering && !bufferingStartTime) {
 
           bufferingStartTime = now;
@@ -1502,9 +1509,9 @@ export function monitorPlaybackHealth(
         }
 
         /*
-       * Re-minimize check. After recovery, the browser window may have been un-minimized by fullscreen actions. As soon as the stream is healthy (progressing without
-       * issues), we re-minimize to reduce GPU usage.
-       */
+         * Re-minimize check. After recovery, the browser window may have been un-minimized by fullscreen actions. As soon as the stream is healthy (progressing without
+         * issues), we re-minimize to reduce GPU usage.
+         */
         if(pendingReMinimize && isProgressing && !state.paused && !state.error && !state.ended) {
 
           LOG.debug("recovery", "Re-minimizing browser window after successful recovery.");
@@ -1515,9 +1522,47 @@ export function monitorPlaybackHealth(
         }
 
         /*
-       * Stall counter management. We increment stallCount when the video is not progressing and not within buffering grace. We reset to 0 when progression resumes.
-       * This hysteresis prevents reacting to single-frame hiccups.
-       */
+         * Fullscreen reinforcement. Some streaming sites (notably Hulu) revert the video to a mini-player or PiP layout in response to browser state changes such as
+         * window minimization or visibility events. Because the video continues playing normally in the smaller frame, no existing recovery condition is triggered — the
+         * health monitor sees healthy, progressing playback while the captured frame shows a small video in the corner of the viewport. We verify that the video fills
+         * the viewport on every healthy tick and re-apply CSS fullscreen styling when it shrinks. The response is graduated: basic CSS first (sufficient for
+         * well-behaved sites like Hulu), escalating to !important priority only if basic styles don't hold by the next tick. The readyState guard prevents false
+         * positives during momentary readyState dips where verifyFullscreen() cannot find a ready video even though the video layout has not changed. A null return
+         * from verifyFullscreen() indicates the check was inconclusive (e.g. context destroyed) and is ignored.
+         */
+        if(isProgressing && !state.paused && !state.error && !state.ended && !withinRecoveryGrace && (state.readyState >= 3)) {
+
+          const isFullscreen = await verifyFullscreen(currentContext, selectorType);
+
+          if(isFullscreen === false) {
+
+            fullscreenReapplyCount++;
+
+            // Graduated escalation: first attempt uses basic CSS (sufficient for well-behaved sites like Hulu that only need a nudge). If the basic styles
+            // didn't hold by the next tick, escalate to !important priority to override sites that actively fight style changes.
+            const useImportant = fullscreenReapplyCount > 1;
+
+            if(fullscreenReapplyCount === 1) {
+
+              LOG.info("Video no longer fills viewport. Re-applying fullscreen styling.");
+            } else if(fullscreenReapplyCount === 2) {
+
+              LOG.info("Basic fullscreen styling did not hold. Escalating to !important priority.");
+            }
+
+            await applyVideoStyles(currentContext, selectorType, useImportant);
+          } else if(isFullscreen && (fullscreenReapplyCount > 0)) {
+
+            LOG.info("Video fullscreen restored.");
+
+            fullscreenReapplyCount = 0;
+          }
+        }
+
+        /*
+         * Stall counter management. We increment stallCount when the video is not progressing and not within buffering grace. We reset to 0 when progression resumes.
+         * This hysteresis prevents reacting to single-frame hiccups.
+         */
         if(!isProgressing && !withinBufferingGrace) {
 
           stallCount++;
@@ -1527,9 +1572,9 @@ export function monitorPlaybackHealth(
         }
 
         /*
-       * Pause counter management. We increment pauseCount when video.paused is true and reset when it clears. This provides the same hysteresis as stall detection,
-       * filtering out transient rebuffer pauses (where the player briefly pauses to refill its buffer) while still catching genuine persistent pauses.
-       */
+         * Pause counter management. We increment pauseCount when video.paused is true and reset when it clears. This provides the same hysteresis as stall detection,
+         * filtering out transient rebuffer pauses (where the player briefly pauses to refill its buffer) while still catching genuine persistent pauses.
+         */
         if(state.paused) {
 
           pauseCount++;
@@ -1539,22 +1584,22 @@ export function monitorPlaybackHealth(
         }
 
         /*
-       * Recovery decision. We trigger recovery when any of these conditions are met AND we're not within the recovery grace period:
-       * - Video has an error state
-       * - Video ended (live streams shouldn't end)
-       * - Video is paused persistently (pauseCount exceeds threshold and not just buffering)
-       * - Video is stalled for too long (stallCount exceeds threshold and not in buffering grace)
-       * - Segment production has stalled after recovery (capture pipeline dead)
-       */
+         * Recovery decision. We trigger recovery when any of these conditions are met AND we're not within the recovery grace period:
+         * - Video has an error state
+         * - Video ended (live streams shouldn't end)
+         * - Video is paused persistently (pauseCount exceeds threshold and not just buffering)
+         * - Video is stalled for too long (stallCount exceeds threshold and not in buffering grace)
+         * - Segment production has stalled after recovery (capture pipeline dead)
+         */
         const needsRecovery = !withinRecoveryGrace && (state.error || state.ended ||
                             (state.paused && !withinBufferingGrace && (pauseCount > CONFIG.playback.stallCountThreshold)) ||
                             (!isProgressing && !withinBufferingGrace && (stallCount > CONFIG.playback.stallCountThreshold)) ||
                             segmentProductionStalled);
 
         /*
-       * Escalation reset. After sustained healthy playback (SUSTAINED_PLAYBACK_REQUIRED, default 60 seconds), we reset the escalation level and circuit breaker.
-       * This allows a stream that recovered to start fresh, rather than immediately escalating to aggressive recovery on the next issue.
-       */
+         * Escalation reset. After sustained healthy playback (SUSTAINED_PLAYBACK_REQUIRED, default 60 seconds), we reset the escalation level and circuit breaker.
+         * This allows a stream that recovered to start fresh, rather than immediately escalating to aggressive recovery on the next issue.
+         */
         if(isProgressing && !state.paused && !state.ended && !state.error) {
 
           // If a recovery was pending confirmation (L1/L2), log success now that we have healthy playback.
@@ -1583,14 +1628,14 @@ export function monitorPlaybackHealth(
         }
 
         /*
-       * Proactive page reload. Some streaming sites enforce a maximum continuous playback duration (e.g., NBC.com cuts streams after 4 hours). When a domain
-       * configures maxContinuousPlayback, we proactively reload the page before the site's limit expires to maintain uninterrupted streaming. The reload triggers
-       * PROACTIVE_RELOAD_MARGIN_MS (2 minutes) before the configured limit, giving enough time for page navigation and video reinitialization.
-       *
-       * This check runs only when playback is healthy (escalationLevel === 0), not within a recovery grace period, and progressing normally. If recovery is already
-       * in progress, the ongoing recovery will eventually perform a page navigation if needed. The page reload rate limit is also checked to avoid consuming reload
-       * budget that error recovery needs. The timer resets after any successful full page navigation (proactive or recovery-triggered).
-       */
+         * Proactive page reload. Some streaming sites enforce a maximum continuous playback duration (e.g., NBC.com cuts streams after 4 hours). When a domain
+         * configures maxContinuousPlayback, we proactively reload the page before the site's limit expires to maintain uninterrupted streaming. The reload triggers
+         * PROACTIVE_RELOAD_MARGIN_MS (2 minutes) before the configured limit, giving enough time for page navigation and video reinitialization.
+         *
+         * This check runs only when playback is healthy (escalationLevel === 0), not within a recovery grace period, and progressing normally. If recovery is already
+         * in progress, the ongoing recovery will eventually perform a page navigation if needed. The page reload rate limit is also checked to avoid consuming reload
+         * budget that error recovery needs. The timer resets after any successful full page navigation (proactive or recovery-triggered).
+         */
         if((profile.maxContinuousPlayback !== null) && (escalationLevel === 0) && !withinRecoveryGrace && isProgressing && !state.paused && !state.error &&
           !state.ended) {
 
@@ -1660,12 +1705,12 @@ export function monitorPlaybackHealth(
         }
 
         /*
-       * Recovery execution. When recovery is needed, we update circuit breaker state, determine the appropriate recovery level based on issue type and history, and
-       * execute the recovery action. The recovery system is issue-aware:
-       * - Paused issues try L1 (play/unmute) first since it works ~50% of the time for paused state
-       * - Buffering issues skip L1 and go directly to L2 (source reload) since L1 never helps buffering
-       * - If L2 has already been attempted, skip to L3 (page reload) since a second L2 always fails
-       */
+         * Recovery execution. When recovery is needed, we update circuit breaker state, determine the appropriate recovery level based on issue type and history, and
+         * execute the recovery action. The recovery system is issue-aware:
+         * - Paused issues try L1 (play/unmute) first since it works ~50% of the time for paused state
+         * - Buffering issues skip L1 and go directly to L2 (source reload) since L1 never helps buffering
+         * - If L2 has already been attempted, skip to L3 (page reload) since a second L2 always fails
+         */
         if(needsRecovery) {
 
           /*
