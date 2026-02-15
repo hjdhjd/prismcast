@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.2 (2026-02-15)
+  * Improvement: when possible, directly tune URLs for HBO Max, Sling TV, and YouTube TV to skip guide navigation on repeat tunes.
+  * Improvement: our stream health monitoring now regularly checks to ensure the stream remains fullscreened, and attempts to correct it if it's not.
+  * Improvement: improved MPEG-TS ATSC transport stream compatibility for Plex HDHomeRun integration.
+  * Improvement: webUI refinements.
+  * Fix: saving settings was wiping the disabled channel list, provider filter, and HDHomeRun device ID.
+  * Housekeeping.
+
 ## 1.3.1 (2026-02-14)
   * Improvement: when channel selection fails, logs available channel names from the provider's guide to help users identify the correct channel selector value for user-defined channels.
   * Improvement: YouTube TV channel matching now handles parenthetical suffix variants and additional PBS affiliate names.
