@@ -90,7 +90,8 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
   // failures will close the connection with no data.
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "close");
-  res.setHeader("Content-Type", "video/mp2t");
+  res.setHeader("Content-Type", "video/mpeg");
+  res.setHeader("transferMode.dlna.org", "Streaming");
   res.flushHeaders();
 
   // Acquire the stream. If a startup is in progress (another request started it), poll silently. Otherwise, start a new stream via initializeStream().
@@ -316,7 +317,8 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
 
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "close");
-    res.setHeader("Content-Type", "video/mp2t");
+    res.setHeader("Content-Type", "video/mpeg");
+    res.setHeader("transferMode.dlna.org", "Streaming");
   }
 
   // Pipe FFmpeg stdout to the HTTP response. When FFmpeg exits (either from stdin ending or being killed), stdout closes and the response ends automatically.

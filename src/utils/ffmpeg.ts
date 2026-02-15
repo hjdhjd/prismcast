@@ -318,11 +318,17 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
+ * - `-fflags +nobuffer`: Disable input buffering to reduce latency on incremental stdin writes
  * - `-flags low_delay`: Reduce codec-level buffering and disable frame reordering
  * - `-probesize 16384`: Limit input probing to 16KB (fMP4 init segment is ~1.3KB) to minimize startup delay
  * - `-f mp4 -i pipe:0`: Read fragmented MP4 from stdin
  * - `-c copy`: Copy both video and audio codecs without transcoding
  * - `-f mpegts`: Output MPEG-TS container format
+ * - `-mpegts_pmt_start_pid 0x0020`: Use ATSC-conventional PMT PID range instead of FFmpeg's default (0x1000). Minimum allowed value is 0x0020 (32).
+ * - `-mpegts_start_pid 0x0031`: Use ATSC-conventional elementary stream PIDs instead of FFmpeg's defaults (0x100+)
+ * - `-mpegts_service_type digital_tv`: Label the service as digital TV in the PMT service descriptor
+ * - `-pat_period 0.1`: Repeat PAT/PMT tables every 100ms, matching ATSC broadcast frequency
+ * - `-pcr_period 40`: Insert PCR timestamps every 40ms, matching ATSC broadcast convention
  * - `-flush_packets 1`: Flush output immediately after each packet to minimize latency
  * - `pipe:1`: Write output to stdout
  * @param onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
@@ -333,15 +339,25 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
 
   const ffmpegBin = cachedFFmpegPath ?? "ffmpeg";
 
+  // MPEG-TS muxer flags are tuned to produce output resembling a real HDHomeRun CONNECT DUO (HDTC-2US) ATSC transport stream. Plex's transcoder may make
+  // assumptions about stream structure based on the reported device model (PID assignments, PAT/PMT frequency). Using ATSC-conventional values avoids "Invalid
+  // argument" failures when Plex tries to transcode the live session for remote clients. These are pure container metadata changes — the actual A/V data is
+  // untouched by -c copy.
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
+    "-fflags", "+nobuffer",
     "-flags", "low_delay",
     "-probesize", "16384",
     "-f", "mp4",
     "-i", "pipe:0",
     "-c", "copy",
     "-f", "mpegts",
+    "-mpegts_pmt_start_pid", "0x0020",
+    "-mpegts_start_pid", "0x0031",
+    "-mpegts_service_type", "digital_tv",
+    "-pat_period", "0.1",
+    "-pcr_period", "40",
     "-flush_packets", "1",
     "pipe:1"
   ];
