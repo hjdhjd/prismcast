@@ -719,12 +719,14 @@ export async function triggerFullscreen(
     await page.keyboard.type(profile.fullscreenKey);
   }
 
-  // Try JavaScript Fullscreen API if configured. This calls video.requestFullscreen() which may trigger browser fullscreen mode.
+  // Try JavaScript Fullscreen API if configured. This calls video.requestFullscreen() which may trigger browser fullscreen mode. We await the promise to ensure
+  // the fullscreen transition has started before returning to the verification step. The catch suppresses errors (the retry logic in ensureFullscreen handles
+  // failures via document.fullscreenElement checking).
   if(profile.useRequestFullscreen) {
 
     try {
 
-      await evaluateWithAbort(context, (type: string): void => {
+      await evaluateWithAbort(context, async (type: string): Promise<void> => {
 
         // Find the video element.
         let video: Nullable<HTMLVideoElement> | undefined;
@@ -740,13 +742,16 @@ export async function triggerFullscreen(
           video = document.querySelector("video");
         }
 
-        // Request fullscreen if the API is available. The catch handles cases where fullscreen is blocked by browser policy or CSP.
+        // Request fullscreen if the API is available. Await the promise so the transition begins before we return.
         if(video?.requestFullscreen) {
 
-          video.requestFullscreen().catch((): void => {
+          try {
 
-            // Ignore fullscreen errors - the CSS-based styling provides a fallback.
-          });
+            await video.requestFullscreen();
+          } catch {
+
+            // Fullscreen may be blocked by browser policy, CSP, or missing user activation. The retry logic in ensureFullscreen handles this.
+          }
         }
       }, [selectorType]);
     } catch(error) {
@@ -816,6 +821,80 @@ async function verifyFullscreen(context: Frame | Page, selectorType: VideoSelect
 
     // If we can't evaluate (page closed, frame detached), assume fullscreen failed.
     return false;
+  }
+}
+
+/**
+ * Checks whether the browser's native fullscreen mode is active by examining document.fullscreenElement. This is a stronger signal than CSS dimension checking
+ * because it confirms the browser has actually entered fullscreen mode, which hides the site's player chrome, overlays, and navigation. Used to verify
+ * requestFullscreen() succeeded for profiles that rely on the JavaScript Fullscreen API.
+ * @param context - The frame or page to check.
+ * @returns True if native fullscreen is active, false otherwise.
+ */
+async function isNativeFullscreenActive(context: Frame | Page): Promise<boolean> {
+
+  try {
+
+    return await evaluateWithAbort(context, (): boolean => {
+
+      return document.fullscreenElement !== null;
+    });
+  } catch {
+
+    // If we can't evaluate (page closed, frame detached), assume fullscreen is not active.
+    return false;
+  }
+}
+
+/**
+ * Clicks the center of the video element to establish user activation in the browser. The Fullscreen API requires a recent user gesture (transient activation)
+ * to succeed. Without it, requestFullscreen() is silently rejected. This function provides that activation by clicking the video via page.mouse.click(), which
+ * dispatches real pointer events that Chrome recognizes as user gestures. The click may toggle play/pause on some players — the health monitor handles
+ * re-starting playback if needed.
+ *
+ * Note: page.mouse.click() uses page-level coordinates, while getBoundingClientRect() in an iframe returns iframe-relative coordinates. This function works
+ * correctly because all profiles with useRequestFullscreen are non-iframe (needsIframeHandling is false).
+ * @param page - The Puppeteer page object.
+ * @param context - The frame or page containing the video element.
+ * @param selectorType - The video selector type for finding the element.
+ */
+async function clickVideoForActivation(page: Page, context: Frame | Page, selectorType: VideoSelectorType): Promise<void> {
+
+  try {
+
+    const coords = await evaluateWithAbort(context, (type: string): Nullable<{ x: number; y: number }> => {
+
+      let video: Nullable<HTMLVideoElement> | undefined;
+
+      if(type === "selectReadyVideo") {
+
+        video = Array.from(document.querySelectorAll("video")).find((v) => {
+
+          return v.readyState >= 3;
+        });
+      } else {
+
+        video = document.querySelector("video");
+      }
+
+      if(!video) {
+
+        return null;
+      }
+
+      const rect = video.getBoundingClientRect();
+
+      return { x: rect.left + (rect.width / 2), y: rect.top + (rect.height / 2) };
+    }, [selectorType]);
+
+    if(coords) {
+
+      await page.mouse.click(coords.x, coords.y);
+      await delay(100);
+    }
+  } catch {
+
+    // Click failure is non-fatal — the fullscreen retry will continue without activation.
   }
 }
 
@@ -906,12 +985,13 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
  * Ensures the video is displayed fullscreen with verification and retry logic. This function orchestrates the fullscreen process:
  *
  * 1. Initial attempt: Apply CSS styles and trigger fullscreen API
- * 2. Verify: Check if video is filling the viewport
- * 3. Simple retry: If verification fails, wait and retry the same approach (timing issues are common)
- * 4. Escalate: If simple retries fail, apply aggressive fullscreen techniques
+ * 2. Verify: Check video dimensions and, for fullscreenApi profiles, confirm document.fullscreenElement is set
+ * 3. Simple retry: If verification fails, click the video for user activation and retry (the Fullscreen API requires a recent user gesture)
+ * 4. Escalate: If simple retries fail, apply aggressive fullscreen techniques with a final Fullscreen API re-trigger
  *
- * The retry approach handles the common case where fullscreen fails due to timing - the page may still be initializing when we first attempt. Escalation to
- * aggressive techniques is a last resort that may break site functionality but ensures video fills the viewport.
+ * The retry approach handles both timing issues (page still initializing) and user activation issues (requestFullscreen requires a recent user gesture).
+ * On retry, clicking the video provides fresh activation so the subsequent requestFullscreen() call can succeed. Escalation to aggressive techniques is a
+ * last resort that may break site functionality but ensures video fills the viewport.
  * @param page - The Puppeteer page object for keyboard input.
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile indicating fullscreen method.
@@ -931,6 +1011,15 @@ export async function ensureFullscreen(
 
   for(let attempt = 1; attempt <= maxSimpleRetries; attempt++) {
 
+    // On retry for fullscreenApi profiles, click the video to provide fresh user activation. The Fullscreen API requires a recent user gesture (transient
+    // activation) to succeed — without it, requestFullscreen() is silently rejected. The initial attempt relies on activation from page navigation, but retries
+    // need an explicit click.
+    if((attempt > 1) && profile.useRequestFullscreen) {
+
+      // eslint-disable-next-line no-await-in-loop
+      await clickVideoForActivation(page, context, selectorType);
+    }
+
     // Apply CSS styles to make the video fill the viewport.
     // eslint-disable-next-line no-await-in-loop
     await applyVideoStyles(context, selectorType);
@@ -948,6 +1037,27 @@ export async function ensureFullscreen(
     const isFullscreen = await verifyFullscreen(context, selectorType);
 
     if(isFullscreen) {
+
+      // For profiles that use the Fullscreen API, also verify that native fullscreen is active. CSS styling alone makes verifyFullscreen() pass based on
+      // dimensions, but the browser's native fullscreen mode is needed to hide the site's player chrome and overlays.
+      if(profile.useRequestFullscreen) {
+
+        // eslint-disable-next-line no-await-in-loop
+        const nativeActive = await isNativeFullscreenActive(context);
+
+        if(!nativeActive) {
+
+          if(attempt < maxSimpleRetries) {
+
+            LOG.debug("browser:video", "Native fullscreen not active (attempt %s/%s). Retrying with user activation.", attempt, maxSimpleRetries);
+
+            // eslint-disable-next-line no-await-in-loop
+            await delay(retryDelay);
+          }
+
+          continue;
+        }
+      }
 
       if(attempt > 1) {
 
@@ -970,6 +1080,12 @@ export async function ensureFullscreen(
   // All simple retries exhausted. Escalate to aggressive fullscreen techniques.
   LOG.warn("Fullscreen failed after %s attempts. Escalating to aggressive fullscreen.", maxSimpleRetries);
 
+  // Click for user activation before the aggressive attempt for fullscreenApi profiles.
+  if(profile.useRequestFullscreen) {
+
+    await clickVideoForActivation(page, context, selectorType);
+  }
+
   await applyAggressiveFullscreen(context, selectorType);
 
   // Also try keyboard "f" as a last resort if the profile doesn't already use it. Many players respond to the "f" key for fullscreen.
@@ -978,18 +1094,38 @@ export async function ensureFullscreen(
     await page.keyboard.type("f");
   }
 
+  // Re-trigger the Fullscreen API after aggressive styling — the aggressive CSS ensures the video fills the viewport, and the API call hides site UI.
+  if(profile.useRequestFullscreen) {
+
+    await triggerFullscreen(page, context, profile, selectorType);
+  }
+
   // Final verification after aggressive techniques.
   await delay(verifyDelay);
 
   const finalCheck = await verifyFullscreen(context, selectorType);
 
-  if(finalCheck) {
-
-    LOG.debug("browser:video", "Fullscreen succeeded after aggressive techniques.");
-  } else {
+  if(!finalCheck) {
 
     LOG.warn("Fullscreen could not be verified even after aggressive techniques. Video may not fill viewport.");
+
+    return;
   }
+
+  // For fullscreenApi profiles, also verify native fullscreen is active after escalation.
+  if(profile.useRequestFullscreen) {
+
+    const nativeActive = await isNativeFullscreenActive(context);
+
+    if(!nativeActive) {
+
+      LOG.warn("Video fills viewport but native fullscreen is not active. Site UI may be visible in capture.");
+
+      return;
+    }
+  }
+
+  LOG.debug("browser:video", "Fullscreen succeeded after aggressive techniques.");
 }
 
 /**
