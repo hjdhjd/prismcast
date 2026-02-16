@@ -499,7 +499,8 @@ function generateStatusScript(): string {
 }
 
 /**
- * Generates the Overview tab content with introduction and quick start instructions.
+ * Generates the Overview tab content with a comprehensive user guide covering what PrismCast is, video quality expectations, quick start instructions, tuning speed,
+ * channel authentication, working with channels, and system requirements.
  * @param baseUrl - The base URL for the server.
  * @param videoChannelCount - The number of video channels available.
  * @returns HTML content for the Overview tab.
@@ -507,18 +508,42 @@ function generateStatusScript(): string {
 function generateOverviewContent(baseUrl: string, videoChannelCount: number): string {
 
   return [
+
     // Active streams table at the top.
     generateActiveStreamsSection(),
 
+    // What Is PrismCast?
     "<div class=\"section\">",
-    "<p>PrismCast is a streaming server that captures live video from web-based TV players and re-streams them over HTTP. ",
-    "It uses a headless Chrome browser to navigate to television network streaming sites, captures the video and audio output, and pipes it to HTTP clients. ",
-    "This allows Channels DVR and similar applications to record and watch content from streaming sites that do not offer direct video URLs.</p>",
+    "<h3>What Is PrismCast?</h3>",
+    "<p>PrismCast captures live video from web-based TV players by driving a real Chrome browser. It navigates to streaming sites, captures the ",
+    "screen and audio output, and serves the result as HLS streams over HTTP. Think of it as a <strong>virtual TV tuner for web-based content</strong> &mdash; ",
+    "it lets Channels DVR (and other applications) record and watch content from streaming sites that do not offer direct video URLs.</p>",
+    "<p>PrismCast is built around three priorities, in order:</p>",
+    "<ol>",
+    "<li><strong>Reliability</strong> &mdash; tuning a channel always delivers that channel. When the primary approach fails, fallback strategies ",
+    "ensure the tune still succeeds.</li>",
+    "<li><strong>Health monitoring</strong> &mdash; once a channel is playing, PrismCast continuously monitors the stream and takes corrective ",
+    "action automatically if issues arise.</li>",
+    "<li><strong>Speed</strong> &mdash; tuning and recovery should be as fast as possible, but never at the expense of reliability.</li>",
+    "</ol>",
+    "<p>The ordering is intentional. PrismCast will always choose the reliable path over the fast one.</p>",
     "</div>",
 
+    // Video Quality.
+    "<div class=\"section\">",
+    "<h3>Video Quality</h3>",
+    "<p><strong>PrismCast delivers H.264 video with AAC stereo audio</strong> at configurable quality presets ranging from 480p to 1080p. ",
+    "Quality presets can be changed in the <a href=\"#config/settings\">Configuration</a> tab.</p>",
+    "<p>This is <em>not</em> a replacement for native 4K, HDR, Dolby Vision, or surround sound &mdash; it is screen capture, not a direct feed. ",
+    "PrismCast captures directly from Chrome's media pipeline with <strong>no video transcoding</strong>, which is why tuning is fast and CPU usage ",
+    "stays low. The result is good quality video that works well for everyday viewing and DVR recording. PrismCast is designed for content you ",
+    "<strong>cannot get any other way</strong> in Channels DVR: network streaming sites, free ad-supported TV, and live channels that only exist on the web.</p>",
+    "</div>",
+
+    // Quick Start (Channels DVR).
     "<div class=\"section\">",
     "<h3>Quick Start</h3>",
-    "<p>To add these channels to Channels DVR:</p>",
+    "<p>To add PrismCast channels to Channels DVR:</p>",
     "<ol>",
     "<li>Go to <strong>Settings &rarr; Custom Channels</strong> in your Channels DVR server.</li>",
     "<li>Click <strong>Add Source</strong> and select <strong>M3U Playlist</strong>.</li>",
@@ -528,9 +553,10 @@ function generateOverviewContent(baseUrl: string, videoChannelCount: number): st
     "<li>Set <strong>Stream Format</strong> to <strong>HLS</strong>.</li>",
     "<li>The " + String(videoChannelCount) + " configured channels will be imported automatically.</li>",
     "</ol>",
-    "<p>Individual channels can be streamed directly using HLS URLs like <code>" + baseUrl + "/hls/nbc/stream.m3u8</code>.</p>",
+    "<p>Individual channels can also be streamed directly using HLS URLs like <code>" + baseUrl + "/hls/nbc/stream.m3u8</code>.</p>",
     "</div>",
 
+    // Plex Integration.
     "<div class=\"section\">",
     "<h3>Plex Integration</h3>",
     "<p>PrismCast includes built-in HDHomeRun emulation, allowing Plex to use it as a network tuner for live TV and DVR recording.</p>",
@@ -540,9 +566,35 @@ function generateOverviewContent(baseUrl: string, videoChannelCount: number): st
     "<li>Plex will detect PrismCast as an HDHomeRun tuner and import available channels.</li>",
     "</ol>",
     "<p>HDHomeRun emulation is enabled by default and can be configured in the ",
-    "<a href=\"#config/hdhr\">HDHomeRun / Plex</a> configuration tab.</p>",
+    "<a href=\"#config/settings\">HDHomeRun / Plex</a> configuration tab.</p>",
     "</div>",
 
+    // Tuning Speed.
+    "<div class=\"section\">",
+    "<h3>Tuning Speed</h3>",
+    "<p>When a client requests a channel, PrismCast navigates Chrome to the streaming site, locates the video player, starts capture, and serves the ",
+    "first HLS segment. How long this takes depends on the channel type:</p>",
+
+    "<h4>Direct URL Channels (~3&ndash;5 seconds)</h4>",
+    "<p>Sites where PrismCast navigates directly to a player page and video starts automatically. ",
+    "Examples: NBC, ABC, Paramount+, USA Network.</p>",
+
+    "<h4>Guide-Based Providers &mdash; First Tune (~5&ndash;10 seconds)</h4>",
+    "<p>Sites where PrismCast navigates a live TV guide to find and select the channel. The first tune for a given channel is slower because the ",
+    "guide grid must be searched. Examples: HBO Max, Hulu, Sling TV, YouTube TV, Fox.</p>",
+
+    "<h4>Guide-Based Providers &mdash; Subsequent Tunes (~3&ndash;5 seconds)</h4>",
+    "<p>After the first tune, PrismCast caches channel data for <strong>HBO Max, Sling TV, and YouTube TV</strong>. ",
+    "Subsequent tunes skip guide navigation entirely and are comparable to direct URL channels. If cached data ",
+    "becomes stale, PrismCast falls back to guide navigation transparently.</p>",
+
+    "<h4>Idle Window</h4>",
+    "<p>Streams stay alive for <strong>30 seconds</strong> after the last client disconnects (configurable in the ",
+    "<a href=\"#config/settings\">Configuration</a> tab). This means channel surfing in Channels DVR is instant for recently-viewed channels &mdash; ",
+    "no re-tuning is needed. Combined with channel caching, the system gets faster the more you use it.</p>",
+    "</div>",
+
+    // Channel Authentication.
     "<div class=\"section\">",
     "<h3>Channel Authentication</h3>",
     "<p>Many streaming channels require TV provider authentication before content can be accessed. To authenticate:</p>",
@@ -554,18 +606,47 @@ function generateOverviewContent(baseUrl: string, videoChannelCount: number): st
     "<li>Click <strong>Done</strong> when authentication is complete.</li>",
     "</ol>",
     "<p>Your login credentials are saved in the browser profile and persist across restarts. You only need to authenticate once per TV provider.</p>",
+    "<p class=\"description-hint\">If PrismCast is running headless or on a remote server, use a VNC client to access the browser for authentication.</p>",
     "</div>",
 
+    // Working with Channels.
     "<div class=\"section\">",
-    "<h3>Configuration</h3>",
-    "<p>Use the <a href=\"#config\">Configuration tab</a> to:</p>",
-    "<ul>",
-    "<li>Add, edit, or remove custom channels.</li>",
-    "<li>Adjust server, browser, and streaming settings.</li>",
-    "<li>View environment variable overrides.</li>",
-    "</ul>",
+    "<h3>Working with Channels</h3>",
+
+    "<h4>Predefined Channels</h4>",
+    "<p>PrismCast ships with channels across multiple streaming providers, maintained and updated with each release. You can disable any channels ",
+    "you do not need from the <a href=\"#channels\">Channels tab</a>. The predefined set covers common networks and is a good starting point &mdash; ",
+    "enable what you watch and disable the rest. You can also override any predefined channel with your own custom definition ",
+    "(see <em>Overriding Predefined Channels</em> below).</p>",
+
+    "<h4>Provider Variants</h4>",
+    "<p>Some channels (ESPN, Fox, NBC, etc.) are available from multiple streaming providers. The <strong>provider dropdown</strong> on each channel ",
+    "lets you choose which service to use for that channel. Different providers may offer different tuning performance.</p>",
+
+    "<h4>Provider Filter</h4>",
+    "<p>If you only subscribe to certain streaming services, use the <strong>provider filter</strong> on the ",
+    "<a href=\"#channels\">Channels tab</a> toolbar to show only relevant channels. This filter also applies to the M3U playlist, so Channels DVR ",
+    "only imports channels from providers you actually use. You can also filter programmatically using the <code>?provider=</code> query parameter ",
+    "on the playlist URL.</p>",
+
+    "<h4>Bulk Operations</h4>",
+    "<p>The <strong>Set all channels to</strong> dropdown on the <a href=\"#channels\">Channels tab</a> toolbar switches every multi-provider channel ",
+    "to a single provider at once. This is useful when you want all channels routed through one streaming service. The operation can be undone by ",
+    "switching individual channels back or selecting a different provider from the same dropdown.</p>",
+
+    "<h4>User-Defined Channels</h4>",
+    "<p>You can add custom channels for any streaming site. Provide a URL, select a site profile, and PrismCast will capture it. For sites with ",
+    "multiple live channels (like a live TV provider), the <strong>Channel Selector</strong> field tells PrismCast which channel to tune to &mdash; ",
+    "the expected value depends on the provider. When adding or editing a channel, select a profile to see the <strong>Profile Reference</strong> ",
+    "section with site-specific guidance, including expected channel selector formats for known providers.</p>",
+
+    "<h4>Overriding Predefined Channels</h4>",
+    "<p>To override a predefined channel, create a user-defined channel with the same channel key. Both versions will appear in the provider ",
+    "dropdown &mdash; yours labeled <em>Custom</em> and the original with its provider name. You can switch between them at any time.</p>",
+    "<p class=\"description-hint\">For automation and integration with other workflows, see the <a href=\"#api\">API Reference</a> tab for the full HTTP API.</p>",
     "</div>",
 
+    // Requirements.
     "<div class=\"section\">",
     "<h3>Requirements</h3>",
     "<ul>",

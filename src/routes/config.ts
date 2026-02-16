@@ -1514,7 +1514,8 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Panel description.
   lines.push("<div class=\"settings-panel-description\">");
   lines.push("<p>Define and manage streaming channels for the playlist. Your custom channels are highlighted.</p>");
-  lines.push("<p class=\"description-hint\">Tip: To override a predefined channel, add a custom channel with the same key.</p>");
+  lines.push("<p class=\"description-hint\">Tip: To override a predefined channel, add a custom channel with the same key. When adding or editing a channel, ",
+    "select a profile to see the Profile Reference with site-specific guidance for known providers.</p>");
   lines.push("</div>");
 
   // Toolbar with channel operations and display controls.
