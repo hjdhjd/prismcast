@@ -945,11 +945,60 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
  * The probe creates a temporary page, attempts a short capture, and tears down both cleanly. A 500ms delay after destroying the capture stream allows
  * puppeteer-stream's fire-and-forget STOP_RECORDING chain to complete before closing the page, preventing the stale capture cascade on the first real request.
  *
+ * After a system reboot, Chrome's display stack or capture extension may not be ready when the service manager starts PrismCast. The probe retries up to
+ * PROBE_MAX_ATTEMPTS times with a delay between attempts, giving the system time to settle before giving up. This prevents a rapid restart storm where the service
+ * manager relaunches PrismCast repeatedly, each attempt orphaning a Chrome process and degrading the environment further.
+ *
  * If stale capture state is detected, the process exits immediately — Chrome restart cannot fix the leaked mutex, only a fresh process can.
  */
 export async function verifyCaptureSystem(): Promise<void> {
 
+  const PROBE_MAX_ATTEMPTS = 3;
+  const PROBE_RETRY_DELAY = 5000;
   const PROBE_TIMEOUT = 5000;
+
+  for(let attempt = 1; attempt <= PROBE_MAX_ATTEMPTS; attempt++) {
+
+    // eslint-disable-next-line no-await-in-loop -- Sequential retries are intentional; each probe must complete before deciding whether to retry.
+    const result = await attemptCaptureProbe(PROBE_TIMEOUT);
+
+    // Probe succeeded.
+    if(result === null) {
+
+      return;
+    }
+
+    // Stale capture state is unrecoverable. The error occurs inside puppeteer-stream's second lock section, which has no try/finally — the internal mutex is
+    // permanently leaked. All subsequent getStream() calls will hang on it. Chrome restart cannot fix module-level state, so exit and let the service manager
+    // restart with a clean process.
+    if(result.includes("Cannot capture a tab with an active stream")) {
+
+      LOG.error("Startup probe detected stale capture state. puppeteer-stream's internal capture mutex is now permanently locked. Exiting so the service " +
+        "manager can restart with a clean module state.");
+
+      process.exit(1);
+    }
+
+    // If we have retries remaining, log a warning and wait before the next attempt.
+    if(attempt < PROBE_MAX_ATTEMPTS) {
+
+      LOG.warn("Capture probe attempt %d of %d failed: %s. Retrying in %ds.", attempt, PROBE_MAX_ATTEMPTS, result, PROBE_RETRY_DELAY / 1000);
+
+      // eslint-disable-next-line no-await-in-loop -- Deliberate delay between sequential retry attempts.
+      await delay(PROBE_RETRY_DELAY);
+    } else {
+
+      throw new Error("Capture system verification failed after " + String(PROBE_MAX_ATTEMPTS) + " attempts: " + result);
+    }
+  }
+}
+
+/**
+ * Executes a single capture probe attempt. Creates a temporary page, tries to start a capture stream, and tears everything down cleanly.
+ * @param timeout - Maximum time in milliseconds to wait for getStream() to respond.
+ * @returns Null on success, or an error message string on failure.
+ */
+async function attemptCaptureProbe(timeout: number): Promise<Nullable<string>> {
 
   const browser = await getCurrentBrowser();
   const page = await browser.newPage();
@@ -989,7 +1038,7 @@ export async function verifyCaptureSystem(): Promise<void> {
         setTimeout(() => {
 
           reject(new Error("Capture probe timed out."));
-        }, PROBE_TIMEOUT);
+        }, timeout);
       })
     ]);
 
@@ -1011,6 +1060,8 @@ export async function verifyCaptureSystem(): Promise<void> {
     }
 
     LOG.info("Capture system verified successfully.");
+
+    return null;
   } catch(error) {
 
     const errorMessage = formatError(error);
@@ -1023,19 +1074,6 @@ export async function verifyCaptureSystem(): Promise<void> {
       page.close().catch(() => { /* Fire-and-forget during error cleanup. */ });
     }
 
-    // Stale capture state is unrecoverable. The error occurs inside puppeteer-stream's second lock section, which has no try/finally — the internal mutex is
-    // permanently leaked. All subsequent getStream() calls will hang on it. Chrome restart cannot fix module-level state, so exit and let the service manager
-    // restart with a clean process.
-    if(errorMessage.includes("Cannot capture a tab with an active stream")) {
-
-      LOG.error("Startup probe detected stale capture state. puppeteer-stream's internal capture mutex is now permanently locked. Exiting so the service " +
-        "manager can restart with a clean module state.");
-
-      process.exit(1);
-    }
-
-    // Non-stale error. Fail immediately — retrying without restarting Chrome won't change anything, and a non-stale getStream() failure at startup indicates a
-    // fundamental problem (extension not loaded, Chrome misconfigured, etc.).
-    throw new Error("Capture system verification failed: " + errorMessage);
+    return errorMessage;
   }
 }

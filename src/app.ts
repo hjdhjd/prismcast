@@ -343,6 +343,9 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
     await initializeFileLogger(CONFIG.logging.maxSize);
   }
 
+  // Log the version as the first message captured by the file logger. This makes it easy to identify which release is running when reading logs.
+  LOG.info("PrismCast v%s starting.", getPackageVersion());
+
   // Log the debug filter status after the file logger is ready so the message is captured.
   if(isDebugLogging()) {
 

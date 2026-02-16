@@ -173,7 +173,6 @@ export interface FFmpegProcess {
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
- * - `-flags low_delay`: Reduce codec-level buffering and disable frame reordering
  * - `-probesize 16384`: Limit input probing to 16KB (Chrome's WebM header fits well under this) to minimize startup delay
  * - `-i pipe:0`: Read input from stdin
  * - `-c:v copy`: Copy video stream without re-encoding (H264 passthrough)
@@ -200,8 +199,6 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
-    "-fflags", "+nobuffer",
-    "-flags", "low_delay",
     "-probesize", "16384",
     "-i", "pipe:0",
     "-c:v", "copy",
@@ -318,8 +315,6 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
- * - `-fflags +nobuffer`: Disable input buffering to reduce latency on incremental stdin writes
- * - `-flags low_delay`: Reduce codec-level buffering and disable frame reordering
  * - `-probesize 16384`: Limit input probing to 16KB (fMP4 init segment is ~1.3KB) to minimize startup delay
  * - `-f mp4 -i pipe:0`: Read fragmented MP4 from stdin
  * - `-c copy`: Copy both video and audio codecs without transcoding
@@ -346,8 +341,6 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
-    "-fflags", "+nobuffer",
-    "-flags", "low_delay",
     "-probesize", "16384",
     "-f", "mp4",
     "-i", "pipe:0",

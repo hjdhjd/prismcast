@@ -308,16 +308,18 @@ export async function ensureDataDirectory(): Promise<void> {
  */
 
 /**
- * Terminates any Chrome processes that are still using our profile directory from previous runs and waits for them to fully exit. Chrome locks its profile
- * directory while running, and if a previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. This function
- * uses pkill to find and terminate any Chrome processes whose command line contains our profile directory path, then polls pgrep to verify the processes have
- * actually exited before returning.
+ * Ensures a clean slate for browser launch by terminating any stale Chrome processes and removing orphaned profile lock files. Chrome locks its profile directory
+ * while running, and if a previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. This function uses pkill to
+ * find and terminate any Chrome processes whose command line contains our profile directory path, then polls pgrep to verify the processes have actually exited.
+ * After process cleanup, it removes stale lock files (SingletonLock, SingletonCookie, SingletonSocket) and DevToolsActivePort from the profile directory.
+ *
+ * The file cleanup is essential for Docker deployments. Container restarts destroy Chrome processes without giving them a chance to release profile locks, but the
+ * lock files persist in the mounted volume. Without removing them, Chrome cannot start in the new container, causing a crash loop.
  *
  * Waiting for exit is critical during service restarts. Without it, the new Chrome can launch while the old one is still releasing its profile lock and
  * tabCapture extension state, causing stale capture errors that cascade into startup failures.
  *
- * This is called at startup before launching the browser to ensure a clean slate. It's safe to call even when no stale processes exist - pkill returns a non-zero
- * exit code when no processes match, which we ignore.
+ * This is called at startup before launching the browser and after closeBrowser() during shutdown. It's safe to call even when no stale processes or files exist.
  */
 export function killStaleChrome(): void {
 
@@ -326,40 +328,82 @@ export function killStaleChrome(): void {
 
   try {
 
-    // Use pkill with -f to match against the full command line, not just the process name. This finds Chrome processes that were launched with our profile
-    // directory. The command is wrapped in quotes to handle paths with spaces.
-    execSync([ "pkill -f \"", profileDir, "\"" ].join(""));
+    // Use pkill with -9 -f to forcefully kill Chrome processes matching our profile directory. SIGKILL is used instead of SIGTERM because orphaned Chrome
+    // processes (from a crashed parent or process.exit without cleanup) may not respond to SIGTERM cleanly. The -f flag matches against the full command line,
+    // not just the process name. The command is wrapped in quotes to handle paths with spaces.
+    execSync([ "pkill -9 -f \"", profileDir, "\"" ].join(""));
 
     LOG.debug("browser", "Killed stale Chrome instances using %s.", profileDir);
+
+    // Poll until the killed processes have fully exited. pgrep returns exit code 0 when matching processes exist and non-zero when none remain. We poll every
+    // 200ms for up to 5 seconds. This ensures Chrome has released its profile directory lock and tabCapture extension state before we launch a new instance.
+    const maxWaitMs = 5000;
+    const pollIntervalMs = 200;
+    const deadline = Date.now() + maxWaitMs;
+    let exited = false;
+
+    while(Date.now() < deadline) {
+
+      try {
+
+        execSync([ "pgrep -f \"", profileDir, "\"" ].join(""), { stdio: "ignore" });
+
+        // Processes still exist. Wait and check again.
+        execSync([ "sleep ", String(pollIntervalMs / 1000) ].join(""));
+      } catch(_error) {
+
+        // pgrep returned non-zero — no matching processes remain. Chrome has fully exited.
+        exited = true;
+
+        break;
+      }
+    }
+
+    if(!exited) {
+
+      LOG.warn("Stale Chrome processes did not exit within %sms. Proceeding anyway.", maxWaitMs);
+    }
   } catch(_error) {
 
-    // When pkill finds no matching processes, it returns a non-zero exit code. This is expected when there are no stale processes from a clean shutdown. We
-    // silently ignore this expected case and skip the wait-for-exit polling below.
-    return;
+    // When pkill finds no matching processes, it returns a non-zero exit code. This is expected when there are no stale processes from a clean shutdown.
   }
 
-  // Poll until the killed processes have fully exited. pgrep returns exit code 0 when matching processes exist and non-zero when none remain. We poll every
-  // 200ms for up to 5 seconds. This ensures Chrome has released its profile directory lock and tabCapture extension state before we launch a new instance.
-  const maxWaitMs = 5000;
-  const pollIntervalMs = 200;
-  const deadline = Date.now() + maxWaitMs;
+  // Remove stale lock and port files left behind by an unclean Chrome exit.
+  cleanStaleProfileFiles(profileDir);
+}
 
-  while(Date.now() < deadline) {
+/**
+ * Removes stale Chrome profile lock files and the DevTools port file. Chrome writes these while running and removes them on clean shutdown, but an unclean exit
+ * (container kill, SIGKILL, crash) leaves them behind. Stale lock files prevent Chrome from acquiring the profile, and a stale DevToolsActivePort can confuse the
+ * Puppeteer connection.
+ * @param profileDir - The Chrome user data directory path.
+ */
+function cleanStaleProfileFiles(profileDir: string): void {
+
+  // Chrome's profile lock mechanism uses three symlinks: SingletonLock (hostname-PID pair), SingletonCookie (numeric verification token), and SingletonSocket
+  // (path to the IPC socket). All three must be removed for Chrome to acquire a fresh lock. DevToolsActivePort contains the debugging port from the previous
+  // session and is irrelevant when launching a new browser instance.
+  const staleFiles = [ "DevToolsActivePort", "SingletonCookie", "SingletonLock", "SingletonSocket" ];
+
+  for(const file of staleFiles) {
+
+    const filePath = path.join(profileDir, file);
 
     try {
 
-      execSync([ "pgrep -f \"", profileDir, "\"" ].join(""), { stdio: "ignore" });
+      fs.unlinkSync(filePath);
 
-      // Processes still exist. Wait and check again.
-      execSync([ "sleep ", String(pollIntervalMs / 1000) ].join(""));
-    } catch(_error) {
+      LOG.debug("browser", "Removed stale profile file: %s.", file);
+    } catch(error: unknown) {
 
-      // pgrep returned non-zero — no matching processes remain. Chrome has fully exited.
-      return;
+      // ENOENT means the file doesn't exist, which is the expected case after a clean shutdown. Any other error (permissions, filesystem issues) is worth
+      // logging as a warning since it could prevent Chrome from starting.
+      if((error as NodeJS.ErrnoException).code !== "ENOENT") {
+
+        LOG.warn("Failed to remove stale profile file %s: %s.", file, formatError(error));
+      }
     }
   }
-
-  LOG.warn("Stale Chrome processes did not exit within %sms. Proceeding anyway.", maxWaitMs);
 }
 
 /**
