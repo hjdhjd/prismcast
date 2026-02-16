@@ -5,6 +5,7 @@
 import type { Express, Request, Response } from "express";
 import { CONFIG } from "../config/index.js";
 import { getAllChannels } from "../config/userChannels.js";
+import { getChannelProviderTags } from "../config/providers.js";
 import { resolveProfile } from "../config/profiles.js";
 
 /* The playlist endpoint generates an M3U playlist in Channels DVR format. The playlist includes all configured video channels with their stream URLs dynamically
@@ -43,15 +44,23 @@ export function resolveBaseUrl(req: Request): string {
  * Generates the M3U playlist content for display on the landing page or the playlist endpoint. The playlist includes all configured video channels with their
  * stream URLs dynamically constructed from the provided base URL.
  * @param baseUrl - The base URL to use for stream URLs (e.g., "http://localhost:5589").
+ * @param providerFilter - Optional provider tag to filter channels by (e.g., "yttv", "hulu", "sling"). Only channels available on the specified provider are
+ * included. When omitted, all channels are included.
  * @returns The M3U playlist content.
  */
-export function generatePlaylistContent(baseUrl: string): string {
+export function generatePlaylistContent(baseUrl: string, providerFilter?: string): string {
 
   const channels = getAllChannels();
   const lines = [ "#EXTM3U", "" ];
   const channelNames = Object.keys(channels).sort();
 
   for(const name of channelNames) {
+
+    // If a provider filter is specified, skip channels that don't have a matching provider tag.
+    if(providerFilter && !getChannelProviderTags(name).some((tag) => tag === providerFilter)) {
+
+      continue;
+    }
 
     const channel = channels[name];
 
@@ -92,9 +101,10 @@ export function setupPlaylistEndpoint(app: Express): void {
   app.get("/playlist", (req: Request, res: Response): void => {
 
     const baseUrl = resolveBaseUrl(req);
+    const providerFilter = typeof req.query.provider === "string" ? req.query.provider : undefined;
 
     // Generate the playlist using the shared function and send it with the correct content type.
-    const playlist = generatePlaylistContent(baseUrl);
+    const playlist = generatePlaylistContent(baseUrl, providerFilter);
 
     res.set("Content-Type", "audio/x-mpegurl");
     res.send(playlist);
