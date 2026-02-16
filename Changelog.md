@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.3 (2026-02-16)
+  * Improvement: the playlist endpoint now supports multi-provider and exclude filters (e.g., `?provider=yttv,sling` or `?provider=-hulu`) with input validation.
+  * Improvement: refreshed the PrismCast server home page documentation.
+  * Improvement: defensively clean up after Chrome on startup and shutdown.
+  * Housekeeping.
+
 ## 1.3.2 (2026-02-15)
   * Improvement: when possible, directly tune URLs for HBO Max, Sling TV, and YouTube TV to skip guide navigation on repeat tunes.
   * Improvement: our stream health monitoring now regularly checks to ensure the stream remains fullscreened, and attempts to correct it if it's not.
