@@ -369,7 +369,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "history.com": { profile: "fullscreenApi", provider: "History.com" },
   "hulu.com": { profile: "huluLive", provider: "Hulu (Live Guide)", providerTag: "hulu" },
   "lakeshorepbs.org": { profile: "embeddedPlayer", provider: "Lakeshore PBS" },
-  "ms.now": { profile: "keyboardDynamic", provider: "MSNOW" },
+  "ms.now": { profile: "keyboardDynamic", provider: "MS NOW" },
   "mylifetime.com": { profile: "fullscreenApi", provider: "Lifetime" },
   "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", provider: "Nat Geo" },
   "nba.com": { profile: "fullscreenApi", provider: "NBA.com" },

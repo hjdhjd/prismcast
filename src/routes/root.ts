@@ -12,13 +12,14 @@ import { getUITabs } from "../config/userConfig.js";
 import { resolveBaseUrl } from "./playlist.js";
 import { resolveProfile } from "../config/profiles.js";
 
-/* The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface with five sections:
+/* The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface with six sections:
  *
  * 1. Overview - Introduction to PrismCast and Quick Start instructions
- * 2. Playlist - The full M3U playlist with copy functionality
+ * 2. Channels - The full M3U playlist with copy functionality
  * 3. Logs - Real-time log viewer for troubleshooting
  * 4. Configuration - Channel management and settings (with subtabs)
  * 5. API Reference - Documentation for all HTTP endpoints
+ * 6. Help - Updating, platform notes, troubleshooting, and known limitations
  */
 
 /**
@@ -605,7 +606,10 @@ function generateOverviewContent(baseUrl: string, videoChannelCount: number): st
     "<li>Complete the TV provider sign-in process in the browser.</li>",
     "<li>Click <strong>Done</strong> when authentication is complete.</li>",
     "</ol>",
-    "<p>Your login credentials are saved in the browser profile and persist across restarts. You only need to authenticate once per TV provider.</p>",
+    "<p>Your login credentials are saved in the browser profile and persist across restarts. You only need to authenticate once per TV provider. ",
+    "The Login button is stateless and always displays &ldquo;Login&rdquo; regardless of authentication status &mdash; successful authentication is ",
+    "confirmed when the channel streams correctly. Some TV providers periodically expire sessions on their end, requiring re-authentication. This is ",
+    "a provider limitation, not a PrismCast issue &mdash; simply click Login again to re-authenticate.</p>",
     "<p class=\"description-hint\">If PrismCast is running headless or on a remote server, use a VNC client to access the browser for authentication.</p>",
     "</div>",
 
@@ -653,6 +657,110 @@ function generateOverviewContent(baseUrl: string, videoChannelCount: number): st
     "<li>Google Chrome browser installed.</li>",
     "<li>Sufficient memory for browser automation (2GB+ recommended).</li>",
     "<li>Network access to streaming sites.</li>",
+    "</ul>",
+    "<p class=\"description-hint\">See the <a href=\"#help\">Help</a> tab for platform-specific requirements and troubleshooting.</p>",
+    "</div>"
+  ].join("\n");
+}
+
+/**
+ * Generates the Help tab content with updating instructions, platform notes, troubleshooting, and known limitations.
+ * @returns HTML content for the Help tab.
+ */
+function generateHelpContent(): string {
+
+  return [
+
+    // Updating PrismCast.
+    "<div class=\"section\">",
+    "<h3>Updating PrismCast</h3>",
+    "<p>Settings and channel configurations are preserved across updates.</p>",
+    "<h4>Homebrew (macOS)</h4>",
+    "<pre>brew upgrade prismcast\nprismcast service restart</pre>",
+    "<h4>npm</h4>",
+    "<pre>npm install -g prismcast\nprismcast service restart</pre>",
+    "<h4>Docker</h4>",
+    "<p>Pull the latest image and recreate the container. If using Watchtower, updates are applied automatically.</p>",
+    "<pre>docker pull ghcr.io/hjdhjd/prismcast:latest\ndocker compose up -d</pre>",
+    "</div>",
+
+    // Display and Resolution.
+    "<div class=\"section\">",
+    "<h3>Display and Resolution</h3>",
+    "<p>PrismCast captures video from Chrome's display output. The <strong>capture resolution must be smaller than the physical display resolution</strong> ",
+    "because browser toolbars and window chrome consume approximately 100&ndash;150 vertical pixels. For example, to capture at 1080p (1920&times;1080), the ",
+    "display must be larger than 1080p.</p>",
+    "<p>When the selected quality preset exceeds what the display can provide, PrismCast logs a warning and automatically degrades to the best available preset. ",
+    "This is not an error &mdash; PrismCast is adapting to your display.</p>",
+    "<h4>Headless Servers</h4>",
+    "<p>macOS works without a physical monitor. Windows and Linux servers without a display need an <strong>HDMI dummy plug</strong> or a ",
+    "<strong>virtual display adapter</strong> to provide a display resolution for Chrome to render into.</p>",
+    "<h4>Remote Access</h4>",
+    "<p>macOS Screen Sharing and VNC work correctly. <strong>Windows Remote Desktop (RDP) does not work</strong> &mdash; RDP creates a virtual display ",
+    "with different properties that interfere with Chrome's rendering. Use VNC or connect a physical display on Windows.</p>",
+    "</div>",
+
+    // Platform Notes.
+    "<div class=\"section\">",
+    "<h3>Platform Notes</h3>",
+    "<h4>macOS</h4>",
+    "<p>Chrome on macOS uses GPU hardware acceleration for video encoding, providing the best capture performance. After installing Node.js, go to ",
+    "<strong>System Settings &rarr; Privacy &amp; Security &rarr; App Management</strong> and allow Node.js. Use Screen Sharing or VNC for remote access ",
+    "to the PrismCast machine.</p>",
+    "<h4>Windows</h4>",
+    "<p>Install PrismCast as a service with <code>prismcast service install</code>. See Remote Access above for display capture requirements.</p>",
+    "<h4>Linux / Docker</h4>",
+    "<p>Chrome cannot use GPU hardware acceleration with virtual displays on Linux (a Chrome limitation), so Docker containers rely on software ",
+    "rendering. Access the browser via VNC for authentication &mdash; Docker containers expose noVNC at port 6080.</p>",
+    "</div>",
+
+    // Troubleshooting.
+    "<div class=\"section\">",
+    "<h3>Troubleshooting</h3>",
+    "<table>",
+    "<tr><th>Problem</th><th>Cause</th><th>Solution</th></tr>",
+    "<tr>",
+    "<td>\"Browser Offline\" or \"Browser is not connected\"</td>",
+    "<td>An existing Chrome process is running.</td>",
+    "<td>Quit all Chrome instances, then restart PrismCast.</td>",
+    "</tr>",
+    "<tr>",
+    "<td>\"All tuners in use\" despite no active streams</td>",
+    "<td>Stale stream state.</td>",
+    "<td>Restart PrismCast service.</td>",
+    "</tr>",
+    "<tr>",
+    "<td>Chrome won't open for login</td>",
+    "<td>Running headless or as a service.</td>",
+    "<td>Access the PrismCast machine via VNC or Screen Sharing to complete authentication.</td>",
+    "</tr>",
+    "<tr>",
+    "<td>macOS blocks Node.js after install</td>",
+    "<td>App Management security gate.</td>",
+    "<td>System Settings &rarr; Privacy &amp; Security &rarr; App Management &rarr; Allow Node.js.</td>",
+    "</tr>",
+    "<tr>",
+    "<td>Port conflict (address in use)</td>",
+    "<td>Another service using port 5589.</td>",
+    "<td>Stop the conflicting service, or change the port in <a href=\"#config/settings\">Configuration</a>.</td>",
+    "</tr>",
+    "</table>",
+    "</div>",
+
+    // Known Limitations.
+    "<div class=\"section\">",
+    "<h3>Known Limitations</h3>",
+    "<ul>",
+    "<li><strong>Bitrate is approximate.</strong> Chrome's media encoder treats the configured bitrate as a target, not a hard limit. ",
+    "Actual bitrate may vary based on content complexity.</li>",
+    "<li><strong>Frame rate follows the source.</strong> If the streaming site delivers 30fps, capture will be 30fps regardless of the configured ",
+    "frame rate setting.</li>",
+    "<li><strong>No closed captions.</strong> Chrome's capture API does not include caption data. Subtitles are not available in PrismCast streams.</li>",
+    "<li><strong>No 4K, HDR, or surround sound.</strong> PrismCast captures H.264 video with AAC stereo audio. It is not a replacement for native ",
+    "4K, HDR, Dolby Vision, or Dolby Atmos content.</li>",
+    "<li><strong>Capture resolution is limited by display size.</strong> See the Display and Resolution section above for details.</li>",
+    "<li><strong>Chrome may drop frames after extended use.</strong> The Chrome encoder can degrade after many hours of continuous operation. PrismCast ",
+    "automatically restarts Chrome during idle periods to mitigate this.</li>",
     "</ul>",
     "</div>"
   ].join("\n");
@@ -3029,6 +3137,7 @@ export function setupRootEndpoint(app: Express): void {
     const logsContent = generateLogsContent();
     const configContent = generateConfigContent();
     const apiContent = generateApiReferenceContent();
+    const helpContent = generateHelpContent();
 
     // Build the tab bar.
     const tabBar = [
@@ -3038,6 +3147,7 @@ export function setupRootEndpoint(app: Express): void {
       generateTabButton("logs", "Logs", false),
       generateTabButton("config", "Configuration", false),
       generateTabButton("api", "API Reference", false),
+      generateTabButton("help", "Help", false),
       "</div>"
     ].join("\n");
 
@@ -3047,7 +3157,8 @@ export function setupRootEndpoint(app: Express): void {
       generateTabPanel("channels", channelsContent, false),
       generateTabPanel("logs", logsContent, false),
       generateTabPanel("config", configContent, false),
-      generateTabPanel("api", apiContent, false)
+      generateTabPanel("api", apiContent, false),
+      generateTabPanel("help", helpContent, false)
     ].join("\n");
 
     // Build the page header with logo, title, version, links, and status bar.
