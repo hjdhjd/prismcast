@@ -477,8 +477,8 @@ export interface ProfileResolutionResult {
  */
 export interface Channel {
 
-  // Numeric channel number for HDHomeRun/Plex guide matching. When set, this number is used as the GuideNumber in the HDHomeRun lineup, enabling Plex to match
-  // the channel with electronic program guide data. When omitted, a number is auto-assigned. Only relevant when HDHomeRun emulation is enabled.
+  // Numeric channel number for guide matching. When set, this number is used as the channel-number in the M3U playlist for Channels DVR and as the GuideNumber in
+  // the HDHomeRun lineup for Plex. When omitted, no channel number is included in the M3U playlist and a number is auto-assigned for HDHomeRun.
   channelNumber?: number;
 
   // CSS selector for channel selection within a multi-channel player. This overrides any channelSelector in the profile. Used for sites like Pluto TV where the

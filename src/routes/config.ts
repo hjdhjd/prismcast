@@ -452,9 +452,9 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
   lines.push(...generateTextField(idPrefix + "-channelSelector", "channelSelector", "Channel Selector", channelSelectorValue,
     { hint: channelSelectorHint, list: idPrefix + "-selectorList", placeholder: showHints ? "e.g., ESPN" : undefined }));
 
-  // Channel number for HDHomeRun/Plex integration.
+  // Channel number for Channels DVR and Plex integration.
   const channelNumberHint = showHints ?
-    "Optional numeric channel number for Plex guide matching when HDHomeRun emulation is enabled. Leave empty for auto-assignment." :
+    "Optional numeric channel number for guide matching in Channels DVR and Plex." :
     undefined;
 
   lines.push(...generateTextField(idPrefix + "-channelNumber", "channelNumber", "Channel Number", channelNumberValue,

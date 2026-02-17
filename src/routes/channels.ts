@@ -14,7 +14,7 @@ import { getChannelListing } from "../config/userChannels.js";
  */
 interface ChannelEntry {
 
-  // Numeric channel number for HDHomeRun/Plex guide matching.
+  // Numeric channel number for guide matching in Channels DVR and Plex.
   channelNumber?: number;
 
   // CSS selector for channel selection within a multi-channel player.
