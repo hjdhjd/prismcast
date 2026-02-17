@@ -60,6 +60,11 @@ export function buildVideoSelectorType(profile: ResolvedSiteProfile): VideoSelec
  * - The selectorType parameter MUST be passed as the first argument to evaluateWithAbort
  */
 
+// Fullscreen activation queue. Chrome's Fullscreen API requires the target tab to be in the foreground (focused). When multiple streams start concurrently, each
+// tab must call page.bringToFront() before requestFullscreen() — but without serialization, tabs steal foreground from each other, causing silent failures. We
+// serialize the bringToFront → triggerFullscreen → verify sequence using a promise chain so each tab gets exclusive foreground access during fullscreen activation.
+let fullscreenQueue: Promise<void> = Promise.resolve();
+
 /**
  * Video state information returned by getVideoState(). Contains all properties needed to assess playback health.
  */
@@ -986,16 +991,9 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
 }
 
 /**
- * Ensures the video is displayed fullscreen with verification and retry logic. This function orchestrates the fullscreen process:
- *
- * 1. Initial attempt: Apply CSS styles and trigger fullscreen API
- * 2. Verify: Check video dimensions and, for fullscreenApi profiles, confirm document.fullscreenElement is set
- * 3. Simple retry: If verification fails, click the video for user activation and retry (the Fullscreen API requires a recent user gesture)
- * 4. Escalate: If simple retries fail, apply aggressive fullscreen techniques with a final Fullscreen API re-trigger
- *
- * The retry approach handles both timing issues (page still initializing) and user activation issues (requestFullscreen requires a recent user gesture).
- * On retry, clicking the video provides fresh activation so the subsequent requestFullscreen() call can succeed. Escalation to aggressive techniques is a
- * last resort that may break site functionality but ensures video fills the viewport.
+ * Ensures the video is displayed fullscreen with verification and retry logic. For profiles that use the native Fullscreen API, this serializes through a
+ * promise-chain mutex so only one tab activates fullscreen at a time — Chrome requires the tab to be in the foreground for requestFullscreen() to succeed, and
+ * concurrent tabs would steal foreground from each other. When skipNativeFullscreen is true (monitor recovery), the mutex is bypassed entirely.
  * @param page - The Puppeteer page object for keyboard input.
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile indicating fullscreen method.
@@ -1011,16 +1009,70 @@ export async function ensureFullscreen(
   skipNativeFullscreen?: boolean
 ): Promise<void> {
 
+  const useNativeFullscreen = profile.useRequestFullscreen && !skipNativeFullscreen;
+
+  // CSS-only path (monitor recovery or profiles without native fullscreen). No serialization needed — CSS styling works fine from background tabs.
+  if(!useNativeFullscreen) {
+
+    return runFullscreenSequence(page, context, profile, selectorType, false);
+  }
+
+  // Native fullscreen path. Serialize through the fullscreen queue so only one tab at a time goes through bringToFront → requestFullscreen → verify. Without
+  // this, concurrent streams steal foreground from each other and all fullscreen attempts silently fail.
+  const FULLSCREEN_QUEUE_TIMEOUT = 10000;
+
+  fullscreenQueue = fullscreenQueue.then(async () => {
+
+    try {
+
+      await Promise.race([
+        runFullscreenSequence(page, context, profile, selectorType, true),
+        new Promise<never>((_, reject) => {
+
+          setTimeout(() => {
+
+            reject(new Error("Fullscreen queue entry timed out."));
+          }, FULLSCREEN_QUEUE_TIMEOUT);
+        })
+      ]);
+    } catch(error) {
+
+      LOG.warn("Fullscreen queue entry failed: %s", formatError(error));
+    }
+  });
+
+  await fullscreenQueue;
+}
+
+/**
+ * Runs the fullscreen sequence with verification and retry logic. This function orchestrates the fullscreen process:
+ *
+ * 1. Initial attempt: Apply CSS styles and trigger fullscreen API
+ * 2. Verify: Check video dimensions and, for fullscreenApi profiles, confirm document.fullscreenElement is set
+ * 3. Simple retry: If verification fails, click the video for user activation and retry (the Fullscreen API requires a recent user gesture)
+ * 4. Escalate: If simple retries fail, apply aggressive fullscreen techniques with a final Fullscreen API re-trigger
+ *
+ * The retry approach handles both timing issues (page still initializing) and user activation issues (requestFullscreen requires a recent user gesture).
+ * On retry, clicking the video provides fresh activation so the subsequent requestFullscreen() call can succeed. Escalation to aggressive techniques is a
+ * last resort that may break site functionality but ensures video fills the viewport.
+ * @param page - The Puppeteer page object for keyboard input.
+ * @param context - The frame or page containing the video element.
+ * @param profile - The site profile indicating fullscreen method.
+ * @param selectorType - The video selector type for finding the element.
+ * @param useNativeFullscreen - Whether to use the native Fullscreen API (bringToFront, click-for-activation, API verification).
+ */
+async function runFullscreenSequence(
+  page: Page,
+  context: Frame | Page,
+  profile: ResolvedSiteProfile,
+  selectorType: VideoSelectorType,
+  useNativeFullscreen: boolean
+): Promise<void> {
+
   // Configuration for retry behavior. These values are tuned for typical page load timing.
   const maxSimpleRetries = 3;
   const retryDelay = 500;
   const verifyDelay = 200;
-
-  // When skipNativeFullscreen is set, we skip all Fullscreen API-specific actions: click-for-activation (which can toggle playback state and interfere with
-  // recovery), native fullscreen verification (which always fails without user activation), and API retries. CSS styling + keyboard shortcuts still run normally.
-  // This is used during monitor recovery where the Fullscreen API cannot succeed (no user activation context) and the monitor's own lightweight fullscreen
-  // maintenance loop handles ongoing CSS reapplication.
-  const useNativeFullscreen = profile.useRequestFullscreen && !skipNativeFullscreen;
 
   for(let attempt = 1; attempt <= maxSimpleRetries; attempt++) {
 
@@ -1036,6 +1088,13 @@ export async function ensureFullscreen(
     // Apply CSS styles to make the video fill the viewport.
     // eslint-disable-next-line no-await-in-loop
     await applyVideoStyles(context, selectorType);
+
+    // Bring the tab to the foreground before requesting fullscreen. Chrome requires the tab to be focused for requestFullscreen() to succeed.
+    if(useNativeFullscreen) {
+
+      // eslint-disable-next-line no-await-in-loop
+      await page.bringToFront();
+    }
 
     // Trigger native fullscreen using the site's preferred method (keyboard shortcut or JavaScript API).
     // eslint-disable-next-line no-await-in-loop
@@ -1107,9 +1166,11 @@ export async function ensureFullscreen(
     await page.keyboard.type("f");
   }
 
-  // Re-trigger the Fullscreen API after aggressive styling — the aggressive CSS ensures the video fills the viewport, and the API call hides site UI.
+  // Re-trigger the Fullscreen API after aggressive styling — the aggressive CSS ensures the video fills the viewport, and the API call hides site UI. Bring the
+  // tab to foreground first, since other tabs may have stolen focus while we were escalating.
   if(useNativeFullscreen) {
 
+    await page.bringToFront();
     await triggerFullscreen(page, context, profile, selectorType);
   }
 
