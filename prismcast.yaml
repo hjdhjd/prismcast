@@ -21,7 +21,7 @@ services:
       - SCREEN_HEIGHT=${SCREEN_HEIGHT:-1080}
       - SCREEN_DEPTH=${SCREEN_DEPTH:-24}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5589/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:${PORT:-5589}/health"]
       interval: 30s
       timeout: 10s
       retries: 3
