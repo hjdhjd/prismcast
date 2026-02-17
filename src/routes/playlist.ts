@@ -3,7 +3,7 @@
  * playlist.ts: M3U playlist route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { getAllProviderTags, getChannelProviderTags } from "../config/providers.js";
+import { getAllProviderTags, getProviderTagForChannel, resolveProviderKey } from "../config/providers.js";
 import { CONFIG } from "../config/index.js";
 import { getAllChannels } from "../config/userChannels.js";
 import { resolveProfile } from "../config/profiles.js";
@@ -107,8 +107,8 @@ export function resolveBaseUrl(req: Request): string {
  * Generates the M3U playlist content for display on the landing page or the playlist endpoint. The playlist includes all configured video channels with their
  * stream URLs dynamically constructed from the provided base URL.
  * @param baseUrl - The base URL to use for stream URLs (e.g., "http://localhost:5589").
- * @param filter - Optional provider filter. In include mode, only channels with at least one matching tag are included. In exclude mode, channels with any matching
- * tag are excluded. When omitted, all channels are included.
+ * @param filter - Optional provider filter based on the currently selected provider for each channel. In include mode, only channels whose selected provider matches
+ * a filter tag are included. In exclude mode, channels whose selected provider matches any filter tag are excluded. When omitted, all channels are included.
  * @returns The M3U playlist content.
  */
 export function generatePlaylistContent(baseUrl: string, filter?: ProviderFilter): string {
@@ -122,10 +122,11 @@ export function generatePlaylistContent(baseUrl: string, filter?: ProviderFilter
     // Apply the provider filter if specified.
     if(filter) {
 
-      const channelTags = getChannelProviderTags(name);
-      const hasMatch = channelTags.some((tag) => filter.tags.includes(tag));
+      const selectedKey = resolveProviderKey(name);
+      const selectedTag = getProviderTagForChannel(selectedKey);
+      const hasMatch = filter.tags.includes(selectedTag);
 
-      // In include mode, skip channels that don't match any filter tag. In exclude mode, skip channels that match any filter tag.
+      // In include mode, skip channels whose selected provider doesn't match any filter tag. In exclude mode, skip channels whose selected provider matches a filter tag.
       if(filter.exclude ? hasMatch : !hasMatch) {
 
         continue;
