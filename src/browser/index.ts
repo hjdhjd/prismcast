@@ -313,11 +313,13 @@ export async function ensureDataDirectory(): Promise<void> {
  * find and terminate any Chrome processes whose command line contains our profile directory path, then polls pgrep to verify the processes have actually exited.
  * After process cleanup, it removes stale lock files (SingletonLock, SingletonCookie, SingletonSocket) and DevToolsActivePort from the profile directory.
  *
+ * The termination strategy escalates from SIGTERM to SIGKILL. SIGTERM is sent first, giving Chrome up to 5 seconds to flush its profile databases (LevelDB,
+ * extension state, session storage) and exit cleanly. If Chrome does not exit, SIGKILL is sent as a fallback. This escalation is critical when called from the
+ * process exit handler — Chrome may be running normally (e.g., after a capture probe timeout), and an immediate SIGKILL would corrupt its profile databases,
+ * poisoning the Docker volume for subsequent container restarts.
+ *
  * The file cleanup is essential for Docker deployments. Container restarts destroy Chrome processes without giving them a chance to release profile locks, but the
  * lock files persist in the mounted volume. Without removing them, Chrome cannot start in the new container, causing a crash loop.
- *
- * Waiting for exit is critical during service restarts. Without it, the new Chrome can launch while the old one is still releasing its profile lock and
- * tabCapture extension state, causing stale capture errors that cascade into startup failures.
  *
  * This is called at startup before launching the browser and after closeBrowser() during shutdown. It's safe to call even when no stale processes or files exist.
  */
@@ -325,43 +327,40 @@ export function killStaleChrome(): void {
 
   // Build the profile directory path that would appear in Chrome's command-line arguments.
   const profileDir = path.join(dataDir, CONFIG.paths.chromeProfileName);
+  const POLL_INTERVAL_MS = 200;
 
   try {
 
-    // Use pkill with -9 -f to forcefully kill Chrome processes matching our profile directory. SIGKILL is used instead of SIGTERM because orphaned Chrome
-    // processes (from a crashed parent or process.exit without cleanup) may not respond to SIGTERM cleanly. The -f flag matches against the full command line,
-    // not just the process name. The command is wrapped in quotes to handle paths with spaces.
-    execSync([ "pkill -9 -f \"", profileDir, "\"" ].join(""));
+    // Send SIGTERM first to give Chrome a chance to flush its profile databases (LevelDB, extension state, session storage) before exiting. This is critical
+    // when called from the process exit handler — Chrome may be running normally (e.g., after a capture probe timeout) and SIGKILL would corrupt its profile
+    // databases, poisoning the Docker volume for subsequent restarts.
+    execSync([ "pkill -f \"", profileDir, "\"" ].join(""));
 
-    LOG.debug("browser", "Killed stale Chrome instances using %s.", profileDir);
+    LOG.debug("browser", "Sent SIGTERM to Chrome instances using %s.", profileDir);
 
-    // Poll until the killed processes have fully exited. pgrep returns exit code 0 when matching processes exist and non-zero when none remain. We poll every
-    // 200ms for up to 5 seconds. This ensures Chrome has released its profile directory lock and tabCapture extension state before we launch a new instance.
-    const maxWaitMs = 5000;
-    const pollIntervalMs = 200;
-    const deadline = Date.now() + maxWaitMs;
-    let exited = false;
+    // Wait up to 5 seconds for Chrome to flush its databases and exit after SIGTERM. Containerized environments with software rendering and shared CPU may
+    // need the full window.
+    const TERM_WAIT_MS = 5000;
 
-    while(Date.now() < deadline) {
+    if(!waitForChromeExit(profileDir, TERM_WAIT_MS, POLL_INTERVAL_MS)) {
+
+      // SIGTERM didn't work. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not respond to SIGTERM.
+      LOG.debug("browser", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
 
       try {
 
-        execSync([ "pgrep -f \"", profileDir, "\"" ].join(""), { stdio: "ignore" });
-
-        // Processes still exist. Wait and check again.
-        execSync([ "sleep ", String(pollIntervalMs / 1000) ].join(""));
+        execSync([ "pkill -9 -f \"", profileDir, "\"" ].join(""));
       } catch(_error) {
 
-        // pgrep returned non-zero — no matching processes remain. Chrome has fully exited.
-        exited = true;
-
-        break;
+        // No matching processes — Chrome may have exited between the pgrep check and the pkill.
       }
-    }
 
-    if(!exited) {
+      const KILL_WAIT_MS = 2000;
 
-      LOG.warn("Stale Chrome processes did not exit within %sms. Proceeding anyway.", maxWaitMs);
+      if(!waitForChromeExit(profileDir, KILL_WAIT_MS, POLL_INTERVAL_MS)) {
+
+        LOG.warn("Chrome processes did not exit after %sms of signal escalation. Proceeding anyway.", TERM_WAIT_MS + KILL_WAIT_MS);
+      }
     }
   } catch(_error) {
 
@@ -370,6 +369,36 @@ export function killStaleChrome(): void {
 
   // Remove stale lock and port files left behind by an unclean Chrome exit.
   cleanStaleProfileFiles(profileDir);
+}
+
+/**
+ * Polls pgrep until no Chrome processes matching the profile directory remain, or the timeout expires. pgrep returns exit code 0 when matching processes exist
+ * and non-zero when none remain.
+ * @param profileDir - The Chrome profile directory path to match against process command lines.
+ * @param timeoutMs - Maximum time to wait in milliseconds.
+ * @param pollIntervalMs - Time between pgrep checks in milliseconds.
+ * @returns True if all matching processes exited within the timeout, false otherwise.
+ */
+function waitForChromeExit(profileDir: string, timeoutMs: number, pollIntervalMs: number): boolean {
+
+  const deadline = Date.now() + timeoutMs;
+
+  while(Date.now() < deadline) {
+
+    try {
+
+      execSync([ "pgrep -f \"", profileDir, "\"" ].join(""), { stdio: "ignore" });
+
+      // Processes still exist. Wait and check again.
+      execSync([ "sleep ", String(pollIntervalMs / 1000) ].join(""));
+    } catch(_error) {
+
+      // pgrep returned non-zero — no matching processes remain.
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -970,10 +999,9 @@ export async function getBrowserPages(): Promise<Page[]> {
  * Closes the browser and cleans up resources. This is called during graceful shutdown to ensure Chrome exits cleanly. After this call, the browser reference is
  * cleared and any subsequent stream requests will launch a fresh browser.
  *
- * The function uses a multi-stage approach to ensure Chrome actually exits:
- * 1. Try browser.close() with a 5-second timeout
- * 2. If that fails or times out, kill the browser process directly
- * 3. As a final fallback, use pkill to terminate any Chrome processes using our profile
+ * The function uses a two-stage approach to ensure Chrome actually exits:
+ * 1. Try browser.close() with a 5-second timeout (DevTools Protocol graceful close)
+ * 2. Run killStaleChrome() to catch anything Stage 1 missed, using SIGTERM→SIGKILL escalation to give Chrome a chance to flush its profile databases
  */
 export async function closeBrowser(): Promise<void> {
 
@@ -994,8 +1022,6 @@ export async function closeBrowser(): Promise<void> {
   }
 
   // Stage 1: Try graceful close with a timeout. We use Promise.race to avoid hanging indefinitely if Chrome is unresponsive.
-  let closedGracefully = false;
-
   if(browserRef.connected) {
 
     try {
@@ -1004,8 +1030,6 @@ export async function closeBrowser(): Promise<void> {
         browserRef.close(),
         new Promise((_, reject) => setTimeout(() => { reject(new Error("Browser close timed out")); }, 5000))
       ]);
-
-      closedGracefully = true;
     } catch(error) {
 
       const message = formatError(error);
@@ -1018,30 +1042,10 @@ export async function closeBrowser(): Promise<void> {
         LOG.debug("browser", "Browser close error: %s.", message);
       }
     }
-  } else {
-
-    closedGracefully = true;
   }
 
-  // Stage 2: If graceful close failed, try to kill the process directly.
-  if(!closedGracefully) {
-
-    try {
-
-      const browserProcess = browserRef.process();
-
-      if(browserProcess && !browserProcess.killed) {
-
-        browserProcess.kill("SIGKILL");
-        LOG.debug("browser", "Sent SIGKILL to browser process.");
-      }
-    } catch(error) {
-
-      LOG.debug("browser", "Browser process kill error: %s.", formatError(error));
-    }
-  }
-
-  // Stage 3: As a final fallback, use pkill to ensure no Chrome processes using our profile remain.
+  // Stage 2: Catch anything Stage 1 missed. If Chrome didn't respond to the DevTools close command (broken WebSocket, hung process), killStaleChrome()
+  // sends SIGTERM first to give Chrome a chance to flush its profile databases, then escalates to SIGKILL if needed.
   killStaleChrome();
 }
 
