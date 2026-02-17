@@ -1651,8 +1651,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Form buttons.
   lines.push("<div class=\"form-buttons\">");
   lines.push("<button type=\"submit\" class=\"btn btn-primary\">Add Channel</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"document.getElementById('add-channel-form').style.display='none'; ",
-    "document.getElementById('add-channel-btn').style.display='inline-block';\">Cancel</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"hideAddForm();\">Cancel</button>");
   lines.push("</div>");
 
   lines.push("</form>");
@@ -2085,6 +2084,40 @@ export function setupConfigEndpoint(app: Express): void {
 
       void closeBrowser().then(() => { process.exit(0); }).catch(() => { process.exit(1); });
     }, 500);
+  });
+
+  // GET /config/channels/predefined-defaults - Returns predefined channel defaults for a given key. Used by the add channel form to pre-populate fields when the
+  // user enters a key that matches a predefined channel.
+  app.get("/config/channels/predefined-defaults", (req: Request, res: Response): void => {
+
+    const key = typeof req.query.key === "string" ? req.query.key.trim().toLowerCase() : "";
+
+    if(!key || !isPredefinedChannel(key)) {
+
+      res.json({ found: false });
+
+      return;
+    }
+
+    // Use getResolvedChannel to get inherited properties (name, stationId) for variants.
+    const channel = getResolvedChannel(key);
+
+    if(!channel) {
+
+      res.json({ found: false });
+
+      return;
+    }
+
+    res.json({
+
+      channelSelector: channel.channelSelector ?? "",
+      found: true,
+      name: channel.name ?? "",
+      profile: channel.profile ?? "",
+      stationId: channel.stationId ?? "",
+      url: channel.url
+    });
   });
 
   // GET /config/channels/export - Export user channels as JSON.

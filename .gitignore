@@ -11,6 +11,10 @@ dist
 CLAUDE.md
 claude
 
+# Ignore local test build files.
+Dockerfile.test
+Dockerfile.test.dockerignore
+
 # Ignore generated files.
 homebridge-ui/public/lib
 
