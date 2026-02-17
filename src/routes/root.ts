@@ -585,7 +585,7 @@ function generateOverviewContent(baseUrl: string, videoChannelCount: number): st
     "guide grid must be searched. Examples: HBO Max, Hulu, Sling TV, YouTube TV, Fox.</p>",
 
     "<h4>Guide-Based Providers &mdash; Subsequent Tunes (~3&ndash;5 seconds)</h4>",
-    "<p>After the first tune, PrismCast caches channel data for <strong>HBO Max, Sling TV, and YouTube TV</strong>. ",
+    "<p>After the first tune, PrismCast caches channel data for <strong>HBO Max, Hulu, Sling TV, and YouTube TV</strong>. ",
     "Subsequent tunes skip guide navigation entirely and are comparable to direct URL channels. If cached data ",
     "becomes stale, PrismCast falls back to guide navigation transparently.</p>",
 
