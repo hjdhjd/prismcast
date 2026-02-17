@@ -124,7 +124,7 @@ export async function scrollAndClick(page: Page, target: ClickTarget): Promise<b
 
 // Normalizes a channel name for case-insensitive, whitespace-tolerant comparison. Trims leading and trailing whitespace, collapses internal whitespace sequences
 // (including non-breaking spaces, tabs, and other Unicode whitespace matched by \s) into a single regular space, and lowercases. This handles data-testid values
-// with trailing spaces (e.g., "WLS "), double spaces, or non-breaking space characters that would otherwise cause exact match failures.
+// with trailing spaces, double spaces, or non-breaking space characters that would otherwise cause exact match failures.
 // Exported for use by tuning strategy files (hulu, sling).
 export function normalizeChannelName(name: string): string {
 
@@ -206,11 +206,8 @@ export function logAvailableChannels(options: {
     return;
   }
 
-  LOG.warn(
-    "Channel \"%s\" not found in %s guide. Create a user-defined channel with one of the names below as the Channel Selector and %s as the URL. " +
-    "Available channels (%s): %s.",
-    channelName, providerName, guideUrl, countLabel, filteredChannels.join(", ")
-  );
+  LOG.warn("Channel \"%s\" not found in %s guide. Create a user-defined channel with one of the names below as the Channel Selector and %s as the URL. " +
+    "Available channels (%s): %s.", channelName, providerName, guideUrl, countLabel, filteredChannels.join(", "));
 }
 
 /**

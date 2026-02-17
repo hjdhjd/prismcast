@@ -119,6 +119,9 @@ export interface StreamSetupResult {
   // The channel display name if streaming a named channel.
   channelName: Nullable<string>;
 
+  // Whether this tune used a cached direct URL, skipping guide navigation.
+  directTune: boolean;
+
   // Cleanup function to release all resources. Safe to call multiple times.
   cleanup: () => Promise<void>;
 
@@ -209,6 +212,9 @@ export interface CreatePageWithCaptureResult {
 
   // The video context (page or frame containing the video element).
   context: Frame | Page;
+
+  // Whether this tune used a cached direct URL, skipping guide navigation.
+  directTune: boolean;
 
   // The FFmpeg process if using WebM+FFmpeg mode, null otherwise.
   ffmpegProcess: Nullable<FFmpegProcess>;
@@ -661,6 +667,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     captureStream: outputStream,
     context,
+    directTune: usedDirectUrl,
     ffmpegProcess,
     page,
     rawCaptureStream
@@ -856,7 +863,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.");
     }
 
-    const { captureStream, context, ffmpegProcess, page, rawCaptureStream } = captureResult;
+    const { captureStream, context, directTune, ffmpegProcess, page, rawCaptureStream } = captureResult;
 
     // Monitor stream info for status updates.
     const monitorStreamInfo: MonitorStreamInfo = {
@@ -920,6 +927,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       captureStream,
       channelName: channel?.name ?? null,
       cleanup,
+      directTune,
       ffmpegProcess,
       numericStreamId,
       page,

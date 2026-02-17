@@ -12,7 +12,7 @@ import { logAvailableChannels } from "../channelSelection.js";
 const YOUTUBE_TV_BASE_URL = "https://tv.youtube.com";
 
 // Module-level cache for watch URLs discovered during channel selection. On the first tune to any YTTV channel, the strategy performs a bulk scrape of all ~256
-// channels in the non-virtualized EPG grid, populating this cache with every channel's watch URL keyed by its lowercased guide name (e.g., "cnn", "nbc 5", "wgn").
+// channels in the non-virtualized EPG grid, populating this cache with every channel's watch URL keyed by its lowercased guide name (e.g., "cnn", "nbc 5", "espn").
 // Subsequent tunes to any YTTV channel resolve via findWatchUrl() in resolveDirectUrl, skipping guide navigation entirely. Cleared on browser disconnect via
 // clearYttvCache().
 const yttvWatchUrlCache = new Map<string, string>();
@@ -36,7 +36,7 @@ const CHANNEL_ALTERNATES: Record<string, string[]> = {
  *
  * 1. Exact match: cache key equals the lowercased name (e.g., "cnn" matches "cnn").
  * 2. Prefix+digit: cache key starts with the name followed by a space and a digit. Catches local affiliates displayed as "{Network} {Number}" (e.g., "nbc 5",
- *    "abc 7") while excluding unrelated channels (e.g., "nbc sports chicago").
+ *    "abc 7") while excluding unrelated channels that share the prefix (e.g., "nbc sports").
  * 3. Parenthetical suffix: cache key starts with the name followed by " (". Catches timezone/region variants like "magnolia network (pacific)".
  *
  * When a non-exact match succeeds, the result is also cached under the primary channelSelector key for O(1) lookup on subsequent calls. This function doubles as
@@ -72,7 +72,7 @@ function findWatchUrl(channelName: string): Nullable<string> {
     }
 
     // Tier 2: Prefix+digit match for local affiliates. Iterate all cache entries to find one whose key starts with "{name} " followed by a digit, matching the
-    // "{Network} {Number}" pattern (e.g., "nbc 5", "abc 7") while excluding unrelated channels (e.g., "nbc sports chicago").
+    // "{Network} {Number}" pattern (e.g., "nbc 5", "abc 7") while excluding unrelated channels that share the prefix (e.g., "nbc sports").
     for(const [ key, url ] of yttvWatchUrlCache) {
 
       if(key.startsWith(name + " ") && (key.length > name.length + 1) && (key.charCodeAt(name.length + 1) >= 48) && (key.charCodeAt(name.length + 1) <= 57)) {
@@ -174,8 +174,8 @@ async function youtubeGridStrategy(page: Page, profile: ChannelSelectionProfile)
   }, []);
 
   // Populate the watch URL cache with all discovered channels. This makes every subsequent YTTV tune a cache hit via resolveDirectUrl, skipping guide navigation
-  // entirely. Cache keys are lowercased guide names (e.g., "cnn", "nbc 5", "wgn"). The tiered matching in findWatchUrl() handles channelSelector-to-guide-name
-  // resolution (e.g., "NBC" finds "nbc 5" via prefix+digit matching, "CW" finds "wgn" via CHANNEL_ALTERNATES).
+  // entirely. Cache keys are lowercased guide names (e.g., "cnn", "nbc 5", "espn"). The tiered matching in findWatchUrl() handles channelSelector-to-guide-name
+  // resolution (e.g., "NBC" finds "nbc 5" via prefix+digit matching, "CW" finds the local affiliate via CHANNEL_ALTERNATES).
   for(const ch of allChannels) {
 
     yttvWatchUrlCache.set(ch.name.toLowerCase(), YOUTUBE_TV_BASE_URL + "/" + ch.watchPath);

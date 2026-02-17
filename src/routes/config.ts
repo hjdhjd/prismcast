@@ -439,13 +439,8 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
   // Station ID.
   const stationIdHint = showHints ? "Optional Gracenote station ID for guide data (tvc-guide-stationid)." : undefined;
 
-  lines.push(...generateTextField(
-    idPrefix + "-stationId",
-    "stationId",
-    "Station ID",
-    stationIdValue,
-    { hint: stationIdHint, placeholder: showHints ? "e.g., 12345" : undefined }
-  ));
+  lines.push(...generateTextField(idPrefix + "-stationId", "stationId", "Station ID", stationIdValue,
+    { hint: stationIdHint, placeholder: showHints ? "e.g., 12345" : undefined }));
 
   // Channel selector.
   const channelSelectorHint = showHints ?
@@ -454,26 +449,16 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
     "For image-based profiles, right-click a channel image \u2192 Inspect \u2192 copy a unique portion of the image src URL." :
     undefined;
 
-  lines.push(...generateTextField(
-    idPrefix + "-channelSelector",
-    "channelSelector",
-    "Channel Selector",
-    channelSelectorValue,
-    { hint: channelSelectorHint, list: idPrefix + "-selectorList", placeholder: showHints ? "e.g., ESPN" : undefined }
-  ));
+  lines.push(...generateTextField(idPrefix + "-channelSelector", "channelSelector", "Channel Selector", channelSelectorValue,
+    { hint: channelSelectorHint, list: idPrefix + "-selectorList", placeholder: showHints ? "e.g., ESPN" : undefined }));
 
   // Channel number for HDHomeRun/Plex integration.
   const channelNumberHint = showHints ?
     "Optional numeric channel number for Plex guide matching when HDHomeRun emulation is enabled. Leave empty for auto-assignment." :
     undefined;
 
-  lines.push(...generateTextField(
-    idPrefix + "-channelNumber",
-    "channelNumber",
-    "Channel Number",
-    channelNumberValue,
-    { hint: channelNumberHint, placeholder: showHints ? "e.g., 501" : undefined }
-  ));
+  lines.push(...generateTextField(idPrefix + "-channelNumber", "channelNumber", "Channel Number", channelNumberValue,
+    { hint: channelNumberHint, placeholder: showHints ? "e.g., 501" : undefined }));
 
   lines.push("</div>"); // End advanced fields.
 

@@ -278,7 +278,7 @@ async function clickWithRetry(
 
 /**
  * Looks up a channel GUID from the cache by normalized name. Falls back to local affiliate prefix matching where the cache key starts with the target name
- * followed by " (" (e.g., "abc" matches "abc (wls)"). On a prefix match, caches the GUID under the primary name for O(1) on subsequent lookups.
+ * followed by " (" (e.g., "abc" matches "abc (wabc)"). On a prefix match, caches the GUID under the primary name for O(1) on subsequent lookups.
  * @param normalizedName - The normalized (lowercased, trimmed) channel name.
  * @returns The channel GUID or null if not cached.
  */

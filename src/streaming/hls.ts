@@ -938,7 +938,7 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
 
       const tuneTime = ((Date.now() - setup.startTime.getTime()) / 1000).toFixed(1);
 
-      LOG.info("Streaming %s (%s, %s). Tuned in %ss.", displayName, setup.profileName, captureMode, tuneTime);
+      LOG.info("Streaming %s (%s, %s). Tuned in %ss%s.", displayName, setup.profileName, captureMode, tuneTime, setup.directTune ? " (direct)" : "");
 
       // Emit stream added event.
       emitStreamAdded(createInitialStreamStatus({
