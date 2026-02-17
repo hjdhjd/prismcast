@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.4 (2026-02-16)
+  * Improvement: documentation updates.
+  * Improvement: give Chrome additional time to shutdown gracefully to prevent profile database corruption in Docker volumes.
+  * Housekeeping.
+
 ## 1.3.3 (2026-02-16)
   * Improvement: the playlist endpoint now supports multi-provider and exclude filters (e.g., `?provider=yttv,sling` or `?provider=-hulu`) with input validation.
   * Improvement: refreshed the PrismCast server home page documentation.
