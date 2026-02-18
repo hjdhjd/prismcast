@@ -52,7 +52,8 @@ import { extractDomain } from "../utils/index.js";
  * - clickToPlayApi: Click to start playback + API fullscreen (extends fullscreenApi)
  * - disneyNow: DisneyNOW player with play button overlay + multi-video (extends clickToPlayApi)
  * - embeddedPlayer: Iframe-based players using fullscreen API (extends fullscreenApi)
- * - apiMultiVideo: API fullscreen + multi-video + tile-based channel selection (extends fullscreenApi)
+ * - apiMultiVideo: API fullscreen + multi-video + auto-play tile channel selection (extends fullscreenApi)
+ * - disneyPlus: API fullscreen + multi-video + tile selection with play button modal (extends fullscreenApi)
  * - huluLive: Hulu Live TV with guide grid channel selection + fullscreen button (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
@@ -65,17 +66,17 @@ import { extractDomain } from "../utils/index.js";
  */
 export const SITE_PROFILES: Record<string, SiteProfile> = {
 
-  // Profile for multi-channel live TV pages that present a grid or shelf of live channel tiles requiring tile-based selection followed by a play button click. Uses
-  // the fullscreen API and multi-video selection to find the actively playing stream after channel selection. Does not use iframe handling or network idle wait
-  // because these sites serve video directly in the main page and have persistent connections that prevent network idle.
+  // Profile for multi-channel live TV pages that present a shelf of live channel tiles where clicking a tile auto-plays the selected channel. Uses the fullscreen
+  // API and multi-video selection to find the actively playing stream after channel selection. Does not use iframe handling or network idle wait because these sites
+  // serve video directly in the main page and have persistent connections that prevent network idle. No playSelector — tile click is the final action.
   apiMultiVideo: {
 
     category: "multiChannel",
     channelSelection: { strategy: "tileClick" },
-    description: "Multi-channel sites with tile-based channel grid. Set Channel Selector to a unique string from the channel's tile image URL.",
+    description: "Multi-channel sites with auto-play tile selection. Set Channel Selector to a unique string from the channel's tile image URL.",
     extends: "fullscreenApi",
     selectReadyVideo: true,
-    summary: "Multi-channel (tile selection, needs selector)"
+    summary: "Multi-channel (auto-play tiles, needs selector)"
   },
 
   // Profile for sites using the Brightcove player platform. Brightcove players require waiting for network activity to settle before the video player is fully
@@ -121,6 +122,22 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     extends: "clickToPlayApi",
     selectReadyVideo: true,
     summary: "DisneyNOW player"
+  },
+
+  // Profile for Disney+ live channels. The live channel shelf displays tiles with network logos. Clicking a tile opens an entity modal with a "WATCH LIVE" button
+  // (playSelector) that must be clicked to start the stream. Extends fullscreenApi for requestFullscreen() behavior. The player uses Web Components with Shadow DOM
+  // for its controls — the native <toggle-fullscreen> button cannot be clicked by Puppeteer (Shadow DOM boundary), so fullscreen is handled entirely by the inherited
+  // requestFullscreen() API. The controls toolbar is hidden via hideSelector to prevent it from appearing in the captured stream. Uses selectReadyVideo because the
+  // page has multiple video elements (previews, ads, main content).
+  disneyPlus: {
+
+    category: "multiChannel",
+    channelSelection: { playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]", strategy: "tileClick" },
+    description: "Disney+ live channels with tile selection and play button modal. Set Channel Selector to a unique string from the channel's tile image URL.",
+    extends: "fullscreenApi",
+    hideSelector: ".controls__footer__wrapper",
+    selectReadyVideo: true,
+    summary: "Disney+ (tile + play button, needs selector)"
   },
 
   // Profile for iframe-embedded players that also have multiple video elements (ads, placeholders, main content) and need network activity to settle. The
@@ -355,7 +372,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "cnbc.com": { profile: "fullscreenApi", provider: "CNBC.com" },
   "cnn.com": { profile: "fullscreenApi", provider: "CNN.com" },
   "disneynow.com": { profile: "disneyNow", provider: "DisneyNOW" },
-  "disneyplus.com": { profile: "apiMultiVideo", provider: "Disney+", providerTag: "disneyplus" },
+  "disneyplus.com": { profile: "disneyPlus", provider: "Disney+", providerTag: "disneyplus" },
   "espn.com": { profile: "keyboardMultiVideo", provider: "ESPN.com" },
   "foodnetwork.com": { profile: "fullscreenApi", provider: "Food Network" },
   "fox.com": { loginUrl: "https://www.fox.com", profile: "foxLive", provider: "Fox", providerTag: "foxcom" },
@@ -452,6 +469,9 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
 
   // No fullscreen button selector - most sites don't have a dedicated fullscreen button we need to click.
   fullscreenSelector: null,
+
+  // No overlay hiding - most sites don't have persistent overlays during fullscreen.
+  hideSelector: null,
 
   // Don't lock volume properties - most sites don't aggressively mute.
   lockVolumeProperties: false,

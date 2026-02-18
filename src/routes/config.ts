@@ -383,7 +383,7 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
     lines.push("<p class=\"category-desc\">Predefined channels already have Channel Selector values set. For custom channels, the value depends on the ");
     lines.push("profile's strategy type:</p>");
     lines.push("<dl class=\"profile-list\">");
-    lines.push("<dt>apiMultiVideo, keyboardDynamicMultiVideo (image URL)</dt>");
+    lines.push("<dt>apiMultiVideo, disneyPlus, keyboardDynamicMultiVideo (image URL)</dt>");
     lines.push("<dd>Right-click the channel's image on the site \u2192 Inspect Element \u2192 find the &lt;img&gt; tag \u2192 copy a unique portion ");
     lines.push("of the <code>src</code> URL that identifies the channel (e.g., \"espn\" from a URL containing \"poster_linear_espn_none\").</dd>");
     lines.push("<dt>foxLive (station code)</dt>");

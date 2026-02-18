@@ -384,6 +384,11 @@ export interface SiteProfile {
   // buttons that disappear after activation are handled gracefully.
   fullscreenSelector?: Nullable<string>;
 
+  // CSS selector for site-specific overlay elements to hide during capture. When set, a persistent stylesheet is injected into the page that applies
+  // "display: none !important" to the matched elements. This is used for player controls, toolbars, or other overlays that remain visible during fullscreen and
+  // would otherwise appear in the captured stream. The selector supports standard CSS selector lists (comma-separated for multiple targets).
+  hideSelector?: Nullable<string>;
+
   // Whether to override the video element's volume properties to prevent auto-muting. Some sites (like France 24) aggressively mute videos and fight attempts to
   // unmute them by resetting volume on every state change. When true, we use Object.defineProperty to intercept volume property access and force the video to
   // remain unmuted. This is a heavyweight intervention used only when necessary.
@@ -434,6 +439,9 @@ export interface ResolvedSiteProfile {
 
   // CSS selector for a fullscreen button to click, or null if not applicable.
   fullscreenSelector: Nullable<string>;
+
+  // CSS selector for overlay elements to hide during capture, or null if not applicable.
+  hideSelector: Nullable<string>;
 
   // Whether to override volume properties to prevent auto-muting.
   lockVolumeProperties: boolean;
@@ -797,7 +805,7 @@ export interface StreamListResponse {
  * - "slingGrid": Find channel by data-testid in a virtualized A-Z guide grid, scroll via binary search on .guide-cell scrollTop, click the on-now program
  *   cell. Used by Sling TV.
  * - "thumbnailRow": Find channel by matching image URL slug, click adjacent element on the same row. Used by USA Network.
- * - "tileClick": Find channel tile by matching image URL slug, click tile, then click play button on modal. Used by Disney+ live channels.
+ * - "tileClick": Find channel tile by matching image URL slug, click tile, then optionally click play button if playSelector is configured. Used by Disney+.
  * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
 export type ChannelSelectionStrategy = "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
@@ -812,7 +820,7 @@ export interface ChannelSelectionConfig {
   listSelector?: string;
 
   // CSS selector for a play button that must be clicked after selecting a channel entry. Some sites show a playback action overlay after channel selection instead
-  // of immediately starting playback. When set, this element is waited for and clicked after the channel entry click. Only used by the guideGrid strategy.
+  // of immediately starting playback. When set, this element is waited for and clicked after the channel entry click. Used by the guideGrid and tileClick strategies.
   playSelector?: string;
 
   // The strategy to use for finding and clicking channel elements.

@@ -1035,6 +1035,15 @@ export async function ensureFullscreen(
 
   const useNativeFullscreen = profile.useRequestFullscreen && !skipNativeFullscreen;
 
+  // Inject a persistent stylesheet to hide site-specific overlay elements (e.g., player control bars, toolbars) that would otherwise appear in the captured stream.
+  // The style tag persists for the page lifetime and is idempotent — duplicate injections from recovery calls are harmless since CSS rules are deduplicated.
+  if(profile.hideSelector) {
+
+    const css = profile.hideSelector + " { display: none !important; }";
+
+    await page.addStyleTag({ content: css }).catch(() => { /* Intentional no-op. */ });
+  }
+
   // CSS-only path (monitor recovery or profiles without native fullscreen). No serialization needed — CSS styling works fine from background tabs.
   if(!useNativeFullscreen) {
 
