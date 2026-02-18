@@ -2,7 +2,7 @@
  *
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
-import { createMP4BoxParser, detectMoofKeyframe, parseMoovTimescales, rewriteMoofTimestamps } from "./mp4Parser.js";
+import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovTimescales } from "./mp4Parser.js";
 import { storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
@@ -22,12 +22,6 @@ import type { Readable } from "node:stream";
 // Set to true to enable keyframe detection and statistics. This parses traf/trun sample flags in each moof to track keyframe frequency and log per-segment warnings.
 // Useful for diagnosing frozen screen issues in downstream HLS consumers.
 const KEYFRAME_DEBUG = false;
-
-// Ratio threshold for the duration sanity check. If a trun's computed total duration exceeds this multiple of the established per-track baseline (or falls below 1/Nth),
-// the duration is considered corrupt and the timestamp counter is corrected to use the baseline value instead. A factor of 20 is deliberately generous — Chrome's
-// MediaRecorder legitimately produces bursty moofs (5-8x normal) when the source player buffers and then delivers accumulated frames in a burst. Those are real data,
-// not corruption. This ratio catches only truly pathological values while letting burst moofs pass through with their correct durations.
-const DURATION_SANITY_RATIO = 20n;
 
 // Types.
 
@@ -53,6 +47,10 @@ export interface FMP4SegmenterOptions {
   // The init segment (ftyp + moov) from the previous segmenter. When provided alongside pendingDiscontinuity, the new init segment is compared against this buffer.
   // If byte-identical, the discontinuity marker is suppressed because the decoder parameters have not changed.
   previousInitSegment?: Nullable<Buffer>;
+
+  // Prior session stats to merge from the old segmenter during tab replacement. The new segmenter inherits these accumulated stats and increments the tab replacement
+  // counter, so the final stats at stream end reflect the entire session across all segmenter instances.
+  priorSessionStats?: SessionStats;
 
   // Starting init version for URI cache busting after tab replacement. Ensures the init URI increments monotonically across segmenter instances so HLS clients
   // re-fetch the init segment when its content changes. If not provided, starts at 0.
@@ -94,6 +92,31 @@ export interface KeyframeStats {
 }
 
 /**
+ * Session-level statistics accumulated across the lifetime of a stream, including across tab replacements. These metrics provide a summary of segmenter health and A-V
+ * synchronization quality when the stream terminates.
+ */
+export interface SessionStats {
+
+  // Number of moofs that failed timestamp processing (caught by try/catch in the moof handler). Non-zero values indicate malformed fMP4 data from Chrome.
+  malformedMoofCount: number;
+
+  // Number of segment-level A-V sync measurements. Each segment boundary contributes one measurement.
+  syncSpreadCount: number;
+
+  // Maximum observed inter-track timing spread in milliseconds.
+  syncSpreadMaxMs: number;
+
+  // Minimum observed inter-track timing spread in milliseconds.
+  syncSpreadMinMs: number;
+
+  // Running sum of inter-track timing spreads for mean calculation.
+  syncSpreadSumMs: number;
+
+  // Number of tab replacements that occurred during this stream session.
+  tabReplacementCount: number;
+}
+
+/**
  * Result of creating an fMP4 segmenter.
  */
 export interface FMP4SegmenterResult {
@@ -113,6 +136,9 @@ export interface FMP4SegmenterResult {
 
   // Get the current segment index. Used by tab replacement to continue numbering from where the old segmenter left off.
   getSegmentIndex: () => number;
+
+  // Returns a snapshot of the accumulated session statistics. Used by tab replacement to carry stats to the new segmenter, and by stream termination to log the summary.
+  getSessionStats: () => SessionStats;
 
   // Returns a copy of the per-track timestamp counters. Used by tab replacement to pass accumulated timestamps to the new segmenter, ensuring monotonic
   // baseMediaDecodeTime across capture restarts.
@@ -203,27 +229,31 @@ interface SegmenterState {
   // Number of segments whose first moof was not a keyframe.
   segmentsWithoutLeadingKeyframe: number;
 
+  // Running session statistics accumulated across the lifetime of this segmenter instance. Initialized from priorSessionStats (if provided during tab replacement) to
+  // carry forward stats from previous segmenter instances.
+  sessionStats: SessionStats;
+
   // Whether the segmenter has been stopped.
   stopped: boolean;
 
   // Running total of keyframe intervals in milliseconds. Used with keyframeCount to compute the average.
   totalKeyframeIntervalMs: number;
 
-  // Per-track baseline durations for sanity checking, keyed by track_ID. Anchored to the first valid moof per track and never updated afterward. The first moof comes
-  // from a fresh FFmpeg instance and is always trustworthy. A fixed baseline prevents baseline poisoning — where a burst moof (from MediaRecorder buffering) becomes
-  // the new expected value, causing subsequent normal moofs to be incorrectly clamped.
-  trackExpectedDurations: Map<number, bigint>;
+  // Per-track constant offsets applied to Chrome's original tfdt values. Zero during normal playback (pure pass-through). Computed lazily on the first moof per track
+  // after tab replacement: offset = initialTrackTimestamp - chromeTfdt.
+  trackOffsets: Map<number, bigint>;
+
+  // Tracks which track IDs have had their offset computed. Offsets are computed lazily on the first moof per track because Chrome's first tfdt value isn't known
+  // until it arrives.
+  trackOffsetsInitialized: Set<number>;
 
   // Per-track timescale values parsed from the moov box. Keyed by track_ID. Populated once when the moov box is received. Converts accumulated trun durations (in
   // timescale units) to seconds for EXTINF: seconds = duration / timescale.
   trackTimescales: Map<number, number>;
 
-  // Per-track monotonic timestamp counters, keyed by track_ID. Each value is the next baseMediaDecodeTime to write into the corresponding track's tfdt box. Audio
-  // and video tracks have separate counters because they may use different timescales (e.g., 90000 for video, 48000 for audio).
+  // Per-track timestamp counters, keyed by track_ID. Each value is the next expected baseMediaDecodeTime (originalTfdt + offset + duration), used for tab replacement
+  // handoff via getTrackTimestamps(). Audio and video tracks have separate counters because they may use different timescales (e.g., 90000 for video, 48000 for audio).
   trackTimestamps: Map<number, bigint>;
-
-  // Track IDs for which a zero-duration warning has already been logged. Prevents repeated warnings on every moof for the same track.
-  zeroDurationWarned: Set<number>;
 }
 
 // Keyframe Stats Formatting.
@@ -280,6 +310,56 @@ export function formatKeyframeStatsSummary(stats: KeyframeStats): string {
   return parts.join("");
 }
 
+/**
+ * Formats session statistics into a human-readable summary for the termination log. Returns an empty string if no sync measurements were recorded. The format provides
+ * a concise overview of segmenter health including A-V synchronization, tab replacements, and data integrity.
+ *
+ * Example output:
+ * - "Session: 1725 segments, A-V sync: mean 12.0ms, min 0.7ms, max 25.7ms."
+ * - "Session: 485 segments, A-V sync: mean 10.5ms, min 1.7ms, max 24.3ms, 2 tab replacements."
+ * - "Session: 100 segments, A-V sync: mean 15.2ms, min 2.0ms, max 30.1ms, 1 tab replacement, 3 malformed moofs."
+ *
+ * @param stats - The session statistics to format.
+ * @param segmentCount - Total number of segments produced across all segmenter instances.
+ * @returns Formatted summary string, or empty string if no data.
+ */
+export function formatSessionStatsSummary(stats: SessionStats, segmentCount: number): string {
+
+  if(stats.syncSpreadCount === 0) {
+
+    return "";
+  }
+
+  const meanMs = (stats.syncSpreadSumMs / stats.syncSpreadCount).toFixed(1);
+
+  const parts: string[] = [ "Session: ", String(segmentCount), " segments, A-V sync: mean ", meanMs, "ms, min ", stats.syncSpreadMinMs.toFixed(1), "ms, max ",
+    stats.syncSpreadMaxMs.toFixed(1), "ms" ];
+
+  if(stats.tabReplacementCount > 0) {
+
+    parts.push(", ", String(stats.tabReplacementCount), " tab replacement");
+
+    if(stats.tabReplacementCount !== 1) {
+
+      parts.push("s");
+    }
+  }
+
+  if(stats.malformedMoofCount > 0) {
+
+    parts.push(", ", String(stats.malformedMoofCount), " malformed moof");
+
+    if(stats.malformedMoofCount !== 1) {
+
+      parts.push("s");
+    }
+  }
+
+  parts.push(".");
+
+  return parts.join("");
+}
+
 // Segmenter Implementation.
 
 /**
@@ -290,7 +370,7 @@ export function formatKeyframeStatsSummary(stats: KeyframeStats): string {
  */
 export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4SegmenterResult {
 
-  const { initialTrackTimestamps, onError, onStop, pendingDiscontinuity, previousInitSegment, startingInitVersion, startingSegmentIndex,
+  const { initialTrackTimestamps, onError, onStop, pendingDiscontinuity, previousInitSegment, priorSessionStats, startingInitVersion, startingSegmentIndex,
     streamId } = options;
 
   // Initialize state.
@@ -317,12 +397,14 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     segmentStartTime: Date.now(),
     segmentTrackDurations: new Map(),
     segmentsWithoutLeadingKeyframe: 0,
+    sessionStats: priorSessionStats ? { ...priorSessionStats, tabReplacementCount: priorSessionStats.tabReplacementCount + 1 } :
+      { malformedMoofCount: 0, syncSpreadCount: 0, syncSpreadMaxMs: 0, syncSpreadMinMs: Infinity, syncSpreadSumMs: 0, tabReplacementCount: 0 },
     stopped: false,
     totalKeyframeIntervalMs: 0,
-    trackExpectedDurations: new Map(),
+    trackOffsets: new Map(),
+    trackOffsetsInitialized: new Set(),
     trackTimescales: new Map(),
-    trackTimestamps: initialTrackTimestamps ? new Map(initialTrackTimestamps) : new Map<number, bigint>(),
-    zeroDurationWarned: new Set()
+    trackTimestamps: initialTrackTimestamps ? new Map(initialTrackTimestamps) : new Map<number, bigint>()
   };
 
   // Reference to the input stream for cleanup.
@@ -410,7 +492,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     // Compute the segment duration from accumulated trun durations (media timeline). Both audio and video tracks should produce nearly identical real-time values. We
     // take the maximum across tracks to handle edge cases where one track has slightly more data at a segment boundary. Falls back to wall-clock time if no media
-    // durations were accumulated (e.g., rewriteMoofTimestamps threw for every moof in this segment, or moov timescale parsing failed). Floored at 0.1 seconds to
+    // durations were accumulated (e.g., timestamp processing threw for every moof in this segment, or moov timescale parsing failed). Floored at 0.1 seconds to
     // prevent zero-duration entries that would violate HLS expectations.
     let mediaDuration = 0;
 
@@ -432,6 +514,55 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     const actualDuration = Math.max(0.1, (mediaDuration > 0) ? mediaDuration : ((Date.now() - state.segmentStartTime) / 1000));
 
     state.segmentDurations.set(state.segmentIndex, actualDuration);
+
+    // Compute inter-track sync spread for session statistics. This measures the timing difference between audio and video tracks at each segment boundary. Only
+    // computed when both tracks have known timescales and active timestamp counters.
+    if(state.trackTimescales.size >= 2) {
+
+      let minPos = Infinity;
+      let maxPos = -Infinity;
+      let validCount = 0;
+
+      for(const [ trackId, timestamp ] of state.trackTimestamps) {
+
+        const timescale = state.trackTimescales.get(trackId);
+
+        if(timescale && (timestamp > 0n)) {
+
+          const positionSec = Number(timestamp) / timescale;
+
+          if(positionSec < minPos) {
+
+            minPos = positionSec;
+          }
+
+          if(positionSec > maxPos) {
+
+            maxPos = positionSec;
+          }
+
+          validCount++;
+        }
+      }
+
+      if(validCount >= 2) {
+
+        const spreadMs = (maxPos - minPos) * 1000;
+
+        state.sessionStats.syncSpreadCount++;
+        state.sessionStats.syncSpreadSumMs += spreadMs;
+
+        if(spreadMs < state.sessionStats.syncSpreadMinMs) {
+
+          state.sessionStats.syncSpreadMinMs = spreadMs;
+        }
+
+        if(spreadMs > state.sessionStats.syncSpreadMaxMs) {
+
+          state.sessionStats.syncSpreadMaxMs = spreadMs;
+        }
+      }
+    }
 
     // Combine all fragment data into a single segment.
     const segmentData = Buffer.concat(state.fragmentBuffer);
@@ -615,69 +746,69 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         }
       }
 
-      // Rewrite tfdt.baseMediaDecodeTime in each traf with self-generated monotonic timestamps. This eliminates discontinuities from capture restarts (tab
-      // replacement, source reload). Wrapped in try/catch so a malformed moof never crashes the segmenter — the segment passes through with Chrome's original
-      // timestamps, which is better than dropping it entirely.
+      // Rewrite tfdt.baseMediaDecodeTime in each traf by adding a constant per-track offset to Chrome's original values. The offset is 0 during normal playback (pure
+      // pass-through) and computed lazily on the first moof per track after tab replacement. This preserves Chrome's wall-clock-based inter-track sync, eliminating the
+      // A/V drift that accumulated under the old trun-based timestamp regeneration approach. Wrapped in try/catch so a malformed moof never crashes the segmenter — the
+      // segment passes through with Chrome's original timestamps, which is better than dropping it entirely.
       try {
 
-        const trafDurations = rewriteMoofTimestamps(box.data, state.trackTimestamps);
+        const trackResults = offsetMoofTimestamps(box.data, state.trackOffsets);
 
-        // Process per-track durations for diagnostics and sanity checking.
-        for(const [ trackId, duration ] of trafDurations) {
+        // Lazy offset initialization: compute offsets for all newly seen tracks before any corrective re-write. This two-pass approach is necessary because
+        // offsetMoofTimestamps processes ALL trafs in the moof — if we re-called after each individual track's initialization, already-offset tracks would get
+        // their offset applied a second time. By computing all offsets first, a single re-call applies them all atomically. This is safe because on the first
+        // moof of a segmenter all tracks are uninitialized, so the first call writes all tracks with offset 0 (no-op) and the re-call applies all offsets to
+        // Chrome's original values. Chrome's MediaRecorder declares all tracks in the moov at stream start and tab replacement creates a fresh segmenter, so a
+        // new track appearing mid-stream in a multi-track moof alongside already-initialized tracks cannot occur.
+        let needsRewrite = false;
 
-          // Zero duration: rate-limited warning. Indicates a trun parsing issue but doesn't corrupt the counter (advancing by zero is harmless).
-          if(duration === 0n) {
+        for(const [ trackId, result ] of trackResults) {
 
-            if(!state.zeroDurationWarned.has(trackId)) {
+          if(!state.trackOffsetsInitialized.has(trackId)) {
 
-              state.zeroDurationWarned.add(trackId);
+            const initialValue = initialTrackTimestamps?.get(trackId);
+            const offset = (initialValue !== undefined) ? (initialValue - result.originalTfdt) : 0n;
 
-              LOG.debug("streaming:segmenter", "Zero duration in moof traf for track %d.", trackId);
+            state.trackOffsets.set(trackId, offset);
+            state.trackOffsetsInitialized.add(trackId);
+
+            if(offset !== 0n) {
+
+              needsRewrite = true;
             }
 
-            continue;
+            LOG.debug("streaming:segmenter", "Initialized offset for track %d: %s (initial=%s, chrome=%s).",
+              trackId, String(offset), String(initialValue ?? 0n), String(result.originalTfdt));
           }
+        }
 
-          // The effective duration is what trackTimestamps actually advances by for this moof. Normally this equals the trun-computed duration, but the sanity
-          // check below may clamp it to the expected baseline when the computed value is unreasonable.
-          let effectiveDuration = duration;
+        // The first call wrote uninitialized tracks with offset 0 (pure pass-through), so the buffer still contains Chrome's original tfdt values for those
+        // tracks. Now that all offsets are stored, a single re-call applies them correctly without double-offsetting any track.
+        if(needsRewrite) {
 
-          // Sanity check: compare against the anchored baseline for this track. A wildly off duration (e.g., from a corrupt trun with inflated per-sample durations)
-          // would permanently shift all subsequent timestamps if not caught. The rewrite function already advanced the counter by `duration` — we correct it here
-          // by substituting the baseline value when the computed value is unreasonable. The baseline is anchored to the first valid moof and never updated — this
-          // prevents baseline poisoning from burst moofs that Chrome's MediaRecorder produces after source buffering stalls.
-          const expected = state.trackExpectedDurations.get(trackId);
+          offsetMoofTimestamps(box.data, state.trackOffsets);
+        }
 
-          if(expected && (expected > 0n) && ((duration > (expected * DURATION_SANITY_RATIO)) || (duration < (expected / DURATION_SANITY_RATIO)))) {
+        // Track "next expected" for future tab replacement handoff and accumulate durations for EXTINF.
+        for(const [ trackId, result ] of trackResults) {
 
-            const current = state.trackTimestamps.get(trackId);
+          const trackOffset = state.trackOffsets.get(trackId) ?? 0n;
 
-            if(current !== undefined) {
+          state.trackTimestamps.set(trackId, result.originalTfdt + trackOffset + result.duration);
 
-              state.trackTimestamps.set(trackId, current - duration + expected);
-            }
+          // Accumulate duration for media-time EXTINF computation. No sanity check needed — Chrome's timestamps are trusted.
+          if(result.duration > 0n) {
 
-            effectiveDuration = expected;
+            const prev = state.segmentTrackDurations.get(trackId) ?? 0n;
 
-            LOG.debug("streaming:segmenter", "Clamped abnormal trun duration for track %d: %s units (expected ~%s, baselines=%d).",
-              trackId, String(duration), String(expected), state.trackExpectedDurations.size);
-          } else if(!state.trackExpectedDurations.has(trackId)) {
-
-            // Establish baseline from the first valid moof per track. The baseline is never updated afterward — see trackExpectedDurations comment in SegmenterState.
-            state.trackExpectedDurations.set(trackId, duration);
-
-            LOG.debug("streaming:segmenter", "Anchored baseline for track %d: %s units (segment %d).", trackId, String(duration), state.segmentIndex);
+            state.segmentTrackDurations.set(trackId, prev + result.duration);
           }
-
-          // Accumulate the effective duration for media-time EXTINF computation. This stays synchronized with the trackTimestamps counter that drives
-          // baseMediaDecodeTime — clamped moofs contribute the clamped value, normal moofs contribute the trun-computed value.
-          const prev = state.segmentTrackDurations.get(trackId) ?? 0n;
-
-          state.segmentTrackDurations.set(trackId, prev + effectiveDuration);
         }
       } catch {
 
-        LOG.debug("streaming:segmenter", "Failed to rewrite moof timestamps.");
+        state.sessionStats.malformedMoofCount++;
+
+        LOG.debug("streaming:segmenter", "Failed to apply offset to moof timestamps.");
       }
 
       // When keyframe debugging is enabled, parse traf/trun sample flags to detect whether this moof starts with a keyframe. Wrapped in try/catch for failure
@@ -795,6 +926,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     getLastSegmentSize: (): number => state.lastSegmentSize,
 
     getSegmentIndex: (): number => state.segmentIndex,
+
+    getSessionStats: (): SessionStats => ({ ...state.sessionStats }),
 
     getTrackTimestamps: (): Map<number, bigint> => new Map(state.trackTimestamps),
 

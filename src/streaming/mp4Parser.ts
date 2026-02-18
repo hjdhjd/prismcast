@@ -15,8 +15,8 @@ import type { Nullable } from "../types/index.js";
  *
  * Container boxes like moof and traf contain child boxes in their payload. The iterateChildBoxes() function walks these children, and detectMoofKeyframe() uses it to
  * parse traf -> tfhd/trun structures for keyframe detection. This supports the fMP4 segmenter's ability to track keyframe frequency and verify that segments start with
- * sync samples. The rewriteMoofTimestamps() function rewrites tfdt.baseMediaDecodeTime values in each traf to produce monotonically increasing timestamps, eliminating
- * discontinuities caused by capture restarts (tab replacement, source reload recovery).
+ * sync samples. The offsetMoofTimestamps() function applies a constant per-track offset to Chrome's original timestamps, preserving Chrome's wall-clock-based
+ * inter-track synchronization while bridging PTS discontinuities at tab replacement boundaries.
  */
 
 // Types.
@@ -281,8 +281,7 @@ function evaluateSampleFlags(flags: number): boolean {
 }
 
 /**
- * Parsed fields from a tfhd (track fragment header) box. Used by both keyframe detection (defaultSampleFlags) and timestamp rewriting (defaultSampleDuration, trackId).
- * Consolidates the field-walking logic that was previously duplicated across two separate extraction functions.
+ * Parsed fields from a tfhd (track fragment header) box. Used by keyframe detection (defaultSampleFlags) and timestamp rewriting (defaultSampleDuration, trackId).
  */
 interface TfhdInfo {
 
@@ -299,7 +298,7 @@ interface TfhdInfo {
 
 /**
  * Parses a tfhd (track fragment header) box and extracts the track ID, default sample duration, and default sample flags. This is the single source of truth for
- * tfhd field extraction, used by both detectMoofKeyframe() (for sample flags) and rewriteMoofTimestamps() (for track ID and duration).
+ * tfhd field extraction, used by both detectMoofKeyframe() (for sample flags) and offsetMoofTimestamps() (for track ID and duration).
  *
  * tfhd layout (FullBox):
  * - [0-3] size, [4-7] "tfhd", [8] version, [9-11] flags, [12-15] track_ID
@@ -634,24 +633,41 @@ function extractTrunTotalDuration(data: Buffer, offset: number, size: number, de
   return totalDuration;
 }
 
+// Offset-Based Timestamp Rewriting.
+
 /**
- * Rewrites the baseMediaDecodeTime in every tfdt box within a moof to produce monotonically increasing timestamps. For each traf, the function reads the track ID from
- * tfhd, writes the current per-track timestamp into tfdt, then advances the counter by the total sample duration extracted from trun. This eliminates timestamp
- * discontinuities caused by capture restarts (tab replacement, source reload recovery) because Chrome's original timestamps are completely overwritten.
+ * Per-track result from offset-based timestamp rewriting. The caller uses these values to initialize offsets lazily and to track the "next expected" timestamp for
+ * future tab replacement handoff.
+ */
+export interface OffsetTrackResult {
+
+  // Total duration of all samples in this track's trun(s), in timescale units. Used for EXTINF computation and "next expected" tracking.
+  duration: bigint;
+
+  // Chrome's original baseMediaDecodeTime read from the tfdt before the offset was applied. Used by the caller for lazy offset initialization on the first moof per
+  // track: offset = initialTrackTimestamp - originalTfdt.
+  originalTfdt: bigint;
+}
+
+/**
+ * Applies a constant per-track offset to Chrome's original tfdt.baseMediaDecodeTime values. Reads Chrome's original tfdt, adds the per-track offset, and writes back.
+ * During normal playback the offset is 0 (pure pass-through of Chrome's wall-clock-based timestamps). At tab replacement boundaries the offset bridges the PTS
+ * discontinuity — it is computed once per track from the difference between the previous segmenter's "next expected" value and Chrome's new starting tfdt.
  *
- * The rewrite is done in-place on the moof buffer. This is safe because the buffer is an owned copy created by the MP4 box parser (Buffer.from() in createMP4BoxParser).
+ * This approach preserves Chrome's inter-track synchronization. Chrome uses wall-clock-based timestamps that keep audio and video aligned regardless of frame drops.
  *
- * Per-track state is necessary because FFmpeg outputs separate moof+mdat pairs for audio and video, and each track may have a different timescale (e.g., 90000 for
- * video, 48000 for audio). A single counter would produce incorrect timestamps for one track.
+ * The rewrite is done in-place on the moof buffer. This is safe because the buffer is an owned copy created by the MP4 box parser (Buffer.from() in
+ * createMP4BoxParser).
  *
  * @param moofData - The complete moof box buffer including its 8-byte header. Modified in place.
- * @param trackTimestamps - Map from track_ID to the next baseMediaDecodeTime value. Updated in place with the advanced timestamps after rewriting.
- * @returns Map from track_ID to the total duration (in timescale units) computed from trun sample durations. The caller uses this for diagnostics (zero durations
- * indicate trun parsing issues) and sanity checking (abnormal durations from corrupt trun data). Each entry corresponds to one traf box in the moof.
+ * @param trackOffsets - Map from track_ID to the constant offset (in timescale units) to add to Chrome's original tfdt. Entries may be absent for tracks whose
+ * offsets have not been initialized yet — the caller initializes them lazily from the returned originalTfdt values.
+ * @returns Map from track_ID to { originalTfdt, duration }. The caller uses originalTfdt for lazy offset initialization and duration for EXTINF and "next expected"
+ * tracking. Each entry corresponds to one traf box in the moof.
  */
-export function rewriteMoofTimestamps(moofData: Buffer, trackTimestamps: Map<number, bigint>): Map<number, bigint> {
+export function offsetMoofTimestamps(moofData: Buffer, trackOffsets: Map<number, bigint>): Map<number, OffsetTrackResult> {
 
-  const trafDurations = new Map<number, bigint>();
+  const results = new Map<number, OffsetTrackResult>();
 
   // Walk the moof's child boxes looking for traf (track fragment) boxes.
   iterateChildBoxes(moofData, (type, data, offset, size) => {
@@ -665,10 +681,11 @@ export function rewriteMoofTimestamps(moofData: Buffer, trackTimestamps: Map<num
     const trafData = data.subarray(offset, offset + size);
 
     let tfhdInfo: Nullable<TfhdInfo> = null;
+    let originalTfdt = 0n;
     let totalDuration = 0n;
 
-    // Walk the traf's child boxes. The spec mandates tfhd before tfdt before trun, so we process them in order. The first pass extracts tfhd info and rewrites
-    // tfdt. The trun duration extraction happens in the same pass since tfhd is already available by the time trun is encountered.
+    // Walk the traf's child boxes. The spec mandates tfhd before tfdt before trun, so we process them in order. For each traf we: (1) parse tfhd for trackId and
+    // defaultSampleDuration, (2) read the original tfdt and write the offset version back, (3) extract trun durations for EXTINF tracking.
     iterateChildBoxes(trafData, (childType, childData, childOffset, childSize) => {
 
       if(childType === "tfhd") {
@@ -676,14 +693,12 @@ export function rewriteMoofTimestamps(moofData: Buffer, trackTimestamps: Map<num
         tfhdInfo = parseTfhd(childData, childOffset, childSize);
       } else if(childType === "tfdt") {
 
-        // Rewrite baseMediaDecodeTime with the current per-track timestamp. The tfhd must precede tfdt per the ISO 14496-12 box ordering, so tfhdInfo is
-        // available here.
+        // Read Chrome's original baseMediaDecodeTime, then write the offset version back. The tfhd must precede tfdt per the ISO 14496-12 box ordering, so
+        // tfhdInfo is available here.
         if(!tfhdInfo) {
 
           return;
         }
-
-        const currentTimestamp = trackTimestamps.get(tfhdInfo.trackId) ?? 0n;
 
         // tfdt layout (FullBox): [0-3] size, [4-7] "tfdt", [8] version, [9-11] flags, [12+] baseMediaDecodeTime.
         // Version 0: 32-bit baseMediaDecodeTime at offset 12. Version 1: 64-bit baseMediaDecodeTime at offset 12.
@@ -694,20 +709,36 @@ export function rewriteMoofTimestamps(moofData: Buffer, trackTimestamps: Map<num
 
         const version = childData.readUInt8(childOffset + 8);
 
+        // Read the original tfdt value.
         if(version === 0) {
 
-          // Version 0: write as uint32 (truncate to 32 bits). Overflows at ~13 hours for 90000 Hz timescale, but version 0 tfdt boxes are inherently 32-bit.
-          childData.writeUInt32BE(Number(currentTimestamp & 0xFFFFFFFFn), childOffset + 12);
+          originalTfdt = BigInt(childData.readUInt32BE(childOffset + 12));
         } else {
 
-          // Version 1: write as uint64 (high 32 bits + low 32 bits). Requires at least 20 bytes in the tfdt box.
           if(childSize < 20) {
 
             return;
           }
 
-          const high = Number((currentTimestamp >> 32n) & 0xFFFFFFFFn);
-          const low = Number(currentTimestamp & 0xFFFFFFFFn);
+          const high = BigInt(childData.readUInt32BE(childOffset + 12));
+          const low = BigInt(childData.readUInt32BE(childOffset + 16));
+
+          originalTfdt = (high << 32n) | low;
+        }
+
+        // Compute the new tfdt by adding the per-track offset. If the offset hasn't been initialized for this track yet, the caller will initialize it lazily
+        // from the returned originalTfdt — for now, treat it as 0 (pure pass-through).
+        const trackOffset = trackOffsets.get(tfhdInfo.trackId) ?? 0n;
+        const newTfdt = originalTfdt + trackOffset;
+
+        // Write the new tfdt back into the buffer.
+        if(version === 0) {
+
+          childData.writeUInt32BE(Number(newTfdt & 0xFFFFFFFFn), childOffset + 12);
+        } else {
+
+          const high = Number((newTfdt >> 32n) & 0xFFFFFFFFn);
+          const low = Number(newTfdt & 0xFFFFFFFFn);
 
           childData.writeUInt32BE(high, childOffset + 12);
           childData.writeUInt32BE(low, childOffset + 16);
@@ -723,23 +754,18 @@ export function rewriteMoofTimestamps(moofData: Buffer, trackTimestamps: Map<num
       }
     });
 
-    // Advance the per-track timestamp counter by the total sample duration from this traf. A zero duration with a valid tfhd indicates a trun parsing issue —
-    // the caller should log a warning. We still advance (by zero) to avoid corrupting subsequent timestamps. TypeScript's control flow analysis cannot track
-    // mutations made inside the iterateChildBoxes callback, so tfhdInfo appears "always null" to the linter despite being set at runtime.
+    // Record the result for this track. TypeScript's control flow analysis cannot track mutations made inside the iterateChildBoxes callback, so tfhdInfo appears
+    // "always null" to the linter despite being set at runtime.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if(tfhdInfo) {
 
       const info = tfhdInfo as TfhdInfo;
 
-      trafDurations.set(info.trackId, totalDuration);
-
-      const currentTimestamp = trackTimestamps.get(info.trackId) ?? 0n;
-
-      trackTimestamps.set(info.trackId, currentTimestamp + totalDuration);
+      results.set(info.trackId, { duration: totalDuration, originalTfdt });
     }
   });
 
-  return trafDurations;
+  return results;
 }
 
 // Moov Timescale Extraction.

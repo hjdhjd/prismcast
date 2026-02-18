@@ -614,6 +614,7 @@ function createTabReplacementHandler(
     const currentInitSegment = stream.segmenter?.getInitSegment();
     const currentInitVersion = stream.segmenter?.getInitVersion() ?? 0;
     const currentSegmentIndex = stream.segmenter?.getSegmentIndex() ?? 0;
+    const currentSessionStats = stream.segmenter?.getSessionStats();
     const currentTrackTimestamps = stream.segmenter?.getTrackTimestamps();
 
     // Destroy the OLD capture stream first. This MUST happen before closing the page to ensure chrome.tabCapture releases the capture. Without this, the new
@@ -715,6 +716,7 @@ function createTabReplacementHandler(
 
       pendingDiscontinuity: true,
       previousInitSegment: currentInitSegment,
+      priorSessionStats: currentSessionStats,
       startingInitVersion: currentInitVersion,
       startingSegmentIndex: currentSegmentIndex,
       streamId: numericStreamId
