@@ -169,6 +169,30 @@ export async function enforceVideoVolume(context: Frame | Page, selectorType: Vi
 }
 
 /**
+ * Mutes all video elements on the page to suppress wrong-channel audio during tuning. When a page loads (e.g. Hulu's /live), a default livestream auto-plays before
+ * channel selection can switch to the target channel. Since the capture pipeline is already running, this audio bleeds into the stream. Muting preemptively silences it.
+ * This is best-effort: if no video elements exist yet, or the page is in a transitional state, the error is silently ignored. The unmute happens naturally when
+ * ensurePlayback() calls startVideoPlayback() after tuning completes.
+ * @param page - The Puppeteer page object.
+ */
+async function muteExistingVideos(page: Page): Promise<void> {
+
+  try {
+
+    await page.evaluate((): void => {
+
+      for(const video of Array.from(document.querySelectorAll("video"))) {
+
+        video.muted = true;
+      }
+    });
+  } catch {
+
+    // Best-effort. The page may still be loading, or there may be no video elements yet.
+  }
+}
+
+/**
  * Validation result for checking if a video element exists and is accessible.
  */
 export interface VideoValidationResult {
@@ -1328,6 +1352,11 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
 export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, skipChannelSelection = false): Promise<TuneResult> {
 
   const elapsed = startTimer();
+
+  // Mute any existing video elements to suppress wrong-channel audio during tuning. On SPA-based providers (Hulu, Fox, USA Network, etc.), a default livestream
+  // auto-plays when the page loads. Since the capture pipeline is already running, this audio bleeds into the stream until channel selection completes and
+  // ensurePlayback() unmutes the correct channel. For providers where no video exists yet, this is a harmless no-op.
+  await muteExistingVideos(page);
 
   // For multi-channel players (like usanetwork.com/live with multiple channels), select the desired channel from the UI. The selectChannel function checks the
   // profile's channelSelection strategy and channelSelector to determine if/how to select a channel. Skipped when navigating directly to a cached watch URL,
