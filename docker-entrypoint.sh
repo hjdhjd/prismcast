@@ -19,7 +19,7 @@ echo "  Display: ${DISPLAY}"
 echo "  Screen: ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}"
 echo "  VNC Port: ${VNC_PORT}"
 echo "  noVNC Port: ${NOVNC_PORT}"
-echo "  PrismCast Port: 5589"
+echo "  PrismCast Port: ${PORT:-5589}"
 
 # Graceful shutdown handler. We terminate PrismCast first because it has its own shutdown handler that closes the browser and active streams cleanly. After
 # PrismCast exits, we kill the remaining background services (Xvfb, x11vnc, noVNC, tail).
@@ -90,7 +90,7 @@ echo "noVNC started successfully."
 echo ""
 echo "=============================================="
 echo "  noVNC available at: http://localhost:${NOVNC_PORT}/vnc.html"
-echo "  PrismCast UI at:    http://localhost:5589"
+echo "  PrismCast UI at:    http://localhost:${PORT:-5589}"
 echo "=============================================="
 echo ""
 

@@ -1,6 +1,6 @@
 services:
   prismcast:
-    # 2026.02.17
+    # 2026.02.18
     # GitHub home for this project with setup instructions: https://github.com/hjdhjd/prismcast.
     # Docker container home for this project: https://github.com/hjdhjd/prismcast/pkgs/container/prismcast.
     image: ghcr.io/hjdhjd/prismcast:${TAG:-latest}
@@ -15,6 +15,8 @@ services:
       - ${HOST_HDHR_PORT:-5004}:${HDHR_PORT:-5004}
     environment:
       - PORT=${PORT:-5589}
+      - VNC_PORT=${VNC_PORT:-5900}
+      - NOVNC_PORT=${NOVNC_PORT:-6080}
       - HDHR_PORT=${HDHR_PORT:-5004}
       - DISPLAY_NUM=${DISPLAY_NUM:-99}
       - SCREEN_WIDTH=${SCREEN_WIDTH:-1920}
