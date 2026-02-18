@@ -16,6 +16,7 @@ import type { FFmpegProcess } from "../utils/index.js";
 import type { Readable } from "node:stream";
 import { getEffectiveViewport } from "../config/presets.js";
 import { getProviderDisplayName } from "../config/providers.js";
+import { isChannelSelectionProfile } from "../types/index.js";
 import { monitorPlaybackHealth } from "./monitor.js";
 import { pipeline } from "node:stream/promises";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
@@ -667,7 +668,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     captureStream: outputStream,
     context,
-    directTune: usedDirectUrl,
+    directTune: usedDirectUrl || !isChannelSelectionProfile(profile),
     ffmpegProcess,
     page,
     rawCaptureStream

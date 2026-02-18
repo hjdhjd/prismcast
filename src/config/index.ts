@@ -4,8 +4,8 @@
  */
 import type { Config, Nullable } from "../types/index.js";
 import { DEFAULTS, loadUserConfig, mergeConfiguration } from "./userConfig.js";
+import { LOG, getCurrentPattern, initDebugFilter, isAnyDebugEnabled } from "../utils/index.js";
 import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.js";
-import { LOG } from "../utils/index.js";
 
 /* The CONFIG object centralizes all tunable parameters for the application. Configuration uses a layered approach with the following priority (highest to lowest):
  *
@@ -55,6 +55,17 @@ export async function initializeConfiguration(): Promise<void> {
 
   // Merge defaults, user config, and environment variables.
   CONFIG = mergeConfiguration(result.config);
+
+  // Apply persisted debug filter from config.json if no higher-priority source is active. The PRISMCAST_DEBUG env var and --debug CLI flag both call
+  // initDebugFilter() before startServer() calls initializeConfiguration(), so isAnyDebugEnabled() is already true when either is set.
+  if(!isAnyDebugEnabled() && (CONFIG.logging.debugFilter.length > 0)) {
+
+    initDebugFilter(CONFIG.logging.debugFilter);
+
+    // Normalize the in-memory value to the canonical form. The stored value may have extra whitespace around commas (e.g., "tuning:hulu, recovery") which
+    // initDebugFilter strips during parsing. Keeping CONFIG in sync with getCurrentPattern() ensures comparisons elsewhere are reliable.
+    CONFIG.logging.debugFilter = getCurrentPattern();
+  }
 
   // Validate quality preset. Viewport is derived on-demand via getViewport() rather than stored in CONFIG.
   const validPresets = getValidPresetIds();

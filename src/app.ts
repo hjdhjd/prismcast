@@ -4,8 +4,8 @@
  */
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.js";
 import type { Express, NextFunction, Request, Response } from "express";
-import { LOG, createMorganStream, formatError, getPackageVersion, isDebugLogging, resolveFFmpegPath, setConsoleLogging, startUpdateChecking,
-  stopUpdateChecking } from "./utils/index.js";
+import { LOG, createMorganStream, formatError, getCurrentPattern, getPackageVersion, isDebugLogging, resolveFFmpegPath, setConsoleLogging,
+  startUpdateChecking, stopUpdateChecking } from "./utils/index.js";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
@@ -353,7 +353,10 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
 
     if(debugEnv) {
 
-      LOG.info("Debug logging enabled with filter: %s.", debugEnv);
+      LOG.info("Debug logging enabled with filter: %s (from PRISMCAST_DEBUG).", debugEnv);
+    } else if((CONFIG.logging.debugFilter.length > 0) && (getCurrentPattern() === CONFIG.logging.debugFilter)) {
+
+      LOG.info("Debug logging enabled with filter: %s (from config).", CONFIG.logging.debugFilter);
     } else {
 
       LOG.info("Debug logging enabled for all categories.");

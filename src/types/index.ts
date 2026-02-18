@@ -201,6 +201,10 @@ export interface HdhrConfig {
  */
 export interface LoggingConfig {
 
+  // Active debug filter pattern persisted from the /debug UI. When non-empty at startup and no higher-priority source (PRISMCAST_DEBUG env var or --debug CLI
+  // flag) is active, this pattern is applied via initDebugFilter(). Managed by the /debug endpoint, not shown in the Settings/Advanced config UI.
+  debugFilter: string;
+
   // Controls HTTP request logging level. "none" disables HTTP request logging, "errors" logs only 4xx and 5xx responses, "filtered" logs important requests
   // while skipping high-frequency endpoints like /logs and /health, "all" logs all requests. Environment variable: HTTP_LOG_LEVEL. Default: "errors".
   httpLogLevel: "all" | "errors" | "filtered" | "none";

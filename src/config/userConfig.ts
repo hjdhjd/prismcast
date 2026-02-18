@@ -591,6 +591,7 @@ export interface UserHLSConfig {
  */
 export interface UserLoggingConfig {
 
+  debugFilter?: string;
   maxSize?: number;
 }
 
@@ -844,6 +845,7 @@ export const DEFAULTS: Config = {
 
   logging: {
 
+    debugFilter: "",
     httpLogLevel: "errors",
     maxSize: 1048576
   },
@@ -1041,6 +1043,11 @@ export function mergeConfiguration(userConfig: UserConfig): Config {
   if((typeof userConfig.hdhr?.deviceId === "string") && (userConfig.hdhr.deviceId.length > 0)) {
 
     config.hdhr.deviceId = userConfig.hdhr.deviceId;
+  }
+
+  if((typeof userConfig.logging?.debugFilter === "string") && (userConfig.logging.debugFilter.length > 0)) {
+
+    config.logging.debugFilter = userConfig.logging.debugFilter;
   }
 
   // Apply environment variable overrides (highest priority).
@@ -1407,6 +1414,13 @@ export function filterDefaults(config: UserConfig): UserConfig {
   if((typeof configDeviceId === "string") && (configDeviceId.length > 0)) {
 
     setNestedValue(filtered, "hdhr.deviceId", configDeviceId);
+  }
+
+  const configDebugFilter = getNestedValue(config, "logging.debugFilter") as string | undefined;
+
+  if((typeof configDebugFilter === "string") && (configDebugFilter.length > 0)) {
+
+    setNestedValue(filtered, "logging.debugFilter", configDebugFilter);
   }
 
   // Remove any empty nested objects that resulted from filtering.

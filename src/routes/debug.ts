@@ -2,9 +2,11 @@
  *
  * debug.ts: Debug logging configuration endpoint for PrismCast.
  */
-import { DEBUG_CATEGORIES, LOG, escapeHtml, getCurrentPattern, initDebugFilter, isCategoryEnabled } from "../utils/index.js";
+import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, initDebugFilter, isCategoryEnabled } from "../utils/index.js";
 import type { Express, Request, Response } from "express";
+import { filterDefaults, loadUserConfig, saveUserConfig } from "../config/userConfig.js";
 import { generateBaseStyles, generatePageWrapper } from "./ui.js";
+import { CONFIG } from "../config/index.js";
 
 /* This module provides a hidden (undocumented) web page at /debug for runtime control of debug logging categories. The page renders all known categories as
  * hierarchical checkboxes grouped by namespace prefix. Toggling a parent group enables or disables all children. Changes are applied immediately via POST without
@@ -113,7 +115,13 @@ function generateDebugStyles(): string {
     ".debug-raw input { width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid var(--border-default); border-radius: 6px;",
     "  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85rem; background: var(--surface-page); color: var(--text-primary); }",
     ".debug-raw input:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); }",
-    ".debug-raw .debug-raw-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }"
+    ".debug-raw .debug-raw-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }",
+
+    // Environment variable override warning.
+    ".debug-env-warning { background: var(--status-warning-bg); border: 1px solid var(--status-warning-border); border-radius: 8px; padding: 12px 16px;",
+    "  margin-bottom: 24px; font-size: 0.85rem; color: var(--status-warning-text); line-height: 1.5; }",
+    ".debug-env-warning code { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; background: rgba(128, 128, 128, 0.15);",
+    "  padding: 1px 5px; border-radius: 3px; font-size: 0.8rem; }"
 
   ].join("\n");
 }
@@ -231,8 +239,21 @@ function generateDebugBody(): string {
   // Header.
   parts.push("<div class=\"debug-header\">");
   parts.push("<h1>Debug Logging</h1>");
-  parts.push("<p>Select categories to enable debug output. Changes take effect immediately without restarting the server.</p>");
+  parts.push("<p>Select categories to enable debug output. Changes take effect immediately and are saved across restarts.</p>");
   parts.push("</div>");
+
+  // Environment variable override warning. When PRISMCAST_DEBUG is set, the env var takes precedence at startup. Changes from the UI are still saved to
+  // config.json for when the env var is removed.
+  const debugEnv = process.env.PRISMCAST_DEBUG;
+
+  if(debugEnv) {
+
+    parts.push("<div class=\"debug-env-warning\">");
+    parts.push("<strong>PRISMCAST_DEBUG environment variable is active:</strong> <code>" + escapeHtml(debugEnv) + "</code><br>");
+    parts.push("Changes below will be saved to config.json but the environment variable takes precedence at startup. ");
+    parts.push("Remove PRISMCAST_DEBUG to use the saved filter.");
+    parts.push("</div>");
+  }
 
   // Current status.
   parts.push("<div class=\"debug-status\">");
@@ -353,16 +374,41 @@ export function setupDebugEndpoint(app: Express): void {
     res.send(html);
   });
 
-  // POST /debug — Applies a new debug filter pattern and redirects back to the page.
-  app.post("/debug", (req: Request, res: Response): void => {
+  // POST /debug — Applies a new debug filter pattern, persists it to config.json, and redirects back to the page.
+  app.post("/debug", async (req: Request, res: Response): Promise<void> => {
 
     const body = req.body as Record<string, unknown>;
     const pattern = typeof body.pattern === "string" ? body.pattern.trim() : "";
     const previousPattern = getCurrentPattern();
 
+    // Apply the filter immediately at runtime.
     initDebugFilter(pattern);
 
-    LOG.info("Debug filter updated: \"%s\" -> \"%s\".", previousPattern, getCurrentPattern());
+    // Use the canonical form after parsing. initDebugFilter normalizes whitespace around commas, so "tuning:hulu, recovery" becomes "tuning:hulu,recovery".
+    // Storing the normalized form ensures consistent comparisons at startup.
+    const normalizedPattern = getCurrentPattern();
+
+    // Keep the in-memory CONFIG consistent with the persisted value.
+    CONFIG.logging.debugFilter = normalizedPattern;
+
+    LOG.info("Debug filter updated: \"%s\" -> \"%s\".", previousPattern, normalizedPattern);
+
+    // Persist to config.json so the filter survives restarts. Wrap in try/catch so persistence failure doesn't break the runtime update.
+    try {
+
+      const result = await loadUserConfig();
+      const existingConfig = result.config;
+
+      existingConfig.logging ??= {};
+      existingConfig.logging.debugFilter = normalizedPattern;
+
+      const filteredConfig = filterDefaults(existingConfig);
+
+      await saveUserConfig(filteredConfig);
+    } catch(error) {
+
+      LOG.warn("Failed to persist debug filter to config.json: %s.", formatError(error));
+    }
 
     res.redirect(303, "/debug");
   });

@@ -1908,6 +1908,12 @@ export function setupConfigEndpoint(app: Express): void {
         newConfig.hdhr.deviceId = existingConfig.hdhr.deviceId;
       }
 
+      if((typeof existingConfig.logging?.debugFilter === "string") && (existingConfig.logging.debugFilter.length > 0)) {
+
+        newConfig.logging ??= {};
+        newConfig.logging.debugFilter = existingConfig.logging.debugFilter;
+      }
+
       // Filter out values that match defaults to keep the config file clean.
       const filteredConfig = filterDefaults(newConfig);
 
