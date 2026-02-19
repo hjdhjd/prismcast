@@ -37,13 +37,21 @@ export interface BrowserConfig {
  */
 export interface PathsConfig {
 
-  // Directory name for Chrome's user data (profile, cookies, cache). This directory persists across restarts, allowing sites to remember login state. The directory
-  // is created inside the application's data directory. Chrome locks this directory while running, so we kill stale processes on startup.
+  // Absolute path override for Chrome's user data directory (profile, cookies, cache), or null to use the default location inside the data directory. When null,
+  // the directory is built as <dataDir>/<chromeProfileName>. Setting this allows storing Chrome data on a different volume or sharing a profile across instances.
+  chromeDataDir: Nullable<string>;
+
+  // Directory name for Chrome's user data within the data directory. Only used when chromeDataDir is null. Chrome locks this directory while running, so we kill
+  // stale processes on startup.
   chromeProfileName: string;
 
   // Directory name for extracted puppeteer-stream extension files. When running as a packaged executable, extension files must be extracted to the filesystem
   // because Chrome cannot load extensions from within the executable archive.
   extensionDirName: string;
+
+  // Absolute path override for the log file, or null to use the default location (<dataDir>/prismcast.log). Setting this allows writing logs to a different
+  // volume or a centralized log directory.
+  logFile: Nullable<string>;
 }
 
 /**

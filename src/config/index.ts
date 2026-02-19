@@ -6,14 +6,18 @@ import type { Config, Nullable } from "../types/index.js";
 import { DEFAULTS, loadUserConfig, mergeConfiguration } from "./userConfig.js";
 import { LOG, getCurrentPattern, initDebugFilter, isAnyDebugEnabled } from "../utils/index.js";
 import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.js";
+import { getChromeDataDir, getConfigFilePath } from "./paths.js";
+import path from "node:path";
 
 /* The CONFIG object centralizes all tunable parameters for the application. Configuration uses a layered approach with the following priority (highest to lowest):
  *
- * 1. Environment variables (SCREAMING_SNAKE_CASE naming)
- * 2. User config file (~/.prismcast/config.json)
- * 3. Hard-coded defaults (defined in userConfig.ts)
+ * 1. CLI flags (--port, --chrome-data-dir, --log-file)
+ * 2. Environment variables (SCREAMING_SNAKE_CASE naming)
+ * 3. User config file (config.json in the data directory)
+ * 4. Hard-coded defaults (defined in userConfig.ts)
  *
- * This design allows Docker deployments to use environment variables for overrides while standalone installations can use the web UI at /config for convenience.
+ * This design follows the standard convention where CLI flags override everything. Docker deployments can use environment variables, standalone installations can
+ * use the web UI at /config, and operators can always override any setting with a CLI flag.
  *
  * The settings are organized by functional area:
  *
@@ -24,9 +28,15 @@ import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./pre
  * - recovery: Retry backoff parameters and circuit breaker configuration
  * - paths: Filesystem locations for Chrome profile and extension data
  *
- * Configuration is initialized at startup via initializeConfiguration(), which loads the user config file, merges with defaults, applies environment overrides, and
- * validates all values. If validation fails, the process exits with a descriptive error message.
+ * Configuration is initialized at startup via initializeConfiguration(), which loads the user config file, merges with defaults, applies environment overrides and
+ * CLI overrides, and validates all values. If validation fails, the process exits with a descriptive error message.
  */
+
+/**
+ * CLI override map. Keys are dot-separated CONFIG_METADATA paths (e.g., "server.port", "paths.chromeDataDir"). Values are the parsed CLI flag values. Applied as the
+ * highest-priority merge pass in mergeConfiguration().
+ */
+export type CliOverrides = Record<string, unknown>;
 
 // The CONFIG object is initialized during startup. It starts as a copy of DEFAULTS and is replaced by the merged configuration.
 export let CONFIG: Config = JSON.parse(JSON.stringify(DEFAULTS)) as Config;
@@ -42,10 +52,11 @@ export let configParseError = false;
 export let configParseErrorMessage: string | undefined;
 
 /**
- * Initializes the configuration by loading the user config file, merging with defaults, and applying environment variable overrides. This must be called at startup
- * before any code accesses CONFIG. After initialization, the CONFIG object contains the final merged values.
+ * Initializes the configuration by loading the user config file, merging with defaults, applying environment variable overrides, and applying CLI overrides. This
+ * must be called at startup before any code accesses CONFIG. After initialization, the CONFIG object contains the final merged values.
+ * @param cliOverrides - Optional CLI flag overrides, applied at the highest priority level.
  */
-export async function initializeConfiguration(): Promise<void> {
+export async function initializeConfiguration(cliOverrides?: CliOverrides): Promise<void> {
 
   // Load user configuration from file.
   const result = await loadUserConfig();
@@ -53,8 +64,8 @@ export async function initializeConfiguration(): Promise<void> {
   configParseError = result.parseError;
   configParseErrorMessage = result.parseErrorMessage;
 
-  // Merge defaults, user config, and environment variables.
-  CONFIG = mergeConfiguration(result.config);
+  // Merge defaults, user config, environment variables, and CLI overrides.
+  CONFIG = mergeConfiguration(result.config, cliOverrides);
 
   // Apply persisted debug filter from config.json if no higher-priority source is active. The PRISMCAST_DEBUG env var and --debug CLI flag both call
   // initDebugFilter() before startServer() calls initializeConfiguration(), so isAnyDebugEnabled() is already true when either is set.
@@ -77,7 +88,7 @@ export async function initializeConfiguration(): Promise<void> {
     CONFIG.streaming.qualityPreset = DEFAULTS.streaming.qualityPreset;
   }
 
-  LOG.info("Configuration initialized from defaults, user config, and environment variables.");
+  LOG.info("Configuration initialized from defaults, user config, environment variables, and CLI overrides.");
 }
 
 /**
@@ -271,6 +282,17 @@ export function validateConfiguration(): void {
     CONFIG.streaming.captureMode = "ffmpeg";
   }
 
+  // Validate path overrides. When set, both chromeDataDir and logFile must be absolute paths to prevent ambiguity.
+  if((CONFIG.paths.chromeDataDir !== null) && !path.isAbsolute(CONFIG.paths.chromeDataDir)) {
+
+    errors.push("paths.chromeDataDir must be an absolute path, got: " + CONFIG.paths.chromeDataDir);
+  }
+
+  if((CONFIG.paths.logFile !== null) && !path.isAbsolute(CONFIG.paths.logFile)) {
+
+    errors.push("paths.logFile must be an absolute path, got: " + CONFIG.paths.logFile);
+  }
+
   // Validate HDHomeRun configuration when enabled.
   if(CONFIG.hdhr.enabled) {
 
@@ -318,6 +340,8 @@ export function displayConfiguration(): void {
   const presetStatus = formatPresetStatus(presetResult);
 
   LOG.info("Starting PrismCast with configuration:");
+  LOG.info("  Configuration file: %s", getConfigFilePath());
+  LOG.info("  Chrome profile: %s", getChromeDataDir(CONFIG));
   LOG.info("  Server port: %s", CONFIG.server.port);
   LOG.info("  Quality preset: %s", presetStatus);
   LOG.info("  Video bitrate: %s", CONFIG.streaming.videoBitsPerSecond);

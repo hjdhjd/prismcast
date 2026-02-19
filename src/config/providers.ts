@@ -22,7 +22,7 @@ import { PREDEFINED_CHANNELS } from "../channels/index.js";
  * is shown first (labeled "Custom") and is the default. The original predefined version uses a special key suffix (PREDEFINED_SUFFIX) to distinguish it from the
  * user's version. This allows users to switch between their custom definition and the original at any time.
  *
- * User selections are stored in ~/.prismcast/channels.json under the `providerSelections` key and persist across restarts.
+ * User selections are stored in channels.json (in the data directory) under the `providerSelections` key and persist across restarts.
  */
 
 // Suffix appended to channel keys to reference the original predefined channel when a user has overridden it. For example, "espn:predefined" references the original

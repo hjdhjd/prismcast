@@ -6,6 +6,8 @@ import { DEFAULTS, loadUserConfig } from "../config/userConfig.js";
 import { SERVICE_NAME, getPlatform, getServiceFilePath } from "../utils/platform.js";
 import { collectServiceEnvironment, getServiceGenerator } from "./generators.js";
 import type { Nullable } from "../types/index.js";
+import { getDataDir } from "../config/paths.js";
+import path from "node:path";
 
 // Types.
 
@@ -132,7 +134,7 @@ export function printServiceUsage(): void {
   print("  --force             Force reinstall even if already installed");
   print("");
   print("The service runs as the current user and starts automatically at login.");
-  print("Configuration is read from ~/.prismcast/config.json.");
+  print("Configuration is read from " + path.join(getDataDir(), "config.json") + ".");
 }
 
 /**
@@ -200,8 +202,8 @@ export async function handleInstall(force: boolean): Promise<number> {
       print("The service is now running and will start automatically at login.");
       print("");
       print("Useful commands:");
-      print("  View logs:        tail -f ~/.prismcast/prismcast.log");
-      print("  View service log: tail -f ~/.prismcast/service-stdout.log");
+      print("  View logs:        tail -f " + path.join(getDataDir(), "prismcast.log"));
+      print("  View service log: tail -f " + path.join(getDataDir(), "service-stdout.log"));
       print("  Stop service:     prismcast service stop");
       print("  Start service:    prismcast service start");
       print("  Status:           prismcast service status");
@@ -214,7 +216,7 @@ export async function handleInstall(force: boolean): Promise<number> {
       print("The service is now running and will start automatically at login.");
       print("");
       print("Useful commands:");
-      print("  View logs:     tail -f ~/.prismcast/prismcast.log");
+      print("  View logs:     tail -f " + path.join(getDataDir(), "prismcast.log"));
       print("  View journal:  journalctl --user -u prismcast -f");
       print("  Stop service:  prismcast service stop");
       print("  Start service: prismcast service start");
@@ -228,7 +230,7 @@ export async function handleInstall(force: boolean): Promise<number> {
       print("The service is now running and will start automatically at login.");
       print("");
       print("Useful commands:");
-      print("  View logs:     type %USERPROFILE%\\.prismcast\\prismcast.log");
+      print("  View logs:     type " + path.join(getDataDir(), "prismcast.log"));
       print("  Stop service:  prismcast service stop");
       print("  Start service: prismcast service start");
       print("  Status:        prismcast service status");
@@ -284,8 +286,8 @@ export async function handleUninstall(): Promise<number> {
 
   print("Service uninstalled successfully.");
   print("");
-  print("Note: Configuration and data files in ~/.prismcast/ have been preserved.");
-  print("To remove all data, delete the ~/.prismcast directory manually.");
+  print("Note: Configuration and data files in " + getDataDir() + " have been preserved.");
+  print("To remove all data, delete the " + getDataDir() + " directory manually.");
 
   return 0;
 }

@@ -69,7 +69,7 @@ export interface ServiceGenerator {
 /* Generates a launchd property list (plist) file for macOS. The plist is installed to ~/Library/LaunchAgents/ and configured with:
  * - RunAtLoad: Start when user logs in
  * - KeepAlive: Restart automatically if the process exits
- * - StandardOutPath/StandardErrorPath: Capture stdout/stderr to ~/.prismcast/logs/
+ * - StandardOutPath/StandardErrorPath: Capture stdout/stderr to the data directory
  */
 
 /**
@@ -620,6 +620,12 @@ export function collectServiceEnvironment(): Record<string, string> {
     "CHROME_BIN",
     "FRAME_RATE",
     "HOST",
+    "LOG_MAX_SIZE",
+    "PORT",
+    "PRISMCAST_CHROME_DATA_DIR",
+    "PRISMCAST_DATA_DIR",
+    "PRISMCAST_DEBUG",
+    "PRISMCAST_LOG_FILE",
     "QUALITY_PRESET",
     "VIDEO_BITRATE"
   ];

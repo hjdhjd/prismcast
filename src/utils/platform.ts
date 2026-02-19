@@ -4,6 +4,7 @@
  */
 import type { Nullable } from "../types/index.js";
 import fs from "node:fs";
+import { getDataDir } from "../config/paths.js";
 import os from "node:os";
 import path from "node:path";
 import url from "node:url";
@@ -115,8 +116,8 @@ export function getServiceFilePath(): string {
 
     case "windows": {
 
-      // Windows Task Scheduler doesn't use a file path in the same way. We return a marker path for consistency.
-      return path.join(homeDir, ".prismcast", "service-installed.marker");
+      // Windows Task Scheduler doesn't use a file path in the same way. We return a marker path inside the data directory for consistency.
+      return path.join(getDataDir(), "service-installed.marker");
     }
 
     default: {
@@ -201,21 +202,21 @@ export function getPrismCastWorkingDirectory(): string {
 }
 
 /**
- * Returns the data directory path for PrismCast (~/.prismcast).
+ * Returns the data directory path for PrismCast. Delegates to the centralized paths module.
  * @returns The absolute path to the data directory.
  */
 export function getDataDirectory(): string {
 
-  return path.join(os.homedir(), ".prismcast");
+  return getDataDir();
 }
 
 /**
- * Returns the directory path for service stdout/stderr output. This is the same as the data directory (~/.prismcast) to keep all PrismCast files in one place.
+ * Returns the directory path for service stdout/stderr output. This is the same as the data directory to keep all PrismCast files in one place.
  * @returns The absolute path to the service logs directory.
  */
 export function getLogsDirectory(): string {
 
-  return getDataDirectory();
+  return getDataDir();
 }
 
 /**

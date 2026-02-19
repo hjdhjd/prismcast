@@ -3,23 +3,24 @@
  * userConfig.ts: User configuration file management for PrismCast.
  */
 import type { Config, Nullable } from "../types/index.js";
+import { getConfigFilePath, getDataDir } from "./paths.js";
+import type { CliOverrides } from "./index.js";
 import { LOG } from "../utils/index.js";
 import fs from "node:fs";
 import { getValidPresetIds } from "./presets.js";
-import os from "node:os";
-import path from "node:path";
 
 const { promises: fsPromises } = fs;
 
-/* PrismCast stores user configuration in ~/.prismcast/config.json. This file allows users to customize settings without using environment variables. The
- * configuration system uses a layered approach:
+/* PrismCast stores user configuration in config.json inside the data directory (default: ~/.prismcast). This file allows users to customize settings without using
+ * environment variables or CLI flags. The configuration system uses a layered approach with the following priority (highest to lowest):
  *
- * 1. Hard-coded defaults (defined in DEFAULTS)
- * 2. User config file (~/.prismcast/config.json)
- * 3. Environment variables (highest priority)
+ * 1. CLI flags (--port, --chrome-data-dir, --log-file)
+ * 2. Environment variables (SCREAMING_SNAKE_CASE naming)
+ * 3. User config file (config.json in data directory)
+ * 4. Hard-coded defaults (defined in DEFAULTS)
  *
- * This design allows Docker deployments to use environment variables to override user settings, while standalone installations can use the config file for
- * convenience. The web UI at /config provides a user-friendly interface for editing the config file.
+ * This design follows the standard convention where CLI flags override everything. Docker deployments can use environment variables, standalone installations can
+ * use the config file via the web UI at /config, and operators can always override any setting with a CLI flag.
  */
 
 /* Each configurable setting has metadata describing its type, valid range, environment variable name, and human-readable description. This metadata is used by the
@@ -202,6 +203,26 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       path: "logging.maxSize",
       type: "integer",
       unit: "bytes"
+    }
+  ],
+
+  paths: [
+    {
+
+      description: "Absolute path override for Chrome's user data directory. When set, Chrome profile data is stored at this path instead of the default " +
+        "location inside the data directory. Useful for placing Chrome data on a different volume.",
+      envVar: "PRISMCAST_CHROME_DATA_DIR",
+      label: "Chrome Data Directory",
+      path: "paths.chromeDataDir",
+      type: "path"
+    },
+    {
+
+      description: "Absolute path override for the log file. When set, logs are written to this path instead of the default location inside the data directory.",
+      envVar: "PRISMCAST_LOG_FILE",
+      label: "Log File Path",
+      path: "paths.logFile",
+      type: "path"
     }
   ],
 
@@ -676,6 +697,15 @@ export interface UserHdhrConfig {
 }
 
 /**
+ * Partial paths configuration for user config file.
+ */
+export interface UserPathsConfig {
+
+  chromeDataDir?: Nullable<string>;
+  logFile?: Nullable<string>;
+}
+
+/**
  * User configuration with all fields optional. This is the structure of the config.json file.
  */
 export interface UserConfig {
@@ -685,6 +715,7 @@ export interface UserConfig {
   hdhr?: UserHdhrConfig;
   hls?: UserHLSConfig;
   logging?: UserLoggingConfig;
+  paths?: UserPathsConfig;
   playback?: UserPlaybackConfig;
   recovery?: UserRecoveryConfig;
   server?: UserServerConfig;
@@ -706,20 +737,8 @@ export interface UserConfigLoadResult {
   parseErrorMessage?: string;
 }
 
-/* The config file is stored in the same data directory as the Chrome profile (~/.prismcast).
+/* The config file path is resolved via the centralized paths module (config/paths.ts). The data directory is initialized at startup before config loading.
  */
-
-const dataDir = path.join(os.homedir(), ".prismcast");
-const configFilePath = path.join(dataDir, "config.json");
-
-/**
- * Returns the path to the user configuration file.
- * @returns The absolute path to ~/.prismcast/config.json.
- */
-export function getConfigFilePath(): string {
-
-  return configFilePath;
-}
 
 /* These functions handle reading and writing the config file. All operations are async and handle errors gracefully.
  */
@@ -733,7 +752,7 @@ export async function loadUserConfig(): Promise<UserConfigLoadResult> {
 
   try {
 
-    const content = await fsPromises.readFile(configFilePath, "utf-8");
+    const content = await fsPromises.readFile(getConfigFilePath(), "utf-8");
 
     try {
 
@@ -744,7 +763,7 @@ export async function loadUserConfig(): Promise<UserConfigLoadResult> {
 
       const message = (parseError instanceof Error) ? parseError.message : String(parseError);
 
-      LOG.warn("Invalid JSON in configuration file %s: %s. Using defaults.", configFilePath, message);
+      LOG.warn("Invalid JSON in configuration file %s: %s. Using defaults.", getConfigFilePath(), message);
 
       return { config: {}, parseError: true, parseErrorMessage: message };
     }
@@ -757,7 +776,7 @@ export async function loadUserConfig(): Promise<UserConfigLoadResult> {
     }
 
     // Other read errors - log and use defaults.
-    LOG.warn("Failed to read configuration file %s: %s. Using defaults.", configFilePath, (error instanceof Error) ? error.message : String(error));
+    LOG.warn("Failed to read configuration file %s: %s. Using defaults.", getConfigFilePath(), (error instanceof Error) ? error.message : String(error));
 
     return { config: {}, parseError: false };
   }
@@ -771,14 +790,14 @@ export async function loadUserConfig(): Promise<UserConfigLoadResult> {
 export async function saveUserConfig(config: UserConfig): Promise<void> {
 
   // Ensure data directory exists.
-  await fsPromises.mkdir(dataDir, { recursive: true });
+  await fsPromises.mkdir(getDataDir(), { recursive: true });
 
   // Write config with pretty formatting for readability.
   const content = JSON.stringify(config, null, 2);
 
-  await fsPromises.writeFile(configFilePath, content + "\n", "utf-8");
+  await fsPromises.writeFile(getConfigFilePath(), content + "\n", "utf-8");
 
-  LOG.info("Configuration saved to %s.", configFilePath);
+  LOG.info("Configuration saved to %s.", getConfigFilePath());
 }
 
 /* These functions detect which settings are overridden by environment variables, so the UI can disable those fields and show appropriate warnings.
@@ -852,13 +871,13 @@ export const DEFAULTS: Config = {
 
   paths: {
 
-
+    chromeDataDir: null,
     chromeProfileName: "chromedata",
-    extensionDirName: "extension"
+    extensionDirName: "extension",
+    logFile: null
   },
 
   playback: {
-
 
     bufferingGracePeriod: 10000,
     channelSelectorDelay: 5000,
@@ -876,7 +895,6 @@ export const DEFAULTS: Config = {
 
   recovery: {
 
-
     backoffJitter: 1000,
     circuitBreakerThreshold: 10,
     circuitBreakerWindow: 300000,
@@ -886,7 +904,6 @@ export const DEFAULTS: Config = {
   },
 
   server: {
-
 
     host: "0.0.0.0",
     port: 5589
@@ -939,10 +956,15 @@ function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<b
       return Number.isNaN(num) ? undefined : num;
     }
 
-    case "host":
-    case "path": {
+    case "host": {
 
       return value;
+    }
+
+    case "path": {
+
+      // An empty path env var means "use default" — return null so the downstream code sees the same sentinel as an unset config field.
+      return (value.trim() === "") ? null : value;
     }
 
     default: {
@@ -1003,11 +1025,13 @@ export function setNestedValue(obj: Record<string, unknown>, settingPath: string
 }
 
 /**
- * Merges user configuration with defaults and environment overrides to produce the final configuration. Priority: env vars > user config > defaults.
+ * Merges user configuration with defaults, environment overrides, and CLI overrides to produce the final configuration.
+ * Priority (highest to lowest): CLI overrides > env vars > user config > defaults.
  * @param userConfig - User configuration from the config file.
+ * @param cliOverrides - Optional CLI flag overrides, applied at the highest priority level.
  * @returns The merged configuration.
  */
-export function mergeConfiguration(userConfig: UserConfig): Config {
+export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOverrides): Config {
 
   // Start with a deep copy of defaults.
   const config = JSON.parse(JSON.stringify(DEFAULTS)) as Config;
@@ -1050,7 +1074,7 @@ export function mergeConfiguration(userConfig: UserConfig): Config {
     config.logging.debugFilter = userConfig.logging.debugFilter;
   }
 
-  // Apply environment variable overrides (highest priority).
+  // Apply environment variable overrides.
   for(const settings of Object.values(CONFIG_METADATA)) {
 
     for(const setting of settings) {
@@ -1065,6 +1089,18 @@ export function mergeConfiguration(userConfig: UserConfig): Config {
 
           setNestedValue(config as unknown as Record<string, unknown>, setting.path, parsedValue);
         }
+      }
+    }
+  }
+
+  // Apply CLI overrides (highest priority). These are already parsed values keyed by CONFIG_METADATA paths.
+  if(cliOverrides) {
+
+    for(const [ overridePath, value ] of Object.entries(cliOverrides)) {
+
+      if(value !== undefined) {
+
+        setNestedValue(config as unknown as Record<string, unknown>, overridePath, value);
       }
     }
   }
@@ -1168,6 +1204,7 @@ const ADVANCED_SECTION_META: { category: string; displayName: string }[] = [
 
   { category: "hls", displayName: "HLS" },
   { category: "logging", displayName: "Logging" },
+  { category: "paths", displayName: "Paths" },
   { category: "playback", displayName: "Playback" },
   { category: "recovery", displayName: "Recovery" },
   { category: "streaming", displayName: "Streaming" }

@@ -4,7 +4,7 @@
  */
 import type { AdvancedSection, SettingMetadata, UserConfig } from "../config/userConfig.js";
 import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from "../config/index.js";
-import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getConfigFilePath, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault,
+import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault,
   loadUserConfig, saveUserConfig, setNestedValue } from "../config/userConfig.js";
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, formatError, generateChannelKey, isRunningAsService, parseM3U } from "../utils/index.js";
@@ -19,6 +19,7 @@ import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
 import { closeBrowser } from "../browser/index.js";
+import { getConfigFilePath } from "../config/paths.js";
 import { getPresetOptionsWithDegradation } from "../config/presets.js";
 import { getProfiles } from "../config/profiles.js";
 import { getStreamCount } from "../streaming/registry.js";

@@ -5,6 +5,7 @@
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
 import { LOG, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
 import { getAllStreams, getStreamCount } from "../streaming/registry.js";
+import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.js";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
 import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.js";
@@ -16,7 +17,6 @@ import { clearChannelSelectionCaches } from "./channelSelection.js";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.js";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
 import { terminateStream } from "../streaming/lifecycle.js";
@@ -29,7 +29,7 @@ const { promises: fsPromises } = fs;
  * - currentBrowser: The shared browser instance. All streaming sessions use a single Chrome process to avoid the overhead of launching multiple browsers. This is
  *   created on first stream request (or during warmup) and persists until the application shuts down or the browser crashes.
  *
- * - dataDir: The filesystem location for persistent data (Chrome profile, extension files). This is always ~/.prismcast, which is created on startup if it doesn't
+ * - dataDir: The filesystem location for persistent data (Chrome profile, extension files). Resolved via config/paths.ts, which is created on startup if it doesn't
  *   exist.
  *
  * Stream tracking and ID generation have been moved to streaming/registry.ts for unified stream management across all output types (direct WebM, HLS, etc.).
@@ -51,9 +51,7 @@ let browserLaunchTime: Nullable<number> = null;
 // starting a second Chrome process. Cleared in a finally block once the launch settles.
 let browserLaunchPromise: Nullable<Promise<Browser>> = null;
 
-// The data directory stores Chrome's profile data and the streaming extension files. This is always ~/.prismcast, which provides a consistent location for
-// user-specific data regardless of how PrismCast is run.
-const dataDir = path.join(os.homedir(), ".prismcast");
+// The data directory stores Chrome's profile data and the streaming extension files. Path resolution is centralized in config/paths.ts.
 
 // The stale page cleanup interval handle, stored so we can clear it during graceful shutdown. The interval periodically checks for browser pages that are not
 // associated with active streams and closes them to prevent resource exhaustion.
@@ -261,19 +259,10 @@ function getManagedPageId(page: Page): string | undefined {
 }
 
 /**
- * Gets the current data directory path. This is where Chrome profile data and extension files are stored.
- * @returns The data directory path.
- */
-export function getDataDir(): string {
-
-  return dataDir;
-}
-
-/**
  * Ensures the data directory exists, creating it if necessary. This should be called during application startup before any operations that depend on the data
  * directory (like browser launch or extension preparation).
  *
- * The data directory (~/.prismcast) stores:
+ * The data directory stores:
  * - Chrome profile data (cookies, local storage, session state)
  * - Extension files (when running as a packaged executable)
  */
@@ -281,12 +270,12 @@ export async function ensureDataDirectory(): Promise<void> {
 
   try {
 
-    await fsPromises.mkdir(dataDir, { recursive: true });
+    await fsPromises.mkdir(getDataDir(), { recursive: true });
 
-    LOG.debug("browser", "Data directory ready: %s.", dataDir);
+    LOG.debug("browser", "Data directory ready: %s.", getDataDir());
   } catch(error) {
 
-    LOG.error("Failed to create data directory %s: %s.", dataDir, formatError(error));
+    LOG.error("Failed to create data directory %s: %s.", getDataDir(), formatError(error));
 
     throw error;
   }
@@ -326,7 +315,7 @@ export async function ensureDataDirectory(): Promise<void> {
 export function killStaleChrome(): void {
 
   // Build the profile directory path that would appear in Chrome's command-line arguments.
-  const profileDir = path.join(dataDir, CONFIG.paths.chromeProfileName);
+  const profileDir = getChromeDataDir(CONFIG);
   const POLL_INTERVAL_MS = 200;
 
   try {
@@ -584,7 +573,7 @@ export function buildLaunchOptions(): LaunchOptions {
 
     // Persistent user data directory for Chrome profile. This directory stores cookies, local storage, and other session data. By persisting this across
     // restarts, sites remember login state and don't require re-authentication.
-    userDataDir: path.join(dataDir, CONFIG.paths.chromeProfileName)
+    userDataDir: getChromeDataDir(CONFIG)
   };
 }
 
@@ -601,7 +590,7 @@ async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
   // them with paths to our extracted extension files.
   if(process.pkg) {
 
-    const extensionPath = path.join(dataDir, CONFIG.paths.extensionDirName);
+    const extensionPath = getExtensionDir(CONFIG);
 
     // Remove any existing extension arguments and add our own pointing to the extracted extension.
     opts.args = (opts.args ?? [])
@@ -1558,8 +1547,8 @@ export async function prepareExtension(): Promise<void> {
 
   try {
 
-    // The extension files are extracted to ~/.prismcast/extension (the data directory is ensured to exist before this function is called).
-    const out = path.join(dataDir, CONFIG.paths.extensionDirName);
+    // The extension files are extracted to the extension directory within the data directory (ensured to exist before this function is called).
+    const out = getExtensionDir(CONFIG);
 
     // Create the extension directory if it doesn't exist.
     try {

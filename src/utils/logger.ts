@@ -21,7 +21,7 @@ const ANSI_COLORS = {
   yellow: "\x1b[33m"
 };
 
-/* The logger can operate in two modes: console mode (output to stdout/stderr with colors) or file mode (output to ~/.prismcast/prismcast.log). By default, file mode
+/* The logger can operate in two modes: console mode (output to stdout/stderr with colors) or file mode (output to the configured log file). By default, file mode
  * is used. Console mode is enabled via the --console CLI flag for Docker deployments or interactive debugging.
  */
 

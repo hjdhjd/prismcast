@@ -6,12 +6,11 @@ import type { Nullable } from "../types/index.js";
 import df from "dateformat";
 import fs from "node:fs";
 import { isAnyDebugEnabled } from "./debugFilter.js";
-import os from "node:os";
 import path from "node:path";
 
 const { promises: fsPromises } = fs;
 
-/* The file logger provides persistent logging to ~/.prismcast/prismcast.log with automatic size-based trimming. When the log file exceeds the configured maximum
+/* The file logger provides persistent logging to a configurable log file with automatic size-based trimming. When the log file exceeds the configured maximum
  * size, it is trimmed to half the maximum size, keeping only complete lines (the most recent logs are preserved). This approach prevents unbounded log growth while
  * maintaining recent history for troubleshooting.
  *
@@ -75,19 +74,18 @@ const ANSI_RESET = "\x1b[0m";
 
 /**
  * Initializes the file logger. Creates the log file if it does not exist. Must be called after the data directory is ensured to exist.
+ * @param logPath - Absolute path to the log file, resolved by the caller via getLogFilePath().
  * @param maxSize - Maximum log file size in bytes from CONFIG.logging.maxSize.
  */
-export async function initializeFileLogger(maxSize: number): Promise<void> {
+export async function initializeFileLogger(logPath: string, maxSize: number): Promise<void> {
 
-  const dataDir = path.join(os.homedir(), ".prismcast");
-
-  logFilePath = path.join(dataDir, "prismcast.log");
+  logFilePath = logPath;
   maxLogSize = maxSize;
 
   try {
 
-    // Ensure the data directory exists.
-    await fsPromises.mkdir(dataDir, { recursive: true });
+    // Ensure the parent directory of the log file exists.
+    await fsPromises.mkdir(path.dirname(logFilePath), { recursive: true });
 
     // Check if log file exists and get its size.
     try {

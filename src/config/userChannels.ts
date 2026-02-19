@@ -5,16 +5,15 @@
 import type { Channel, ChannelListingEntry, ChannelMap } from "../types/index.js";
 import { buildProviderGroups, getAllProviderTags, getProviderSelections, isChannelAvailableByProvider, isProviderVariant, setEnabledProviders,
   setProviderSelections } from "./providers.js";
+import { getChannelsFilePath, getDataDir } from "./paths.js";
 import { CONFIG } from "./index.js";
 import { LOG } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 const { promises: fsPromises } = fs;
 
-/* PrismCast allows users to define custom channels in ~/.prismcast/channels.json. These user channels are merged with the predefined channels from the source code,
+/* PrismCast allows users to define custom channels in channels.json inside the data directory. These user channels are merged with the predefined channels,
  * with user channels taking precedence when there are key conflicts. This allows users to:
  *
  * 1. Add new channels not included in the default set
@@ -57,19 +56,16 @@ export interface UserChannelsLoadResult {
   providerSelections: Record<string, string>;
 }
 
-/* The channels file is stored in the same data directory as the config file (~/.prismcast).
+/* The channels file path is resolved via the centralized paths module (config/paths.ts). The data directory is initialized at startup before channel loading.
  */
-
-const dataDir = path.join(os.homedir(), ".prismcast");
-const channelsFilePath = path.join(dataDir, "channels.json");
 
 /**
  * Returns the path to the user channels file.
- * @returns The absolute path to ~/.prismcast/channels.json.
+ * @returns The absolute path to channels.json inside the data directory.
  */
 export function getUserChannelsFilePath(): string {
 
-  return channelsFilePath;
+  return getChannelsFilePath();
 }
 
 /* These functions handle reading and writing the channels file. All operations are async and handle errors gracefully.
@@ -107,7 +103,7 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
   try {
 
-    const content = await fsPromises.readFile(channelsFilePath, "utf-8");
+    const content = await fsPromises.readFile(getChannelsFilePath(), "utf-8");
 
     try {
 
@@ -144,7 +140,7 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
       const message = (parseError instanceof Error) ? parseError.message : String(parseError);
 
-      LOG.warn("Invalid JSON in channels file %s: %s. Using predefined channels only.", channelsFilePath, message);
+      LOG.warn("Invalid JSON in channels file %s: %s. Using predefined channels only.", getChannelsFilePath(), message);
 
       return { channels: {}, parseError: true, parseErrorMessage: message, providerSelections: {} };
     }
@@ -157,7 +153,7 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
     }
 
     // Other read errors - log and use predefined channels.
-    LOG.warn("Failed to read channels file %s: %s. Using predefined channels only.", channelsFilePath, (error instanceof Error) ? error.message : String(error));
+    LOG.warn("Failed to read channels file %s: %s. Using predefined channels only.", getChannelsFilePath(), (error instanceof Error) ? error.message : String(error));
 
     return { channels: {}, parseError: false, providerSelections: {} };
   }
@@ -172,7 +168,7 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 export async function saveUserChannels(channels: UserChannelMap): Promise<void> {
 
   // Ensure data directory exists.
-  await fsPromises.mkdir(dataDir, { recursive: true });
+  await fsPromises.mkdir(getDataDir(), { recursive: true });
 
   // Sort channels by key for consistent output.
   const sortedChannels: Record<string, Channel | Record<string, string>> = {};
@@ -203,7 +199,7 @@ export async function saveUserChannels(channels: UserChannelMap): Promise<void> 
   // Write channels with pretty formatting for readability.
   const content = JSON.stringify(sortedChannels, null, 2);
 
-  await fsPromises.writeFile(channelsFilePath, content + "\n", "utf-8");
+  await fsPromises.writeFile(getChannelsFilePath(), content + "\n", "utf-8");
 
   // Update in-memory cache so changes take effect immediately for new stream requests.
   loadedUserChannels = { ...channels };
@@ -248,7 +244,7 @@ export async function resetUserChannels(): Promise<void> {
 
   try {
 
-    await fsPromises.unlink(channelsFilePath);
+    await fsPromises.unlink(getChannelsFilePath());
 
     LOG.info("Channels file deleted, using predefined channels only.");
   } catch(error) {

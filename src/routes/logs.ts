@@ -4,10 +4,10 @@
  */
 import type { Express, Request, Response } from "express";
 import { isConsoleLogging, subscribeToLogs } from "../utils/index.js";
+import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
 import fs from "fs";
-import os from "os";
-import path from "path";
+import { getLogFilePath } from "../config/paths.js";
 
 const { promises: fsPromises } = fs;
 
@@ -118,7 +118,7 @@ async function readLogEntries(lines: number, levelFilter?: string): Promise<Logs
     return { entries: [], filtered: 0, mode: "console", total: 0 };
   }
 
-  const logFilePath = path.join(os.homedir(), ".prismcast", "prismcast.log");
+  const logFilePath = getLogFilePath(CONFIG);
 
   try {
 

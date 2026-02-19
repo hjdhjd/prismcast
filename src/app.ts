@@ -11,12 +11,15 @@ import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, 
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { startHdhrServer, stopHdhrServer } from "./hdhr/index.js";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
+import type { CliOverrides } from "./config/index.js";
 import type { Nullable } from "./types/index.js";
+import type { ParsedArgs } from "./index.js";
 import type { Server } from "http";
 import { cleanupIdleStreams } from "./streaming/hls.js";
 import consoleStamp from "console-stamp";
 import express from "express";
 import { getAllStreams } from "./streaming/registry.js";
+import { getLogFilePath } from "./config/paths.js";
 import { initializeUserChannels } from "./config/userChannels.js";
 import morgan from "morgan";
 import { setupRoutes } from "./routes/index.js";
@@ -25,7 +28,7 @@ import { validateProfiles } from "./config/profiles.js";
 import { verifyCaptureSystem } from "./streaming/setup.js";
 
 /* The logging mode is set at startup based on the --console CLI flag. When console logging is enabled, timestamps are added via console-stamp and output goes to
- * stdout/stderr. When file logging is used (the default), output goes to ~/.prismcast/prismcast.log.
+ * stdout/stderr. When file logging is used (the default), output goes to the configured log file (default: prismcast.log in the data directory).
  */
 
 // Track whether console logging is enabled, set during startServer().
@@ -304,24 +307,42 @@ async function buildApp(): Promise<Express> {
 /**
  * Initializes and starts the HTTP server. Before accepting connections, we validate configuration, clean up stale Chrome processes, and warm up the browser
  * instance.
- * @param useConsoleLogging - Whether to log to console instead of file. Defaults to false (file logging).
+ * @param parsedArgs - Parsed command-line arguments containing flags and override values.
  */
-export async function startServer(useConsoleLogging = false): Promise<void> {
+export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Set logging mode early before any log calls.
-  usingConsoleLogging = useConsoleLogging;
-  setConsoleLogging(useConsoleLogging);
+  usingConsoleLogging = parsedArgs.consoleLogging;
+  setConsoleLogging(parsedArgs.consoleLogging);
 
   // Apply console-stamp for timestamps only when using console logging.
-  if(useConsoleLogging) {
+  if(parsedArgs.consoleLogging) {
 
     consoleStamp(console, { format: ":date(yyyy/mm/dd HH:MM:ss.l)" });
   }
 
-  // Initialize configuration from file and environment variables, then validate.
+  // Build CLI overrides from parsed arguments. These have the highest priority in the merge order (CLI > env > config.json > defaults).
+  const cliOverrides: CliOverrides = {};
+
+  if(parsedArgs.chromeDataDir !== undefined) {
+
+    cliOverrides["paths.chromeDataDir"] = parsedArgs.chromeDataDir;
+  }
+
+  if(parsedArgs.logFile !== undefined) {
+
+    cliOverrides["paths.logFile"] = parsedArgs.logFile;
+  }
+
+  if(parsedArgs.port !== undefined) {
+
+    cliOverrides["server.port"] = parsedArgs.port;
+  }
+
+  // Initialize configuration from file and environment variables, then validate. CLI overrides are applied as the highest-priority merge pass.
   try {
 
-    await initializeConfiguration();
+    await initializeConfiguration(cliOverrides);
     validateConfiguration();
     validateProfiles();
   } catch(error) {
@@ -331,20 +352,21 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
     process.exit(1);
   }
 
-  displayConfiguration();
   setupGracefulShutdown();
 
   // Ensure the data directory exists before any operations that depend on it.
   await ensureDataDirectory();
 
-  // Initialize file logger if not using console logging.
-  if(!useConsoleLogging) {
+  // Initialize file logger if not using console logging. This must happen after config loading (to resolve the log file path) and after ensureDataDirectory()
+  // (to create the parent directory). All startup log messages that should appear in the log file must come after this point.
+  if(!parsedArgs.consoleLogging) {
 
-    await initializeFileLogger(CONFIG.logging.maxSize);
+    await initializeFileLogger(getLogFilePath(CONFIG), CONFIG.logging.maxSize);
   }
 
-  // Log the version as the first message captured by the file logger. This makes it easy to identify which release is running when reading logs.
+  // Log the version and active configuration as the first messages captured by the file logger.
   LOG.info("PrismCast v%s starting.", getPackageVersion());
+  displayConfiguration();
 
   // Log the debug filter status after the file logger is ready so the message is captured.
   if(isDebugLogging()) {
@@ -379,7 +401,7 @@ export async function startServer(useConsoleLogging = false): Promise<void> {
     LOG.info("Using FFmpeg at: %s", ffmpegPath);
   }
 
-  // Load user channels from ~/.prismcast/channels.json if it exists.
+  // Load user channels from channels.json in the data directory if it exists.
   await initializeUserChannels();
 
   killStaleChrome();
