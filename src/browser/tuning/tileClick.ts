@@ -4,9 +4,9 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
 import { LOG, evaluateWithAbort } from "../../utils/index.js";
+import { resolveMatchSelector, scrollAndClick } from "../channelSelection.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
-import { scrollAndClick } from "../channelSelection.js";
 
 // Maximum number of play button click attempts before giving up. The first click sometimes misses due to coordinate shifts from SPA animations or overlay
 // interference — retrying with fresh coordinates resolves most transient failures.
@@ -17,99 +17,97 @@ const MAX_PLAY_CLICK_ATTEMPTS = 3;
 const PLAY_CLICK_VERIFY_TIMEOUT = 3000;
 
 /**
- * Tile click strategy: finds a channel by matching the slug in tile image URLs, clicks the tile, and optionally clicks a play button if the profile specifies one.
- * This strategy works for multi-channel live TV sites that display channels as tiles in a horizontal shelf. When `channelSelection.playSelector` is set (e.g.,
- * Disney+), clicking the tile opens a modal and the play button is clicked to start the stream. When `playSelector` is absent, clicking the tile is the final action
- * and the site auto-plays the selected channel.
+ * Tile click strategy: finds a channel element using the profile's matchSelector (defaults to image URL matching), clicks the tile, and optionally clicks a play
+ * button if the profile specifies one. This strategy works for multi-channel live TV sites that display channels as tiles in a horizontal shelf. When
+ * `channelSelection.playSelector` is set (e.g., Disney+), clicking the tile opens a modal and the play button is clicked to start the stream. When `playSelector`
+ * is absent, clicking the tile is the final action and the site auto-plays the selected channel.
  *
  * The selection process:
- * 1. Search all images on the page for one whose src URL contains the channel slug
- * 2. Walk up the DOM to find the nearest clickable ancestor (the tile container)
+ * 1. Find channel elements matching the resolved matchSelector CSS selector
+ * 2. Walk up the DOM from the first visible match to find the nearest clickable ancestor (the tile container)
  * 3. Scroll the tile into view and click it
  * 4. If `playSelector` is configured: wait for the play button, click it, and verify the modal dismissed — retrying up to 3 times on silent failures
  * @param page - The Puppeteer page object.
- * @param profile - The resolved site profile with a non-null channelSelector (image URL slug).
+ * @param profile - The resolved site profile with a non-null channelSelector.
  * @returns Result object with success status and optional failure reason.
  */
 async function tileClickStrategyFn(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
 
-  const channelSlug = profile.channelSelector;
+  const selector = resolveMatchSelector(profile);
 
-  // Step 1: Find the channel tile by matching the slug in a descendant image's src URL. Live channels are displayed as tiles in a horizontal shelf, each containing
-  // an image with the network name in the URL label parameter (e.g., "poster_linear_espn_none"). We match the image, then walk up the DOM to find the nearest
-  // clickable ancestor that represents the entire tile.
-  const tileTarget = await evaluateWithAbort(page, (slug: string): Nullable<ClickTarget> => {
+  // Step 1: Find the channel tile by querying for elements matching the resolved matchSelector. The selector is interpolated from the profile's matchSelector
+  // template (or defaults to img[src*="channelSelector"]). We find the first visible match, then walk up the DOM to find the nearest clickable ancestor that
+  // represents the entire tile.
+  const tileTarget = await evaluateWithAbort(page, (sel: string): Nullable<ClickTarget> => {
 
-    const images = document.querySelectorAll("img");
+    const elements = document.querySelectorAll(sel);
 
-    for(const img of Array.from(images)) {
+    for(const el of Array.from(elements)) {
 
-      if(img.src.includes(slug)) {
+      const htmlEl = el as HTMLElement;
+      const elRect = htmlEl.getBoundingClientRect();
 
-        const imgRect = img.getBoundingClientRect();
+      // Verify the element has dimensions (is actually rendered and visible). This provides defense-in-depth if the coordinator's wait phase timed out before the
+      // element fully loaded.
+      if((elRect.width > 0) && (elRect.height > 0)) {
 
-        // Verify the image has dimensions (is actually rendered and visible). This matches the pattern in thumbnailRowStrategy and provides defense-in-depth if the
-        // wait phase timed out before the image fully loaded.
-        if((imgRect.width > 0) && (imgRect.height > 0)) {
+        // Walk up the DOM to find the nearest clickable ancestor wrapping the tile. Check for semantic clickable elements (<a>, <button>, role="button") and
+        // elements with explicit click handlers first. Track cursor:pointer elements as a fallback for sites using custom click handlers without semantic markup.
+        let ancestor: Nullable<HTMLElement> = htmlEl.parentElement;
+        let pointerFallback: Nullable<HTMLElement> = null;
 
-          // Walk up the DOM to find the nearest clickable ancestor wrapping the tile. Check for semantic clickable elements (<a>, <button>, role="button") and
-          // elements with explicit click handlers first. Track cursor:pointer elements as a fallback for sites using custom click handlers without semantic markup.
-          let ancestor: Nullable<HTMLElement> = img.parentElement;
-          let pointerFallback: Nullable<HTMLElement> = null;
+        while(ancestor && (ancestor !== document.body)) {
 
-          while(ancestor && (ancestor !== document.body)) {
+          const tag = ancestor.tagName;
 
-            const tag = ancestor.tagName;
+          // Semantic clickable elements are the most reliable indicators of an interactive tile container.
+          if((tag === "A") || (tag === "BUTTON") || (ancestor.getAttribute("role") === "button") || ancestor.hasAttribute("onclick")) {
 
-            // Semantic clickable elements are the most reliable indicators of an interactive tile container.
-            if((tag === "A") || (tag === "BUTTON") || (ancestor.getAttribute("role") === "button") || ancestor.hasAttribute("onclick")) {
+            ancestor.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
 
-              ancestor.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-
-              const rect = ancestor.getBoundingClientRect();
-
-              if((rect.width > 0) && (rect.height > 0)) {
-
-                return { x: rect.x + (rect.width / 2), y: rect.y + (rect.height / 2) };
-              }
-            }
-
-            // Track the nearest cursor:pointer ancestor with reasonable dimensions as a fallback.
-            if(!pointerFallback) {
-
-              const rect = ancestor.getBoundingClientRect();
-
-              if((rect.width > 20) && (rect.height > 20) && (window.getComputedStyle(ancestor).cursor === "pointer")) {
-
-                pointerFallback = ancestor;
-              }
-            }
-
-            ancestor = ancestor.parentElement;
-          }
-
-          // Fallback: use cursor:pointer ancestor if no semantic clickable was found above.
-          if(pointerFallback) {
-
-            pointerFallback.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-
-            const rect = pointerFallback.getBoundingClientRect();
+            const rect = ancestor.getBoundingClientRect();
 
             if((rect.width > 0) && (rect.height > 0)) {
 
               return { x: rect.x + (rect.width / 2), y: rect.y + (rect.height / 2) };
             }
           }
+
+          // Track the nearest cursor:pointer ancestor with reasonable dimensions as a fallback.
+          if(!pointerFallback) {
+
+            const rect = ancestor.getBoundingClientRect();
+
+            if((rect.width > 20) && (rect.height > 20) && (window.getComputedStyle(ancestor).cursor === "pointer")) {
+
+              pointerFallback = ancestor;
+            }
+          }
+
+          ancestor = ancestor.parentElement;
+        }
+
+        // Fallback: use cursor:pointer ancestor if no semantic clickable was found above.
+        if(pointerFallback) {
+
+          pointerFallback.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+
+          const rect = pointerFallback.getBoundingClientRect();
+
+          if((rect.width > 0) && (rect.height > 0)) {
+
+            return { x: rect.x + (rect.width / 2), y: rect.y + (rect.height / 2) };
+          }
         }
       }
     }
 
     return null;
-  }, [channelSlug]);
+  }, [selector]);
 
   if(!tileTarget) {
 
-    return { reason: "Channel tile not found in page images.", success: false };
+    return { reason: "Channel element not found for selector.", success: false };
   }
 
   // Click the channel tile. For sites with a play button (playSelector configured), this opens a modal. For auto-play sites, this is the final action.
@@ -200,4 +198,4 @@ async function tileClickStrategyFn(page: Page, profile: ChannelSelectionProfile)
   return { success: true };
 }
 
-export const tileClickStrategy: ChannelStrategyEntry = { execute: tileClickStrategyFn, usesImageSlug: true };
+export const tileClickStrategy: ChannelStrategyEntry = { execute: tileClickStrategyFn };

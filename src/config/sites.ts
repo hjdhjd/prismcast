@@ -46,14 +46,14 @@ import { extractDomain } from "../utils/index.js";
  * - keyboardDynamic: Keyboard fullscreen + network idle wait (extends keyboardFullscreen)
  * - keyboardMultiVideo: Keyboard fullscreen + multi-video selection (extends keyboardFullscreen)
  * - keyboardIframe: Keyboard fullscreen + iframe handling (extends keyboardFullscreen)
- * - keyboardDynamicMultiVideo: Keyboard + network idle + multi-video selection (extends keyboardDynamic)
+ * - keyboardDynamicMultiVideo: Keyboard + network idle + multi-video selection via matchSelector (extends keyboardDynamic)
  * - clickToPlayKeyboard: Click to start playback + keyboard fullscreen (extends keyboardFullscreen)
  * - brightcove: Brightcove players using API fullscreen + network idle wait (extends fullscreenApi)
  * - clickToPlayApi: Click to start playback + API fullscreen (extends fullscreenApi)
  * - disneyNow: DisneyNOW player with play button overlay + multi-video (extends clickToPlayApi)
  * - embeddedPlayer: Iframe-based players using fullscreen API (extends fullscreenApi)
- * - apiMultiVideo: API fullscreen + multi-video + auto-play tile channel selection (extends fullscreenApi)
- * - disneyPlus: API fullscreen + multi-video + tile selection with play button modal (extends fullscreenApi)
+ * - apiMultiVideo: API fullscreen + multi-video + auto-play tile channel selection via matchSelector (extends fullscreenApi)
+ * - disneyPlus: API fullscreen + multi-video + tile selection via matchSelector with play button modal (extends fullscreenApi)
  * - huluLive: Hulu Live TV with guide grid channel selection + fullscreen button (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
@@ -72,8 +72,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   apiMultiVideo: {
 
     category: "multiChannel",
-    channelSelection: { strategy: "tileClick" },
-    description: "Multi-channel sites with auto-play tile selection. Set Channel Selector to a unique string from the channel's tile image URL.",
+    channelSelection: { matchSelector: "img[src*=\"{channel}\"]", strategy: "tileClick" },
+    description: "Multi-channel sites with auto-play tile selection. Channel Selector is interpolated into the matchSelector CSS template to find the channel element.",
     extends: "fullscreenApi",
     selectReadyVideo: true,
     summary: "Multi-channel (auto-play tiles, needs selector)"
@@ -132,8 +132,8 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   disneyPlus: {
 
     category: "multiChannel",
-    channelSelection: { playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]", strategy: "tileClick" },
-    description: "Disney+ live channels with tile selection and play button modal. Set Channel Selector to a unique string from the channel's tile image URL.",
+    channelSelection: { matchSelector: "img[src*=\"{channel}\"]", playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]", strategy: "tileClick" },
+    description: "Disney+ live channels with tile selection and play button modal. Channel Selector is interpolated into matchSelector to find the element.",
     extends: "fullscreenApi",
     hideSelector: ".controls__footer__wrapper",
     selectReadyVideo: true,
@@ -241,12 +241,12 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
   // Profile for multi-channel player pages that use keyboard fullscreen and need both network idle wait and multi-video selection. These pages present multiple
   // channels to choose from, and the channelSelector property in the channel definition specifies which one to select. Extends keyboardDynamic to inherit network
-  // idle wait behavior. Uses thumbnailRow strategy for channel selection (find channel by thumbnail image URL, click adjacent show entry).
+  // idle wait behavior. Uses thumbnailRow strategy for channel selection (find channel element via matchSelector, click adjacent show entry).
   keyboardDynamicMultiVideo: {
 
     category: "multiChannel",
-    channelSelection: { strategy: "thumbnailRow" },
-    description: "Multi-channel sites with thumbnail row layout. Set Channel Selector to a unique string from the channel's thumbnail image URL.",
+    channelSelection: { matchSelector: "img[src*=\"{channel}\"]", strategy: "thumbnailRow" },
+    description: "Multi-channel sites with thumbnail row layout. Channel Selector is interpolated into the matchSelector CSS template to find the channel element.",
     extends: "keyboardDynamic",
     selectReadyVideo: true,
     summary: "Multi-channel (thumbnail row, needs selector)"

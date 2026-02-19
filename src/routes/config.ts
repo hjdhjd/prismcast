@@ -383,9 +383,11 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
     lines.push("<p class=\"category-desc\">Predefined channels already have Channel Selector values set. For custom channels, the value depends on the ");
     lines.push("profile's strategy type:</p>");
     lines.push("<dl class=\"profile-list\">");
-    lines.push("<dt>apiMultiVideo, disneyPlus, keyboardDynamicMultiVideo (image URL)</dt>");
-    lines.push("<dd>Right-click the channel's image on the site \u2192 Inspect Element \u2192 find the &lt;img&gt; tag \u2192 copy a unique portion ");
-    lines.push("of the <code>src</code> URL that identifies the channel (e.g., \"espn\" from a URL containing \"poster_linear_espn_none\").</dd>");
+    lines.push("<dt>apiMultiVideo, disneyPlus, keyboardDynamicMultiVideo (element selector)</dt>");
+    lines.push("<dd>These profiles use a <code>matchSelector</code> CSS template to find the channel element. The default pattern matches image URLs: ");
+    lines.push("right-click the channel's image on the site \u2192 Inspect Element \u2192 find the &lt;img&gt; tag \u2192 copy a unique portion ");
+    lines.push("of the <code>src</code> URL that identifies the channel (e.g., \"espn\" from a URL containing \"poster_linear_espn_none\"). ");
+    lines.push("Custom <code>matchSelector</code> patterns can match any attribute (aria-label, data-testid, title, etc.).</dd>");
     lines.push("<dt>foxLive (station code)</dt>");
     lines.push("<dd>Inspect a channel logo in the guide \u2192 find the <code>&lt;button&gt;</code> inside <code>GuideChannelLogo</code> \u2192 use ");
     lines.push("the <code>title</code> attribute value (e.g., BTN, FOXD2C, FS1, FS2, FWX).</dd>");
@@ -446,7 +448,8 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
   const channelSelectorHint = showHints ?
     "Identifies which channel to select on sites that host multiple live streams. Known values are suggested when the URL matches a supported site. " +
     "For guide-based profiles (Fox, HBO Max, Hulu, Sling, YouTube TV), use the channel name or station code from the guide. " +
-    "For image-based profiles, right-click a channel image \u2192 Inspect \u2192 copy a unique portion of the image src URL." :
+    "For tile and thumbnail profiles, right-click the channel element \u2192 Inspect \u2192 copy a unique value matching the profile's selector pattern " +
+    "(typically a portion of the image src URL)." :
     undefined;
 
   lines.push(...generateTextField(idPrefix + "-channelSelector", "channelSelector", "Channel Selector", channelSelectorValue,

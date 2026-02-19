@@ -2,7 +2,7 @@
  *
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
-import type { ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable, ResolvedSiteProfile } from "../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable, ResolvedSiteProfile } from "../types/index.js";
 import { LOG, delay } from "../utils/index.js";
 import { CHANNELS } from "../channels/index.js";
 import { CONFIG } from "../config/index.js";
@@ -19,9 +19,10 @@ import { yttvStrategy } from "./tuning/youtubeTv.js";
 /* Multi-channel streaming sites (like USA Network) present multiple channels on a single page, with a program guide for each channel. Users must select which
  * channel they want to watch by clicking on a show in the guide. This module coordinates the dispatch to per-provider strategy functions in the tuning/ directory.
  *
- * Each strategy is a self-contained file under tuning/ that exports a single ChannelStrategyEntry object. The coordinator handles pre-dispatch concerns (image
- * polling, no-op checks) and post-dispatch logging. Strategy files may import scrollAndClick() and normalizeChannelName() from this coordinator — the circular
- * import is safe because all cross-module calls happen inside async functions long after module evaluation completes.
+ * Each strategy is a self-contained file under tuning/ that exports a single ChannelStrategyEntry object. The coordinator handles pre-dispatch concerns
+ * (matchSelector-based element polling, no-op checks) and post-dispatch logging. Strategy files may import scrollAndClick(), normalizeChannelName(), and
+ * resolveMatchSelector() from this coordinator — the circular import is safe because all cross-module calls happen inside async functions long after module
+ * evaluation completes.
  */
 
 /* Adding a new channel selection provider:
@@ -31,17 +32,17 @@ import { yttvStrategy } from "./tuning/youtubeTv.js";
  *    - execute (required): The strategy function that selects the channel in the provider's guide UI.
  *    - clearCache: If your strategy caches state (row positions, URLs), provide a function that clears it.
  *    - resolveDirectUrl / invalidateDirectUrl: If your strategy discovers stable watch URLs that can be reused across tunes, provide cache lookup and invalidation.
- *    - usesImageSlug: Set to true if channelSelector is an image URL slug requiring load polling before dispatch.
  * 3. Import the entry here and add it to the strategies registry with the strategy name as the key.
  * 4. Add the strategy name to the ChannelSelectionStrategy union type in types/index.ts.
  * 5. Add a site profile entry in config/sites.ts that references the new strategy name.
  *
- * The coordinator handles all cross-cutting concerns (dispatch, cache clearing, direct URL resolution, image polling) through the ChannelStrategyEntry interface.
- * Strategy files may import scrollAndClick(), normalizeChannelName(), and logAvailableChannels() from this module for shared utilities.
+ * The coordinator handles all cross-cutting concerns (dispatch, cache clearing, direct URL resolution, matchSelector polling) through the ChannelStrategyEntry
+ * interface. Strategy files may import scrollAndClick(), normalizeChannelName(), resolveMatchSelector(), and logAvailableChannels() from this module for shared
+ * utilities.
  */
 
 // Strategy dispatch registry. Maps strategy names from ChannelSelectionStrategy to their implementation entry. Adding a new provider requires a single entry here
-// — all cross-cutting concerns (cache clearing, direct URL resolution, image polling) are driven by the entry's hooks.
+// — all cross-cutting concerns (cache clearing, direct URL resolution, matchSelector polling) are driven by the entry's hooks.
 const strategies: Record<string, ChannelStrategyEntry> = {
 
   foxGrid: foxStrategy,
@@ -131,6 +132,22 @@ export function normalizeChannelName(name: string): string {
   return name.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+// Resolves the CSS selector for finding a channel element. Interpolates the {channel} placeholder in the profile's matchSelector template with the channelSelector
+// value. When matchSelector is not configured, falls back to image URL matching for backward compatibility.
+// Exported for use by tuning strategy files (tileClick, thumbnailRow).
+export function resolveMatchSelector(profile: ChannelSelectionProfile): string {
+
+  const template = profile.channelSelection.matchSelector;
+
+  if(template) {
+
+    return template.replaceAll("{channel}", profile.channelSelector);
+  }
+
+  // Default to image URL slug matching for backward compatibility with profiles that don't specify matchSelector.
+  return "img[src*=\"" + profile.channelSelector + "\"]";
+}
+
 /**
  * Logs available channel names from a provider's guide grid when channel selection fails. Produces an actionable log message listing channel names that users can
  * use as `channelSelector` values in user-defined channels. When `presetSuffix` is provided, channels already covered by built-in preset definitions are filtered
@@ -215,7 +232,7 @@ export function logAvailableChannels(options: {
  * tuneToChannel() after page navigation.
  *
  * The function handles:
- * - Polling for channel slug image readiness before strategy dispatch (when entry.usesImageSlug is true)
+ * - Polling for channel element readiness before strategy dispatch (when profile.channelSelection.matchSelector is set)
  * - Strategy dispatch based on profile.channelSelection.strategy
  * - No-op for single-channel sites (strategy "none" or no channelSelector)
  * - Logging of selection attempts and results
@@ -233,7 +250,6 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     return { success: true };
   }
 
-  // Look up the strategy entry before image polling so we can check entry.usesImageSlug.
   const entry = strategies[channelSelection.strategy];
 
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -244,25 +260,47 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     return { reason: "Unknown channel selection strategy.", success: false };
   }
 
-  // Poll for the channel slug image to appear and fully load. We check both src match and load completion (img.complete + naturalWidth) to ensure the image is
-  // actually rendered before proceeding. This prevents race conditions where the img element exists with the correct src but the browser hasn't finished fetching
-  // and rendering it, which can cause layout instability and click failures. Only run for strategies that use an image URL slug as their channelSelector
-  // (thumbnailRow, tileClick). Strategies using channel names or station codes skip this.
-  if(entry.usesImageSlug) {
+  // Poll for the channel element to appear and become visible. Only run when matchSelector is explicitly configured — the default fallback in
+  // resolveMatchSelector() is for strategy-internal use, and guide-based strategies that don't set matchSelector skip this wait entirely. For <img> elements, we
+  // also verify load completion (img.complete + naturalWidth) to prevent race conditions where the element exists with the correct src but hasn't finished
+  // rendering, which can cause layout instability and click failures.
+  if(channelSelection.matchSelector) {
+
+    const selector = resolveMatchSelector(profile);
 
     try {
 
       await page.waitForFunction(
-        (slug: string): boolean => {
+        (sel: string): boolean => {
 
-          return Array.from(document.querySelectorAll("img")).some((img) => img.src && img.src.includes(slug) && img.complete && (img.naturalWidth > 0));
+          const el = document.querySelector(sel);
+
+          if(!el) {
+
+            return false;
+          }
+
+          const rect = el.getBoundingClientRect();
+
+          if(!((rect.width > 0) && (rect.height > 0))) {
+
+            return false;
+          }
+
+          // For <img> elements, also verify the image has fully loaded.
+          if(el instanceof HTMLImageElement) {
+
+            return el.complete && (el.naturalWidth > 0);
+          }
+
+          return true;
         },
         { timeout: CONFIG.playback.channelSelectorDelay },
-        profile.channelSelector
+        selector
       );
     } catch {
 
-      // Timeout — the image hasn't loaded yet. Proceed anyway and let the strategy evaluate and report not-found naturally.
+      // Timeout — the element hasn't appeared or loaded yet. Proceed anyway and let the strategy evaluate and report not-found naturally.
     }
   }
 

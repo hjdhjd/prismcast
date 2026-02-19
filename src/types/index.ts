@@ -804,8 +804,10 @@ export interface StreamListResponse {
  * - "none": No channel selection needed (single-channel sites). This is the default.
  * - "slingGrid": Find channel by data-testid in a virtualized A-Z guide grid, scroll via binary search on .guide-cell scrollTop, click the on-now program
  *   cell. Used by Sling TV.
- * - "thumbnailRow": Find channel by matching image URL slug, click adjacent element on the same row. Used by USA Network.
- * - "tileClick": Find channel tile by matching image URL slug, click tile, then optionally click play button if playSelector is configured. Used by Disney+.
+ * - "thumbnailRow": Find channel element using the profile's matchSelector (defaults to image URL matching), click adjacent element on the same row. Used by
+ *   USA Network.
+ * - "tileClick": Find channel element using the profile's matchSelector (defaults to image URL matching), click tile, then optionally click play button if
+ *   playSelector is configured. Used by Disney+.
  * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
 export type ChannelSelectionStrategy = "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
@@ -818,6 +820,11 @@ export interface ChannelSelectionConfig {
   // CSS selector for a tab or button to click to reveal the channel list before selection. Some sites hide the channel list behind a tab (e.g., a "Channels" tab
   // in a guide grid). When set, this element is clicked before searching for channel images. Only used by the guideGrid strategy.
   listSelector?: string;
+
+  // CSS selector template for finding the channel element on the page. The placeholder {channel} is replaced with the channel's channelSelector value at runtime
+  // (e.g., "img[src*=\"{channel}\"]" becomes "img[src*=\"espn\"]"). Supports any valid CSS selector — match by image src, aria-label, data-testid, title, or any
+  // other attribute. Used by the tileClick and thumbnailRow strategies. When absent, these strategies default to image URL matching (img[src*="..."]).
+  matchSelector?: string;
 
   // CSS selector for a play button that must be clicked after selecting a channel entry. Some sites show a playback action overlay after channel selection instead
   // of immediately starting playback. When set, this element is waited for and clicked after the channel entry click. Used by the guideGrid and tileClick strategies.
@@ -885,12 +892,6 @@ export interface ChannelStrategyEntry {
    * provider APIs. The page parameter allows setting up response interception or accessing browser context when needed (e.g., cold cache setup).
    */
   resolveDirectUrl?: (channelSelector: string, page: Page) => Promise<Nullable<string>>;
-
-  /**
-   * Set to true when the channelSelector is an image URL slug that must be polled for load completion before strategy dispatch. The coordinator waits for an img
-   * element whose src contains the slug to reach loaded state.
-   */
-  usesImageSlug?: boolean;
 }
 
 /**
