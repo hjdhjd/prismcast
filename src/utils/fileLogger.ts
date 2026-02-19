@@ -5,6 +5,7 @@
 import type { Nullable } from "../types/index.js";
 import df from "dateformat";
 import fs from "node:fs";
+import { isAnyDebugEnabled } from "./debugFilter.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -248,7 +249,9 @@ async function checkAndTrimFile(): Promise<void> {
 
     approximateSize = stats.size;
 
-    if(approximateSize > maxLogSize) {
+    // Skip trimming when debug logging is active. Debug sessions generate high-volume output that is valuable for diagnosis — trimming mid-session would discard
+    // the very data we are trying to capture.
+    if((approximateSize > maxLogSize) && !isAnyDebugEnabled()) {
 
       await trimLogFile();
     }

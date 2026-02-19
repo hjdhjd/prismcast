@@ -902,7 +902,7 @@ export const DEFAULTS: Config = {
     navigationTimeout: 10000,
     qualityPreset: "720p-high",
     videoBitsPerSecond: 12000000,
-    videoTimeout: 10000
+    videoTimeout: 11000
   }
 };
 
