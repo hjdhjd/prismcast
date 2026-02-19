@@ -204,6 +204,11 @@ interface SegmenterState {
   // Total number of moof boxes that did not start with a keyframe.
   nonKeyframeCount: number;
 
+  // Normalized reference position in seconds for offset computation during tab replacement. Computed once when the moov is parsed by converting
+  // initialTrackTimestamps to seconds via timescales and averaging across tracks. All per-track offsets are derived from this single position to eliminate the
+  // inter-track bias that would otherwise be frozen from the old segmenter's A-V jitter at the moment of replacement. Null for fresh streams (offset = 0).
+  normalizedReferencePositionSec: Nullable<number>;
+
   // Whether the next segment should have a discontinuity marker (consumed when first segment is output).
   pendingDiscontinuity: boolean;
 
@@ -239,8 +244,8 @@ interface SegmenterState {
   // Running total of keyframe intervals in milliseconds. Used with keyframeCount to compute the average.
   totalKeyframeIntervalMs: number;
 
-  // Per-track constant offsets applied to Chrome's original tfdt values. Zero during normal playback (pure pass-through). Computed lazily on the first moof per track
-  // after tab replacement: offset = initialTrackTimestamp - chromeTfdt.
+  // Per-track constant offsets applied to Chrome's original tfdt values. Zero during normal playback (pure pass-through). During tab replacement, derived from
+  // normalizedReferencePositionSec to ensure all tracks anchor to the same second-position, eliminating inter-track bias. Computed lazily on first moof per track.
   trackOffsets: Map<number, bigint>;
 
   // Tracks which track IDs have had their offset computed. Offsets are computed lazily on the first moof per track because Chrome's first tfdt value isn't known
@@ -390,6 +395,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     maxKeyframeIntervalMs: 0,
     minKeyframeIntervalMs: Infinity,
     nonKeyframeCount: 0,
+    normalizedReferencePositionSec: null,
     pendingDiscontinuity: pendingDiscontinuity ?? false,
     segmentDurations: new Map(),
     segmentFirstMoofChecked: false,
@@ -713,6 +719,32 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           LOG.debug("streaming:segmenter", "Init segment received: %d bytes, version=%d, timescales=[%s].",
             initData.length, state.initVersion, timescaleEntries.join(", "));
 
+          // Compute the normalized reference position for tab replacement offset initialization. This converts the old segmenter's per-track timestamp counters
+          // to seconds via the new moov's timescales (which Chrome keeps consistent across captures), then averages across tracks to produce a single shared position.
+          // Deriving all per-track offsets from this shared reference eliminates the inter-track bias that per-track independent offsets would freeze from the old
+          // segmenter's A-V jitter at the moment of replacement.
+          if(initialTrackTimestamps && (state.trackTimescales.size > 0)) {
+
+            let totalSec = 0;
+            let count = 0;
+
+            for(const [ trackId, timestamp ] of initialTrackTimestamps) {
+
+              const timescale = state.trackTimescales.get(trackId);
+
+              if(timescale) {
+
+                totalSec += Number(timestamp) / timescale;
+                count++;
+              }
+            }
+
+            if(count > 0) {
+
+              state.normalizedReferencePositionSec = totalSec / count;
+            }
+          }
+
           // Suppress the discontinuity marker when codec parameters are unchanged (byte-identical init). This avoids an unnecessary decoder flush on the client.
           if(!initChanged && state.pendingDiscontinuity) {
 
@@ -746,10 +778,11 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         }
       }
 
-      // Rewrite tfdt.baseMediaDecodeTime in each traf by adding a constant per-track offset to Chrome's original values. The offset is 0 during normal playback (pure
-      // pass-through) and computed lazily on the first moof per track after tab replacement. This preserves Chrome's wall-clock-based inter-track sync, eliminating the
-      // A/V drift that accumulated under the old trun-based timestamp regeneration approach. Wrapped in try/catch so a malformed moof never crashes the segmenter — the
-      // segment passes through with Chrome's original timestamps, which is better than dropping it entirely.
+      // Rewrite tfdt.baseMediaDecodeTime in each traf by adding a constant per-track offset to Chrome's original values. This preserves Chrome's wall-clock-based
+      // inter-track sync rather than regenerating timestamps from trun durations (which accumulates drift). The offset is 0 during normal playback (pure pass-through).
+      // During tab replacement, offsets are derived from a normalized reference position (mean of all tracks' old positions in seconds) to eliminate inter-track
+      // bias — see normalizedReferencePositionSec. Wrapped in try/catch so a malformed moof never crashes the segmenter — the segment passes through with Chrome's
+      // original timestamps, which is better than dropping it entirely.
       try {
 
         const trackResults = offsetMoofTimestamps(box.data, state.trackOffsets);
@@ -767,7 +800,18 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           if(!state.trackOffsetsInitialized.has(trackId)) {
 
             const initialValue = initialTrackTimestamps?.get(trackId);
-            const offset = (initialValue !== undefined) ? (initialValue - result.originalTfdt) : 0n;
+            const timescale = state.trackTimescales.get(trackId);
+            let offset = 0n;
+
+            // Compute the per-track offset. When a normalized reference position is available (tab replacement with valid timescales), derive the offset from
+            // the shared reference to eliminate inter-track bias. Otherwise fall back to per-track independent offsets (fresh stream or moov parse failure).
+            if((state.normalizedReferencePositionSec !== null) && timescale) {
+
+              offset = BigInt(Math.round(state.normalizedReferencePositionSec * timescale)) - result.originalTfdt;
+            } else if(initialValue !== undefined) {
+
+              offset = initialValue - result.originalTfdt;
+            }
 
             state.trackOffsets.set(trackId, offset);
             state.trackOffsetsInitialized.add(trackId);
