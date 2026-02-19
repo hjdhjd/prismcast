@@ -99,6 +99,10 @@ ENV DISPLAY=:99
 ENV CHROME_BIN=/usr/local/bin/chrome-no-sandbox
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
+# Data persistence. Mount a volume at the data directory to preserve configuration, Chrome profile, and logs across container recreations:
+#   docker run -v prismcast-data:/root/.prismcast ...
+# Custom directories are supported via PRISMCAST_DATA_DIR, PRISMCAST_CHROME_DATA_DIR, and PRISMCAST_LOG_FILE environment variables.
+
 # Expose all ports the container listens on.
 # 5589 - PrismCast web UI and streaming.
 # 5900 - VNC server for direct VNC client access.

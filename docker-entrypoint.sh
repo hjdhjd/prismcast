@@ -12,6 +12,10 @@ SCREEN_DEPTH=${SCREEN_DEPTH:-24}
 VNC_PORT=${VNC_PORT:-5900}
 NOVNC_PORT=${NOVNC_PORT:-6080}
 
+# Resolve PrismCast directories from environment variables, falling back to the same defaults PrismCast uses internally.
+DATA_DIR="${PRISMCAST_DATA_DIR:-/root/.prismcast}"
+LOGFILE="${PRISMCAST_LOG_FILE:-${DATA_DIR}/prismcast.log}"
+
 export DISPLAY=:${DISPLAY_NUM}
 
 echo "Starting PrismCast with noVNC support..."
@@ -20,6 +24,7 @@ echo "  Screen: ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}"
 echo "  VNC Port: ${VNC_PORT}"
 echo "  noVNC Port: ${NOVNC_PORT}"
 echo "  PrismCast Port: ${PORT:-5589}"
+echo "  Data Directory: ${DATA_DIR}"
 
 # Graceful shutdown handler. We terminate PrismCast first because it has its own shutdown handler that closes the browser and active streams cleanly. After
 # PrismCast exits, we kill the remaining background services (Xvfb, x11vnc, noVNC, tail).
@@ -96,10 +101,14 @@ echo ""
 
 # Start PrismCast in the background. PrismCast logs to a file by default.
 echo "Starting PrismCast..."
-LOGFILE="/root/.prismcast/prismcast.log"
 
-# Ensure the log directory exists before PrismCast starts writing to it.
-mkdir -p /root/.prismcast
+# Ensure the data directory exists before PrismCast starts writing to it.
+mkdir -p "$DATA_DIR"
+
+# Create a custom Chrome data directory if specified. PrismCast creates this internally, but the parent path must exist for Docker volume mounts to work.
+if [ -n "$PRISMCAST_CHROME_DATA_DIR" ]; then
+  mkdir -p "$PRISMCAST_CHROME_DATA_DIR"
+fi
 
 # Launch PrismCast, forwarding any command-line arguments from docker run.
 prismcast "$@" &
