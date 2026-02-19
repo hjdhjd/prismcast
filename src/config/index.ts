@@ -4,7 +4,7 @@
  */
 import type { Config, Nullable } from "../types/index.js";
 import { DEFAULTS, loadUserConfig, mergeConfiguration } from "./userConfig.js";
-import { LOG, getCurrentPattern, initDebugFilter, isAnyDebugEnabled } from "../utils/index.js";
+import { LOG, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.js";
 import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.js";
 import { getChromeDataDir, getConfigFilePath } from "./paths.js";
 import path from "node:path";
@@ -339,7 +339,7 @@ export function displayConfiguration(): void {
   const presetResult = getEffectivePreset(CONFIG);
   const presetStatus = formatPresetStatus(presetResult);
 
-  LOG.info("Starting PrismCast with configuration:");
+  LOG.info("Starting PrismCast v%s with configuration:", getPackageVersion());
   LOG.info("  Configuration file: %s", getConfigFilePath());
   LOG.info("  Chrome profile: %s", getChromeDataDir(CONFIG));
   LOG.info("  Server port: %s", CONFIG.server.port);

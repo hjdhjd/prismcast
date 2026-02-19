@@ -365,7 +365,6 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   }
 
   // Log the version and active configuration as the first messages captured by the file logger.
-  LOG.info("PrismCast v%s starting.", getPackageVersion());
   displayConfiguration();
 
   // Log the debug filter status after the file logger is ready so the message is captured.
