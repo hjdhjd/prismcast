@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.0 (2026-02-19)
+  * New feature: Hulu direct tuning — channels now cache on first tune for faster subsequent tunes.
+  * New feature: `upgrade` command for CLI and web UI — detects your install method (npm, Homebrew, Docker) and runs the appropriate upgrade.
+  * New feature: optionally include channel numbers in the M3U playlist for Channels DVR.
+  * New feature: configurable data, Chrome profile, and log file paths via `--data-dir`, `--chrome-data-dir`, and `--log-file` CLI flags and environment variables, with a new `--list-env` option to list all available settings.
+  * Improvement: smoother stream continuity and resiliency across playback recovery boundaries.
+  * Improvement: cleaner audio transitions when switching between channels.
+  * Improvement: more flexible site profile system for channel matching, fullscreen handling, and overlay suppression.
+  * Improvement: broader compatibility with additional streaming site layouts.
+  * Improvement: Docker entrypoint supports custom data, Chrome, and log directories via environment variables for flexible volume mount configurations.
+  * Improvement: additions and refinements to predefined channels.
+  * Fix: provider playlist filter now correctly honors user-specified include and exclude selections.
+  * Housekeeping.
+
 ## 1.3.4 (2026-02-16)
   * Improvement: documentation updates.
   * Improvement: give Chrome additional time to shutdown gracefully to prevent profile database corruption in Docker volumes.
