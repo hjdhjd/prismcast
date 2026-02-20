@@ -55,13 +55,7 @@ export interface M3UParseResult {
  */
 export function generateChannelKey(name: string): string {
 
-  return name
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, MAX_KEY_LENGTH);
+  return name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-+|-+$/g, "").slice(0, MAX_KEY_LENGTH);
 }
 
 /**

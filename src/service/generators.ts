@@ -79,12 +79,7 @@ export interface ServiceGenerator {
  */
 function escapeXml(str: string): string {
 
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
 /**
@@ -292,10 +287,7 @@ function createSystemdGenerator(): ServiceGenerator {
       const envVars: Record<string, string> = { PRISMCAST_SERVICE: "1", ...options.envVars };
 
       // Generate Environment= lines, sorted alphabetically.
-      const envLines = Object.entries(envVars)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([ key, value ]) => "Environment=\"" + key + "=" + value + "\"")
-        .join("\n");
+      const envLines = Object.entries(envVars).sort(([a], [b]) => a.localeCompare(b)).map(([ key, value ]) => "Environment=\"" + key + "=" + value + "\"").join("\n");
 
       // Generate the unit file content.
       return [
@@ -448,10 +440,7 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
       const envVars: Record<string, string> = { PRISMCAST_SERVICE: "1", ...options.envVars };
 
       // Generate environment variable SET commands.
-      const envSets = Object.entries(envVars)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([ key, value ]) => "set \"" + key + "=" + value + "\"")
-        .join(" && ");
+      const envSets = Object.entries(envVars).sort(([a], [b]) => a.localeCompare(b)).map(([ key, value ]) => "set \"" + key + "=" + value + "\"").join(" && ");
 
       // Return the command to run (used by install).
       return "cmd /c \"cd /d \"" + workingDir + "\" && " + envSets + " && \"" + nodePath + "\" \"" + entryPoint + "\"\"";

@@ -594,15 +594,8 @@ async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
 
     // Remove any existing extension arguments and add our own pointing to the extracted extension.
     opts.args = (opts.args ?? [])
-      .filter((arg: string): boolean => {
-
-        return !arg.startsWith("--load-extension=") && !arg.startsWith("--disable-extensions-except=");
-      })
-      .concat([
-
-        [ "--disable-extensions-except=", extensionPath ].join(""),
-        [ "--load-extension=", extensionPath ].join("")
-      ]);
+      .filter((arg: string): boolean => !arg.startsWith("--load-extension=") && !arg.startsWith("--disable-extensions-except="))
+      .concat([ "--disable-extensions-except=" + extensionPath, "--load-extension=" + extensionPath ]);
   }
 
   return puppeteerLaunch(opts);

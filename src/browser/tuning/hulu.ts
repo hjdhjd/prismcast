@@ -313,7 +313,7 @@ function inferLocalAffiliate(rendered: RenderedChannel[], targetName: string): N
  * @param timeout - Optional timeout in milliseconds for the play button to appear. Defaults to CONFIG.streaming.videoTimeout.
  * @returns Result object with success status and optional failure reason.
  */
-async function waitForPlayButton(page: Page, playSelector: Nullable<string> | undefined, timeout?: number): Promise<ChannelSelectorResult> {
+async function waitForPlayButton(page: Page, playSelector?: string, timeout?: number): Promise<ChannelSelectorResult> {
 
   if(!playSelector) {
 
@@ -377,7 +377,7 @@ async function waitForPlayButton(page: Page, playSelector: Nullable<string> | un
  * @param channelName - The original channel name for logging.
  * @returns Result object with success status and optional failure reason.
  */
-async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelector: Nullable<string> | undefined, channelName: string): Promise<ChannelSelectorResult> {
+async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelector: string | undefined, channelName: string): Promise<ChannelSelectorResult> {
 
   // Maximum number of on-now cell click attempts. The first click may not register if React hasn't finished hydrating the guide's event handlers.
   const MAX_CLICK_ATTEMPTS = 3;
@@ -1233,7 +1233,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       // Promise that resolves when both UUID and EAB are available for the playlist swap. On warm cache, resolves immediately (both injected at install time).
       // On cold cache, resolves when the in-page listing and details API response parsers have captured both values. The playlist handler awaits this Promise
       // to hold the request until the target channel's data is ready.
-      let directTuneResolve: (() => void) | null = null;
+      let directTuneResolve: Nullable<() => void> = null;
 
       const directTunePromise = (uuid && eab) ?
         Promise.resolve() :
@@ -1290,7 +1290,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       // timeout) before expanding, so even the very first details request gets expanded with listing-derived EABs. The listing response typically arrives
       // ~200-600ms after the request fires, adding minimal latency to the details response — and the details API is not on the critical path for the channel
       // grid that binary search needs (it only provides program info for the mini-guide overlay).
-      let listingCapturedResolve: (() => void) | null = null;
+      let listingCapturedResolve: Nullable<() => void> = null;
 
       const listingCapturedPromise = new Promise<void>((resolve) => {
 
@@ -1362,8 +1362,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
               listingCapturedResolve();
               listingCapturedResolve = null;
             }
-          // eslint-disable-next-line @typescript-eslint/no-empty-function
-          }).catch(() => {});
+          }).catch(() => { /* Intentional no-op. */ });
         } catch {
 
           // Response doesn't support clone() or json() — silently skip capture.
@@ -1422,8 +1421,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
                 }
               }
             }
-          // eslint-disable-next-line @typescript-eslint/no-empty-function
-          }).catch(() => {});
+          }).catch(() => { /* Intentional no-op. */ });
         } catch {
 
           // Response doesn't support clone() or json() — silently skip capture.
@@ -1432,7 +1430,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
       // Extracts the request body from either the init options or a cloned Request object. Returns null if the body is not a string and the input is not a
       // Request. Used by all three API handlers to normalize body extraction across the two fetch call patterns Hulu uses.
-      async function getBodyText(input: RequestInfo | URL, init?: RequestInit): Promise<string | null> {
+      async function getBodyText(input: RequestInfo | URL, init?: RequestInit): Promise<Nullable<string>> {
 
         if(init && (typeof init.body === "string")) {
 

@@ -1249,9 +1249,7 @@ export function getSettingsTabSections(): SettingsSection[] {
 
     displayName: section.displayName,
     id: section.id,
-    settings: section.paths
-      .map((p) => getSettingByPath(p))
-      .filter((s): s is SettingMetadata => s !== undefined)
+    settings: section.paths.map((p) => getSettingByPath(p)).filter((s): s is SettingMetadata => s !== undefined)
   }));
 }
 
@@ -1265,15 +1263,11 @@ export function getUITabs(): UITab[] {
   const settingsTabPaths = SETTINGS_TAB_SECTIONS.flatMap((s) => s.paths);
 
   // Build Settings tab from sections.
-  const settingsTabSettings = settingsTabPaths
-    .map((p) => getSettingByPath(p))
-    .filter((s): s is SettingMetadata => s !== undefined);
+  const settingsTabSettings = settingsTabPaths.map((p) => getSettingByPath(p)).filter((s): s is SettingMetadata => s !== undefined);
 
   // Build Advanced tab from everything not in Settings.
   const advancedPaths = getAllSettingPaths().filter((p) => !settingsTabPaths.includes(p));
-  const advancedSettings = advancedPaths
-    .map((p) => getSettingByPath(p))
-    .filter((s): s is SettingMetadata => s !== undefined);
+  const advancedSettings = advancedPaths.map((p) => getSettingByPath(p)).filter((s): s is SettingMetadata => s !== undefined);
 
   return [
     {
