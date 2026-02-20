@@ -199,7 +199,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "LOG_MAX_SIZE",
       label: "Max Log Size",
       max: 104857600,
-      min: 10240,
+      min: 524288,
       path: "logging.maxSize",
       type: "integer",
       unit: "bytes"

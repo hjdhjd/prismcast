@@ -1110,13 +1110,16 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     // Render as input field.
     const inputType = (setting.type === "float") ? "number" : (((setting.type === "integer") || (setting.type === "port")) ? "number" : "text");
 
-    // Calculate step based on type and displayDivisor. When displayDivisor is set, step must match the storage granularity to ensure HTML5 validation passes
-    // (the check is: (value - min) % step === 0). For example, ms→seconds with divisor 1000 needs step 0.001 so any millisecond value is valid.
+    // Calculate step for arrow key increments. Auto-derived from min/displayDivisor: when the min in display units is between 0 and 1 (exclusive), use it as the
+    // step (e.g., 500ms → 0.5s step); otherwise step is 1 whole display unit. This produces sensible arrow increments while satisfying HTML5 validation — the step
+    // always divides evenly into all valid values since stored values are integer multiples of the minimum.
     let step = "1";
 
-    if(setting.displayDivisor) {
+    if(setting.displayDivisor && (setting.min !== undefined)) {
 
-      step = String(1 / setting.displayDivisor);
+      const displayMin = setting.min / setting.displayDivisor;
+
+      step = (displayMin > 0) && (displayMin < 1) ? String(displayMin) : "1";
     } else if(setting.type === "float") {
 
       step = "0.01";
