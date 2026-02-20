@@ -183,7 +183,7 @@ jobs:
           FORMULA_SHA=$(echo "$RESPONSE" | jq -r '.sha')
 
           # Update the url and sha256 lines in the formula.
-          FORMULA=$(echo "$FORMULA" | sed "s|url \".*\"|url \"${URL}\"|")
+          FORMULA=$(echo "$FORMULA" | sed "s|url \"https://registry.npmjs.org/prismcast/-/prismcast-.*\.tgz\"|url \"${URL}\"|")
           FORMULA=$(echo "$FORMULA" | sed "s|sha256 \".*\"|sha256 \"${SHA256}\"|")
 
           # Push the updated formula via the GitHub Contents API.
