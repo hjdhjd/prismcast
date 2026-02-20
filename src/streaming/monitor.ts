@@ -625,9 +625,11 @@ export function monitorPlaybackHealth(
   let segmentWaitStartTime: Nullable<number> = null;         // Timestamp when we started waiting for segment production after recovery grace period.
   let segmentProductionStalled = false;                       // Flag indicating segment production has stalled after recovery.
 
-  // Continuous segment size monitoring state. Detects spontaneous capture pipeline death (no preceding recovery event) by checking segment sizes. Dead pipelines
-  // produce tiny segments (18 bytes observed) while the video element appears healthy. This complements post-recovery index monitoring.
+  // Continuous segment size and staleness monitoring state. Detects spontaneous capture pipeline death (no preceding recovery event) by checking segment sizes and
+  // production rate. Dead pipelines may produce tiny segments (18 bytes observed) or stop producing segments entirely, while the video element appears healthy. This
+  // complements post-recovery index monitoring.
   let lastCheckedSegmentIndex = 0;                            // Last segment index we inspected (to detect new segments).
+  let lastSegmentAdvanceTime = Date.now();                    // Timestamp when segment index last advanced. Used for staleness detection.
   let consecutiveTinySegments = 0;                            // Count of consecutive tiny segments.
   let wasInTinySegmentState = false;                          // For detecting spontaneous recovery (tiny→valid transition without explicit recovery).
 
@@ -686,6 +688,11 @@ export function monitorPlaybackHealth(
   // The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset (480p/3Mbps ≈ 750KB/segment).
   const TINY_SEGMENT_THRESHOLD = 512000; // 500KB - segments below this indicate dead or degraded capture.
   const TINY_SEGMENT_COUNT_TRIGGER = 10;  // Trigger recovery after 10 consecutive tiny segments (~20 seconds with 2-second segments).
+
+  // Segment staleness timeout. When no new segments have been produced for this duration, the capture pipeline is considered dead even though the video element may
+  // appear healthy. This catches the case where Chrome's MediaRecorder silently stops emitting data without raising an error — the input stream stays "open" but no
+  // data events fire. The 20-second threshold is 4x the maximum expected moof delivery interval (5 seconds) to avoid false positives during normal bursty delivery.
+  const SEGMENT_STALENESS_TIMEOUT = 20000;  // 20 seconds.
 
   // Fixed margin in milliseconds before the maxContinuousPlayback limit at which a proactive reload is triggered. Two minutes provides enough time for page
   // navigation and video reinitialization to complete before the site enforces its cutoff.
@@ -819,6 +826,7 @@ export function monitorPlaybackHealth(
     consecutiveTinySegments = 0;
     wasInTinySegmentState = false;
     lastCheckedSegmentIndex = getStream(streamInfo.numericStreamId)?.segmenter?.getSegmentIndex() ?? 0;
+    lastSegmentAdvanceTime = Date.now();
   }
 
   /**
@@ -1465,7 +1473,9 @@ export function monitorPlaybackHealth(
 
         if((currentSegmentIndex > lastCheckedSegmentIndex) && sizeCheckEntry) {
 
-          // A new segment was produced. Check its size.
+          // A new segment was produced. Update the staleness tracker and check its size.
+          lastSegmentAdvanceTime = now;
+
           const segmentSize = getLastSegmentSize(sizeCheckEntry) ?? 0;
 
           if(segmentSize < TINY_SEGMENT_THRESHOLD) {
@@ -1505,6 +1515,29 @@ export function monitorPlaybackHealth(
           }
 
           lastCheckedSegmentIndex = currentSegmentIndex;
+        } else if(sizeCheckEntry && (lastCheckedSegmentIndex > 0) && !withinRecoveryGrace && ((now - lastSegmentAdvanceTime) > SEGMENT_STALENESS_TIMEOUT)) {
+
+          /* Segment staleness detection. The segment index has not advanced for longer than SEGMENT_STALENESS_TIMEOUT. This catches the case where Chrome's
+           * MediaRecorder silently stops emitting data — the input Readable stream stays "open" (no end/error events) but no data events fire. The segmenter
+           * receives nothing, produces no new segments, and the playlist freezes at the last known sequence number. The video element on the page continues
+           * playing normally (currentTime advances, no errors), so all video health checks pass. Without this check, the stale playlist persists indefinitely.
+           *
+           * The sizeCheckEntry guard prevents firing on a stream that was terminated mid-tick. The lastCheckedSegmentIndex > 0 guard ensures we don't trigger
+           * during stream startup before the first segment has been produced. The recovery grace guard prevents false triggering during legitimate pauses (e.g.,
+           * after tab replacement while the new capture pipeline is initializing).
+           */
+          LOG.warn("No new segments produced for %ss. Capture pipeline appears stale.", SEGMENT_STALENESS_TIMEOUT / 1000);
+
+          if(onTabReplacement && !recoveryInProgress) {
+
+            await executeTabReplacement("segment staleness");
+
+            return;
+          } else if(!onTabReplacement) {
+
+            // No tab replacement callback - set stalled flag for circuit breaker.
+            segmentProductionStalled = true;
+          }
         }
 
         /* Re-minimize check. After recovery, the browser window may have been un-minimized by fullscreen actions. As soon as the stream is healthy (progressing without
