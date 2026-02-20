@@ -19,6 +19,9 @@ export type Platform = "darwin" | "linux" | "windows";
 // Type representing supported service managers.
 export type ServiceManager = "launchd" | "systemd" | "windows-scheduler";
 
+// Environment variable name used to detect container mode.
+const CONTAINER_ENV_VAR = "PRISMCAST_CONTAINER";
+
 // Environment variable name used to detect service mode.
 const SERVICE_ENV_VAR = "PRISMCAST_SERVICE";
 
@@ -92,6 +95,28 @@ export function getServiceManager(): Nullable<ServiceManager> {
 export function isRunningAsService(): boolean {
 
   return process.env[SERVICE_ENV_VAR] === "1";
+}
+
+/**
+ * Checks whether PrismCast is running inside a Docker container. Two-tier detection: the explicit PRISMCAST_CONTAINER environment variable set in our Dockerfile is
+ * the primary signal; the /.dockerenv marker file (created by Docker in every container) is the backup for custom images that omit the environment variable.
+ * @returns True if running inside a container, false otherwise.
+ */
+export function isRunningInContainer(): boolean {
+
+  if(process.env[CONTAINER_ENV_VAR] === "1") {
+
+    return true;
+  }
+
+  // Backup: Docker creates /.dockerenv in every container. This catches custom images that don't set PRISMCAST_CONTAINER.
+  try {
+
+    return fs.existsSync("/.dockerenv");
+  } catch {
+
+    return false;
+  }
 }
 
 /**

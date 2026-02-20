@@ -16,6 +16,7 @@ import { setupPlayEndpoint } from "./play.js";
 import { setupPlaylistEndpoint } from "./playlist.js";
 import { setupRootEndpoint } from "./root.js";
 import { setupStreamsEndpoint } from "./streams.js";
+import { setupUpgradeEndpoint } from "./upgrade.js";
 
 /* This module aggregates all route setup functions and provides a single function to configure all HTTP endpoints on the Express application.
  */
@@ -39,6 +40,7 @@ export function setupRoutes(app: Express): void {
   setupPlaylistEndpoint(app);
   setupRootEndpoint(app);
   setupStreamsEndpoint(app);
+  setupUpgradeEndpoint(app);
 }
 
 // Re-export individual setup functions for selective use if needed.
@@ -55,3 +57,4 @@ export { setupPlayEndpoint } from "./play.js";
 export { generatePlaylistContent, resolveBaseUrl, setupPlaylistEndpoint } from "./playlist.js";
 export { setupRootEndpoint } from "./root.js";
 export { setupStreamsEndpoint } from "./streams.js";
+export { setupUpgradeEndpoint } from "./upgrade.js";

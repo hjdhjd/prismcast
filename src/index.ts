@@ -39,6 +39,8 @@ function printUsage(): void {
   console.log("Commands:");
   console.log("  service                         Manage PrismCast as a system service");
   console.log("                                  Run 'prismcast service --help' for details");
+  console.log("  upgrade                         Upgrade PrismCast to the latest version");
+  console.log("                                  Run 'prismcast upgrade --help' for details");
   console.log("");
   console.log("Options:");
   console.log("  -c, --console                   Log to console instead of file (for Docker or debugging)");
@@ -327,6 +329,19 @@ if(subcommand === "service") {
 
     // eslint-disable-next-line no-console
     console.error("Service command failed: " + formatError(error));
+
+    process.exit(1);
+  });
+} else if(subcommand === "upgrade") {
+
+  // Handle the 'upgrade' subcommand for self-upgrading PrismCast. Uses a dynamic import to keep the upgrade module out of the main server's import graph.
+  import("./upgrade/index.js").then(async ({ handleUpgradeCommand }) => handleUpgradeCommand(rawArgs.slice(1))).then((exitCode) => {
+
+    process.exit(exitCode);
+  }).catch((error: unknown) => {
+
+    // eslint-disable-next-line no-console
+    console.error("Upgrade command failed: " + formatError(error));
 
     process.exit(1);
   });

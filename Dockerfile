@@ -97,6 +97,7 @@ RUN mkdir -p /root/.vnc
 # Set environment variables for the virtual display, Chrome binary, and Puppeteer.
 ENV DISPLAY=:99
 ENV CHROME_BIN=/usr/local/bin/chrome-no-sandbox
+ENV PRISMCAST_CONTAINER=1
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 # Data persistence. Mount a volume at the data directory to preserve configuration, Chrome profile, and logs across container recreations:
