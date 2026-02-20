@@ -1127,6 +1127,14 @@ export function monitorPlaybackHealth(
       return;
     }
 
+    // For noVideo profiles (e.g., staticPage), there is no video element to monitor. Skip all video health checks and just emit a status update.
+    if(profile.noVideo) {
+
+      emitStatusUpdate();
+
+      return;
+    }
+
     // Re-establish stream context for this interval tick. AsyncLocalStorage context is lost when entering setInterval callbacks.
     runWithStreamContext(streamContext, async () => {
 
@@ -1138,14 +1146,6 @@ export function monitorPlaybackHealth(
         if(abortSignal?.aborted) {
 
           clearInterval(interval);
-
-          return;
-        }
-
-        // For noVideo profiles (e.g., staticPage), there is no video element to monitor. Skip all video health checks and just emit a status update.
-        if(profile.noVideo) {
-
-          emitStatusUpdate();
 
           return;
         }
