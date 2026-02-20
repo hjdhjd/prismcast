@@ -1,7 +1,7 @@
 {
   "name": "prismcast",
   "displayName": "PrismCast",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Browser-based live TV capture server for Channels DVR, Plex, and other streaming clients.",
   "author": {
     "name": "HJD",

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.1 (2026-02-20)
+  * Improvement: webUI refinements.
+  * Fix: static page profiles (e.g., Weatherscan) no longer trigger false recovery loops from the playback monitor searching for a nonexistent video element.
+  * Fix: detect stale capture pipelines that stop producing segments entirely, even when the video element appears healthy.
+  * Housekeeping.
+
 ## 1.4.0 (2026-02-19)
   * New feature: Hulu direct tuning — channels now cache on first tune for faster subsequent tunes.
   * New feature: `upgrade` command for CLI and web UI — detects your install method (npm, Homebrew, Docker) and runs the appropriate upgrade.
