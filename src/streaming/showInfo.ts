@@ -437,37 +437,33 @@ async function getDeviceMappings(host: string): Promise<Map<string, Map<string, 
       continue;
     }
 
-    // Check if this device's channel IDs exactly match PrismCast's channels. This identifies our M3U source and avoids misidentification when the user has multiple
-    // M3U sources in Channels DVR.
+    // Identify PrismCast's M3U source by measuring channel ID overlap. We use overlap-based matching rather than exact matching because the channel set can drift:
+    // the user may disable channels after Channels DVR imports the playlist, or add new channels that haven't been refreshed yet in the DVR. We count how many of
+    // PrismCast's channel keys appear in the device, and accept the device if overlap exceeds 80% of the larger set.
     const deviceChannelIds = new Set(device.Channels.map((ch) => ch.ID));
+    let overlapCount = 0;
 
-    if(deviceChannelIds.size !== prismcastChannelKeys.size) {
+    for(const key of prismcastChannelKeys) {
 
-      LOG.debug("streaming:showinfo", "Skipping M3U device %s: channel count mismatch (%d vs %d).", device.DeviceID, deviceChannelIds.size, prismcastChannelKeys.size);
+      if(deviceChannelIds.has(key)) {
 
-      continue;
-    }
-
-    let allMatch = true;
-
-    for(const channelId of deviceChannelIds) {
-
-      if(!prismcastChannelKeys.has(channelId)) {
-
-        allMatch = false;
-
-        break;
+        overlapCount++;
       }
     }
 
-    if(!allMatch) {
+    const maxSize = Math.max(deviceChannelIds.size, prismcastChannelKeys.size);
+    const overlapRatio = overlapCount / maxSize;
 
-      LOG.debug("streaming:showinfo", "Skipping M3U device %s: channel IDs do not match PrismCast channels.", device.DeviceID);
+    if(overlapRatio < 0.8) {
+
+      LOG.debug("streaming:showinfo", "Skipping M3U device %s: low channel overlap (%d/%d = %d%%).",
+        device.DeviceID, overlapCount, maxSize, Math.round(overlapRatio * 100));
 
       continue;
     }
 
-    LOG.debug("streaming:showinfo", "Matched M3U device %s as PrismCast source (%d channels).", device.DeviceID, device.Channels.length);
+    LOG.debug("streaming:showinfo", "Matched M3U device %s as PrismCast source (%d channels, %d%% overlap).",
+      device.DeviceID, device.Channels.length, Math.round(overlapRatio * 100));
 
     // Build guide number → channel ID map for this device and cache logo URLs.
     const guideToChannelId = new Map<string, string>();

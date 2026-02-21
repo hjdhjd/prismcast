@@ -348,8 +348,7 @@ export interface DomainConfig {
   providerTag?: string;
 
   // Friendly provider name shown in the UI source column, provider dropdowns, and labels. When set, this name is used instead of the raw domain string (e.g.,
-  // "Hulu" instead of "hulu.com"). Additionally, entries with providerTag derive their filter UI display name from this field by stripping any trailing
-  // parenthetical (e.g., "Hulu (Live Guide)" becomes "Hulu" in the filter). Omit to fall back to the concise domain extracted from the URL.
+  // "Hulu" instead of "hulu.com"). Omit to fall back to the concise domain extracted from the URL.
   provider?: string;
 }
 
@@ -384,7 +383,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "golfchannel.com": { profile: "fullscreenApi", provider: "Golf Channel" },
   "hbomax.com": { profile: "hboMax", provider: "HBO Max", providerTag: "hbomax" },
   "history.com": { profile: "fullscreenApi", provider: "History.com" },
-  "hulu.com": { profile: "huluLive", provider: "Hulu (Live Guide)", providerTag: "hulu" },
+  "hulu.com": { profile: "huluLive", provider: "Hulu", providerTag: "hulu" },
   "lakeshorepbs.org": { profile: "embeddedPlayer", provider: "Lakeshore PBS" },
   "ms.now": { profile: "keyboardDynamic", provider: "MS NOW" },
   "mylifetime.com": { profile: "fullscreenApi", provider: "Lifetime" },
@@ -399,7 +398,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "tv.youtube.com": { profile: "youtubeTV", provider: "YouTube TV", providerTag: "yttv" },
   "usanetwork.com": { profile: "keyboardDynamicMultiVideo", provider: "USA Network", providerTag: "usa" },
   "vh1.com": { profile: "fullscreenApi", provider: "VH1.com" },
-  "watch.sling.com": { profile: "slingLive", provider: "Sling TV (Live Guide)", providerTag: "sling" },
+  "watch.sling.com": { profile: "slingLive", provider: "Sling TV", providerTag: "sling" },
   "watchhallmarktv.com": { profile: "fullscreenApi", provider: "Hallmark" },
   "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
   "windy.com": { profile: "staticPage", provider: "Windy" },

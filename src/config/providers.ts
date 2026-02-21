@@ -109,7 +109,7 @@ export function getChannelProviderTags(canonicalKey: string): string[] {
 
 /**
  * Scans all provider groups and collects unique provider tags with display names. Display names are derived from the provider field in DOMAIN_CONFIG entries that
- * have a providerTag, with any trailing parenthetical stripped (e.g., "Hulu (Live Guide)" becomes "Hulu").
+ * have a providerTag.
  * @returns Array of { displayName, tag } objects sorted alphabetically by display name, with "direct" always first.
  */
 export function getAllProviderTags(): { displayName: string; tag: string }[] {
@@ -137,8 +137,7 @@ export function getAllProviderTags(): { displayName: string; tag: string }[] {
     }
   }
 
-  // Build a tag → display name map from DOMAIN_CONFIG's provider fields, stripping any trailing parenthetical (e.g., "Hulu (Live Guide)" → "Hulu"). First match wins
-  // for each tag.
+  // Build a tag → display name map from DOMAIN_CONFIG's provider fields. First match wins for each tag.
   const tagDisplayNames = new Map<string, string>();
 
   tagDisplayNames.set("direct", "Direct");
@@ -147,7 +146,7 @@ export function getAllProviderTags(): { displayName: string; tag: string }[] {
 
     if(config.providerTag && config.provider && !tagDisplayNames.has(config.providerTag)) {
 
-      tagDisplayNames.set(config.providerTag, config.provider.replace(/\s*\(.*\)$/, ""));
+      tagDisplayNames.set(config.providerTag, config.provider);
     }
   }
 
