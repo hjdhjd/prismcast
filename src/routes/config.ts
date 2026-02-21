@@ -6,15 +6,16 @@ import type { AdvancedSection, SettingMetadata, UserConfig } from "../config/use
 import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from "../config/index.js";
 import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault,
   loadUserConfig, saveUserConfig, setNestedValue } from "../config/userConfig.js";
+import type { Channel, ChannelDelta, ChannelListingEntry, Nullable, ProfileCategory, StoredChannel } from "../types/index.js";
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, formatError, generateChannelKey, isRunningAsService, parseM3U } from "../utils/index.js";
-import type { Nullable, ProfileCategory } from "../types/index.js";
 import { getAllProviderTags, getCanonicalKey, getChannelProviderTags, getEnabledProviders, getProviderDisplayName, getProviderGroup, getProviderSelection,
-  getProviderTagForChannel, getResolvedChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolveProviderKey, setEnabledProviders,
-  setProviderSelection } from "../config/providers.js";
-import { getChannelListing, getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannels, getUserChannels, getUserChannelsFilePath,
-  hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, saveProviderSelections, saveUserChannels, validateChannelKey,
-  validateChannelName, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
+  getProviderTagForChannel, getResolvedChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant,
+  resolveProviderKey, setEnabledProviders, setProviderSelection } from "../config/providers.js";
+import { getChannelListing, getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannel, getPredefinedChannels, getUserChannels,
+  getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, resolveStoredChannel,
+  saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl,
+  validateImportedChannels } from "../config/userChannels.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
@@ -34,6 +35,46 @@ import { getStreamCount } from "../streaming/registry.js";
  * - Reset buttons for individual categories
  * - Save & Restart button that applies changes and restarts the server
  */
+
+// SVG icon constants for channel action buttons. Each icon is 14x14px with a 16x16 viewBox, stroke-based with currentColor, and uses round line caps/joins.
+
+const ICON_EDIT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
+  "stroke-linejoin=\"round\"><path d=\"M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z\"/></svg>";
+
+const ICON_LOGIN = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
+  "stroke-linejoin=\"round\"><path d=\"M6.5 2H3.5a1 1 0 00-1 1v10a1 1 0 001 1h3\"/><path d=\"M10.5 11l3-3-3-3\"/><path d=\"M13.5 8H6.5\"/></svg>";
+
+const ICON_DELETE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
+  "stroke-linejoin=\"round\"><path d=\"M2 4h12\"/><path d=\"M5 4V2.5a.5.5 0 01.5-.5h5a.5.5 0 01.5.5V4\"/><path d=\"M12.5 4l-.5 9.5a1 1 0 01-1 .5H5a1 1 0 " +
+  "01-1-.5L3.5 4\"/></svg>";
+
+const ICON_ENABLE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
+  "stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M5.5 8l2 2 3.5-4\"/></svg>";
+
+const ICON_DISABLE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
+  "stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M5.5 5.5l5 5\"/></svg>";
+
+const ICON_REVERT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
+  "stroke-linejoin=\"round\"><path d=\"M3 8a5 5 0 1 1 1.5 3.5\"/><path d=\"M3 4v4h4\"/></svg>";
+
+const ICON_COPY = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
+  "stroke-linejoin=\"round\"><rect x=\"5\" y=\"5\" width=\"9\" height=\"9\" rx=\"1\"/><path d=\"M5 11H3a1 1 0 01-1-1V3a1 1 0 011-1h7a1 1 0 011 1v2\"/></svg>";
+
+// Fields that appear in the generated M3U playlist and affect Channels DVR's view of the channel. Used to decide whether the playlist reload hint is shown.
+const M3U_FIELDS = [ "channelNumber", "name", "stationId" ];
+
+const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this change.";
+
+/**
+ * Checks whether a stored channel entry contains any fields that affect the M3U playlist. Used to decide whether to append the playlist reload hint when reverting
+ * or removing an override.
+ * @param stored - The stored channel data to check (may be a delta or full definition).
+ * @returns The PLAYLIST_HINT string if M3U-relevant fields are present, empty string otherwise.
+ */
+function playlistHintForStored(stored: StoredChannel): string {
+
+  return M3U_FIELDS.some((f) => f in stored) ? PLAYLIST_HINT : "";
+}
 
 /**
  * Result of scheduling a server restart.
@@ -303,7 +344,7 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
   lines.push("<div id=\"profile-reference\" class=\"profile-reference\" style=\"display: none;\">");
   lines.push("<div class=\"profile-reference-header\">");
   lines.push("<h3>Profile Reference</h3>");
-  lines.push("<a href=\"#\" class=\"profile-reference-close\" onclick=\"toggleProfileReference(); return false;\">\u2715</a>");
+  lines.push("<button type=\"button\" class=\"profile-reference-close\" aria-label=\"Close\" onclick=\"toggleProfileReference()\">\u2715</button>");
   lines.push("</div>");
   lines.push("<p class=\"reference-intro\">Profiles configure how PrismCast interacts with different video players. Autodetect uses predefined ");
   lines.push("profiles for known sites. If video doesn't play or fullscreen fails, use this reference to experiment with different profiles.</p>");
@@ -509,37 +550,41 @@ export interface ChannelRowHtml {
   // The display row HTML (always present).
   displayRow: string;
 
-  // The edit form row HTML (only present for user channels).
-  editRow: Nullable<string>;
+  // The edit form row HTML (always present for all channels — predefined, override, and user-defined).
+  editRow: string;
 }
 
 /**
- * Generates the HTML for a single channel's table rows (display row and optional edit form row).
+ * Generates the HTML for a single channel's table rows (display row and edit form row). All channels — predefined, override, and user-defined — get both rows.
+ * The edit form is pre-populated with the effective (resolved) values so users see what they're changing. When called from generateChannelsPanel() which already
+ * has the listing entry, pass it via the entry parameter to avoid redundant getChannelListing() calls. POST handlers that generate a single row omit the
+ * parameter to trigger an internal lookup.
  * @param key - The channel key.
  * @param profiles - List of available profiles with descriptions for the dropdown.
+ * @param entry - Optional pre-resolved listing entry. When omitted, looked up from getChannelListing().
  * @returns Object with displayRow and editRow HTML strings.
  */
-export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): ChannelRowHtml {
+export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], entry?: ChannelListingEntry): ChannelRowHtml {
 
-  // Look up channel from user channels first (they override predefined), then predefined channels.
-  const userChannels = getUserChannels();
-  const predefinedChannels = getPredefinedChannels();
-  const channel = userChannels[key] ?? predefinedChannels[key];
+  // Resolve the effective channel. Use the provided entry if available, otherwise look it up from the listing.
+  const listing = entry ?? getChannelListing().find((e) => e.key === key);
 
-  // If channel doesn't exist, return empty rows (shouldn't happen in normal use).
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!channel) {
+  // If channel doesn't exist in the listing, return empty rows (shouldn't happen in normal use).
+  if(!listing) {
 
-    return { displayRow: "", editRow: null };
+    return { displayRow: "", editRow: "" };
   }
 
-  // Resolve the selected provider's channel data for display purposes (profile column). This ensures the profile shown reflects the currently selected provider.
+  const channel = listing.channel;
+
+  // Resolve the selected provider's channel data for display purposes (edit form pre-population). This ensures the values shown reflect the currently selected provider.
   const resolvedKey = resolveProviderKey(key);
   const resolvedChannel = getResolvedChannel(resolvedKey);
   const displayChannel = resolvedChannel ?? channel;
 
   const isUser = isUserChannel(key);
   const isPredefined = isPredefinedChannel(key);
+  const isOverride = isPredefined && isUser;
   const isDisabled = isPredefinedChannelDisabled(key);
   const isAvailableByProvider = isChannelAvailableByProvider(key);
 
@@ -571,11 +616,11 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
   const rowClassAttr = (rowClasses.length > 0) ? " class=\"" + rowClasses.join(" ") + "\"" : "";
 
   displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + " data-provider-tags=\"" + escapeHtml(providerTags) + "\">");
-  displayLines.push("<td><code>" + escapeHtml(key) + "</code></td>");
+  displayLines.push("<td class=\"ch-key\">" + escapeHtml(key) + "</td>");
   displayLines.push("<td>" + escapeHtml(channel.name ?? key) + "</td>");
 
-  // Source column: dropdown for multi-provider channels, static provider name for single-provider. Both states always render a hidden "No available providers" label
-  // alongside the provider content so that client-side filterChannelRows() can toggle between them without a page reload.
+  // Provider column: dropdown for multi-provider channels, static provider name for single-provider. Both states always render a hidden "No available providers"
+  // label alongside the provider content so that client-side filterChannelRows() can toggle between them without a page reload.
   displayLines.push("<td>");
 
   const labelHidden = isAvailableByProvider ? " style=\"display:none\"" : "";
@@ -612,36 +657,61 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
   }
 
   displayLines.push("</td>");
-  displayLines.push("<td>" + (displayChannel.profile ? escapeHtml(displayChannel.profile) : "<em>auto</em>") + "</td>");
 
-  // Actions column.
+  // Actions column with icon buttons. Four positions per row: Edit (always), Login/placeholder (middle), a third action that varies by row type, and Copy URL.
   displayLines.push("<td>");
   displayLines.push("<div class=\"btn-group\">");
 
-  // Login button appears for enabled channels only.
+  const escapedKey = escapeHtml(key);
+
+  // Position 1: Edit (all channels).
+  displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-edit\" title=\"Edit\" aria-label=\"Edit\" onclick=\"showEditForm('" + escapedKey +
+    "')\">" + ICON_EDIT + "</button>");
+
+  // Position 2: Login for enabled channels, placeholder for disabled predefined.
   if(!isDisabled) {
 
-    displayLines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startChannelLogin('" + escapeHtml(key) + "')\">Login</button>");
+    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-login\" title=\"Login\" aria-label=\"Login\" onclick=\"startChannelLogin('" +
+      escapedKey + "')\">" + ICON_LOGIN + "</button>");
+  } else {
+
+    displayLines.push("<span class=\"btn-icon-placeholder\"></span>");
   }
 
-  if(isUser) {
+  // Position 3: varies by row type.
+  if(isOverride) {
 
-    // User channels: Edit/Delete buttons.
-    displayLines.push("<button type=\"button\" class=\"btn btn-edit btn-sm\" onclick=\"showEditForm('" + escapeHtml(key) + "')\">Edit</button>");
-    displayLines.push("<button type=\"button\" class=\"btn btn-delete btn-sm\" onclick=\"deleteChannel('" + escapeHtml(key) + "')\">Delete</button>");
+    // Override: revert to predefined defaults.
+    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-revert\" title=\"Revert to defaults\" aria-label=\"Revert to defaults\"" +
+      " onclick=\"revertChannel('" + escapedKey + "')\">" + ICON_REVERT + "</button>");
+  } else if(isUser && !isPredefined) {
+
+    // User-defined (not an override): delete.
+    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete\" aria-label=\"Delete\" onclick=\"deleteChannel('" +
+      escapedKey + "')\">" + ICON_DELETE + "</button>");
   } else if(isPredefined) {
 
-    // Predefined channels: Enable/Disable button.
+    // Predefined (no override): enable/disable toggle.
     if(isDisabled) {
 
-      displayLines.push("<button type=\"button\" class=\"btn btn-enable btn-sm\" onclick=\"togglePredefinedChannel('" + escapeHtml(key) +
-        "', true)\">Enable</button>");
+      displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-enable\" title=\"Enable\" aria-label=\"Enable\" onclick=\"togglePredefinedChannel('" +
+        escapedKey + "', true)\">" + ICON_ENABLE + "</button>");
     } else {
 
-      displayLines.push("<button type=\"button\" class=\"btn btn-disable btn-sm\" onclick=\"togglePredefinedChannel('" + escapeHtml(key) +
-        "', false)\">Disable</button>");
+      displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-disable\" title=\"Disable\" aria-label=\"Disable\" onclick=\"togglePredefinedChannel('" +
+        escapedKey + "', false)\">" + ICON_DISABLE + "</button>");
     }
   }
+
+  // Position 4: Copy URL dropdown (all channels).
+  displayLines.push("<div class=\"dropdown copy-dropdown\">");
+  displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-copy\" title=\"Copy stream URL\" aria-label=\"Copy stream URL\" " +
+    "onclick=\"toggleDropdown(this)\">" + ICON_COPY + "</button>");
+  displayLines.push("<div class=\"dropdown-menu copy-url-menu\">");
+  displayLines.push("<div class=\"dropdown-item\" onclick=\"copyStreamUrl('hls', '" + escapedKey + "')\">Copy HLS URL</div>");
+  displayLines.push("<div class=\"dropdown-item\" onclick=\"copyStreamUrl('mpegts', '" + escapedKey + "')\">Copy MPEG-TS URL</div>");
+  displayLines.push("</div>");
+  displayLines.push("</div>");
 
   displayLines.push("</div>");
   displayLines.push("</td>");
@@ -649,56 +719,52 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[]): Ch
 
   const displayRow = displayLines.join("\n");
 
-  // Generate edit form row for user channels.
-  let editRow: Nullable<string> = null;
+  // Generate edit form row for all channels. Pre-populate with the currently selected provider's values so the user sees what they're actually streaming, not the
+  // canonical definition which may differ when a provider variant is selected.
+  const editLines: string[] = [];
 
-  if(isUser) {
+  editLines.push("<tr id=\"edit-row-" + escapedKey + "\" style=\"display: none;\">");
+  editLines.push("<td colspan=\"4\">");
+  editLines.push("<div class=\"channel-form\" style=\"margin: 0;\">");
+  editLines.push("<h3>Edit Channel: " + escapedKey + "</h3>");
+  editLines.push("<form id=\"edit-channel-form-" + escapedKey + "\" onsubmit=\"return submitChannelForm(event, 'edit')\">");
+  editLines.push("<input type=\"hidden\" name=\"action\" value=\"edit\">");
+  editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapedKey + "\">");
 
-    const editLines: string[] = [];
+  // Channel name.
+  editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", displayChannel.name ?? key, {
 
-    editLines.push("<tr id=\"edit-row-" + escapeHtml(key) + "\" style=\"display: none;\">");
-    editLines.push("<td colspan=\"5\">");
-    editLines.push("<div class=\"channel-form\" style=\"margin: 0;\">");
-    editLines.push("<h3>Edit Channel: " + escapeHtml(key) + "</h3>");
-    editLines.push("<form id=\"edit-channel-form-" + escapeHtml(key) + "\" onsubmit=\"return submitChannelForm(event, 'edit')\">");
-    editLines.push("<input type=\"hidden\" name=\"action\" value=\"edit\">");
-    editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapeHtml(key) + "\">");
+    hint: "Friendly name shown in the playlist and UI.",
+    required: true
+  }));
 
-    // Channel name.
-    editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", channel.name ?? key, {
+  // Channel URL.
+  editLines.push(...generateTextField("edit-url-" + key, "url", "Stream URL", displayChannel.url, {
 
-      hint: "Friendly name shown in the playlist and UI.",
-      required: true
-    }));
+    hint: "The URL of the streaming page to capture.",
+    required: true,
+    type: "url"
+  }));
 
-    // Channel URL.
-    editLines.push(...generateTextField("edit-url-" + key, "url", "Stream URL", channel.url, {
+  // Profile dropdown.
+  editLines.push(...generateProfileDropdown("edit-profile-" + key, displayChannel.profile ?? "", profiles));
 
-      hint: "The URL of the streaming page to capture.",
-      required: true,
-      type: "url"
-    }));
+  // Advanced fields.
+  editLines.push(...generateAdvancedFields("edit-" + key, displayChannel.stationId ?? "", displayChannel.channelSelector ?? "",
+    displayChannel.channelNumber ? String(displayChannel.channelNumber) : ""));
 
-    // Profile dropdown.
-    editLines.push(...generateProfileDropdown("edit-profile-" + key, channel.profile ?? "", profiles));
+  // Form buttons.
+  editLines.push("<div class=\"form-buttons\">");
+  editLines.push("<button type=\"submit\" class=\"btn btn-primary\">Save Changes</button>");
+  editLines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"hideEditForm('" + escapedKey + "')\">Cancel</button>");
+  editLines.push("</div>");
 
-    // Advanced fields.
-    editLines.push(...generateAdvancedFields("edit-" + key, channel.stationId ?? "", channel.channelSelector ?? "",
-      channel.channelNumber ? String(channel.channelNumber) : ""));
+  editLines.push("</form>");
+  editLines.push("</div>");
+  editLines.push("</td>");
+  editLines.push("</tr>");
 
-    // Form buttons.
-    editLines.push("<div class=\"form-buttons\">");
-    editLines.push("<button type=\"submit\" class=\"btn btn-primary\">Save Changes</button>");
-    editLines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"hideEditForm('" + escapeHtml(key) + "')\">Cancel</button>");
-    editLines.push("</div>");
-
-    editLines.push("</form>");
-    editLines.push("</div>");
-    editLines.push("</td>");
-    editLines.push("</tr>");
-
-    editRow = editLines.join("\n");
-  }
+  const editRow = editLines.join("\n");
 
   return { displayRow, editRow };
 }
@@ -1180,7 +1246,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   if(isModified) {
 
     lines.push("<button type=\"button\" class=\"btn-reset\" onclick=\"resetSetting('" + escapeHtml(setting.path) +
-      "')\" title=\"Reset to default\">&#8635;</button>");
+      "')\" title=\"Reset to default\" aria-label=\"Reset to default\">&#8635;</button>");
   }
 
   lines.push("</div>");
@@ -1443,7 +1509,8 @@ export function generateProviderFilterToolbar(): string {
       const displayName = allTags.find((t) => t.tag === tag)?.displayName ?? tag;
 
       lines.push("<span class=\"provider-chip\" data-tag=\"" + escapeHtml(tag) + "\">" + escapeHtml(displayName) +
-        "<button type=\"button\" class=\"chip-close\" onclick=\"removeProviderChip('" + escapeHtml(tag) + "')\">&times;</button></span>");
+        "<button type=\"button\" class=\"chip-close\" aria-label=\"Remove " + escapeHtml(displayName) + "\" onclick=\"removeProviderChip('" + escapeHtml(tag) +
+        "')\">&times;</button></span>");
     }
   }
 
@@ -1664,8 +1731,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<tr>");
   lines.push("<th class=\"col-key\">Key</th>");
   lines.push("<th class=\"col-name\">Name</th>");
-  lines.push("<th class=\"col-source\">Source</th>");
-  lines.push("<th class=\"col-profile\">Profile</th>");
+  lines.push("<th class=\"col-provider\">Provider</th>");
   lines.push("<th class=\"col-actions\">Actions</th>");
   lines.push("</tr>");
   lines.push("</thead>");
@@ -1674,14 +1740,10 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Generate rows for all channels using the shared row generator.
   for(const entry of listing) {
 
-    const rowHtml = generateChannelRowHtml(entry.key, profiles);
+    const rowHtml = generateChannelRowHtml(entry.key, profiles, entry);
 
     lines.push(rowHtml.displayRow);
-
-    if(rowHtml.editRow) {
-
-      lines.push(rowHtml.editRow);
-    }
+    lines.push(rowHtml.editRow);
   }
 
   lines.push("</tbody>");
@@ -2085,16 +2147,23 @@ export function setupConfigEndpoint(app: Express): void {
     }, 500);
   });
 
-  // GET /config/channels/export - Export user channels as JSON.
+  // GET /config/channels/export - Export user channels as JSON. Deltas are resolved to full definitions for backward compatibility with the import validator
+  // which requires url as a required field.
   app.get("/config/channels/export", (_req: Request, res: Response): void => {
 
     try {
 
-      const userChannels = getUserChannels();
+      const storedChannels = getUserChannels();
+      const resolved: Record<string, Channel> = {};
+
+      for(const [ key, stored ] of Object.entries(storedChannels)) {
+
+        resolved[key] = resolveStoredChannel(key, stored);
+      }
 
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Content-Disposition", "attachment; filename=\"prismcast-channels.json\"");
-      res.send(JSON.stringify(userChannels, null, 2) + "\n");
+      res.send(JSON.stringify(resolved, null, 2) + "\n");
     } catch(error) {
 
       LOG.error("Failed to export channels: %s", formatError(error));
@@ -2412,13 +2481,13 @@ export function setupConfigEndpoint(app: Express): void {
       // Save to disk.
       await saveProviderSelections();
 
-      // Get the resolved channel to return its profile for UI update.
-      const resolvedChannel = getResolvedChannel(providerKey);
-      const profile = resolvedChannel?.profile ?? null;
-
       LOG.info("Provider selection for '%s' changed to '%s'.", canonicalKey, providerKey);
 
-      res.json({ channel: canonicalKey, profile, provider: providerKey, success: true });
+      // Return full row HTML so the client can replace both the display and edit rows, keeping the edit form in sync with the selected provider.
+      const profiles = getProfiles();
+      const rowHtml = generateChannelRowHtml(canonicalKey, profiles);
+
+      res.json({ channel: canonicalKey, html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, provider: providerKey, success: true });
     } catch(error) {
 
       LOG.error("Failed to update provider selection: %s", formatError(error));
@@ -2667,7 +2736,7 @@ export function setupConfigEndpoint(app: Express): void {
     }
   });
 
-  // POST /config/channels - Handle channel add, edit, delete operations. Returns JSON response.
+  // POST /config/channels - Handle channel add, edit, delete, and revert operations. Returns JSON response.
   app.post("/config/channels", async (req: Request, res: Response): Promise<void> => {
 
     try {
@@ -2676,6 +2745,58 @@ export function setupConfigEndpoint(app: Express): void {
       const action = body.action;
       const key = body.key?.trim();
       const profiles = getProfiles();
+
+      // Handle revert action — remove override of a predefined channel, restoring it to defaults.
+      if(action === "revert") {
+
+        if(!key) {
+
+          res.status(400).json({ message: "Channel key is required for revert.", success: false });
+
+          return;
+        }
+
+        if(!isPredefinedChannel(key)) {
+
+          res.status(400).json({ message: "Cannot revert '" + key + "': it is not a predefined channel.", success: false });
+
+          return;
+        }
+
+        if(!isUserChannel(key)) {
+
+          res.status(400).json({ message: "Cannot revert '" + key + "': no override exists.", success: false });
+
+          return;
+        }
+
+        // Remove the override.
+        const result = await loadUserChannels();
+
+        if(result.parseError) {
+
+          res.status(400).json({ message: "Cannot revert channel: channels file contains invalid JSON.", success: false });
+
+          return;
+        }
+
+        // Check if the override contains M3U-relevant fields before removing it.
+        const revertHint = playlistHintForStored(result.channels[key]);
+
+        Reflect.deleteProperty(result.channels, key);
+
+        await saveUserChannels(result.channels);
+
+        LOG.info("Channel '%s' reverted to predefined defaults.", key);
+
+        // Generate the predefined row HTML so the client can replace the override row.
+        const rowHtml = generateChannelRowHtml(key, profiles);
+
+        res.json({ html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, key,
+          message: "Channel '" + key + "' reverted to defaults." + revertHint, success: true });
+
+        return;
+      }
 
       // Handle delete action.
       if(action === "delete") {
@@ -2715,7 +2836,8 @@ export function setupConfigEndpoint(app: Express): void {
         const predefined = isPredefinedChannel(key) ? generateChannelRowHtml(key, profiles) : undefined;
 
         // Return success response with key for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
-        res.json({ html: predefined, key, message: "Channel '" + key + "' deleted successfully.", success: true });
+        res.json({ html: predefined, key,
+          message: "Channel '" + key + "' deleted successfully." + PLAYLIST_HINT, success: true });
 
         return;
       }
@@ -2757,14 +2879,12 @@ export function setupConfigEndpoint(app: Express): void {
           formErrors.channelNumber = "Channel number must be between 1 and 99999.";
         } else {
 
-          // Check for duplicate channel numbers across all channels.
-          const allChannels = { ...getPredefinedChannels(), ...getUserChannels() };
+          // Check for duplicate channel numbers across all resolved channels.
+          for(const entry of getChannelListing()) {
 
-          for(const [ existingKey, existingChannel ] of Object.entries(allChannels)) {
+            if((entry.channel.channelNumber === num) && (entry.key !== key)) {
 
-            if((existingChannel.channelNumber === num) && (existingKey !== key)) {
-
-              formErrors.channelNumber = "Channel number " + String(num) + " is already used by '" + existingKey + "'.";
+              formErrors.channelNumber = "Channel number " + String(num) + " is already used by '" + entry.key + "'.";
 
               break;
             }
@@ -2832,35 +2952,187 @@ export function setupConfigEndpoint(app: Express): void {
         }
       }
 
-      // Build the channel object.
-      const channel: UserChannel = {
+      let playlistChanged = false;
 
-        name,
-        url
-      };
+      // For predefined channels being edited, compute a delta of only the changed fields. For user-defined channels and adds, build a full channel object.
+      const predefinedBase = getPredefinedChannel(key);
 
-      if(profile) {
+      if((action === "edit") && predefinedBase) {
 
-        channel.profile = profile;
+        // Build a record of submitted form values keyed by channel property name. This record drives both the displayChannel comparison and the predefined delta
+        // computation, so adding a new form field only requires adding it here. String fields use "" for empty; channelNumber uses undefined.
+        const formValues: Record<string, string | number | null | undefined> = {
+
+          channelNumber: channelNumberStr ? parseInt(channelNumberStr, 10) : undefined,
+          channelSelector,
+          name,
+          profile,
+          stationId,
+          url
+        };
+
+        // Helper to read a comparable value from a Channel object. String fields default to "" when undefined so they match the form's empty-string representation.
+        // channelNumber stays as number | undefined since the form value uses the same representation.
+        const channelValue = (ch: Channel, field: string): string | number | undefined => {
+
+          const val = (ch as unknown as Record<string, unknown>)[field];
+
+          return (field === "channelNumber") ? val as number | undefined : (val as string | undefined) ?? "";
+        };
+
+        // First check: did the user change anything from what the form showed? The edit form is pre-populated with the selected provider's resolved channel, which
+        // may differ from the canonical predefined base when a variant is selected (e.g., the Hulu variant has a different URL and channelSelector). If the submitted
+        // values match the displayChannel exactly, the user saved without modification — no override should be created, and any existing override is preserved.
+        const resolvedKey = resolveProviderKey(key);
+        const displayChannel = getResolvedChannel(resolvedKey) ?? predefinedBase;
+
+        if(Object.keys(formValues).every((field) => formValues[field] === channelValue(displayChannel, field))) {
+
+          res.json({ key, message: "No changes to save.", success: true });
+
+          return;
+        }
+
+        // Second check: compute a delta against the canonical predefined base. This determines whether the user's changes create a custom override or effectively
+        // revert the channel to predefined defaults. Changed fields store their new value; empty/undefined fields store null (explicit clear).
+        const delta: ChannelDelta = {};
+        let hasChanges = false;
+
+        for(const field of Object.keys(formValues)) {
+
+          if(formValues[field] !== channelValue(predefinedBase, field)) {
+
+            const formVal = formValues[field];
+
+            (delta as Record<string, string | number | null | undefined>)[field] = ((formVal === "") || (formVal === undefined)) ? null : formVal;
+            hasChanges = true;
+          }
+        }
+
+        // Helper to check if form values match a given channel's properties.
+        const formMatchesChannel = (ch: Channel): boolean => Object.keys(formValues).every((field) => formValues[field] === channelValue(ch, field));
+
+        if(!hasChanges) {
+
+          // The submitted values match the predefined base exactly. If an override exists, this means the user edited their customizations away — treat it as an
+          // implicit revert by removing the override and returning the predefined row HTML.
+          if(isUserChannel(key)) {
+
+            const implicitRevertHint = playlistHintForStored(result.channels[key]);
+
+            Reflect.deleteProperty(result.channels, key);
+
+            await saveUserChannels(result.channels);
+
+            LOG.info("Channel '%s' reverted to predefined defaults (edit matched predefined values).", key);
+
+            const rowHtml = generateChannelRowHtml(key, profiles);
+
+            res.json({ html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, key,
+              message: "Channel '" + key + "' reverted to defaults." + implicitRevertHint, success: true });
+
+            return;
+          }
+
+          res.json({ key, message: "No changes to save.", success: true });
+
+          return;
+        }
+
+        // The delta has changes vs the canonical predefined. Before storing a custom override, check if the form values match any provider variant's predefined
+        // definition. This handles the case where a user edits from a variant (e.g., Hulu), makes a change, saves (creating a custom override), then edits again
+        // and reverts the change. The URL and channelSelector still differ from the canonical predefined but match the variant — that's a revert to the variant,
+        // not a new customization. We resolve each variant against pure PREDEFINED data (not the user-overridden channelsRef) to avoid contamination from the
+        // current override.
+        const providerGroup = getProviderGroup(key);
+        let matchedVariantKey: string | undefined;
+
+        if(providerGroup && isUserChannel(key)) {
+
+          for(const variant of providerGroup.variants) {
+
+            // Skip the canonical entry (already handled by the !hasChanges check above) and :predefined entries (synthetic entries for override UI).
+            if((variant.key === key) || variant.key.includes(":")) {
+
+              continue;
+            }
+
+            // Resolve this variant against pure predefined data (no user override contamination).
+            const resolvedVariant = resolvePredefinedVariant(variant.key);
+
+            if(resolvedVariant && formMatchesChannel(resolvedVariant)) {
+
+              matchedVariantKey = variant.key;
+
+              break;
+            }
+          }
+        }
+
+        if(matchedVariantKey) {
+
+          // Form values match a known variant — revert the override and switch back to that variant.
+          const variantRevertHint = playlistHintForStored(result.channels[key]);
+
+          Reflect.deleteProperty(result.channels, key);
+          setProviderSelection(key, matchedVariantKey);
+
+          await saveUserChannels(result.channels);
+
+          LOG.info("Channel '%s' reverted to variant '%s' (edit matched variant values).", key, matchedVariantKey);
+
+          const rowHtml = generateChannelRowHtml(key, profiles);
+
+          res.json({ html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, key,
+            message: "Channel '" + key + "' reverted to defaults." + variantRevertHint, success: true });
+
+          return;
+        }
+
+        // No variant match — store the delta and switch the provider selection to the canonical key (the custom override). This ensures the provider dropdown shows
+        // "Custom" after saving, which is the expected behavior when a user customizes a predefined channel.
+        setProviderSelection(key, key);
+        result.channels[key] = delta;
+
+        playlistChanged = M3U_FIELDS.some((f) => f in delta);
+      } else {
+
+        // User-defined channel or add: build a full channel object. For edits, snapshot the old channel to detect M3U-relevant changes.
+        const oldChannel = ((action === "edit") && (key in result.channels)) ? result.channels[key] : undefined;
+
+        const channel: UserChannel = {
+
+          name,
+          url
+        };
+
+        if(profile) {
+
+          channel.profile = profile;
+        }
+
+        if(stationId) {
+
+          channel.stationId = stationId;
+        }
+
+        if(channelSelector) {
+
+          channel.channelSelector = channelSelector;
+        }
+
+        if(channelNumberStr) {
+
+          channel.channelNumber = parseInt(channelNumberStr, 10);
+        }
+
+        result.channels[key] = channel;
+
+        // For adds the playlist always changes. For edits, check whether any M3U-relevant field differs from the old stored values.
+        playlistChanged = (action === "add") ||
+          ((oldChannel !== undefined) &&
+            M3U_FIELDS.some((f) => (channel as unknown as Record<string, unknown>)[f] !== (oldChannel as unknown as Record<string, unknown>)[f]));
       }
-
-      if(stationId) {
-
-        channel.stationId = stationId;
-      }
-
-      if(channelSelector) {
-
-        channel.channelSelector = channelSelector;
-      }
-
-      if(channelNumberStr) {
-
-        channel.channelNumber = parseInt(channelNumberStr, 10);
-      }
-
-      // Add or update the channel.
-      result.channels[key] = channel;
 
       await saveUserChannels(result.channels);
 
@@ -2871,13 +3143,16 @@ export function setupConfigEndpoint(app: Express): void {
       // Generate HTML for the channel row so the client can update the DOM without a full page reload.
       const rowHtml = generateChannelRowHtml(key, profiles);
 
+      // Append a playlist reload hint when the change affects M3U content that Channels DVR consumes.
+      const playlistHint = playlistChanged ? PLAYLIST_HINT : "";
+
       // Return success response with HTML for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
       res.json({
 
         html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow },
         isNew: action === "add",
         key,
-        message: "Channel '" + key + "' " + actionLabel + " successfully.",
+        message: "Channel '" + key + "' " + actionLabel + " successfully." + playlistHint,
         success: true
       });
     } catch(error) {

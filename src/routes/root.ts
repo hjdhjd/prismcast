@@ -32,7 +32,7 @@ function generateHeaderStatusHtml(): string {
     "<div id=\"system-status\" class=\"header-status\">",
     "<span id=\"system-health\"><span class=\"status-dot\" style=\"color: var(--text-muted);\">&#9679;</span> Connecting...</span>",
     "<div class=\"dropdown stream-popover\">",
-    "<span id=\"stream-count\" onclick=\"toggleStreamPopover()\">-</span>",
+    "<button type=\"button\" id=\"stream-count\" aria-label=\"Active streams\" onclick=\"toggleStreamPopover()\">-</button>",
     "<div class=\"dropdown-menu\" id=\"stream-popover-menu\"></div>",
     "</div>",
     "</div>"
@@ -50,7 +50,7 @@ function generateVersionHtml(): string {
 
   // Refresh icon for manual update check (using Unicode refresh symbol).
   const refreshIcon = [
-    "<button type=\"button\" class=\"version-check\" onclick=\"checkForUpdates()\" title=\"Check for updates\">",
+    "<button type=\"button\" class=\"version-check\" onclick=\"checkForUpdates()\" title=\"Check for updates\" aria-label=\"Check for updates\">",
     "&#8635;",
     "</button>"
   ].join("");
@@ -495,6 +495,35 @@ function generateStatusScript(): string {
     "    });",
     "  }",
     "};",
+
+    // JS-based tooltips for devices where the primary input can't hover (iPadOS). Safari on iPadOS doesn't show native title tooltips, so we use
+    // a single <div> appended to <body> and positioned via getBoundingClientRect(). This is immune to overflow containers and stacking contexts.
+    // On pure-touch devices without a trackpad, mouseenter never fires so the tooltip stays hidden. Desktop skips initialization entirely.
+    "(function() {",
+    "  if(!window.matchMedia('(hover: none)').matches) return;",
+    "  var tip = document.createElement('div');",
+    "  tip.className = 'btn-icon-tooltip';",
+    "  document.body.appendChild(tip);",
+    "  document.addEventListener('mouseenter', function(e) {",
+    "    var btn = e.target.closest('.btn-icon[aria-label]');",
+    "    if(!btn) return;",
+    "    var label = btn.getAttribute('aria-label');",
+    "    if(!label) return;",
+    "    var rect = btn.getBoundingClientRect();",
+    "    tip.textContent = label;",
+    "    tip.classList.add('visible');",
+    "    tip.style.top = (rect.bottom + 6) + 'px';",
+    "    tip.style.left = (rect.left + rect.width / 2) + 'px';",
+    "    tip.style.transform = 'translateX(-50%)';",
+    "  }, true);",
+    "  document.addEventListener('mouseleave', function(e) {",
+    "    var src = e.target.closest('.btn-icon[aria-label]');",
+    "    if(!src) return;",
+    "    var dest = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.btn-icon[aria-label]');",
+    "    if(dest === src) return;",
+    "    tip.classList.remove('visible');",
+    "  }, true);",
+    "})();",
 
     "</script>"
   ].join("\n");
@@ -1370,6 +1399,7 @@ function generateConfigSubtabScript(): string {
     "    closeBtn.type = 'button';",
     "    closeBtn.className = 'toast-close';",
     "    closeBtn.textContent = '\\u00d7';",
+    "    closeBtn.setAttribute('aria-label', 'Dismiss');",
     "    closeBtn.onclick = function() { dismissToast(toast); };",
     "    toast.appendChild(closeBtn);",
     "    container.appendChild(toast);",
@@ -1383,6 +1413,9 @@ function generateConfigSubtabScript(): string {
     "    toast.classList.add('toast-exit');",
     "    toast.addEventListener('animationend', function() { if (toast.parentNode) toast.parentNode.removeChild(toast); });",
     "  }",
+
+    // Hint appended to success toasts when a channel operation changes M3U playlist content that Channels DVR consumes.
+    "  var PLAYLIST_HINT = ' Reload the playlist in Channels DVR to see this change.';",
 
     // Queue a toast to appear after the next page reload.
     "  function showToastAfterReload(message, type) {",
@@ -1682,6 +1715,7 @@ function generateConfigSubtabScript(): string {
     "          btn.type = 'button';",
     "          btn.className = 'btn-reset';",
     "          btn.title = 'Reset to default';",
+    "          btn.setAttribute('aria-label', 'Reset to default');",
     "          btn.innerHTML = '&#8635;';",
     "          btn.onclick = function() { resetSetting(path); };",
     "          row.appendChild(btn);",
@@ -1937,7 +1971,7 @@ function generateConfigSubtabScript(): string {
     "          })",
     "          .then(function(response) {",
     "            if (response.ok) {",
-    "              showToastAfterReload('Channels imported successfully.', 'success');",
+    "              showToastAfterReload('Channels imported successfully.' + PLAYLIST_HINT, 'success');",
     "            } else {",
     "              return response.text().then(function(text) { throw new Error(text); });",
     "            }",
@@ -1979,7 +2013,7 @@ function generateConfigSubtabScript(): string {
     "            }",
     "            if (data.errors.length > 5) msg += '  ... and ' + (data.errors.length - 5) + ' more\\n';",
     "          }",
-    "          if (data.imported > 0 || data.replaced > 0) { showToastAfterReload(msg, 'success'); }",
+    "          if (data.imported > 0 || data.replaced > 0) { showToastAfterReload(msg + PLAYLIST_HINT, 'success'); }",
     "          else { showToast(msg, 'success'); }",
     "        } else {",
     "          showToast('M3U import failed: ' + (data.error || 'Unknown error'), 'error');",
@@ -2170,13 +2204,12 @@ function generateConfigSubtabScript(): string {
     "        showToast(result.data.message, 'success');",
     "        if (result.data.html) {",
     "          insertChannelRow(result.data.html, result.data.key);",
-    "          if (action === 'add') {",
-    "            hideAddForm();",
-    "          } else {",
-    "            hideEditForm(result.data.key);",
-    "          }",
+    "          refilterChannelRows();",
+    "        }",
+    "        if (action === 'add') {",
+    "          hideAddForm();",
     "        } else {",
-    "          showToast('Channel saved. Reload to see changes.', 'info');",
+    "          hideEditForm(result.data.key);",
     "        }",
     "      } else if (result.data.errors) {",
     "        var errorMsgs = [];",
@@ -2204,6 +2237,7 @@ function generateConfigSubtabScript(): string {
     "        showToast(result.data.message, 'success');",
     "        if (result.data.html) {",
     "          insertChannelRow(result.data.html, result.data.key || key);",
+    "          refilterChannelRows();",
     "        } else {",
     "          removeChannelRow(result.data.key || key);",
     "        }",
@@ -2224,7 +2258,7 @@ function generateConfigSubtabScript(): string {
     "    .then(function(response) { return response.json(); })",
     "    .then(function(result) {",
     "      if (result.success) {",
-    "        showToast('Channel ' + key + ' ' + (enable ? 'enabled' : 'disabled') + '.', 'success');",
+    "        showToast('Channel ' + key + ' ' + (enable ? 'enabled' : 'disabled') + '.' + PLAYLIST_HINT, 'success');",
     "        updateChannelRowDisabledState(key, !enable);",
     "      } else {",
     "        showToast(result.error || 'Failed to toggle channel.', 'error');",
@@ -2233,24 +2267,18 @@ function generateConfigSubtabScript(): string {
     "    .catch(function(err) { showToast('Failed to toggle channel: ' + err.message, 'error'); });",
     "  };",
 
-    // Update a channel row's provider selection and profile cell in-place. Syncs the HTML selected attribute so filterChannelRows() restore logic works correctly.
-    // We iterate _allOptions (if present) rather than querySelectorAll because filtered-out options are removed from the DOM but still tracked in the array.
-    "  function updateChannelProviderUI(channelKey, variant, profile) {",
+    // Update a channel row's provider selection in-place. Syncs the HTML selected attribute so filterChannelRows() restore logic works correctly. We iterate
+    // _allOptions (if present) rather than querySelectorAll because filtered-out options are removed from the DOM but still tracked in the array.
+    "  function updateChannelProviderUI(channelKey, variant) {",
     "    var row = document.getElementById('display-row-' + channelKey);",
     "    if (!row) return;",
     "    var sel = row.querySelector('.provider-select');",
-    "    if (sel) {",
-    "      sel.value = variant;",
-    "      var allOpts = sel._allOptions || Array.prototype.slice.call(sel.querySelectorAll('option'));",
-    "      for (var oi = 0; oi < allOpts.length; oi++) {",
-    "        if (allOpts[oi].value === variant) { allOpts[oi].setAttribute('selected', ''); }",
-    "        else { allOpts[oi].removeAttribute('selected'); }",
-    "      }",
-    "    }",
-    "    var profileCell = row.cells[3];",
-    "    if (profileCell) {",
-    "      if (profile) { profileCell.textContent = profile; }",
-    "      else { profileCell.innerHTML = '<em>auto</em>'; }",
+    "    if (!sel) return;",
+    "    sel.value = variant;",
+    "    var allOpts = sel._allOptions || Array.prototype.slice.call(sel.querySelectorAll('option'));",
+    "    for (var oi = 0; oi < allOpts.length; oi++) {",
+    "      if (allOpts[oi].value === variant) { allOpts[oi].setAttribute('selected', ''); }",
+    "      else { allOpts[oi].removeAttribute('selected'); }",
     "    }",
     "  }",
 
@@ -2267,7 +2295,7 @@ function generateConfigSubtabScript(): string {
     "    .then(function(result) {",
     "      if (result.success) {",
     "        showToast('Provider updated. New streams will use the selected provider.', 'success');",
-    "        updateChannelProviderUI(channelKey, providerKey, result.profile);",
+    "        if (result.html) { insertChannelRow(result.html, channelKey); refilterChannelRows(); }",
     "      } else {",
     "        showToast(result.error || 'Failed to update provider.', 'error');",
     "      }",
@@ -2285,7 +2313,7 @@ function generateConfigSubtabScript(): string {
     "    .then(function(response) { return response.json(); })",
     "    .then(function(result) {",
     "      if (result.success) {",
-    "        showToast('All predefined channels ' + (enable ? 'enabled' : 'disabled') + '.', 'success');",
+    "        showToast('All predefined channels ' + (enable ? 'enabled' : 'disabled') + '.' + PLAYLIST_HINT, 'success');",
     "        var rows = document.querySelectorAll('tr[id^=\"display-row-\"]:not(.user-channel)');",
     "        for (var i = 0; i < rows.length; i++) {",
     "          var rowKey = rows[i].id.replace('display-row-', '');",
@@ -2300,7 +2328,39 @@ function generateConfigSubtabScript(): string {
     "    .catch(function(err) { showToast('Failed to toggle channels: ' + err.message, 'error'); });",
     "  };",
 
-    // Set a channel row's disabled state without triggering count updates. Used by toggleAllPredefined for efficient bulk updates.
+    // SVG icon strings for dynamic DOM manipulation when toggling button states.
+    "  var ICON_LOGIN_SVG = '<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.5 2H3.5a1 1 0 00-1 1v10a1 1 0 001 1h3\"/><path d=\"M10.5 11l3-3-3-3\"/>" +
+    "<path d=\"M13.5 8H6.5\"/></svg>';",
+    "  var ICON_ENABLE_SVG = '<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M5.5 8l2 2 3.5-4\"/></svg>';",
+    "  var ICON_DISABLE_SVG = '<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M5.5 5.5l5 5\"/></svg>';",
+
+    // Revert a channel override back to predefined defaults.
+    "  window.revertChannel = function(key) {",
+    "    if (!confirm('Revert channel ' + key + ' to predefined defaults?')) return;",
+    "    fetch('/config/channels', {",
+    "      method: 'POST',",
+    "      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },",
+    "      body: JSON.stringify({ action: 'revert', key: key })",
+    "    })",
+    "    .then(function(response) { return response.json().then(function(d) { return { ok: response.ok, data: d }; }); })",
+    "    .then(function(result) {",
+    "      if (result.ok && result.data.success) {",
+    "        showToast(result.data.message, 'success');",
+    "        if (result.data.html) {",
+    "          insertChannelRow(result.data.html, result.data.key || key);",
+    "          refilterChannelRows();",
+    "        }",
+    "      } else {",
+    "        showToast(result.data.message || 'Failed to revert channel.', 'error');",
+    "      }",
+    "    })",
+    "    .catch(function(err) { showToast('Failed to revert channel: ' + err.message, 'error'); });",
+    "  };",
+
+    // Set a channel row's disabled state without triggering count updates. Uses icon buttons. Used by toggleAllPredefined for efficient bulk updates.
     "  function setRowDisabledState(key, disabled) {",
     "    var row = document.getElementById('display-row-' + key);",
     "    if (!row) return;",
@@ -2309,26 +2369,43 @@ function generateConfigSubtabScript(): string {
     "    if (disabled) {",
     "      row.classList.add('channel-disabled');",
     "      row.classList.remove('user-channel');",
-    "      var loginBtn = btnGroup.querySelector('button[onclick*=\"startChannelLogin\"]');",
-    "      if (loginBtn) loginBtn.remove();",
-    "      var disableBtn = btnGroup.querySelector('.btn-disable');",
+    // Replace login icon with placeholder.
+    "      var loginBtn = btnGroup.querySelector('.btn-icon-login');",
+    "      if (loginBtn) {",
+    "        var placeholder = document.createElement('span');",
+    "        placeholder.className = 'btn-icon-placeholder';",
+    "        loginBtn.replaceWith(placeholder);",
+    "      }",
+    // Swap disable icon to enable icon.
+    "      var disableBtn = btnGroup.querySelector('.btn-icon-disable');",
     "      if (disableBtn) {",
-    "        disableBtn.className = 'btn btn-enable btn-sm';",
-    "        disableBtn.textContent = 'Enable';",
+    "        disableBtn.className = 'btn-icon btn-icon-enable';",
+    "        disableBtn.title = 'Enable';",
+    "        disableBtn.setAttribute('aria-label', 'Enable');",
+    "        disableBtn.innerHTML = ICON_ENABLE_SVG;",
     "        disableBtn.setAttribute('onclick', \"togglePredefinedChannel('\" + key + \"', true)\");",
     "      }",
     "    } else {",
     "      row.classList.remove('channel-disabled');",
-    "      var enableBtn = btnGroup.querySelector('.btn-enable');",
+    // Swap enable icon to disable icon.
+    "      var enableBtn = btnGroup.querySelector('.btn-icon-enable');",
     "      if (enableBtn) {",
-    "        var newLoginBtn = document.createElement('button');",
-    "        newLoginBtn.type = 'button';",
-    "        newLoginBtn.className = 'btn btn-secondary btn-sm';",
-    "        newLoginBtn.setAttribute('onclick', \"startChannelLogin('\" + key + \"')\");",
-    "        newLoginBtn.textContent = 'Login';",
-    "        btnGroup.insertBefore(newLoginBtn, enableBtn);",
-    "        enableBtn.className = 'btn btn-disable btn-sm';",
-    "        enableBtn.textContent = 'Disable';",
+    // Replace placeholder with login icon button.
+    "        var placeholder = btnGroup.querySelector('.btn-icon-placeholder');",
+    "        if (placeholder) {",
+    "          var newLoginBtn = document.createElement('button');",
+    "          newLoginBtn.type = 'button';",
+    "          newLoginBtn.className = 'btn-icon btn-icon-login';",
+    "          newLoginBtn.title = 'Login';",
+    "          newLoginBtn.setAttribute('aria-label', 'Login');",
+    "          newLoginBtn.innerHTML = ICON_LOGIN_SVG;",
+    "          newLoginBtn.setAttribute('onclick', \"startChannelLogin('\" + key + \"')\");",
+    "          placeholder.replaceWith(newLoginBtn);",
+    "        }",
+    "        enableBtn.className = 'btn-icon btn-icon-disable';",
+    "        enableBtn.title = 'Disable';",
+    "        enableBtn.setAttribute('aria-label', 'Disable');",
+    "        enableBtn.innerHTML = ICON_DISABLE_SVG;",
     "        enableBtn.setAttribute('onclick', \"togglePredefinedChannel('\" + key + \"', false)\");",
     "      }",
     "    }",
@@ -2398,6 +2475,7 @@ function generateConfigSubtabScript(): string {
     "        updateBulkAssignOptions(enabledTags);",
     "        updateProviderFilterButton(enabledTags);",
     "        updateDisabledCount();",
+    "        showToast('Provider filter updated.' + PLAYLIST_HINT, 'success');",
     "      }",
     "    })",
     "    .catch(function(err) { showToast('Failed to update filter: ' + err.message, 'error'); });",
@@ -2436,7 +2514,8 @@ function generateConfigSubtabScript(): string {
     "      var chip = document.createElement('span');",
     "      chip.className = 'provider-chip';",
     "      chip.setAttribute('data-tag', tag);",
-    "      chip.innerHTML = label + '<button type=\"button\" class=\"chip-close\" onclick=\"removeProviderChip(\\'' + tag + '\\')\">\\u00d7</button>';",
+    "      chip.innerHTML = label + '<button type=\"button\" class=\"chip-close\" aria-label=\"Remove ' + label +",
+    "        '\" onclick=\"removeProviderChip(\\'' + tag + '\\')\">\\u00d7</button>';",
     "      container.appendChild(chip);",
     "    }",
     "  };",
@@ -2491,6 +2570,21 @@ function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
+    // Re-run the provider filter on all channel rows using the current checkbox state. Called after insertChannelRow replaces a row (which loses the filter state).
+    "  function refilterChannelRows() {",
+    "    var menu = document.querySelector('.provider-dropdown-menu');",
+    "    if (!menu) return;",
+    "    var cbs = menu.querySelectorAll('input[type=\"checkbox\"]:not(:disabled)');",
+    "    var enabledTags = [];",
+    "    var allChecked = true;",
+    "    for (var i = 0; i < cbs.length; i++) {",
+    "      if (cbs[i].checked) { enabledTags.push(cbs[i].getAttribute('data-tag')); }",
+    "      else { allChecked = false; }",
+    "    }",
+    "    if (allChecked) { enabledTags = []; }",
+    "    if (enabledTags.length > 0) { filterChannelRows(enabledTags); }",
+    "  }",
+
     // Update bulk assign dropdown to only show enabled providers. Uses DOM removal like filterChannelRows because Safari ignores hidden/display:none on option
     // elements. The snapshot filters by truthy .value to exclude the "Choose provider..." placeholder (value="") so it is never removed from the DOM.
     "  function updateBulkAssignOptions(enabledTags) {",
@@ -2537,7 +2631,7 @@ function generateConfigSubtabScript(): string {
     "        if (result.selections) {",
     "          for (var key in result.selections) {",
     "            var sel = result.selections[key];",
-    "            updateChannelProviderUI(key, sel.variant, sel.profile);",
+    "            updateChannelProviderUI(key, sel.variant);",
     "          }",
     "        }",
     "      } else {",
@@ -2561,7 +2655,7 @@ function generateConfigSubtabScript(): string {
     "        if (result.selections) {",
     "          for (var key in result.selections) {",
     "            var sel = result.selections[key];",
-    "            updateChannelProviderUI(key, sel.variant, sel.profile);",
+    "            updateChannelProviderUI(key, sel.variant);",
     "          }",
     "        }",
     "      } else {",
@@ -2591,6 +2685,27 @@ function generateConfigSubtabScript(): string {
     "  document.addEventListener('click', function(e) {",
     "    if (!e.target.closest('.dropdown')) closeDropdowns();",
     "  });",
+
+    // Copy a stream URL to the clipboard and show a toast notification. The type parameter selects HLS or MPEG-TS format. Uses the modern Clipboard API when
+    // available (secure contexts), falling back to execCommand for plain HTTP access via IP address.
+    "  window.copyStreamUrl = function(type, key) {",
+    "    closeDropdowns();",
+    "    var url = (type === 'hls') ? (location.origin + '/hls/' + key + '/stream.m3u8') : (location.origin + '/stream/' + key);",
+    "    if (navigator.clipboard && navigator.clipboard.writeText) {",
+    "      navigator.clipboard.writeText(url).then(function() { showToast('Stream URL copied to clipboard.', 'success'); })",
+    "        .catch(function() { showToast('Failed to copy URL.', 'error'); });",
+    "    } else {",
+    "      var ta = document.createElement('textarea');",
+    "      ta.value = url;",
+    "      ta.style.position = 'fixed';",
+    "      ta.style.opacity = '0';",
+    "      document.body.appendChild(ta);",
+    "      ta.select();",
+    "      try { document.execCommand('copy'); showToast('Stream URL copied to clipboard.', 'success'); }",
+    "      catch(e) { showToast('Failed to copy URL.', 'error'); }",
+    "      document.body.removeChild(ta);",
+    "    }",
+    "  };",
 
     // Toggle visibility of disabled predefined channels and persist preference.
     "  window.toggleDisabledVisibility = function() {",
@@ -2797,6 +2912,7 @@ function generateLandingPageStyles(): string {
     ".header-status span { white-space: nowrap; }",
 
     // Stream count popover. Clickable when streams are active; popover drops from the right edge of the header.
+    "#stream-count { background: none; border: none; color: inherit; font: inherit; padding: 0; }",
     "#stream-count.clickable { cursor: pointer; }",
     "#stream-count.clickable:hover { color: var(--text-primary); }",
     ".stream-popover .dropdown-menu { right: 0; left: auto; min-width: 220px; }",
@@ -2866,23 +2982,25 @@ function generateLandingPageStyles(): string {
     ".log-muted { color: var(--dark-text-muted); }",
     ".log-connecting { color: var(--dark-text-muted); }",
 
-    // Channel table styles. The wrapper enables horizontal scrolling on small screens.
-    ".channel-table-wrapper { overflow-x: auto; margin-bottom: 20px; }",
-    ".channel-table { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 650px; }",
-    ".channel-table th, .channel-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border-default); ",
-    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
-    ".channel-table th { background: var(--table-header-bg); font-weight: 600; font-size: 13px; }",
+    // Channel table styles. The wrapper provides a rounded card border and enables horizontal scrolling on small screens. We use border-collapse: separate so
+    // that border-radius works on the header cells.
+    // Max-width caps the Name column (the sole flexible column) at 350px. Fixed columns: Key 170 + Provider 200 + Actions 140 = 510px.
+    ".channel-table-wrapper { max-width: 860px; margin: 0 auto 20px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); }",
+    ".channel-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: 650px; margin: 0; }",
+    ".channel-table th, .channel-table td { padding: 10px 12px; text-align: left; border: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
+    ".channel-table th { background: var(--table-header-bg); font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--border-default); }",
+    ".channel-table tbody tr:nth-child(even):not(.user-channel) { background: var(--table-row-even); }",
     ".channel-table tr:hover { background: var(--table-row-hover); }",
     ".channel-table .col-key { width: 170px; }",
-    ".channel-table .col-name { width: 250px; }",
-    ".channel-table .col-source { width: 150px; }",
-    ".channel-table .col-profile { width: 140px; }",
-    ".channel-table .col-actions { width: 170px; white-space: nowrap; overflow: visible; }",
+    ".channel-table .col-provider { width: 200px; }",
+    ".channel-table .col-actions, .channel-table td:last-child { width: 140px; white-space: nowrap; overflow: visible; }",
     ".provider-select { width: 100%; padding: 2px 4px; font-size: 12px; border: 1px solid var(--form-input-border); ",
     "border-radius: 3px; background: var(--form-input-bg); color: var(--text-primary); }",
 
-    // Responsive: hide Profile on tablets, hide Key and Profile on phones.
-    "@media (max-width: 1024px) { .channel-table .col-profile, .channel-table td:nth-child(4), .channel-table th:nth-child(4) { display: none; } }",
+    // Key column styling: monospace at a slightly smaller size with secondary color to reduce visual weight.
+    ".ch-key { color: var(--text-secondary); font-family: var(--font-mono); font-size: 13px; }",
+
+    // Responsive: hide Key on phones.
     "@media (max-width: 768px) { .channel-table .col-key, .channel-table td:nth-child(1), .channel-table th:nth-child(1) { display: none; } }",
 
     // User channel row tinting to distinguish custom/override channels from predefined.
@@ -2892,7 +3010,6 @@ function generateLandingPageStyles(): string {
     // Disabled predefined channel row styling and hide-disabled toggle.
     ".channel-table tr.channel-disabled { opacity: 0.5; }",
     ".channel-table tr.channel-disabled td { color: var(--text-tertiary); }",
-    ".channel-table tr.channel-disabled code { color: var(--text-tertiary); }",
     ".channel-table.hide-disabled tr.channel-disabled { display: none; }",
 
     // Provider-filtered channel row styling. Uses reduced opacity and italic text to distinguish from manually disabled rows. The compound selector ensures that rows
@@ -2925,16 +3042,34 @@ function generateLandingPageStyles(): string {
 
     // Bulk assign dropdown.
     ".bulk-assign-select { font-size: 13px; padding: 4px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-md); ",
-    "background: var(--surface-default); color: var(--text-primary); cursor: pointer; }",
+    "background: var(--surface-page); color: var(--text-primary); cursor: pointer; }",
 
     // Responsive: stack provider toolbar groups vertically on small screens.
     "@media (max-width: 768px) { .provider-toolbar { flex-direction: column; align-items: flex-start; } }",
 
-    // Enable/Disable button styling.
-    ".btn-enable { background: var(--status-success-bg); color: var(--status-success-text); border: 1px solid var(--status-success-border); }",
-    ".btn-enable:hover { background: var(--status-success-border); }",
-    ".btn-disable { background: var(--surface-elevated); color: var(--text-secondary); border: 1px solid var(--border-default); }",
-    ".btn-disable:hover { border-color: var(--text-secondary); }",
+    // Icon button styling for channel action buttons.
+    ".btn-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: none; ",
+    "border-radius: var(--radius-md); background: transparent; cursor: pointer; color: var(--text-secondary); transition: color 0.15s, background 0.15s; }",
+    ".btn-icon:hover { background: var(--surface-hover); }",
+    ".user-channel .btn-icon:hover { background: var(--user-channel-tint-hover); }",
+    ".btn-icon-edit:hover { color: var(--interactive-edit); }",
+    ".btn-icon-delete:hover { color: var(--interactive-delete); }",
+    ".btn-icon-revert:hover { color: var(--interactive-edit); }",
+    ".btn-icon-enable:hover { color: var(--interactive-success); }",
+    ".btn-icon-disable:hover { color: var(--interactive-delete); }",
+    ".btn-icon-login:hover { color: var(--interactive-primary); }",
+    ".btn-icon-copy:hover { color: var(--interactive-primary); }",
+    ".btn-icon-placeholder { display: inline-block; width: 28px; height: 28px; }",
+    ".copy-dropdown .dropdown-menu { left: auto; right: 0; }",
+    ".copy-dropdown .dropdown-item { font-size: 12px; }",
+
+    // JS tooltip styling. The tooltip element is appended to <body> and positioned via getBoundingClientRect() so it's immune to overflow and stacking contexts.
+    // Only activated when the primary input can't hover (hover: none), targeting iPadOS where Safari doesn't show native title tooltips. On pure-touch
+    // devices without a trackpad, the JS loads but mouseenter never fires so the tooltip stays hidden. Desktop (hover: hover) skips initialization entirely.
+    ".btn-icon-tooltip { position: fixed; padding: 4px 8px; border-radius: var(--radius-sm); background: var(--surface-overlay); color: var(--text-primary); ",
+    "font-size: 12px; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.5s; z-index: 10000; ",
+    "box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15); }",
+    ".btn-icon-tooltip.visible { opacity: 1; transition: opacity 0.1s; }",
 
     // Channel toolbar with operation buttons and display controls.
     ".channel-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; margin-bottom: 15px; }",
@@ -2972,7 +3107,7 @@ function generateLandingPageStyles(): string {
     "padding: 20px; }",
     ".profile-reference-header { display: flex; justify-content: space-between; align-items: flex-start; }",
     ".profile-reference h3 { margin: 0 0 10px 0; color: var(--text-heading-secondary); }",
-    ".profile-reference-close { color: var(--text-secondary); font-size: 18px; text-decoration: none; padding: 0 5px; }",
+    ".profile-reference-close { color: var(--text-secondary); font-size: 18px; background: none; border: none; cursor: pointer; padding: 0 5px; }",
     ".profile-reference-close:hover { color: var(--text-primary); }",
     ".reference-intro { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }",
     ".profile-category { margin-bottom: 20px; }",

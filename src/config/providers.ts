@@ -573,8 +573,26 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 }
 
 /**
- * Gets a channel with inheritance applied. For provider variants, this merges the variant's properties with inherited properties from the canonical entry.
- * Inherited properties: `name`, `stationId` (variant takes precedence). `channelSelector` is not inherited — it is provider-specific.
+ * Applies variant inheritance: the variant's own properties take precedence, but `name` and `stationId` fall through from the base channel when not set on the
+ * variant. `channelSelector` is deliberately NOT inherited — it is provider-specific (e.g., fox.com uses station codes like "FOXD2C" while Sling uses guide
+ * names like "FOX"), so each variant must define its own. This is the single source of truth for variant inheritance rules.
+ * @param variant - The variant channel definition.
+ * @param base - The canonical (base) channel to inherit from.
+ * @returns A new Channel with inheritance applied.
+ */
+function applyVariantInheritance(variant: Channel, base: Channel): Channel {
+
+  return {
+
+    ...variant,
+    name: variant.name ?? base.name,
+    stationId: variant.stationId ?? base.stationId
+  };
+}
+
+/**
+ * Gets a channel with inheritance applied. For provider variants, this merges the variant's properties with inherited properties from the canonical entry
+ * using the live channel data (which includes user overrides). Use `resolvePredefinedVariant()` when you need resolution against pure predefined data.
  * @param key - The channel key (canonical or variant).
  * @returns The complete channel with inheritance applied, or undefined if the channel doesn't exist.
  */
@@ -616,12 +634,42 @@ export function getResolvedChannel(key: string): Channel | undefined {
     return channel;
   }
 
-  // Build the merged channel. Variant properties override canonical, but inherit name and stationId if not set. channelSelector is NOT inherited — it is
-  // provider-specific (e.g., fox.com uses station codes like "FOXD2C" while Sling uses guide names like "FOX"), so each variant must define its own.
-  return {
+  return applyVariantInheritance(channel, canonical);
+}
 
-    ...channel,
-    name: channel.name ?? canonical.name,
-    stationId: channel.stationId ?? canonical.stationId
-  };
+/**
+ * Resolves a variant channel key against pure predefined data (ignoring user overrides). This is used for revert detection — when the user's edits match a
+ * variant's predefined definition, the custom override can be removed and the provider selection switched to that variant. For canonical keys, returns the raw
+ * predefined channel. For variant keys, applies the same inheritance rules as `getResolvedChannel()` but against `PREDEFINED_CHANNELS` instead of `channelsRef`.
+ * @param key - The channel key (canonical or variant).
+ * @returns The channel with inheritance applied against predefined data, or undefined if the key has no predefined definition.
+ */
+export function resolvePredefinedVariant(key: string): Channel | undefined {
+
+  const channel = PREDEFINED_CHANNELS[key];
+
+  // Runtime check — the key may not exist in PREDEFINED_CHANNELS.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!channel) {
+
+    return undefined;
+  }
+
+  const group = providerGroups.get(key);
+
+  // If not part of a group or is the canonical entry, return the predefined channel as-is.
+  if(!group || (group.canonicalKey === key)) {
+
+    return channel;
+  }
+
+  const canonical = PREDEFINED_CHANNELS[group.canonicalKey];
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!canonical) {
+
+    return channel;
+  }
+
+  return applyVariantInheritance(channel, canonical);
 }

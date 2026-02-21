@@ -2,7 +2,7 @@
  *
  * userChannels.ts: User channel file management for PrismCast.
  */
-import type { Channel, ChannelListingEntry, ChannelMap } from "../types/index.js";
+import type { Channel, ChannelListingEntry, ChannelMap, StoredChannel, StoredChannelMap } from "../types/index.js";
 import { buildProviderGroups, getAllProviderTags, getProviderSelections, isChannelAvailableByProvider, isProviderVariant, setEnabledProviders,
   setProviderSelections } from "./providers.js";
 import { getChannelsFilePath, getDataDir } from "./paths.js";
@@ -34,9 +34,9 @@ const { promises: fsPromises } = fs;
 export type UserChannel = Channel;
 
 /**
- * Map of channel keys to user-defined channel configurations.
+ * Map of channel keys to stored channel data (full definitions or deltas). This is the raw file format for channels.json.
  */
-export type UserChannelMap = ChannelMap;
+export type UserChannelMap = StoredChannelMap;
 
 /**
  * Result of loading user channels from the file.
@@ -44,7 +44,7 @@ export type UserChannelMap = ChannelMap;
 export interface UserChannelsLoadResult {
 
   // The loaded user channels (empty object if file doesn't exist or parse error).
-  channels: UserChannelMap;
+  channels: StoredChannelMap;
 
   // True if the file exists but contains invalid JSON.
   parseError: boolean;
@@ -71,8 +71,9 @@ export function getUserChannelsFilePath(): string {
 /* These functions handle reading and writing the channels file. All operations are async and handle errors gracefully.
  */
 
-// Module-level storage for loaded user channels. This is populated at startup and used by getAllChannels().
-let loadedUserChannels: UserChannelMap = {};
+// Module-level storage for loaded user channels. This is populated at startup and used by getAllChannels(). Entries can be full Channel definitions or
+// ChannelDelta overrides for predefined channels.
+let loadedUserChannels: StoredChannelMap = {};
 let userChannelsParseError = false;
 let userChannelsParseErrorMessage: string | undefined;
 
@@ -111,7 +112,7 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
       // Extract providerSelections if present — it's not a channel, it's metadata.
       const providerSelections: Record<string, string> = {};
-      const channels: UserChannelMap = {};
+      const channels: StoredChannelMap = {};
 
       for(const [ key, value ] of Object.entries(parsed)) {
 
@@ -130,8 +131,8 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
           }
         } else if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
 
-          // It's a channel definition.
-          channels[key] = value as Channel;
+          // It's a channel definition or delta override.
+          channels[key] = value as StoredChannel;
         }
       }
 
@@ -161,22 +162,36 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
 /**
  * Saves user channels to the channels file and updates the in-memory cache. Changes take effect immediately for new stream requests without requiring a server
- * restart. Creates the data directory if it doesn't exist. Provider selections are also saved if any exist.
- * @param channels - The channels to save.
+ * restart. Creates the data directory if it doesn't exist. Provider selections are also saved if any exist. Empty deltas (no overridden fields) for predefined
+ * channel keys are stripped before saving to avoid storing no-op entries.
+ * @param channels - The channels to save (full definitions or delta overrides).
  * @throws If the file cannot be written.
  */
-export async function saveUserChannels(channels: UserChannelMap): Promise<void> {
+export async function saveUserChannels(channels: StoredChannelMap): Promise<void> {
 
   // Ensure data directory exists.
   await fsPromises.mkdir(getDataDir(), { recursive: true });
 
+  // Strip empty deltas for predefined keys — an empty delta means no changes were made.
+  const filtered: StoredChannelMap = {};
+
+  for(const [ key, stored ] of Object.entries(channels)) {
+
+    if((key in PREDEFINED_CHANNELS) && (Object.keys(stored).length === 0)) {
+
+      continue;
+    }
+
+    filtered[key] = stored;
+  }
+
   // Sort channels by key for consistent output.
-  const sortedChannels: Record<string, Channel | Record<string, string>> = {};
-  const sortedKeys = Object.keys(channels).sort();
+  const sortedChannels: Record<string, Record<string, string> | StoredChannel> = {};
+  const sortedKeys = Object.keys(filtered).sort();
 
   for(const key of sortedKeys) {
 
-    sortedChannels[key] = channels[key];
+    sortedChannels[key] = filtered[key];
   }
 
   // Include provider selections if any exist.
@@ -202,7 +217,7 @@ export async function saveUserChannels(channels: UserChannelMap): Promise<void> 
   await fsPromises.writeFile(getChannelsFilePath(), content + "\n", "utf-8");
 
   // Update in-memory cache so changes take effect immediately for new stream requests.
-  loadedUserChannels = { ...channels };
+  loadedUserChannels = { ...filtered };
 
   // Refresh provider groups so channelsRef reflects the new channel data. This ensures getResolvedChannel() returns correct data after modifications.
   buildProviderGroups(getMergedChannelMap());
@@ -319,17 +334,66 @@ export async function initializeUserChannels(): Promise<void> {
   }
 }
 
+// Fields that users are allowed to override via delta. This allowlist prevents hand-edited channels.json from overriding fields like provider that are
+// intentionally not user-editable. Matches the fields in the ChannelDelta interface.
+const DELTA_ALLOWED_FIELDS = new Set([ "channelNumber", "channelSelector", "name", "profile", "stationId", "url" ]);
+
+/**
+ * Resolves a stored channel entry (full definition or delta) into a fully resolved Channel. For user-defined channels with no predefined equivalent, the stored
+ * entry is returned as-is (it must be a full Channel). For overrides of predefined channels, the predefined definition is used as a base and only allowlisted
+ * delta fields are overlaid. Fields set to null in the delta are removed from the result. Fields not in the allowlist are silently ignored.
+ * @param key - The channel key.
+ * @param stored - The stored channel data (full definition or delta).
+ * @returns A fully resolved Channel with all fields populated.
+ */
+export function resolveStoredChannel(key: string, stored: StoredChannel): Channel {
+
+  const predefined = PREDEFINED_CHANNELS[key];
+
+  // No predefined equivalent — this is a user-defined channel, return as-is. The caller is responsible for ensuring it has a url field.
+  // Runtime check needed — TypeScript thinks Record indexing always returns a value, but the key may not exist.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!predefined) {
+
+    return stored as Channel;
+  }
+
+  // Start with a copy of the predefined definition, then overlay allowlisted non-null delta fields.
+  const resolved: Channel = { ...predefined };
+
+  for(const [ field, value ] of Object.entries(stored)) {
+
+    if(!DELTA_ALLOWED_FIELDS.has(field)) {
+
+      continue;
+    }
+
+    if(value === null) {
+
+      // Explicit null means "clear this field" — delete it from the resolved object.
+      Reflect.deleteProperty(resolved, field);
+    } else if(value !== undefined) {
+
+      // Non-null, non-undefined — override the predefined value.
+      (resolved as unknown as Record<string, unknown>)[field] = value;
+    }
+  }
+
+  return resolved;
+}
+
 /**
  * Returns the merged channel map (predefined + user) without filtering by enabled status or provider variants. Used internally for building provider groups.
+ * Resolves any delta overrides into full Channel objects so the result contains only complete definitions.
  * @returns The complete merged channel map.
  */
 function getMergedChannelMap(): ChannelMap {
 
   const result: ChannelMap = { ...PREDEFINED_CHANNELS };
 
-  for(const [ key, channel ] of Object.entries(loadedUserChannels)) {
+  for(const [ key, stored ] of Object.entries(loadedUserChannels)) {
 
-    result[key] = channel;
+    result[key] = resolveStoredChannel(key, stored);
   }
 
   return result;
@@ -353,8 +417,8 @@ function getMergedChannelMap(): ChannelMap {
  *
  * Provider variants (non-canonical keys in provider groups) are filtered out from this listing — they are accessed via the provider selection mechanism instead.
  *
- * IMPORTANT: This function preserves object references from PREDEFINED_CHANNELS and loadedUserChannels. The provider system (providers.ts) relies on this behavior
- * to detect user overrides via reference comparison. Do not clone channel objects when building the listing.
+ * Override entries produce a new resolved Channel object (via resolveStoredChannel()), which is a different reference from PREDEFINED_CHANNELS[key]. The provider
+ * system (providers.ts) relies on this reference difference to detect user overrides via isUserOverride(). Predefined-only entries preserve the original reference.
  * @returns Sorted array of channel listing entries.
  */
 export function getChannelListing(): ChannelListingEntry[] {
@@ -387,10 +451,14 @@ export function getChannelListing(): ChannelListingEntry[] {
       source = "predefined";
     }
 
+    // For user entries (including overrides), resolve the stored delta/definition into a full Channel. The resolved object is a new reference, which preserves
+    // the isUserOverride() contract in providers.ts (reference comparison against PREDEFINED_CHANNELS[key]).
+    const channel: Channel = isUser ? resolveStoredChannel(key, loadedUserChannels[key]) : PREDEFINED_CHANNELS[key];
+
     listing.push({
 
       availableByProvider: isChannelAvailableByProvider(key),
-      channel: isUser ? loadedUserChannels[key] : PREDEFINED_CHANNELS[key],
+      channel,
       enabled: !isPredefinedChannelDisabled(key),
       key,
       source
@@ -424,12 +492,22 @@ export function getAllChannels(): ChannelMap {
 }
 
 /**
- * Returns the loaded user channels (without predefined channels).
- * @returns The user channel map.
+ * Returns the raw stored channel data (without predefined channels). Entries may be full Channel definitions or ChannelDelta overrides.
+ * @returns The stored channel map.
  */
-export function getUserChannels(): UserChannelMap {
+export function getUserChannels(): StoredChannelMap {
 
   return { ...loadedUserChannels };
+}
+
+/**
+ * Returns the predefined channel definition for a key.
+ * @param key - The channel key to look up.
+ * @returns The predefined channel, or undefined if the key is not predefined.
+ */
+export function getPredefinedChannel(key: string): Channel | undefined {
+
+  return PREDEFINED_CHANNELS[key];
 }
 
 /**
@@ -450,16 +528,6 @@ export function isPredefinedChannel(key: string): boolean {
 export function isUserChannel(key: string): boolean {
 
   return key in loadedUserChannels;
-}
-
-/**
- * Checks if a user channel overrides a predefined channel (same key exists in both).
- * @param key - The channel key to check.
- * @returns True if the user channel overrides a predefined channel.
- */
-export function isOverrideChannel(key: string): boolean {
-
-  return isPredefinedChannel(key) && isUserChannel(key);
 }
 
 /* Users can disable predefined channels to exclude them from the playlist and block streaming. Disabled channels appear grayed out in the UI with an option to
@@ -636,8 +704,8 @@ export function validateChannelProfile(profile: string | undefined, validProfile
  */
 export interface ChannelsValidationResult {
 
-  // The validated channels if valid.
-  channels: UserChannelMap;
+  // The validated channels if valid. Import always produces full Channel definitions, not deltas.
+  channels: ChannelMap;
 
   // Validation error messages.
   errors: string[];
@@ -662,7 +730,7 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
     return { channels: {}, errors: ["Invalid format: expected an object with channel definitions."], valid: false };
   }
 
-  const channels: UserChannelMap = {};
+  const channels: ChannelMap = {};
   const entries = Object.entries(data as Record<string, unknown>);
 
   for(const [ key, value ] of entries) {

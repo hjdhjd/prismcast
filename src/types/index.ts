@@ -549,6 +549,44 @@ export interface ChannelListingEntry {
 }
 
 /**
+ * A delta override for a predefined channel. All fields are optional because only fields that differ from the predefined definition are stored. String and number
+ * fields use Nullable<T> to distinguish "user cleared this field" (null) from "inherit from predefined" (absent). When a field is null, the predefined value is
+ * removed in the resolved channel. When a field is absent, the predefined value is inherited.
+ */
+export interface ChannelDelta {
+
+  // Override for channel number, or null to clear the predefined value.
+  channelNumber?: Nullable<number>;
+
+  // Override for channel selector, or null to clear the predefined value.
+  channelSelector?: Nullable<string>;
+
+  // Override for display name, or null to clear the predefined value.
+  name?: Nullable<string>;
+
+  // Override for profile, or null to clear the predefined value.
+  profile?: Nullable<string>;
+
+  // Override for station ID, or null to clear the predefined value.
+  stationId?: Nullable<string>;
+
+  // Override for URL, or null to clear the predefined value. When absent, the predefined URL is inherited.
+  url?: Nullable<string>;
+}
+
+/**
+ * What gets stored in channels.json per key. For user-defined channels (no predefined equivalent), this is a full Channel with a required url. For overrides of
+ * predefined channels, this can be a ChannelDelta with only the differing fields. Legacy full-override entries (from before the delta model) are also valid — they
+ * are just deltas that happen to override every field.
+ */
+export type StoredChannel = Channel | ChannelDelta;
+
+/**
+ * Map of channel keys to stored channel data (full definitions or deltas). This is the raw type for the channels.json file contents.
+ */
+export type StoredChannelMap = Record<string, StoredChannel>;
+
+/**
  * Map of channel short names to channel definitions. Channel names must be URL-safe strings (lowercase letters, numbers, hyphens) since they appear in stream
  * request URLs.
  */

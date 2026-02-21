@@ -31,6 +31,7 @@ export function generateThemeStyles(): string {
     "  --surface-elevated: #f9f9f9;",
     "  --surface-sunken: #f4f4f4;",
     "  --surface-overlay: #ffffff;",
+    "  --surface-hover: #eeeeee;",
     "  --surface-code: #f4f4f4;",
     "  --surface-pre: #f8f8f8;",
 
@@ -38,7 +39,8 @@ export function generateThemeStyles(): string {
     "  --text-primary: #333333;",
     "  --text-secondary: #666666;",
     "  --text-muted: #888888;",
-    "  --text-disabled: #999999;",
+    "  --text-tertiary: #999999;",
+    "  --text-disabled: #aaaaaa;",
     "  --text-heading: #2c3e50;",
     "  --text-heading-secondary: #34495e;",
     "  --text-inverse: #ffffff;",
@@ -151,6 +153,9 @@ export function generateThemeStyles(): string {
     "  --dark-scrollbar-thumb: #555555;",
     "  --dark-scrollbar-thumb-hover: #666666;",
 
+    // Font stacks.
+    "  --font-mono: 'SF Mono', Monaco, monospace;",
+
     // Spacing and sizing tokens.
     "  --radius-sm: 3px;",
     "  --radius-md: 4px;",
@@ -167,6 +172,7 @@ export function generateThemeStyles(): string {
     "    --surface-elevated: #2a2a2a;",
     "    --surface-sunken: #151515;",
     "    --surface-overlay: #2d2d2d;",
+    "    --surface-hover: #353535;",
     "    --surface-code: #2d2d2d;",
     "    --surface-pre: #252525;",
 
@@ -174,6 +180,7 @@ export function generateThemeStyles(): string {
     "    --text-primary: #e0e0e0;",
     "    --text-secondary: #b0b0b0;",
     "    --text-muted: #888888;",
+    "    --text-tertiary: #777777;",
     "    --text-disabled: #666666;",
     "    --text-heading: #ffffff;",
     "    --text-heading-secondary: #e0e0e0;",
