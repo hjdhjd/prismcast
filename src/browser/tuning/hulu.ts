@@ -25,8 +25,8 @@ const huluEabCache = new Map<string, HuluListingProgram[]>();
 const huluPagesWithListeners = new WeakSet<Page>();
 
 // The Hulu live page URL. The evaluateOnNewDocument fetch interceptor swaps channel_id and content_eab_id in the playlist API request, making the app play the
-// target channel through its own pipeline without guide grid interaction. On warm cache, UUID and EAB are injected at install time. On cold cache (non-affiliate),
-// the interceptor captures them from listing and details API responses during page load, holding the playlist request until both are resolved.
+// target channel through its own pipeline without guide grid interaction. On warm cache, UUID and EAB are injected at install time. On cold cache, the guide
+// grid's Channels tab click triggers full API expansion, and the interceptor captures UUID+EAB from those expanded responses.
 const HULU_LIVE_URL = "https://www.hulu.com/live";
 
 // Partial type for Hulu's guide details API response. Each item represents a scheduled program and includes channel_info with the channel's UUID and display name.
@@ -503,33 +503,80 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
 }
 
 /**
- * Attempts to tune to a channel via the fast path: injects UUID and EAB into the in-page fetch interceptor, which swaps the held playlist request to the target
- * channel. Called after binary search identifies a local affiliate whose UUID and EAB are available in the server-side caches. On success, dismisses the guide
- * overlay so the video player is visible for capture, then returns true. On failure (interceptor's directTunePromise already resolved due to timeout), returns
- * false so the caller can fall through to the click-based path.
+ * Attempts a fast-path tune by either injecting UUID+EAB from server-side caches into the in-page interceptor, or detecting that the interceptor has already
+ * self-resolved from in-page API data. Two resolution mechanisms handle different channel types:
+ *
+ * 1. Server-side injection: looks up the currently-airing EAB for the given channel UUID and calls __prismcastResolveDirectTune to inject both values into the
+ *    held playlist request. Primary mechanism for local affiliates whose call signs don't match the channelSelector network name — the interceptor can't
+ *    self-resolve by name for these, so external injection is the only path.
+ * 2. Self-resolution detection: queries __prismcastIsDirectTuneResolved to check if the interceptor already captured UUID+EAB from the expanded
+ *    Details+Listing API responses and resolved the playlist autonomously. Primary mechanism for non-affiliate channels on cold cache, where the interceptor's
+ *    in-page name matching succeeds before the guide grid completes binary search.
+ *
+ * On success, dismisses the guide overlay so the video player is visible for capture.
  * @param page - The Puppeteer page object.
- * @param channelUuid - The channel UUID to inject into the interceptor.
- * @param currentEab - The currently-airing EAB to inject into the interceptor.
+ * @param channelUuid - The channel UUID from server-side cache, or null if not yet available.
  * @param channelName - The original channel name for logging.
- * @returns True if the injection succeeded, false if the interceptor's Promise had already resolved.
+ * @returns True if the tune was resolved (via injection or self-resolution), false otherwise.
  */
-async function tryFastPathTune(page: Page, channelUuid: string, currentEab: string, channelName: string): Promise<boolean> {
+async function tryFastPathTune(page: Page, channelUuid: Nullable<string>, channelName: string): Promise<boolean> {
 
-  const injected = await page.evaluate((u: string, e: string): boolean => {
+  let resolved = false;
+  let resolveDetail = "";
 
-    const resolver = (window as unknown as Record<string, unknown>).__prismcastResolveDirectTune;
+  // Phase 1: If UUID is available from the server-side cache, attempt to inject it along with the current EAB into the in-page interceptor. This is the primary
+  // mechanism for local affiliates (where the interceptor can't self-resolve by name) and a secondary mechanism for exact-match channels.
+  if(channelUuid) {
 
-    if(typeof resolver === "function") {
+    const currentEab = findCurrentEab(channelUuid);
 
-      return (resolver as (uuid: string, eab: string) => boolean)(u, e);
+    if(currentEab) {
+
+      const injected = await page.evaluate((u: string, e: string): boolean => {
+
+        const resolver = (window as unknown as Record<string, unknown>).__prismcastResolveDirectTune;
+
+        if(typeof resolver === "function") {
+
+          return (resolver as (uuid: string, eab: string) => boolean)(u, e);
+        }
+
+        return false;
+      }, channelUuid, currentEab);
+
+      if(injected) {
+
+        resolved = true;
+        resolveDetail = "uuid=" + channelUuid;
+      }
     }
+  }
 
-    return false;
-  }, channelUuid, currentEab);
+  // Phase 2: If injection didn't succeed, check if the interceptor self-resolved from in-page API data. This happens on cold cache for non-affiliate channels
+  // whose names match the Details API response (e.g., "CNN International", "ESPN"). The interceptor captures UUID+EAB from the expanded Details+Listing
+  // responses triggered by the Channels tab click and resolves the held playlist autonomously, making the guide grid click redundant.
+  if(!resolved) {
 
-  if(!injected) {
+    const selfResolved = await page.evaluate((): boolean => {
 
-    LOG.debug("tuning:hulu", "Fast-path injection failed for %s (interceptor Promise already resolved).", channelName);
+      const checker = (window as unknown as Record<string, unknown>).__prismcastIsDirectTuneResolved;
+
+      if(typeof checker === "function") {
+
+        return (checker as () => boolean)();
+      }
+
+      return false;
+    });
+
+    if(selfResolved) {
+
+      resolved = true;
+      resolveDetail = "interceptor self-resolved from API data";
+    }
+  }
+
+  if(!resolved) {
 
     return false;
   }
@@ -544,15 +591,15 @@ async function tryFastPathTune(page: Page, channelUuid: string, currentEab: stri
     LOG.debug("tuning:hulu", "Could not dismiss guide after fast-path tune: %s.", formatError(error));
   }
 
-  LOG.debug("tuning:hulu", "Direct tune via fetch interception for inferred affiliate %s (uuid=%s).", channelName, channelUuid);
+  LOG.debug("tuning:hulu", "Direct tune via fetch interception for %s (%s).", channelName, resolveDetail);
 
   return true;
 }
 
 /**
- * Releases the held playlist request in the in-page fetch interceptor, reverting to the click-based flow. Called when the fast-path injection can't proceed
- * (UUID or EAB not in server-side caches) or wasn't attempted. Sets holdActive to false in the interceptor so subsequent playlist requests from the play button
- * click follow the affiliate capture path ([HULU-CACHE]).
+ * Releases the held playlist request in the in-page fetch interceptor, reverting to the click-based flow. Called when tryFastPathTune returns false (neither
+ * server-side injection nor interceptor self-resolution succeeded). Sets holdActive to false in the interceptor so subsequent playlist requests from the play
+ * button click follow the affiliate capture path ([HULU-CACHE]).
  * @param page - The Puppeteer page object.
  */
 async function releaseHeldPlaylist(page: Page): Promise<void> {
@@ -853,20 +900,12 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
         LOG.debug("tuning:hulu", "Cross-referenced UUID cache: %s -> %s (from inferred affiliate %s).", channelName, inferredUuid, inferred);
 
-        // Fast path: inject UUID+EAB into the in-page interceptor to tune via fetch interception instead of clicking. The server-side caches are populated
-        // from details and listing API responses during page load, which typically complete before binary search finishes (~600ms). If both UUID and EAB are
-        // available, the interceptor swaps the held playlist request to the target channel — no on-now cell click or play button interaction needed.
-        const currentEab = findCurrentEab(inferredUuid);
+        // eslint-disable-next-line no-await-in-loop
+        const fastPathSuccess = await tryFastPathTune(page, inferredUuid, channelName);
 
-        if(currentEab) {
+        if(fastPathSuccess) {
 
-          // eslint-disable-next-line no-await-in-loop
-          const fastPathSuccess = await tryFastPathTune(page, inferredUuid, currentEab, channelName);
-
-          if(fastPathSuccess) {
-
-            return { success: true };
-          }
+          return { success: true };
         }
       }
     }
@@ -926,8 +965,20 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     return { reason: "Could not find channel " + channelName + " in guide grid.", success: false };
   }
 
-  // Release the held playlist before falling through to the click path. This is a safety net — the inference block releases the hold in all its sub-paths, but
-  // exact-match and linear-scan paths may reach here without having released. The release is a no-op if the hold was already released or was never active.
+  // Fast path: attempt direct tune via server-side cache injection or interceptor self-resolution detection. The Channels tab click (before binary search)
+  // triggers full Details+Listing API responses. For non-affiliates, the in-page interceptor may have already self-resolved from those responses (capturing
+  // UUID+EAB and swapping the playlist autonomously). For channels where the interceptor hasn't self-resolved, server-side caches provide UUID+EAB for
+  // injection. Either path avoids the redundant on-now cell click. Note: for affiliates, the inference block above may have already called tryFastPathTune with
+  // the same UUID — that call is redundant here but harmless (~10ms), and avoiding it with a flag would create a fragile coupling to the inference block.
+  const fastPathSuccess = await tryFastPathTune(page, huluUuidCache.get(normalizedName) ?? null, channelName);
+
+  if(fastPathSuccess) {
+
+    return { success: true };
+  }
+
+  // Release the held playlist before falling through to the click path. Neither tryFastPathTune nor the inference block calls releaseHeldPlaylist — they either
+  // inject successfully (resolving the held playlist directly) or return false without side effects. The release is a no-op if the hold was already resolved.
   await releaseHeldPlaylist(page);
 
   // Click the on-now program cell and wait for the play button, with click retries to handle React hydration timing.
@@ -970,7 +1021,7 @@ async function guideGridWithRetry(page: Page, profile: ChannelSelectionProfile):
  * As the live page loads, Hulu fetches program details from guide.hulu.com/guide/details in batches. Each response item includes channel_info with the
  * channel's UUID and display name. We intercept these responses to populate the huluUuidCache, enabling instant UUID resolution on subsequent tunes. The
  * in-page interceptor in resolveHuluDirectUrl() expands details request bodies with additional EABs so these responses cover all ~123 channels. Also bridges
- * in-page console signals (HULU-DIAG and HULU-CACHE) to the Node.js LOG. Uses a WeakSet to prevent duplicate listener registration.
+ * in-page console signals (HULU-DIAG, HULU-CACHE, and HULU-FAIL) to the Node.js LOG. Uses a WeakSet to prevent duplicate listener registration.
  * @param page - The Puppeteer page object.
  */
 function setupDetailsResponseInterception(page: Page): void {
@@ -1009,6 +1060,14 @@ function setupDetailsResponseInterception(page: Page): void {
 
         LOG.debug("tuning:hulu", "Cached affiliate UUID from playlist: %s -> %s. UUID cache size: %s.", name, channelUuid, huluUuidCache.size);
       }
+    }
+
+    // Direct tune failure: the interceptor's hold period expired without resolving UUID+EAB for the target channel. The 503 response prevents Hulu from playing
+    // the wrong channel. The guide grid binary search runs as the fallback. Since all cold tunes go through the guide grid (triggering full API expansion), this
+    // path should rarely be reached — it provides defense-in-depth against silent false positives.
+    if(text.startsWith("[HULU-FAIL]")) {
+
+      LOG.warn(text);
     }
   });
 
@@ -1116,14 +1175,13 @@ function findCurrentEab(channelUuid: string): Nullable<string> {
 
 /**
  * Resolves a direct URL for Hulu channel tuning and installs a fetch interceptor that handles both warm and cold tunes. On warm cache (UUID and EAB known from
- * previous API responses), the interceptor has both values at install time and swaps the first playlist request immediately. On cold cache, the interceptor
- * captures the target channel's UUID from the details API response and EAB from the listing API response, holding the playlist request until both are resolved
- * (with an 8-second timeout). On all tunes, the interceptor also expands listing and details API requests to populate the full UUID cache (~123 channels) for
- * future warm tunes. Returns null only for known local affiliate network names on cold cache (ABC, CBS, NBC, Fox, PBS, CW) — their channel_info.name in the
- * details API uses call signs that don't match the channelSelector, so the guide grid handles them via position-based inference.
+ * previous API responses), the interceptor has both values at install time and swaps the first playlist request immediately. On cold cache (no UUID), returns
+ * null so the guide grid runs — the Channels tab click triggers full Details+Listing API expansion for all ~123 channels, and the interceptor captures UUID+EAB
+ * from those expanded responses to resolve the held playlist. Without the Channels tab click, the initial page load only provides data for ~10 visible channels.
+ * On all tunes, the interceptor also expands listing and details API requests to populate the full UUID cache for future warm tunes.
  * @param channelSelector - The channel selector string (e.g., "Fox", "CNN", "ESPN").
  * @param page - The Puppeteer page for evaluateOnNewDocument installation and response interception setup.
- * @returns The Hulu live URL for direct tuning, or null for local affiliate networks on cold cache or interceptor installation failure.
+ * @returns The Hulu live URL for direct tuning, or null on cold cache (no UUID) or interceptor installation failure.
  */
 async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promise<Nullable<string>> {
 
@@ -1135,8 +1193,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
   setupDetailsResponseInterception(page);
 
   // Look up the currently-airing EAB for the target channel (if UUID is known). On warm cache (both UUID and EAB available), the interceptor has both at install
-  // time and swaps immediately. On cold cache or stale EAB, the interceptor captures the values from API responses during page load, holding the playlist until
-  // both are resolved. The guide grid only runs for local affiliate network names (NETWORK_NAMES_WITH_AFFILIATES) whose names don't match the details API.
+  // time and swaps immediately. On cold cache (no UUID), we return null below so the guide grid runs — the Channels tab click triggers full API expansion.
   const cachedEab = cachedUuid ? findCurrentEab(cachedUuid) : null;
   const isWarmCache = Boolean(cachedUuid && cachedEab);
 
@@ -1145,14 +1202,14 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
     LOG.debug("tuning:hulu", "resolveHuluDirectUrl: warm cache for %s (uuid=%s, eab=%s).", channelSelector, cachedUuid, cachedEab);
   } else if(!cachedUuid) {
 
-    // On cold cache, local affiliate network names fall through to the guide grid because their channel_info.name uses call signs that the interceptor
-    // can't match. All other channels attempt cold direct tuning — the interceptor captures UUID+EAB from API responses during page load.
+    // On cold cache, all channels fall through to the guide grid — the Channels tab click triggers full Details+Listing API expansion for all ~123 channels.
+    // The affiliate/non-affiliate distinction is diagnostic only (both return null). Affiliates use position-based inference; non-affiliates use exact match.
     if(NETWORK_NAMES_WITH_AFFILIATES.has(normalizedName)) {
 
       LOG.debug("tuning:hulu", "resolveHuluDirectUrl: cold cache for %s (local affiliate). Falling through to guide grid.", channelSelector);
     } else {
 
-      LOG.debug("tuning:hulu", "resolveHuluDirectUrl: cold cache for %s. Attempting cold direct tune via API interception.", channelSelector);
+      LOG.debug("tuning:hulu", "resolveHuluDirectUrl: cold cache for %s. Falling through to guide grid for full API expansion.", channelSelector);
     }
   } else {
 
@@ -1179,10 +1236,11 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
   }
 
   /* Install the fetch interceptor before navigation on both warm and cold tunes. On warm tunes, it swaps channel_id and content_eab_id in playlist requests
-   * immediately. On cold non-affiliate tunes, it holds the playlist request and swaps after capturing both values from listing and details API responses. On all
-   * tunes, it captures listing API responses to build an in-page EAB map and expands subsequent details API requests, populating the UUID cache to ~123 channels
-   * on a single page load. The script runs via evaluateOnNewDocument — it executes before any page JavaScript, patching window.fetch so Hulu's module-scoped
-   * fetch reference captures the interceptor. Each stream gets its own page via createPageWithCapture(), so there's no persistence concern.
+   * immediately. On cold tunes, the guide grid's Channels tab click triggers full API expansion, and the interceptor holds the playlist request until both
+   * UUID and EAB are captured from those responses. On all tunes, it captures listing API responses to build an in-page EAB map and expands subsequent
+   * details API requests, populating the UUID cache to ~123 channels on a single page load. The script runs via evaluateOnNewDocument — it executes before
+   * any page JavaScript, patching window.fetch so Hulu's module-scoped fetch reference captures the interceptor. Each stream gets its own page via
+   * createPageWithCapture(), so there's no persistence concern.
    */
   try {
 
@@ -1239,21 +1297,27 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
         Promise.resolve() :
         new Promise<void>((resolve) => { directTuneResolve = resolve; });
 
+      // Tracks whether the direct tune has been successfully resolved (UUID+EAB available and playlist swap in progress). Set by tryResolveDirectTune when both
+      // values are captured from API responses or injected externally. Warm cache starts resolved. Used by __prismcastIsDirectTuneResolved to let the guide grid
+      // strategy detect that the interceptor already handled the tune autonomously, avoiding a redundant on-now cell click.
+      let directTuneResolved = Boolean(uuid && eab);
+
       // Checks whether both UUID and EAB are now known and resolves directTunePromise if so. Called after each successful capture from listing or details API
       // responses. Order-independent — handles both "listing first, details second" and "details first, listing second" sequences.
       function tryResolveDirectTune(): void {
 
         if(uuid && eab && directTuneResolve) {
 
+          directTuneResolved = true;
           directTuneResolve();
           directTuneResolve = null;
         }
       }
 
-      // Injection endpoint for the guide grid strategy's fast-path affiliate tune. After binary search identifies the local affiliate and the server-side caches
-      // provide the UUID and EAB, the strategy calls this function via page.evaluate to feed both values into the interceptor. The held playlist request then
-      // resumes with the swapped channel_id and content_eab_id. Returns true if the injection was accepted (directTunePromise not yet resolved), false if the
-      // Promise already resolved (8s timeout expired or a previous injection).
+      // Injection endpoint for the guide grid strategy's fast-path tune. After binary search identifies the target channel and the server-side caches provide the
+      // UUID and EAB, the strategy calls this function via page.evaluate to feed both values into the interceptor. The held playlist request then resumes with the
+      // swapped channel_id and content_eab_id. Returns true if the injection was accepted (directTunePromise not yet resolved), false if the Promise already
+      // resolved (self-resolution from API data, 8s timeout, or a previous injection).
       (window as unknown as Record<string, unknown>).__prismcastResolveDirectTune = (u: string, e: string): boolean => {
 
         if(!directTuneResolve) {
@@ -1281,6 +1345,11 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
           directTuneResolve = null;
         }
       };
+
+      // Query endpoint for the guide grid strategy to check if the interceptor has already resolved the direct tune. Returns true if the playlist was swapped
+      // (self-resolution from API data, external injection, or warm cache). The guide grid checks this after finding the target channel — if the interceptor
+      // already handled the tune, the on-now cell click is redundant and can be skipped.
+      (window as unknown as Record<string, unknown>).__prismcastIsDirectTuneResolved = (): boolean => directTuneResolved;
 
       // In-page EAB map built dynamically from listing API responses. On the first cold tune, cachedEabs is empty (no pre-computed data from Node.js), so this
       // map is the sole source of expansion data for details API requests. Populated asynchronously when the first listing response arrives.
@@ -1578,8 +1647,9 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
           // Wait for UUID and EAB to be available. On warm cache, directTunePromise resolved immediately at creation time. On cold cache with holdActive
           // enabled, this holds the playlist request until either: (1) the guide grid strategy injects UUID+EAB via __prismcastResolveDirectTune (fast path), or
-          // (2) the in-page listing/details parsers capture both values (cold non-affiliate), or (3) the 8-second timeout expires (safety net). When holdActive
-          // is false (set by __prismcastReleasePlaylist after fast-path failure), the playlist passes through with affiliate UUID capture for the click fallback.
+          // (2) the in-page listing/details parsers capture both values from the guide grid's Channels tab expansion, or (3) the 8-second timeout expires and the
+          // interceptor returns a 503 (safety net). When holdActive is false (set by __prismcastReleasePlaylist after fast-path failure), the playlist passes
+          // through with affiliate UUID capture for the click fallback.
           if(holdActive) {
 
             await Promise.race([ directTunePromise, new Promise<void>((resolve) => { setTimeout(resolve, 8000); }) ]);
@@ -1623,9 +1693,9 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
             }
 
             // eslint-disable-next-line no-console
-            console.log("[HULU-DIAG] Playlist passthrough: no uuid/eab resolved for " + targetName + " (uuid=" + uuid + ", eab=" + (eab ? "yes" : "no") + ").");
+            console.log("[HULU-FAIL] Direct tune failed for " + targetName + ": uuid/eab not resolved within hold period.");
 
-            return originalFetch(input, init);
+            return new Response("", { status: 503 });
           }
 
           const bodyText = await getBodyText(input, init);
@@ -1668,10 +1738,10 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
     return null;
   }
 
-  // For known local affiliate network names on cold cache, skip cold direct tuning — the channel_info.name in the details API uses the local call sign
-  // rather than the network name, so the in-page interceptor can't match by name. The guide grid handles these via position-based inference and
-  // cross-references the UUID for warm tunes on subsequent requests.
-  if(!cachedUuid && NETWORK_NAMES_WITH_AFFILIATES.has(normalizedName)) {
+  // On cold cache (no UUID), fall through to the guide grid. The initial page load only provides Details API data for ~10 visible channels — the guide grid's
+  // Channels tab click triggers full expansion for all ~123 channels, and the interceptor captures UUID+EAB from those expanded responses to resolve the held
+  // playlist. Affiliates additionally need position-based inference because their channel_info.name uses call signs rather than network names.
+  if(!cachedUuid) {
 
     return null;
   }
