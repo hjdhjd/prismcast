@@ -1,7 +1,7 @@
 {
   "name": "prismcast",
   "displayName": "PrismCast",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Browser-based live TV capture server for Channels DVR, Plex, and other streaming clients.",
   "author": {
     "name": "HJD",
@@ -78,7 +78,7 @@
     "@types/node": "25.3.0",
     "eslint": "9.39.2",
     "homebridge-plugin-utils": "1.32.0",
-    "nodemon": "3.1.13",
+    "nodemon": "3.1.14",
     "shx": "0.4.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.56.0"

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.2 (2026-02-21)
+  * Improvement: Hulu tuning refinements.
+  * Improvement: channels tab modernization and refinements.
+  * Housekeeping: reorganized API Reference with navigation index and expanded endpoint documentation.
+  * Housekeeping: accessibility improvements.
+
 ## 1.4.1 (2026-02-20)
   * Improvement: webUI refinements.
   * Fix: static page profiles (e.g., Weatherscan) no longer trigger false recovery loops from the playback monitor searching for a nonexistent video element.
