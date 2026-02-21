@@ -7,10 +7,8 @@ import { checkForUpdates, escapeHtml, getChangelogItems, getPackageVersion, getV
 import { generateAdvancedTabContent, generateChannelsPanel, generateSettingsFormFooter, generateSettingsTabContent, hasEnvOverrides } from "./config.js";
 import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "./ui.js";
 import { VIDEO_QUALITY_PRESETS } from "../config/presets.js";
-import { getAllChannels } from "../config/userChannels.js";
 import { getUITabs } from "../config/userConfig.js";
 import { resolveBaseUrl } from "./playlist.js";
-import { resolveProfile } from "../config/profiles.js";
 
 /* The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface with six sections:
  *
@@ -533,10 +531,9 @@ function generateStatusScript(): string {
  * Generates the Overview tab content with a comprehensive user guide covering what PrismCast is, video quality expectations, quick start instructions, tuning speed,
  * channel authentication, working with channels, and system requirements.
  * @param baseUrl - The base URL for the server.
- * @param videoChannelCount - The number of video channels available.
  * @returns HTML content for the Overview tab.
  */
-function generateOverviewContent(baseUrl: string, videoChannelCount: number): string {
+function generateOverviewContent(baseUrl: string): string {
 
   return [
 
@@ -582,7 +579,9 @@ function generateOverviewContent(baseUrl: string, videoChannelCount: number): st
     "<button class=\"btn-copy-inline\" onclick=\"copyOverviewPlaylistUrl()\" title=\"Copy URL\">Copy</button>",
     "<span id=\"overview-copy-feedback\" class=\"copy-feedback-inline\">Copied!</span></li>",
     "<li>Set <strong>Stream Format</strong> to <strong>HLS</strong>.</li>",
-    "<li>The " + String(videoChannelCount) + " configured channels will be imported automatically.</li>",
+    "<li>Optionally, go to the <a href=\"#channels\">Channels tab</a> and set the <strong>provider filter</strong> to only include streaming services you ",
+    "subscribe to. This controls which channels Channels DVR sees in the playlist.</li>",
+    "<li>Your configured channels will be imported automatically.</li>",
     "</ol>",
     "<p>Individual channels can also be streamed directly using HLS URLs like <code>" + baseUrl + "/hls/nbc/stream.m3u8</code>.</p>",
     "</div>",
@@ -654,14 +653,14 @@ function generateOverviewContent(baseUrl: string, videoChannelCount: number): st
     "(see <em>Overriding Predefined Channels</em> below).</p>",
 
     "<h4>Provider Variants</h4>",
-    "<p>Some channels (ESPN, Fox, NBC, etc.) are available from multiple streaming providers. The <strong>provider dropdown</strong> on each channel ",
-    "lets you choose which service to use for that channel. Different providers may offer different tuning performance.</p>",
+    "<p>Some channels (Comedy Central, Fox, NBC, etc.) are available from multiple streaming providers. The <strong>provider dropdown</strong> on each ",
+    "channel lets you choose which service to use for that channel. Different providers may offer different tuning performance.</p>",
 
     "<h4>Provider Filter</h4>",
     "<p>If you only subscribe to certain streaming services, use the <strong>provider filter</strong> on the ",
-    "<a href=\"#channels\">Channels tab</a> toolbar to show only relevant channels. This filter also applies to the M3U playlist, so Channels DVR ",
-    "only imports channels from providers you actually use. You can also filter programmatically using the <code>?provider=</code> query parameter ",
-    "on the playlist URL.</p>",
+    "<a href=\"#channels\">Channels tab</a> toolbar to show only relevant channels. This filter also controls which channels appear in the playlist ",
+    "that Channels DVR imports &mdash; set it before adding the playlist source in the <a href=\"#overview\">Quick Start</a>. You can also filter ",
+    "programmatically using the <code>?provider=</code> query parameter on the playlist URL.</p>",
 
     "<h4>Bulk Operations</h4>",
     "<p>The <strong>Set all channels to</strong> dropdown on the <a href=\"#channels\">Channels tab</a> toolbar switches every multi-provider channel ",
@@ -805,11 +804,74 @@ function generateApiReferenceContent(): string {
   return [
     "<div class=\"section\">",
     "<p>PrismCast provides a RESTful HTTP API for streaming, management, and diagnostics.</p>",
+    "<div class=\"api-index\">",
+
+    "<div class=\"api-index-group\">",
+    "<a href=\"#api-streaming\" class=\"api-index-heading\">Streaming</a>",
+    "<span class=\"api-index-desc\">HLS and MPEG-TS video streams.</span>",
+    "<a href=\"#api-streaming\"><code>GET /hls/:name/stream.m3u8</code></a>",
+    "<a href=\"#api-streaming\"><code>GET /stream/:name</code></a>",
+    "<a href=\"#api-streaming\"><code>GET /play</code></a>",
+    "</div>",
+
+    "<div class=\"api-index-group\">",
+    "<a href=\"#api-playlist\" class=\"api-index-heading\">Playlist</a>",
+    "<span class=\"api-index-desc\">M3U playlist for Channels DVR.</span>",
+    "<a href=\"#api-playlist\"><code>GET /playlist</code></a>",
+    "</div>",
+
+    "<div class=\"api-index-group\">",
+    "<a href=\"#api-channels\" class=\"api-index-heading\">Channels</a>",
+    "<span class=\"api-index-desc\">Add, edit, import, and toggle channel definitions.</span>",
+    "<a href=\"#api-channels\"><code>POST /config/channels</code></a>",
+    "<a href=\"#api-channels\"><code>GET /config/channels/export</code></a>",
+    "<a href=\"#api-channels\"><code>POST /config/channels/import</code></a>",
+    "</div>",
+
+    "<div class=\"api-index-group\">",
+    "<a href=\"#api-providers\" class=\"api-index-heading\">Providers</a>",
+    "<span class=\"api-index-desc\">Provider selection and playlist filtering.</span>",
+    "<a href=\"#api-providers\"><code>POST /config/provider</code></a>",
+    "<a href=\"#api-providers\"><code>POST /config/provider-filter</code></a>",
+    "</div>",
+
+    "<div class=\"api-index-group\">",
+    "<a href=\"#api-auth\" class=\"api-index-heading\">Authentication</a>",
+    "<span class=\"api-index-desc\">TV provider login sessions.</span>",
+    "<a href=\"#api-auth\"><code>POST /auth/login</code></a>",
+    "<a href=\"#api-auth\"><code>POST /auth/done</code></a>",
+    "</div>",
+
+    "<div class=\"api-index-group\">",
+    "<a href=\"#api-management\" class=\"api-index-heading\">Management</a>",
+    "<span class=\"api-index-desc\">List channels, view and control active streams.</span>",
+    "<a href=\"#api-management\"><code>GET /channels</code></a>",
+    "<a href=\"#api-management\"><code>GET /streams</code></a>",
+    "<a href=\"#api-management\"><code>DELETE /streams/:id</code></a>",
+    "</div>",
+
+    "<div class=\"api-index-group\">",
+    "<a href=\"#api-settings\" class=\"api-index-heading\">Settings</a>",
+    "<span class=\"api-index-desc\">Save, export, and import server configuration.</span>",
+    "<a href=\"#api-settings\"><code>POST /config</code></a>",
+    "<a href=\"#api-settings\"><code>GET /config/export</code></a>",
+    "<a href=\"#api-settings\"><code>POST /config/import</code></a>",
+    "</div>",
+
+    "<div class=\"api-index-group\">",
+    "<a href=\"#api-diagnostics\" class=\"api-index-heading\">Diagnostics</a>",
+    "<span class=\"api-index-desc\">Health checks, logs, and real-time monitoring.</span>",
+    "<a href=\"#api-diagnostics\"><code>GET /health</code></a>",
+    "<a href=\"#api-diagnostics\"><code>GET /logs</code></a>",
+    "<a href=\"#api-diagnostics\"><code>GET /logs/stream</code></a>",
+    "</div>",
+
+    "</div>",
     "</div>",
 
     // Streaming endpoints.
     "<div class=\"section\">",
-    "<h3>Streaming</h3>",
+    "<h3 id=\"api-streaming\">Streaming</h3>",
     "<table>",
     "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
     "<tr>",
@@ -840,7 +902,7 @@ function generateApiReferenceContent(): string {
 
     // Playlist endpoints.
     "<div class=\"section\">",
-    "<h3>Playlist</h3>",
+    "<h3 id=\"api-playlist\">Playlist</h3>",
     "<table>",
     "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
     "<tr>",
@@ -854,74 +916,16 @@ function generateApiReferenceContent(): string {
     "</table>",
     "</div>",
 
-    // Management endpoints.
+    // Channel endpoints.
     "<div class=\"section\">",
-    "<h3>Management</h3>",
+    "<h3 id=\"api-channels\">Channels</h3>",
+    "<p>Channel definitions, import/export, and predefined channel management.</p>",
     "<table>",
     "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><a href=\"/channels\"><code>GET /channels</code></a></td>",
-    "<td>List all channels (predefined + user) as JSON with source, enabled status, and channel metadata.</td>",
-    "</tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><a href=\"/streams\"><code>GET /streams</code></a></td>",
-    "<td>List all currently active streams with their ID, channel, URL, duration, and status.</td>",
-    "</tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><code>GET /streams/status</code></td>",
-    "<td>Server-Sent Events stream for real-time stream and system status updates.</td>",
-    "</tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><code>DELETE /streams/:id</code></td>",
-    "<td>Terminate a specific stream by its numeric ID. Returns 200 on success, 404 if not found.</td>",
-    "</tr>",
-    "</table>",
-    "</div>",
-
-    // Authentication endpoints.
-    "<div class=\"section\">",
-    "<h3>Authentication</h3>",
-    "<table>",
-    "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><code>POST /auth/login</code></td>",
-    "<td>Start login mode for a channel. Body: <code>{ \"channel\": \"name\" }</code> or <code>{ \"url\": \"...\" }</code></td>",
-    "</tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><code>POST /auth/done</code></td>",
-    "<td>End login mode and close the login browser tab.</td>",
-    "</tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><a href=\"/auth/status\"><code>GET /auth/status</code></a></td>",
-    "<td>Get current login status including whether login mode is active and which channel.</td>",
-    "</tr>",
-    "</table>",
-    "</div>",
-
-    // Configuration endpoints.
-    "<div class=\"section\">",
-    "<h3>Configuration</h3>",
-    "<table>",
-    "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><code>POST /config</code></td>",
-    "<td>Save configuration settings. Returns <code>{ success, message, willRestart, deferred, activeStreams }</code></td>",
-    "</tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><a href=\"/config/export\"><code>GET /config/export</code></a></td>",
-    "<td>Export current configuration as a JSON file download.</td>",
-    "</tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><code>POST /config/import</code></td>",
-    "<td>Import configuration from JSON. Server restarts to apply changes (if running as service).</td>",
-    "</tr>",
-    "<tr>",
-    "<td class=\"endpoint\"><code>POST /config/restart-now</code></td>",
-    "<td>Force immediate server restart regardless of active streams. Only works when running as a service.</td>",
-    "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/channels</code></td>",
-    "<td>Add, edit, or delete user channels. Body includes <code>action</code> (add/edit/delete) and channel data.</td>",
+    "<td>Add, edit, delete, or revert user channels. Body includes <code>action</code> (add/edit/delete/revert) and channel data. " +
+    "Revert removes a predefined channel override, restoring defaults.</td>",
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><a href=\"/config/channels/export\"><code>GET /config/channels/export</code></a></td>",
@@ -943,6 +947,15 @@ function generateApiReferenceContent(): string {
     "<td class=\"endpoint\"><code>POST /config/channels/toggle-all-predefined</code></td>",
     "<td>Enable or disable all predefined channels. Body: <code>{ \"enabled\": true }</code></td>",
     "</tr>",
+    "</table>",
+    "</div>",
+
+    // Provider endpoints.
+    "<div class=\"section\">",
+    "<h3 id=\"api-providers\">Providers</h3>",
+    "<p>Provider selection and filtering for multi-provider channels.</p>",
+    "<table>",
+    "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/provider</code></td>",
     "<td>Update provider selection for a multi-provider channel. Body: <code>{ \"channel\": \"nbc\", \"provider\": \"nbc-hulu\" }</code></td>",
@@ -964,9 +977,78 @@ function generateApiReferenceContent(): string {
     "</table>",
     "</div>",
 
+    // Authentication endpoints.
+    "<div class=\"section\">",
+    "<h3 id=\"api-auth\">Authentication</h3>",
+    "<table>",
+    "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /auth/login</code></td>",
+    "<td>Start login mode for a channel. Body: <code>{ \"channel\": \"name\" }</code> or <code>{ \"url\": \"...\" }</code></td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /auth/done</code></td>",
+    "<td>End login mode and close the login browser tab.</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><a href=\"/auth/status\"><code>GET /auth/status</code></a></td>",
+    "<td>Get current login status including whether login mode is active and which channel.</td>",
+    "</tr>",
+    "</table>",
+    "</div>",
+
+    // Management endpoints.
+    "<div class=\"section\">",
+    "<h3 id=\"api-management\">Management</h3>",
+    "<table>",
+    "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><a href=\"/channels\"><code>GET /channels</code></a></td>",
+    "<td>List all channels (predefined + user) as JSON with source, enabled status, and channel metadata.</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><a href=\"/streams\"><code>GET /streams</code></a></td>",
+    "<td>List all currently active streams with their ID, channel, URL, duration, and status.</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>GET /streams/status</code></td>",
+    "<td>Server-Sent Events stream for real-time stream and system status updates.</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>DELETE /streams/:id</code></td>",
+    "<td>Terminate a specific stream by its numeric ID. Returns 200 on success, 404 if not found.</td>",
+    "</tr>",
+    "</table>",
+    "</div>",
+
+    // Settings endpoints.
+    "<div class=\"section\">",
+    "<h3 id=\"api-settings\">Settings</h3>",
+    "<p>Server configuration and backup.</p>",
+    "<table>",
+    "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config</code></td>",
+    "<td>Save configuration settings. Returns <code>{ success, message, willRestart, deferred, activeStreams }</code></td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><a href=\"/config/export\"><code>GET /config/export</code></a></td>",
+    "<td>Export current configuration as a JSON file download.</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config/import</code></td>",
+    "<td>Import configuration from JSON. Server restarts to apply changes (if running as service).</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config/restart-now</code></td>",
+    "<td>Force immediate server restart regardless of active streams. Only works when running as a service.</td>",
+    "</tr>",
+    "</table>",
+    "</div>",
+
     // Diagnostics endpoints.
     "<div class=\"section\">",
-    "<h3>Diagnostics</h3>",
+    "<h3 id=\"api-diagnostics\">Diagnostics</h3>",
     "<table>",
     "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
     "<tr>",
@@ -3120,6 +3202,15 @@ function generateLandingPageStyles(): string {
     ".profile-list dd { color: var(--text-secondary); font-size: 13px; margin: 4px 0 0 0; }",
     ".selector-guide-heading { margin-top: 20px !important; border-top: 1px solid var(--border-default); padding-top: 16px; }",
 
+    // API Reference index.
+    ".api-index { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px 24px; margin-top: 12px; }",
+    ".api-index-group { display: flex; flex-direction: column; gap: 2px; }",
+    ".api-index a { color: var(--text-secondary); text-decoration: none; font-size: 12px; line-height: 1.5; }",
+    ".api-index a:hover { color: var(--interactive-primary); }",
+    ".api-index a code { font-size: 11px; }",
+    ".api-index-heading { font-weight: 600; font-size: 13px !important; color: var(--text-primary) !important; margin-bottom: 1px; }",
+    ".api-index-desc { color: var(--text-muted); font-size: 11px; margin-bottom: 3px; }",
+
     // Other landing page styles.
     ".endpoint code { font-size: 13px; }",
 
@@ -3295,19 +3386,8 @@ export function setupRootEndpoint(app: Express): void {
 
     const baseUrl = resolveBaseUrl(req);
 
-    // Count the number of video channels (excluding static pages).
-    const channels = getAllChannels();
-
-    const videoChannelCount = Object.keys(channels).filter((name) => {
-
-      const channel = channels[name];
-      const profile = resolveProfile(channel.profile);
-
-      return !profile.noVideo;
-    }).length;
-
     // Generate content for each tab.
-    const overviewContent = generateOverviewContent(baseUrl, videoChannelCount);
+    const overviewContent = generateOverviewContent(baseUrl);
     const channelsContent = generateChannelsTabContent();
     const logsContent = generateLogsContent();
     const configContent = generateConfigContent();

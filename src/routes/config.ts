@@ -1572,9 +1572,11 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   // Panel description.
   lines.push("<div class=\"settings-panel-description\">");
-  lines.push("<p>Define and manage streaming channels for the playlist. Your custom channels are highlighted.</p>");
-  lines.push("<p class=\"description-hint\">Tip: To override a predefined channel, add a custom channel with the same key. When adding or editing a channel, ",
-    "select a profile to see the Profile Reference with site-specific guidance for known providers.</p>");
+  lines.push("<p>Define and manage streaming channels for the playlist. Customized channels are highlighted.</p>");
+  lines.push("<p class=\"description-hint\">Tip: Use the <strong>provider filter</strong> above to show only channels from services you subscribe to &mdash; ",
+    "this also controls which channels Channels DVR sees in the playlist. Use the <strong>provider dropdown</strong> on any multi-provider channel to choose ",
+    "which streaming service delivers it (e.g., Comedy Central via Hulu vs Sling). Click the <strong>edit icon</strong> to customize any channel's name, ",
+    "Gracenote station ID, URL, or other properties.</p>");
   lines.push("</div>");
 
   // Toolbar with channel operations and display controls.
