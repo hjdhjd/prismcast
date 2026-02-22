@@ -3067,7 +3067,7 @@ function generateLandingPageStyles(): string {
     // Channel table styles. The wrapper provides a rounded card border and enables horizontal scrolling on small screens. We use border-collapse: separate so
     // that border-radius works on the header cells.
     // Max-width caps the Name column (the sole flexible column) at 350px. Fixed columns: Key 170 + Provider 200 + Actions 140 = 510px.
-    ".channel-table-wrapper { max-width: 860px; margin: 0 auto 20px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); }",
+    ".channel-table-wrapper { max-width: 860px; margin: 0 auto 20px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); overflow: auto; }",
     ".channel-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: 650px; margin: 0; }",
     ".channel-table th, .channel-table td { padding: 10px 12px; text-align: left; border: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
     ".channel-table th { background: var(--table-header-bg); font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--border-default); }",
