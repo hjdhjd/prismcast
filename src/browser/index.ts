@@ -19,6 +19,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
+import { startPrecaching } from "./precaching.js";
 import { terminateStream } from "../streaming/lifecycle.js";
 
 const { promises: fsPromises } = fs;
@@ -854,6 +855,10 @@ async function launchBrowser(): Promise<Browser> {
 
     // Emit system status update for SSE subscribers.
     await emitCurrentSystemStatus();
+
+    // Start background precaching of selected provider channel lineups. Fire-and-forget — the setTimeout inside startPrecaching() ensures the actual work is fully
+    // async and non-blocking.
+    startPrecaching();
   } catch(error) {
 
     LOG.error("Failed to launch browser: %s.", formatError(error));

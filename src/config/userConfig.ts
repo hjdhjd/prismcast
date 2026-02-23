@@ -696,6 +696,9 @@ export interface UserChannelsConfig {
 
   // Provider tags that are enabled for filtering. Empty means no filter.
   enabledProviders?: string[];
+
+  // Provider slugs selected for precaching at startup. Empty means no precaching.
+  precacheProviders?: string[];
 }
 
 /**
@@ -857,7 +860,8 @@ export const DEFAULTS: Config = {
   channels: {
 
     disabledPredefined: [],
-    enabledProviders: []
+    enabledProviders: [],
+    precacheProviders: []
   },
 
   hdhr: {
@@ -1063,9 +1067,12 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
     }
   }
 
-  /* These fields are stored in the user config file but are not part of CONFIG_METADATA because they are complex types (arrays, auto-generated strings) that don't
-   * fit the standard scalar setting model. When adding a new field here, you must also add corresponding preservation logic in filterDefaults() below AND in the
-   * POST /config handler in routes/config.ts (which must carry forward these fields from the existing file so the settings form doesn't wipe them).
+  /* Array and auto-generated string fields require explicit handling here because the standard CONFIG_METADATA loop above assigns by reference. These blocks
+   * apply defensive spread copies to prevent shared references between the user config and runtime config. Fields not in CONFIG_METADATA (disabledPredefined,
+   * enabledProviders) also need their own POST /config carry-forward logic since they are managed by separate endpoints. The precacheProviders field is in
+   * CONFIG_METADATA (as a checkboxList) so the standard loop handles it, but the spread copy here still provides the defensive guarantee.
+   *
+   * When adding a new field here, also add corresponding preservation logic in filterDefaults() below.
    */
   if(Array.isArray(userConfig.channels?.disabledPredefined)) {
 
@@ -1075,6 +1082,11 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
   if(Array.isArray(userConfig.channels?.enabledProviders)) {
 
     config.channels.enabledProviders = [...userConfig.channels.enabledProviders];
+  }
+
+  if(Array.isArray(userConfig.channels?.precacheProviders)) {
+
+    config.channels.precacheProviders = [...userConfig.channels.precacheProviders];
   }
 
   if((typeof userConfig.hdhr?.deviceId === "string") && (userConfig.hdhr.deviceId.length > 0)) {
@@ -1442,8 +1454,9 @@ export function filterDefaults(config: UserConfig): UserConfig {
     }
   }
 
-  /* Counterpart to the non-CONFIG_METADATA handling in mergeConfiguration() above. When adding a new complex field there, you must also add preservation logic
-   * here AND in the POST /config handler in routes/config.ts, otherwise the field will be lost when saving configuration.
+  /* Counterpart to the array handling in mergeConfiguration() above. Array fields need explicit preservation here because the standard loop's isEqualToDefault()
+   * uses String() comparison, which works for inequality detection but can produce false positives for arrays with comma-containing strings. The explicit blocks
+   * also ensure non-empty arrays survive the diff even when the standard loop would skip them.
    */
   const configChannelsDisabled = getNestedValue(config, "channels.disabledPredefined") as string[] | undefined;
 
@@ -1457,6 +1470,13 @@ export function filterDefaults(config: UserConfig): UserConfig {
   if(Array.isArray(configEnabledProviders) && (configEnabledProviders.length > 0)) {
 
     setNestedValue(filtered, "channels.enabledProviders", configEnabledProviders);
+  }
+
+  const configPrecacheProviders = getNestedValue(config, "channels.precacheProviders") as string[] | undefined;
+
+  if(Array.isArray(configPrecacheProviders) && (configPrecacheProviders.length > 0)) {
+
+    setNestedValue(filtered, "channels.precacheProviders", configPrecacheProviders);
   }
 
   const configDeviceId = getNestedValue(config, "hdhr.deviceId") as string | undefined;

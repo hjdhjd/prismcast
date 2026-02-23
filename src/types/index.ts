@@ -178,6 +178,10 @@ export interface ChannelsConfig {
   // Provider tags that are enabled for filtering. Empty array means no filter (all providers shown). Non-empty means only channels with at least one matching
   // provider variant are included in the playlist and guide.
   enabledProviders: string[];
+
+  // Provider slugs selected for precaching at startup. Empty array means no precaching (default). When non-empty, the listed providers have their channel lineups
+  // discovered at startup so that even the first tune benefits from cached lineup data.
+  precacheProviders: string[];
 }
 
 /**
