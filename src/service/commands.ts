@@ -3,9 +3,10 @@
  * commands.ts: Service command handlers for PrismCast CLI.
  */
 import { DEFAULTS, loadUserConfig } from "../config/userConfig.js";
-import { SERVICE_NAME, getPlatform, getServiceFilePath } from "../utils/platform.js";
-import { collectServiceEnvironment, getServiceGenerator } from "./generators.js";
+import { SERVICE_NAME, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getServiceFilePath } from "../utils/platform.js";
+import { collectServiceEnvironment, detectStalePaths, getServiceGenerator, getServicePaths } from "./generators.js";
 import type { Nullable } from "../types/index.js";
+import type { ServiceGenerator } from "./generators.js";
 import { getDataDir } from "../config/paths.js";
 import path from "node:path";
 
@@ -48,6 +49,34 @@ function printError(message: string): void {
 
   // eslint-disable-next-line no-console
   console.error(message);
+}
+
+/**
+ * Prints a stale path warning block to stderr. Called by handleStatus() when the service file references paths that no longer exist on disk.
+ */
+function printStalePathWarning(): void {
+
+  const staleResult = detectStalePaths();
+
+  if(!staleResult?.stale) {
+
+    return;
+  }
+
+  print("");
+  printError("Warning: Service file contains stale paths that no longer exist on disk.");
+
+  if(staleResult.nodePath) {
+
+    printError("  Node binary:  " + staleResult.nodePath + " (not found)");
+  }
+
+  if(staleResult.entryPoint) {
+
+    printError("  Entry point:  " + staleResult.entryPoint + " (not found)");
+  }
+
+  printError("Run 'prismcast service restart' to update the service file.");
 }
 
 /**
@@ -293,7 +322,90 @@ export async function handleUninstall(): Promise<number> {
 }
 
 /**
- * Handles the `service start` command. Starts the service if it is installed but not running.
+ * Core restart logic shared by handleStart() and handleRestart(). Compares paths in the existing service file against the current runtime paths. If the paths have
+ * changed (e.g., after a Homebrew or npm upgrade), the service file is regenerated before starting. Otherwise, a normal start is performed. The caller is
+ * responsible for validation (platform support, installed check) and for stopping the service if needed before calling this function.
+ * @param generator - The validated service generator for the current platform.
+ * @param action - The user-facing action verb for success messages ("started" or "restarted").
+ * @returns Exit code (0 for success, 1 for error).
+ */
+async function restartService(generator: ServiceGenerator, action: string): Promise<number> {
+
+  // Compare the paths in the existing service file against the current runtime paths to determine whether regeneration is needed. All supported platforms (launchd,
+  // systemd, Windows) store paths in their service files, so getServicePaths() only returns null for corrupt or legacy marker files.
+  const existingPaths = getServicePaths();
+  const currentNodePath = getNodeExecutablePath();
+  const currentEntryPoint = getPrismCastEntryPoint();
+  const pathsMatch = (existingPaths?.nodePath === currentNodePath) && (existingPaths.entryPoint === currentEntryPoint);
+
+  // Regenerate the service file if paths have changed or couldn't be extracted.
+  if(!pathsMatch) {
+
+    if(existingPaths) {
+
+      print("Detected path changes in service file:");
+
+      if(existingPaths.nodePath !== currentNodePath) {
+
+        print("  Node binary:  " + existingPaths.nodePath + " -> " + currentNodePath);
+      }
+
+      if(existingPaths.entryPoint !== currentEntryPoint) {
+
+        print("  Entry point:  " + existingPaths.entryPoint + " -> " + currentEntryPoint);
+      }
+    }
+
+    print("Regenerating service file...");
+
+    try {
+
+      const envVars = collectServiceEnvironment();
+      const content = generator.generate({ envVars });
+
+      await generator.install(content);
+    } catch(error) {
+
+      printError("Error: Failed to regenerate service file.");
+
+      if(error instanceof Error) {
+
+        printError(error.message);
+      }
+
+      return 1;
+    }
+
+    print("Updated service file with current paths.");
+  } else {
+
+    // Paths match — normal start cycle without file rewrite.
+    print("Starting " + SERVICE_NAME + " service...");
+
+    try {
+
+      await generator.start();
+    } catch(error) {
+
+      printError("Error: Failed to start service.");
+
+      if(error instanceof Error) {
+
+        printError(error.message);
+      }
+
+      return 1;
+    }
+  }
+
+  print("Service " + action + " successfully.");
+
+  return 0;
+}
+
+/**
+ * Handles the `service start` command. Starts the service if it is installed but not running. If the service file contains stale paths (e.g., after a Homebrew
+ * upgrade), they are fixed automatically before starting.
  * @returns Exit code (0 for success, 1 for error).
  */
 export async function handleStart(): Promise<number> {
@@ -328,30 +440,12 @@ export async function handleStart(): Promise<number> {
     return 0;
   }
 
-  print("Starting " + SERVICE_NAME + " service...");
-
-  try {
-
-    await generator.start();
-  } catch(error) {
-
-    printError("Error: Failed to start service.");
-
-    if(error instanceof Error) {
-
-      printError(error.message);
-    }
-
-    return 1;
-  }
-
-  print("Service started successfully.");
-
-  return 0;
+  return restartService(generator, "started");
 }
 
 /**
- * Handles the `service stop` command. Stops the service if it is running.
+ * Handles the `service stop` command. Always attempts to stop the service regardless of whether it appears to be running, ensuring that loaded-but-not-running
+ * state (common on launchd after a crash) is properly cleared.
  * @returns Exit code (0 for success, 1 for error).
  */
 export async function handleStop(): Promise<number> {
@@ -375,16 +469,9 @@ export async function handleStop(): Promise<number> {
     return 1;
   }
 
-  // Check if running.
-  const isRunning = await generator.isRunning();
-
-  if(!isRunning) {
-
-    print(SERVICE_NAME + " service is not running.");
-
-    return 0;
-  }
-
+  // Always attempt to stop the service regardless of whether isRunning() reports it as running. On launchd, a service can be in a "loaded but not running" state
+  // (e.g., after a crash) where isRunning() returns false but the stale definition remains loaded. Skipping the stop in that case prevents launchctl unload from
+  // clearing the loaded state, which causes subsequent start attempts to reuse the cached (potentially stale) definition.
   print("Stopping " + SERVICE_NAME + " service...");
 
   try {
@@ -392,14 +479,12 @@ export async function handleStop(): Promise<number> {
     await generator.stop();
   } catch(error) {
 
-    printError("Error: Failed to stop service.");
-
+    // The stop call may fail if the service wasn't actually loaded or running. This is expected — each platform's stop() can throw when there's nothing to stop.
+    // We log the error but don't treat it as a failure since the end state (service stopped) is what we wanted.
     if(error instanceof Error) {
 
-      printError(error.message);
+      printError("Note: " + error.message);
     }
-
-    return 1;
   }
 
   print("Service stopped successfully.");
@@ -408,21 +493,46 @@ export async function handleStop(): Promise<number> {
 }
 
 /**
- * Handles the `service restart` command. Stops the service if running, then starts it.
+ * Handles the `service restart` command. Stops the service, then compares paths and regenerates the service file if needed before starting.
  * @returns Exit code (0 for success, 1 for error).
  */
 export async function handleRestart(): Promise<number> {
 
-  // Stop the service (ignores "not running" state).
-  const stopResult = await handleStop();
+  const generator = getServiceGenerator();
 
-  if(stopResult !== 0) {
+  if(!generator) {
 
-    return stopResult;
+    printError("Error: Service management is not supported on this platform (" + getPlatform() + ").");
+
+    return 1;
   }
 
-  // Start the service.
-  return handleStart();
+  // Check if installed.
+  const isInstalled = await generator.isInstalled();
+
+  if(!isInstalled) {
+
+    printError("Error: " + SERVICE_NAME + " service is not installed.");
+    printError("Run 'prismcast service install' first.");
+
+    return 1;
+  }
+
+  // Stop the service. We call generator.stop() directly rather than handleStop() to avoid the duplicate "not installed" check and to ensure the stop is always
+  // attempted regardless of isRunning() state.
+  print("Stopping " + SERVICE_NAME + " service...");
+
+  try {
+
+    await generator.stop();
+  } catch {
+
+    // The service may not be running or loaded. This is fine — we just need it stopped before restart.
+  }
+
+  print("");
+
+  return restartService(generator, "restarted");
 }
 
 /**
@@ -455,6 +565,13 @@ export async function handleStatus(): Promise<number> {
   print("Service file:    " + getServiceFilePath());
   print("Installed:       " + (isInstalled ? "Yes" : "No"));
   print("Running:         " + (isRunning ? "Yes" : "No"));
+
+  // Warn about stale paths if the service is installed. This is the most common scenario users encounter after upgrading — the status shows "not running" with no
+  // explanation. The warning gives them a clear next step.
+  if(isInstalled) {
+
+    printStalePathWarning();
+  }
 
   // If the service is running, fetch and display active streams.
   if(isRunning) {

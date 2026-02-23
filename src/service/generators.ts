@@ -220,16 +220,20 @@ function createLaunchdGenerator(): ServiceGenerator {
 
       const installPath = this.getInstallPath();
 
-      // Load the plist if not already loaded. This is idempotent — if already loaded, launchd logs a warning but doesn't fail.
+      // Unload first to clear any stale loaded-but-not-running state. Without this, `launchctl load -w` is a no-op when the definition is already loaded
+      // (e.g., after a crash or upgrade with changed paths), and the cached stale definition is reused.
       try {
 
-        execSync("launchctl load -w \"" + installPath + "\"", { stdio: "pipe" });
+        execSync("launchctl unload \"" + installPath + "\"", { stdio: "pipe" });
       } catch {
 
-        // Ignore — may already be loaded.
+        // Ignore — may not be loaded.
       }
 
-      // Explicitly start the service. This handles the case where the plist is loaded but the process isn't running (e.g., after a crash).
+      // Load the plist with the current (possibly updated) definition.
+      execSync("launchctl load -w \"" + installPath + "\"", { stdio: "pipe" });
+
+      // Explicitly start the service. This handles the case where RunAtLoad doesn't trigger (e.g., load-then-start sequence).
       execSync("launchctl start " + SERVICE_ID, { stdio: "pipe" });
     },
 
@@ -475,8 +479,12 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
 
       execSync(createCmd, { stdio: "pipe" });
 
-      // Write marker file to indicate installation.
-      await fsPromises.writeFile(installPath, "Installed at " + new Date().toISOString() + "\n", "utf8");
+      // Write marker file to indicate installation. We include the node binary and entry point paths so that getServicePaths() can extract them for stale path
+      // detection. The task command itself is stored in the Windows Task Scheduler registry, which isn't easily inspectable.
+      const nodePath = getNodeExecutablePath();
+      const entryPoint = getPrismCastEntryPoint();
+
+      await fsPromises.writeFile(installPath, "node:" + nodePath + "\nentry:" + entryPoint + "\n", "utf8");
 
       // Start the task immediately.
       try {
@@ -551,6 +559,161 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
         await fsPromises.unlink(installPath);
       }
     }
+  };
+}
+
+/**
+ * Paths extracted from an existing service file.
+ */
+export interface ServicePaths {
+
+  // The entry point path (e.g., /opt/homebrew/lib/node_modules/prismcast/dist/index.js).
+  entryPoint: string;
+
+  // The node binary path (e.g., /opt/homebrew/bin/node).
+  nodePath: string;
+}
+
+/**
+ * Result of stale path detection.
+ */
+export interface StalePathResult {
+
+  // The entry point from the service file (present when stale).
+  entryPoint?: string;
+
+  // The node binary from the service file (present when stale).
+  nodePath?: string;
+
+  // True if one or more paths in the service file no longer exist on disk.
+  stale: boolean;
+}
+
+/**
+ * Reads the existing service file and extracts the node binary and PrismCast entry point paths. Each platform has its own format: launchd plist XML, systemd unit
+ * ExecStart line, or Windows marker file with explicit path entries.
+ * @returns The extracted paths, or null if the file doesn't exist or can't be parsed.
+ */
+export function getServicePaths(): Nullable<ServicePaths> {
+
+  const filePath = getServiceFilePath();
+
+  if(!fs.existsSync(filePath)) {
+
+    return null;
+  }
+
+  let content: string;
+
+  try {
+
+    content = fs.readFileSync(filePath, "utf8");
+  } catch {
+
+    return null;
+  }
+
+  switch(getPlatform()) {
+
+    // Launchd plist: ProgramArguments contains two <string> elements — first is the node path, second is the entry point.
+    case "darwin": {
+
+      const stringPattern = /<string>([^<]+)<\/string>/g;
+      const matches: string[] = [];
+      let match: Nullable<RegExpExecArray>;
+
+      // Walk the ProgramArguments array. We look for the section after the ProgramArguments key and extract the first two string values.
+      const programArgsIndex = content.indexOf("<key>ProgramArguments</key>");
+
+      if(programArgsIndex === -1) {
+
+        return null;
+      }
+
+      // Extract strings from the <array> section following ProgramArguments.
+      const arraySection = content.slice(programArgsIndex);
+
+      while((match = stringPattern.exec(arraySection)) !== null) {
+
+        matches.push(match[1]);
+
+        if(matches.length === 2) {
+
+          break;
+        }
+      }
+
+      if(matches.length < 2) {
+
+        return null;
+      }
+
+      return { entryPoint: matches[1], nodePath: matches[0] };
+    }
+
+    // Systemd unit: ExecStart=<node> <entrypoint> on one line.
+    case "linux": {
+
+      const execStartMatch = /^ExecStart=(.+)$/m.exec(content);
+
+      if(!execStartMatch) {
+
+        return null;
+      }
+
+      const parts = execStartMatch[1].split(" ");
+
+      if(parts.length < 2) {
+
+        return null;
+      }
+
+      return { entryPoint: parts[1], nodePath: parts[0] };
+    }
+
+    // Windows: paths are stored in the marker file as "node:<path>" and "entry:<path>" lines.
+    case "windows": {
+
+      const nodeMatch = /^node:(.+)$/m.exec(content);
+      const entryMatch = /^entry:(.+)$/m.exec(content);
+
+      if(!nodeMatch || !entryMatch) {
+
+        return null;
+      }
+
+      return { entryPoint: entryMatch[1], nodePath: nodeMatch[1] };
+    }
+
+    default: {
+
+      return null;
+    }
+  }
+}
+
+/**
+ * Checks whether the paths in the existing service file still exist on disk. This detects the common post-upgrade scenario where Homebrew or npm has moved the
+ * installation to a new versioned directory and the old paths no longer resolve.
+ * @returns A StalePathResult indicating which paths are missing, or null if the service file doesn't exist or can't be parsed.
+ */
+export function detectStalePaths(): Nullable<StalePathResult> {
+
+  const paths = getServicePaths();
+
+  if(!paths) {
+
+    return null;
+  }
+
+  const nodeStale = !fs.existsSync(paths.nodePath);
+  const entryStale = !fs.existsSync(paths.entryPoint);
+
+  return {
+
+    entryPoint: entryStale ? paths.entryPoint : undefined,
+    nodePath: nodeStale ? paths.nodePath : undefined,
+    stale: nodeStale || entryStale
   };
 }
 
