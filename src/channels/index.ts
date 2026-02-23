@@ -354,7 +354,7 @@ export const CHANNELS: ChannelMap = {
   "tbsp-hulu": { channelSelector: "TBS (West)", url: "https://www.hulu.com/live" },
   tcm: { channelSelector: "TCM (East)", name: "TCM", stationId: "64312", url: "https://www.hulu.com/live" },
   "tcm-yttv": { channelSelector: "Turner Classic Movies", url: "https://tv.youtube.com/live" },
-  tcmp: { channelSelector: "TCM (West)", name: "TCM (Pacific)", url: "https://www.hulu.com/live" },
+  tcmp: { channelSelector: "TCM (West)", name: "TCM (Pacific)", stationId: "64312", tvgShift: 3, url: "https://www.hulu.com/live" },
   tlc: { name: "TLC", stationId: "57391", url: "https://watch.foodnetwork.com/channel/tlc" },
   "tlc-hulu": { channelSelector: "TLC", url: "https://www.hulu.com/live" },
   "tlc-sling": { channelSelector: "TLC", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },

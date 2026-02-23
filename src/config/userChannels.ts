@@ -336,7 +336,7 @@ export async function initializeUserChannels(): Promise<void> {
 
 // Fields that users are allowed to override via delta. This allowlist prevents hand-edited channels.json from overriding fields like provider that are
 // intentionally not user-editable. Matches the fields in the ChannelDelta interface.
-const DELTA_ALLOWED_FIELDS = new Set([ "channelNumber", "channelSelector", "name", "profile", "stationId", "url" ]);
+const DELTA_ALLOWED_FIELDS = new Set([ "channelNumber", "channelSelector", "name", "profile", "stationId", "tvgShift", "url" ]);
 
 /**
  * Resolves a stored channel entry (full definition or delta) into a fully resolved Channel. For user-defined channels with no predefined equivalent, the stored
@@ -836,6 +836,21 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
       }
 
       channel.channelNumber = num;
+    }
+
+    // Validate optional tvgShift field (must be a finite number). Negative values are valid (e.g., a West Coast feed viewed from the East).
+    if(channelData.tvgShift !== undefined) {
+
+      const shift = Number(channelData.tvgShift);
+
+      if(!Number.isFinite(shift)) {
+
+        errors.push("Channel '" + key + "': tvgShift must be a finite number.");
+
+        continue;
+      }
+
+      channel.tvgShift = shift;
     }
 
     channels[key] = channel;

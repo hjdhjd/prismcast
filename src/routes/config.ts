@@ -61,7 +61,7 @@ const ICON_COPY = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"
   "stroke-linejoin=\"round\"><rect x=\"5\" y=\"5\" width=\"9\" height=\"9\" rx=\"1\"/><path d=\"M5 11H3a1 1 0 01-1-1V3a1 1 0 011-1h7a1 1 0 011 1v2\"/></svg>";
 
 // Fields that appear in the generated M3U playlist and affect Channels DVR's view of the channel. Used to decide whether the playlist reload hint is shown.
-const M3U_FIELDS = [ "channelNumber", "name", "stationId" ];
+const M3U_FIELDS = [ "channelNumber", "name", "stationId", "tvgShift" ];
 
 const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this change.";
 

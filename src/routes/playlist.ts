@@ -148,10 +148,12 @@ export function generatePlaylistContent(baseUrl: string, filter?: ProviderFilter
     const streamUrl = baseUrl + "/hls/" + name + "/stream.m3u8";
 
     // Build the EXTINF line with required channel-id attribute and tvg-name for the friendly display name. Include channel-number when the user has specified one,
-    // and tvc-guide-stationid for Gracenote guide data when a stationId is defined.
+    // tvc-guide-stationid for Gracenote guide data when a stationId is defined, and tvg-shift for EPG time offset.
     const channelNumberAttr = channel.channelNumber ? " channel-number=\"" + String(channel.channelNumber) + "\"" : "";
     const stationIdAttr = channel.stationId ? " tvc-guide-stationid=\"" + channel.stationId + "\"" : "";
-    const extinfLine = "#EXTINF:-1 channel-id=\"" + name + "\"" + channelNumberAttr + " tvg-name=\"" + displayName + "\"" + stationIdAttr + "," + displayName;
+    const tvgShiftAttr = (channel.tvgShift !== undefined) ? " tvg-shift=\"" + String(channel.tvgShift) + "\"" : "";
+    const attrs = "#EXTINF:-1 channel-id=\"" + name + "\"" + channelNumberAttr + " tvg-name=\"" + displayName + "\"" + stationIdAttr + tvgShiftAttr;
+    const extinfLine = attrs + "," + displayName;
 
     lines.push(extinfLine);
     lines.push(streamUrl);

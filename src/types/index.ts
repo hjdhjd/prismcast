@@ -521,6 +521,10 @@ export interface Channel {
   // allowing Channels DVR to fetch program guide data for the channel.
   stationId?: string;
 
+  // EPG time shift in hours. When set, this value is included in the M3U playlist as the tvg-shift attribute, telling Channels DVR to offset the guide data by
+  // this many hours. Useful for time-delayed feeds that share a station ID with the primary feed (e.g., Pacific feeds that air 3 hours after the East feed).
+  tvgShift?: number;
+
   // URL of the streaming page to capture. This should be the direct URL to the live stream player, not a landing page or show page. Authentication cookies from
   // the Chrome profile are used, so the URL can be to authenticated content.
   url: string;
@@ -569,6 +573,9 @@ export interface ChannelDelta {
 
   // Override for station ID, or null to clear the predefined value.
   stationId?: Nullable<string>;
+
+  // Override for EPG time shift, or null to clear the predefined value.
+  tvgShift?: Nullable<number>;
 
   // Override for URL, or null to clear the predefined value. When absent, the predefined URL is inherited.
   url?: Nullable<string>;

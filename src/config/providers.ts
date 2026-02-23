@@ -573,9 +573,11 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 }
 
 /**
- * Applies variant inheritance: the variant's own properties take precedence, but `name` and `stationId` fall through from the base channel when not set on the
- * variant. `channelSelector` is deliberately NOT inherited — it is provider-specific (e.g., fox.com uses station codes like "FOXD2C" while Sling uses guide
- * names like "FOX"), so each variant must define its own. This is the single source of truth for variant inheritance rules.
+ * Applies variant inheritance: the variant's own properties take precedence, but `name`, `stationId`, and `tvgShift` fall through from the base channel when not
+ * set on the variant. `tvgShift` is inherited alongside `stationId` because it modifies how guide data for that station ID is displayed — inheriting the station
+ * ID without the shift would produce wrong program times. `channelSelector` is deliberately NOT inherited — it is provider-specific (e.g., fox.com uses station
+ * codes like "FOXD2C" while Sling uses guide names like "FOX"), so each variant must define its own. This is the single source of truth for variant inheritance
+ * rules.
  * @param variant - The variant channel definition.
  * @param base - The canonical (base) channel to inherit from.
  * @returns A new Channel with inheritance applied.
@@ -586,7 +588,8 @@ function applyVariantInheritance(variant: Channel, base: Channel): Channel {
 
     ...variant,
     name: variant.name ?? base.name,
-    stationId: variant.stationId ?? base.stationId
+    stationId: variant.stationId ?? base.stationId,
+    tvgShift: variant.tvgShift ?? base.tvgShift
   };
 }
 
