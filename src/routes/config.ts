@@ -2004,7 +2004,7 @@ export function setupConfigEndpoint(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to save configuration: %s", formatError(error));
+      LOG.error("Failed to save configuration: %s.", formatError(error));
       res.status(500).json({ message: "Failed to save configuration: " + formatError(error), success: false });
     }
   });
@@ -2021,7 +2021,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.send(JSON.stringify(result.config, null, 2) + "\n");
     } catch(error) {
 
-      LOG.error("Failed to export configuration: %s", formatError(error));
+      LOG.error("Failed to export configuration: %s.", formatError(error));
       res.status(500).json({ error: "Failed to export configuration: " + formatError(error) });
     }
   });
@@ -2121,7 +2121,7 @@ export function setupConfigEndpoint(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to import configuration: %s", formatError(error));
+      LOG.error("Failed to import configuration: %s.", formatError(error));
       res.status(500).json({ error: "Failed to import configuration: " + formatError(error) });
     }
   });
@@ -2168,7 +2168,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.send(JSON.stringify(resolved, null, 2) + "\n");
     } catch(error) {
 
-      LOG.error("Failed to export channels: %s", formatError(error));
+      LOG.error("Failed to export channels: %s.", formatError(error));
       res.status(500).json({ error: "Failed to export channels: " + formatError(error) });
     }
   });
@@ -2200,7 +2200,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.json({ message: "Imported " + String(channelCount) + " channel" + (channelCount === 1 ? "" : "s") + " successfully.", success: true });
     } catch(error) {
 
-      LOG.error("Failed to import channels: %s", formatError(error));
+      LOG.error("Failed to import channels: %s.", formatError(error));
       res.status(500).json({ error: "Failed to import channels: " + formatError(error) });
     }
   });
@@ -2353,7 +2353,7 @@ export function setupConfigEndpoint(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to import M3U channels: %s", formatError(error));
+      LOG.error("Failed to import M3U channels: %s.", formatError(error));
       res.status(500).json({ error: "Failed to import channels: " + formatError(error), success: false });
     }
   });
@@ -2424,7 +2424,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.json({ enabled, key, success: true });
     } catch(error) {
 
-      LOG.error("Failed to toggle predefined channel: %s", formatError(error));
+      LOG.error("Failed to toggle predefined channel: %s.", formatError(error));
       res.status(500).json({ error: "Failed to toggle channel: " + formatError(error), success: false });
     }
   });
@@ -2492,7 +2492,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.json({ channel: canonicalKey, html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, provider: providerKey, success: true });
     } catch(error) {
 
-      LOG.error("Failed to update provider selection: %s", formatError(error));
+      LOG.error("Failed to update provider selection: %s.", formatError(error));
       res.status(500).json({ error: "Failed to update provider: " + formatError(error), success: false });
     }
   });
@@ -2547,7 +2547,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.json({ affected, enabled, success: true });
     } catch(error) {
 
-      LOG.error("Failed to toggle all predefined channels: %s", formatError(error));
+      LOG.error("Failed to toggle all predefined channels: %s.", formatError(error));
       res.status(500).json({ error: "Failed to toggle channels: " + formatError(error), success: false });
     }
   });
@@ -2601,7 +2601,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.json({ enabledProviders: tags, success: true });
     } catch(error) {
 
-      LOG.error("Failed to update provider filter: %s", formatError(error));
+      LOG.error("Failed to update provider filter: %s.", formatError(error));
       res.status(500).json({ error: "Failed to update provider filter: " + formatError(error), success: false });
     }
   });
@@ -2666,7 +2666,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.json({ affected, previousSelections, selections, success: true, total: listing.length });
     } catch(error) {
 
-      LOG.error("Failed to bulk assign provider: %s", formatError(error));
+      LOG.error("Failed to bulk assign provider: %s.", formatError(error));
       res.status(500).json({ error: "Failed to bulk assign provider: " + formatError(error), success: false });
     }
   });
@@ -2733,7 +2733,7 @@ export function setupConfigEndpoint(app: Express): void {
       res.json({ restored, selections, success: true });
     } catch(error) {
 
-      LOG.error("Failed to bulk restore providers: %s", formatError(error));
+      LOG.error("Failed to bulk restore providers: %s.", formatError(error));
       res.status(500).json({ error: "Failed to bulk restore providers: " + formatError(error), success: false });
     }
   });
@@ -3159,7 +3159,7 @@ export function setupConfigEndpoint(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to save channel: %s", formatError(error));
+      LOG.error("Failed to save channel: %s.", formatError(error));
       res.status(500).json({ message: "Failed to save channel: " + formatError(error), success: false });
     }
   });
