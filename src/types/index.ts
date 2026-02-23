@@ -999,7 +999,8 @@ export interface ProviderModule {
   // Human-readable display name (e.g., "YouTube TV", "Hulu").
   label: string;
 
-  // Provider identifier for API endpoints (e.g., "yttv", "hulu"). Used as the :slug parameter in GET /providers/:slug/channels.
+  // Provider identifier used for API endpoints and provider filter matching (e.g., "yttv", "hulu", "foxcom"). Matches the providerTag values in DOMAIN_CONFIG so that
+  // slug-based lookups and provider filter comparisons use the same identifier space.
   slug: string;
 
   // The existing tuning strategy contract, unchanged from the flat registry pattern.

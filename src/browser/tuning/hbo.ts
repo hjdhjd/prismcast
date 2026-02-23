@@ -434,7 +434,7 @@ export const hboProvider: ProviderModule = {
   getCachedChannels: getHboCachedChannels,
   guideUrl: "https://play.hbomax.com",
   label: "HBO Max",
-  slug: "hbo",
+  slug: "hbomax",
   strategy: {
 
     clearCache: clearHboCache,

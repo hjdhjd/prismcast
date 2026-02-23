@@ -294,7 +294,7 @@ export const foxProvider: ProviderModule = {
   getCachedChannels: (): Nullable<DiscoveredChannel[]> => cachedDiscoveredChannels,
   guideUrl: "https://www.fox.com/live/channels",
   label: "Fox",
-  slug: "fox",
+  slug: "foxcom",
   strategy: { clearCache: clearFoxCache, execute: foxGridStrategy },
   strategyName: "foxGrid"
 };

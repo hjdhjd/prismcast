@@ -960,7 +960,7 @@ function generateApiReferenceContent(): string {
     "<tr>",
     "<td class=\"endpoint\"><code>GET /providers/:slug/channels</code></td>",
     "<td>Discover all available channels for a provider. Returns a JSON array of channel objects with <code>name</code>, <code>channelSelector</code>, " +
-    "and optional <code>affiliate</code> and <code>tier</code> fields. Provider slugs: <code>fox</code>, <code>hbo</code>, <code>hulu</code>, " +
+    "and optional <code>affiliate</code> and <code>tier</code> fields. Provider slugs: <code>foxcom</code>, <code>hbomax</code>, <code>hulu</code>, " +
     "<code>sling</code>, <code>yttv</code>. Returns cached results instantly when a prior tune or discovery call has already enumerated the lineup. " +
     "Add <code>?refresh=true</code> to clear caches and force a fresh discovery walk.</td>",
     "</tr>",
