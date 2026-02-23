@@ -70,7 +70,7 @@ export interface SettingMetadata {
   path: string;
 
   // Data type for validation and form field rendering.
-  type: "boolean" | "float" | "host" | "integer" | "path" | "port" | "string";
+  type: "boolean" | "checkboxList" | "float" | "host" | "integer" | "path" | "port" | "string";
 
   // Valid values for string type settings.
   validValues?: string[];
@@ -106,6 +106,19 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       path: "browser.initTimeout",
       type: "integer",
       unit: "ms"
+    }
+  ],
+
+  channels: [
+    {
+
+      description: "Speed up your first channel tune by loading provider lineups when PrismCast starts. Normally, each provider's lineup is loaded on your " +
+        "first tune, which may add a few extra seconds. Enabling precaching fetches lineups at startup so even your very first tune is fast. Providers not " +
+        "enabled in the Channels tab provider filter are skipped at startup. Ensure you've logged into each provider before enabling.",
+      envVar: null,
+      label: "Channel Lineup Precaching",
+      path: "channels.precacheProviders",
+      type: "checkboxList"
     }
   ],
 
@@ -1183,6 +1196,12 @@ const SETTINGS_TAB_SECTIONS: { displayName: string; id: string; paths: string[] 
     displayName: "Browser",
     id: "browser",
     paths: [ "browser.executablePath", "browser.initTimeout" ]
+  },
+  {
+
+    displayName: "Startup",
+    id: "startup",
+    paths: ["channels.precacheProviders"]
   },
   {
 

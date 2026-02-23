@@ -1751,6 +1751,16 @@ function generateConfigSubtabScript(): string {
     "    } else {",
     "      input.value = value;",
     "    }",
+    "    if (input.hasAttribute('data-checkbox-list')) {",
+    "      var values = JSON.parse(value || '[]');",
+    "      var grid = input.closest('.form-group').querySelector('.checkbox-list-grid');",
+    "      if (grid) {",
+    "        var cbs = grid.querySelectorAll('input[type=\"checkbox\"]');",
+    "        for (var k = 0; k < cbs.length; k++) {",
+    "          cbs[k].checked = values.indexOf(cbs[k].value) !== -1;",
+    "        }",
+    "      }",
+    "    }",
     "  }",
 
     // Get a form input's current value as a string, handling checkbox and standard input types uniformly.
@@ -2964,6 +2974,24 @@ function generateConfigSubtabScript(): string {
     "      presetSelect.addEventListener('change', function() { onPresetChange(this.value); });",
     "    }",
     "  }",
+
+    // Checkbox list: collect checked values into the hidden input and update the modified indicator. Called by onchange on individual checkboxes within a
+    // checkbox-list-grid. The hidden input holds the JSON-encoded array and participates in the standard form submission.
+    "  window.updateCheckboxList = function(checkbox) {",
+    "    var group = checkbox.closest('.form-group');",
+    "    if (!group) return;",
+    "    var hidden = group.querySelector('[data-checkbox-list]');",
+    "    if (!hidden) return;",
+    "    var grid = group.querySelector('.checkbox-list-grid');",
+    "    if (!grid) return;",
+    "    var cbs = grid.querySelectorAll('input[type=\"checkbox\"]');",
+    "    var values = [];",
+    "    for (var i = 0; i < cbs.length; i++) {",
+    "      if (cbs[i].checked) values.push(cbs[i].value);",
+    "    }",
+    "    hidden.value = JSON.stringify(values);",
+    "    updateModifiedIndicator(hidden);",
+    "  };",
 
     // Initialize subtab on load: hash > localStorage > default.
     "  var initialSubtab = window.initialHashSubtab;",

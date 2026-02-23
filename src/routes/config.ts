@@ -16,6 +16,7 @@ import { getChannelListing, getChannelsParseErrorMessage, getDisabledPredefinedC
   getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, resolveStoredChannel,
   saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl,
   validateImportedChannels } from "../config/userChannels.js";
+import { getProviderModuleInfo, getProviderSlugs } from "../browser/channelSelection.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
@@ -814,6 +815,12 @@ function toDisplayValue(value: unknown, setting: SettingMetadata): Nullable<numb
     return null;
   }
 
+  // Array values (e.g., checkboxList) are serialized as JSON for the hidden input's value attribute.
+  if(Array.isArray(value)) {
+
+    return JSON.stringify(value);
+  }
+
   if((typeof value === "number") && setting.displayDivisor) {
 
     const displayValue = value / setting.displayDivisor;
@@ -1072,6 +1079,10 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   // Track if the selected preset is degraded (used for inline message).
   let selectedPresetDegradedTo: Nullable<string> = null;
 
+  // Block-level content that must appear outside the form-row flex container. Type branches that produce content too large for the inline flex layout (grids,
+  // editors, lists) push their HTML here. Emitted after the description div.
+  const postDescription: string[] = [];
+
   if(hasValidValues) {
 
     // Render as select dropdown.
@@ -1171,6 +1182,35 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     }
 
     lines.push("<input " + checkboxAttrs.join(" ") + ">");
+  } else if(setting.type === "checkboxList") {
+
+    // Render as a grid of checkboxes backed by a hidden input that holds the JSON array value. The hidden input goes inside the form-row (invisible, takes no
+    // space). The visible checkbox grid is pushed to postDescription for emission after the description, keeping it outside the form-row flex container.
+    const currentArray = Array.isArray(currentValue) ? currentValue as string[] : [];
+    const defaultArray = Array.isArray(defaultValue) ? defaultValue as string[] : [];
+    const hiddenValue = escapeHtml(JSON.stringify(currentArray));
+    const hiddenDefault = escapeHtml(JSON.stringify(defaultArray));
+
+    lines.push("<input type=\"hidden\" id=\"" + inputId + "\" name=\"" + setting.path + "\" value=\"" + hiddenValue +
+      "\" data-default=\"" + hiddenDefault + "\" data-checkbox-list>");
+
+    // Build the checkbox grid from provider module info. Pushed to postDescription for emission after the description, outside the form-row flex container.
+    const providers = getProviderModuleInfo();
+
+    postDescription.push("<div class=\"checkbox-list-grid\" style=\"display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); " +
+      "gap: 0.5rem; margin-top: 10px;\">");
+
+    for(const provider of providers) {
+
+      const checked = currentArray.includes(provider.slug) ? " checked" : "";
+
+      postDescription.push("<label style=\"display: flex; align-items: center; gap: 0.5rem; cursor: pointer;\">");
+      postDescription.push("<input type=\"checkbox\" value=\"" + escapeHtml(provider.slug) + "\"" + checked +
+        " onchange=\"updateCheckboxList(this)\"> " + escapeHtml(provider.label));
+      postDescription.push("</label>");
+    }
+
+    postDescription.push("</div>");
   } else {
 
     // Render as input field.
@@ -1254,6 +1294,12 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   // Add description.
   lines.push("<div class=\"form-description\">" + escapeHtml(setting.description) + "</div>");
 
+  // Emit block-level content that type branches deferred to outside the form-row flex container.
+  for(const content of postDescription) {
+
+    lines.push(content);
+  }
+
   // Add disabled reason warning when a setting is locked out due to an upstream issue.
   if(setting.disabledReason) {
 
@@ -1270,7 +1316,11 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   // Add default value hint with properly pluralized unit.
   let defaultDisplay: string;
 
-  if(displayDefault === null) {
+  if(setting.type === "checkboxList") {
+
+    // For checkbox lists, show "none" instead of the raw JSON "[]".
+    defaultDisplay = "none";
+  } else if(displayDefault === null) {
 
     defaultDisplay = "autodetect";
   } else if(typeof displayDefault === "number") {
@@ -1346,6 +1396,26 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
       return undefined;
     }
 
+    case "checkboxList": {
+
+      if(!Array.isArray(value)) {
+
+        return "Must be an array.";
+      }
+
+      const knownSlugs = new Set(getProviderSlugs());
+
+      for(const slug of value as string[]) {
+
+        if(!knownSlugs.has(slug)) {
+
+          return "Unknown provider: " + slug + ".";
+        }
+      }
+
+      return undefined;
+    }
+
     case "integer":
     case "port": {
 
@@ -1398,7 +1468,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
  * @param value - The raw string value from the form (in display units).
  * @returns The parsed value (in storage units).
  */
-function parseFormValue(setting: SettingMetadata, value: string): Nullable<boolean | number | string> {
+function parseFormValue(setting: SettingMetadata, value: string): Nullable<boolean | number | string | string[]> {
 
   // Handle empty values for path type.
   if((setting.type === "path") && (value.trim() === "")) {
@@ -1412,6 +1482,12 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
 
       // Convert string "true" to boolean true, anything else to false.
       return value === "true";
+    }
+
+    case "checkboxList": {
+
+      // The hidden input holds a JSON-encoded array of strings.
+      return JSON.parse(value) as string[];
     }
 
     case "integer":
@@ -1956,8 +2032,8 @@ export function setupConfigEndpoint(app: Express): void {
         return;
       }
 
-      // The settings form only submits CONFIG_METADATA scalar values. The config file also stores complex fields managed by their own endpoints: disabled channel
-      // list, enabled provider filter, and the auto-generated HDHomeRun device ID. We must preserve these from the existing file, otherwise saving settings wipes them.
+      // The settings form submits CONFIG_METADATA values (scalars and checkboxLists). The config file also stores fields managed by their own endpoints: disabled
+      // channel list, enabled provider filter, and the auto-generated HDHomeRun device ID. We must preserve these from the existing file, otherwise saving wipes them.
       const existingResult = await loadUserConfig();
       const existingConfig = existingResult.config;
 

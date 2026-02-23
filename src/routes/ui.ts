@@ -129,6 +129,7 @@ export function generateBaseStyles(): string {
     ".form-select { flex: 0 0 auto; padding: 8px 12px; border: 1px solid var(--form-input-border); border-radius: var(--radius-md); ",
     "background: var(--form-input-bg); color: var(--text-primary); font-size: 14px; cursor: pointer; }",
     ".form-checkbox { flex: none; width: 18px; height: 18px; cursor: pointer; accent-color: var(--interactive-primary); }",
+    ".checkbox-list-grid { font-size: 13px; }",
 
     // Focus states.
     ".form-input:focus, .form-select:focus { border-color: var(--interactive-primary); outline: none; box-shadow: 0 0 0 2px var(--border-focus); }",

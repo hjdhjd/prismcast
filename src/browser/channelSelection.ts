@@ -116,6 +116,24 @@ export function getProviderBySlug(slug: string): ProviderModule | undefined {
 }
 
 /**
+ * Returns all registered provider module slugs. Used for validation in the checkboxList setting for precache providers.
+ * @returns Array of provider slugs.
+ */
+export function getProviderSlugs(): string[] {
+
+  return providerModules.map((p) => p.slug);
+}
+
+/**
+ * Returns slug and label pairs for all registered provider modules. Used by the checkboxList setting to render precache provider checkbox labels.
+ * @returns Array of objects with label and slug properties.
+ */
+export function getProviderModuleInfo(): { label: string; slug: string }[] {
+
+  return providerModules.map((p) => ({ label: p.label, slug: p.slug }));
+}
+
+/**
  * Clicks at the specified coordinates after a brief settle delay. The delay allows scroll animations and lazy-loaded content to finish before the click fires.
  * Callers are responsible for scrolling the target element into view (typically via scrollIntoView inside a page.evaluate call) before invoking this function.
  * Exported for use by tuning strategy files (thumbnailRow, tileClick, hulu).
