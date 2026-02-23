@@ -2,37 +2,40 @@
  *
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable, ResolvedSiteProfile } from "../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.js";
 import { LOG, delay } from "../utils/index.js";
 import { CHANNELS } from "../channels/index.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
-import { foxStrategy } from "./tuning/fox.js";
-import { hboStrategy } from "./tuning/hbo.js";
-import { huluStrategy } from "./tuning/hulu.js";
+import { foxProvider } from "./tuning/fox.js";
+import { hboProvider } from "./tuning/hbo.js";
+import { huluProvider } from "./tuning/hulu.js";
 import { isChannelSelectionProfile } from "../types/index.js";
-import { slingStrategy } from "./tuning/sling.js";
+import { slingProvider } from "./tuning/sling.js";
 import { thumbnailRowStrategy } from "./tuning/thumbnailRow.js";
 import { tileClickStrategy } from "./tuning/tileClick.js";
-import { yttvStrategy } from "./tuning/youtubeTv.js";
+import { yttvProvider } from "./tuning/youtubeTv.js";
 
 /* Multi-channel streaming sites (like USA Network) present multiple channels on a single page, with a program guide for each channel. Users must select which
  * channel they want to watch by clicking on a show in the guide. This module coordinates the dispatch to per-provider strategy functions in the tuning/ directory.
  *
- * Each strategy is a self-contained file under tuning/ that exports a single ChannelStrategyEntry object. The coordinator handles pre-dispatch concerns
- * (matchSelector-based element polling, no-op checks) and post-dispatch logging. Strategy files may import scrollAndClick(), normalizeChannelName(), and
- * resolveMatchSelector() from this coordinator — the circular import is safe because all cross-module calls happen inside async functions long after module
- * evaluation completes.
+ * Each provider tuning file exports a single ProviderModule object that bundles identity metadata (slug, label, guideUrl), the tuning strategy, and a
+ * discoverChannels implementation. The coordinator builds its strategy dispatch lookup from provider modules at evaluation time. Generic strategies
+ * (thumbnailRow, tileClick) remain bare ChannelStrategyEntry objects — they are site-specific interaction patterns, not provider-level registrations.
+ *
+ * Strategy files may import scrollAndClick(), normalizeChannelName(), and resolveMatchSelector() from this coordinator — the circular import is safe because
+ * all cross-module calls happen inside async functions long after module evaluation completes.
  */
 
 /* Adding a new channel selection provider:
  *
  * 1. Create a new file in tuning/ implementing the strategy function with the ChannelStrategyHandler signature.
- * 2. Export a single ChannelStrategyEntry object from the file. Set the hooks your provider needs:
- *    - execute (required): The strategy function that selects the channel in the provider's guide UI.
- *    - clearCache: If your strategy caches state (row positions, URLs), provide a function that clears it.
- *    - resolveDirectUrl / invalidateDirectUrl: If your strategy discovers stable watch URLs that can be reused across tunes, provide cache lookup and invalidation.
- * 3. Import the entry here and add it to the strategies registry with the strategy name as the key.
+ * 2. Export a single ProviderModule object from the file. Set the required fields:
+ *    - slug, label, guideUrl: Identity metadata for API endpoints and logging.
+ *    - strategyName: The ChannelSelectionStrategy union value that site profiles reference.
+ *    - strategy: A ChannelStrategyEntry with at minimum an execute hook. Also set clearCache, resolveDirectUrl, and invalidateDirectUrl as needed.
+ *    - discoverChannels: Reads the provider's guide for all available channels, returning DiscoveredChannel[].
+ * 3. Import the provider here and add it to the providerModules array.
  * 4. Add the strategy name to the ChannelSelectionStrategy union type in types/index.ts.
  * 5. Add a site profile entry in config/sites.ts that references the new strategy name.
  *
@@ -41,18 +44,16 @@ import { yttvStrategy } from "./tuning/youtubeTv.js";
  * utilities.
  */
 
-// Strategy dispatch registry. Maps strategy names from ChannelSelectionStrategy to their implementation entry. Adding a new provider requires a single entry here
-// — all cross-cutting concerns (cache clearing, direct URL resolution, matchSelector polling) are driven by the entry's hooks.
-const strategies: Record<string, ChannelStrategyEntry> = {
+// Provider module registry. The primary registry for all provider-level operations. Each entry bundles identity metadata, tuning strategy, and channel discovery.
+// Future capabilities become additional methods on ProviderModule — no new registries needed.
+const providerModules: readonly ProviderModule[] = [ foxProvider, hboProvider, huluProvider, slingProvider, yttvProvider ];
 
-  foxGrid: foxStrategy,
-  guideGrid: huluStrategy,
-  hboGrid: hboStrategy,
-  slingGrid: slingStrategy,
-  thumbnailRow: thumbnailRowStrategy,
-  tileClick: tileClickStrategy,
-  youtubeGrid: yttvStrategy
-};
+// Strategy dispatch registry. Derived from provider modules (keyed by strategyName) plus generic strategies that are not provider-level registrations.
+const strategies: Record<string, ChannelStrategyEntry> = Object.fromEntries([
+  ...providerModules.map((p) => [ p.strategyName, p.strategy ]),
+  [ "thumbnailRow", thumbnailRowStrategy ],
+  [ "tileClick", tileClickStrategy ]
+]) as Record<string, ChannelStrategyEntry>;
 
 /**
  * Returns a direct watch URL for the channel specified in the profile, if one can be resolved. Looks up the strategy entry's resolveDirectUrl hook and calls it
@@ -102,6 +103,16 @@ export function clearChannelSelectionCaches(): void {
 
     entry.clearCache?.();
   }
+}
+
+/**
+ * Looks up a provider module by its URL slug. Returns undefined if no provider matches.
+ * @param slug - The provider slug (e.g., "yttv", "hulu", "sling").
+ * @returns The matching provider module or undefined.
+ */
+export function getProviderBySlug(slug: string): ProviderModule | undefined {
+
+  return providerModules.find((p) => p.slug === slug);
 }
 
 /**

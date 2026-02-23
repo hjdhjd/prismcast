@@ -830,7 +830,8 @@ function generateApiReferenceContent(): string {
 
     "<div class=\"api-index-group\">",
     "<a href=\"#api-providers\" class=\"api-index-heading\">Providers</a>",
-    "<span class=\"api-index-desc\">Provider selection and playlist filtering.</span>",
+    "<span class=\"api-index-desc\">Channel discovery, provider selection, and playlist filtering.</span>",
+    "<a href=\"#api-providers\"><code>GET /providers/:slug/channels</code></a>",
     "<a href=\"#api-providers\"><code>POST /config/provider</code></a>",
     "<a href=\"#api-providers\"><code>POST /config/provider-filter</code></a>",
     "</div>",
@@ -953,9 +954,16 @@ function generateApiReferenceContent(): string {
     // Provider endpoints.
     "<div class=\"section\">",
     "<h3 id=\"api-providers\">Providers</h3>",
-    "<p>Provider selection and filtering for multi-provider channels.</p>",
+    "<p>Channel discovery, provider selection, and filtering for multi-provider channels.</p>",
     "<table>",
     "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>GET /providers/:slug/channels</code></td>",
+    "<td>Discover all available channels for a provider. Returns a JSON array of channel objects with <code>name</code>, <code>channelSelector</code>, " +
+    "and optional <code>affiliate</code> and <code>tier</code> fields. Provider slugs: <code>fox</code>, <code>hbo</code>, <code>hulu</code>, " +
+    "<code>sling</code>, <code>yttv</code>. Returns cached results instantly when a prior tune or discovery call has already enumerated the lineup. " +
+    "Add <code>?refresh=true</code> to clear caches and force a fresh discovery walk.</td>",
+    "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/provider</code></td>",
     "<td>Update provider selection for a multi-provider channel. Body: <code>{ \"channel\": \"nbc\", \"provider\": \"nbc-hulu\" }</code></td>",

@@ -2,24 +2,37 @@
  *
  * hulu.ts: Hulu Live TV channel selection with fetch interception for direct tuning, guide grid fallback with binary search, position-based inference, and row caching.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.js";
 import { logAvailableChannels, normalizeChannelName, scrollAndClick } from "../channelSelection.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 
-// Guide grid row number cache. Maps lowercased, trimmed channel names from data-testid attributes to their row numbers (from sr-only text). Populated passively
-// during binary search iterations and used for direct-scroll optimization on subsequent tunes. Session-scoped — cleared when the browser restarts.
-const guideRowCache = new Map<string, number>();
+// Unified channel cache entry combining discovery metadata, tuning data, and guide grid scroll positions. Populated from two sources: (1) details and listing API
+// responses intercepted during page load (provides uuid, programs, displayName), and (2) guide grid DOM reads during binary search or discovery linear scan
+// (provides rowNumber, displayName). When position inference maps a network name to a call sign's entry, both keys share the same object reference — mutating
+// programs on one propagates to the other.
+interface HuluChannelEntry {
 
-// Hulu channel UUID cache. Maps normalized channel names (from guide.hulu.com/guide/details API responses) to channel UUIDs used in the playlist API's channel_id
-// field. Populated server-side by intercepting details API responses during page load. Session-scoped — cleared when the browser restarts via clearHuluCache().
-const huluUuidCache = new Map<string, string>();
+  affiliate?: string;
+  displayName: string;
+  programs?: HuluListingProgram[];
+  rowNumber?: number;
+  uuid?: string;
+}
 
-// Hulu channel EAB cache. Maps channel UUIDs to their program schedules (from guide.hulu.com/guide/listing API responses). Each entry is an array of programs with
-// EAB IDs and airing times. Used to supply the correct content_eab_id when swapping channel_id in the playlist API request — the server requires a valid EAB for
-// the target channel. Session-scoped — cleared when the browser restarts via clearHuluCache().
-const huluEabCache = new Map<string, HuluListingProgram[]>();
+// Unified channel cache for Hulu. Maps normalized channel names to their combined entry. Aliases (e.g., "abc" → same entry as "wls") share object references for
+// automatic propagation of fresh programs and EAB data. Cleared on browser disconnect via clearHuluCache().
+const huluChannelCache = new Map<string, HuluChannelEntry>();
+
+// Transient staging map for listing API response data. Maps channel UUIDs to their program schedules. Populated from listing API responses (which arrive before
+// details responses due to the interceptor's listingCapturedPromise hold). Read by populateHuluChannelCache when the details response arrives, joining UUID-keyed
+// programs with name-keyed entries. Also used to propagate fresh programs to existing cache entries when a new listing response arrives.
+const huluListingStaging = new Map<string, HuluListingProgram[]>();
+
+// Tracks whether a full discovery walk (with affiliate position inference) has completed. When true, buildHuluDiscoveredChannels can return comprehensive results
+// including proper affiliate labeling. When false, getCachedChannels returns null to force a fresh discovery walk.
+let huluFullyDiscovered = false;
 
 // Tracks pages with details API response listeners to avoid duplicate registration. Mirrors the pagesWithListeners pattern in sling.ts.
 const huluPagesWithListeners = new WeakSet<Page>();
@@ -67,20 +80,118 @@ interface HuluListingResponse {
 }
 
 /**
- * Clears all Hulu caches: guide row cache, channel UUID cache, and EAB program cache. Called by clearChannelSelectionCaches() in the coordinator when the
+ * Clears all Hulu caches: the unified channel cache, listing staging map, and discovery flag. Called by clearChannelSelectionCaches() in the coordinator when the
  * browser restarts, since cached state may be stale in a new browser session.
  */
 function clearHuluCache(): void {
 
-  guideRowCache.clear();
-  huluEabCache.clear();
-  huluUuidCache.clear();
+  huluChannelCache.clear();
+  huluFullyDiscovered = false;
+  huluListingStaging.clear();
 }
 
-// Rendered channel entry from the guide grid. Captures the lowercased trimmed name from data-testid and the DOM position index (order of appearance in the DOM,
-// which reflects the guide's network-name sort order).
+/**
+ * Populates the unified channel cache from a details API response. For each item with channel_info, creates or updates the entry keyed by normalized name,
+ * joining the details data (name, UUID) with programs from the listing staging map. Updates existing entries in-place to preserve alias references and
+ * supplementary fields (rowNumber, affiliate) that may have been set by guide grid operations.
+ * @param items - Array of details response items containing channel_info with name and id.
+ */
+function populateHuluChannelCache(items: HuluDetailsItem[]): void {
+
+  const channelsSeen = new Set<string>();
+
+  for(const item of items) {
+
+    const info = item.channel_info;
+
+    if(info?.name && info.id) {
+
+      const normalized = normalizeChannelName(info.name);
+      const existing = huluChannelCache.get(normalized);
+      const programs = huluListingStaging.get(info.id) ?? existing?.programs;
+
+      if(existing) {
+
+        // Update in-place to preserve alias references and supplementary fields (rowNumber, affiliate).
+        existing.displayName = info.name;
+        existing.uuid = info.id;
+
+        if(programs) {
+
+          existing.programs = programs;
+        }
+      } else {
+
+        huluChannelCache.set(normalized, { displayName: info.name, programs, uuid: info.id });
+      }
+
+      channelsSeen.add(info.name);
+    }
+  }
+
+  LOG.debug("tuning:hulu", "Details API: %s items, %s unique channels. Channel cache size: %s.", items.length, channelsSeen.size, huluChannelCache.size);
+}
+
+/**
+ * Finds the currently-airing EAB from a program schedule array. Searches the programs for one whose airing window brackets the current time. Returns null if the
+ * array is empty or no program is currently airing (stale data or program boundary gap).
+ * @param programs - Array of programs with EAB IDs and airing times.
+ * @returns The currently-airing EAB string, or null if no match.
+ */
+function findCurrentEabFromPrograms(programs: HuluListingProgram[]): Nullable<string> {
+
+  const now = Date.now();
+
+  for(const program of programs) {
+
+    if((now >= new Date(program.airingStart).getTime()) && (now < new Date(program.airingEnd).getTime())) {
+
+      return program.eab;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Derives a DiscoveredChannel array from the unified channel cache, deduplicating alias entries via Set reference equality. Affiliates produce entries with the
+ * network name as channelSelector; non-affiliates use their display name. Used by getCachedChannels and discoverHuluChannels when returning from warm cache.
+ * @returns Sorted array of discovered channels.
+ */
+function buildHuluDiscoveredChannels(): DiscoveredChannel[] {
+
+  const channels: DiscoveredChannel[] = [];
+  const seen = new Set<HuluChannelEntry>();
+
+  for(const entry of huluChannelCache.values()) {
+
+    if(seen.has(entry)) {
+
+      continue;
+    }
+
+    seen.add(entry);
+
+    const result: DiscoveredChannel = { channelSelector: entry.affiliate ?? entry.displayName, name: entry.displayName };
+
+    if(entry.affiliate) {
+
+      result.affiliate = entry.affiliate;
+    }
+
+    channels.push(result);
+  }
+
+  channels.sort((a, b) => a.name.localeCompare(b.name));
+
+  return channels;
+}
+
+// Rendered channel entry from the guide grid. Captures the lowercased trimmed name from data-testid (for matching) and the original-cased display name from
+// sr-only text (for discovery output). The DOM position index reflects the guide's network-name sort order.
 interface RenderedChannel {
 
+  displayName: string;
   domIndex: number;
   name: string;
   rowNumber: number;
@@ -88,13 +199,13 @@ interface RenderedChannel {
 
 /**
  * Reads all rendered channel containers from the guide grid, extracting their names from data-testid attributes and row numbers from sr-only text. Populates the
- * row number cache as a side effect.
+ * unified channel cache with rowNumber and displayName as a side effect.
  * @param page - The Puppeteer page object.
  * @returns Array of rendered channels in DOM order, or null if no channels are rendered.
  */
 async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChannel[]>> {
 
-  const channels = await page.evaluate((): Nullable<{ name: string; rowNumber: number }[]> => {
+  const channels = await page.evaluate((): Nullable<{ displayName: string; name: string; rowNumber: number }[]> => {
 
     const containers = document.querySelectorAll("[data-testid^=\"live-guide-channel-kyber-\"]");
 
@@ -104,14 +215,16 @@ async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChanne
     }
 
     const prefix = "live-guide-channel-kyber-";
-    const results: { name: string; rowNumber: number }[] = [];
+    const results: { displayName: string; name: string; rowNumber: number }[] = [];
 
     for(const el of Array.from(containers)) {
 
       const testid = el.getAttribute("data-testid") ?? "";
       const name = testid.slice(prefix.length).trim().replace(/\s+/g, " ").toLowerCase();
 
-      // Extract row number from sr-only text. Format: "{Name} Details, row {N} of {Total}. ..."
+      // Extract the original-cased display name and row number from sr-only text. Format: "{Name} Details, row {N} of {Total}. ..." The data-testid attribute
+      // is lowercased by Hulu's app, so the sr-only text is the only source of original casing (e.g., "CNN" vs "cnn", "A&E" vs "a&e").
+      let displayName = name;
       let rowNumber = -1;
       const btn = el.querySelector("[data-testid=\"live-guide-channel-button\"]");
 
@@ -121,17 +234,27 @@ async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChanne
 
         if(srOnly) {
 
-          const match = /row (\d+) of/.exec(srOnly.textContent);
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          const text = srOnly.textContent ?? "";
 
-          if(match) {
+          const nameMatch = /^(.+?) Details, row/.exec(text);
+
+          if(nameMatch) {
+
+            displayName = nameMatch[1].trim();
+          }
+
+          const rowMatch = /row (\d+) of/.exec(text);
+
+          if(rowMatch) {
 
             // Row numbers in sr-only text are 1-based. Convert to 0-based for scroll offset calculation.
-            rowNumber = parseInt(match[1], 10) - 1;
+            rowNumber = parseInt(rowMatch[1], 10) - 1;
           }
         }
       }
 
-      results.push({ name, rowNumber });
+      results.push({ displayName, name, rowNumber });
     }
 
     return results;
@@ -142,23 +265,114 @@ async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChanne
     return null;
   }
 
-  // Assign DOM indices and populate the row number cache.
+  // Assign DOM indices and populate the unified channel cache with row numbers and display names.
   const rendered: RenderedChannel[] = [];
 
   for(let i = 0; i < channels.length; i++) {
 
     const ch = channels[i];
 
-    rendered.push({ domIndex: i, name: ch.name, rowNumber: ch.rowNumber });
+    rendered.push({ displayName: ch.displayName, domIndex: i, name: ch.name, rowNumber: ch.rowNumber });
 
-    // Cache the row number for future direct-scroll lookups.
+    // Cache the row number and display name for future direct-scroll lookups.
     if(ch.rowNumber >= 0) {
 
-      guideRowCache.set(ch.name, ch.rowNumber);
+      const existing = huluChannelCache.get(ch.name);
+
+      if(existing) {
+
+        existing.rowNumber = ch.rowNumber;
+      } else {
+
+        huluChannelCache.set(ch.name, { displayName: ch.displayName, rowNumber: ch.rowNumber });
+      }
     }
   }
 
   return rendered;
+}
+
+// Result type for readGridMeta. Contains the document-level offset for scroll targeting, the measured row height, and the total number of channel rows.
+interface HuluGridMeta {
+
+  gridDocTop: number;
+  rowHeight: number;
+  totalRows: number;
+}
+
+/**
+ * Reads grid metadata from the Hulu live guide by walking up from a rendered row element to find the spacer and viewport divs. Measures the actual row height
+ * from the first rendered row's bounding rect rather than assuming a hardcoded pixel value. The spacer div is the direct parent of all absolutely-positioned
+ * rows, and its height equals totalRows * rowHeight. The viewport div is the spacer's parent (overflow: hidden). We calculate gridDocTop as the viewport's
+ * document-level offset, so that scrolling to gridDocTop + (rowIndex * rowHeight) places that row at the top of the browser viewport. Shared by both
+ * guideGridStrategy and discoverHuluChannels.
+ * @param page - The Puppeteer page object.
+ * @returns Grid metadata or null if the grid structure is not found.
+ */
+async function readGridMeta(page: Page): Promise<Nullable<HuluGridMeta>> {
+
+  return await page.evaluate((): Nullable<{ gridDocTop: number; rowHeight: number; totalRows: number }> => {
+
+    const row = document.querySelector("[data-testid=\"live-guide-row\"]");
+
+    if(!row) {
+
+      return null;
+    }
+
+    // Measure the actual row height from the rendered element rather than assuming a hardcoded value.
+    const rowHeight = row.getBoundingClientRect().height;
+
+    if(rowHeight <= 0) {
+
+      return null;
+    }
+
+    // The spacer div is the parent of all row elements.
+    const spacer = row.parentElement;
+
+    if(!spacer) {
+
+      return null;
+    }
+
+    const spacerHeight = spacer.offsetHeight;
+
+    if(spacerHeight < rowHeight) {
+
+      return null;
+    }
+
+    // The viewport div is the spacer's parent. Its position relative to the document determines our scroll offset.
+    const viewport = spacer.parentElement;
+
+    if(!viewport) {
+
+      return null;
+    }
+
+    const gridDocTop = viewport.getBoundingClientRect().top + document.documentElement.scrollTop;
+
+    return { gridDocTop, rowHeight, totalRows: Math.round(spacerHeight / rowHeight) };
+  });
+}
+
+/**
+ * Scrolls the Hulu live guide to the specified row index and waits for the virtualizer to render. The scroll target is calculated from the grid's document-level
+ * offset and the dynamically measured row height. Shared by guideGridStrategy (binary search) and discoverHuluChannels (linear scan).
+ * @param page - The Puppeteer page object.
+ * @param gridDocTop - The grid viewport's document-level top offset (from readGridMeta).
+ * @param rowHeight - The measured row height in pixels (from readGridMeta).
+ * @param rowIndex - The zero-based row index to scroll to.
+ */
+async function scrollToGuideRow(page: Page, gridDocTop: number, rowHeight: number, rowIndex: number): Promise<void> {
+
+  await page.evaluate((scrollTo: number): void => {
+
+    document.documentElement.scrollTop = scrollTo;
+  }, gridDocTop + (rowIndex * rowHeight));
+
+  await delay(200);
 }
 
 /**
@@ -503,10 +717,10 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
 }
 
 /**
- * Attempts a fast-path tune by either injecting UUID+EAB from server-side caches into the in-page interceptor, or detecting that the interceptor has already
+ * Attempts a fast-path tune by either injecting UUID+EAB from the unified cache into the in-page interceptor, or detecting that the interceptor has already
  * self-resolved from in-page API data. Two resolution mechanisms handle different channel types:
  *
- * 1. Server-side injection: looks up the currently-airing EAB for the given channel UUID and calls __prismcastResolveDirectTune to inject both values into the
+ * 1. Server-side injection: finds the currently-airing EAB from the entry's program schedule and calls __prismcastResolveDirectTune to inject both values into the
  *    held playlist request. Primary mechanism for local affiliates whose call signs don't match the channelSelector network name — the interceptor can't
  *    self-resolve by name for these, so external injection is the only path.
  * 2. Self-resolution detection: queries __prismcastIsDirectTuneResolved to check if the interceptor already captured UUID+EAB from the expanded
@@ -515,20 +729,20 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
  *
  * On success, dismisses the guide overlay so the video player is visible for capture.
  * @param page - The Puppeteer page object.
- * @param channelUuid - The channel UUID from server-side cache, or null if not yet available.
+ * @param entry - The unified cache entry for the target channel, or null if not yet available.
  * @param channelName - The original channel name for logging.
  * @returns True if the tune was resolved (via injection or self-resolution), false otherwise.
  */
-async function tryFastPathTune(page: Page, channelUuid: Nullable<string>, channelName: string): Promise<boolean> {
+async function tryFastPathTune(page: Page, entry: Nullable<HuluChannelEntry>, channelName: string): Promise<boolean> {
 
   let resolved = false;
   let resolveDetail = "";
 
-  // Phase 1: If UUID is available from the server-side cache, attempt to inject it along with the current EAB into the in-page interceptor. This is the primary
-  // mechanism for local affiliates (where the interceptor can't self-resolve by name) and a secondary mechanism for exact-match channels.
-  if(channelUuid) {
+  // Phase 1: If UUID and programs are available from the unified cache, attempt to inject the UUID along with the current EAB into the in-page interceptor. This
+  // is the primary mechanism for local affiliates (where the interceptor can't self-resolve by name) and a secondary mechanism for exact-match channels.
+  if(entry?.uuid && entry.programs) {
 
-    const currentEab = findCurrentEab(channelUuid);
+    const currentEab = findCurrentEabFromPrograms(entry.programs);
 
     if(currentEab) {
 
@@ -542,12 +756,12 @@ async function tryFastPathTune(page: Page, channelUuid: Nullable<string>, channe
         }
 
         return false;
-      }, channelUuid, currentEab);
+      }, entry.uuid, currentEab);
 
       if(injected) {
 
         resolved = true;
-        resolveDetail = "uuid=" + channelUuid;
+        resolveDetail = "uuid=" + entry.uuid;
       }
     }
   }
@@ -629,7 +843,7 @@ async function releaseHeldPlaylist(page: Page): Promise<void> {
  * The selection process:
  * 1. If listSelector is provided, click the tab/button to reveal the channel list (e.g., a "Channels" tab)
  * 2. Wait for the channel grid rows to render in the DOM
- * 3. Check the row number cache for a direct-scroll shortcut
+ * 3. Check the unified cache for a row number direct-scroll shortcut
  * 4. Binary search: scroll to the midpoint row, read rendered channels (caching row numbers), check for exact match or infer local affiliate
  * 5. If binary search fails, linear scan from top to bottom as a universal fallback
  * 6. Click the on-now program cell (`.LiveGuideProgram--first`) in the target channel's row to open the playback overlay
@@ -704,81 +918,30 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     return { reason: "Channel grid rows did not render.", success: false };
   }
 
-  // Each row in the virtualized grid is exactly 112px tall. The total number of channels is derived from the spacer div's height.
-  const ROW_HEIGHT = 112;
-
   // Normalize the channel name to lowercase for case-insensitive matching against data-testid suffixes.
   const normalizedName = normalizeChannelName(channelName);
 
-  // Read grid metadata by walking up from a rendered row to find the spacer and viewport divs. The spacer div is the direct parent of all absolutely-positioned
-  // rows, and its height equals totalRows * ROW_HEIGHT. The viewport div is the spacer's parent (overflow: hidden). We calculate gridDocTop as the viewport's
-  // document-level offset, so that scrolling to gridDocTop + (rowIndex * ROW_HEIGHT) places that row at the top of the browser viewport.
-  const gridMeta = await page.evaluate((rowHeight: number): Nullable<{ gridDocTop: number; totalRows: number }> => {
-
-    const row = document.querySelector("[data-testid=\"live-guide-row\"]");
-
-    if(!row) {
-
-      return null;
-    }
-
-    // The spacer div is the parent of all row elements.
-    const spacer = row.parentElement;
-
-    if(!spacer) {
-
-      return null;
-    }
-
-    const spacerHeight = spacer.offsetHeight;
-
-    if(spacerHeight < rowHeight) {
-
-      return null;
-    }
-
-    // The viewport div is the spacer's parent. Its position relative to the document determines our scroll offset.
-    const viewport = spacer.parentElement;
-
-    if(!viewport) {
-
-      return null;
-    }
-
-    const gridDocTop = viewport.getBoundingClientRect().top + document.documentElement.scrollTop;
-
-    return { gridDocTop, totalRows: Math.round(spacerHeight / rowHeight) };
-  }, ROW_HEIGHT);
+  const gridMeta = await readGridMeta(page);
 
   if(!gridMeta) {
 
     return { reason: "Could not locate channel grid spacer element.", success: false };
   }
 
-  const { gridDocTop, totalRows } = gridMeta;
-
-  // Helper: scroll to a specific row index and wait for the virtualizer to render.
-  const scrollToRow = async (rowIndex: number): Promise<void> => {
-
-    await page.evaluate((scrollTo: number): void => {
-
-      document.documentElement.scrollTop = scrollTo;
-    }, gridDocTop + (rowIndex * ROW_HEIGHT));
-
-    await delay(200);
-  };
+  const { gridDocTop, rowHeight, totalRows } = gridMeta;
 
   // The name of the channel to click. This starts as the normalized target name but may be replaced by a local affiliate call sign via position inference.
   let clickTarget = normalizedName;
 
-  // Check the row number cache for a direct-scroll shortcut. If we've seen this channel before, we can skip binary search entirely and scroll directly to it.
-  const cachedRow = guideRowCache.get(normalizedName);
+  // Check the unified cache for a row number direct-scroll shortcut. If we've seen this channel before, we can skip binary search entirely and scroll directly
+  // to it.
+  const cachedEntry = huluChannelCache.get(normalizedName);
 
-  if(cachedRow !== undefined) {
+  if(cachedEntry?.rowNumber !== undefined) {
 
-    LOG.debug("tuning:hulu", "Guide cache hit for %s at row %s.", channelName, cachedRow);
+    LOG.debug("tuning:hulu", "Guide cache hit for %s at row %s.", channelName, cachedEntry.rowNumber);
 
-    await scrollToRow(cachedRow);
+    await scrollToGuideRow(page, gridDocTop, rowHeight, cachedEntry.rowNumber);
 
     // Read rendered channels to update the cache and confirm the channel is present.
     const rendered = await readRenderedChannels(page);
@@ -793,10 +956,10 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
       }
     }
 
-    // Cache hit but channel not found at expected position. The guide may have changed. Clear this entry and fall through to binary search.
+    // Cache hit but channel not found at expected position. The guide may have changed. Clear the row number and fall through to binary search.
     LOG.debug("tuning:hulu", "Guide cache miss for %s. Falling back to binary search.", channelName);
 
-    guideRowCache.delete(normalizedName);
+    cachedEntry.rowNumber = undefined;
   }
 
   // Binary search through the virtualized channel list. On each iteration we scroll to the midpoint of the current range, wait for the virtualizer to render,
@@ -817,9 +980,9 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     const mid = Math.floor((low + high) / 2);
 
     // eslint-disable-next-line no-await-in-loop
-    await scrollToRow(mid);
+    await scrollToGuideRow(page, gridDocTop, rowHeight, mid);
 
-    // Read all rendered channels, populating the row number cache as a side effect.
+    // Read all rendered channels, populating the unified cache with row numbers as a side effect.
     // eslint-disable-next-line no-await-in-loop
     const rendered = await readRenderedChannels(page);
 
@@ -881,27 +1044,19 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
       clickTarget = inferred;
       found = true;
 
-      // Cache the network name → affiliate's row number so subsequent tunes for the same network name become direct scrolls.
-      const inferredRow = guideRowCache.get(inferred);
-
-      if(inferredRow !== undefined) {
-
-        guideRowCache.set(normalizedName, inferredRow);
-      }
-
-      // Cross-reference the UUID cache so the network name can resolve to a warm-cache direct tune on subsequent requests. The details API returns the local
-      // call sign as channel_info.name, so the UUID cache is keyed by call sign. The user's channelSelector uses the network name (e.g., "ABC"). Without this
+      // Cross-reference the unified cache so the network name resolves to a warm-cache direct tune on subsequent requests. The details API returns the local
+      // call sign as channel_info.name, so the cache is keyed by call sign. The user's channelSelector uses the network name (e.g., "ABC"). Without this
       // cross-reference, local affiliates would always fall through to cold-cache guide grid tunes because the names never match.
-      const inferredUuid = huluUuidCache.get(inferred);
+      const inferredEntry = huluChannelCache.get(inferred);
 
-      if(inferredUuid) {
+      if(inferredEntry) {
 
-        huluUuidCache.set(normalizedName, inferredUuid);
+        huluChannelCache.set(normalizedName, inferredEntry);
 
-        LOG.debug("tuning:hulu", "Cross-referenced UUID cache: %s -> %s (from inferred affiliate %s).", channelName, inferredUuid, inferred);
+        LOG.debug("tuning:hulu", "Cross-referenced cache: %s -> %s (from inferred affiliate %s).", channelName, inferredEntry.uuid ?? "no-uuid", inferred);
 
         // eslint-disable-next-line no-await-in-loop
-        const fastPathSuccess = await tryFastPathTune(page, inferredUuid, channelName);
+        const fastPathSuccess = await tryFastPathTune(page, inferredEntry, channelName);
 
         if(fastPathSuccess) {
 
@@ -923,7 +1078,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     for(let row = 0; row < totalRows; row += 10) {
 
       // eslint-disable-next-line no-await-in-loop
-      await scrollToRow(row);
+      await scrollToGuideRow(page, gridDocTop, rowHeight, row);
 
       // eslint-disable-next-line no-await-in-loop
       const rendered = await readRenderedChannels(page);
@@ -946,9 +1101,9 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
   if(!found) {
 
-    // Log available channels from the guide row cache to help users identify the correct channelSelector value. The cache accumulates all channel names encountered
-    // during binary search and linear scan, so it contains most or all channels even though the virtualized grid only renders ~13 at a time.
-    const availableChannels = Array.from(guideRowCache.keys()).sort();
+    // Log available channels from the unified cache to help users identify the correct channelSelector value. The cache accumulates all channel names
+    // encountered during binary search and linear scan, so it contains most or all channels even though the virtualized grid only renders ~13 at a time.
+    const availableChannels = Array.from(huluChannelCache.keys()).sort();
 
     if(availableChannels.length > 0) {
 
@@ -965,12 +1120,12 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     return { reason: "Could not find channel " + channelName + " in guide grid.", success: false };
   }
 
-  // Fast path: attempt direct tune via server-side cache injection or interceptor self-resolution detection. The Channels tab click (before binary search)
+  // Fast path: attempt direct tune via unified cache injection or interceptor self-resolution detection. The Channels tab click (before binary search)
   // triggers full Details+Listing API responses. For non-affiliates, the in-page interceptor may have already self-resolved from those responses (capturing
-  // UUID+EAB and swapping the playlist autonomously). For channels where the interceptor hasn't self-resolved, server-side caches provide UUID+EAB for
+  // UUID+EAB and swapping the playlist autonomously). For channels where the interceptor hasn't self-resolved, the unified cache provides UUID+EAB for
   // injection. Either path avoids the redundant on-now cell click. Note: for affiliates, the inference block above may have already called tryFastPathTune with
-  // the same UUID — that call is redundant here but harmless (~10ms), and avoiding it with a flag would create a fragile coupling to the inference block.
-  const fastPathSuccess = await tryFastPathTune(page, huluUuidCache.get(normalizedName) ?? null, channelName);
+  // the same entry — that call is redundant here but harmless (~10ms), and avoiding it with a flag would create a fragile coupling to the inference block.
+  const fastPathSuccess = await tryFastPathTune(page, huluChannelCache.get(normalizedName) ?? null, channelName);
 
   if(fastPathSuccess) {
 
@@ -1017,11 +1172,11 @@ async function guideGridWithRetry(page: Page, profile: ChannelSelectionProfile):
 }
 
 /**
- * Sets up server-side response interception on the page to capture channel UUID mappings from Hulu's guide details API and EAB schedules from the listing API.
- * As the live page loads, Hulu fetches program details from guide.hulu.com/guide/details in batches. Each response item includes channel_info with the
- * channel's UUID and display name. We intercept these responses to populate the huluUuidCache, enabling instant UUID resolution on subsequent tunes. The
- * in-page interceptor in resolveHuluDirectUrl() expands details request bodies with additional EABs so these responses cover all ~123 channels. Also bridges
- * in-page console signals (HULU-DIAG, HULU-CACHE, and HULU-FAIL) to the Node.js LOG. Uses a WeakSet to prevent duplicate listener registration.
+ * Sets up server-side response interception on the page to capture channel data from Hulu's guide APIs. As the live page loads, Hulu fetches program details from
+ * guide.hulu.com/guide/details in batches and program schedules from guide.hulu.com/guide/listing. We intercept both responses to populate the unified channel
+ * cache: listing data goes into the staging map (UUID → programs), then details data triggers populateHuluChannelCache which joins name → UUID with staged
+ * programs. Also bridges in-page console signals (HULU-DIAG, HULU-CACHE, HULU-FAIL) to the Node.js LOG. Uses a WeakSet to prevent duplicate listener
+ * registration.
  * @param page - The Puppeteer page object.
  */
 function setupDetailsResponseInterception(page: Page): void {
@@ -1045,7 +1200,7 @@ function setupDetailsResponseInterception(page: Page): void {
     }
 
     // Affiliate UUID capture: the in-page interceptor emits "[HULU-CACHE] targetName=channelUuid" when it observes a playlist passthrough for an affiliate guide
-    // grid tune. Cache the UUID under the channelSelector key so subsequent tunes resolve via warm direct tuning instead of the guide grid.
+    // grid tune. Find the existing entry by UUID and create an alias under the channelSelector key so subsequent tunes resolve via warm direct tuning.
     if(text.startsWith("[HULU-CACHE] ")) {
 
       const payload = text.slice("[HULU-CACHE] ".length);
@@ -1056,9 +1211,28 @@ function setupDetailsResponseInterception(page: Page): void {
         const name = payload.slice(0, eqIdx);
         const channelUuid = payload.slice(eqIdx + 1);
 
-        huluUuidCache.set(name, channelUuid);
+        // Find the existing entry by UUID to create an alias (shared object reference). If no entry exists yet, create a new one with programs from staging.
+        let existingEntry: Nullable<HuluChannelEntry> = null;
 
-        LOG.debug("tuning:hulu", "Cached affiliate UUID from playlist: %s -> %s. UUID cache size: %s.", name, channelUuid, huluUuidCache.size);
+        for(const e of huluChannelCache.values()) {
+
+          if(e.uuid === channelUuid) {
+
+            existingEntry = e;
+
+            break;
+          }
+        }
+
+        if(existingEntry) {
+
+          huluChannelCache.set(name, existingEntry);
+        } else {
+
+          huluChannelCache.set(name, { displayName: name, programs: huluListingStaging.get(channelUuid), uuid: channelUuid });
+        }
+
+        LOG.debug("tuning:hulu", "Cached affiliate UUID from playlist: %s -> %s. Channel cache size: %s.", name, channelUuid, huluChannelCache.size);
       }
     }
 
@@ -1080,7 +1254,7 @@ function setupDetailsResponseInterception(page: Page): void {
       return;
     }
 
-    // Details API: capture channel UUID mappings for the persistent cache.
+    // Details API: populate the unified channel cache by joining name → UUID from this response with programs from the listing staging map.
     if(url.includes("guide.hulu.com/guide/details")) {
 
       void response.json().then((data: HuluDetailsResponse) => {
@@ -1090,21 +1264,7 @@ function setupDetailsResponseInterception(page: Page): void {
           return;
         }
 
-        const channelsSeen = new Set<string>();
-
-        for(const item of data.items) {
-
-          const info = item.channel_info;
-
-          if(info?.name && info.id) {
-
-            huluUuidCache.set(normalizeChannelName(info.name), info.id);
-            channelsSeen.add(info.name);
-          }
-        }
-
-        LOG.debug("tuning:hulu", "Details API: %s items, %s unique channels. UUID cache size: %s.",
-          data.items.length, channelsSeen.size, huluUuidCache.size);
+        populateHuluChannelCache(data.items);
       }).catch(() => {
 
         // CORS preflight responses (OPTIONS) return empty bodies that fail JSON parsing. This is expected and harmless.
@@ -1113,8 +1273,8 @@ function setupDetailsResponseInterception(page: Page): void {
       return;
     }
 
-    // Listing API: capture program schedules (EABs with airing times) for each channel. The app fires listing requests on every page load covering all ~130
-    // channels with ~8 hours of programs. We cache the full schedule per channel UUID so resolveHuluDirectUrl can find the currently-airing EAB at tune time.
+    // Listing API: capture program schedules (EABs with airing times) into the staging map, then propagate fresh programs to existing unified cache entries. The
+    // app fires listing requests on every page load covering all ~130 channels with ~8 hours of programs.
     if(url.includes("guide.hulu.com/guide/listing")) {
 
       void response.json().then((data: HuluListingResponse) => {
@@ -1130,12 +1290,27 @@ function setupDetailsResponseInterception(page: Page): void {
 
           if(channel.id && Array.isArray(channel.programs) && (channel.programs.length > 0)) {
 
-            huluEabCache.set(channel.id, channel.programs);
+            huluListingStaging.set(channel.id, channel.programs);
             programCount += channel.programs.length;
           }
         }
 
-        LOG.debug("tuning:hulu", "Listing API: %s channels, %s programs. EAB cache size: %s.", data.channels.length, programCount, huluEabCache.size);
+        // Propagate fresh programs to existing unified cache entries. Aliases share object references, so updating one entry automatically propagates to all
+        // aliases for the same channel.
+        for(const entry of huluChannelCache.values()) {
+
+          if(entry.uuid) {
+
+            const freshPrograms = huluListingStaging.get(entry.uuid);
+
+            if(freshPrograms) {
+
+              entry.programs = freshPrograms;
+            }
+          }
+        }
+
+        LOG.debug("tuning:hulu", "Listing API: %s channels, %s programs. Staging size: %s.", data.channels.length, programCount, huluListingStaging.size);
       }).catch(() => {
 
         // CORS preflight responses (OPTIONS) return empty bodies that fail JSON parsing. This is expected and harmless.
@@ -1145,40 +1320,11 @@ function setupDetailsResponseInterception(page: Page): void {
 }
 
 /**
- * Finds the currently-airing EAB for a channel from the EAB cache. Searches the cached program schedule for the given channel UUID and returns the EAB of the
- * program whose airing window brackets the current time. Returns null if the channel has no cached programs or if no program is currently airing (stale cache
- * or program boundary gap).
- * @param channelUuid - The channel UUID to look up in the EAB cache.
- * @returns The currently-airing EAB string, or null if no match.
- */
-function findCurrentEab(channelUuid: string): Nullable<string> {
-
-  const programs = huluEabCache.get(channelUuid);
-
-  if(!programs) {
-
-    return null;
-  }
-
-  const now = Date.now();
-
-  for(const program of programs) {
-
-    if((now >= new Date(program.airingStart).getTime()) && (now < new Date(program.airingEnd).getTime())) {
-
-      return program.eab;
-    }
-  }
-
-  return null;
-}
-
-/**
  * Resolves a direct URL for Hulu channel tuning and installs a fetch interceptor that handles both warm and cold tunes. On warm cache (UUID and EAB known from
  * previous API responses), the interceptor has both values at install time and swaps the first playlist request immediately. On cold cache (no UUID), returns
  * null so the guide grid runs — the Channels tab click triggers full Details+Listing API expansion for all ~123 channels, and the interceptor captures UUID+EAB
  * from those expanded responses to resolve the held playlist. Without the Channels tab click, the initial page load only provides data for ~10 visible channels.
- * On all tunes, the interceptor also expands listing and details API requests to populate the full UUID cache for future warm tunes.
+ * On all tunes, the interceptor also expands listing and details API requests to populate the full cache for future warm tunes.
  * @param channelSelector - The channel selector string (e.g., "Fox", "CNN", "ESPN").
  * @param page - The Puppeteer page for evaluateOnNewDocument installation and response interception setup.
  * @returns The Hulu live URL for direct tuning, or null on cold cache (no UUID) or interceptor installation failure.
@@ -1186,15 +1332,17 @@ function findCurrentEab(channelUuid: string): Nullable<string> {
 async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promise<Nullable<string>> {
 
   const normalizedName = normalizeChannelName(channelSelector);
-  const cachedUuid = huluUuidCache.get(normalizedName) ?? null;
+  const cachedEntry = huluChannelCache.get(normalizedName);
+  const cachedUuid = cachedEntry?.uuid ?? null;
 
-  // Set up server-side response listeners to populate the UUID and EAB caches. Must be set up before navigation so we capture details and listing API responses
+  // Set up server-side response listeners to populate the unified channel cache. Must be set up before navigation so we capture details and listing API responses
   // during both the guide grid flow (cold cache) and the intercepted page load (warm cache).
   setupDetailsResponseInterception(page);
 
-  // Look up the currently-airing EAB for the target channel (if UUID is known). On warm cache (both UUID and EAB available), the interceptor has both at install
-  // time and swaps immediately. On cold cache (no UUID), we return null below so the guide grid runs — the Channels tab click triggers full API expansion.
-  const cachedEab = cachedUuid ? findCurrentEab(cachedUuid) : null;
+  // Look up the currently-airing EAB for the target channel (if UUID and programs are known). On warm cache (both UUID and EAB available), the interceptor has
+  // both at install time and swaps immediately. On cold cache (no UUID), we return null below so the guide grid runs — the Channels tab click triggers full API
+  // expansion.
+  const cachedEab = (cachedEntry?.programs) ? findCurrentEabFromPrograms(cachedEntry.programs) : null;
   const isWarmCache = Boolean(cachedUuid && cachedEab);
 
   if(isWarmCache) {
@@ -1216,22 +1364,30 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
     LOG.debug("tuning:hulu", "resolveHuluDirectUrl: UUID cached for %s but no current EAB. Attempting direct tune via API interception.", channelSelector);
   }
 
-  // Collect all unique UUIDs from the cache for listing API request expansion. On warm tunes, this keeps EAB schedules fresh for all known channels. On cold
-  // tunes after the first, this expands the listing request beyond the mini-guide's ~10 UUIDs. Empty on the very first cold tune (no cached data yet).
-  const allCachedUuids = [...new Set(huluUuidCache.values())];
-
-  // Collect one current EAB per cached channel for details API request expansion. On warm tunes, this fills the UUID cache completely. On cold tunes after the
-  // first, this supplements the in-page listing-derived EABs. Empty on the very first cold tune — the interceptor builds EABs dynamically from the listing API
-  // response instead.
+  // Collect all unique UUIDs and current EABs from the unified cache for API request expansion. On warm tunes, this keeps EAB schedules fresh for all known
+  // channels. On cold tunes after the first, this expands requests beyond the mini-guide's ~10 channels. Empty on the very first cold tune.
+  const seenEntries = new Set<HuluChannelEntry>();
+  const allCachedUuids: string[] = [];
   const allCurrentEabs: string[] = [];
 
-  for(const channelUuid of huluEabCache.keys()) {
+  for(const entry of huluChannelCache.values()) {
 
-    const currentEab = findCurrentEab(channelUuid);
+    if(!entry.uuid || seenEntries.has(entry)) {
 
-    if(currentEab) {
+      continue;
+    }
 
-      allCurrentEabs.push(currentEab);
+    seenEntries.add(entry);
+    allCachedUuids.push(entry.uuid);
+
+    if(entry.programs) {
+
+      const currentEab = findCurrentEabFromPrograms(entry.programs);
+
+      if(currentEab) {
+
+        allCurrentEabs.push(currentEab);
+      }
     }
   }
 
@@ -1314,7 +1470,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
         }
       }
 
-      // Injection endpoint for the guide grid strategy's fast-path tune. After binary search identifies the target channel and the server-side caches provide the
+      // Injection endpoint for the guide grid strategy's fast-path tune. After binary search identifies the target channel and the unified cache provides the
       // UUID and EAB, the strategy calls this function via page.evaluate to feed both values into the interceptor. The held playlist request then resumes with the
       // swapped channel_id and content_eab_id. Returns true if the injection was accepted (directTunePromise not yet resolved), false if the Promise already
       // resolved (self-resolution from API data, 8s timeout, or a previous injection).
@@ -1332,7 +1488,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
         return true;
       };
 
-      // Release endpoint for the guide grid strategy's click-path fallback. When the fast-path injection can't proceed (UUID or EAB not in server-side caches),
+      // Release endpoint for the guide grid strategy's click-path fallback. When the fast-path injection can't proceed (UUID or EAB not in unified cache),
       // the strategy calls this to unblock the held playlist request and revert to the click-based flow. Sets holdActive to false so the playlist handler follows
       // the affiliate capture path ([HULU-CACHE]) on subsequent requests from the play button click.
       (window as unknown as Record<string, unknown>).__prismcastReleasePlaylist = (): void => {
@@ -1367,7 +1523,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       });
 
       // Fire-and-forget: parses a listing API response to build the in-page EAB map. For each channel, finds the currently-airing program by comparing airing
-      // times against the current time, mirroring the server-side findCurrentEab() logic. Called on all listing return paths (expanded and passthrough).
+      // times against the current time, mirroring the server-side findCurrentEabFromPrograms() logic. Called on all listing return paths (expanded and passthrough).
       function captureListingData(response: Response): void {
 
         try {
@@ -1752,19 +1908,216 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 }
 
 /**
- * Invalidates the cached channel UUID for the given channel selector. Called when a cached direct URL fails to produce a working stream, so the next tune
- * attempts the cold cache path (details API extraction) or falls back to the guide grid.
+ * Invalidates the cached entry for the given channel selector. Called when a cached direct URL fails to produce a working stream, so the next tune attempts the
+ * cold cache path (details API extraction) or falls back to the guide grid. Deletes the specific key without affecting entries that share the same object
+ * reference via aliasing.
  * @param channelSelector - The channel selector string to invalidate.
  */
 function invalidateHuluDirectUrl(channelSelector: string): void {
 
-  huluUuidCache.delete(normalizeChannelName(channelSelector));
+  huluChannelCache.delete(normalizeChannelName(channelSelector));
 }
 
-export const huluStrategy: ChannelStrategyEntry = {
+/**
+ * Discovers all channels from Hulu Live TV by clicking the Channels tab to trigger full API expansion and performing a complete linear scan through the
+ * virtualized guide grid. The route has already navigated to the Hulu live page. Detects local affiliates using the same CALL_SIGN_PATTERN and position-based
+ * inference logic as the tuning strategy. Affiliates get the network name as their selector; non-affiliates get their display name. Enriches unified cache
+ * entries with affiliate metadata for subsequent getCachedChannels derivation.
+ * @param page - The Puppeteer page object, already on the Hulu live page (navigated by the route handler).
+ * @returns Array of discovered channels with affiliate detection and selector mapping.
+ */
+async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
 
-  clearCache: clearHuluCache,
-  execute: guideGridWithRetry,
-  invalidateDirectUrl: invalidateHuluDirectUrl,
-  resolveDirectUrl: resolveHuluDirectUrl
+  // Return from the unified cache if a full discovery walk (with affiliate inference) has already completed.
+  if(huluFullyDiscovered && (huluChannelCache.size > 0)) {
+
+    return buildHuluDiscoveredChannels();
+  }
+
+  // Set up response interception BEFORE navigation so we capture the initial details and listing API responses during page load. These responses populate the
+  // unified channel cache with UUID, programs, and display names for all ~130 channels — warming the tuning cache as a side effect of discovery. The same
+  // setupDetailsResponseInterception function used by the tuning path ensures a single code path for all API response processing.
+  setupDetailsResponseInterception(page);
+
+  try {
+
+    await page.goto(HULU_LIVE_URL, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
+  } catch {
+
+    return [];
+  }
+
+  // Click the Channels tab to reveal the channel list and trigger full API expansion. Matches the tuning path's retry logic — if guide rows don't appear after
+  // the first tab click, retry once with a longer delay in case the first click fired during a transitional state before the guide was fully interactive.
+  const listSelector = "#CHANNELS";
+
+  try {
+
+    await page.waitForSelector(listSelector, { timeout: CONFIG.streaming.videoTimeout, visible: true });
+    await page.$eval(listSelector, (el) => { (el as HTMLElement).click(); });
+    await delay(300);
+  } catch {
+
+    return [];
+  }
+
+  let rowsVisible = false;
+
+  for(let guideAttempt = 0; guideAttempt < 2; guideAttempt++) {
+
+    try {
+
+      const rowTimeout = (guideAttempt === 0) ? 5000 : CONFIG.streaming.videoTimeout;
+
+      // eslint-disable-next-line no-await-in-loop
+      await page.waitForSelector("[data-testid=\"live-guide-row\"]", { timeout: rowTimeout, visible: true });
+      rowsVisible = true;
+
+      break;
+    } catch {
+
+      // Rows not visible yet. On first failure, retry the tab click in case the guide wasn't fully interactive.
+      if(guideAttempt === 0) {
+
+        try {
+
+          // eslint-disable-next-line no-await-in-loop
+          await page.$eval(listSelector, (el) => { (el as HTMLElement).click(); });
+
+          // eslint-disable-next-line no-await-in-loop
+          await delay(500);
+        } catch {
+
+          // Retry click failed. Fall through to final wait attempt.
+        }
+      }
+    }
+  }
+
+  if(!rowsVisible) {
+
+    return [];
+  }
+
+  // Read grid metadata to determine total rows and scroll offset. Reuses the shared readGridMeta helper.
+  const gridMeta = await readGridMeta(page);
+
+  if(!gridMeta) {
+
+    return [];
+  }
+
+  const { gridDocTop, rowHeight, totalRows } = gridMeta;
+
+  // Linear scan through the entire guide grid to collect all channels. Step by 10 rows (~the virtualizer render window) to cover the full list.
+  const allChannels: RenderedChannel[] = [];
+  const seenNames = new Set<string>();
+
+  for(let row = 0; row < totalRows; row += 10) {
+
+    // eslint-disable-next-line no-await-in-loop
+    await scrollToGuideRow(page, gridDocTop, rowHeight, row);
+
+    // eslint-disable-next-line no-await-in-loop
+    const rendered = await readRenderedChannels(page);
+
+    if(!rendered) {
+
+      continue;
+    }
+
+    for(const ch of rendered) {
+
+      if(!seenNames.has(ch.name)) {
+
+        seenNames.add(ch.name);
+        allChannels.push(ch);
+      }
+    }
+  }
+
+  // Reassign sequential domIndex values across the full accumulated list so that inferLocalAffiliate's position-based logic works correctly. The original
+  // domIndex values are from individual scroll windows (0-12) and are not meaningful across the full channel list.
+  const indexedChannels: RenderedChannel[] = allChannels.map((ch, i) => ({ ...ch, domIndex: i }));
+
+  // Build a callSign → networkName map by reusing inferLocalAffiliate for each broadcast network. This is the same position-based inference the tuning strategy
+  // uses during binary search — a call sign channel occupies the alphabetical position where its network name would sort.
+  const affiliateMap = new Map<string, string>();
+
+  for(const network of NETWORK_NAMES_WITH_AFFILIATES) {
+
+    const callSign = inferLocalAffiliate(indexedChannels, network);
+
+    if(callSign) {
+
+      affiliateMap.set(callSign, network.toUpperCase());
+    }
+  }
+
+  // Enrich unified cache entries with affiliate metadata so buildHuluDiscoveredChannels can derive proper affiliate labeling on subsequent getCachedChannels calls.
+  for(const [ callSign, network ] of affiliateMap) {
+
+    const entry = huluChannelCache.get(callSign);
+
+    if(entry) {
+
+      entry.affiliate = network;
+    }
+  }
+
+  // Build discovery results from the walk data. The unified cache may have incomplete entries on cold start (no API data), so we build from the walk results
+  // directly to ensure all channels are included.
+  const discovered = indexedChannels.map((ch) => {
+
+    const network = affiliateMap.get(ch.name);
+
+    if(network) {
+
+      return { affiliate: network, channelSelector: network, name: ch.displayName } as DiscoveredChannel;
+    }
+
+    return { channelSelector: ch.displayName, name: ch.displayName } as DiscoveredChannel;
+  });
+
+  // Do not cache empty results — leave the flag false so subsequent calls retry the full walk. Empty results can indicate no Hulu + Live TV subscription.
+  if(discovered.length > 0) {
+
+    discovered.sort((a, b) => a.name.localeCompare(b.name));
+    huluFullyDiscovered = true;
+  }
+
+  return discovered;
+}
+
+/**
+ * Returns cached discovered channels from the unified channel cache, or null if a full discovery walk (with affiliate position inference) has not yet completed.
+ * Derives the result on the fly from unified cache entries, deduplicating aliases via Set reference equality.
+ * @returns Sorted array of discovered channels or null.
+ */
+function getHuluCachedChannels(): Nullable<DiscoveredChannel[]> {
+
+  if(!huluFullyDiscovered || (huluChannelCache.size === 0)) {
+
+    return null;
+  }
+
+  return buildHuluDiscoveredChannels();
+}
+
+export const huluProvider: ProviderModule = {
+
+  discoverChannels: discoverHuluChannels,
+  getCachedChannels: getHuluCachedChannels,
+  guideUrl: "https://www.hulu.com/live",
+  handlesOwnNavigation: true,
+  label: "Hulu",
+  slug: "hulu",
+  strategy: {
+
+    clearCache: clearHuluCache,
+    execute: guideGridWithRetry,
+    invalidateDirectUrl: invalidateHuluDirectUrl,
+    resolveDirectUrl: resolveHuluDirectUrl
+  },
+  strategyName: "guideGrid"
 };

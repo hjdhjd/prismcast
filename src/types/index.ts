@@ -941,6 +941,68 @@ export interface ChannelStrategyEntry {
 }
 
 /**
+ * Standardized output shape for a channel discovered from a provider's guide. Produced by each provider's discoverChannels implementation and returned as
+ * a JSON array from the GET /providers/:slug/channels endpoint. Mirrors the shape of channel definitions in channels/index.ts so discovery output can be
+ * used directly to populate new entries.
+ */
+export interface DiscoveredChannel {
+
+  // Parent network name when the channel is a local affiliate. Present for Hulu affiliates, YTTV local affiliates, and Fox FOXD2C entries. Omitted when not
+  // applicable.
+  affiliate?: string;
+
+  // The value to use as channelSelector in channels/index.ts for tuning to this channel. Always present. For most channels this equals name. For Hulu affiliates
+  // this is the network name. For YTTV affiliates this is the network name. For Fox FOXD2C entries this is the internal call sign.
+  channelSelector: string;
+
+  // Human-readable display name as the provider shows it in their guide grid.
+  name: string;
+
+  // Channel tier: "paid" for subscription channels, "free" for free ad-supported channels. Present for Sling where the distinction matters (Freestream channels
+  // are free). Omitted for providers where all channels are paid.
+  tier?: string;
+}
+
+/**
+ * Unified provider contract that bundles identity metadata, tuning strategy, and channel discovery into a single registry entry. Each provider tuning file
+ * exports one ProviderModule. The coordinator builds its strategy dispatch lookup from provider modules at evaluation time. Generic strategies (thumbnailRow,
+ * tileClick) remain bare ChannelStrategyEntry objects — they are not providers.
+ */
+export interface ProviderModule {
+
+  /**
+   * Discovers all available channels from the provider's guide. The route handler navigates to guideUrl before calling this function unless handlesOwnNavigation
+   * is set. Returns a standardized DiscoveredChannel array.
+   */
+  discoverChannels: (page: Page) => Promise<DiscoveredChannel[]>;
+
+  /**
+   * Returns cached discovered channels if the provider has already fully enumerated its lineup from a previous tune or discovery call, or null if no enumeration
+   * has occurred. When non-null, the route handler can skip browser page creation entirely and return the cached result immediately.
+   */
+  getCachedChannels: () => Nullable<DiscoveredChannel[]>;
+
+  // The provider's live guide page URL. The route handler navigates here before calling discoverChannels (unless handlesOwnNavigation is set).
+  guideUrl: string;
+
+  // When true, the provider's discoverChannels function handles its own navigation instead of relying on the route to navigate to guideUrl first. Used by
+  // providers that need to set up response interception before navigation (e.g., Hulu, Sling).
+  handlesOwnNavigation?: boolean;
+
+  // Human-readable display name (e.g., "YouTube TV", "Hulu").
+  label: string;
+
+  // Provider identifier for API endpoints (e.g., "yttv", "hulu"). Used as the :slug parameter in GET /providers/:slug/channels.
+  slug: string;
+
+  // The existing tuning strategy contract, unchanged from the flat registry pattern.
+  strategy: ChannelStrategyEntry;
+
+  // Links back to the site profile strategy name for derived strategy lookup.
+  strategyName: ChannelSelectionStrategy;
+}
+
+/**
  * Coordinates for a click target, used when clicking channel selector elements.
  */
 export interface ClickTarget {

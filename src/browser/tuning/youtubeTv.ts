@@ -2,7 +2,7 @@
  *
  * youtubeTv.ts: YouTube TV EPG grid channel selection strategy.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable } from "../../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
@@ -11,10 +11,19 @@ import { logAvailableChannels } from "../channelSelection.js";
 // Base URL for YouTube TV watch page navigation.
 const YOUTUBE_TV_BASE_URL = "https://tv.youtube.com";
 
-// Module-level cache for watch URLs discovered during channel selection. On the first tune to any YTTV channel, the strategy discovers all ~256 channels from the
-// non-virtualized EPG grid, populating this cache with every channel's watch URL keyed by its lowercased guide name (e.g., "cnn", "nbc 5", "espn"). Subsequent
-// tunes to any YTTV channel resolve via findWatchUrl() in resolveDirectUrl, skipping guide navigation entirely. Cleared on browser disconnect via clearYttvCache().
-const yttvWatchUrlCache = new Map<string, string>();
+// Internal cache entry combining discovery metadata and tuning data. The discovered field provides the API-facing DiscoveredChannel (name, channelSelector,
+// affiliate), and the watchUrl provides the direct navigation target for tuning. Both are populated from the same discoverGuideChannels() result, ensuring a single
+// source of truth for "what channels exist" and "how to tune to them."
+interface YttvChannelEntry {
+
+  discovered: DiscoveredChannel;
+  watchUrl: string;
+}
+
+// Unified channel cache for YouTube TV. Maps lowercased guide names (e.g., "cnn", "nbc 5", "espn") to their combined discovery and tuning data. Populated during
+// the first tune (when the strategy enumerates all ~256 channels from the non-virtualized EPG grid) or the first discovery call. Both tuning (via findWatchUrl) and
+// discovery (via getCachedChannels / discoverYttvChannels) read from this single cache. Cleared on browser disconnect via clearYttvCache().
+const yttvChannelCache = new Map<string, YttvChannelEntry>();
 
 // Tracks consecutive guide page loads that discover zero channels. When this reaches the recovery threshold, the strategy clears YTTV site data (service workers
 // and cache storage) via CDP and reloads the guide to break out of a degraded state where the guide grid container renders but channel entries are not populated.
@@ -38,8 +47,8 @@ const CHANNEL_ALTERNATES: Record<string, string[]> = {
 };
 
 /**
- * Looks up a watch URL in the cache using the same three-tier matching logic as the guide grid DOM query. The tiers are tried in order for each name in the
- * candidate list (primary channelSelector first, then any CHANNEL_ALTERNATES):
+ * Looks up a watch URL in the unified cache using three-tier matching logic. The tiers are tried in order for each name in the candidate list (primary
+ * channelSelector first, then any CHANNEL_ALTERNATES):
  *
  * 1. Exact match: cache key equals the lowercased name (e.g., "cnn" matches "cnn").
  * 2. Prefix+digit: cache key starts with the name followed by a space and a digit. Catches local affiliates displayed as "{Network} {Number}" (e.g., "nbc 5",
@@ -66,40 +75,40 @@ function findWatchUrl(channelName: string): Nullable<string> {
   for(const name of namesToTry) {
 
     // Tier 1: Exact match.
-    const exact = yttvWatchUrlCache.get(name);
+    const exact = yttvChannelCache.get(name);
 
     if(exact) {
 
       // Cache under the primary channelSelector key if we matched via an alternate name, so subsequent lookups are O(1).
       if(name !== lower) {
 
-        yttvWatchUrlCache.set(lower, exact);
+        yttvChannelCache.set(lower, exact);
       }
 
-      return exact;
+      return exact.watchUrl;
     }
 
     // Tier 2: Prefix+digit match for local affiliates. Iterate all cache entries to find one whose key starts with "{name} " followed by a digit, matching the
     // "{Network} {Number}" pattern (e.g., "nbc 5", "abc 7") while excluding unrelated channels that share the prefix (e.g., "nbc sports").
-    for(const [ key, url ] of yttvWatchUrlCache) {
+    for(const [ key, entry ] of yttvChannelCache) {
 
       if(key.startsWith(name + " ") && (key.length > name.length + 1) && (key.charCodeAt(name.length + 1) >= 48) && (key.charCodeAt(name.length + 1) <= 57)) {
 
-        yttvWatchUrlCache.set(lower, url);
+        yttvChannelCache.set(lower, entry);
 
-        return url;
+        return entry.watchUrl;
       }
     }
 
     // Tier 3: Parenthetical suffix match for timezone/region variants. Find a cache entry whose key starts with "{name} (" to catch channels like
     // "magnolia network (pacific)" or "the filipino channel (pacific)".
-    for(const [ key, url ] of yttvWatchUrlCache) {
+    for(const [ key, entry ] of yttvChannelCache) {
 
       if(key.startsWith(name + " (")) {
 
-        yttvWatchUrlCache.set(lower, url);
+        yttvChannelCache.set(lower, entry);
 
-        return url;
+        return entry.watchUrl;
       }
     }
   }
@@ -115,17 +124,17 @@ function findWatchUrl(channelName: string): Nullable<string> {
  */
 function invalidateYttvDirectUrl(channelSelector: string): void {
 
-  yttvWatchUrlCache.delete(channelSelector.toLowerCase());
+  yttvChannelCache.delete(channelSelector.toLowerCase());
 }
 
 /**
- * Clears all cached YouTube TV watch URLs and resets the empty discovery counter. Called by clearChannelSelectionCaches() in the coordinator when the browser
- * restarts, since a fresh browser session resolves the degraded guide state that the counter tracks.
+ * Clears all YouTube TV caches: the unified channel cache and the empty discovery counter. Called by clearChannelSelectionCaches() in the coordinator when the
+ * browser restarts, since a fresh browser session resolves the degraded guide state that the counter tracks.
  */
 function clearYttvCache(): void {
 
-  yttvWatchUrlCache.clear();
   consecutiveEmptyDiscoveries = 0;
+  yttvChannelCache.clear();
 }
 
 /**
@@ -226,8 +235,92 @@ async function attemptGuideRecovery(page: Page): Promise<{ name: string; watchPa
   return channels;
 }
 
+// Broadcast network names that have local affiliates displayed as "{Network} {Number}" (e.g., "NBC 5", "ABC 7") in the YouTube TV guide. Used to constrain
+// prefix+digit affiliate detection to actual broadcast networks and avoid false positives like "ESPN 2" or "Fox Sports 1".
+const YTTV_BROADCAST_NETWORKS = new Set([ "abc", "cbs", "cw", "fox", "nbc", "pbs" ]);
+
+// Pattern for detecting local affiliate channels displayed as "{Network} {Number}" (e.g., "NBC 5", "ABC 7"). The prefix is validated against
+// YTTV_BROADCAST_NETWORKS before tagging as an affiliate.
+const YTTV_AFFILIATE_PATTERN = /^(.+?) \d/;
+
 /**
- * YouTube TV grid strategy: discovers all watch URLs from the non-virtualized EPG grid at tv.youtube.com/live in a single pass, populating the module-level cache
+ * Derives a DiscoveredChannel array from the unified channel cache, deduplicating alias entries via Set reference equality. Aliases are created by findWatchUrl
+ * when a prefix+digit, parenthetical, or CHANNEL_ALTERNATES match caches the same YttvChannelEntry under the primary channelSelector key. Without deduplication,
+ * iterating cache values would produce duplicate entries in the discovery output. Sorts by name before returning.
+ * @returns Sorted, deduplicated array of discovered channels.
+ */
+function buildYttvDiscoveredChannels(): DiscoveredChannel[] {
+
+  const channels: DiscoveredChannel[] = [];
+  const seen = new Set<YttvChannelEntry>();
+
+  for(const entry of yttvChannelCache.values()) {
+
+    if(seen.has(entry)) {
+
+      continue;
+    }
+
+    seen.add(entry);
+    channels.push(entry.discovered);
+  }
+
+  channels.sort((a, b) => a.name.localeCompare(b.name));
+
+  return channels;
+}
+
+/**
+ * Populates the unified channel cache from raw guide channel data. For each channel, builds a DiscoveredChannel with affiliate detection and pairs it with the
+ * full watch URL. Detects affiliates via two mechanisms: (1) prefix+digit pattern constrained to known broadcast networks (e.g., "NBC 5" → affiliate of "NBC"),
+ * and (2) CHANNEL_ALTERNATES entries for affiliates that use different names entirely (e.g., "WGN" → affiliate of "CW"). Shared by youtubeGridStrategy
+ * (tuning-time population) and discoverYttvChannels (discovery endpoint).
+ * @param rawChannels - Array of channel names and watch paths from discoverGuideChannels().
+ */
+function populateYttvChannelCache(rawChannels: { name: string; watchPath: string }[]): void {
+
+  // Build a reverse lookup from alternate names to their parent network for affiliate detection.
+  const alternateToNetwork = new Map<string, string>();
+
+  for(const [ network, alts ] of Object.entries(CHANNEL_ALTERNATES)) {
+
+    for(const alt of alts) {
+
+      alternateToNetwork.set(alt.toLowerCase(), network.toUpperCase());
+    }
+  }
+
+  for(const ch of rawChannels) {
+
+    const entry: DiscoveredChannel = { channelSelector: ch.name, name: ch.name };
+
+    // Detect affiliates via prefix+digit pattern, but only for known broadcast networks. This prevents false positives like "ESPN 2" or "Fox Sports 1"
+    // from being tagged as affiliates.
+    const prefixMatch = YTTV_AFFILIATE_PATTERN.exec(ch.name);
+
+    if(prefixMatch && YTTV_BROADCAST_NETWORKS.has(prefixMatch[1].toLowerCase())) {
+
+      entry.affiliate = prefixMatch[1].toUpperCase();
+      entry.channelSelector = entry.affiliate;
+    } else {
+
+      // Detect affiliates via CHANNEL_ALTERNATES (e.g., "WGN" → affiliate of "CW", "WTTW" → affiliate of "PBS"). Only checked when prefix+digit didn't
+      // match, since the two mechanisms target different affiliate naming patterns.
+      const altNetwork = alternateToNetwork.get(ch.name.toLowerCase());
+
+      if(altNetwork) {
+
+        entry.affiliate = altNetwork;
+        entry.channelSelector = altNetwork;
+      }
+    }
+
+    yttvChannelCache.set(ch.name.toLowerCase(), { discovered: entry, watchUrl: YOUTUBE_TV_BASE_URL + "/" + ch.watchPath });
+  }
+}
+
+/**
+ * YouTube TV grid strategy: discovers all channels from the non-virtualized EPG grid at tv.youtube.com/live in a single pass, populating the unified channel cache
  * so that subsequent tunes to any YTTV channel resolve via findWatchUrl() without loading the guide page. All ~256 channel rows are present in the DOM
  * simultaneously, so one querySelectorAll captures every channel's name and watch URL.
  *
@@ -235,7 +328,7 @@ async function attemptGuideRecovery(page: Page): Promise<{ name: string; watchPa
  * 1. Wait for ytu-epg-row elements to confirm the guide grid has loaded.
  * 2. Discover all channels: extract aria-label names and watch/ hrefs from every thumbnail endpoint.
  * 3. If no channels are discovered (degraded guide state), attempt recovery by clearing cached site data via CDP and reloading.
- * 4. Populate the watch URL cache with all discovered channels.
+ * 4. Populate the unified channel cache with all discovered channels (discovery metadata + watch URLs).
  * 5. Look up the target channel using tiered matching (exact, prefix+digit, parenthetical, alternates) against the cache.
  * 6. Navigate to the matched watch URL via page.goto().
  * @param page - The Puppeteer page object.
@@ -281,16 +374,10 @@ async function youtubeGridStrategy(page: Page, profile: ChannelSelectionProfile)
     return { reason: "YouTube TV guide is empty — no channels were discovered.", success: false };
   }
 
-  // Successful discovery — reset the consecutive empty counter.
+  // Successful discovery — reset the consecutive empty counter and repopulate the unified channel cache. Always repopulate rather than skipping when the cache has
+  // entries, because invalidated entries (deleted by invalidateYttvDirectUrl) need to be restored with fresh watch URLs from the guide.
   consecutiveEmptyDiscoveries = 0;
-
-  // Populate the watch URL cache with all discovered channels. This makes every subsequent YTTV tune a cache hit via resolveDirectUrl, skipping guide navigation
-  // entirely. Cache keys are lowercased guide names (e.g., "cnn", "nbc 5", "espn"). The tiered matching in findWatchUrl() handles channelSelector-to-guide-name
-  // resolution (e.g., "NBC" finds "nbc 5" via prefix+digit matching, "CW" finds the local affiliate via CHANNEL_ALTERNATES).
-  for(const ch of allChannels) {
-
-    yttvWatchUrlCache.set(ch.name.toLowerCase(), YOUTUBE_TV_BASE_URL + "/" + ch.watchPath);
-  }
+  populateYttvChannelCache(allChannels);
 
   LOG.debug("tuning:yttv", "Discovered %s YouTube TV channels.", allChannels.length);
 
@@ -350,10 +437,72 @@ async function resolveYttvDirectUrl(channelSelector: string, _page: Page): Promi
   return findWatchUrl(channelSelector);
 }
 
-export const yttvStrategy: ChannelStrategyEntry = {
+/**
+ * Discovers all channels from the YouTube TV EPG grid. Returns cached results if the unified channel cache is populated from a prior tune or discovery call.
+ * Otherwise, waits for the first grid row to confirm the guide has rendered (the route handler's networkidle2 navigation ensures all API data has arrived before
+ * this function is called), then extracts all ~256 channels via discoverGuideChannels() and populates the cache (unless empty, to allow retries on transient
+ * failures).
+ * @param page - The Puppeteer page object.
+ * @returns Array of discovered channels with affiliate tagging.
+ */
+async function discoverYttvChannels(page: Page): Promise<DiscoveredChannel[]> {
 
-  clearCache: clearYttvCache,
-  execute: youtubeGridStrategy,
-  invalidateDirectUrl: invalidateYttvDirectUrl,
-  resolveDirectUrl: resolveYttvDirectUrl
+  // Return from the unified cache if already populated.
+  if(yttvChannelCache.size > 0) {
+
+    return buildYttvDiscoveredChannels();
+  }
+
+  // Wait for at least one EPG row to confirm the guide grid has rendered. The route handler navigates with networkidle2, which ensures all API data has arrived
+  // before this function is called — no additional network idle wait is needed here.
+  try {
+
+    await page.waitForSelector("ytu-epg-row", { timeout: CONFIG.streaming.videoTimeout });
+  } catch {
+
+    return [];
+  }
+
+  const allChannels = await discoverGuideChannels(page);
+
+  // Do not cache empty results — leave the cache empty so subsequent calls retry the full walk. Empty results can indicate no subscription or transient failures.
+  if(allChannels.length === 0) {
+
+    return [];
+  }
+
+  populateYttvChannelCache(allChannels);
+
+  return buildYttvDiscoveredChannels();
+}
+
+/**
+ * Returns cached discovered channels from the unified channel cache, or null if the cache is empty (no prior tune or discovery call has enumerated the lineup).
+ * @returns Sorted array of discovered channels or null.
+ */
+function getYttvCachedChannels(): Nullable<DiscoveredChannel[]> {
+
+  if(yttvChannelCache.size === 0) {
+
+    return null;
+  }
+
+  return buildYttvDiscoveredChannels();
+}
+
+export const yttvProvider: ProviderModule = {
+
+  discoverChannels: discoverYttvChannels,
+  getCachedChannels: getYttvCachedChannels,
+  guideUrl: "https://tv.youtube.com/live",
+  label: "YouTube TV",
+  slug: "yttv",
+  strategy: {
+
+    clearCache: clearYttvCache,
+    execute: youtubeGridStrategy,
+    invalidateDirectUrl: invalidateYttvDirectUrl,
+    resolveDirectUrl: resolveYttvDirectUrl
+  },
+  strategyName: "youtubeGrid"
 };

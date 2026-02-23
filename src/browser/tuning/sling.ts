@@ -2,7 +2,7 @@
  *
  * sling.ts: Sling TV guide grid channel selection strategy with binary search and row caching.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
 import { LOG, delay, formatError } from "../../utils/index.js";
 import { logAvailableChannels, normalizeChannelName } from "../channelSelection.js";
 import { CONFIG } from "../../config/index.js";
@@ -13,9 +13,26 @@ import type { Page } from "puppeteer-core";
 // and different scroll mechanics (.guide-cell scrollTop vs document.documentElement.scrollTop).
 const slingRowCache = new Map<string, number>();
 
-// Channel GUID cache: maps normalized channel names to stable Sling channel GUIDs. Populated by intercepting guide grid API responses during guide page load.
-// Channel GUIDs are permanent infrastructure identifiers that never change — only the per-program asset_id rotates.
-const slingChannelGuidCache = new Map<string, string>();
+// Internal cache entry combining tuning data (GUID for resolving ephemeral player URLs) and discovery metadata (display name, tier). Populated from the grid
+// guide API responses intercepted during page load. Unlike YTTV/HBO, Sling has no stable watch URLs — player URLs are ephemeral per-program asset_ids resolved
+// at tune time via the playback_info endpoint. The GUID is the stable tuning artifact.
+interface SlingChannelEntry {
+
+  displayName: string;
+  guid: string;
+  tier?: string;
+}
+
+// Unified channel cache for Sling TV. Maps normalized channel names to their combined tuning and discovery data. Populated by intercepting grid guide API
+// responses during guide page load (both tuning and discovery paths). Channel GUIDs are permanent infrastructure identifiers that never change — only the
+// per-program asset_id rotates. Both tuning (via findChannelGuid / resolvePlayerUrl) and discovery (via buildSlingDiscoveredChannels) read from this single
+// cache. Cleared on browser disconnect via clearSlingCache().
+const slingChannelCache = new Map<string, SlingChannelEntry>();
+
+// Set to true after a complete discovery walk confirms the channel cache contains the full channel lineup. Individual tunes only populate the cache with channels
+// from the specific API pages that happen to arrive during that tune's guide page load — a small subset. Without this flag, getCachedChannels() would derive from
+// a partially-warm cache and return an incomplete channel list.
+let slingFullyEnumerated = false;
 
 // Playback info URL template captured from the grid API response. The CDN hostname (e.g., cbd46b77.cdn.cms.movetv.com) may change, so we derive it at runtime
 // from the first PLAY_CONTENT tile's playback_info.url rather than hardcoding it. The template stores everything up to and including "/channels" — the caller
@@ -38,14 +55,15 @@ const FRONTIER_POLL_INTERVAL = 300;
 const FRONTIER_MAX_WAIT = 5000;
 
 /**
- * Clears all Sling TV caches: row index cache, channel GUID cache, and playback info base URL. Called by clearChannelSelectionCaches() in the coordinator when
- * the browser restarts, since cached state may be stale in a new browser session.
+ * Clears all Sling TV caches: the unified channel cache, playback info base URL, row indices, and the fully-enumerated flag. Called by
+ * clearChannelSelectionCaches() in the coordinator when the browser restarts, since cached state may be stale in a new browser session.
  */
 function clearSlingCache(): void {
 
-  slingRowCache.clear();
-  slingChannelGuidCache.clear();
+  slingChannelCache.clear();
+  slingFullyEnumerated = false;
   slingPlaybackInfoBase = null;
+  slingRowCache.clear();
 }
 
 // Rendered channel entry from the Sling TV guide grid. Captures the normalized name from data-testid="channel-{NAME}" and the row index from the parent
@@ -277,36 +295,36 @@ async function clickWithRetry(
 }
 
 /**
- * Looks up a channel GUID from the cache by normalized name. Falls back to local affiliate prefix matching where the cache key starts with the target name
- * followed by " (" (e.g., "abc" matches "abc (wabc)"). On a prefix match, caches the GUID under the primary name for O(1) on subsequent lookups.
+ * Looks up a channel GUID from the unified cache by normalized name. Falls back to local affiliate prefix matching where the cache key starts with the target
+ * name followed by " (" (e.g., "abc" matches "abc (wabc)"). On a prefix match, caches the full entry under the primary name for O(1) on subsequent lookups.
  * @param normalizedName - The normalized (lowercased, trimmed) channel name.
  * @returns The channel GUID or null if not cached.
  */
 function findChannelGuid(normalizedName: string): Nullable<string> {
 
-  let channelGuid = slingChannelGuidCache.get(normalizedName) ?? null;
+  const exact = slingChannelCache.get(normalizedName);
 
-  if(!channelGuid) {
+  if(exact) {
 
-    for(const [ key, guid ] of slingChannelGuidCache) {
+    return exact.guid;
+  }
 
-      if(key.startsWith(normalizedName + " (")) {
+  for(const [ key, entry ] of slingChannelCache) {
 
-        channelGuid = guid;
+    if(key.startsWith(normalizedName + " (")) {
 
-        // Cache under the primary name for O(1) on next lookup.
-        slingChannelGuidCache.set(normalizedName, guid);
+      // Cache the full entry under the primary name for O(1) on next lookup.
+      slingChannelCache.set(normalizedName, entry);
 
-        break;
-      }
+      return entry.guid;
     }
   }
 
-  return channelGuid;
+  return null;
 }
 
 /**
- * Returns the alphabetically latest key in the GUID cache. Used by the polling loop to detect when the API has delivered pages past the target's position —
+ * Returns the alphabetically latest key in the channel cache. Used by the polling loop to detect when the API has delivered pages past the target's position —
  * if the frontier sorts after the target name, the API page covering the target's range has already been processed and the channel is not in the lineup.
  * @returns The alphabetically latest cache key, or null if the cache is empty.
  */
@@ -314,7 +332,7 @@ function getCacheFrontier(): Nullable<string> {
 
   let max: Nullable<string> = null;
 
-  for(const key of slingChannelGuidCache.keys()) {
+  for(const key of slingChannelCache.keys()) {
 
     if(!max || (key > max)) {
 
@@ -351,10 +369,9 @@ async function fetchSlingAssetId(channelGuid: string): Promise<Nullable<string>>
 }
 
 /**
- * Resolves a direct player URL from the channel GUID cache. Looks up the channel GUID by normalized name (with local affiliate prefix fallback), fetches the
- * current asset_id from the public playback info endpoint, and returns the full player URL. Returns null if the channel is not in the GUID cache, the playback
- * info base URL is unknown, or the asset_id fetch fails. Shared by both resolveSlingDirectUrl (pre-navigation) and the slingGridStrategy fast path
- * (post-guide-load).
+ * Resolves a direct player URL from the unified channel cache. Looks up the channel GUID by normalized name (with local affiliate prefix fallback), fetches the
+ * current asset_id from the public playback info endpoint, and returns the full player URL. Returns null if the channel is not in the cache, the playback info
+ * base URL is unknown, or the asset_id fetch fails. Shared by both resolveSlingDirectUrl (pre-navigation) and the slingGridStrategy fast path (post-guide-load).
  * @param normalizedName - The normalized (lowercased, trimmed) channel name.
  * @returns The direct player URL (e.g., "https://watch.sling.com/1/asset/{id}/watch") or null.
  */
@@ -383,7 +400,7 @@ interface SlingGridApiRibbon {
   stitch_id?: string;
   tiles?: {
     actions?: {
-      DETAIL_VIEW?: { adobe?: { ChannelName?: string } };
+      DETAIL_VIEW?: { adobe?: { ChannelName?: string; PackageName?: string } };
       PLAY_CONTENT?: { playback_info?: { url?: string } };
     };
   }[];
@@ -395,8 +412,9 @@ interface SlingGridApiResponse {
 }
 
 /**
- * Processes a single Sling grid guide API response, extracting channel GUIDs and the playback info base URL. Called by the response interception listener for
- * each paginated grid_guide_a_z response. Populates the slingChannelGuidCache and, on the first tile with a PLAY_CONTENT action, captures slingPlaybackInfoBase.
+ * Processes a single Sling grid guide API response, extracting channel data and the playback info base URL. Called by the response interception listener for
+ * each paginated grid_guide_a_z response. Populates the unified slingChannelCache and, on the first tile with a PLAY_CONTENT action, captures
+ * slingPlaybackInfoBase.
  * @param data - The parsed JSON response from the grid guide API.
  */
 function processGridApiResponse(data: SlingGridApiResponse): void {
@@ -418,7 +436,14 @@ function processGridApiResponse(data: SlingGridApiResponse): void {
     // only have DETAIL_VIEW.
     if(channelName && channelGuid && isLive) {
 
-      slingChannelGuidCache.set(normalizeChannelName(channelName), channelGuid);
+      const normalized = normalizeChannelName(channelName);
+
+      // Compute tier at population time from the PackageName field. Freestream channels have PackageName containing "Freestream".
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      const packageName = tile?.actions?.DETAIL_VIEW?.adobe?.PackageName;
+      const tier = packageName ? (packageName.includes("Freestream") ? "free" : "paid") : undefined;
+
+      slingChannelCache.set(normalized, { displayName: channelName, guid: channelGuid, tier });
     }
 
     // Extract the playback info base URL from the first tile that has one. The CDN hostname varies (e.g., cbd46b77.cdn.cms.movetv.com), so we derive it
@@ -439,7 +464,7 @@ function processGridApiResponse(data: SlingGridApiResponse): void {
 /**
  * Sets up response interception on the page to capture Sling's grid guide API responses. As the guide page loads, Sling fetches paginated channel data from the
  * grid_guide_a_z API. Each response contains ribbons with channel GUIDs (stitch_id) and channel names (DETAIL_VIEW.adobe.ChannelName). We intercept these to
- * populate the slingChannelGuidCache, enabling the API fast path on subsequent tunes. Also extracts the playback info base URL from the first PLAY_CONTENT tile
+ * populate the slingChannelCache, enabling the API fast path on subsequent tunes. Also extracts the playback info base URL from the first PLAY_CONTENT tile
  * to avoid hardcoding the CDN hostname. Uses a WeakSet to prevent duplicate listener registration on the same page.
  * @param page - The Puppeteer page object.
  */
@@ -472,9 +497,9 @@ function setupGridResponseInterception(page: Page): void {
 }
 
 /**
- * Resolves a direct player URL for a Sling channel. When the channel GUID cache is warm (populated by grid API response interception), fetches the current
- * asset_id from the public playback_info endpoint and returns a direct player URL. When the cache is cold, sets up response interception on the page so that
- * the next guide page navigation will populate the cache for future tunes.
+ * Resolves a direct player URL for a Sling channel. When the channel cache is warm (populated by grid API response interception), fetches the current asset_id
+ * from the public playback_info endpoint and returns a direct player URL. When the cache is cold, sets up response interception on the page so that the next
+ * guide page navigation will populate the cache for future tunes.
  * @param channelSelector - The channel selector string (e.g., "ESPN", "ABC").
  * @param page - The Puppeteer page for setting up response interception on cold cache.
  * @returns The direct player URL or null.
@@ -483,7 +508,7 @@ async function resolveSlingDirectUrl(channelSelector: string, page: Page): Promi
 
   const normalizedName = normalizeChannelName(channelSelector);
 
-  // Warm cache: resolve the player URL from the channel GUID cache and the public playback info endpoint.
+  // Warm cache: resolve the player URL from the channel cache and the public playback info endpoint.
   try {
 
     const playerUrl = await resolvePlayerUrl(normalizedName);
@@ -501,30 +526,31 @@ async function resolveSlingDirectUrl(channelSelector: string, page: Page): Promi
     return null;
   }
 
-  // Cold cache: set up response interception for the upcoming guide page navigation. The listener will populate slingChannelGuidCache as the guide loads,
-  // making the channel_guid available for the execute fast path and subsequent resolveDirectUrl calls.
+  // Cold cache: set up response interception for the upcoming guide page navigation. The listener will populate the channel cache as the guide loads, making
+  // the channel GUID available for the execute fast path and subsequent resolveDirectUrl calls.
   setupGridResponseInterception(page);
 
   return null;
 }
 
 /**
- * Invalidates the cached channel GUID for the given channel selector. Called when a cached direct URL fails to produce a working stream.
+ * Invalidates the cached channel entry for the given channel selector. Called when a cached direct URL fails to produce a working stream.
  * @param channelSelector - The channel selector string to invalidate.
  */
 function invalidateSlingDirectUrl(channelSelector: string): void {
 
-  slingChannelGuidCache.delete(normalizeChannelName(channelSelector));
+  slingChannelCache.delete(normalizeChannelName(channelSelector));
 }
 
 /**
  * Sling TV grid strategy: finds a channel in the virtualized, alphabetically sorted guide grid at watch.sling.com/dashboard/grid_guide/grid_guide_a_z using binary
  * search on the .guide-cell scroll container, then clicks the on-now program cell to navigate to the player page. The guide renders ~8-10 of ~638 rows at a time,
- * each 120px tall, sorted A-Z by channel name. Channel identification uses data-testid="channel-{NAME}" attributes.
+ * sorted A-Z by channel name. Row height and scroll offset are measured dynamically from rendered elements. Channel identification uses
+ * data-testid="channel-{NAME}" attributes.
  *
  * The selection process:
  * 1. Wait for channel entries to appear in the DOM (confirms guide grid has loaded and API data is flowing)
- * 2. API fast path with frontier polling: poll the GUID cache until the target channel appears, the cache frontier passes the target's position, or 5 seconds
+ * 2. API fast path with frontier polling: poll the channel cache until the target channel appears, the cache frontier passes the target's position, or 5 seconds
  *    elapse — then fetch the current asset_id and navigate directly, skipping all steps below
  * 3. Read grid metadata: locate the .guide-cell scroll host and compute total rows from scrollHeight / 120
  * 4. Check the slingRowCache for a direct-scroll shortcut from a previous tune
@@ -548,7 +574,7 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     return { reason: "Sling TV guide grid did not load.", success: false };
   }
 
-  // API fast path with frontier-based polling. The GUID cache populates progressively as paginated grid API responses arrive in alphabetical order during page
+  // API fast path with frontier-based polling. The channel cache populates progressively as paginated grid API responses arrive in alphabetical order during page
   // load. Rather than checking the cache once (missing late-alphabet channels whose API page hasn't arrived yet), poll until one of three conditions is met:
   // (1) the target channel's GUID appears in the cache, (2) the cache frontier (alphabetically latest entry) passes the target's position (confirming the
   // channel is not in the lineup), or (3) the maximum wait time is exceeded. This ensures the cache is fully populated for all subsequent tunes — a one-time
@@ -595,15 +621,12 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     }
   }
 
-  LOG.debug("tuning:sling", "Sling binary search fallback for %s after %sms polling (GUID cache: %s, base URL: %s).",
-    channelName, Date.now() - pollStart, slingChannelGuidCache.size, slingPlaybackInfoBase ? "yes" : "no");
+  LOG.debug("tuning:sling", "Sling binary search fallback for %s after %sms polling (channel cache: %s, base URL: %s).",
+    channelName, Date.now() - pollStart, slingChannelCache.size, slingPlaybackInfoBase ? "yes" : "no");
 
-  // Phase 2: Read grid metadata. The .guide-cell element is the scroll host for the virtualized channel list. Each row is 120px tall with a 30px offset for the
-  // time header row at the top of the grid.
-  const ROW_HEIGHT = 120;
-  const ROW_OFFSET = 30;
-
-  const gridMeta = await page.evaluate((rowHeight: number): Nullable<{ totalRows: number }> => {
+  // Phase 2: Read grid metadata. The .guide-cell element is the scroll host for the virtualized channel list. We measure the row height dynamically from a rendered
+  // row element and read the time header offset from the first row's top position within the scroll container.
+  const gridMeta = await page.evaluate((): Nullable<{ rowHeight: number; rowOffset: number; totalRows: number }> => {
 
     const guideCell = document.querySelector(".guide-cell");
 
@@ -612,22 +635,40 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
       return null;
     }
 
-    const totalRows = Math.round(guideCell.scrollHeight / rowHeight);
+    // Measure row height from a rendered row element rather than assuming a hardcoded value.
+    const row = document.querySelector(".guide-row-container");
+
+    if(!row) {
+
+      return null;
+    }
+
+    const rowHeight = row.getBoundingClientRect().height;
+
+    if(rowHeight <= 0) {
+
+      return null;
+    }
+
+    // The first row's offset from the top of the scroll container accounts for the time header. Using the element's actual position is more robust than
+    // hardcoding a pixel value that could change if Sling updates their UI.
+    const rowOffset = (row as HTMLElement).offsetTop;
+    const totalRows = Math.round((guideCell.scrollHeight - rowOffset) / rowHeight);
 
     if(totalRows <= 0) {
 
       return null;
     }
 
-    return { totalRows };
-  }, ROW_HEIGHT);
+    return { rowHeight, rowOffset, totalRows };
+  });
 
   if(!gridMeta) {
 
     return { reason: "Could not locate Sling TV guide grid scroll container.", success: false };
   }
 
-  const { totalRows } = gridMeta;
+  const { rowHeight, rowOffset, totalRows } = gridMeta;
 
   // Helper: scroll the .guide-cell container to a specific row index and wait for the virtualizer to render.
   const scrollToRow = async (rowIndex: number): Promise<void> => {
@@ -640,7 +681,7 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
         guideCell.scrollTop = scrollTo;
       }
-    }, ROW_OFFSET + (rowIndex * ROW_HEIGHT));
+    }, rowOffset + (rowIndex * rowHeight));
 
     await delay(200);
   };
@@ -770,10 +811,167 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
   return await clickWithRetry(page, foundClickTarget, normalizedName, channelName);
 }
 
-export const slingStrategy: ChannelStrategyEntry = {
+/**
+ * Builds a DiscoveredChannel array from the unified channel cache. Deduplicates alias entries (created by findChannelGuid's prefix matching) by tracking seen
+ * entry references — aliases point to the same object as the original guide-name key. Sorts by name before returning.
+ * @returns Sorted array of discovered channels with tier tagging.
+ */
+function buildSlingDiscoveredChannels(): DiscoveredChannel[] {
 
-  clearCache: clearSlingCache,
-  execute: slingGridStrategy,
-  invalidateDirectUrl: invalidateSlingDirectUrl,
-  resolveDirectUrl: resolveSlingDirectUrl
+  const channels: DiscoveredChannel[] = [];
+  const seen = new Set<SlingChannelEntry>();
+
+  for(const entry of slingChannelCache.values()) {
+
+    if(seen.has(entry)) {
+
+      continue;
+    }
+
+    seen.add(entry);
+
+    const result: DiscoveredChannel = { channelSelector: entry.displayName, name: entry.displayName };
+
+    if(entry.tier) {
+
+      result.tier = entry.tier;
+    }
+
+    channels.push(result);
+  }
+
+  channels.sort((a, b) => a.name.localeCompare(b.name));
+
+  return channels;
+}
+
+/**
+ * Discovers all channels from Sling TV by setting up grid API response interception, navigating to the guide page, and scrolling through the entire guide to
+ * trigger all lazy-loaded API page fetches. The Sling guide API only delivers data for the currently visible viewport, so we scroll in viewport-sized increments
+ * to ensure complete coverage, then wait for network idle to confirm all triggered API responses have arrived. Requires handlesOwnNavigation on the provider
+ * module because response interception must be registered before navigation.
+ *
+ * Side effect: populates the module-level slingChannelCache, warming the tuning cache for subsequent channel tunes.
+ * @param page - The Puppeteer page object (fresh page, not yet navigated).
+ * @returns Array of discovered channels with tier tagging.
+ */
+async function discoverSlingChannels(page: Page): Promise<DiscoveredChannel[]> {
+
+  // Return from the unified cache if a prior discovery walk has fully enumerated the lineup. Individual tunes only populate a subset of the cache, so we require
+  // the fully-enumerated flag to avoid returning an incomplete channel list.
+  if(slingFullyEnumerated && (slingChannelCache.size > 0)) {
+
+    return buildSlingDiscoveredChannels();
+  }
+
+  // Set up response interception BEFORE navigation so we capture all paginated grid API responses during page load. These responses populate the channel cache
+  // that discovery reads from.
+  setupGridResponseInterception(page);
+
+  await page.goto("https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z", { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+
+  // Wait for channel entries to appear in the DOM (confirms guide grid has loaded).
+  try {
+
+    await page.waitForSelector("[data-testid^=\"channel-\"]", { timeout: 5000, visible: true });
+  } catch {
+
+    return [];
+  }
+
+  // Phase 1: Scroll through the entire guide to trigger all lazy-loaded API fetches. The Sling guide API only delivers data for the currently visible viewport —
+  // without scrolling, only the first ~8-10 channels are fetched. We scroll the .guide-cell container in viewport-sized increments so the virtualizer requests
+  // API pages for every region. The response interceptor captures everything, so we don't need to read the DOM at each scroll position.
+  const scrollMeta = await page.evaluate((): Nullable<{ clientHeight: number; scrollHeight: number }> => {
+
+    const guideCell = document.querySelector(".guide-cell");
+
+    if(!guideCell) {
+
+      return null;
+    }
+
+    return { clientHeight: guideCell.clientHeight, scrollHeight: guideCell.scrollHeight };
+  });
+
+  if(scrollMeta) {
+
+    const { clientHeight, scrollHeight } = scrollMeta;
+
+    // Scroll through the entire guide in viewport-sized steps. Each scroll triggers the virtualizer to fetch API pages for the newly visible region. A brief
+    // delay between scrolls gives the API responses time to arrive and be processed by the response interceptor.
+    for(let scrollTop = 0; scrollTop < scrollHeight; scrollTop += clientHeight) {
+
+      // eslint-disable-next-line no-await-in-loop
+      await page.evaluate((pos: number): void => {
+
+        const guideCell = document.querySelector(".guide-cell");
+
+        if(guideCell) {
+
+          guideCell.scrollTop = pos;
+        }
+      }, scrollTop);
+
+      // eslint-disable-next-line no-await-in-loop
+      await delay(300);
+    }
+
+  }
+
+  // Phase 2: Wait for network idle to ensure all triggered API responses have arrived. The scroll pass above fires lazy-loaded API fetches for every viewport
+  // region, but some responses may still be in flight when scrolling completes. Network idle (zero in-flight requests for 500ms) confirms all data has been
+  // received and processed by the response interceptor before we read the channel cache.
+  try {
+
+    await page.waitForNetworkIdle({ idleTime: 500, timeout: CONFIG.streaming.videoTimeout });
+  } catch {
+
+    // Timeout is non-fatal — proceed with whatever the channel cache has collected so far.
+  }
+
+  // Do not cache empty results — leave the fully-enumerated flag unset so subsequent calls retry the full walk. Empty results can indicate no subscription or
+  // API failure.
+  if(slingChannelCache.size === 0) {
+
+    return [];
+  }
+
+  // Mark the channel cache as fully enumerated so that getCachedChannels() and future discoverSlingChannels() calls can derive from it without repeating the walk.
+  slingFullyEnumerated = true;
+
+  return buildSlingDiscoveredChannels();
+}
+
+/**
+ * Returns cached discovered channels if a complete discovery walk has fully enumerated the lineup, or null if no complete enumeration has occurred. Individual
+ * tunes only populate a subset of the channel cache and must not be treated as a complete lineup.
+ * @returns Sorted array of discovered channels or null.
+ */
+function getSlingCachedChannels(): Nullable<DiscoveredChannel[]> {
+
+  if(!slingFullyEnumerated || (slingChannelCache.size === 0)) {
+
+    return null;
+  }
+
+  return buildSlingDiscoveredChannels();
+}
+
+export const slingProvider: ProviderModule = {
+
+  discoverChannels: discoverSlingChannels,
+  getCachedChannels: getSlingCachedChannels,
+  guideUrl: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z",
+  handlesOwnNavigation: true,
+  label: "Sling TV",
+  slug: "sling",
+  strategy: {
+
+    clearCache: clearSlingCache,
+    execute: slingGridStrategy,
+    invalidateDirectUrl: invalidateSlingDirectUrl,
+    resolveDirectUrl: resolveSlingDirectUrl
+  },
+  strategyName: "slingGrid"
 };
