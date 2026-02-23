@@ -392,6 +392,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", provider: "NBC.com" },
   "paramountplus.com": { profile: "fullscreenApi", provider: "Paramount+", providerTag: "paramountplus" },
   "sling.com": { profile: "embeddedVolumeLock", provider: "Sling TV" },
+  "starz.com": { profile: "fullscreenApi", provider: "Starz" },
   "tbs.com": { profile: "fullscreenApi", provider: "TBS.com" },
   "tntdrama.com": { profile: "fullscreenApi", provider: "TNT" },
   "trutv.com": { profile: "fullscreenApi", provider: "truTV" },
