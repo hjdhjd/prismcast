@@ -2,7 +2,7 @@
  *
  * index.ts: Channel definitions for PrismCast.
  */
-import type { ChannelMap } from "../types/index.js";
+import type { Channel, ChannelMap } from "../types/index.js";
 
 /* Map short channel names to streaming configurations. Users request streams via /stream/nbc instead of full URLs.
  *
@@ -11,6 +11,8 @@ import type { ChannelMap } from "../types/index.js";
  * - url: Streaming site URL.
  * - profile: Site behavior profile (optional). Use "auto" or omit to auto-detect from URL domain. See config/profiles.ts for available profiles.
  * - stationId: Gracenote station ID for guide data (optional). Local affiliates (ABC, CBS, NBC) vary by region.
+ * - pacificStationId: Gracenote station ID for the Pacific timezone feed (optional). When set on an East canonical, the system auto-generates a Pacific
+ *   canonical ("{key}p") and matching provider variants at startup. See generatePacificEntries() below for details, examples, and how to add new channels.
  * - channelSelector: Channel identifier for multi-channel pages. For thumbnailRow/tileClick profiles, this is a slug matched against image URLs. For foxGrid
  *   (foxLive), this is the station code matched against GuideChannelLogo button titles (e.g., FOXD2C, FNC, FS1). For guideGrid (huluLive), this is the exact
  *   channel name matched against image alt text. For hboGrid (hboMax), this is the channel name matched against the live channel rail tile text (e.g., HBO, HBO
@@ -24,9 +26,14 @@ import type { ChannelMap } from "../types/index.js";
  *
  * IMPORTANT: Avoid hyphenated keys that would unintentionally match an existing channel. If "foo" exists, "foo-bar" becomes its variant. Use non-hyphenated keys
  * for independent channels (e.g., "cnni" instead of "cnn-international").
+ *
+ * FAST channels: This list contains only traditional linear TV networks and public broadcasters — no FAST (Free Ad-Supported Streaming Television) channels.
+ * FAST channels from platforms like Pluto TV or Tubi should not be added here. Users who want FAST content can add them as user-defined channels through the
+ * web UI or user channels file, or preferably use dedicated high-quality integrations such as Plex Channels, Pluto for Channels, or Tubi for Channels. Any
+ * FAST channel listed here would be by exception only.
  */
 /* eslint-disable @stylistic/max-len */
-export const CHANNELS: ChannelMap = {
+const BASE_CHANNELS: ChannelMap = {
 
   abc: { name: "ABC", url: "https://abc.com/watch-live" },
   "abc-hulu": { channelSelector: "ABC", url: "https://www.hulu.com/live" },
@@ -38,22 +45,24 @@ export const CHANNELS: ChannelMap = {
   ae: { name: "A&E", stationId: "51529", url: "https://play.aetv.com/live" },
   "ae-hulu": { channelSelector: "A&E", url: "https://www.hulu.com/live" },
   "ae-sling": { channelSelector: "A&E", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
+  "ae-yttv": { channelSelector: "A&E", url: "https://tv.youtube.com/live" },
   ahc: { name: "American Heroes", stationId: "78808", url: "https://watch.foodnetwork.com/channel/ahc" },
   amc: { channelSelector: "AMC", name: "AMC", stationId: "59337", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "amc-yttv": { channelSelector: "AMC", url: "https://tv.youtube.com/live" },
   amcthrillers: { channelSelector: "AMC Thrillers", name: "AMC Thrillers", stationId: "115678", url: "https://tv.youtube.com/live" },
   "amcthrillers-sling": { channelSelector: "AMC Thrillers", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
-  animal: { name: "Animal Planet", stationId: "57394", url: "https://watch.foodnetwork.com/channel/animal-planet" },
+  animal: { name: "Animal Planet", pacificStationId: "68785", stationId: "57394", url: "https://watch.foodnetwork.com/channel/animal-planet" },
   "animal-hulu": { channelSelector: "Animal Planet", url: "https://www.hulu.com/live" },
   "animal-yttv": { channelSelector: "Animal Planet", url: "https://tv.youtube.com/live" },
   bbcamerica: { channelSelector: "BBC America", name: "BBC America", stationId: "64492", url: "https://tv.youtube.com/live" },
   "bbcamerica-sling": { channelSelector: "BBC America", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
-  bbcnews: { channelSelector: "BBC News", name: "BBC News", stationId: "36844", url: "https://tv.youtube.com/live" },
+  bbcnews: { channelSelector: "BBC News", name: "BBC News", stationId: "101449", url: "https://tv.youtube.com/live" },
   "bbcnews-sling": { channelSelector: "BBC News", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
-  bet: { name: "BET", stationId: "63236", url: "https://www.bet.com/live-tv" },
+  bet: { name: "BET", pacificStationId: "64673", stationId: "63236", url: "https://www.bet.com/live-tv" },
   "bet-hulu": { channelSelector: "BET", url: "https://www.hulu.com/live" },
   "bet-sling": { channelSelector: "BET", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "bet-yttv": { channelSelector: "BET", url: "https://tv.youtube.com/live" },
+  bether: { channelSelector: "BET Her", name: "BET Her", pacificStationId: "97360", stationId: "63220", url: "https://tv.youtube.com/live" },
   bigten: { name: "Big 10", stationId: "58321", url: "https://www.foxsports.com/live/btn" },
   "bigten-foxcom": { channelSelector: "BTN", url: "https://www.fox.com/live/channels" },
   "bigten-hulu": { channelSelector: "Big Ten Network", url: "https://www.hulu.com/live" },
@@ -61,11 +70,15 @@ export const CHANNELS: ChannelMap = {
   bloomberg: { channelSelector: "Bloomberg Television", name: "Bloomberg Television", stationId: "71799", url: "https://www.hulu.com/live" },
   "bloomberg-sling": { channelSelector: "Bloomberg TV+", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "bloomberg-yttv": { channelSelector: "Bloomberg TV+", url: "https://tv.youtube.com/live" },
+  bloombergoriginals: { channelSelector: "Bloomberg Originals", name: "Bloomberg Originals", stationId: "175656", url: "https://tv.youtube.com/live" },
   bravo: { name: "Bravo", stationId: "58625", url: "https://www.nbc.com/live?brand=bravo&callsign=bravo_east" },
   "bravo-hulu": { channelSelector: "Bravo", url: "https://www.hulu.com/live" },
   "bravo-sling": { channelSelector: "Bravo", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "bravo-yttv": { channelSelector: "Bravo", url: "https://tv.youtube.com/live" },
   bravop: { name: "Bravo (Pacific)", stationId: "73994", url: "https://www.nbc.com/live?brand=bravo&callsign=bravo_west" },
+  cartoon: { channelSelector: "Cartoon Network", name: "Cartoon Network", pacificStationId: "67703", stationId: "60048", url: "https://tv.youtube.com/live" },
+  "cartoon-hulu": { channelSelector: "Cartoon Network (East)", url: "https://www.hulu.com/live" },
+  "cartoonp-hulu": { channelSelector: "Cartoon Network (West)", url: "https://www.hulu.com/live" },
   cbs: { name: "CBS", url: "https://www.cbs.com/live-tv/stream" },
   "cbs-hulu": { channelSelector: "CBS", url: "https://www.hulu.com/live" },
   "cbs-paramountplus": { name: "CBS", url: "https://www.paramountplus.com/live-tv/" },
@@ -74,7 +87,7 @@ export const CHANNELS: ChannelMap = {
   "cbsnews-sling": { channelSelector: "CBS News 24/7", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   cbssports: { channelSelector: "CBS Sports Network", name: "CBS Sports Network", stationId: "59250", url: "https://www.hulu.com/live" },
   "cbssports-yttv": { channelSelector: "CBS Sports Network", url: "https://tv.youtube.com/live" },
-  cmt: { channelSelector: "CMT", name: "CMT", stationId: "59440", url: "https://www.hulu.com/live" },
+  cmt: { channelSelector: "CMT", name: "CMT", pacificStationId: "64610", stationId: "59440", url: "https://www.hulu.com/live" },
   "cmt-yttv": { channelSelector: "CMT", url: "https://tv.youtube.com/live" },
   cnbc: { name: "CNBC", stationId: "58780", url: "https://www.cnbc.com/live-tv" },
   "cnbc-hulu": { channelSelector: "CNBC", url: "https://www.hulu.com/live" },
@@ -87,7 +100,7 @@ export const CHANNELS: ChannelMap = {
   cnni: { name: "CNN International", stationId: "83110", url: "https://www.cnn.com/videos/cnn-i" },
   "cnni-hulu": { channelSelector: "CNN International", url: "https://www.hulu.com/live" },
   "cnni-yttv": { channelSelector: "CNN International", url: "https://tv.youtube.com/live" },
-  "comedycentral": { channelSelector: "Comedy Central", name: "Comedy Central", stationId: "62420", url: "https://www.hulu.com/live" },
+  "comedycentral": { channelSelector: "Comedy Central", name: "Comedy Central", pacificStationId: "64599", stationId: "62420", url: "https://www.hulu.com/live" },
   "comedycentral-sling": { channelSelector: "Comedy Central", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "comedycentral-yttv": { channelSelector: "Comedy Central", url: "https://tv.youtube.com/live" },
   cooking: { name: "Cooking", stationId: "68065", url: "https://watch.foodnetwork.com/channel/cooking-channel" },
@@ -102,7 +115,7 @@ export const CHANNELS: ChannelMap = {
   "cspan3-yttv": { channelSelector: "C-SPAN3", url: "https://tv.youtube.com/live" },
   cw: { channelSelector: "CW", name: "CW", url: "https://www.hulu.com/live" },
   "cw-yttv": { channelSelector: "CW", url: "https://tv.youtube.com/live" },
-  discovery: { name: "Discovery", stationId: "56905", url: "https://watch.foodnetwork.com/channel/discovery" },
+  discovery: { name: "Discovery", pacificStationId: "80399", stationId: "56905", url: "https://watch.foodnetwork.com/channel/discovery" },
   "discovery-hulu": { channelSelector: "Discovery", url: "https://www.hulu.com/live" },
   "discovery-sling": { channelSelector: "Discovery", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "discovery-yttv": { channelSelector: "Discovery Channel", url: "https://tv.youtube.com/live" },
@@ -111,14 +124,14 @@ export const CHANNELS: ChannelMap = {
   "discoveryturbo-hulu": { channelSelector: "Discovery Turbo", url: "https://www.hulu.com/live" },
   "discoveryturbo-sling": { channelSelector: "Discovery Turbo", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "discoveryturbo-yttv": { channelSelector: "Discovery Turbo", url: "https://tv.youtube.com/live" },
-  disney: { name: "Disney", stationId: "59684", url: "https://disneynow.com/watch-live?brand=004" },
+  disney: { name: "Disney", pacificStationId: "63320", stationId: "59684", url: "https://disneynow.com/watch-live?brand=004" },
   "disney-hulu": { channelSelector: "Disney Channel", url: "https://www.hulu.com/live" },
   "disney-sling": { channelSelector: "Disney Channel", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "disney-yttv": { channelSelector: "Disney Channel", url: "https://tv.youtube.com/live" },
-  disneyjr: { name: "Disney Jr.", stationId: "74885", url: "https://disneynow.com/watch-live?brand=008" },
+  disneyjr: { name: "Disney Jr.", pacificStationId: "75004", stationId: "74885", url: "https://disneynow.com/watch-live?brand=008" },
   "disneyjr-hulu": { channelSelector: "Disney Junior", url: "https://www.hulu.com/live" },
   "disneyjr-yttv": { channelSelector: "Disney Junior", url: "https://tv.youtube.com/live" },
-  disneyxd: { name: "Disney XD", stationId: "60006", url: "https://disneynow.com/watch-live?brand=009" },
+  disneyxd: { name: "Disney XD", pacificStationId: "63322", stationId: "60006", url: "https://disneynow.com/watch-live?brand=009" },
   "disneyxd-hulu": { channelSelector: "Disney XD", url: "https://www.hulu.com/live" },
   "disneyxd-yttv": { channelSelector: "Disney XD", url: "https://tv.youtube.com/live" },
   e: { channelSelector: "E-_East", name: "E!", stationId: "61812", url: "https://www.usanetwork.com/live" },
@@ -164,7 +177,7 @@ export const CHANNELS: ChannelMap = {
   "fnc-hulu": { channelSelector: "Fox News", url: "https://www.hulu.com/live" },
   "fnc-sling": { channelSelector: "Fox News", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "fnc-yttv": { channelSelector: "Fox News", url: "https://tv.youtube.com/live" },
-  food: { name: "Food Network", stationId: "50747", url: "https://watch.foodnetwork.com/channel/food-network" },
+  food: { name: "Food Network", pacificStationId: "82119", stationId: "50747", url: "https://watch.foodnetwork.com/channel/food-network" },
   "food-hulu": { channelSelector: "Food Network", url: "https://www.hulu.com/live" },
   "food-sling": { channelSelector: "Food Network", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "food-yttv": { channelSelector: "Food Network", url: "https://tv.youtube.com/live" },
@@ -181,6 +194,10 @@ export const CHANNELS: ChannelMap = {
   "france24-sling": { channelSelector: "France 24 (English)", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   france24fr: { name: "France 24 (French)", stationId: "58685", url: "https://www.france24.com/fr/direct" },
   "france24fr-sling": { channelSelector: "France 24", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
+  freeform: { name: "Freeform", stationId: "59615", url: "https://www.freeform.com/watch-live/885c669e-fa9a-4039-b42e-6c85c90cc86d" },
+  "freeform-hulu": { channelSelector: "Freeform", url: "https://www.hulu.com/live" },
+  "freeform-yttv": { channelSelector: "Freeform", url: "https://tv.youtube.com/live" },
+  freeformp: { name: "Freeform (Pacific)", stationId: "63324", url: "https://www.freeform.com/watch-live/3507c750-e86a-4c0f-8ff4-dd23c4859009" },
   fs1: { name: "FS1", stationId: "82547", url: "https://www.foxsports.com/live/fs1" },
   "fs1-foxcom": { channelSelector: "FS1", url: "https://www.fox.com/live/channels" },
   "fs1-hulu": { channelSelector: "FS1", url: "https://www.hulu.com/live" },
@@ -204,11 +221,13 @@ export const CHANNELS: ChannelMap = {
   fxxp: { name: "FXX (Pacific)", stationId: "82571", url: "https://abc.com/watch-live/e4c83395-62ed-4a49-829a-c55ab3c33e7d" },
   fyi: { name: "FYI", stationId: "58988", url: "https://play.fyi.tv/live" },
   "fyi-hulu": { channelSelector: "FYI", url: "https://www.hulu.com/live" },
+  gameshow: { channelSelector: "Game Show Network", name: "Game Show Network", pacificStationId: "90210", stationId: "68827", url: "https://www.hulu.com/live" },
+  "gameshow-yttv": { channelSelector: "Game Show Network", url: "https://tv.youtube.com/live" },
   golf: { name: "Golf", stationId: "61854", url: "https://www.golfchannel.com/watch/live" },
   "golf-hulu": { channelSelector: "Golf Channel", url: "https://www.hulu.com/live" },
   "golf-usa": { channelSelector: "gc", url: "https://www.usanetwork.com/live" },
   "golf-yttv": { channelSelector: "Golf Channel", url: "https://tv.youtube.com/live" },
-  hallmark: { name: "Hallmark", stationId: "66268", url: "https://www.watchhallmarktv.com/playback/item/live" },
+  hallmark: { name: "Hallmark", pacificStationId: "66415", stationId: "66268", url: "https://www.watchhallmarktv.com/playback/item/live" },
   "hallmark-hulu": { channelSelector: "Hallmark Channel", url: "https://www.hulu.com/live" },
   "hallmark-yttv": { channelSelector: "Hallmark Channel", url: "https://tv.youtube.com/live" },
   hallmarkfamily: { name: "Hallmark Family", stationId: "105723", url: "https://www.watchhallmarktv.com/playback/item/hdlive" },
@@ -237,7 +256,7 @@ export const CHANNELS: ChannelMap = {
   "hln-hulu": { channelSelector: "HLN", url: "https://www.hulu.com/live" },
   "hln-sling": { channelSelector: "HLN", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "hln-yttv": { channelSelector: "HLN", url: "https://tv.youtube.com/live" },
-  id: { name: "Investigation Discovery", stationId: "65342", url: "https://watch.foodnetwork.com/channel/investigation-discovery" },
+  id: { name: "Investigation Discovery", pacificStationId: "80309", stationId: "65342", url: "https://watch.foodnetwork.com/channel/investigation-discovery" },
   "id-hulu": { channelSelector: "Investigation Discovery", url: "https://www.hulu.com/live" },
   "id-sling": { channelSelector: "Investigation Discovery", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "id-yttv": { channelSelector: "ID", url: "https://tv.youtube.com/live" },
@@ -249,7 +268,7 @@ export const CHANNELS: ChannelMap = {
   "lifetime-hulu": { channelSelector: "Lifetime", url: "https://www.hulu.com/live" },
   "lifetime-sling": { channelSelector: "Lifetime", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   lmn: { channelSelector: "LMN", name: "Lifetime Movie Network", stationId: "55887", url: "https://www.hulu.com/live" },
-  magnolia: { name: "Magnolia Network", stationId: "67375", url: "https://watch.foodnetwork.com/channel/magnolia-network-preview-atve-us" },
+  magnolia: { name: "Magnolia Network", pacificStationId: "122081", stationId: "67375", url: "https://watch.foodnetwork.com/channel/magnolia-network-preview-atve-us" },
   "magnolia-hulu": { channelSelector: "Magnolia Network", url: "https://www.hulu.com/live" },
   "magnolia-yttv": { channelSelector: "Magnolia Network", url: "https://tv.youtube.com/live" },
   mlb: { channelSelector: "MLB Network", name: "MLB Network", stationId: "62081", url: "https://www.hulu.com/live" },
@@ -283,6 +302,7 @@ export const CHANNELS: ChannelMap = {
   nbcsbayarea: { name: "NBC Sports Bay Area", stationId: "63138", url: "https://www.nbc.com/live?brand=rsn-bay-area&callsign=nbcsbayarea" },
   nbcsboston: { name: "NBC Sports Boston", stationId: "49198", url: "https://www.nbc.com/live?brand=rsn-boston&callsign=nbcsboston" },
   nbcscalifornia: { name: "NBC Sports California", stationId: "45540", url: "https://www.nbc.com/live?brand=rsn-california&callsign=nbcscalifornia" },
+  nbcsn: { channelSelector: "NBC Sports Network", name: "NBC Sports Network", stationId: "194412", url: "https://tv.youtube.com/live" },
   nbcsphiladelphia: { name: "NBC Sports Philadelphia", stationId: "32571", url: "https://www.nbc.com/live?brand=rsn-philadelphia&callsign=nbcsphiladelphia" },
   necn: { name: "NECN", stationId: "66278", url: "https://www.nbc.com/live?brand=necn&callsign=necn" },
   nfl: { channelSelector: "NFL Network", name: "NFL Network", stationId: "45399", url: "https://www.hulu.com/live" },
@@ -297,6 +317,8 @@ export const CHANNELS: ChannelMap = {
   oxygenp: { channelSelector: "Oxygen_West", name: "Oxygen (Pacific)", stationId: "74032", url: "https://www.usanetwork.com/live" },
   paramount: { channelSelector: "Paramount Network", name: "Paramount Network", stationId: "59186", url: "https://www.hulu.com/live" },
   "paramount-yttv": { channelSelector: "Paramount", url: "https://tv.youtube.com/live" },
+  paramountp: { name: "Paramount (Pacific)", stationId: "64593", url: "https://tv.youtube.com/live" },
+  "paramountp-yttv": { channelSelector: "Paramount Network", url: "https://tv.youtube.com/live" },
   pbs: { channelSelector: "PBS", name: "PBS", url: "https://www.hulu.com/live" },
   "pbs-yttv": { channelSelector: "PBS", url: "https://tv.youtube.com/live" },
   pbschicago: { name: "PBS Chicago (WTTW)", stationId: "30415", url: "https://www.wttw.com/wttw-live-stream" },
@@ -355,7 +377,11 @@ export const CHANNELS: ChannelMap = {
   tcm: { channelSelector: "TCM (East)", name: "TCM", stationId: "64312", url: "https://www.hulu.com/live" },
   "tcm-yttv": { channelSelector: "Turner Classic Movies", url: "https://tv.youtube.com/live" },
   tcmp: { channelSelector: "TCM (West)", name: "TCM (Pacific)", stationId: "64312", tvgShift: 3, url: "https://www.hulu.com/live" },
-  tlc: { name: "TLC", stationId: "57391", url: "https://watch.foodnetwork.com/channel/tlc" },
+  tennis: { channelSelector: "Tennis Channel", name: "Tennis Channel", stationId: "60316", url: "https://tv.youtube.com/live" },
+  tennis2: { channelSelector: "T2", name: "Tennis Channel 2", stationId: "137752", url: "https://tv.youtube.com/live" },
+  "tennis2-hulu": { channelSelector: "Tennis Channel 2", url: "https://www.hulu.com/live" },
+  "tennis2-sling": { channelSelector: "T2", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
+  tlc: { name: "TLC", pacificStationId: "79911", stationId: "57391", url: "https://watch.foodnetwork.com/channel/tlc" },
   "tlc-hulu": { channelSelector: "TLC", url: "https://www.hulu.com/live" },
   "tlc-sling": { channelSelector: "TLC", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "tlc-yttv": { channelSelector: "TLC", url: "https://tv.youtube.com/live" },
@@ -365,22 +391,23 @@ export const CHANNELS: ChannelMap = {
   "tnt-yttv": { channelSelector: "TNT", url: "https://tv.youtube.com/live" },
   tntp: { name: "TNT (Pacific)", stationId: "61340", url: "https://www.tntdrama.com/watchtnt/west" },
   "tntp-hulu": { channelSelector: "TNT (West)", url: "https://www.hulu.com/live" },
-  travel: { name: "Travel", stationId: "59303", url: "https://watch.foodnetwork.com/channel/travel-channel" },
+  travel: { name: "Travel", pacificStationId: "64525", stationId: "59303", url: "https://watch.foodnetwork.com/channel/travel-channel" },
   "travel-hulu": { channelSelector: "Travel Channel", url: "https://www.hulu.com/live" },
   "travel-sling": { channelSelector: "Travel Channel", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "travel-yttv": { channelSelector: "Travel Channel", url: "https://tv.youtube.com/live" },
-  trutv: { name: "truTV", stationId: "64490", url: "https://www.trutv.com/watchtrutv/east" },
+  trutv: { name: "truTV", pacificStationId: "65717", stationId: "64490", url: "https://www.trutv.com/watchtrutv/east" },
   "trutv-hulu": { channelSelector: "truTV (East)", url: "https://www.hulu.com/live" },
   "trutv-sling": { channelSelector: "truTV", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "trutv-yttv": { channelSelector: "truTV", url: "https://tv.youtube.com/live" },
-  trutvp: { name: "truTV (Pacific)", stationId: "65717", url: "https://www.trutv.com/watchtrutv/east" },
   "trutvp-hulu": { channelSelector: "truTV (West)", url: "https://www.hulu.com/live" },
+  tvland: { channelSelector: "TV Land", name: "TV Land", pacificStationId: "74134", stationId: "73541", url: "https://tv.youtube.com/live" },
+  "tvland-hulu": { channelSelector: "TV Land", url: "https://www.hulu.com/live" },
   usa: { channelSelector: "USA_East", name: "USA Network", stationId: "58452", url: "https://www.usanetwork.com/live" },
   "usa-hulu": { channelSelector: "USA", url: "https://www.hulu.com/live" },
   "usa-sling": { channelSelector: "USA", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "usa-yttv": { channelSelector: "USA", url: "https://tv.youtube.com/live" },
   usap: { channelSelector: "USA_West", name: "USA Network (Pacific)", stationId: "74030", url: "https://www.usanetwork.com/live" },
-  vh1: { name: "VH1", stationId: "60046", url: "https://www.vh1.com/live-tv" },
+  vh1: { name: "VH1", pacificStationId: "64634", stationId: "60046", url: "https://www.vh1.com/live-tv" },
   "vh1-hulu": { channelSelector: "VH1", url: "https://www.hulu.com/live" },
   "vh1-yttv": { channelSelector: "VH1", url: "https://tv.youtube.com/live" },
   vice: { channelSelector: "Vice", name: "Vice", stationId: "65732", url: "https://www.hulu.com/live" },
@@ -391,5 +418,136 @@ export const CHANNELS: ChannelMap = {
 };
 /* eslint-enable @stylistic/max-len */
 
+// Pacific channel auto-generation.
+
+/* PrismCast automatically generates Pacific timezone channel entries to reduce manual maintenance. Two tiers of generation run at module load, producing entries
+ * that are functionally identical to hand-written ones. Generated entries never override manually-defined entries — if a key already exists in BASE_CHANNELS,
+ * the manual definition takes precedence.
+ *
+ * Tier 1 — Pacific canonicals via pacificStationId:
+ *
+ *   When an East canonical has a pacificStationId field, the system generates a "{key}p" entry with the Pacific station ID, the same url and channelSelector,
+ *   and " (Pacific)" appended to the name. This works for channels where providers serve region-appropriate content via a single URL. Channels with distinct
+ *   Pacific URLs (e.g., bravo_west vs bravo_east) or different Pacific channelSelectors (e.g., E-_West vs E-_East) must define their Pacific canonical manually.
+ *
+ *   Example — adding pacificStationId to the East canonical:
+ *     animal: { name: "Animal Planet", pacificStationId: "68785", stationId: "57394", url: "..." }
+ *   Auto-generates:
+ *     animalp: { name: "Animal Planet (Pacific)", stationId: "68785", url: "..." }
+ *
+ * Tier 2 — Pacific provider variants from East provider variants:
+ *
+ *   For each East variant "{key}-{provider}", if a Pacific canonical "{key}p" exists (manual or generated), the system generates "{key}p-{provider}" with the
+ *   same channelSelector and url. Providers serve region-appropriate feeds with a single selector — the Pacific variant's inherited stationId provides the
+ *   correct timezone guide data. Variants with "East" or "West" in the channelSelector are skipped — these have explicit timezone entries on the provider and
+ *   need manual Pacific definitions (e.g., Hulu's "TBS (East)" / "TBS (West)").
+ *
+ *   Example — East variant with a Pacific canonical present:
+ *     "animal-hulu": { channelSelector: "Animal Planet", url: "https://www.hulu.com/live" }
+ *   Auto-generates (because animalp exists):
+ *     "animalp-hulu": { channelSelector: "Animal Planet", url: "https://www.hulu.com/live" }
+ *
+ * Adding a new channel with Pacific support:
+ *
+ *   1. Look up both East and Pacific HD station IDs in Gracenote (http://localhost:8089/tms/stations/<search>).
+ *   2. Add the East canonical with both IDs: mychannel: { name: "...", pacificStationId: "PACIFIC_ID", stationId: "EAST_ID", url: "..." }
+ *   3. Add East provider variants: "mychannel-hulu": { channelSelector: "...", url: "https://www.hulu.com/live" }
+ *   4. The system auto-generates mychannelp (Pacific canonical) and mychannelp-hulu (Pacific provider variant).
+ *   5. If the Pacific version needs a different URL or channelSelector, skip pacificStationId and define the Pacific canonical manually instead.
+ *
+ * Manual entries always take precedence — generated entries never overwrite existing keys in BASE_CHANNELS.
+ */
+function generatePacificEntries(channels: ChannelMap): ChannelMap {
+
+  const eastWestPattern = /east|west/i;
+
+  const generated: ChannelMap = {};
+
+  // Tier 1: Generate Pacific canonicals from East canonicals with pacificStationId.
+  for(const [ key, channel ] of Object.entries(channels)) {
+
+    if(!channel.pacificStationId) {
+
+      continue;
+    }
+
+    const pacificKey = key + "p";
+
+    // Manual Pacific canonical takes precedence.
+    if(pacificKey in channels) {
+
+      continue;
+    }
+
+    const entry: Channel = {
+
+      ...(channel.channelSelector ? { channelSelector: channel.channelSelector } : {}),
+      name: (channel.name ?? key) + " (Pacific)",
+      stationId: channel.pacificStationId,
+      url: channel.url
+    };
+
+    generated[pacificKey] = entry;
+  }
+
+  // Merge manual and generated entries for Pacific canonical lookup in Tier 2.
+  const allChannels: ChannelMap = { ...channels, ...generated };
+
+  // Tier 2: Generate Pacific provider variants from East provider variants.
+  for(const [ key, channel ] of Object.entries(channels)) {
+
+    const dashIndex = key.indexOf("-");
+
+    if(dashIndex === -1) {
+
+      continue;
+    }
+
+    const baseKey = key.substring(0, dashIndex);
+    const providerSuffix = key.substring(dashIndex);
+
+    // The base key must exist as a canonical entry (otherwise this is not a provider variant).
+    if(!(baseKey in channels)) {
+
+      continue;
+    }
+
+    const pacificCanonicalKey = baseKey + "p";
+    const pacificVariantKey = pacificCanonicalKey + providerSuffix;
+
+    // A Pacific canonical must exist (manual or generated) for the variant to be meaningful.
+    if(!(pacificCanonicalKey in allChannels)) {
+
+      continue;
+    }
+
+    // Manual Pacific variant takes precedence.
+    if((pacificVariantKey in channels) || (pacificVariantKey in generated)) {
+
+      continue;
+    }
+
+    // Skip when the East variant's channelSelector contains timezone-specific terms. These channels have provider-specific East/West entries
+    // (e.g., Hulu's "TBS (East)" / "TBS (West)") and need manually-defined Pacific variants with the correct West selector.
+    if(channel.channelSelector && eastWestPattern.test(channel.channelSelector)) {
+
+      continue;
+    }
+
+    const entry: Channel = {
+
+      ...(channel.channelSelector ? { channelSelector: channel.channelSelector } : {}),
+      url: channel.url
+    };
+
+    generated[pacificVariantKey] = entry;
+  }
+
+  return generated;
+}
+
+export const CHANNELS: ChannelMap = { ...generatePacificEntries(BASE_CHANNELS), ...BASE_CHANNELS };
+
 // Re-export CHANNELS as PREDEFINED_CHANNELS for use in userChannels.ts where the distinction between predefined and user channels is important.
 export { CHANNELS as PREDEFINED_CHANNELS };
+

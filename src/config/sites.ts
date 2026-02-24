@@ -379,6 +379,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "foxnews.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox News" },
   "foxsports.com": { profile: "fullscreenApi", provider: "Fox Sports" },
   "france24.com": { profile: "embeddedVolumeLock", provider: "France 24" },
+  "freeform.com": { profile: "fullscreenApi", provider: "Freeform" },
   "fyi.tv": { profile: "fullscreenApi", provider: "FYI" },
   "golfchannel.com": { profile: "fullscreenApi", provider: "Golf Channel" },
   "hbomax.com": { profile: "hboMax", provider: "HBO Max", providerTag: "hbomax" },

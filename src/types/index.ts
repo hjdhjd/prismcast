@@ -513,6 +513,11 @@ export interface Channel {
   // suffixes like "HD" or regional identifiers like "(Pacific)" where appropriate. Required for canonical channels; variants inherit from their canonical entry.
   name?: string;
 
+  // Gracenote station ID for the Pacific timezone feed. When present on an East canonical entry, the system auto-generates a Pacific canonical ("{key}p") and
+  // matching Pacific provider variants at startup. The generated Pacific entry inherits name, url, and channelSelector from this entry. See the
+  // generatePacificEntries() function in channels/index.ts for the full generation rules, examples, and instructions for adding new channels.
+  pacificStationId?: string;
+
   // Profile name to use for this channel, overriding URL-based profile detection. Use this when a site's behavior doesn't match what would be inferred from its
   // domain, or when a specific channel needs different handling than others on the same site.
   profile?: string;
