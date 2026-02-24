@@ -13,10 +13,10 @@ import { getAllProviderTags, getCanonicalKey, getChannelProviderTags, getEnabled
   getProviderTagForChannel, getResolvedChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant,
   resolveProviderKey, setEnabledProviders, setProviderSelection } from "../config/providers.js";
 import { getChannelHealth, getProviderAuth } from "../config/health.js";
-import { getChannelListing, getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannel, getPredefinedChannels, getUserChannels,
-  getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, resolveStoredChannel,
-  saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl,
-  validateImportedChannels } from "../config/userChannels.js";
+import { getChannelListing, getChannelsParseErrorMessage, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel,
+  getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel,
+  loadUserChannels, resolveStoredChannel, saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile,
+  validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
 import { getProviderModuleInfo, getProviderSlugs } from "../browser/channelSelection.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
@@ -1666,9 +1666,6 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // it handles predefined/user merging, disabled state, and provider availability.
   const listing = getChannelListing();
   const profiles = getProfiles();
-  const disabledPredefined = getDisabledPredefinedChannels();
-  const predefinedCount = Object.keys(getPredefinedChannels()).length;
-  const allDisabled = disabledPredefined.length === predefinedCount;
 
   // Count channels hidden from the default view: disabled predefined channels OR channels with no available providers.
   const totalHiddenCount = listing.filter((entry) => !entry.enabled || !entry.availableByProvider).length;
@@ -1710,15 +1707,19 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Right group: display controls.
   lines.push("<div class=\"toolbar-group\">");
 
-  if(allDisabled) {
-
-    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" id=\"bulk-toggle-btn\" ",
-      "onclick=\"toggleAllPredefined(true)\">Enable All Predefined</button>");
-  } else {
-
-    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" id=\"bulk-toggle-btn\" ",
-      "onclick=\"toggleAllPredefined(false)\">Disable All Predefined</button>");
-  }
+  lines.push("<div class=\"dropdown bulk-actions-dropdown\">");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"toggleDropdown(this)\">Bulk Actions &#9662;</button>");
+  lines.push("<div class=\"dropdown-menu\">");
+  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(true, 'all')\">Enable All Predefined</div>");
+  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(false, 'all')\">Disable All Predefined</div>");
+  lines.push("<div class=\"dropdown-divider\"></div>");
+  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(true, 'pacific')\">Enable Pacific Variants</div>");
+  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(false, 'pacific')\">Disable Pacific Variants</div>");
+  lines.push("<div class=\"dropdown-divider\"></div>");
+  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(true, 'east')\">Enable East Variants</div>");
+  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(false, 'east')\">Disable East Variants</div>");
+  lines.push("</div>");
+  lines.push("</div>");
 
   lines.push("<label class=\"toggle-label\"><input type=\"checkbox\" id=\"show-disabled-toggle\" onchange=\"toggleDisabledVisibility()\"> ",
     "Show disabled (<span id=\"disabled-count\">" + String(totalHiddenCount) + "</span>)</label>");
@@ -2602,13 +2603,14 @@ export function setupConfigEndpoint(app: Express): void {
     }
   });
 
-  // POST /config/channels/toggle-all-predefined - Toggle all predefined channels' enabled/disabled state.
-  app.post("/config/channels/toggle-all-predefined", async (req: Request, res: Response): Promise<void> => {
+  // POST /config/channels/bulk-toggle-predefined - Toggle predefined channels by scope (all, pacific, east).
+  app.post("/config/channels/bulk-toggle-predefined", async (req: Request, res: Response): Promise<void> => {
 
     try {
 
-      const body = req.body as { enabled?: boolean };
+      const body = req.body as { enabled?: boolean; scope?: string };
       const enabled = body.enabled;
+      const scope = body.scope;
 
       // Validate enabled is provided.
       if(typeof enabled !== "boolean") {
@@ -2618,6 +2620,41 @@ export function setupConfigEndpoint(app: Express): void {
         return;
       }
 
+      // Validate scope is provided and recognized.
+      if((scope !== "all") && (scope !== "pacific") && (scope !== "east")) {
+
+        res.status(400).json({ error: "Scope must be 'all', 'pacific', or 'east'.", success: false });
+
+        return;
+      }
+
+      // Compute the target key set based on scope.
+      let targetKeys: string[];
+
+      switch(scope) {
+
+        case "pacific": {
+
+          targetKeys = getPacificPredefinedKeys();
+
+          break;
+        }
+
+        case "east": {
+
+          targetKeys = getEastWithPacificPredefinedKeys();
+
+          break;
+        }
+
+        default: {
+
+          targetKeys = Object.keys(getPredefinedChannels());
+
+          break;
+        }
+      }
+
       // Load current config.
       const configResult = await loadUserConfig();
       const userConfig = configResult.config;
@@ -2625,21 +2662,27 @@ export function setupConfigEndpoint(app: Express): void {
       // Initialize channels.disabledPredefined if not present.
       userConfig.channels ??= {};
 
-      const predefinedKeys = Object.keys(getPredefinedChannels());
-      let affected: number;
+      const targetSet = new Set(targetKeys);
 
-      if(enabled) {
+      if(enabled && (scope === "all")) {
 
-        // Enable all: clear the disabled list.
-        affected = userConfig.channels.disabledPredefined?.length ?? 0;
+        // Enable all is a full reset — clear the entire disabled list.
         userConfig.channels.disabledPredefined = [];
+      } else if(enabled) {
+
+        // Scoped enable: remove target keys from the disabled list (subtractive — preserves other disabled channels).
+        userConfig.channels.disabledPredefined = (userConfig.channels.disabledPredefined ?? []).filter((k) => !targetSet.has(k));
       } else {
 
-        // Disable all: add all predefined channel keys.
-        const previousCount = userConfig.channels.disabledPredefined?.length ?? 0;
+        // Disable: add target keys to the disabled list (additive — preserves other disabled channels).
+        const existing = new Set(userConfig.channels.disabledPredefined ?? []);
 
-        userConfig.channels.disabledPredefined = predefinedKeys.sort();
-        affected = predefinedKeys.length - previousCount;
+        for(const k of targetKeys) {
+
+          existing.add(k);
+        }
+
+        userConfig.channels.disabledPredefined = [...existing].sort();
       }
 
       await saveUserConfig(userConfig);
@@ -2647,12 +2690,15 @@ export function setupConfigEndpoint(app: Express): void {
       // Update the runtime CONFIG to reflect the change immediately.
       CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
 
-      LOG.info("All predefined channels %s (%d affected).", enabled ? "enabled" : "disabled", affected);
+      const affected = targetKeys.length;
+      const scopeLabel = (scope === "all") ? "All" : (scope === "pacific") ? "Pacific" : "East";
 
-      res.json({ affected, enabled, success: true });
+      LOG.info("%s predefined channels %s (%d affected).", scopeLabel, enabled ? "enabled" : "disabled", affected);
+
+      res.json({ affected, enabled, keys: targetKeys, scope, success: true });
     } catch(error) {
 
-      LOG.error("Failed to toggle all predefined channels: %s.", formatError(error));
+      LOG.error("Failed to toggle predefined channels: %s.", formatError(error));
       res.status(500).json({ error: "Failed to toggle channels: " + formatError(error), success: false });
     }
   });

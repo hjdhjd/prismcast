@@ -997,8 +997,8 @@ function generateApiReferenceContent(): string {
     "<td>Enable or disable a single predefined channel. Body: <code>{ \"key\": \"nbc\", \"enabled\": true }</code></td>",
     "</tr>",
     "<tr>",
-    "<td class=\"endpoint\"><code>POST /config/channels/toggle-all-predefined</code></td>",
-    "<td>Enable or disable all predefined channels. Body: <code>{ \"enabled\": true }</code></td>",
+    "<td class=\"endpoint\"><code>POST /config/channels/bulk-toggle-predefined</code></td>",
+    "<td>Enable or disable predefined channels by scope. Body: <code>{ \"enabled\": true, \"scope\": \"all\" | \"pacific\" | \"east\" }</code></td>",
     "</tr>",
     "</table>",
     "</div>",
@@ -2455,23 +2455,21 @@ function generateConfigSubtabScript(): string {
     "    .catch(function(err) { showToast('Failed to update provider: ' + err.message, 'error'); });",
     "  };",
 
-    // Toggle all predefined channels' enabled/disabled state.
-    "  window.toggleAllPredefined = function(enable) {",
-    "    fetch('/config/channels/toggle-all-predefined', {",
+    // Bulk toggle predefined channels by scope (all, pacific, east).
+    "  window.bulkTogglePredefined = function(enable, scope) {",
+    "    fetch('/config/channels/bulk-toggle-predefined', {",
     "      method: 'POST',",
     "      headers: { 'Content-Type': 'application/json' },",
-    "      body: JSON.stringify({ enabled: enable })",
+    "      body: JSON.stringify({ enabled: enable, scope: scope })",
     "    })",
     "    .then(function(response) { return response.json(); })",
     "    .then(function(result) {",
     "      if (result.success) {",
-    "        showToast('All predefined channels ' + (enable ? 'enabled' : 'disabled') + '.' + PLAYLIST_HINT, 'success');",
-    "        var rows = document.querySelectorAll('tr[id^=\"display-row-\"]:not(.user-channel)');",
-    "        for (var i = 0; i < rows.length; i++) {",
-    "          var rowKey = rows[i].id.replace('display-row-', '');",
-    "          setRowDisabledState(rowKey, !enable);",
+    "        var labels = { all: 'All predefined', pacific: 'Pacific predefined', east: 'East predefined' };",
+    "        showToast((labels[scope] || 'Predefined') + ' channels ' + (enable ? 'enabled' : 'disabled') + '.' + PLAYLIST_HINT, 'success');",
+    "        if (result.keys) {",
+    "          for (var i = 0; i < result.keys.length; i++) { setRowDisabledState(result.keys[i], !enable); }",
     "        }",
-    "        updateBulkToggleButton();",
     "        updateDisabledCount();",
     "      } else {",
     "        showToast(result.error || 'Failed to toggle channels.', 'error');",
@@ -2512,7 +2510,7 @@ function generateConfigSubtabScript(): string {
     "    .catch(function(err) { showToast('Failed to revert channel: ' + err.message, 'error'); });",
     "  };",
 
-    // Set a channel row's disabled state without triggering count updates. Uses icon buttons. Used by toggleAllPredefined for efficient bulk updates.
+    // Set a channel row's disabled state without triggering count updates. Uses icon buttons. Used by bulkTogglePredefined for efficient bulk updates.
     "  function setRowDisabledState(key, disabled) {",
     "    var row = document.getElementById('display-row-' + key);",
     "    if (!row) return;",
@@ -2566,24 +2564,7 @@ function generateConfigSubtabScript(): string {
     // Update a single channel row's disabled state and refresh counts. Used by individual togglePredefinedChannel.
     "  function updateChannelRowDisabledState(key, disabled) {",
     "    setRowDisabledState(key, disabled);",
-    "    updateBulkToggleButton();",
     "    updateDisabledCount();",
-    "  };",
-
-    // Update the bulk toggle button text based on current state.
-    "  function updateBulkToggleButton() {",
-    "    var btn = document.getElementById('bulk-toggle-btn');",
-    "    if (!btn) return;",
-    "    var disabledRows = document.querySelectorAll('tr.channel-disabled:not(.user-channel)');",
-    "    var allRows = document.querySelectorAll('tr[id^=\"display-row-\"]:not(.user-channel)');",
-    "    var allDisabled = disabledRows.length === allRows.length;",
-    "    if (allDisabled) {",
-    "      btn.textContent = 'Enable All Predefined';",
-    "      btn.setAttribute('onclick', 'toggleAllPredefined(true)');",
-    "    } else {",
-    "      btn.textContent = 'Disable All Predefined';",
-    "      btn.setAttribute('onclick', 'toggleAllPredefined(false)');",
-    "    }",
     "  };",
 
     // Update the disabled channel count shown in the toolbar toggle label. Uses a union selector to avoid double-counting rows that are both disabled and
@@ -3272,6 +3253,7 @@ function generateLandingPageStyles(): string {
     ".dropdown-item:hover { background: var(--surface-sunken); }",
     ".dropdown-option { display: block; padding: 2px 12px 6px 24px; font-size: 12px; color: var(--text-secondary); cursor: pointer; user-select: none; }",
     ".dropdown-divider { height: 1px; margin: 4px 0; background: var(--border-default); }",
+    ".bulk-actions-dropdown .dropdown-menu { left: auto; right: 0; }",
 
     // Channel form styles. Inputs use full width; selects use width classes from ui.ts for consistency with settings forms.
     ".channel-form { background: var(--form-bg); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 20px; }",

@@ -574,6 +574,68 @@ export function getPredefinedChannels(): ChannelMap {
   return { ...PREDEFINED_CHANNELS };
 }
 
+/* Pacific and East key identification share the same structural logic: iterate all predefined keys, extract the canonical base (before the first hyphen for
+ * provider variants, or the full key for canonicals), and test whether the base participates in the Pacific timezone naming convention. The helper below
+ * centralizes this so the two exported functions differ only in which side of the East/Pacific pair they select.
+ */
+
+/**
+ * Filters predefined channel keys by their relationship to the Pacific timezone naming convention. For "pacific" mode, returns keys whose base ends in "p"
+ * and whose East counterpart (base minus trailing "p") exists. For "east" mode, returns keys whose base does NOT end in "p" and whose Pacific counterpart
+ * (base plus "p") exists. Both modes include canonicals and provider variants.
+ * @param side - Which side of the East/Pacific pair to select.
+ * @returns Sorted array of matching predefined channel keys.
+ */
+function filterPredefinedKeysByTimezone(side: "east" | "pacific"): string[] {
+
+  const keys: string[] = [];
+
+  for(const key of Object.keys(PREDEFINED_CHANNELS)) {
+
+    // Extract the canonical base: for provider variants like "animalp-hulu" the base is "animalp"; for canonicals like "animalp" the base is the full key.
+    const dashIndex = key.indexOf("-");
+    const base = (dashIndex === -1) ? key : key.substring(0, dashIndex);
+
+    if(side === "pacific") {
+
+      // Pacific: base ends in "p" and the East counterpart exists.
+      if(base.endsWith("p") && ((base.slice(0, -1)) in PREDEFINED_CHANNELS)) {
+
+        keys.push(key);
+      }
+    } else {
+
+      // East: base does NOT end in "p" and the Pacific counterpart exists.
+      if(!base.endsWith("p") && ((base + "p") in PREDEFINED_CHANNELS)) {
+
+        keys.push(key);
+      }
+    }
+  }
+
+  return keys.sort();
+}
+
+/**
+ * Returns the keys of all predefined channels that are Pacific entries (both canonicals and provider variants). A key is Pacific if its canonical base ends
+ * in "p" and the East counterpart (base minus trailing "p") exists in PREDEFINED_CHANNELS.
+ * @returns Sorted array of Pacific predefined channel keys.
+ */
+export function getPacificPredefinedKeys(): string[] {
+
+  return filterPredefinedKeysByTimezone("pacific");
+}
+
+/**
+ * Returns the keys of all predefined East channels that have Pacific counterparts (both canonicals and provider variants). A key qualifies if its canonical
+ * base does NOT end in "p" and the Pacific counterpart (base plus "p") exists in PREDEFINED_CHANNELS.
+ * @returns Sorted array of East predefined channel keys that have Pacific counterparts.
+ */
+export function getEastWithPacificPredefinedKeys(): string[] {
+
+  return filterPredefinedKeysByTimezone("east");
+}
+
 /**
  * Checks if a channel is available for streaming. A channel is available if it exists in the merged channel map returned by getAllChannels(), which already
  * excludes disabled predefined channels (unless overridden by a user channel).
