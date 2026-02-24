@@ -84,6 +84,15 @@ export function getChannelsFilePath(): string {
 }
 
 /**
+ * Returns the path to the health state file.
+ * @returns The absolute path to health.json inside the data directory.
+ */
+export function getHealthFilePath(): string {
+
+  return path.join(getDataDir(), "health.json");
+}
+
+/**
  * Returns the Chrome user data directory. When config.paths.chromeDataDir is set, that absolute path is used directly. Otherwise, the directory is built from the
  * data directory and the configured profile name.
  * @param config - The application configuration.

@@ -21,6 +21,7 @@ import express from "express";
 import { getAllStreams } from "./streaming/registry.js";
 import { getLogFilePath } from "./config/paths.js";
 import { initializeUserChannels } from "./config/userChannels.js";
+import { loadHealthState } from "./config/health.js";
 import morgan from "morgan";
 import { setupRoutes } from "./routes/index.js";
 import { terminateStream } from "./streaming/lifecycle.js";
@@ -402,6 +403,9 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Load user channels from channels.json in the data directory if it exists.
   await initializeUserChannels();
+
+  // Load persisted health state (channel health + provider auth) from health.json.
+  await loadHealthState();
 
   killStaleChrome();
 

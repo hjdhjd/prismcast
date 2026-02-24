@@ -394,6 +394,52 @@ function generateStatusScript(): string {
     "var lastStatusEventTime = Date.now();",
     "var hiddenSince = 0;",
 
+    // Real-time health indicator updates. These functions update channel health icons and provider login icons in the Channels tab without a page refresh.
+    "function formatTimeAgo(ts) {",
+    "  var seconds = Math.floor((Date.now() - ts) / 1000);",
+    "  if(seconds < 60) { return 'just now'; }",
+    "  var minutes = Math.floor(seconds / 60);",
+    "  if(minutes < 60) { return minutes + (minutes === 1 ? ' minute ago' : ' minutes ago'); }",
+    "  var hours = Math.floor(minutes / 60);",
+    "  if(hours < 24) { return hours + (hours === 1 ? ' hour ago' : ' hours ago'); }",
+    "  var days = Math.floor(hours / 24);",
+    "  return days + (days === 1 ? ' day ago' : ' days ago');",
+    "}",
+    "function updateChannelHealth(channelKey, status, timestamp, providerTag) {",
+    "  var row = document.getElementById('display-row-' + channelKey);",
+    "  if(!row) { return; }",
+
+    // If a providerTag was supplied (snapshot and real-time events both include it), verify it matches the currently selected provider for this channel. The login
+    // button carries a data-provider-tag attribute with the selected provider. If the tags differ the health entry is from a previous provider and should be ignored.
+    "  if(providerTag) {",
+    "    var loginBtn = row.querySelector('.btn-icon-login');",
+    "    if(loginBtn && loginBtn.getAttribute('data-provider-tag') !== providerTag) { return; }",
+    "  }",
+    "  var icon = row.querySelector('.btn-icon-health');",
+    "  if(!icon) { return; }",
+    "  icon.classList.remove('health-success', 'health-failed');",
+    "  if(status === 'success') { icon.classList.add('health-success'); }",
+    "  else if(status === 'failed') { icon.classList.add('health-failed'); }",
+    "  icon.title = (status === 'success' ? 'Succeeded ' : 'Failed ') + formatTimeAgo(timestamp);",
+    "}",
+    "function updateProviderAuth(providerTag, timestamp) {",
+    "  var buttons = document.querySelectorAll('.btn-icon-login[data-provider-tag=\"' + providerTag + '\"]');",
+    "  for(var i = 0; i < buttons.length; i++) {",
+    "    buttons[i].classList.add('health-success');",
+    "    buttons[i].title = 'Verified ' + formatTimeAgo(timestamp);",
+    "  }",
+    "}",
+    "function applyHealthSnapshot(data) {",
+    "  var key;",
+    "  for(key in data.channels) {",
+    "    var entry = data.channels[key];",
+    "    updateChannelHealth(key, entry.status, entry.timestamp, entry.providerTag);",
+    "  }",
+    "  for(key in data.providers) {",
+    "    updateProviderAuth(key, data.providers[key]);",
+    "  }",
+    "}",
+
     // Connect (or reconnect) to the status SSE stream. Closes any existing connection first so this is safe to call repeatedly.
     "function connectStatusSSE() {",
     "  if(statusEventSource) { statusEventSource.close(); }",
@@ -420,6 +466,7 @@ function generateStatusScript(): string {
     "    updateSystemStatus();",
     "    renderStreamsTable();",
     "    updateStreamPopover();",
+    "    if(data.health) { applyHealthSnapshot(data.health); }",
     "  });",
     "  on('streamAdded', function(e) {",
     "    var s = JSON.parse(e.data);",
@@ -448,6 +495,11 @@ function generateStatusScript(): string {
     "  on('systemStatusChanged', function(e) {",
     "    systemData = JSON.parse(e.data);",
     "    updateSystemStatus();",
+    "  });",
+    "  on('healthChanged', function(e) {",
+    "    var event = JSON.parse(e.data);",
+    "    updateChannelHealth(event.channelKey, event.status, event.timestamp, event.providerTag);",
+    "    if(event.status === 'success') { updateProviderAuth(event.providerTag, event.timestamp); }",
     "  });",
     "  statusEventSource.onerror = function() {",
     "    document.getElementById('system-health').innerHTML = '<span class=\"status-dot\" style=\"color: var(--stream-stalled);\">&#9679;</span> Updates paused';",
@@ -505,7 +557,7 @@ function generateStatusScript(): string {
     "  document.addEventListener('mouseenter', function(e) {",
     "    var btn = e.target.closest('.btn-icon[aria-label]');",
     "    if(!btn) return;",
-    "    var label = btn.getAttribute('aria-label');",
+    "    var label = btn.getAttribute('title') || btn.getAttribute('aria-label');",
     "    if(!label) return;",
     "    var rect = btn.getBoundingClientRect();",
     "    tip.textContent = label;",
@@ -3102,8 +3154,8 @@ function generateLandingPageStyles(): string {
 
     // Channel table styles. The wrapper provides a rounded card border and enables horizontal scrolling on small screens. We use border-collapse: separate so
     // that border-radius works on the header cells.
-    // Max-width caps the Name column (the sole flexible column) at 350px. Fixed columns: Key 170 + Provider 200 + Actions 140 = 510px.
-    ".channel-table-wrapper { max-width: 860px; margin: 0 auto 20px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); overflow: auto; }",
+    // Max-width caps the Name column (the sole flexible column) at 350px. Fixed columns: Key 170 + Provider 200 + Actions 168 = 538px.
+    ".channel-table-wrapper { max-width: 888px; margin: 0 auto 20px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); overflow: auto; }",
     ".channel-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: 650px; margin: 0; }",
     ".channel-table th, .channel-table td { padding: 10px 12px; text-align: left; border: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
     ".channel-table th { background: var(--table-header-bg); font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--border-default); }",
@@ -3111,7 +3163,7 @@ function generateLandingPageStyles(): string {
     ".channel-table tr:hover { background: var(--table-row-hover); }",
     ".channel-table .col-key { width: 170px; }",
     ".channel-table .col-provider { width: 200px; }",
-    ".channel-table .col-actions, .channel-table td:last-child { width: 140px; white-space: nowrap; overflow: visible; }",
+    ".channel-table .col-actions, .channel-table td:last-child { width: 168px; white-space: nowrap; overflow: visible; }",
     ".provider-select { width: 100%; padding: 2px 4px; font-size: 12px; border: 1px solid var(--form-input-border); ",
     "border-radius: 3px; background: var(--form-input-bg); color: var(--text-primary); }",
 
@@ -3178,6 +3230,20 @@ function generateLandingPageStyles(): string {
     ".btn-icon-login:hover { color: var(--interactive-primary); }",
     ".btn-icon-copy:hover { color: var(--interactive-primary); }",
     ".btn-icon-placeholder { display: inline-block; width: 28px; height: 28px; }",
+
+    // Health indicator colors. The login icon only uses health-success (provider verified). The health icon uses both (channel last-tune result).
+    ".health-success { color: var(--interactive-success); }",
+    ".health-failed { color: var(--interactive-delete); }",
+
+    // Health icon is non-interactive — no hover effect, default cursor. The .user-channel override needs matching specificity (0-3-0) to prevent the
+    // tinted hover background from making the health icon look clickable on user-defined channel rows.
+    ".btn-icon-health { cursor: default; }",
+    ".btn-icon-health:hover { background: transparent; color: var(--text-secondary); }",
+    ".user-channel .btn-icon-health:hover { background: transparent; }",
+
+    // Override hover to preserve health color when set.
+    ".btn-icon-health.health-success:hover { color: var(--interactive-success); }",
+    ".btn-icon-health.health-failed:hover { color: var(--interactive-delete); }",
     ".copy-dropdown .dropdown-menu { left: auto; right: 0; }",
     ".copy-dropdown .dropdown-item { font-size: 12px; }",
 

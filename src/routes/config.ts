@@ -8,10 +8,11 @@ import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getEnvOverrides, 
   loadUserConfig, saveUserConfig, setNestedValue } from "../config/userConfig.js";
 import type { Channel, ChannelDelta, ChannelListingEntry, Nullable, ProfileCategory, StoredChannel } from "../types/index.js";
 import type { Express, Request, Response } from "express";
-import { LOG, escapeHtml, formatError, generateChannelKey, isRunningAsService, parseM3U } from "../utils/index.js";
+import { LOG, escapeHtml, formatError, formatTimeAgo, generateChannelKey, isRunningAsService, parseM3U } from "../utils/index.js";
 import { getAllProviderTags, getCanonicalKey, getChannelProviderTags, getEnabledProviders, getProviderDisplayName, getProviderGroup, getProviderSelection,
   getProviderTagForChannel, getResolvedChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant,
   resolveProviderKey, setEnabledProviders, setProviderSelection } from "../config/providers.js";
+import { getChannelHealth, getProviderAuth } from "../config/health.js";
 import { getChannelListing, getChannelsParseErrorMessage, getDisabledPredefinedChannels, getPredefinedChannel, getPredefinedChannels, getUserChannels,
   getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel, loadUserChannels, resolveStoredChannel,
   saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl,
@@ -54,6 +55,9 @@ const ICON_ENABLE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=
 
 const ICON_DISABLE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
   "stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M5.5 5.5l5 5\"/></svg>";
+
+const ICON_HEALTH = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+  "stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"1,9 4,9 6,4 8,12 10,7 12,9 15,9\"/></svg>";
 
 const ICON_REVERT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
   "stroke-linejoin=\"round\"><path d=\"M3 8a5 5 0 1 1 1.5 3.5\"/><path d=\"M3 4v4h4\"/></svg>";
@@ -659,27 +663,52 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
   displayLines.push("</td>");
 
-  // Actions column with icon buttons. Four positions per row: Edit (always), Login/placeholder (middle), a third action that varies by row type, and Copy URL.
+  // Actions column with icon buttons. Five positions per row: Edit (always), Login/placeholder, Health/placeholder, context-sensitive, and Copy URL.
   displayLines.push("<td>");
   displayLines.push("<div class=\"btn-group\">");
 
   const escapedKey = escapeHtml(key);
 
+  // Resolve the provider tag for the currently selected provider variant. Used for both login icon color and health icon lookups.
+  const variantKey = resolveProviderKey(key);
+  const providerTag = getProviderTagForChannel(variantKey);
+
   // Position 1: Edit (all channels).
   displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-edit\" title=\"Edit\" aria-label=\"Edit\" onclick=\"showEditForm('" + escapedKey +
     "')\">" + ICON_EDIT + "</button>");
 
-  // Position 2: Login for enabled channels, placeholder for disabled predefined.
+  // Position 2: Login for enabled channels (with provider auth color), placeholder for disabled predefined. Custom channels (user-defined, not predefined) skip
+  // login coloring because they have no provider concept.
   if(!isDisabled) {
 
-    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-login\" title=\"Login\" aria-label=\"Login\" onclick=\"startChannelLogin('" +
-      escapedKey + "')\">" + ICON_LOGIN + "</button>");
+    const authTimestamp = (isPredefined || isOverride) ? getProviderAuth(providerTag) : null;
+    const loginColorClass = authTimestamp ? " health-success" : "";
+    const loginTitle = authTimestamp ? "Verified " + formatTimeAgo(authTimestamp) : "Not yet verified";
+
+    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-login" + loginColorClass + "\" data-provider-tag=\"" +
+      escapeHtml(providerTag) + "\" title=\"" + loginTitle + "\" aria-label=\"Login\" " +
+      "onclick=\"startChannelLogin('" + escapedKey + "')\">" + ICON_LOGIN + "</button>");
   } else {
 
     displayLines.push("<span class=\"btn-icon-placeholder\"></span>");
   }
 
-  // Position 3: varies by row type.
+  // Position 3: Channel health indicator. Shows last tune result via color. Non-interactive (span, not button). Disabled channels get a placeholder instead.
+  if(!isDisabled) {
+
+    const channelHealthResult = getChannelHealth(key, providerTag);
+    const healthColorClass = (channelHealthResult?.status === "success") ? " health-success" : (channelHealthResult?.status === "failed") ? " health-failed" : "";
+    const healthTitle = channelHealthResult ?
+      (channelHealthResult.status === "success" ? "Succeeded " : "Failed ") + formatTimeAgo(channelHealthResult.timestamp) : "Not yet tuned";
+
+    displayLines.push("<span class=\"btn-icon btn-icon-health" + healthColorClass + "\" title=\"" + healthTitle +
+      "\" aria-label=\"Channel health\">" + ICON_HEALTH + "</span>");
+  } else {
+
+    displayLines.push("<span class=\"btn-icon-placeholder\"></span>");
+  }
+
+  // Position 4: varies by row type.
   if(isOverride) {
 
     // Override: revert to predefined defaults.
@@ -704,7 +733,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
     }
   }
 
-  // Position 4: Copy URL dropdown (all channels).
+  // Position 5: Copy URL dropdown (all channels).
   displayLines.push("<div class=\"dropdown copy-dropdown\">");
   displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-copy\" title=\"Copy stream URL\" aria-label=\"Copy stream URL\" " +
     "onclick=\"toggleDropdown(this)\">" + ICON_COPY + "</button>");

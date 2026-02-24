@@ -12,7 +12,8 @@ import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setC
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
 import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
 import { getInitSegment, getPlaylist, getSegment, waitForPlaylist } from "./hlsSegments.js";
-import { getResolvedChannel, resolveProviderKey } from "../config/providers.js";
+import { getProviderTagForChannel, getResolvedChannel, resolveProviderKey } from "../config/providers.js";
+import { markChannelFailure, markChannelSuccess } from "../config/health.js";
 import { CONFIG } from "../config/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { StreamRegistryEntry } from "./registry.js";
@@ -844,6 +845,15 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
     );
   } catch(error) {
 
+    // Mark channel health as failed. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity.
+    if(channel) {
+
+      const failVariantKey = resolveProviderKey(channelName);
+      const failProviderTag = getProviderTagForChannel(failVariantKey);
+
+      markChannelFailure(channelName, failProviderTag);
+    }
+
     // Remove startup sentinel on failure and re-throw for the caller to handle error responses.
     deleteChannelStreamId(channelName);
 
@@ -941,6 +951,15 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
       const tuneTime = ((Date.now() - setup.startTime.getTime()) / 1000).toFixed(1);
 
       LOG.info("Streaming %s (%s, %s). Tuned in %ss%s.", displayName, setup.profileName, captureMode, tuneTime, setup.directTune ? " (direct)" : "");
+
+      // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity.
+      if(channel) {
+
+        const successVariantKey = resolveProviderKey(channelName);
+        const successProviderTag = getProviderTagForChannel(successVariantKey);
+
+        markChannelSuccess(channelName, successProviderTag);
+      }
 
       // Emit stream added event.
       emitStreamAdded(createInitialStreamStatus({

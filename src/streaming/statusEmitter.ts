@@ -2,6 +2,8 @@
  *
  * statusEmitter.ts: Event emitter for real-time stream and system status via SSE.
  */
+import type { HealthEvent, HealthSnapshot } from "../config/health.js";
+import { getHealthSnapshot, subscribeToHealth } from "../config/health.js";
 import type { ClientTypeCount } from "./clients.js";
 import { EventEmitter } from "events";
 import type { Nullable } from "../types/index.js";
@@ -72,6 +74,7 @@ export interface SystemStatus {
  */
 export interface StatusSnapshot {
 
+  health: HealthSnapshot;
   streams: StreamStatus[];
   system: SystemStatus;
 }
@@ -79,7 +82,7 @@ export interface StatusSnapshot {
 /**
  * Event types emitted by the status emitter.
  */
-export type StatusEventType = "snapshot" | "streamAdded" | "streamHealthChanged" | "streamRemoved" | "systemStatusChanged";
+export type StatusEventType = "healthChanged" | "snapshot" | "streamAdded" | "streamHealthChanged" | "streamRemoved" | "systemStatusChanged";
 
 /* A singleton EventEmitter that broadcasts status updates to all subscribed SSE clients. The emitter maintains current state for all streams, allowing new clients
  * to receive a snapshot of current status immediately upon connecting.
@@ -200,6 +203,7 @@ export function getStatusSnapshot(): StatusSnapshot {
 
   return {
 
+    health: getHealthSnapshot(),
     streams: Array.from(streamStatuses.values()),
     system: cachedSystemStatus ?? {
 
@@ -235,7 +239,9 @@ export function removeStreamStatus(streamId: number): void {
  * @param callback - Function to call when a status event is emitted.
  * @returns A function to unsubscribe the callback.
  */
-export function subscribeToStatus(callback: (event: StatusEventType, data: StreamStatus | SystemStatus | StatusSnapshot | { id: number }) => void): () => void {
+export function subscribeToStatus(
+  callback: (event: StatusEventType, data: HealthEvent | StreamStatus | SystemStatus | StatusSnapshot | { id: number }) => void
+): () => void {
 
   const streamAddedHandler = (data: StreamStatus): void => { callback("streamAdded", data); };
   const streamRemovedHandler = (data: { id: number }): void => { callback("streamRemoved", data); };
@@ -247,11 +253,15 @@ export function subscribeToStatus(callback: (event: StatusEventType, data: Strea
   statusEmitter.on("streamHealthChanged", streamHealthChangedHandler);
   statusEmitter.on("systemStatusChanged", systemStatusChangedHandler);
 
+  // Forward health events from the health emitter through the same SSE connection. This avoids a separate SSE endpoint for health updates.
+  const unsubscribeHealth = subscribeToHealth((event) => { callback("healthChanged", event); });
+
   return (): void => {
 
     statusEmitter.off("streamAdded", streamAddedHandler);
     statusEmitter.off("streamRemoved", streamRemovedHandler);
     statusEmitter.off("streamHealthChanged", streamHealthChangedHandler);
     statusEmitter.off("systemStatusChanged", systemStatusChangedHandler);
+    unsubscribeHealth();
   };
 }
