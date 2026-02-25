@@ -189,19 +189,41 @@ function flushHealthState(): void {
 // Public API.
 
 /**
- * Records a successful tune for a channel. Sets the channel's health to "success" and marks the provider as verified (authenticated). Triggers a debounced flush.
+ * Records a successful tune for a channel. Sets the channel's health to "success" and optionally marks the provider as verified (authenticated). Triggers a
+ * debounced flush. The markAuth parameter allows callers to skip provider auth marking when a successful tune does not prove paid access (e.g., Sling Freestream
+ * channels succeed without a subscription).
  * @param channelKey - The channel key (canonical key, e.g., "nbc").
  * @param providerTag - The provider tag for the currently selected provider variant.
+ * @param markAuth - Whether to also mark the provider as authenticated (default: true).
  */
-export function markChannelSuccess(channelKey: string, providerTag: string): void {
+export function markChannelSuccess(channelKey: string, providerTag: string, markAuth = true): void {
 
   const now = Date.now();
 
   channelHealth.set(channelKey, { providerTag, status: "success", timestamp: now });
-  providerAuth.set(providerTag, now);
+
+  if(markAuth) {
+
+    providerAuth.set(providerTag, now);
+  }
 
   flushHealthState();
   healthEmitter.emit("healthChanged", { channelKey, providerTag, status: "success", timestamp: now } satisfies HealthEvent);
+}
+
+/**
+ * Records a provider as authenticated without a specific channel context. Used when a provider action (e.g., precaching) proves the provider is accessible and logged
+ * in, even though no channel was tuned. Triggers a debounced flush and emits a health event with an empty channelKey.
+ * @param providerTag - The provider tag to mark as authenticated.
+ */
+export function markProviderAuth(providerTag: string): void {
+
+  const now = Date.now();
+
+  providerAuth.set(providerTag, now);
+
+  flushHealthState();
+  healthEmitter.emit("healthChanged", { channelKey: "", providerTag, status: "success", timestamp: now } satisfies HealthEvent);
 }
 
 /**

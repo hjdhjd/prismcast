@@ -21,6 +21,7 @@ import type { TabReplacementHandlerFactory } from "./setup.js";
 import type { TabReplacementResult } from "./monitor.js";
 import { createFMP4Segmenter } from "./fmp4Segmenter.js";
 import { createHash } from "node:crypto";
+import { getProviderBySlug } from "../browser/channelSelection.js";
 import { registerClient } from "./clients.js";
 import { triggerShowNameUpdate } from "./showInfo.js";
 
@@ -952,13 +953,16 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
 
       LOG.info("Streaming %s (%s, %s). Tuned in %ss%s.", displayName, setup.profileName, captureMode, tuneTime, setup.directTune ? " (direct)" : "");
 
-      // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity.
+      // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity. Provider
+      // auth is conditionally skipped when the provider defines validateTune and the tuned channel does not prove paid access (e.g., Sling Freestream channels).
       if(channel) {
 
         const successVariantKey = resolveProviderKey(channelName);
         const successProviderTag = getProviderTagForChannel(successVariantKey);
+        const provider = getProviderBySlug(successProviderTag);
+        const markAuth = !provider?.validateTune || provider.validateTune(channel.channelSelector ?? channelName);
 
-        markChannelSuccess(channelName, successProviderTag);
+        markChannelSuccess(channelName, successProviderTag, markAuth);
       }
 
       // Emit stream added event.

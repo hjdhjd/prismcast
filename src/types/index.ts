@@ -1017,6 +1017,17 @@ export interface ProviderModule {
 
   // Links back to the site profile strategy name for derived strategy lookup.
   strategyName: ChannelSelectionStrategy;
+
+  // Optional validator called after a successful precache to determine whether the results prove the provider is authenticated. When defined, precaching calls
+  // this with the discovered channels and only marks the provider as authenticated if it returns true. When omitted, any non-empty precache result proves auth.
+  // Used by providers like Sling that return a guide lineup even without authentication — free-tier channels appear regardless of login state, so a non-empty
+  // result alone does not prove the user has a paid subscription.
+  validatePrecache?: (channels: DiscoveredChannel[]) => boolean;
+
+  // Optional validator called after a successful tune to determine whether the channel proves the provider is authenticated. When defined, the tune success
+  // handler calls this with the channel selector and only marks provider auth if it returns true. Channel health is always recorded regardless. When omitted,
+  // any successful tune proves auth. Used by Sling where free-tier (Freestream) channels succeed without a paid subscription.
+  validateTune?: (channelSelector: string) => boolean;
 }
 
 /**

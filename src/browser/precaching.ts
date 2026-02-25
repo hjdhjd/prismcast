@@ -6,6 +6,7 @@ import { LOG, formatError, startTimer } from "../utils/index.js";
 import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.js";
 import { CONFIG } from "../config/index.js";
 import { getProviderBySlug } from "./channelSelection.js";
+import { markProviderAuth } from "../config/health.js";
 
 /* Precaching discovers channel lineups for selected providers at startup so that even the first tune benefits from cached lineup data. Each provider is precached
  * sequentially — discovery opens a browser page and navigates to a heavy SPA, so running all providers concurrently would stress CPU and GPU on resource-constrained
@@ -110,6 +111,14 @@ async function runPrecacheCycle(): Promise<void> {
           const channels = await provider.discoverChannels(page);
 
           LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (providerElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
+
+          // A successful discovery with results proves the provider is accessible and authenticated. Mark it so the UI shows the green indicator immediately
+          // rather than waiting for the first manual tune. When a provider defines validatePrecache, defer to it — some providers (e.g., Sling) return guide data
+          // even without authentication, so a non-empty result alone does not prove paid access.
+          if((channels.length > 0) && (!provider.validatePrecache || provider.validatePrecache(channels))) {
+
+            markProviderAuth(slug);
+          }
 
           succeeded++;
         } finally {

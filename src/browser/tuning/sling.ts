@@ -973,5 +973,17 @@ export const slingProvider: ProviderModule = {
     invalidateDirectUrl: invalidateSlingDirectUrl,
     resolveDirectUrl: resolveSlingDirectUrl
   },
-  strategyName: "slingGrid"
+  strategyName: "slingGrid",
+
+  // Sling returns a guide lineup even without authentication — Freestream channels (tier: "free") are always visible. A non-empty result alone does not prove
+  // the user has a paid subscription. We require at least one paid-tier channel in the results to confirm authenticated access.
+  validatePrecache: (channels): boolean => channels.some((ch) => (ch.tier === "paid")),
+
+  // A successful tune on a free-tier Freestream channel does not prove the user has a paid subscription. Only paid-tier channels vouch for provider auth.
+  validateTune: (channelSelector): boolean => {
+
+    const entry = slingChannelCache.get(normalizeChannelName(channelSelector));
+
+    return (entry?.tier === "paid");
+  }
 };
