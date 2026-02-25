@@ -63,6 +63,7 @@
     "watch": "npm run build && nodemon"
   },
   "dependencies": {
+    "compression": "^1.8.1",
     "console-stamp": "3.1.2",
     "express": "5.2.1",
     "ffmpeg-for-homebridge": "2.2.1",
@@ -72,6 +73,7 @@
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "5.9.0",
+    "@types/compression": "^1.8.1",
     "@types/dateformat": "5.0.3",
     "@types/express": "5.0.6",
     "@types/morgan": "1.9.10",

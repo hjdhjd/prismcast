@@ -16,6 +16,7 @@ import type { Nullable } from "./types/index.js";
 import type { ParsedArgs } from "./index.js";
 import type { Server } from "http";
 import { cleanupIdleStreams } from "./streaming/hls.js";
+import compression from "compression";
 import consoleStamp from "console-stamp";
 import express from "express";
 import { getAllStreams } from "./streaming/registry.js";
@@ -176,6 +177,21 @@ async function buildApp(): Promise<Express> {
   // Trust proxy headers (X-Forwarded-Proto, X-Forwarded-Host) so that req.protocol and req.hostname reflect what the client actually used when accessing through
   // a reverse proxy. This ensures playlist URLs match the client's connection.
   app.set("trust proxy", true);
+
+  // Enable response compression for HTML, JSON, CSS, JavaScript, and text responses. SSE is excluded because compression buffers output for better ratios, which
+  // conflicts with SSE's need to deliver events immediately. Binary video data (HLS segments, MPEG-TS) is skipped automatically by the compressible MIME type check.
+  app.use(compression({
+
+    filter: (req, res) => {
+
+      if(res.getHeader("Content-Type") === "text/event-stream") {
+
+        return false;
+      }
+
+      return compression.filter(req, res);
+    }
+  }));
 
   // Add body parsing middleware for form submissions (configuration page).
   app.use(express.urlencoded({ extended: true }));
