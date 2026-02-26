@@ -133,7 +133,9 @@ export function getProfileForUrl(url: string | undefined): ProfileResolutionResu
  * @param channel - The channel object with url and optional profile properties.
  * @returns The site profile containing behavior flags.
  */
-export function getProfileForChannel(channel: { channelSelector?: string; profile?: string; url?: string } | undefined): ProfileResolutionResult {
+export function getProfileForChannel(channel: {
+  channelSelector?: string; profile?: string; scrollSelector?: string; scrollTarget?: string; scrollToBottom?: boolean; url?: string;
+} | undefined): ProfileResolutionResult {
 
   // No channel provided - return the default.
   if(!channel) {
@@ -190,11 +192,27 @@ export function getProfileForChannel(channel: { channelSelector?: string; profil
     }
   }
 
-  // Merge channel-specific properties into the profile. Currently only channelSelector is supported, which specifies a CSS selector for the channel button in
-  // multi-channel player pages. The channelSelector on the channel overrides any channelSelector from the profile.
+  // Merge channel-specific properties into the profile. The channelSelector on the channel overrides any channelSelector from the profile. Channel-level scroll
+  // overrides (scrollSelector, scrollTarget, scrollToBottom) are merged into the profile's channelSelection config, allowing individual channels to customize
+  // scroll behavior without changing the shared profile definition.
   if(channel.channelSelector) {
 
     profile = { ...profile, channelSelector: channel.channelSelector };
+  }
+
+  if((channel.scrollSelector !== undefined) || (channel.scrollTarget !== undefined) || (channel.scrollToBottom !== undefined)) {
+
+    profile = {
+
+      ...profile,
+      channelSelection: {
+
+        ...profile.channelSelection,
+        ...(channel.scrollSelector !== undefined ? { scrollSelector: channel.scrollSelector } : {}),
+        ...(channel.scrollTarget !== undefined ? { scrollTarget: channel.scrollTarget } : {}),
+        ...(channel.scrollToBottom !== undefined ? { scrollToBottom: channel.scrollToBottom } : {})
+      }
+    };
   }
 
   return { profile, profileName };

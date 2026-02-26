@@ -526,6 +526,18 @@ export interface Channel {
   // hulu.com URL automatically resolves to "Hulu"). Only needed when a channel's display name should differ from the domain-level default.
   provider?: string;
 
+  // CSS selector to narrow the DOM search when scrollTarget is set. Overrides the profile-level scrollSelector for this channel. See ChannelSelectionConfig for
+  // full documentation.
+  scrollSelector?: string;
+
+  // Text content to match when scrolling a lazy-loaded section into view before channel selection. Overrides the profile-level scrollTarget for this channel. See
+  // ChannelSelectionConfig for full documentation.
+  scrollTarget?: string;
+
+  // Whether to scroll to the bottom of the page before channel selection. Overrides the profile-level scrollToBottom for this channel. See
+  // ChannelSelectionConfig for full documentation.
+  scrollToBottom?: boolean;
+
   // Gracenote station ID for electronic program guide integration. When set, this ID is included in the M3U playlist as the tvc-guide-stationid attribute,
   // allowing Channels DVR to fetch program guide data for the channel.
   stationId?: string;
@@ -891,6 +903,20 @@ export interface ChannelSelectionConfig {
   // CSS selector for a play button that must be clicked after selecting a channel entry. Some sites show a playback action overlay after channel selection instead
   // of immediately starting playback. When set, this element is waited for and clicked after the channel entry click. Used by the guideGrid and tileClick strategies.
   playSelector?: string;
+
+  // CSS selector to narrow the DOM search when scrollTarget is set. Combined with scrollTarget, the scroll phase queries elements matching this selector and then
+  // filters to the one whose textContent matches scrollTarget. Example: "h4" to search only heading elements. Can be overridden per channel.
+  scrollSelector?: string;
+
+  // Text content to match when scrolling a lazy-loaded section into view before channel selection. Some sites (e.g., Disney+) lazy-load channel shelves that only
+  // render when scrolled into the viewport. When set, the scroll phase finds an element whose textContent matches this string, scrolls it into view, and waits
+  // briefly for lazy content to render. Must be used together with scrollSelector. Can be overridden per channel.
+  scrollTarget?: string;
+
+  // Whether to scroll to the bottom of the page before channel selection. Some sites (e.g., Disney+) lazy-load entire page sections that only appear in the DOM
+  // after scrolling. When true, the page is scrolled to the bottom to force all lazy content to render before the matchSelector poll begins. Can be overridden
+  // per channel.
+  scrollToBottom?: boolean;
 
   // The strategy to use for finding and clicking channel elements.
   strategy: ChannelSelectionStrategy;

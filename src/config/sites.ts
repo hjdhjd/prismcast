@@ -2,8 +2,9 @@
  *
  * sites.ts: Site profile definitions and domain-to-profile mappings for PrismCast.
  */
-import type { ResolvedSiteProfile, SiteProfile } from "../types/index.js";
+import type { DomainConfig, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
 import { extractDomain } from "../utils/index.js";
+import { getUserDomains } from "./userProfiles.js";
 
 /* Streaming sites implement their video players in wildly different ways. Some use standard HTML5 video with keyboard shortcuts, others embed players in iframes,
  * and many have unique quirks like auto-muting or requiring specific fullscreen methods. Rather than scattering site-specific conditionals throughout the streaming
@@ -132,7 +133,11 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   disneyPlus: {
 
     category: "multiChannel",
-    channelSelection: { matchSelector: "img[src*=\"{channel}\"]", playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]", strategy: "tileClick" },
+    channelSelection: {
+
+      matchSelector: "img[src*=\"{channel}\"]", playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]",
+      scrollToBottom: true, strategy: "tileClick"
+    },
     description: "Disney+ live channels with tile selection and play button modal. Channel Selector is interpolated into matchSelector to find the element.",
     extends: "fullscreenApi",
     hideSelector: ".controls__footer__wrapper",
@@ -324,33 +329,6 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   }
 };
 
-/**
- * Domain-level configuration associating domain patterns with site profiles and provider display names. Each entry can specify a site profile for behavior
- * configuration and/or a provider display name for friendly UI labels.
- */
-export interface DomainConfig {
-
-  // URL to navigate to for authentication. Some sites show different login options on their homepage vs their player page. When set, the auth route navigates to
-  // this URL instead of the channel's streaming URL. Omit for sites where the streaming URL is also the correct login page.
-  loginUrl?: string;
-
-  // Maximum continuous playback duration in hours before the site enforces a stream cutoff. When set, the playback monitor proactively reloads the page before this
-  // limit expires to maintain uninterrupted streaming. Fractional values are supported (e.g., 1.5 for 90 minutes). Omit for sites that allow indefinite playback.
-  maxContinuousPlayback?: number;
-
-  // Site profile name for automatic profile detection. When a URL matches this domain, the specified profile is used to configure site-specific behavior
-  // (fullscreen method, iframe handling, etc.). Omit for domains that only need a display name.
-  profile?: string;
-
-  // Provider filter tag for subscription services. Channels whose canonical URL matches a domain with this field are identified as belonging to this subscription
-  // service for filtering purposes. Domains that share a tag (e.g., "watch.sling.com" and a hypothetical "sling.com" variant) are treated as the same provider.
-  // Omit for network-owned sites (abc.com, nbc.com, espn.com, etc.) — they are implicitly tagged "direct".
-  providerTag?: string;
-
-  // Friendly provider name shown in the UI source column, provider dropdowns, and labels. When set, this name is used instead of the raw domain string (e.g.,
-  // "Hulu" instead of "hulu.com"). Omit to fall back to the concise domain extracted from the URL.
-  provider?: string;
-}
 
 /* This mapping associates domain keys with site profiles, provider display names, and provider filter tags. Most keys are concise second-level domains
  * (e.g., "nbc.com", "foodnetwork.com") matching the output of extractDomain(). Keys can also be full hostnames (e.g., "tv.youtube.com") for subdomain-specific
@@ -416,11 +394,23 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
  */
 export function getDomainConfig(url: string): DomainConfig | undefined {
 
+  // User domain mappings take precedence over built-in mappings. The lookup order is: user full hostname → built-in full hostname → user concise domain →
+  // built-in concise domain. This allows users to override specific subdomain mappings or base domain mappings independently.
+  const userDomains = getUserDomains();
+
   try {
 
     const hostname = new URL(url).hostname;
 
-    // Try the full hostname first for subdomain-specific overrides (e.g., "tv.youtube.com" before "youtube.com").
+    // Try user domains for the full hostname first.
+    const userHostnameMatch = userDomains[hostname] as DomainConfig | undefined;
+
+    if(userHostnameMatch) {
+
+      return userHostnameMatch;
+    }
+
+    // Try the built-in full hostname for subdomain-specific overrides (e.g., "tv.youtube.com" before "youtube.com").
     const hostnameMatch = DOMAIN_CONFIG[hostname] as DomainConfig | undefined;
 
     if(hostnameMatch) {
@@ -432,7 +422,17 @@ export function getDomainConfig(url: string): DomainConfig | undefined {
     // Invalid URL — fall through to concise domain lookup.
   }
 
-  return DOMAIN_CONFIG[extractDomain(url)] as DomainConfig | undefined;
+  const conciseDomain = extractDomain(url);
+
+  // Try user domains for the concise domain.
+  const userConciseMatch = userDomains[conciseDomain] as DomainConfig | undefined;
+
+  if(userConciseMatch) {
+
+    return userConciseMatch;
+  }
+
+  return DOMAIN_CONFIG[conciseDomain] as DomainConfig | undefined;
 }
 
 /* The default profile provides baseline behavior for sites not explicitly listed in the domain mapping or channel definitions. These settings work for most

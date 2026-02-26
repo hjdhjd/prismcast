@@ -3,7 +3,7 @@
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.js";
-import { LOG, delay } from "../utils/index.js";
+import { LOG, delay, evaluateWithAbort } from "../utils/index.js";
 import { CHANNELS } from "../channels/index.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
@@ -261,6 +261,7 @@ export function logAvailableChannels(options: {
  * tuneToChannel() after page navigation.
  *
  * The function handles:
+ * - Pre-selection scroll phase to force lazy-loaded content into the DOM (when scrollToBottom or scrollSelector+scrollTarget is set)
  * - Polling for channel element readiness before strategy dispatch (when profile.channelSelection.matchSelector is set)
  * - Strategy dispatch based on profile.channelSelection.strategy
  * - No-op for single-channel sites (strategy "none" or no channelSelector)
@@ -289,6 +290,102 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     return { reason: "Unknown channel selection strategy.", success: false };
   }
 
+  // Pre-selection scroll phase. Some sites (e.g., Disney+) lazy-load entire page sections — headings, tiles, and images only appear in the DOM after scrolling
+  // them into the viewport. Two scroll modes are supported: scrollToBottom scrolls the page to the bottom to force all lazy content into the DOM, and
+  // scrollSelector+scrollTarget progressively scrolls until a specific element with matching text content is found and scrolled into view. Both modes gate on a
+  // readiness signal before scrolling — scrollToBottom waits for the page to become scrollable (scrollHeight > innerHeight), while scrollSelector waits for the
+  // first matching DOM element — since SPAs typically fire the load event before React/framework rendering completes.
+  if(channelSelection.scrollToBottom) {
+
+    // Wait for the SPA to render enough content to make the page scrollable. SPAs fire the load event before the framework renders page sections, so scrollHeight
+    // equals innerHeight immediately after navigation. We poll until scrollHeight exceeds innerHeight, indicating content has been rendered and there is somewhere
+    // to scroll.
+    try {
+
+      await page.waitForFunction((): boolean => document.body.scrollHeight > window.innerHeight, { timeout: CONFIG.streaming.videoTimeout });
+    } catch {
+
+      LOG.debug("tuning:tileClick", "Page did not become scrollable within %sms (scrollHeight: %s, innerHeight: %s). Proceeding anyway.",
+        CONFIG.streaming.videoTimeout, await page.evaluate(() => document.body.scrollHeight), await page.evaluate(() => window.innerHeight));
+    }
+
+    // Press End to scroll to the bottom of the page, forcing lazy-loaded sections to render as they enter the viewport.
+    await page.keyboard.press("End");
+
+    LOG.debug("tuning:tileClick", "Pressed End to scroll to page bottom (scrollHeight: %s).",
+      await page.evaluate(() => document.body.scrollHeight));
+  } else if(channelSelection.scrollSelector && channelSelection.scrollTarget) {
+
+    // Targeted scroll: find a specific element matching scrollSelector whose text content equals scrollTarget, then scroll it into view. This is used when only a
+    // particular section needs to be visible rather than the entire page. Progressively scrolls in viewport-sized increments, checking after each step whether the
+    // target element has appeared — necessary because sites with IntersectionObserver-based lazy loading only add sections to the DOM as they enter the viewport.
+    let found = false;
+
+    // Wait for at least one element matching the selector to appear so the SPA has started rendering content.
+    try {
+
+      await page.waitForSelector(channelSelection.scrollSelector, { timeout: CONFIG.streaming.videoTimeout });
+    } catch {
+
+      LOG.debug("tuning:tileClick", "No \"%s\" elements appeared within %sms. Page may not have rendered.",
+        channelSelection.scrollSelector, CONFIG.streaming.videoTimeout);
+    }
+
+    // Set the scroll deadline after the readiness gate so the progressive scroll loop gets its own full time budget rather than sharing it with the waitForSelector.
+    const scrollDeadline = Date.now() + CONFIG.streaming.videoTimeout;
+
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- found is mutated inside the loop body.
+    while(!found && (Date.now() < scrollDeadline)) {
+
+      // eslint-disable-next-line no-await-in-loop
+      found = await evaluateWithAbort(page, (selector: string, target: string): boolean => {
+
+        for(const el of Array.from(document.querySelectorAll(selector))) {
+
+          if(el.textContent.trim() === target) {
+
+            (el as HTMLElement).scrollIntoView({ behavior: "instant", block: "center" });
+
+            return true;
+          }
+        }
+
+        return false;
+      }, [ channelSelection.scrollSelector, channelSelection.scrollTarget ]);
+
+      if(found) {
+
+        break;
+      }
+
+      // Scroll down by one viewport height to trigger the next batch of lazy-loaded sections.
+      // eslint-disable-next-line no-await-in-loop
+      await page.evaluate(() => { window.scrollBy(0, window.innerHeight); });
+
+      // eslint-disable-next-line no-await-in-loop
+      await delay(300);
+    }
+
+    if(found) {
+
+      LOG.debug("tuning:tileClick", "Scroll target \"%s\" via \"%s\": found and scrolled into view.",
+        channelSelection.scrollTarget, channelSelection.scrollSelector);
+
+      // Brief settle delay for lazy content near the target to finish rendering.
+      await delay(500);
+    } else {
+
+      // Log what headings exist to help diagnose text mismatches.
+      const headings = await evaluateWithAbort(page, (selector: string): string[] => {
+
+        return Array.from(document.querySelectorAll(selector)).map((el) => el.textContent.trim());
+      }, [channelSelection.scrollSelector]);
+
+      LOG.debug("tuning:tileClick", "Scroll target \"%s\" via \"%s\": not found after %sms. Found headings: %s.",
+        channelSelection.scrollTarget, channelSelection.scrollSelector, CONFIG.streaming.videoTimeout, JSON.stringify(headings));
+    }
+  }
+
   // Poll for the channel element to appear and become visible. Only run when matchSelector is explicitly configured — the default fallback in
   // resolveMatchSelector() is for strategy-internal use, and guide-based strategies that don't set matchSelector skip this wait entirely. For <img> elements, we
   // also verify load completion (img.complete + naturalWidth) to prevent race conditions where the element exists with the correct src but hasn't finished
@@ -296,6 +393,8 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
   if(channelSelection.matchSelector) {
 
     const selector = resolveMatchSelector(profile);
+
+    LOG.debug("tuning:tileClick", "Polling for matchSelector: %s (timeout: %sms).", selector, CONFIG.playback.channelSelectorDelay);
 
     try {
 
@@ -327,9 +426,12 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
         { timeout: CONFIG.playback.channelSelectorDelay },
         selector
       );
+
+      LOG.debug("tuning:tileClick", "matchSelector poll succeeded: element found and visible.");
     } catch {
 
       // Timeout — the element hasn't appeared or loaded yet. Proceed anyway and let the strategy evaluate and report not-found naturally.
+      LOG.debug("tuning:tileClick", "matchSelector poll timed out after %sms. Element not found or not visible.", CONFIG.playback.channelSelectorDelay);
     }
   }
 

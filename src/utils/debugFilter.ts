@@ -178,6 +178,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "browser", description: "Browser lifecycle: launch, close, stale page cleanup, restart." },
   { category: "browser:video", description: "Video context, fullscreen, volume locking, playback." },
   { category: "config", description: "Provider groups, version checking." },
+  { category: "precache", description: "Channel lineup precaching: deferred runs, provider filter skips." },
   { category: "recovery", description: "General recovery: browser re-minimize, monitor abort." },
   { category: "recovery:context", description: "Video context: frame detachment, re-search." },
   { category: "recovery:nav", description: "Page navigation recovery: new tab detection, URL validation." },
@@ -186,7 +187,6 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "retry", description: "Retry attempts, page-closed aborts." },
   { category: "streaming:ffmpeg", description: "FFmpeg stderr output, pipe errors." },
   { category: "streaming:hls", description: "HLS segment storage, page close errors." },
-  { category: "streaming:mpegts", description: "MPEG-TS remuxer errors, client connect/disconnect." },
   { category: "streaming:segmenter", description: "fMP4 parsing: keyframes, init segments, duration clamping." },
   { category: "streaming:setup", description: "Stream setup: redirect resolution, profile override, capture init." },
   { category: "streaming:showinfo", description: "Channels DVR show name lookups, device mapping." },
@@ -199,6 +199,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "tuning:hbo", description: "HBO Max: tab URL discovery, channel rail, navigation." },
   { category: "tuning:hulu", description: "Hulu Live guide grid: binary search, cache, click retries." },
   { category: "tuning:sling", description: "Sling TV guide grid: binary search, cache, click retries." },
+  { category: "tuning:tileClick", description: "Tile click strategy: scroll phase, matchSelector poll, play button retries, modal dismiss." },
   { category: "tuning:yttv", description: "YouTube TV EPG grid navigation." }
 ];
 
