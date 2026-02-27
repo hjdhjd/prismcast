@@ -2652,7 +2652,13 @@ export function setupConfigEndpoint(app: Express): void {
       // Save to disk.
       await saveProviderSelections();
 
-      LOG.info("Provider selection for '%s' changed to '%s'.", canonicalKey, providerKey);
+      // Resolve display names for logging before generating the row HTML.
+      const canonicalChannel = getResolvedChannel(canonicalKey);
+      const variantChannel = getResolvedChannel(providerKey);
+      const channelName = canonicalChannel?.name ?? canonicalKey;
+      const providerLabel = variantChannel ? getChannelProviderLabel(variantChannel) : providerKey;
+
+      LOG.info("Provider for %s changed to %s.", channelName, providerLabel);
 
       // Return full row HTML so the client can replace both the display and edit rows, keeping the edit form in sync with the selected provider.
       const profiles = getProfiles();
