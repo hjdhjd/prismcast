@@ -290,7 +290,7 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
     "    try { localStorage.setItem('" + localStorageKey + "', category); } catch(e) {}",
     "    if(updateUrl !== false) {",
     "      var parsed = parseHash();",
-    "      var subtab = (category === 'config') ? parsed.subtab : null;",
+    "      var subtab = ((category === 'config') || (category === 'channels')) ? parsed.subtab : null;",
     "      updateHash(category, subtab);",
     "    }",
     "    document.dispatchEvent(new CustomEvent('tabactivated', { detail: { category: category } }));",
@@ -332,6 +332,9 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
     "      if(parsed.tab === 'config' && parsed.subtab && window.switchConfigSubtab) {",
     "        window.switchConfigSubtab(parsed.subtab, false);",
     "      }",
+    "      if(parsed.tab === 'channels' && parsed.subtab && window.switchChannelsSubtab) {",
+    "        window.switchChannelsSubtab(parsed.subtab, false);",
+    "      }",
     "    }",
     "  });",
 
@@ -352,8 +355,9 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
     "    }",
     "  }",
 
-    // Store parsed hash for subtab script to use.
-    "  window.initialHashSubtab = parsed.subtab;",
+    // Store parsed hash for subtab scripts to use. Config and Channels tabs each read their own variable.
+    "  window.initialHashSubtab = (parsed.tab === 'config') ? parsed.subtab : null;",
+    "  window.initialChannelsHashSubtab = (parsed.tab === 'channels') ? parsed.subtab : null;",
 
     "})();",
     "</script>"
