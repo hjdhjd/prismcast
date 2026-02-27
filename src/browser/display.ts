@@ -60,12 +60,3 @@ export function getBrowserChrome(): Nullable<{ height: number; width: number }> 
 
   return browserChrome;
 }
-
-/**
- * Clears the cached display dimensions. Called when browser restarts to force re-detection.
- */
-export function clearDisplayCache(): void {
-
-  browserChrome = null;
-  maxSupportedViewport = null;
-}
