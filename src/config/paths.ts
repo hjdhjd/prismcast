@@ -93,6 +93,15 @@ export function getHealthFilePath(): string {
 }
 
 /**
+ * Returns the path to the user profiles file.
+ * @returns The absolute path to profiles.json inside the data directory.
+ */
+export function getProfilesFilePath(): string {
+
+  return path.join(getDataDir(), "profiles.json");
+}
+
+/**
  * Returns the Chrome user data directory. When config.paths.chromeDataDir is set, that absolute path is used directly. Otherwise, the directory is built from the
  * data directory and the configured profile name.
  * @param config - The application configuration.

@@ -3,14 +3,14 @@
  * profiles.ts: Site profile resolution and validation for PrismCast.
  */
 import { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig } from "./sites.js";
-import type { ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
+import type { DomainConfig, ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
+import { getUserDomains, getUserProfiles, validateDomain, validateProfile } from "./userProfiles.js";
 import { CHANNELS } from "../channels/index.js";
-import type { DomainConfig } from "./sites.js";
+import { LOG } from "../utils/index.js";
 import { extractDomain } from "../utils/index.js";
 
 // Re-export site data so existing consumers can import from either module.
 export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig };
-export type { DomainConfig };
 
 /* Profile resolution is the process of determining which behavior flags to use for a given stream. The resolution process handles inheritance, merging parent and
  * child profile properties, and falling back to defaults for unspecified flags.
@@ -55,9 +55,9 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
     return { ...DEFAULT_SITE_PROFILE };
   }
 
-  // The conditional below guards against runtime scenarios where profileName is not in SITE_PROFILES, even though TypeScript's Record type doesn't capture this.
-  // This can happen if a channel references a typo'd profile name or if profiles are modified at runtime.
-  const profile = SITE_PROFILES[profileName] as SiteProfile | undefined;
+  // Check built-in profiles first, then user-defined profiles. User profiles are stored separately and can only extend built-in profiles (not other user profiles),
+  // so the resolution chain always terminates at a built-in profile.
+  const profile = (SITE_PROFILES[profileName] as SiteProfile | undefined) ?? (getUserProfiles()[profileName] as SiteProfile | undefined);
 
   if(!profile) {
 
@@ -296,22 +296,53 @@ export function validateProfiles(): void {
     }
   }
 
-  // Validate all channel profile references point to existing profiles. This catches typos in channel definitions.
+  // Validate all channel profile references point to existing profiles (built-in or user). This catches typos in channel definitions.
+  const userProfiles = getUserProfiles();
+
   for(const [ channelName, channel ] of Object.entries(CHANNELS)) {
 
     const channelProfile = channel.profile;
 
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if((channelProfile !== undefined) && (channelProfile !== "auto") && !SITE_PROFILES[channelProfile]) {
+    if((channelProfile !== undefined) && (channelProfile !== "auto") && !SITE_PROFILES[channelProfile] && !(channelProfile in userProfiles)) {
 
       errors.push([ "Channel ", channelName, " references non-existent profile: ", channelProfile ].join(""));
     }
   }
 
-  // If any errors were found, throw with all error messages for comprehensive feedback.
+  // If any built-in configuration errors were found, throw with all error messages for comprehensive feedback.
   if(errors.length > 0) {
 
     throw new Error([ "Profile validation failed:\n  ", errors.join("\n  ") ].join(""));
+  }
+
+  // Validate user-defined profiles and domain mappings. These are warnings, not fatal errors — broken user profiles should not prevent the server from starting.
+  // The user can fix them via the web UI.
+  const userWarnings: string[] = [];
+  const allProfileNames = new Set([ ...Object.keys(SITE_PROFILES), ...Object.keys(userProfiles) ]);
+
+  for(const [ key, profile ] of Object.entries(userProfiles)) {
+
+    const profileErrors = validateProfile(key, profile);
+
+    userWarnings.push(...profileErrors);
+  }
+
+  const userDomains = getUserDomains();
+
+  for(const [ domain, config ] of Object.entries(userDomains)) {
+
+    const domainErrors = validateDomain(domain, config, allProfileNames);
+
+    userWarnings.push(...domainErrors);
+  }
+
+  if(userWarnings.length > 0) {
+
+    for(const warning of userWarnings) {
+
+      LOG.warn("User profile validation: %s", warning);
+    }
   }
 }
 
@@ -329,30 +360,59 @@ export interface ProfileInfo {
   // Human-readable description of the profile's purpose.
   description: string;
 
-  // Profile name (the key in SITE_PROFILES).
+  // Profile name (the key in SITE_PROFILES or user profiles).
   name: string;
+
+  // Where this profile comes from: "builtin" for SITE_PROFILES entries, "user" for user-defined profiles.
+  source: "builtin" | "user";
 
   // Short summary for dropdown display (max ~40 chars).
   summary: string;
 }
 
 /**
- * Returns all profiles with their descriptions, categories, and summaries, sorted alphabetically by name. Used by the channel configuration UI to populate the
- * profile dropdown with tooltips and the profile reference section.
+ * Returns all profiles (built-in and user-defined) with their descriptions, categories, summaries, and source tags, sorted alphabetically by name. Used by the
+ * channel configuration UI to populate the profile dropdown with tooltips and the profile reference section.
  * @returns Array of profile info objects.
  */
 export function getProfiles(): ProfileInfo[] {
 
-  return Object.keys(SITE_PROFILES).sort().map((name) => {
+  const result: ProfileInfo[] = [];
+
+  // Add built-in profiles.
+  for(const name of Object.keys(SITE_PROFILES).sort()) {
 
     const profile = SITE_PROFILES[name];
 
-    return {
+    result.push({
 
       category: profile.category ?? "special",
       description: profile.description ?? "",
       name,
+      source: "builtin",
       summary: profile.summary ?? profile.description ?? ""
-    };
-  });
+    });
+  }
+
+  // Add user-defined profiles. User profiles default to the "custom" category unless they explicitly specify a different category.
+  const userProfiles = getUserProfiles();
+
+  for(const name of Object.keys(userProfiles).sort()) {
+
+    const profile = userProfiles[name];
+
+    result.push({
+
+      category: profile.category ?? "custom",
+      description: profile.description ?? "",
+      name,
+      source: "user",
+      summary: profile.summary ?? profile.description ?? ""
+    });
+  }
+
+  // Sort all profiles alphabetically by name.
+  result.sort((a, b) => a.name.localeCompare(b.name));
+
+  return result;
 }

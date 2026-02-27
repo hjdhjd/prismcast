@@ -22,6 +22,7 @@ import express from "express";
 import { getAllStreams } from "./streaming/registry.js";
 import { getLogFilePath } from "./config/paths.js";
 import { initializeUserChannels } from "./config/userChannels.js";
+import { initializeUserProfiles } from "./config/userProfiles.js";
 import { loadHealthState } from "./config/health.js";
 import morgan from "morgan";
 import { setupRoutes } from "./routes/index.js";
@@ -356,11 +357,13 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
     cliOverrides["server.port"] = parsedArgs.port;
   }
 
-  // Initialize configuration from file and environment variables, then validate. CLI overrides are applied as the highest-priority merge pass.
+  // Initialize configuration from file and environment variables, then validate. CLI overrides are applied as the highest-priority merge pass. User profiles are
+  // loaded after configuration validation but before profile validation, so that user-defined profiles and domain mappings are available for the validation pass.
   try {
 
     await initializeConfiguration(cliOverrides);
     validateConfiguration();
+    await initializeUserProfiles();
     validateProfiles();
   } catch(error) {
 

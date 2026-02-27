@@ -344,11 +344,12 @@ export interface Config {
 /**
  * UI category for profile grouping in dropdowns and reference documentation. Profiles are grouped by their fullscreen mechanism and special characteristics.
  * - "api": Profiles using the JavaScript fullscreen API (including embedded iframe and click-to-play variants).
+ * - "custom": User-defined profiles created via the profile builder wizard or imported from provider packs.
  * - "keyboard": Profiles using keyboard shortcuts (typically the 'f' key) for fullscreen.
  * - "multiChannel": Multi-channel profiles requiring a channel selector for tile or thumbnail-based channel selection.
  * - "special": Special-purpose profiles like static page capture.
  */
-export type ProfileCategory = "api" | "keyboard" | "multiChannel" | "special";
+export type ProfileCategory = "api" | "custom" | "keyboard" | "multiChannel" | "special";
 
 /**
  * Site profile definition with optional flags. All flags are optional because profiles can inherit from other profiles, and only the flags that differ from the
@@ -1092,4 +1093,107 @@ export interface UiSize {
 
   // Width of browser chrome in pixels (window borders, scrollbars if visible).
   width: number;
+}
+
+/* Provider packs allow users to define custom site profiles and domain mappings without modifying source code. These types support the profiles.json storage format,
+ * the provider pack distribution format for sharing configurations, and the validation pipeline for imports.
+ */
+
+/**
+ * Storage format for profiles.json. Contains user-defined site profiles and domain mappings that extend or override the built-in configurations.
+ */
+export interface UserProfilesFile {
+
+  // User-defined domain-to-profile mappings. Each key is a hostname (e.g., "watch.sling.com") and the value configures which profile and provider name to use.
+  domains?: Record<string, DomainConfig>;
+
+  // User-defined site profiles. Each key is a profile name (e.g., "huluLive") and the value is a SiteProfile definition with an extends property referencing
+  // a built-in profile.
+  profiles?: Record<string, SiteProfile>;
+}
+
+/**
+ * Domain-level configuration associating domain patterns with site profiles and provider display names. Each entry can specify a site profile for behavior
+ * configuration and/or a provider display name for friendly UI labels. Used by both built-in domain mappings in sites.ts and user-defined mappings in profiles.json.
+ */
+export interface DomainConfig {
+
+  // URL to navigate to for authentication. Some sites show different login options on their homepage vs their player page. When set, the auth route navigates to
+  // this URL instead of the channel's streaming URL. Omit for sites where the streaming URL is also the correct login page.
+  loginUrl?: string;
+
+  // Maximum continuous playback duration in hours before the site enforces a stream cutoff. When set, the playback monitor proactively reloads the page before this
+  // limit expires to maintain uninterrupted streaming. Fractional values are supported (e.g., 1.5 for 90 minutes). Omit for sites that allow indefinite playback.
+  maxContinuousPlayback?: number;
+
+  // Site profile name for automatic profile detection. When a URL matches this domain, the specified profile is used to configure site-specific behavior
+  // (fullscreen method, iframe handling, etc.). Omit for domains that only need a display name.
+  profile?: string;
+
+  // Friendly provider name shown in the UI source column, provider dropdowns, and labels. When set, this name is used instead of the raw domain string (e.g.,
+  // "Hulu" instead of "hulu.com"). Omit to fall back to the concise domain extracted from the URL.
+  provider?: string;
+
+  // Provider filter tag for subscription services. Channels whose canonical URL matches a domain with this field are identified as belonging to this subscription
+  // service for filtering purposes. Domains that share a tag (e.g., "watch.sling.com" and a hypothetical "sling.com" variant) are treated as the same provider.
+  // Omit for network-owned sites (abc.com, nbc.com, espn.com, etc.) — they are implicitly tagged "direct".
+  providerTag?: string;
+}
+
+/**
+ * Result of loading user profiles from the profiles.json file.
+ */
+export interface UserProfilesLoadResult {
+
+  // User-defined domain mappings (empty object if file doesn't exist or parse error).
+  domains: Record<string, DomainConfig>;
+
+  // True if the file exists but contains invalid JSON.
+  parseError: boolean;
+
+  // Error message if parseError is true.
+  parseErrorMessage?: string;
+
+  // User-defined site profiles (empty object if file doesn't exist or parse error).
+  profiles: Record<string, SiteProfile>;
+}
+
+/**
+ * Provider pack distribution format. Bundles a profile, domain mapping(s), and optionally channels for a streaming provider into a single JSON file. On import,
+ * its contents are split and written to profiles.json and channels.json.
+ */
+export interface ProviderPack {
+
+  // Channel definitions to add alongside the profile. Optional — users may want to configure their own channel list.
+  channels?: ChannelMap;
+
+  // Domain-to-profile mappings. Optional — users may want to import just a profile to reference from their own domain mappings.
+  domains?: Record<string, DomainConfig>;
+
+  // Human-readable provider name for display during import.
+  name: string;
+
+  // One or more profile definitions. At least one is required.
+  profiles: Record<string, SiteProfile>;
+
+  // Format version for future compatibility.
+  version: number;
+}
+
+/**
+ * Validation result for profile and domain imports.
+ */
+export interface ProfilesValidationResult {
+
+  // Validated domain mappings that passed all checks.
+  domains: Record<string, DomainConfig>;
+
+  // Validation error messages describing each issue found.
+  errors: string[];
+
+  // Validated profiles that passed all checks.
+  profiles: Record<string, SiteProfile>;
+
+  // True if validation passed with no errors.
+  valid: boolean;
 }

@@ -3,11 +3,11 @@
  * userChannels.ts: User channel file management for PrismCast.
  */
 import type { Channel, ChannelListingEntry, ChannelMap, StoredChannel, StoredChannelMap } from "../types/index.js";
+import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.js";
 import { buildProviderGroups, getAllProviderTags, getProviderSelections, isChannelAvailableByProvider, isProviderVariant, setEnabledProviders,
   setProviderSelections } from "./providers.js";
 import { getChannelsFilePath, getDataDir } from "./paths.js";
 import { CONFIG } from "./index.js";
-import { LOG } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import fs from "node:fs";
 
@@ -319,6 +319,18 @@ export async function initializeUserChannels(): Promise<void> {
   } else {
 
     setEnabledProviders(configuredProviders);
+  }
+
+  // Check for non-printable characters in loaded channel string values. These warnings are informational — loaded data is not modified.
+  for(const [ channelKey, stored ] of Object.entries(loadedUserChannels)) {
+
+    for(const [ field, value ] of Object.entries(stored)) {
+
+      if((typeof value === "string") && containsNonPrintable(value)) {
+
+        LOG.warn("User channel '%s' field '%s' contains non-printable characters. Re-save the channel to clean it.", channelKey, field);
+      }
+    }
   }
 
   const userCount = Object.keys(loadedUserChannels).length;
@@ -817,7 +829,7 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
 
     const channelData = value as Record<string, unknown>;
 
-    // Validate required name field.
+    // Validate required name field. Sanitize after type check to strip non-printable characters from imported data.
     if((typeof channelData.name !== "string") || (channelData.name.trim() === "")) {
 
       errors.push("Channel '" + key + "': name is required.");
@@ -825,7 +837,9 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
       continue;
     }
 
-    const nameError = validateChannelName(channelData.name);
+    const cleanName = sanitizeString(channelData.name);
+
+    const nameError = validateChannelName(cleanName);
 
     if(nameError) {
 
@@ -834,7 +848,7 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
       continue;
     }
 
-    // Validate required url field.
+    // Validate required url field. Sanitize after type check.
     if((typeof channelData.url !== "string") || (channelData.url.trim() === "")) {
 
       errors.push("Channel '" + key + "': url is required.");
@@ -842,7 +856,9 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
       continue;
     }
 
-    const urlError = validateChannelUrl(channelData.url);
+    const cleanUrl = sanitizeString(channelData.url);
+
+    const urlError = validateChannelUrl(cleanUrl);
 
     if(urlError) {
 
@@ -851,8 +867,8 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
       continue;
     }
 
-    // Validate optional profile field.
-    const profile = (typeof channelData.profile === "string") ? channelData.profile : undefined;
+    // Validate optional profile field. Sanitize after type check.
+    const profile = (typeof channelData.profile === "string") ? sanitizeString(channelData.profile) : undefined;
     const profileError = validateChannelProfile(profile, validProfiles);
 
     if(profileError) {
@@ -862,11 +878,11 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
       continue;
     }
 
-    // Build validated channel.
+    // Build validated channel with sanitized values.
     const channel: UserChannel = {
 
-      name: channelData.name,
-      url: channelData.url
+      name: cleanName,
+      url: cleanUrl
     };
 
     if(profile) {
@@ -874,15 +890,15 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
       channel.profile = profile;
     }
 
-    // Include optional fields if present.
+    // Include optional fields if present. Sanitize string values to strip non-printable characters.
     if(typeof channelData.stationId === "string") {
 
-      channel.stationId = channelData.stationId;
+      channel.stationId = sanitizeString(channelData.stationId);
     }
 
     if(typeof channelData.channelSelector === "string") {
 
-      channel.channelSelector = channelData.channelSelector;
+      channel.channelSelector = sanitizeString(channelData.channelSelector);
     }
 
     // Validate optional channelNumber field (range and type).

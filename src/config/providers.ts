@@ -6,6 +6,7 @@ import type { Channel, ChannelMap, ProviderGroup } from "../types/index.js";
 import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
+import { getUserDomains } from "./userProfiles.js";
 
 /* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
@@ -68,6 +69,18 @@ export function getProviderTagForChannel(key: string): string {
   if(!channel) {
 
     return "direct";
+  }
+
+  // If the channel specifies a user-defined profile, use that profile's providerTag rather than deriving from the URL. This ensures channels with explicit profile
+  // assignments are grouped under the correct provider filter even when their URL domain has a different built-in providerTag.
+  if(channel.profile) {
+
+    const profileProvider = resolveUserProfileProvider(channel.profile);
+
+    if(profileProvider?.providerTag) {
+
+      return profileProvider.providerTag;
+    }
   }
 
   const config = getDomainConfig(channel.url);
@@ -137,12 +150,32 @@ export function getAllProviderTags(): { displayName: string; tag: string }[] {
     }
   }
 
+  // Scan user domain mappings for provider tags that may not appear in any channel yet (e.g., newly created profiles with no channels assigned).
+  const userDomains = getUserDomains();
+
+  for(const config of Object.values(userDomains)) {
+
+    if(config.providerTag) {
+
+      tags.add(config.providerTag);
+    }
+  }
+
   // Build a tag → display name map from DOMAIN_CONFIG's provider fields. First match wins for each tag.
   const tagDisplayNames = new Map<string, string>();
 
   tagDisplayNames.set("direct", "Direct");
 
   for(const config of Object.values(DOMAIN_CONFIG)) {
+
+    if(config.providerTag && config.provider && !tagDisplayNames.has(config.providerTag)) {
+
+      tagDisplayNames.set(config.providerTag, config.provider);
+    }
+  }
+
+  // Scan user domain mappings for display names not covered by built-in DOMAIN_CONFIG.
+  for(const config of Object.values(userDomains)) {
 
     if(config.providerTag && config.provider && !tagDisplayNames.has(config.providerTag)) {
 
@@ -312,7 +345,7 @@ export function buildProviderGroups(channels: ChannelMap): void {
     } else {
 
       // Normal case: canonical is the predefined version (or a new user-defined channel with no predefined equivalent).
-      variants.push({ key: canonicalKey, label: canonical.provider ?? getProviderDisplayName(canonical.url) });
+      variants.push({ key: canonicalKey, label: getChannelProviderLabel(canonical) });
     }
 
     variantKeys.sort();
@@ -321,7 +354,7 @@ export function buildProviderGroups(channels: ChannelMap): void {
 
       const variant = channels[variantKey];
 
-      variants.push({ key: variantKey, label: variant.provider ?? getProviderDisplayName(variant.url) });
+      variants.push({ key: variantKey, label: getChannelProviderLabel(variant) });
     }
 
     const group: ProviderGroup = { canonicalKey, variants };
@@ -377,16 +410,94 @@ export function buildProviderGroups(channels: ChannelMap): void {
 }
 
 /**
- * Resolves a URL to a friendly provider display name. Checks DOMAIN_CONFIG via getDomainConfig() for a provider name, trying the full hostname first for
- * subdomain-specific overrides before falling back to the concise domain. Returns the raw domain string if no provider name is configured.
+ * Resolves a URL to a friendly provider display name. Checks built-in DOMAIN_CONFIG first for a stable, well-known provider name, then falls back to
+ * getDomainConfig() which includes user domain mappings. This ordering prevents user domain overrides from corrupting display labels for predefined channel
+ * variants — a user mapping a built-in domain to a custom profile should not rename every provider dropdown entry that uses that domain.
  * @param url - The URL to resolve a provider display name for.
  * @returns The provider display name, or the concise domain if no provider name is configured.
  */
 export function getProviderDisplayName(url: string): string {
 
+  // Prefer built-in DOMAIN_CONFIG provider names for stable display. Check by full hostname first (for subdomain-specific entries like tv.youtube.com), then by
+  // concise domain (e.g., disneyplus.com).
+  try {
+
+    const hostname = new URL(url).hostname;
+    const builtinFull = DOMAIN_CONFIG[hostname];
+
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    if(builtinFull?.provider) {
+
+      return builtinFull.provider;
+    }
+
+    const concise = extractDomain(url);
+    const builtinConcise = DOMAIN_CONFIG[concise];
+
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    if(builtinConcise?.provider) {
+
+      return builtinConcise.provider;
+    }
+  } catch {
+
+    // Invalid URL — fall through to getDomainConfig.
+  }
+
+  // For domains not in DOMAIN_CONFIG, fall back to getDomainConfig() which includes user domain mappings.
   const config = getDomainConfig(url);
 
   return config?.provider ?? extractDomain(url);
+}
+
+/**
+ * Resolves provider identity (tag and display name) for a user-defined profile by scanning its domain mappings. Returns the first matching domain config's
+ * providerTag and provider name. This is the single source of truth for "profile key → provider identity" resolution, used by both tag and label lookups to avoid
+ * duplicating the domain scan logic.
+ * @param profileKey - The user profile key to resolve.
+ * @returns The provider identity from the profile's domain mappings, or undefined if no matching domain mapping exists.
+ */
+function resolveUserProfileProvider(profileKey: string): { provider?: string; providerTag?: string } | undefined {
+
+  const userDomains = getUserDomains();
+
+  for(const config of Object.values(userDomains)) {
+
+    if(config.profile === profileKey) {
+
+      return { provider: config.provider, providerTag: config.providerTag };
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Resolves the provider display label for a channel. Checks in order: explicit `provider` field on the channel, the channel's explicit profile resolved via
+ * user domain mappings, then URL-based built-in display name. This ensures channels assigned to user-defined profiles show the profile's provider name rather
+ * than the built-in name for the URL domain.
+ * @param channel - The channel to resolve a label for.
+ * @returns The provider display label.
+ */
+export function getChannelProviderLabel(channel: Channel): string {
+
+  if(channel.provider) {
+
+    return channel.provider;
+  }
+
+  // If the channel specifies a user-defined profile, use that profile's provider name from domain mappings.
+  if(channel.profile) {
+
+    const profileProvider = resolveUserProfileProvider(channel.profile);
+
+    if(profileProvider?.provider) {
+
+      return profileProvider.provider;
+    }
+  }
+
+  return getProviderDisplayName(channel.url);
 }
 
 /**

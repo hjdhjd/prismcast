@@ -1203,6 +1203,20 @@ export function getLoginStatus(): LoginStatus {
   };
 }
 
+/**
+ * Returns the active login page if login mode is currently active. Used by the profile test flow to evaluate CSS selectors against the live page DOM.
+ * @returns The login page, or null if login mode is not active.
+ */
+export function getLoginPage(): Nullable<Page> {
+
+  if(!loginModeActive) {
+
+    return null;
+  }
+
+  return loginPage;
+}
+
 /* Over time, browser pages (tabs) may accumulate if cleanup fails during stream termination. This can happen due to race conditions, errors during cleanup, or
  * edge cases in stream lifecycle management. Each orphaned page consumes memory and may continue running JavaScript, so we periodically clean them up.
  *
