@@ -1247,7 +1247,7 @@ export function monitorPlaybackHealth(
 
             // Video element exists but doesn't meet readyState criteria. This is a buffering condition, not a missing video condition.
             // Apply the normal buffering grace period instead of escalating to navigation.
-            LOG.info("Video element exists but not ready (count=%s, maxReadyState=%s). Treating as buffering.", presence.videoCount, presence.maxReadyState);
+            LOG.debug("recovery", "Video is buffering (readyState=%s, elements=%s).", presence.maxReadyState, presence.videoCount);
 
             // Reset video not found counter since video actually exists.
             videoNotFoundCount = 0;

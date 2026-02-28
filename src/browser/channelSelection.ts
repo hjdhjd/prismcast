@@ -135,6 +135,67 @@ export function getProviderModuleInfo(): { label: string; slug: string }[] {
 }
 
 /**
+ * Returns a mapping of provider guide URL hostnames to provider slugs for all registered provider modules. Used by the channels panel to embed a client-side
+ * lookup table so the browser can fetch provider channel discovery by slug when the user enters a matching URL.
+ * @returns Record mapping hostnames to provider slugs.
+ */
+export function getProviderDomainMap(): Record<string, string> {
+
+  const map: Record<string, string> = {};
+
+  for(const provider of providerModules) {
+
+    map[new URL(provider.guideUrl).hostname] = provider.slug;
+  }
+
+  return map;
+}
+
+/**
+ * Returns a map of provider slugs to their guide URLs. Used client-side to suggest the correct full URL when a user enters a bare or www-variant hostname.
+ * @returns Record mapping provider slug to guide URL.
+ */
+export function getProviderGuideUrls(): Record<string, string> {
+
+  const map: Record<string, string> = {};
+
+  for(const provider of providerModules) {
+
+    map[provider.slug] = provider.guideUrl;
+  }
+
+  return map;
+}
+
+/**
+ * Returns cached discovered channels from all provider modules, grouped by guide URL hostname. Each entry includes the hostname and an array of label/value pairs
+ * suitable for datalist population. Only includes providers whose cache is non-null (i.e., discovery or precaching has already run). Used by the channels panel
+ * to merge provider-discovered channels into the channel selector datalist alongside predefined channel suggestions.
+ * @returns Array of objects with hostname and entries properties.
+ */
+export function getCachedProviderChannels(): { entries: { label: string; value: string }[]; hostname: string }[] {
+
+  const results: { entries: { label: string; value: string }[]; hostname: string }[] = [];
+
+  for(const provider of providerModules) {
+
+    const cached = provider.getCachedChannels();
+
+    if(!cached) {
+
+      continue;
+    }
+
+    const hostname = new URL(provider.guideUrl).hostname;
+    const entries = cached.map((ch) => ({ label: ch.name, value: ch.channelSelector }));
+
+    results.push({ entries, hostname });
+  }
+
+  return results;
+}
+
+/**
  * Clicks at the specified coordinates after a brief settle delay. The delay allows scroll animations and lazy-loaded content to finish before the click fires.
  * Callers are responsible for scrolling the target element into view (typically via scrollIntoView inside a page.evaluate call) before invoking this function.
  * Exported for use by tuning strategy files (thumbnailRow, tileClick, hulu).
@@ -175,7 +236,7 @@ export function resolveMatchSelector(profile: ChannelSelectionProfile): string {
   }
 
   // Default to image URL slug matching for backward compatibility with profiles that don't specify matchSelector.
-  return "img[src*=\"" + profile.channelSelector + "\"]";
+  return "img[src*=\"" + profile.channelSelector + "\" i]";
 }
 
 /**

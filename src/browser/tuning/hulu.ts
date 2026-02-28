@@ -91,6 +91,48 @@ function clearHuluCache(): void {
 }
 
 /**
+ * Resolves the actual cache key for a normalized channel name, with a fuzzy fallback that strips all non-alphanumeric characters to handle formatting mismatches
+ * between channelSelector values and Hulu's API naming (e.g., "C-SPAN3" vs "C-SPAN 3", "HBO2" vs "HBO 2"). Used by findHuluChannelEntry (lookup) and
+ * invalidateHuluDirectUrl (deletion) to ensure both paths handle the same set of name variants.
+ * @param normalizedName - The normalized (lowercased, whitespace-collapsed) channel name to resolve.
+ * @returns The actual cache key, or null if no match found.
+ */
+function resolveHuluCacheKey(normalizedName: string): Nullable<string> {
+
+  if(huluChannelCache.has(normalizedName)) {
+
+    return normalizedName;
+  }
+
+  // Fuzzy fallback: strip all non-alphanumeric characters and compare. Handles formatting differences in spaces, hyphens, ampersands, and other punctuation
+  // between channelSelector definitions and Hulu's Details API channel_info.name values.
+  const stripped = normalizedName.replace(/[^a-z0-9]/g, "");
+
+  for(const key of huluChannelCache.keys()) {
+
+    if(key.replace(/[^a-z0-9]/g, "") === stripped) {
+
+      return key;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Looks up a channel in the unified cache by normalized name, with fuzzy fallback via resolveHuluCacheKey. Only used for lookups keyed by channelSelector —
+ * internal cache operations that use API-derived names should use huluChannelCache.get() directly.
+ * @param normalizedName - The normalized (lowercased, whitespace-collapsed) channel name to look up.
+ * @returns The matching cache entry, or null if no match found.
+ */
+function findHuluChannelEntry(normalizedName: string): Nullable<HuluChannelEntry> {
+
+  const key = resolveHuluCacheKey(normalizedName);
+
+  return key ? huluChannelCache.get(key) ?? null : null;
+}
+
+/**
  * Populates the unified channel cache from a details API response. For each item with channel_info, creates or updates the entry keyed by normalized name,
  * joining the details data (name, UUID) with programs from the listing staging map. Updates existing entries in-place to preserve alias references and
  * supplementary fields (rowNumber, affiliate) that may have been set by guide grid operations.
@@ -934,8 +976,8 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
   let clickTarget = normalizedName;
 
   // Check the unified cache for a row number direct-scroll shortcut. If we've seen this channel before, we can skip binary search entirely and scroll directly
-  // to it.
-  const cachedEntry = huluChannelCache.get(normalizedName);
+  // to it. Uses fuzzy lookup to handle channelSelector/API name formatting mismatches.
+  const cachedEntry = findHuluChannelEntry(normalizedName);
 
   if(cachedEntry?.rowNumber !== undefined) {
 
@@ -1125,7 +1167,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
   // UUID+EAB and swapping the playlist autonomously). For channels where the interceptor hasn't self-resolved, the unified cache provides UUID+EAB for
   // injection. Either path avoids the redundant on-now cell click. Note: for affiliates, the inference block above may have already called tryFastPathTune with
   // the same entry — that call is redundant here but harmless (~10ms), and avoiding it with a flag would create a fragile coupling to the inference block.
-  const fastPathSuccess = await tryFastPathTune(page, huluChannelCache.get(normalizedName) ?? null, channelName);
+  const fastPathSuccess = await tryFastPathTune(page, findHuluChannelEntry(normalizedName), channelName);
 
   if(fastPathSuccess) {
 
@@ -1332,7 +1374,7 @@ function setupDetailsResponseInterception(page: Page): void {
 async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promise<Nullable<string>> {
 
   const normalizedName = normalizeChannelName(channelSelector);
-  const cachedEntry = huluChannelCache.get(normalizedName);
+  const cachedEntry = findHuluChannelEntry(normalizedName);
   const cachedUuid = cachedEntry?.uuid ?? null;
 
   // Set up server-side response listeners to populate the unified channel cache. Must be set up before navigation so we capture details and listing API responses
@@ -1909,13 +1951,19 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
 /**
  * Invalidates the cached entry for the given channel selector. Called when a cached direct URL fails to produce a working stream, so the next tune attempts the
- * cold cache path (details API extraction) or falls back to the guide grid. Deletes the specific key without affecting entries that share the same object
- * reference via aliasing.
+ * cold cache path (details API extraction) or falls back to the guide grid. Uses resolveHuluCacheKey for fuzzy name matching so invalidation works even when the
+ * channelSelector format doesn't exactly match the API-derived key. Deletes the specific key without affecting entries that share the same object reference
+ * via aliasing.
  * @param channelSelector - The channel selector string to invalidate.
  */
 function invalidateHuluDirectUrl(channelSelector: string): void {
 
-  huluChannelCache.delete(normalizeChannelName(channelSelector));
+  const key = resolveHuluCacheKey(normalizeChannelName(channelSelector));
+
+  if(key) {
+
+    huluChannelCache.delete(key);
+  }
 }
 
 /**

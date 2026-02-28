@@ -73,7 +73,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   apiMultiVideo: {
 
     category: "multiChannel",
-    channelSelection: { matchSelector: "img[src*=\"{channel}\"]", strategy: "tileClick" },
+    channelSelection: { matchSelector: "img[src*=\"{channel}\" i]", strategy: "tileClick" },
     description: "Multi-channel sites with auto-play tile selection. Channel Selector is interpolated into the matchSelector CSS template to find the channel element.",
     extends: "fullscreenApi",
     selectReadyVideo: true,
@@ -149,7 +149,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     category: "multiChannel",
     channelSelection: {
 
-      matchSelector: "img[src*=\"{channel}\"]", playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]",
+      matchSelector: "img[src*=\"{channel}\" i]", playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]",
       scrollToBottom: true, strategy: "tileClick"
     },
     description: "Disney+ live channels with tile selection and play button modal. Channel Selector is interpolated into matchSelector to find the element.",
@@ -264,7 +264,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   keyboardDynamicMultiVideo: {
 
     category: "multiChannel",
-    channelSelection: { matchSelector: "img[src*=\"{channel}\"]", strategy: "thumbnailRow" },
+    channelSelection: { matchSelector: "img[src*=\"{channel}\" i]", strategy: "thumbnailRow" },
     description: "Multi-channel sites with thumbnail row layout. Channel Selector is interpolated into the matchSelector CSS template to find the channel element.",
     extends: "keyboardDynamic",
     selectReadyVideo: true,

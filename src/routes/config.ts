@@ -15,12 +15,12 @@ import { exportProviderPack, importProviderPack, parseProviderPack } from "../co
 import { getAllProviderTags, getCanonicalKey, getChannelProviderLabel, getChannelProviderTags, getEnabledProviders, getProviderGroup, getProviderSelection,
   getProviderTagForChannel, getResolvedChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant,
   resolveProviderKey, setEnabledProviders, setProviderSelection } from "../config/providers.js";
+import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo, getProviderSlugs } from "../browser/channelSelection.js";
 import { getChannelHealth, getProviderAuth } from "../config/health.js";
 import { getChannelListing, getChannelsParseErrorMessage, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel,
   getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel,
   loadUserChannels, resolveStoredChannel, saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile,
   validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
-import { getProviderModuleInfo, getProviderSlugs } from "../browser/channelSelection.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
@@ -574,14 +574,17 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
 }
 
 /**
- * Generates a JavaScript object literal mapping URL hostnames to known channel selector values from predefined channels. This data is embedded as a `<script>` block
- * in the channels panel so the client-side datalist can offer suggestions based on the URL the user enters.
+ * Generates JavaScript variables for channel selector datalist population. Produces three variables: `channelSelectorsByDomain` maps URL hostnames to known
+ * channel selector values (from predefined channels and cached provider discovery), `providerByDomain` maps provider guide URL hostnames to provider slugs for
+ * client-side async discovery, and `providerGuideUrl` maps provider slugs to their guide URLs for URL correction hints. Embedded as a `<script>` block in the
+ * channels panel.
  *
- * @returns A JavaScript variable declaration string ready to embed in a `<script>` tag.
+ * @returns JavaScript variable declarations ready to embed in a `<script>` tag.
  */
 function generateChannelSelectorData(): string {
 
   const byDomain: Record<string, { label: string; value: string }[]> = {};
+  const seen: Record<string, Set<string>> = {};
 
   for(const channel of Object.values(PREDEFINED_CHANNELS)) {
 
@@ -592,9 +595,39 @@ function generateChannelSelectorData(): string {
 
     const hostname = new URL(channel.url).hostname;
 
+    seen[hostname] ??= new Set();
+
+    if(seen[hostname].has(channel.channelSelector)) {
+
+      continue;
+    }
+
+    seen[hostname].add(channel.channelSelector);
     byDomain[hostname] ??= [];
     byDomain[hostname].push({ label: channel.name ?? channel.channelSelector, value: channel.channelSelector });
   }
+
+  // Merge cached provider-discovered channels into the domain map. Predefined entries take precedence — we only add discovered channels whose channelSelector
+  // value is not already present for that domain. This enriches the datalist with the full provider lineup when precaching or prior discovery has run.
+  for(const provider of getCachedProviderChannels()) {
+
+    seen[provider.hostname] ??= new Set();
+    byDomain[provider.hostname] ??= [];
+
+    for(const entry of provider.entries) {
+
+      if(!seen[provider.hostname].has(entry.value)) {
+
+        seen[provider.hostname].add(entry.value);
+        byDomain[provider.hostname].push(entry);
+      }
+    }
+  }
+
+  // Build the hostname→slug map and slug→guideUrl map for all providers (including those with cold caches) so the client-side fetch can trigger discovery for any
+  // provider domain and the URL hint can suggest the correct guide URL.
+  const providerByDomain = getProviderDomainMap();
+  const providerGuideUrl = getProviderGuideUrls();
 
   // Sort entries within each domain alphabetically by label for consistent ordering in the datalist dropdown.
   for(const entries of Object.values(byDomain)) {
@@ -602,7 +635,9 @@ function generateChannelSelectorData(): string {
     entries.sort((a, b) => a.label.localeCompare(b.label));
   }
 
-  return "var channelSelectorsByDomain = " + JSON.stringify(byDomain) + ";";
+  return "var channelSelectorsByDomain = " + JSON.stringify(byDomain) + ";\n" +
+    "var providerByDomain = " + JSON.stringify(providerByDomain) + ";\n" +
+    "var providerGuideUrl = " + JSON.stringify(providerGuideUrl) + ";";
 }
 
 /**
