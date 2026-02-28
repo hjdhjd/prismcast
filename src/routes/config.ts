@@ -6,28 +6,30 @@ import type { AdvancedSection, SettingMetadata, UserConfig } from "../config/use
 import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from "../config/index.js";
 import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault,
   loadUserConfig, saveUserConfig, setNestedValue } from "../config/userConfig.js";
-import type { Channel, ChannelDelta, ChannelListingEntry, DomainConfig, Nullable, ProfileCategory, SiteProfile, StoredChannel } from "../types/index.js";
+import type { Channel, ChannelDelta, ChannelListingEntry, ChannelSortField, DomainConfig, Nullable, ProfileCategory, SiteProfile,
+  StoredChannel } from "../types/index.js";
 import { EXCLUDED_PROFILES, deleteUserProfile, getUserDomains, getUserProfiles, saveUserProfiles, validateDomain, validateProfile,
   validateProfileKey } from "../config/userProfiles.js";
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, formatError, formatTimeAgo, generateChannelKey, isRunningAsService, parseM3U, sanitizeString } from "../utils/index.js";
+import { VALID_SORT_FIELDS, compareChannelSort, getAllProviderTags, getCanonicalKey, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey,
+  getEnabledProviders, getProviderGroup, getProviderSelection, getProviderTagForChannel, getResolvedChannel, hasMultipleProviders,
+  isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant, resolveProviderKey, setEnabledProviders,
+  setProviderSelection } from "../config/providers.js";
 import { exportProviderPack, importProviderPack, parseProviderPack } from "../config/providerPacks.js";
-import { getAllProviderTags, getCanonicalKey, getChannelProviderLabel, getChannelProviderTags, getEnabledProviders, getProviderGroup, getProviderSelection,
-  getProviderTagForChannel, getResolvedChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant,
-  resolveProviderKey, setEnabledProviders, setProviderSelection } from "../config/providers.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo, getProviderSlugs } from "../browser/channelSelection.js";
 import { getChannelHealth, getProviderAuth } from "../config/health.js";
 import { getChannelListing, getChannelsParseErrorMessage, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel,
   getPredefinedChannels, getUserChannels, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel,
   loadUserChannels, resolveStoredChannel, saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile,
   validateChannelUrl, validateImportedChannels } from "../config/userChannels.js";
+import { getProfileForChannel, getProfiles } from "../config/profiles.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { ProfileInfo } from "../config/profiles.js";
 import type { UserChannel } from "../config/userChannels.js";
 import { closeBrowser } from "../browser/index.js";
 import { getConfigFilePath } from "../config/paths.js";
 import { getPresetOptionsWithDegradation } from "../config/presets.js";
-import { getProfiles } from "../config/profiles.js";
 import { getStreamCount } from "../streaming/registry.js";
 
 /* The /config endpoint provides a user-friendly web interface for editing PrismCast settings. Users can adjust values, see defaults, and understand what each
@@ -72,6 +74,24 @@ const ICON_COPY = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"
 const M3U_FIELDS = [ "channelNumber", "name", "stationId", "tvgShift" ];
 
 const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this change.";
+
+// Optional column definitions for the channels table. These columns can be shown or hidden by the user via the column picker. The order here determines the
+// column order in the table, slotted between Provider and Actions.
+export const OPTIONAL_COLUMNS: readonly {
+  readonly align: string; readonly cssClass: string; readonly field: string; readonly label: string; readonly width: string;
+}[] = [
+
+  { align: "center", cssClass: "col-chnum", field: "channelNumber", label: "Number", width: "70px" },
+  { align: "center", cssClass: "col-stationid", field: "stationId", label: "Station ID", width: "100px" },
+  { align: "left", cssClass: "col-profile", field: "profile", label: "Profile", width: "130px" },
+  { align: "left", cssClass: "col-selector", field: "channelSelector", label: "Selector", width: "130px" }
+];
+
+// Total number of columns in the channels table (4 required + 4 optional).
+const TOTAL_COLUMN_COUNT = 8;
+
+// Valid optional column field names.
+const VALID_OPTIONAL_COLUMNS = new Set(OPTIONAL_COLUMNS.map((c) => c.field));
 
 /**
  * Checks whether a stored channel entry contains any fields that affect the M3U playlist. Used to decide whether to append the playlist reload hint when reverting
@@ -714,12 +734,12 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   const rowClassAttr = (rowClasses.length > 0) ? " class=\"" + rowClasses.join(" ") + "\"" : "";
 
   displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + " data-provider-tags=\"" + escapeHtml(providerTags) + "\">");
-  displayLines.push("<td class=\"ch-key\">" + escapeHtml(key) + "</td>");
-  displayLines.push("<td>" + escapeHtml(channel.name ?? key) + "</td>");
+  displayLines.push("<td class=\"ch-key\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "key")) + "\">" + escapeHtml(key) + "</td>");
+  displayLines.push("<td data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "name")) + "\">" + escapeHtml(channel.name ?? key) + "</td>");
 
   // Provider column: dropdown for multi-provider channels, static provider name for single-provider. Both states always render a hidden "No available providers"
   // label alongside the provider content so that client-side filterChannelRows() can toggle between them without a page reload.
-  displayLines.push("<td>");
+  displayLines.push("<td data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "provider")) + "\">");
 
   const labelHidden = isAvailableByProvider ? " style=\"display:none\"" : "";
   const contentHidden = isAvailableByProvider ? "" : " style=\"display:none\"";
@@ -756,6 +776,38 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   }
 
   displayLines.push("</td>");
+
+  // Optional columns: Number, Station ID, Profile, Selector. All four are always rendered; visibility is controlled by CSS classes on the table element.
+  displayLines.push("<td class=\"col-chnum\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelNumber")) + "\">" +
+    (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "") + "</td>");
+  displayLines.push("<td class=\"col-stationid\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "stationId")) + "\">" +
+    (channel.stationId ? escapeHtml(channel.stationId) : "") + "</td>");
+
+  // Profile column: show explicit profile as-is, or the auto-resolved friendly name with "(auto)" suffix in muted style. The sort key is computed once and applied
+  // uniformly to all three display branches so server-side sort order always matches client-side re-sort.
+  const profileSortKey = escapeHtml(getChannelSortKey(channel, key, "profile"));
+
+  if(channel.profile) {
+
+    displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey + "\">" + escapeHtml(channel.profile) + "</td>");
+  } else {
+
+    const resolved = getProfileForChannel(channel);
+
+    if(resolved.profileName !== "default") {
+
+      const label = getChannelProviderLabel(channel);
+
+      displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey +
+        "\"><span class=\"text-muted\">" + escapeHtml(label + " (auto)") + "</span></td>");
+    } else {
+
+      displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey + "\"></td>");
+    }
+  }
+
+  displayLines.push("<td class=\"col-selector\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelSelector")) + "\">" +
+    (channel.channelSelector ? escapeHtml(channel.channelSelector) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
 
   // Actions column with icon buttons. Five positions per row: Edit (always), Login/placeholder, Health/placeholder, context-sensitive, and Copy URL.
   displayLines.push("<td>");
@@ -848,7 +900,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   const editLines: string[] = [];
 
   editLines.push("<tr id=\"edit-row-" + escapedKey + "\" style=\"display: none;\">");
-  editLines.push("<td colspan=\"4\">");
+  editLines.push("<td colspan=\"" + String(TOTAL_COLUMN_COUNT) + "\">");
   editLines.push("<div class=\"channel-form\" style=\"margin: 0;\">");
   editLines.push("<h3>Edit Channel: " + escapedKey + "</h3>");
   editLines.push("<form id=\"edit-channel-form-" + escapedKey + "\" onsubmit=\"return submitChannelForm(event, 'edit')\">");
@@ -1926,21 +1978,72 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push(generateProfileReference(profiles));
 
   // Channels table. Disabled predefined channels are hidden by default and revealed via the "Show disabled" toggle. The wrapper div enables horizontal scrolling on
-  // small screens.
+  // small screens. Table classes dynamically include hide-col-* for each hidden optional column.
+  const visibleCols = new Set(CONFIG.channels.visibleColumns);
+  const tableClasses = [ "channel-table", "hide-disabled" ];
+
+  for(const col of OPTIONAL_COLUMNS) {
+
+    if(!visibleCols.has(col.field)) {
+
+      tableClasses.push("hide-" + col.cssClass);
+    }
+  }
+
+  const sortField = CONFIG.channels.channelSortField;
+  const sortDir = CONFIG.channels.channelSortDirection;
+
   lines.push("<div class=\"channel-table-wrapper\">");
-  lines.push("<table class=\"channel-table hide-disabled\">");
+  lines.push("<table class=\"" + tableClasses.join(" ") + "\" data-sort-field=\"" + sortField + "\" data-sort-dir=\"" + sortDir + "\">");
   lines.push("<thead>");
   lines.push("<tr>");
-  lines.push("<th class=\"col-key\">Key</th>");
-  lines.push("<th class=\"col-name\">Name</th>");
-  lines.push("<th class=\"col-provider\">Provider</th>");
-  lines.push("<th class=\"col-actions\">Actions</th>");
+
+  // Sortable column headers. All columns except Actions are sortable. The active sort column gets a direction indicator triangle.
+  const sortableHeaders: { cssClass: string; field: string; label: string }[] = [
+
+    { cssClass: "col-key", field: "key", label: "Key" },
+    { cssClass: "col-name", field: "name", label: "Name" },
+    { cssClass: "col-provider", field: "provider", label: "Provider" },
+    ...OPTIONAL_COLUMNS
+  ];
+
+  for(const hdr of sortableHeaders) {
+
+    const isActive = (sortField === hdr.field);
+    const indicator = isActive ? ((sortDir === "asc") ? " &#9650;" : " &#9660;") : "";
+
+    lines.push("<th class=\"" + hdr.cssClass + " sortable\" data-sort-field=\"" + hdr.field + "\" onclick=\"sortChannelTable('" + hdr.field + "')\">" +
+      hdr.label + indicator + "</th>");
+  }
+
+  // Actions header with column picker dropdown.
+  lines.push("<th class=\"col-actions\"><span>Actions</span>");
+  lines.push("<div class=\"dropdown column-picker\">");
+  lines.push("<button type=\"button\" class=\"btn-icon btn-col-picker\" title=\"Show/hide columns\" aria-label=\"Show/hide columns\" " +
+    "onclick=\"toggleDropdown(this)\">&#8942;</button>");
+  lines.push("<div class=\"dropdown-menu column-picker-menu\">");
+
+  for(const col of OPTIONAL_COLUMNS) {
+
+    const checked = visibleCols.has(col.field) ? " checked" : "";
+
+    lines.push("<label class=\"provider-option\"><input type=\"checkbox\" data-col-class=\"" + col.cssClass + "\" data-col-field=\"" + col.field +
+      "\" onchange=\"toggleColumn(this)\"" + checked + "> " + col.label + "</label>");
+  }
+
+  lines.push("</div>");
+  lines.push("</div>");
+  lines.push("</th>");
+
   lines.push("</tr>");
   lines.push("</thead>");
   lines.push("<tbody>");
 
+  // Sort the listing by the user's preferred field and direction before rendering rows. The canonical getChannelListing() order is preserved for other callers.
+  const sortedListing = [...listing].sort((a, b) => compareChannelSort(a.channel, a.key, b.channel, b.key, sortField, sortDir));
+
   // Generate rows for all channels using the shared row generator.
-  for(const entry of listing) {
+  for(const entry of sortedListing) {
 
     const rowHtml = generateChannelRowHtml(entry.key, profiles, entry);
 
@@ -2860,6 +2963,81 @@ export function setupConfigEndpoint(app: Express): void {
 
       LOG.error("Failed to update provider filter: %s.", formatError(error));
       res.status(500).json({ error: "Failed to update provider filter: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/channels/display-prefs - Update channel table display preferences (visible columns, sort field, sort direction).
+  app.post("/config/channels/display-prefs", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { sortDirection?: string; sortField?: string; visibleColumns?: string[] };
+
+      // Validate and apply visible columns if provided.
+      if(body.visibleColumns !== undefined) {
+
+        if(!Array.isArray(body.visibleColumns)) {
+
+          res.status(400).json({ error: "visibleColumns must be an array.", success: false });
+
+          return;
+        }
+
+        for(const col of body.visibleColumns) {
+
+          if(!VALID_OPTIONAL_COLUMNS.has(col)) {
+
+            res.status(400).json({ error: "Unknown column: " + col, success: false });
+
+            return;
+          }
+        }
+
+        CONFIG.channels.visibleColumns = [...body.visibleColumns];
+      }
+
+      // Validate and apply sort field if provided.
+      if(body.sortField !== undefined) {
+
+        if(!VALID_SORT_FIELDS.has(body.sortField as ChannelSortField)) {
+
+          res.status(400).json({ error: "Unknown sort field: " + body.sortField, success: false });
+
+          return;
+        }
+
+        CONFIG.channels.channelSortField = body.sortField as ChannelSortField;
+      }
+
+      // Validate and apply sort direction if provided.
+      if(body.sortDirection !== undefined) {
+
+        if((body.sortDirection !== "asc") && (body.sortDirection !== "desc")) {
+
+          res.status(400).json({ error: "sortDirection must be \"asc\" or \"desc\".", success: false });
+
+          return;
+        }
+
+        CONFIG.channels.channelSortDirection = body.sortDirection;
+      }
+
+      // Persist to config file.
+      const configResult = await loadUserConfig();
+      const userConfig = configResult.config;
+
+      userConfig.channels ??= {};
+      userConfig.channels.channelSortDirection = CONFIG.channels.channelSortDirection;
+      userConfig.channels.channelSortField = CONFIG.channels.channelSortField;
+      userConfig.channels.visibleColumns = CONFIG.channels.visibleColumns;
+
+      await saveUserConfig(filterDefaults(userConfig));
+
+      res.json({ success: true });
+    } catch(error) {
+
+      LOG.error("Failed to update display preferences: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to update display preferences: " + formatError(error), success: false });
     }
   });
 

@@ -2,10 +2,11 @@
  *
  * providers.ts: Provider group management for multi-provider channels.
  */
-import type { Channel, ChannelMap, ProviderGroup } from "../types/index.js";
+import type { Channel, ChannelMap, ChannelSortField, ProviderGroup, SortDirection } from "../types/index.js";
 import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
+import { getProfileForChannel } from "./profiles.js";
 import { getUserDomains } from "./userProfiles.js";
 
 /* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
@@ -498,6 +499,118 @@ export function getChannelProviderLabel(channel: Channel): string {
   }
 
   return getProviderDisplayName(channel.url);
+}
+
+// Valid sort field values for the channels table. Exported as the single source of truth for sort field validation, shared by the config POST handler and the
+// playlist endpoint's query parameter validation.
+export const VALID_SORT_FIELDS = new Set<ChannelSortField>([ "channelNumber", "channelSelector", "key", "name", "profile", "provider", "stationId" ]);
+
+/**
+ * Extracts a sortable string value from a channel for the specified sort field. Channel numbers are zero-padded to 6 digits for correct numeric ordering within a
+ * string comparison. Provider values use the display label for human-meaningful sort order. This is the single source of truth for channel sort key extraction,
+ * shared by both the server-side table renderer and the M3U playlist generator.
+ * @param channel - The channel definition.
+ * @param key - The channel key (used for key-based and name-fallback sorting).
+ * @param field - The sort field to extract.
+ * @returns A lowercase string suitable for comparison-based sorting.
+ */
+export function getChannelSortKey(channel: Channel, key: string, field: ChannelSortField): string {
+
+  switch(field) {
+
+    case "channelNumber": {
+
+      const num = channel.channelNumber;
+
+      return num ? String(num).padStart(6, "0") : "zzzzzz";
+    }
+
+    case "channelSelector": {
+
+      return (channel.channelSelector ?? "").toLowerCase();
+    }
+
+    case "key": {
+
+      return key.toLowerCase();
+    }
+
+    case "name": {
+
+      return (channel.name ?? key).toLowerCase();
+    }
+
+    case "profile": {
+
+      // Explicit profile: sort by its name.
+      if(channel.profile) {
+
+        return channel.profile.toLowerCase();
+      }
+
+      // Auto-detected: check whether the profile resolves to a real provider or falls back to default. Only apply the ! prefix for non-default auto profiles so
+      // they sort between explicit profiles and empty profiles.
+      const resolved = getProfileForChannel(channel);
+
+      if(resolved.profileName === "default") {
+
+        return "";
+      }
+
+      const label = getChannelProviderLabel(channel);
+
+      return label ? ("!" + label.toLowerCase()) : "";
+    }
+
+    case "provider": {
+
+      return getChannelProviderLabel(channel).toLowerCase();
+    }
+
+    case "stationId": {
+
+      const id = channel.stationId;
+
+      return id ? id.padStart(6, "0") : "zzzzzz";
+    }
+
+    default: {
+
+      return key.toLowerCase();
+    }
+  }
+}
+
+/**
+ * Compares two channels for sorting by the specified field and direction with a built-in channel name tiebreaker. The tiebreaker is always ascending so that rows
+ * within each group maintain a consistent alphabetical order regardless of the primary sort direction. This is the single comparator for all sort sites — server HTML
+ * render, client re-sort, and M3U playlist — to prevent ordering divergence.
+ * @param channelA - First channel definition.
+ * @param keyA - First channel key.
+ * @param channelB - Second channel definition.
+ * @param keyB - Second channel key.
+ * @param field - The sort field to compare.
+ * @param direction - Sort direction for the primary field.
+ * @returns A negative, zero, or positive number for sort ordering.
+ */
+export function compareChannelSort(
+  channelA: Channel, keyA: string, channelB: Channel, keyB: string, field: ChannelSortField, direction: SortDirection
+): number {
+
+  const valA = getChannelSortKey(channelA, keyA, field);
+  const valB = getChannelSortKey(channelB, keyB, field);
+  const cmp = (direction === "asc") ? valA.localeCompare(valB) : valB.localeCompare(valA);
+
+  if(cmp !== 0) {
+
+    return cmp;
+  }
+
+  // Tiebreaker: channel name ascending regardless of primary direction.
+  const nameA = (channelA.name ?? keyA).toLowerCase();
+  const nameB = (channelB.name ?? keyB).toLowerCase();
+
+  return nameA.localeCompare(nameB);
 }
 
 /**

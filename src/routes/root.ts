@@ -3,9 +3,9 @@
  * root.ts: Landing page route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { checkForUpdates, escapeHtml, getChangelogItems, getPackageVersion, getVersionInfo, isRunningAsService } from "../utils/index.js";
-import { generateAdvancedTabContent, generateChannelsPanel, generateProvidersPanel, generateSettingsFormFooter, generateSettingsTabContent,
+import { OPTIONAL_COLUMNS, generateAdvancedTabContent, generateChannelsPanel, generateProvidersPanel, generateSettingsFormFooter, generateSettingsTabContent,
   generateWizardModal, hasEnvOverrides } from "./config.js";
+import { checkForUpdates, escapeHtml, getChangelogItems, getPackageVersion, getVersionInfo, isRunningAsService } from "../utils/index.js";
 import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "./ui.js";
 import { VIDEO_QUALITY_PRESETS } from "../config/presets.js";
 import { getUITabs } from "../config/userConfig.js";
@@ -2312,9 +2312,11 @@ function generateConfigSubtabScript(): string {
     "  };",
 
     // Insert or replace channel rows in the table. Always removes existing rows with the same key first (handles both edits and overrides of builtin channels).
+    // Uses the current table sort field and direction for correct insertion order.
     "  window.insertChannelRow = function(html, key) {",
     "    var tbody = document.querySelector('.channel-table tbody');",
-    "    if (!tbody || !html) return;",
+    "    var table = document.querySelector('.channel-table');",
+    "    if (!tbody || !html || !table) return;",
     // Remove any existing rows with this key (edit or override of builtin).
     "    var oldDisplay = document.getElementById('display-row-' + key);",
     "    var oldEdit = document.getElementById('edit-row-' + key);",
@@ -2325,12 +2327,16 @@ function generateConfigSubtabScript(): string {
     "    temp.innerHTML = html.displayRow + (html.editRow || '');",
     "    var newDisplayRow = temp.firstElementChild;",
     "    var newEditRow = temp.children[1] || null;",
-    // Find insertion point (alphabetical by key) and insert.
+    // Find insertion point using current sort field and direction.
+    "    var sortField = table.getAttribute('data-sort-field') || 'name';",
+    "    var sortDir = table.getAttribute('data-sort-dir') || 'asc';",
+    "    var newVal = getSortValue(newDisplayRow, sortField);",
     "    var rows = tbody.querySelectorAll('tr[id^=\"display-row-\"]');",
     "    var inserted = false;",
     "    for (var i = 0; i < rows.length; i++) {",
-    "      var rowKey = rows[i].id.replace('display-row-', '');",
-    "      if (key < rowKey) {",
+    "      var rowVal = getSortValue(rows[i], sortField);",
+    "      var cmp = (sortDir === 'asc') ? (newVal < rowVal) : (newVal > rowVal);",
+    "      if (cmp) {",
     "        tbody.insertBefore(newDisplayRow, rows[i]);",
     "        if (newEditRow) tbody.insertBefore(newEditRow, rows[i]);",
     "        inserted = true;",
@@ -2848,25 +2854,48 @@ function generateConfigSubtabScript(): string {
     "    .catch(function(err) { showToast('Failed to revert: ' + err.message, 'error'); });",
     "  }",
 
-    // Close all open dropdown menus.
+    // Close all open dropdown menus and remove the scroll and resize listeners.
     "  function closeDropdowns() {",
     "    var menus = document.querySelectorAll('.dropdown-menu.show');",
     "    for (var i = 0; i < menus.length; i++) menus[i].classList.remove('show');",
+    "    window.removeEventListener('scroll', closeDropdowns, true);",
+    "    window.removeEventListener('resize', closeDropdowns);",
     "  };",
     "  window.closeDropdowns = closeDropdowns;",
 
-    // Toggle a dropdown menu open or closed. Closes any other open dropdowns first.
+    // Toggle a dropdown menu open or closed. On first call for a given button, the menu is detached from its .dropdown parent and portaled to <body> with
+    // position: fixed. This allows the menu to escape overflow: auto containers like the channel table wrapper. On every open, the menu is positioned relative
+    // to the button's bounding rect, with edge-of-viewport clamping and above-button flip when it would extend below the viewport.
     "  window.toggleDropdown = function(btn) {",
-    "    var menu = btn.nextElementSibling;",
-    "    if (!menu) return;",
-    "    var isOpen = menu.classList.contains('show');",
+    "    var menu = btn._portalMenu;",
+    "    var isOpen = menu && menu.classList.contains('show');",
     "    closeDropdowns();",
-    "    if (!isOpen) menu.classList.add('show');",
+    "    if (isOpen) return;",
+    "    if (!menu) {",
+    "      menu = btn.nextElementSibling;",
+    "      if (!menu) return;",
+    "      btn._portalMenu = menu;",
+    "      document.body.appendChild(menu);",
+    "      menu.style.position = 'fixed';",
+    "      menu.style.marginTop = '0';",
+    "    }",
+    "    menu.classList.add('show');",
+    "    var rect = btn.getBoundingClientRect();",
+    "    var top = rect.bottom + 2;",
+    "    var left = rect.left;",
+    "    if (left + menu.offsetWidth > window.innerWidth - 4) left = rect.right - menu.offsetWidth;",
+    "    if (left < 4) left = 4;",
+    "    if (top + menu.offsetHeight > window.innerHeight - 4) top = rect.top - menu.offsetHeight - 2;",
+    "    menu.style.top = top + 'px';",
+    "    menu.style.left = left + 'px';",
+    "    window.addEventListener('scroll', closeDropdowns, true);",
+    "    window.addEventListener('resize', closeDropdowns);",
     "  };",
 
-    // Close dropdowns when clicking outside.
+    // Close dropdowns when clicking outside. After portaling, menus live on <body> outside .dropdown containers, so we also check .dropdown-menu to prevent
+    // clicks on menu items (like column picker checkboxes) from triggering close.
     "  document.addEventListener('click', function(e) {",
-    "    if (!e.target.closest('.dropdown')) closeDropdowns();",
+    "    if (!e.target.closest('.dropdown') && !e.target.closest('.dropdown-menu')) closeDropdowns();",
     "  });",
 
     // Copy a stream URL to the clipboard and show a toast notification. The type parameter selects HLS or MPEG-TS format. Uses the modern Clipboard API when
@@ -2902,6 +2931,87 @@ function generateConfigSubtabScript(): string {
     "      table.classList.add('hide-disabled');",
     "      localStorage.removeItem('prismcast-show-disabled-channels');",
     "    }",
+    "  };",
+
+    // Toggle visibility of an optional column and persist via background POST.
+    "  window.toggleColumn = function(checkbox) {",
+    "    var table = document.querySelector('.channel-table');",
+    "    if (!table || !checkbox) return;",
+    "    var colClass = checkbox.getAttribute('data-col-class');",
+    "    var hideClass = 'hide-' + colClass;",
+    "    if (checkbox.checked) { table.classList.remove(hideClass); }",
+    "    else { table.classList.add(hideClass); }",
+    // Collect all currently checked columns from the picker menu.
+    "    var menu = document.querySelector('.column-picker-menu');",
+    "    var cols = [];",
+    "    if (menu) {",
+    "      var cbs = menu.querySelectorAll('input[type=\"checkbox\"]');",
+    "      for (var i = 0; i < cbs.length; i++) {",
+    "        if (cbs[i].checked) cols.push(cbs[i].getAttribute('data-col-field'));",
+    "      }",
+    "    }",
+    "    fetch('/config/channels/display-prefs', {",
+    "      method: 'POST', headers: { 'Content-Type': 'application/json' },",
+    "      body: JSON.stringify({ visibleColumns: cols })",
+    "    }).catch(function() {});",
+    "  };",
+
+    // Read the server-stamped sort value from the data-sort-value attribute.
+    "  function getSortValue(row, field) {",
+    "    var colIndex = { key: 0, name: 1, provider: 2, channelNumber: 3, stationId: 4, profile: 5, channelSelector: 6 };",
+    "    var idx = colIndex[field];",
+    "    if (idx === undefined) return '';",
+    "    var cell = row.children[idx];",
+    "    if (!cell) return '';",
+    "    return cell.getAttribute('data-sort-value') || '';",
+    "  }",
+
+    // Sort the channel table by the specified field. Toggles direction if the same field is clicked again.
+    "  window.sortChannelTable = function(field) {",
+    "    var table = document.querySelector('.channel-table');",
+    "    if (!table) return;",
+    "    var currentField = table.getAttribute('data-sort-field');",
+    "    var currentDir = table.getAttribute('data-sort-dir') || 'asc';",
+    "    var dir = (field === currentField) ? (currentDir === 'asc' ? 'desc' : 'asc') : 'asc';",
+    "    table.setAttribute('data-sort-field', field);",
+    "    table.setAttribute('data-sort-dir', dir);",
+    // Collect display rows and their paired edit rows.
+    "    var tbody = table.querySelector('tbody');",
+    "    var displayRows = tbody.querySelectorAll('tr[id^=\"display-row-\"]');",
+    "    var pairs = [];",
+    "    for (var i = 0; i < displayRows.length; i++) {",
+    "      var dr = displayRows[i];",
+    "      var key = dr.id.replace('display-row-', '');",
+    "      var er = document.getElementById('edit-row-' + key);",
+    "      var name = dr.children[1] ? dr.children[1].textContent.trim().toLowerCase() : '';",
+    "      pairs.push({ displayRow: dr, editRow: er, val: getSortValue(dr, field), name: name });",
+    "    }",
+    // Sort pairs. The channel name is used as a secondary sort key to stabilize rows with identical primary values. The secondary sort is always ascending
+    // regardless of the primary direction so that rows within each group maintain a consistent alphabetical order.
+    "    pairs.sort(function(a, b) {",
+    "      var cmp = (dir === 'asc') ? a.val.localeCompare(b.val) : b.val.localeCompare(a.val);",
+    "      if (cmp !== 0) return cmp;",
+    "      return a.name.localeCompare(b.name);",
+    "    });",
+    // Re-append in sorted order.
+    "    for (var j = 0; j < pairs.length; j++) {",
+    "      tbody.appendChild(pairs[j].displayRow);",
+    "      if (pairs[j].editRow) tbody.appendChild(pairs[j].editRow);",
+    "    }",
+    // Update header indicators.
+    "    var headers = table.querySelectorAll('th.sortable');",
+    "    for (var h = 0; h < headers.length; h++) {",
+    "      var th = headers[h];",
+    "      var hField = th.getAttribute('data-sort-field');",
+    "      var label = th.textContent.replace(/[\\u25B2\\u25BC]/g, '').trim();",
+    "      if (hField === field) { th.innerHTML = label + (dir === 'asc' ? ' &#9650;' : ' &#9660;'); }",
+    "      else { th.textContent = label; }",
+    "    }",
+    // Persist sort preference.
+    "    fetch('/config/channels/display-prefs', {",
+    "      method: 'POST', headers: { 'Content-Type': 'application/json' },",
+    "      body: JSON.stringify({ sortField: field, sortDirection: dir })",
+    "    }).catch(function() {});",
     "  };",
 
     // Populate channel selector datalist based on the URL field value. First populates from server-rendered data (predefined channels and cached provider
@@ -4161,26 +4271,47 @@ function generateLandingPageStyles(): string {
     ".log-muted { color: var(--dark-text-muted); }",
     ".log-connecting { color: var(--dark-text-muted); }",
 
-    // Channel table styles. The wrapper provides a rounded card border and enables horizontal scrolling on small screens. We use border-collapse: separate so
-    // that border-radius works on the header cells.
-    // Max-width caps the Name column (the sole flexible column) at 350px. Fixed columns: Key 170 + Provider 200 + Actions 168 = 538px.
-    ".channel-table-wrapper { max-width: 888px; margin: 0 auto 20px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); overflow: auto; }",
-    ".channel-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: 650px; margin: 0; }",
+    // Channel table styles. The wrapper uses fit-content so it shrinks when columns are hidden, with max-width: 100% to prevent viewport overflow. We use
+    // border-collapse: separate so that border-radius works on the header cells. Overflow is auto so the table scrolls on narrow screens; dropdown menus escape
+    // the container via portal to <body>.
+    ".channel-table-wrapper { width: fit-content; max-width: 100%; margin: 0 auto 20px; border: 1px solid var(--border-default); " +
+      "border-radius: var(--radius-lg); overflow: auto; }",
+    ".channel-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; min-width: 650px; margin: 0; }",
     ".channel-table th, .channel-table td { padding: 10px 12px; text-align: left; border: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
     ".channel-table th { background: var(--table-header-bg); font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--border-default); }",
     ".channel-table tbody tr:nth-child(even):not(.user-channel) { background: var(--table-row-even); }",
     ".channel-table tr:hover { background: var(--table-row-hover); }",
-    ".channel-table .col-key { width: 170px; }",
-    ".channel-table .col-provider { width: 200px; }",
-    ".channel-table .col-actions, .channel-table td:last-child { width: 168px; white-space: nowrap; overflow: visible; }",
+    ".channel-table .col-key { min-width: 170px; }",
+    ".channel-table .col-name { min-width: 200px; }",
+    ".channel-table .col-provider { min-width: 200px; }",
+    ".channel-table .col-actions, .channel-table td:last-child { min-width: 168px; white-space: nowrap; overflow: visible; }",
     ".provider-select { width: 100%; padding: 2px 4px; font-size: 12px; border: 1px solid var(--form-input-border); ",
     "border-radius: 3px; background: var(--form-input-bg); color: var(--text-primary); }",
+
+    // Optional column width, alignment, and visibility rules. Generated from OPTIONAL_COLUMNS to keep a single source of truth for column metadata.
+    ...OPTIONAL_COLUMNS.flatMap((col) => [
+      ".channel-table ." + col.cssClass + " { min-width: " + col.width + (col.align === "center" ? "; text-align: center" : "") + "; }",
+      ".channel-table.hide-" + col.cssClass + " ." + col.cssClass + " { display: none; }"
+    ]),
+
+    // Sortable header styles. Clickable headers with pointer cursor and subtle hover effect.
+    ".channel-table th.sortable { cursor: pointer; user-select: none; }",
+    ".channel-table th.sortable:hover { background: var(--surface-hover); }",
+
+    // Column picker dropdown. The Actions header uses flex layout to push the ellipsis button to the far right.
+    ".channel-table th.col-actions { display: flex; align-items: center; justify-content: space-between; }",
+    ".column-picker { position: relative; }",
+    ".btn-col-picker { font-size: 16px; line-height: 1; vertical-align: middle; padding: 0 4px; color: var(--text-muted); cursor: pointer; " +
+      "background: none; border: none; border-radius: 3px; }",
+    ".btn-col-picker:hover { color: var(--text-primary); background: var(--surface-hover); }",
+    ".column-picker-menu { min-width: 140px; }",
 
     // Key column styling: monospace at a slightly smaller size with secondary color to reduce visual weight.
     ".ch-key { color: var(--text-secondary); font-family: var(--font-mono); font-size: 13px; }",
 
-    // Responsive: hide Key on phones.
-    "@media (max-width: 768px) { .channel-table .col-key, .channel-table td:nth-child(1), .channel-table th:nth-child(1) { display: none; } }",
+    // Responsive: hide Key and all optional columns on phones.
+    "@media (max-width: 768px) { .channel-table .col-key, .channel-table td:nth-child(1), .channel-table th:nth-child(1) { display: none; } " +
+      OPTIONAL_COLUMNS.map((col) => ".channel-table ." + col.cssClass).join(", ") + " { display: none; } }",
 
     // User channel row tinting to distinguish custom/override channels from predefined.
     ".channel-table tr.user-channel { background: var(--user-channel-tint); }",
@@ -4198,6 +4329,7 @@ function generateLandingPageStyles(): string {
     ".channel-table tr.channel-unavailable.channel-disabled { opacity: 0.5; }",
     ".channel-table.hide-disabled tr.channel-unavailable { display: none; }",
     ".no-provider-label { color: var(--text-tertiary); font-size: 12px; }",
+    ".text-muted { color: var(--text-muted); }",
 
     // Provider filter toolbar layout.
     ".provider-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }",
@@ -4253,7 +4385,6 @@ function generateLandingPageStyles(): string {
     // Override hover to preserve health color when set.
     ".btn-icon-health.health-success:hover { color: var(--interactive-success); }",
     ".btn-icon-health.health-failed:hover { color: var(--interactive-delete); }",
-    ".copy-dropdown .dropdown-menu { left: auto; right: 0; }",
     ".copy-dropdown .dropdown-item { font-size: 12px; }",
 
     // JS tooltip styling. The tooltip element is appended to <body> and positioned via getBoundingClientRect() so it's immune to overflow and stacking contexts.
@@ -4281,7 +4412,6 @@ function generateLandingPageStyles(): string {
     ".dropdown-item:hover { background: var(--surface-sunken); }",
     ".dropdown-option { display: block; padding: 2px 12px 6px 24px; font-size: 12px; color: var(--text-secondary); cursor: pointer; user-select: none; }",
     ".dropdown-divider { height: 1px; margin: 4px 0; background: var(--border-default); }",
-    ".bulk-actions-dropdown .dropdown-menu { left: auto; right: 0; }",
 
     // Channel form styles. Inputs use full width; selects use width classes from ui.ts for consistency with settings forms.
     ".channel-form { background: var(--form-bg); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 20px; }",

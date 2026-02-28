@@ -11,6 +11,12 @@ import type { RecoveryMetrics } from "../streaming/monitor.js";
  */
 export type Nullable<T> = T | null;
 
+// Sortable column field names for the channels table.
+export type ChannelSortField = "channelNumber" | "channelSelector" | "key" | "name" | "profile" | "provider" | "stationId";
+
+// Sort direction for the channels table.
+export type SortDirection = "asc" | "desc";
+
 /* These interfaces define the structure of the application configuration. The Config interface is the root configuration object, with nested interfaces for each
  * functional area. All configuration values are loaded from environment variables with sensible defaults. The configuration is validated at startup to catch
  * misconfigurations before the server begins accepting connections.
@@ -172,6 +178,12 @@ export interface HLSConfig {
  */
 export interface ChannelsConfig {
 
+  // Sort direction for the channels table. Default: "asc".
+  channelSortDirection: SortDirection;
+
+  // Sort field for the channels table. Default: "name".
+  channelSortField: ChannelSortField;
+
   // List of predefined channel keys that are disabled. Disabled channels are excluded from the playlist and cannot be streamed.
   disabledPredefined: string[];
 
@@ -182,6 +194,9 @@ export interface ChannelsConfig {
   // Provider slugs selected for precaching at startup. Empty array means no precaching (default). When non-empty, the listed providers have their channel lineups
   // discovered at startup so that even the first tune benefits from cached lineup data.
   precacheProviders: string[];
+
+  // Optional column field names that are currently visible in the channels table. Empty array means only required columns are shown.
+  visibleColumns: string[];
 }
 
 /**

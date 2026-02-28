@@ -691,6 +691,12 @@ export interface UserStreamingConfig {
  */
 export interface UserChannelsConfig {
 
+  // Sort direction for the channels table.
+  channelSortDirection?: string;
+
+  // Sort field for the channels table.
+  channelSortField?: string;
+
   // List of predefined channel keys that are disabled.
   disabledPredefined?: string[];
 
@@ -699,6 +705,9 @@ export interface UserChannelsConfig {
 
   // Provider slugs selected for precaching at startup. Empty means no precaching.
   precacheProviders?: string[];
+
+  // Optional column field names currently visible in the channels table.
+  visibleColumns?: string[];
 }
 
 /**
@@ -859,9 +868,12 @@ export const DEFAULTS: Config = {
 
   channels: {
 
+    channelSortDirection: "asc",
+    channelSortField: "name",
     disabledPredefined: [],
     enabledProviders: [],
-    precacheProviders: []
+    precacheProviders: [],
+    visibleColumns: []
   },
 
   hdhr: {
@@ -1087,6 +1099,21 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
   if(Array.isArray(userConfig.channels?.precacheProviders)) {
 
     config.channels.precacheProviders = [...userConfig.channels.precacheProviders];
+  }
+
+  if(Array.isArray(userConfig.channels?.visibleColumns)) {
+
+    config.channels.visibleColumns = [...userConfig.channels.visibleColumns];
+  }
+
+  if((typeof userConfig.channels?.channelSortField === "string") && (userConfig.channels.channelSortField.length > 0)) {
+
+    config.channels.channelSortField = userConfig.channels.channelSortField as Config["channels"]["channelSortField"];
+  }
+
+  if((typeof userConfig.channels?.channelSortDirection === "string") && (userConfig.channels.channelSortDirection.length > 0)) {
+
+    config.channels.channelSortDirection = userConfig.channels.channelSortDirection as Config["channels"]["channelSortDirection"];
   }
 
   if((typeof userConfig.hdhr?.deviceId === "string") && (userConfig.hdhr.deviceId.length > 0)) {
@@ -1477,6 +1504,27 @@ export function filterDefaults(config: UserConfig): UserConfig {
   if(Array.isArray(configPrecacheProviders) && (configPrecacheProviders.length > 0)) {
 
     setNestedValue(filtered, "channels.precacheProviders", configPrecacheProviders);
+  }
+
+  const configVisibleColumns = getNestedValue(config, "channels.visibleColumns") as string[] | undefined;
+
+  if(Array.isArray(configVisibleColumns) && (configVisibleColumns.length > 0)) {
+
+    setNestedValue(filtered, "channels.visibleColumns", configVisibleColumns);
+  }
+
+  const configSortField = getNestedValue(config, "channels.channelSortField") as string | undefined;
+
+  if((typeof configSortField === "string") && (configSortField !== "name")) {
+
+    setNestedValue(filtered, "channels.channelSortField", configSortField);
+  }
+
+  const configSortDirection = getNestedValue(config, "channels.channelSortDirection") as string | undefined;
+
+  if((typeof configSortDirection === "string") && (configSortDirection !== "asc")) {
+
+    setNestedValue(filtered, "channels.channelSortDirection", configSortDirection);
   }
 
   const configDeviceId = getNestedValue(config, "hdhr.deviceId") as string | undefined;
