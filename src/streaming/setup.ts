@@ -120,7 +120,7 @@ export interface StreamSetupResult {
   // The channel display name if streaming a named channel.
   channelName: Nullable<string>;
 
-  // Whether this tune used a cached direct URL, skipping guide navigation.
+  // Whether the channel was tuned via a direct mechanism (cached URL or API interception) rather than DOM interaction.
   directTune: boolean;
 
   // Cleanup function to release all resources. Safe to call multiple times.
@@ -214,7 +214,7 @@ export interface CreatePageWithCaptureResult {
   // The video context (page or frame containing the video element).
   context: Frame | Page;
 
-  // Whether this tune used a cached direct URL, skipping guide navigation.
+  // Whether the channel was tuned via a direct mechanism (cached URL or API interception) rather than DOM interaction.
   directTune: boolean;
 
   // The FFmpeg process if using WebM+FFmpeg mode, null otherwise.
@@ -573,6 +573,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   // Navigate and set up playback. For noVideo profiles, just navigate without video setup.
   let context: Frame | Page;
+  let strategyDirectTune = false;
   let usedDirectUrl = false;
 
   try {
@@ -620,6 +621,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
         })
       ]);
 
+      strategyDirectTune = tuneResult.directTune ?? false;
       context = tuneResult.context;
     } else {
 
@@ -668,7 +670,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     captureStream: outputStream,
     context,
-    directTune: usedDirectUrl || !isChannelSelectionProfile(profile),
+    directTune: usedDirectUrl || strategyDirectTune || !isChannelSelectionProfile(profile),
     ffmpegProcess,
     page,
     rawCaptureStream

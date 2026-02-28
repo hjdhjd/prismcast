@@ -13,11 +13,12 @@ import type { Channel, ChannelMap } from "../types/index.js";
  * - stationId: Gracenote station ID for guide data (optional). Local affiliates (ABC, CBS, NBC) vary by region.
  * - pacificStationId: Gracenote station ID for the Pacific timezone feed (optional). When set on an East canonical, the system auto-generates a Pacific
  *   canonical ("{key}p") and matching provider variants at startup. See generatePacificEntries() below for details, examples, and how to add new channels.
- * - channelSelector: Channel identifier for multi-channel pages. For thumbnailRow/tileClick profiles, this is a slug matched against image URLs. For foxGrid
- *   (foxLive), this is the station code matched against GuideChannelLogo button titles (e.g., FOXD2C, FNC, FS1). For guideGrid (huluLive), this is the exact
- *   channel name matched against image alt text. For hboGrid (hboMax), this is the channel name matched against the live channel rail tile text (e.g., HBO, HBO
- *   Hits). For slingGrid (slingLive), this is the channel name as it appears in the Sling TV guide grid data-testid attributes. For youtubeGrid (youtubeTV), this
- *   is the channel name from the YouTube TV guide or a network name (e.g., NBC) for local affiliates.
+ * - channelSelector: Channel identifier for multi-channel pages. For thumbnailRow/tileClick profiles, this is a slug matched against image URLs. For directvGrid
+ *   (directvStream), this is the channel name from the DirecTV Stream Redux store (e.g., CNN, ESPN, NBC). For foxGrid (foxLive), this is the station code matched
+ *   against GuideChannelLogo button titles (e.g., FOXD2C, FNC, FS1). For guideGrid (huluLive), this is the exact channel name matched against image alt text. For
+ *   hboGrid (hboMax), this is the channel name matched against the live channel rail tile text (e.g., HBO, HBO Hits). For slingGrid (slingLive), this is the
+ *   channel name as it appears in the Sling TV guide grid data-testid attributes. For youtubeGrid (youtubeTV), this is the channel name from the YouTube TV guide
+ *   or a network name (e.g., NBC) for local affiliates.
  * - provider: Display name override for the provider selection dropdown (optional). Normally auto-derived from the URL domain via DOMAIN_CONFIG in
  *   config/profiles.ts. Only needed when a channel's display name should differ from the domain-level default.
  *

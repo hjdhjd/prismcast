@@ -114,6 +114,20 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Click-to-play ('f' key fullscreen)"
   },
 
+  // Profile for DirecTV Stream (stream.directv.com) live guide. The guide page is a React Native for Web SPA where all ~152 channel logos are always in the DOM
+  // (not virtualized). The primary tuning mechanism bypasses DOM interaction entirely by injecting into webpack internals — capturing __webpack_require__ via the
+  // chunk push array, extracting the Redux store from the React fiber tree, and dispatching the playConsumable action to switch channels. The fallback uses logo
+  // aria-label matching with DOM click (coordinate clicks are blocked by an invisible overlay). Uses selectReadyVideo because the page has multiple video elements.
+  directvStream: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "directvGrid" },
+    description: "DirecTV Stream with direct tune via webpack injection. Set Channel Selector to the channel name as shown in the guide (e.g., CNN, ESPN, NBC).",
+    extends: "fullscreenApi",
+    selectReadyVideo: true,
+    summary: "DirecTV Stream (guide grid, needs selector)"
+  },
+
   // Profile for DisneyNOW (disneynow.com) which has a play button overlay that must be clicked to start playback and multiple video elements on the page.
   disneyNow: {
 
@@ -372,6 +386,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "paramountplus.com": { profile: "fullscreenApi", provider: "Paramount+", providerTag: "paramountplus" },
   "sling.com": { profile: "embeddedVolumeLock", provider: "Sling TV" },
   "starz.com": { profile: "fullscreenApi", provider: "Starz" },
+  "stream.directv.com": { loginUrl: "https://stream.directv.com", profile: "directvStream", provider: "DirecTV Stream", providerTag: "directv" },
   "tbs.com": { profile: "fullscreenApi", provider: "TBS.com" },
   "tntdrama.com": { profile: "fullscreenApi", provider: "TNT" },
   "trutv.com": { profile: "fullscreenApi", provider: "truTV" },

@@ -871,6 +871,8 @@ export interface StreamListResponse {
 /**
  * Available channel selection strategies. Each strategy implements a different approach to finding and selecting channels in a multi-channel player UI.
  *
+ * - "directvGrid": Tune via webpack injection — captures __webpack_require__, extracts the Redux store from the React fiber tree, matches by channel name, and
+ *   dispatches playConsumable. Falls back to logo aria-label click when the interceptor fails. Used by DirecTV Stream.
  * - "foxGrid": Find channel by station code in a non-virtualized guide grid, click the channel logo button via DOM .click(). Used by Fox.com.
  * - "guideGrid": Find channel by exact-matching image alt text, click nearest clickable ancestor. Optionally clicks a tab to reveal the list first. Used by Hulu
  *   Live TV.
@@ -885,7 +887,7 @@ export interface StreamListResponse {
  *   playSelector is configured. Used by Disney+.
  * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
-export type ChannelSelectionStrategy = "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
+export type ChannelSelectionStrategy = "directvGrid" | "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
 
 /**
  * Configuration for channel selection behavior within a site profile.
@@ -941,6 +943,9 @@ export function isChannelSelectionProfile(profile: ResolvedSiteProfile): profile
  * Result of attempting to select a channel from a multi-channel player UI.
  */
 export interface ChannelSelectorResult {
+
+  // True when the tune succeeded via API interception rather than DOM interaction.
+  directTune?: boolean;
 
   // Human-readable explanation of why selection failed, present only when success is false.
   reason?: string;
@@ -1076,6 +1081,9 @@ export interface TuneResult {
 
   // The frame or page containing the video element, used for subsequent monitoring and recovery.
   context: Frame | Page;
+
+  // Propagated from ChannelSelectorResult — true when the tune succeeded via API interception rather than DOM interaction.
+  directTune?: boolean;
 }
 
 /* Chrome DevTools Protocol operations for window management. We use CDP to resize and minimize browser windows to match viewport dimensions and reduce GPU usage

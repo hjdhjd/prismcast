@@ -1356,7 +1356,7 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
  * @param profile - The site profile containing all behavior flags.
  * @param skipChannelSelection - When true, skip the channel selection phase entirely. Used when navigating directly to a cached watch URL that already targets
  *   the correct channel — only video detection, playback, and fullscreen setup are needed.
- * @returns The video context (frame or page) for subsequent monitoring.
+ * @returns The video context (frame or page) for subsequent monitoring, and a directTune flag when the channel was tuned via API interception.
  */
 export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, skipChannelSelection = false): Promise<TuneResult> {
 
@@ -1370,6 +1370,8 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
   // For multi-channel players (like usanetwork.com/live with multiple channels), select the desired channel from the UI. The selectChannel function checks the
   // profile's channelSelection strategy and channelSelector to determine if/how to select a channel. Skipped when navigating directly to a cached watch URL,
   // since the URL already targets the correct channel.
+  let directTune = false;
+
   if(!skipChannelSelection) {
 
     let channelResult = await selectChannel(page, profile);
@@ -1391,6 +1393,8 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
         throw new Error("Channel selection failed: " + (channelResult.reason ?? "Unknown reason."));
       }
     }
+
+    directTune = channelResult.directTune ?? false;
 
     LOG.debug("timing:tune", "Channel selection complete. (+%sms)", elapsed());
   }
@@ -1430,7 +1434,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
   LOG.debug("timing:tune", "Playback ensured. (+%sms)", elapsed());
 
-  return { context };
+  return { context, directTune };
 }
 
 /**

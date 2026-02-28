@@ -7,6 +7,7 @@ import { LOG, delay, evaluateWithAbort } from "../utils/index.js";
 import { CHANNELS } from "../channels/index.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
+import { directvProvider } from "./tuning/directv.js";
 import { foxProvider } from "./tuning/fox.js";
 import { hboProvider } from "./tuning/hbo.js";
 import { huluProvider } from "./tuning/hulu.js";
@@ -46,7 +47,7 @@ import { yttvProvider } from "./tuning/youtubeTv.js";
 
 // Provider module registry. The primary registry for all provider-level operations. Each entry bundles identity metadata, tuning strategy, and channel discovery.
 // Future capabilities become additional methods on ProviderModule — no new registries needed.
-const providerModules: readonly ProviderModule[] = [ foxProvider, hboProvider, huluProvider, slingProvider, yttvProvider ];
+const providerModules: readonly ProviderModule[] = [ directvProvider, foxProvider, hboProvider, huluProvider, slingProvider, yttvProvider ];
 
 // Strategy dispatch registry. Derived from provider modules (keyed by strategyName) plus generic strategies that are not provider-level registrations.
 const strategies: Record<string, ChannelStrategyEntry> = Object.fromEntries([
