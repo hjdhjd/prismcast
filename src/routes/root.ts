@@ -963,10 +963,14 @@ function generateApiReferenceContent(): string {
     "<tr>",
     "<td class=\"endpoint\"><a href=\"/playlist\"><code>GET /playlist</code></a></td>",
     "<td>M3U playlist of all channels in Channels DVR format. Use this URL when adding PrismCast as a custom channel source. " +
-    "Optional <code>?provider=</code> query parameter filters by streaming provider: " +
-    "<code>?provider=yttv</code> (single), <code>?provider=yttv,sling</code> (multi-include), " +
-    "<code>?provider=-hulu</code> (exclude). Tags are case-insensitive. " +
-    "<strong>This only controls which channels appear in the playlist, not which provider is used for tuning.</strong></td>",
+    "Optional query parameters: " +
+    "<code>?provider=</code> filters by streaming provider (<code>?provider=yttv</code>, <code>?provider=yttv,sling</code>, " +
+    "<code>?provider=-hulu</code>). " +
+    "<code>?sort=</code> overrides sort field (<code>name</code>, <code>key</code>, <code>channelNumber</code>, <code>provider</code>, " +
+    "<code>profile</code>, <code>stationId</code>, <code>channelSelector</code>). " +
+    "<code>?direction=</code> overrides sort direction (<code>asc</code> or <code>desc</code>). " +
+    "All parameters are optional and can be combined. " +
+    "<strong>Provider filter only controls which channels appear in the playlist, not which provider is used for tuning.</strong></td>",
     "</tr>",
     "</table>",
     "</div>",

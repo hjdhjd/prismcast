@@ -2,8 +2,9 @@
  *
  * playlist.ts: M3U playlist route for PrismCast.
  */
+import type { ChannelSortField, SortDirection } from "../types/index.js";
 import type { Express, Request, Response } from "express";
-import { getAllProviderTags, getProviderTagForChannel, resolveProviderKey } from "../config/providers.js";
+import { VALID_SORT_FIELDS, compareChannelSort, getAllProviderTags, getProviderTagForChannel, resolveProviderKey } from "../config/providers.js";
 import { CONFIG } from "../config/index.js";
 import { getAllChannels } from "../config/userChannels.js";
 import { resolveProfile } from "../config/profiles.js";
@@ -109,13 +110,20 @@ export function resolveBaseUrl(req: Request): string {
  * @param baseUrl - The base URL to use for stream URLs (e.g., "http://localhost:5589").
  * @param filter - Optional provider filter based on the currently selected provider for each channel. In include mode, only channels whose selected provider matches
  * a filter tag are included. In exclude mode, channels whose selected provider matches any filter tag are excluded. When omitted, all channels are included.
+ * @param sort - Optional sort field override. When provided, channels are sorted by this field instead of the user's saved preference. Validated against
+ * VALID_SORT_FIELDS before calling.
+ * @param direction - Optional sort direction override ("asc" or "desc"). When provided, overrides the user's saved sort direction.
  * @returns The M3U playlist content.
  */
-export function generatePlaylistContent(baseUrl: string, filter?: ProviderFilter): string {
+export function generatePlaylistContent(baseUrl: string, filter?: ProviderFilter, sort?: ChannelSortField, direction?: SortDirection): string {
 
   const channels = getAllChannels();
   const lines = [ "#EXTM3U", "" ];
-  const channelNames = Object.keys(channels).sort();
+  const sortField = sort ?? CONFIG.channels.channelSortField;
+  const sortDir = direction ?? CONFIG.channels.channelSortDirection;
+
+  // Sort channel keys using the specified (or saved) sort field and direction. Default is name ascending.
+  const channelNames = Object.keys(channels).sort((a, b) => compareChannelSort(channels[a], a, channels[b], b, sortField, sortDir));
 
   for(const name of channelNames) {
 
@@ -163,6 +171,9 @@ export function generatePlaylistContent(baseUrl: string, filter?: ProviderFilter
   return lines.join("\n");
 }
 
+// Valid sort direction values for query parameter validation.
+const VALID_SORT_DIRECTIONS = new Set<SortDirection>([ "asc", "desc" ]);
+
 /**
  * Creates the playlist endpoint that serves an M3U playlist in Channels DVR format. The playlist lists all configured channels with their stream URLs, allowing
  * Channels DVR to import them as custom channels. The endpoint dynamically constructs URLs using the request host header so the playlist works regardless of how
@@ -171,11 +182,14 @@ export function generatePlaylistContent(baseUrl: string, filter?: ProviderFilter
  */
 export function setupPlaylistEndpoint(app: Express): void {
 
-  // GET /playlist - Returns the M3U playlist file. Supports optional ?provider= query parameter for filtering channels by streaming provider.
+  // GET /playlist - Returns the M3U playlist file. Supports optional query parameters: ?provider= for filtering by streaming provider, ?sort= for sort field
+  // override, and ?direction= for sort direction override.
   app.get("/playlist", (req: Request, res: Response): void => {
 
     const baseUrl = resolveBaseUrl(req);
     const providerParam = typeof req.query.provider === "string" ? req.query.provider.trim() : undefined;
+    const sortParam = typeof req.query.sort === "string" ? req.query.sort.trim() || undefined : undefined;
+    const directionParam = typeof req.query.direction === "string" ? req.query.direction.trim().toLowerCase() || undefined : undefined;
     let filter: ProviderFilter | undefined;
 
     // Parse and validate the provider filter if specified.
@@ -193,7 +207,25 @@ export function setupPlaylistEndpoint(app: Express): void {
       filter = result.filter;
     }
 
-    const playlist = generatePlaylistContent(baseUrl, filter);
+    // Validate the sort field if specified.
+    if(sortParam && !VALID_SORT_FIELDS.has(sortParam as ChannelSortField)) {
+
+      res.status(400).json({ error: "Invalid sort field: " + sortParam + ".", validFields: [...VALID_SORT_FIELDS].sort() });
+
+      return;
+    }
+
+    // Validate the sort direction if specified.
+    if(directionParam && !VALID_SORT_DIRECTIONS.has(directionParam as SortDirection)) {
+
+      res.status(400).json({ error: "Invalid sort direction: " + directionParam + ".", validDirections: [...VALID_SORT_DIRECTIONS] });
+
+      return;
+    }
+
+    const sort = sortParam as ChannelSortField | undefined;
+    const direction = directionParam as SortDirection | undefined;
+    const playlist = generatePlaylistContent(baseUrl, filter, sort, direction);
 
     res.set("Content-Type", "audio/x-mpegurl");
     res.send(playlist);
