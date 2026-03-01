@@ -53,6 +53,10 @@ const TUNE_TIMEOUT = 8000;
 // conditions where the browser script succeeds but the console signal hasn't been processed yet.
 const DISCOVERY_TIMEOUT = 15000;
 
+// Network names that have local affiliates on DirecTV Stream, named as "{NETWORK}-{CALLSIGN}" (e.g., "ABC-WABC", "PBS-WNET"). Used for cache aliasing in
+// processChannelLineup. The in-page interceptor and logo click fallback perform generic prefix matching independent of this set.
+const DIRECTV_LOCAL_NETWORKS = new Set([ "abc", "cbs", "cw", "fox", "nbc", "pbs" ]);
+
 /**
  * Clears all DirecTV state: the unified channel cache and the fully-discovered flag. Called by clearChannelSelectionCaches() in the coordinator when the browser
  * restarts, since cached state may be stale in a new browser session. The pendingTunes WeakMap is self-cleaning — entries are GC'd when their Page references are
@@ -88,6 +92,13 @@ function processChannelLineup(json: string): void {
     return;
   }
 
+  // Remove stale alias keys before repopulating. The population loop creates fresh objects for every channel, which would leave alias keys pointing to old objects
+  // from the previous call. Deleting them first ensures the aliasing pass below always re-establishes aliases against the current objects.
+  for(const network of DIRECTV_LOCAL_NETWORKS) {
+
+    directvChannelCache.delete(network);
+  }
+
   let count = 0;
 
   for(const ch of channels) {
@@ -113,6 +124,37 @@ function processChannelLineup(json: string): void {
     directvFullyDiscovered = true;
 
     LOG.debug("tuning:directv", "Channel lineup populated: %s channels.", count);
+
+    // Cross-reference local affiliates so the short network name (e.g., "abc") resolves to the affiliate's cache entry (e.g., "abc-wabc"). This mirrors Hulu's
+    // affiliate cache aliasing (hulu.ts:1089-1098) and ensures warm-cache diagnostic logging works for local channels.
+    for(const network of DIRECTV_LOCAL_NETWORKS) {
+
+      // Skip if the network name itself is already an exact cache key (unlikely on DirecTV, but defensive).
+      if(directvChannelCache.has(network)) {
+
+        continue;
+      }
+
+      // Collect all affiliate entries whose normalized name starts with "{network}-", then pick the first alphabetically. Sorting ensures deterministic alias
+      // resolution when a network has multiple affiliates in the same DMA (e.g., PBS-WEDW, PBS-WNET, PBS-WNJN). For networks with a single affiliate this is a no-op.
+      const affiliates: { entry: DirectvChannelEntry; key: string }[] = [];
+
+      for(const [ key, entry ] of directvChannelCache) {
+
+        if(key.startsWith(network + "-")) {
+
+          affiliates.push({ entry, key });
+        }
+      }
+
+      if(affiliates.length > 0) {
+
+        affiliates.sort((a, b) => a.key.localeCompare(b.key));
+        directvChannelCache.set(network, affiliates[0].entry);
+
+        LOG.debug("tuning:directv", "Cross-referenced cache: %s -> %s.", network, affiliates[0].entry.displayName);
+      }
+    }
   }
 }
 
@@ -564,8 +606,12 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
       const normalize = (name: string): string => name.trim().replace(/\s+/g, " ").toLowerCase();
       const normalizedTarget = normalize(targetName);
 
-      // Find the target channel in the lineup by matching normalized channel name.
-      const targetChannel = channels.find((ch) => normalize(ch.channelName ?? "") === normalizedTarget);
+      // Find the target channel in the lineup by matching normalized channel name. Falls back to prefix-with-hyphen matching for local affiliates (e.g., "PBS"
+      // matches "PBS-WEDW"). When multiple affiliates match the prefix (e.g., PBS-WEDW, PBS-WNET, PBS-WNJN), we sort alphabetically and pick the first to ensure
+      // deterministic selection consistent with the Node-side cache alias in processChannelLineup.
+      const targetChannel = channels.find((ch) => normalize(ch.channelName ?? "") === normalizedTarget) ??
+        channels.filter((ch) => normalize(ch.channelName ?? "").startsWith(normalizedTarget + "-"))
+          .sort((a, b) => normalize(a.channelName ?? "").localeCompare(normalize(b.channelName ?? ""))).at(0);
 
       if(!targetChannel) {
 
@@ -819,24 +865,40 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
   // hit-testing. The find-and-scroll step tags the element with a data attribute so the subsequent click step can retrieve it without duplicating the search.
   const found = await page.evaluate((name: string): boolean => {
 
-    // Try exact match first, then case-insensitive fallback.
+    // Try exact match first, then case-insensitive fallback, then prefix match for local affiliates.
     let logo = document.querySelector("[aria-label=\"view " + name + "\"]") as Nullable<HTMLElement>;
 
     if(!logo) {
 
-      const allLogos = document.querySelectorAll("[aria-label^=\"view \"]");
-
       const lowerName = name.toLowerCase();
 
-      for(const el of Array.from(allLogos)) {
+      const logos = Array.from(document.querySelectorAll("[aria-label^=\"view \"]")).map((el) => ({
 
-        const label = (el.getAttribute("aria-label") ?? "").slice("view ".length).toLowerCase();
+        el: el as HTMLElement,
+        label: (el.getAttribute("aria-label") ?? "").slice("view ".length).toLowerCase()
+      }));
+
+      // Tier 2: case-insensitive exact match.
+      for(const { el, label } of logos) {
 
         if(label === lowerName) {
 
-          logo = el as HTMLElement;
+          logo = el;
 
           break;
+        }
+      }
+
+      // Tier 3: prefix match for local affiliates (e.g., "PBS" matches "PBS-WEDW"). When multiple affiliates match (e.g., PBS-WEDW, PBS-WNET, PBS-WNJN), pick
+      // the first alphabetically for deterministic selection consistent with the webpack interceptor and the Node-side cache alias in processChannelLineup.
+      if(!logo) {
+
+        const prefixMatches = logos.filter(({ label }) => label.startsWith(lowerName + "-"));
+
+        if(prefixMatches.length > 0) {
+
+          prefixMatches.sort((a, b) => a.label.localeCompare(b.label));
+          logo = prefixMatches[0].el;
         }
       }
     }
@@ -951,9 +1013,16 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
 function buildDirectvDiscoveredChannels(): DiscoveredChannel[] {
 
   const channels: DiscoveredChannel[] = [];
+  const seen = new Set<string>();
 
   for(const entry of directvChannelCache.values()) {
 
+    if(seen.has(entry.displayName)) {
+
+      continue;
+    }
+
+    seen.add(entry.displayName);
     channels.push({ channelSelector: entry.displayName, name: entry.displayName });
   }
 
