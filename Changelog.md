@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.1 (2026-03-01)
+  * New feature: Spectrum TV provider support inclusive of local affiliates. Thanks to @scottuf for the collaboration.
+  * Improvement: added 40+ DirecTV Stream (thanks to @mackid1993) and Sling channel variants (thanks to @bnhf), including local affiliate support for DirecTV Stream.
+  * Improvement: webUI refinements - consolidated Quick Actions menu with live toggle counts for predefined channel scopes, bulk provider assignment, and a channel summary showing predefined and user channel breakdown.
+  * Housekeeping.
+
 ## 1.5.0 (2026-02-28)
   * New feature: DirecTV Stream provider support. Thanks to @kineticmac for the collaboration.
   * New feature: sortable columns and optional columns on the channels tab — click any column header to sort, and use the column picker to show or hide Number, Station ID, Profile, and Selector columns. Preferences persist across sessions. **Note: your preferred sort will determine how the playlist is ordered for Channels DVR by default.**
