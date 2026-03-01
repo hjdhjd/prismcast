@@ -59,6 +59,7 @@ async function runPrecacheCycle(): Promise<void> {
   const hasFilter = enabledFilter.length > 0;
   const cycleElapsed = startTimer();
 
+  let skipped = 0;
   let succeeded = 0;
 
   LOG.info("Starting channel lineup precaching for %d provider%s.", slugs.length, (slugs.length === 1) ? "" : "s");
@@ -79,6 +80,7 @@ async function runPrecacheCycle(): Promise<void> {
       if(hasFilter && !enabledFilter.includes(slug)) {
 
         LOG.debug("precache", "Skipping precache for %s: not in active provider filter.", provider.label);
+        skipped++;
 
         continue;
       }
@@ -144,8 +146,10 @@ async function runPrecacheCycle(): Promise<void> {
       }
     }
 
-    LOG.info("Channel lineup precaching complete: %d of %d provider%s (%ss total).", succeeded, slugs.length, (slugs.length === 1) ? "" : "s",
-      (cycleElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
+    const elapsed = (cycleElapsed() / 1000).toFixed(1).replace(/\.0$/, "");
+    const skippedSuffix = skipped > 0 ? ", " + String(skipped) + " skipped (filtered)" : "";
+
+    LOG.info("Channel lineup precaching complete: %d provider%s cached%s in %ss.", succeeded, (succeeded === 1) ? "" : "s", skippedSuffix, elapsed);
   } finally {
 
     precacheInProgress = false;
