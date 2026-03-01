@@ -18,7 +18,7 @@ import { CONFIG } from "../config/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { StreamRegistryEntry } from "./registry.js";
 import type { TabReplacementHandlerFactory } from "./setup.js";
-import type { TabReplacementResult } from "./monitor.js";
+import type { TabReplacementResult } from "./recovery.js";
 import { createFMP4Segmenter } from "./fmp4Segmenter.js";
 import { createHash } from "node:crypto";
 import { getProviderBySlug } from "../browser/channelSelection.js";

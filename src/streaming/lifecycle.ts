@@ -5,11 +5,11 @@
 import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.js";
 import { LOG, formatDuration, formatError, getAbortController, unregisterAbortController } from "../utils/index.js";
 import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.js";
-import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./monitor.js";
+import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recovery.js";
 import { getStream, unregisterStream } from "./registry.js";
 import type { Nullable } from "../types/index.js";
 import type { Readable } from "node:stream";
-import type { RecoveryMetrics } from "./monitor.js";
+import type { RecoveryMetrics } from "./recovery.js";
 import { clearClients } from "./clients.js";
 import { clearShowName } from "./showInfo.js";
 import { emitStreamRemoved } from "./statusEmitter.js";

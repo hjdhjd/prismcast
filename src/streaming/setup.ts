@@ -5,7 +5,7 @@
 import type { Channel, Nullable, ResolvedSiteProfile, UrlValidation } from "../types/index.js";
 import type { Frame, Page } from "puppeteer-core";
 import { LOG, delay, extractDomain, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.js";
-import type { MonitorStreamInfo, RecoveryMetrics, TabReplacementResult } from "./monitor.js";
+import type { RecoveryMetrics, TabReplacementResult } from "./recovery.js";
 import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.js";
@@ -13,6 +13,7 @@ import { initializePlayback, navigateToPage } from "../browser/video.js";
 import { invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.js";
 import { CONFIG } from "../config/index.js";
 import type { FFmpegProcess } from "../utils/index.js";
+import type { MonitorStreamInfo } from "./monitor.js";
 import type { Readable } from "node:stream";
 import { getEffectiveViewport } from "../config/presets.js";
 import { getProviderDisplayName } from "../config/providers.js";
