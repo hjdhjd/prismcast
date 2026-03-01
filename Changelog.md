@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.0 (2026-02-28)
+  * New feature: DirecTV Stream provider support. Thanks to @kineticmac for the collaboration.
+  * New feature: sortable columns and optional columns on the channels tab — click any column header to sort, and use the column picker to show or hide Number, Station ID, Profile, and Selector columns. Preferences persist across sessions. **Note: your preferred sort will determine how the playlist is ordered for Channels DVR by default.**
+  * New feature: channel health and provider login indicators on the channels tab — green/red dots show last tune status per channel, and provider badges indicate verified authentication.
+  * New feature: channel lineup precaching at startup — provider guide data can be optionally fetched in the background so channel discovery is instant on first tune. Precaching only helps speed up the first tune of a channel on a given provider.
+  * New feature: bulk actions dropdown on the channels tab for toggling predefined channels by scope — all, Pacific variants only, or East variants only.
+  * New feature: user-defined provider profiles — add support for any streaming site without waiting for a built-in update. A step-by-step builder wizard guides you through profile creation, live CSS selector testing verifies your configuration against the real site, and shareable provider packs let you export and import complete provider setups.
+  * Improvement: the playlist endpoint now accepts optional `?sort=` and `?direction=` query parameters to override the saved sort order per request without changing the saved preference. Thanks to @bnhf for the inspiration.
+  * Improvement: expanded predefined channel coverage across providers, with automatic Pacific timezone variant generation. Thanks to @bnhf for the collaboration.
+  * Improvement: detect and fix stale service paths after upgrades — `service start` and `service restart` auto-regenerate the service file when paths change, and `service status` warns about mismatches.
+  * Improvement: profile-level scroll options for sites like Disney+ that lazy-load page content.
+  * Improvement: webUI performance refinements.
+  * Improvement: channel selector autocomplete now suggests all available channels from provider discovery, with fuzzy URL matching and "Did you mean?" hints for common domain variants.
+  * Housekeeping: provider optimizations and refinements.
+  * Housekeeping.
+
 ## 1.4.2 (2026-02-21)
   * Improvement: Hulu tuning refinements.
   * Improvement: channels tab modernization and refinements.
