@@ -3,7 +3,7 @@
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
 import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovTimescales } from "./mp4Parser.js";
-import { storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.js";
+import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
 import type { MP4Box } from "./mp4Parser.js";
@@ -423,7 +423,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     // Compute TARGETDURATION from the maximum actual segment duration in the current playlist window. RFC 8216 requires this value to be an integer that is greater
     // than or equal to every #EXTINF duration in the playlist. We floor at the configured segment duration to avoid under-declaring when all segments are short.
-    const startIndex = Math.max(0, state.segmentIndex - CONFIG.hls.maxSegments);
+    const startIndex = Math.max(0, state.segmentIndex - Math.min(getSegmentCount(streamId), CONFIG.hls.maxSegments));
     let maxDuration = CONFIG.hls.segmentDuration;
 
     for(let i = startIndex; i < state.segmentIndex; i++) {

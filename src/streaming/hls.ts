@@ -19,6 +19,7 @@ import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { StreamRegistryEntry } from "./registry.js";
 import type { TabReplacementHandlerFactory } from "./setup.js";
 import type { TabReplacementResult } from "./recovery.js";
+import { consumeResumeData } from "./hlsResume.js";
 import { createFMP4Segmenter } from "./fmp4Segmenter.js";
 import { createHash } from "node:crypto";
 import { getProviderBySlug } from "../browser/channelSelection.js";
@@ -895,8 +896,21 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
         url: setup.url
       });
 
+      // Check for resume data from a previous shutdown. If available, the segmenter will continue from the saved sequence numbers instead of starting at 0, preventing
+      // HLS sequence resets that cause Channels DVR to produce broken recording timelines.
+      const resumeData = consumeResumeData(channelName);
+
       // Create the native fMP4 segmenter to parse the MP4/AAC stream into HLS segments.
       const segmenter = createFMP4Segmenter({
+
+        ...(resumeData ? {
+
+          initialTrackTimestamps: resumeData.trackTimestamps,
+          pendingDiscontinuity: true,
+          previousInitSegment: resumeData.initSegment,
+          startingInitVersion: resumeData.initVersion,
+          startingSegmentIndex: resumeData.segmentIndex
+        } : {}),
 
         onError: (error: Error) => {
 

@@ -9,11 +9,13 @@ import { LOG, createMorganStream, formatError, getCurrentPattern, getPackageVers
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
+import { loadResumeState, saveResumeState } from "./streaming/hlsResume.js";
 import { startHdhrServer, stopHdhrServer } from "./hdhr/index.js";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
 import type { CliOverrides } from "./config/index.js";
 import type { Nullable } from "./types/index.js";
 import type { ParsedArgs } from "./index.js";
+import type { ResumeStreamData } from "./streaming/hlsResume.js";
 import type { Server } from "http";
 import { cleanupIdleStreams } from "./streaming/hls.js";
 import compression from "compression";
@@ -109,6 +111,27 @@ function setupGracefulShutdown(): void {
 
     // Terminate all streams. terminateStream() handles all cleanup including page closure and registry removal.
     const streams = getAllStreams();
+
+    // Collect resume state from active streams before termination destroys the segmenters. Each entry captures the final sequence numbers and timestamps so the
+    // next startup can seed from them, preventing HLS sequence resets that confuse Channels DVR.
+    const resumeEntries: ResumeStreamData[] = [];
+
+    for(const stream of streams) {
+
+      if(stream.info.storeKey && stream.segmenter) {
+
+        resumeEntries.push({
+
+          channelName: stream.info.storeKey,
+          initSegment: stream.segmenter.getInitSegment(),
+          initVersion: stream.segmenter.getInitVersion(),
+          segmentIndex: stream.segmenter.getSegmentIndex(),
+          trackTimestamps: stream.segmenter.getTrackTimestamps()
+        });
+      }
+    }
+
+    saveResumeState(resumeEntries);
 
     for(const stream of streams) {
 
@@ -425,6 +448,9 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Load persisted health state (channel health + provider auth) from health.json.
   await loadHealthState();
+
+  // Load HLS resume state from the previous shutdown. This seeds sequence numbers so streams resume forward instead of resetting to 0.
+  loadResumeState();
 
   killStaleChrome();
 

@@ -79,6 +79,16 @@ export function getSegment(streamId: number, filename: string): Buffer | undefin
   return stream.hls.segments.get(filename);
 }
 
+/**
+ * Returns the number of media segments currently stored for a stream. Used by the segmenter to clamp the playlist window to segments that actually exist in storage.
+ * @param streamId - The numeric stream ID.
+ * @returns The number of stored segments, or 0 if the stream is not found.
+ */
+export function getSegmentCount(streamId: number): number {
+
+  return getStream(streamId)?.hls.segments.size ?? 0;
+}
+
 // Init Segment Management.
 
 /**

@@ -102,6 +102,15 @@ export function getProfilesFilePath(): string {
 }
 
 /**
+ * Returns the path to the HLS resume state file.
+ * @returns The absolute path to hls-resume.json inside the data directory.
+ */
+export function getResumeFilePath(): string {
+
+  return path.join(getDataDir(), "hls-resume.json");
+}
+
+/**
  * Returns the Chrome user data directory. When config.paths.chromeDataDir is set, that absolute path is used directly. Otherwise, the directory is built from the
  * data directory and the configured profile name.
  * @param config - The application configuration.
