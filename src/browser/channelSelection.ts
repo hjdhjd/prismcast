@@ -13,6 +13,7 @@ import { hboProvider } from "./tuning/hbo.js";
 import { huluProvider } from "./tuning/hulu.js";
 import { isChannelSelectionProfile } from "../types/index.js";
 import { slingProvider } from "./tuning/sling.js";
+import { spectrumProvider } from "./tuning/spectrum.js";
 import { thumbnailRowStrategy } from "./tuning/thumbnailRow.js";
 import { tileClickStrategy } from "./tuning/tileClick.js";
 import { yttvProvider } from "./tuning/youtubeTv.js";
@@ -47,7 +48,7 @@ import { yttvProvider } from "./tuning/youtubeTv.js";
 
 // Provider module registry. The primary registry for all provider-level operations. Each entry bundles identity metadata, tuning strategy, and channel discovery.
 // Future capabilities become additional methods on ProviderModule — no new registries needed.
-const providerModules: readonly ProviderModule[] = [ directvProvider, foxProvider, hboProvider, huluProvider, slingProvider, yttvProvider ];
+const providerModules: readonly ProviderModule[] = [ directvProvider, foxProvider, hboProvider, huluProvider, slingProvider, spectrumProvider, yttvProvider ];
 
 // Strategy dispatch registry. Derived from provider modules (keyed by strategyName) plus generic strategies that are not provider-level registrations.
 const strategies: Record<string, ChannelStrategyEntry> = Object.fromEntries([

@@ -23,13 +23,16 @@ import type { Nullable } from "./shared.js";
  * - "none": No channel selection needed (single-channel sites). This is the default.
  * - "slingGrid": Find channel by data-testid in a virtualized A-Z guide grid, scroll via binary search on .guide-cell scrollTop, click the on-now program
  *   cell. Used by Sling TV.
+ * - "spectrumGrid": Find channel by callsign or display name in a non-virtualized AngularJS guide grid, extract the Gracenote tmsid from channel logo URLs,
+ *   and navigate directly to the watch URL. Caches all ~442 streamable channels on first tune. Used by Spectrum TV.
  * - "thumbnailRow": Find channel element using the profile's matchSelector (defaults to image URL matching), click adjacent element on the same row. Used by
  *   USA Network.
  * - "tileClick": Find channel element using the profile's matchSelector (defaults to image URL matching), click tile, then optionally click play button if
  *   playSelector is configured. Used by Disney+.
  * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
-export type ChannelSelectionStrategy = "directvGrid" | "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
+export type ChannelSelectionStrategy =
+  "directvGrid" | "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "spectrumGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
 
 /**
  * Configuration for channel selection behavior within a site profile.

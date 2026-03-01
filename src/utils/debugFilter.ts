@@ -200,6 +200,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "tuning:hbo", description: "HBO Max: tab URL discovery, channel rail, navigation." },
   { category: "tuning:hulu", description: "Hulu Live guide grid: binary search, cache, click retries." },
   { category: "tuning:sling", description: "Sling TV guide grid: binary search, cache, click retries." },
+  { category: "tuning:spectrum", description: "Spectrum TV guide grid: channel discovery, cache, direct URL navigation." },
   { category: "tuning:tileClick", description: "Tile click strategy: scroll phase, matchSelector poll, play button retries, modal dismiss." },
   { category: "tuning:yttv", description: "YouTube TV EPG grid navigation." }
 ];

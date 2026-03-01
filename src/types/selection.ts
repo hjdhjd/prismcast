@@ -87,6 +87,10 @@ export interface DiscoveredChannel {
   // Human-readable display name as the provider shows it in their guide grid.
   name: string;
 
+  // Gracenote station ID extracted from the provider's guide data, when available. Used by Channels DVR for automatic guide data matching via the
+  // tvc-guide-stationid M3U attribute. Currently populated by Spectrum (tmsid from channel logo URLs).
+  stationId?: string;
+
   // Channel tier: "paid" for subscription channels, "free" for free ad-supported channels. Present for Sling where the distinction matters (Freestream channels
   // are free). Omitted for providers where all channels are paid.
   tier?: string;
