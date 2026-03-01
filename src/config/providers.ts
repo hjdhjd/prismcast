@@ -165,7 +165,7 @@ export function getAllProviderTags(): { displayName: string; tag: string }[] {
   // Build a tag → display name map from DOMAIN_CONFIG's provider fields. First match wins for each tag.
   const tagDisplayNames = new Map<string, string>();
 
-  tagDisplayNames.set("direct", "Direct");
+  tagDisplayNames.set("direct", "Network");
 
   for(const config of Object.values(DOMAIN_CONFIG)) {
 
@@ -509,25 +509,30 @@ export const VALID_SORT_FIELDS = new Set<ChannelSortField>([ "channelNumber", "c
  * Extracts a sortable string value from a channel for the specified sort field. Channel numbers are zero-padded to 6 digits for correct numeric ordering within a
  * string comparison. Provider values use the display label for human-meaningful sort order. This is the single source of truth for channel sort key extraction,
  * shared by both the server-side table renderer and the M3U playlist generator.
- * @param channel - The channel definition.
- * @param key - The channel key (used for key-based and name-fallback sorting).
+ * @param channel - Fallback channel definition, used only when the selected provider variant cannot be resolved (e.g., key not in the merged channel map).
+ * @param key - The canonical channel key. Used for key-based sorting and to resolve the selected provider variant internally.
  * @param field - The sort field to extract.
  * @returns A lowercase string suitable for comparison-based sorting.
  */
 export function getChannelSortKey(channel: Channel, key: string, field: ChannelSortField): string {
 
+  // Resolve the selected provider variant so all sort keys reflect the user's provider selection. For URL-dependent fields (profile, provider), this is essential —
+  // a canonical's URL may differ from the selected variant's (e.g., bbcnews canonical uses youtube.com but the user selected the directv variant). For identity
+  // fields (name, stationId, channelNumber), the resolved channel has identical values via applyVariantInheritance, so behavior is unchanged.
+  const effective = getResolvedChannel(resolveProviderKey(key)) ?? channel;
+
   switch(field) {
 
     case "channelNumber": {
 
-      const num = channel.channelNumber;
+      const num = effective.channelNumber;
 
       return num ? String(num).padStart(6, "0") : "zzzzzz";
     }
 
     case "channelSelector": {
 
-      return (channel.channelSelector ?? "").toLowerCase();
+      return (effective.channelSelector ?? "").toLowerCase();
     }
 
     case "key": {
@@ -537,39 +542,39 @@ export function getChannelSortKey(channel: Channel, key: string, field: ChannelS
 
     case "name": {
 
-      return (channel.name ?? key).toLowerCase();
+      return (effective.name ?? key).toLowerCase();
     }
 
     case "profile": {
 
       // Explicit profile: sort by its name.
-      if(channel.profile) {
+      if(effective.profile) {
 
-        return channel.profile.toLowerCase();
+        return effective.profile.toLowerCase();
       }
 
       // Auto-detected: check whether the profile resolves to a real provider or falls back to default. Only apply the ! prefix for non-default auto profiles so
       // they sort between explicit profiles and empty profiles.
-      const resolved = getProfileForChannel(channel);
+      const resolved = getProfileForChannel(effective);
 
       if(resolved.profileName === "default") {
 
         return "";
       }
 
-      const label = getChannelProviderLabel(channel);
+      const label = getChannelProviderLabel(effective);
 
       return label ? ("!" + label.toLowerCase()) : "";
     }
 
     case "provider": {
 
-      return getChannelProviderLabel(channel).toLowerCase();
+      return getChannelProviderLabel(effective).toLowerCase();
     }
 
     case "stationId": {
 
-      const id = channel.stationId;
+      const id = effective.stationId;
 
       return id ? id.padStart(6, "0") : "zzzzzz";
     }

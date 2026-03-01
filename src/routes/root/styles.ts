@@ -273,13 +273,13 @@ export function generateLandingPageStyles(): string {
     ".provider-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }",
     ".provider-toolbar .toolbar-group { display: flex; align-items: center; gap: 6px; }",
     ".provider-toolbar .toolbar-label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }",
-    ".provider-toolbar .toolbar-spacer { flex: 1; }",
 
     // Provider dropdown multi-select.
     ".provider-dropdown-menu { min-width: 200px; max-height: 300px; overflow-y: auto; }",
     ".provider-option { display: flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--text-primary); }",
     ".provider-option:hover { background: var(--surface-sunken); }",
     ".provider-option input[type=\"checkbox\"] { margin: 0; }",
+    ".quick-action-count { margin-left: auto; font-size: 12px; color: var(--text-secondary); }",
 
     // Provider chips.
     ".provider-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }",
@@ -288,10 +288,6 @@ export function generateLandingPageStyles(): string {
     ".chip-close { background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; color: var(--text-muted); ",
     "transition: color 0.2s; }",
     ".chip-close:hover { color: var(--text-primary); }",
-
-    // Bulk assign dropdown.
-    ".bulk-assign-select { font-size: 13px; padding: 4px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-md); ",
-    "background: var(--surface-page); color: var(--text-primary); cursor: pointer; }",
 
     // Responsive: stack provider toolbar groups vertically on small screens.
     "@media (max-width: 768px) { .provider-toolbar { flex-direction: column; align-items: flex-start; } }",
@@ -333,12 +329,10 @@ export function generateLandingPageStyles(): string {
     "box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15); }",
     ".btn-icon-tooltip.visible { opacity: 1; transition: opacity 0.1s; }",
 
-    // Channel toolbar with operation buttons and display controls.
-    ".channel-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; margin-bottom: 15px; }",
+    // Channel toolbar with operation buttons.
+    ".channel-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; margin-bottom: 10px; }",
     ".channel-toolbar .toolbar-group { display: flex; align-items: center; gap: 6px; }",
-    ".channel-toolbar .toolbar-spacer { flex: 1; }",
-    ".channel-toolbar .toggle-label { font-size: 12px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 4px; ",
-    "user-select: none; }",
+    ".channel-summary { text-align: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }",
 
     // Dropdown menu used by the Import button in the channel toolbar.
     ".dropdown { position: relative; display: inline-block; }",

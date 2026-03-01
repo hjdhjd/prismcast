@@ -10,9 +10,10 @@ import { VALID_SORT_FIELDS, getAllProviderTags, getCanonicalKey, getChannelProvi
   getProviderTagForChannel, getResolvedChannel, resolvePredefinedVariant, resolveProviderKey, setEnabledProviders,
   setProviderSelection } from "../../../config/providers.js";
 import { filterDefaults, loadUserConfig, saveUserConfig } from "../../../config/userConfig.js";
-import { getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel, getPredefinedChannels, getUserChannels,
-  isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel, saveProviderSelections, saveUserChannels, validateChannelKey,
-  validateChannelName, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../../../config/userChannels.js";
+import { getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel, getPredefinedChannels,
+  getPredefinedScopeCounts, getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel, saveProviderSelections,
+  saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl,
+  validateImportedChannels } from "../../../config/userChannels.js";
 import { CONFIG } from "../../../config/index.js";
 import type { UserChannel } from "../../../config/userChannels.js";
 import { getProfiles } from "../../../config/profiles.js";
@@ -315,7 +316,7 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.info("Predefined channel '%s' %s.", key, enabled ? "enabled" : "disabled");
 
-      res.json({ enabled, key, success: true });
+      res.json({ counts: getPredefinedScopeCounts(), enabled, key, success: true });
     } catch(error) {
 
       LOG.error("Failed to toggle predefined channel: %s.", formatError(error));
@@ -489,7 +490,10 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.info("%s predefined channels %s (%d affected).", scopeLabel, enabled ? "enabled" : "disabled", affected);
 
-      res.json({ affected, enabled, keys: targetKeys, scope, success: true });
+      // Compute updated counts for all three scopes so the client can update all toggle rows from a single response.
+      const counts = getPredefinedScopeCounts();
+
+      res.json({ affected, counts, enabled, keys: targetKeys, scope, success: true });
     } catch(error) {
 
       LOG.error("Failed to toggle predefined channels: %s.", formatError(error));

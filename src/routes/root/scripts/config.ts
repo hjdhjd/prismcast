@@ -957,6 +957,7 @@ export function generateConfigSubtabScript(): string {
     "      if (result.success) {",
     "        showToast('Channel ' + key + ' ' + (enable ? 'enabled' : 'disabled') + '.' + PLAYLIST_HINT, 'success');",
     "        updateChannelRowDisabledState(key, !enable);",
+    "        if(result.counts) { updateScopeToggles(result.counts); }",
     "      } else {",
     "        showToast(result.error || 'Failed to toggle channel.', 'error');",
     "      }",
@@ -1016,12 +1017,29 @@ export function generateConfigSubtabScript(): string {
     "          for (var i = 0; i < result.keys.length; i++) { setRowDisabledState(result.keys[i], !enable); }",
     "        }",
     "        updateDisabledCount();",
+    "        if(result.counts) { updateScopeToggles(result.counts); }",
     "      } else {",
     "        showToast(result.error || 'Failed to toggle channels.', 'error');",
     "      }",
     "    })",
     "    .catch(function(err) { showToast('Failed to toggle channels: ' + err.message, 'error'); });",
     "  };",
+
+    // Update scope toggle checkboxes and count labels from server-provided counts. Pure renderer — no client-side arithmetic.
+    "  function updateScopeToggles(counts) {",
+    "    var scopes = ['all', 'east', 'pacific'];",
+    "    for(var i = 0; i < scopes.length; i++) {",
+    "      var s = scopes[i];",
+    "      if(!counts[s]) continue;",
+    "      var cb = document.querySelector('.scope-toggle[data-scope=\"' + s + '\"]');",
+    "      var span = document.querySelector('.quick-action-count[data-scope=\"' + s + '\"]');",
+    "      if(cb) {",
+    "        cb.checked = (counts[s].enabled === counts[s].total);",
+    "        cb.indeterminate = (counts[s].enabled > 0) && (counts[s].enabled < counts[s].total);",
+    "      }",
+    "      if(span) { span.textContent = counts[s].enabled + ' of ' + counts[s].total + ' enabled'; }",
+    "    }",
+    "  }",
 
     // SVG icon strings for dynamic DOM manipulation when toggling button states.
     "  var ICON_LOGIN_SVG = '<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
@@ -1112,13 +1130,24 @@ export function generateConfigSubtabScript(): string {
     "    updateDisabledCount();",
     "  };",
 
-    // Update the disabled channel count shown in the toolbar toggle label. Uses a union selector to avoid double-counting rows that are both disabled and
-    // provider-unavailable.
+    // Update the channel summary counts (total, enabled, disabled, predefined/user breakdown) shown above the channel table.
     "  function updateDisabledCount() {",
-    "    var countEl = document.getElementById('disabled-count');",
-    "    if (!countEl) return;",
+    "    var totalRows = document.querySelectorAll('.channel-table tbody tr[id^=\"display-row-\"]').length;",
     "    var hiddenRows = document.querySelectorAll('tr.channel-disabled:not(.user-channel), tr.channel-unavailable');",
-    "    countEl.textContent = String(hiddenRows.length);",
+    "    var disabledCount = hiddenRows.length;",
+    "    var enabledCount = totalRows - disabledCount;",
+    "    var userRows = document.querySelectorAll('.channel-table tbody tr.user-channel[id^=\"display-row-\"]').length;",
+    "    var predefinedRows = totalRows - userRows;",
+    "    var totalEl = document.getElementById('total-count');",
+    "    var enabledEl = document.getElementById('enabled-count');",
+    "    var disabledEl = document.getElementById('disabled-count');",
+    "    var predefinedEl = document.getElementById('predefined-count');",
+    "    var userEl = document.getElementById('user-count');",
+    "    if (totalEl) totalEl.textContent = String(totalRows);",
+    "    if (enabledEl) enabledEl.textContent = String(enabledCount);",
+    "    if (disabledEl) disabledEl.textContent = String(disabledCount);",
+    "    if (predefinedEl) predefinedEl.textContent = String(predefinedRows);",
+    "    if (userEl) userEl.textContent = (userRows > 0) ? ', ' + String(userRows) + ' user' : '';",
     "  };",
 
     // Save the provider filter to the server and update the UI on success.
@@ -1275,34 +1304,19 @@ export function generateConfigSubtabScript(): string {
     "    if (enabledTags.length > 0) { filterChannelRows(enabledTags); }",
     "  }",
 
-    // Update bulk assign dropdown to only show enabled providers. Uses DOM removal like filterChannelRows because Safari ignores hidden/display:none on option
-    // elements. The snapshot filters by truthy .value to exclude the "Choose provider..." placeholder (value="") so it is never removed from the DOM.
+    // Update bulk assign items in the Quick Actions menu to only show enabled providers. Toggles display on .bulk-assign-item elements based on the active filter.
     "  function updateBulkAssignOptions(enabledTags) {",
-    "    var select = document.getElementById('bulk-assign');",
-    "    if (!select) return;",
-    "    if (!select._allOptions) {",
-    "      select._allOptions = [];",
-    "      var all = select.querySelectorAll('option');",
-    "      for (var a = 0; a < all.length; a++) { if (all[a].value) select._allOptions.push(all[a]); }",
+    "    var items = document.querySelectorAll('.bulk-assign-item');",
+    "    for (var i = 0; i < items.length; i++) {",
+    "      var tag = items[i].getAttribute('data-provider-tag');",
+    "      var show = (enabledTags.length === 0) || (tag === 'direct') || (enabledTags.indexOf(tag) !== -1);",
+    "      items[i].style.display = show ? '' : 'none';",
     "    }",
-    "    for (var i = 0; i < select._allOptions.length; i++) {",
-    "      var opt = select._allOptions[i];",
-    "      if (opt.parentNode === select) { select.removeChild(opt); }",
-    "    }",
-    "    for (var j = 0; j < select._allOptions.length; j++) {",
-    "      var opt2 = select._allOptions[j];",
-    "      if (enabledTags.length === 0 || opt2.value === 'direct' || enabledTags.indexOf(opt2.value) !== -1) {",
-    "        select.appendChild(opt2);",
-    "      }",
-    "    }",
-    "    select.value = '';",
     "  };",
 
     // Bulk assign all channels to a specific provider. Updates all dropdowns and profile cells in-place.
-    "  window.bulkAssignProvider = function(selectEl) {",
-    "    var providerTag = selectEl.value;",
+    "  window.bulkAssignProvider = function(providerTag) {",
     "    if (!providerTag) return;",
-    "    selectEl.value = '';",
     "    fetch('/config/provider-bulk-assign', {",
     "      method: 'POST',",
     "      headers: { 'Content-Type': 'application/json' },",
@@ -1446,7 +1460,7 @@ export function generateConfigSubtabScript(): string {
     "    var menu = document.querySelector('.column-picker-menu');",
     "    var cols = [];",
     "    if (menu) {",
-    "      var cbs = menu.querySelectorAll('input[type=\"checkbox\"]');",
+    "      var cbs = menu.querySelectorAll('input[type=\"checkbox\"][data-col-field]');",
     "      for (var i = 0; i < cbs.length; i++) {",
     "        if (cbs[i].checked) cols.push(cbs[i].getAttribute('data-col-field'));",
     "      }",
@@ -1620,6 +1634,18 @@ export function generateConfigSubtabScript(): string {
     "      var checkbox = document.getElementById('show-disabled-toggle');",
     "      if (table) table.classList.remove('hide-disabled');",
     "      if (checkbox) checkbox.checked = true;",
+    "    }",
+
+    // Set indeterminate state on scope toggle checkboxes. HTML has no indeterminate attribute — it must be set via JS on page load.
+    "    var scopeToggles = document.querySelectorAll('.scope-toggle');",
+    "    for(var si = 0; si < scopeToggles.length; si++) {",
+    "      var st = scopeToggles[si];",
+    "      var total = parseInt(st.getAttribute('data-total'), 10);",
+    "      var span = document.querySelector('.quick-action-count[data-scope=\"' + st.getAttribute('data-scope') + '\"]');",
+    "      if(span && total > 0) {",
+    "        var count = parseInt(span.textContent, 10);",
+    "        if(!isNaN(count) && (count > 0) && (count < total)) { st.indeterminate = true; }",
+    "      }",
     "    }",
 
     // Run filterChannelRows on page load when a provider filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on

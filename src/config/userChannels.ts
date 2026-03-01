@@ -578,25 +578,37 @@ export function getDisabledPredefinedChannels(): string[] {
 }
 
 /**
- * Returns all predefined channels regardless of disabled state. Used by the UI to show all predefined channels including disabled ones.
- * @returns The predefined channel map.
+ * Returns all predefined channels regardless of disabled state, excluding provider variants. Used by the UI to show all predefined channels including disabled ones.
+ * Provider variants are internal implementation details of channel delivery and are not channels themselves.
+ * @returns The predefined channel map with canonical entries only.
  */
 export function getPredefinedChannels(): ChannelMap {
 
-  return { ...PREDEFINED_CHANNELS };
+  const result: ChannelMap = {};
+
+  for(const [ key, channel ] of Object.entries(PREDEFINED_CHANNELS)) {
+
+    if(isProviderVariant(key)) {
+
+      continue;
+    }
+
+    result[key] = channel;
+  }
+
+  return result;
 }
 
-/* Pacific and East key identification share the same structural logic: iterate all predefined keys, extract the canonical base (before the first hyphen for
- * provider variants, or the full key for canonicals), and test whether the base participates in the Pacific timezone naming convention. The helper below
- * centralizes this so the two exported functions differ only in which side of the East/Pacific pair they select.
+/* Pacific and East key identification share the same structural logic: iterate canonical predefined keys and test whether each participates in the Pacific
+ * timezone naming convention. The helper below centralizes this so the two exported functions differ only in which side of the East/Pacific pair they select.
  */
 
 /**
- * Filters predefined channel keys by their relationship to the Pacific timezone naming convention. For "pacific" mode, returns keys whose base ends in "p"
- * and whose East counterpart (base minus trailing "p") exists. For "east" mode, returns keys whose base does NOT end in "p" and whose Pacific counterpart
- * (base plus "p") exists. Both modes include canonicals and provider variants.
+ * Filters predefined channel keys by their relationship to the Pacific timezone naming convention. For "pacific" mode, returns keys that end in "p" and
+ * whose East counterpart (key minus trailing "p") exists. For "east" mode, returns keys that do NOT end in "p" and whose Pacific counterpart (key plus "p")
+ * exists. Provider variants are excluded — only canonical keys are returned.
  * @param side - Which side of the East/Pacific pair to select.
- * @returns Sorted array of matching predefined channel keys.
+ * @returns Sorted array of matching canonical predefined channel keys.
  */
 function filterPredefinedKeysByTimezone(side: "east" | "pacific"): string[] {
 
@@ -604,21 +616,23 @@ function filterPredefinedKeysByTimezone(side: "east" | "pacific"): string[] {
 
   for(const key of Object.keys(PREDEFINED_CHANNELS)) {
 
-    // Extract the canonical base: for provider variants like "animalp-hulu" the base is "animalp"; for canonicals like "animalp" the base is the full key.
-    const dashIndex = key.indexOf("-");
-    const base = (dashIndex === -1) ? key : key.substring(0, dashIndex);
+    // Skip provider variants — they are internal implementation details, not channels.
+    if(isProviderVariant(key)) {
+
+      continue;
+    }
 
     if(side === "pacific") {
 
-      // Pacific: base ends in "p" and the East counterpart exists.
-      if(base.endsWith("p") && ((base.slice(0, -1)) in PREDEFINED_CHANNELS)) {
+      // Pacific: key ends in "p" and the East counterpart exists.
+      if(key.endsWith("p") && ((key.slice(0, -1)) in PREDEFINED_CHANNELS)) {
 
         keys.push(key);
       }
     } else {
 
-      // East: base does NOT end in "p" and the Pacific counterpart exists.
-      if(!base.endsWith("p") && ((base + "p") in PREDEFINED_CHANNELS)) {
+      // East: key does NOT end in "p" and the Pacific counterpart exists.
+      if(!key.endsWith("p") && ((key + "p") in PREDEFINED_CHANNELS)) {
 
         keys.push(key);
       }
@@ -629,9 +643,9 @@ function filterPredefinedKeysByTimezone(side: "east" | "pacific"): string[] {
 }
 
 /**
- * Returns the keys of all predefined channels that are Pacific entries (both canonicals and provider variants). A key is Pacific if its canonical base ends
- * in "p" and the East counterpart (base minus trailing "p") exists in PREDEFINED_CHANNELS.
- * @returns Sorted array of Pacific predefined channel keys.
+ * Returns the keys of all predefined channels that are Pacific entries (canonical keys only). A key is Pacific if it ends in "p" and the East counterpart
+ * (key minus trailing "p") exists in PREDEFINED_CHANNELS.
+ * @returns Sorted array of canonical Pacific predefined channel keys.
  */
 export function getPacificPredefinedKeys(): string[] {
 
@@ -639,13 +653,35 @@ export function getPacificPredefinedKeys(): string[] {
 }
 
 /**
- * Returns the keys of all predefined East channels that have Pacific counterparts (both canonicals and provider variants). A key qualifies if its canonical
- * base does NOT end in "p" and the Pacific counterpart (base plus "p") exists in PREDEFINED_CHANNELS.
- * @returns Sorted array of East predefined channel keys that have Pacific counterparts.
+ * Returns the keys of all predefined East channels that have Pacific counterparts (canonical keys only). A key qualifies if it does NOT end in "p" and
+ * the Pacific counterpart (key plus "p") exists in PREDEFINED_CHANNELS.
+ * @returns Sorted array of canonical East predefined channel keys that have Pacific counterparts.
  */
 export function getEastWithPacificPredefinedKeys(): string[] {
 
   return filterPredefinedKeysByTimezone("east");
+}
+
+/**
+ * Computes enabled/total counts for all three predefined channel scopes (all, east, pacific) against the current disabled set. Both the enabled count and
+ * the total are filtered by provider availability so that the displayed counts match the visible channel table. When no provider filter is active,
+ * all channels pass and the counts are unaffected. Used by the server-side HTML renderer and both toggle endpoints to provide consistent counts to the client.
+ * @returns An object with `all`, `east`, and `pacific` keys, each containing `{ enabled, total }`.
+ */
+export function getPredefinedScopeCounts(): { all: { enabled: number; total: number }; east: { enabled: number; total: number };
+  pacific: { enabled: number; total: number }; } {
+
+  const allKeys = Object.keys(getPredefinedChannels()).filter((k) => isChannelAvailableByProvider(k));
+  const eastKeys = getEastWithPacificPredefinedKeys().filter((k) => isChannelAvailableByProvider(k));
+  const pacificKeys = getPacificPredefinedKeys().filter((k) => isChannelAvailableByProvider(k));
+  const disabled = new Set(CONFIG.channels.disabledPredefined);
+
+  return {
+
+    all: { enabled: allKeys.filter((k) => !disabled.has(k)).length, total: allKeys.length },
+    east: { enabled: eastKeys.filter((k) => !disabled.has(k)).length, total: eastKeys.length },
+    pacific: { enabled: pacificKeys.filter((k) => !disabled.has(k)).length, total: pacificKeys.length }
+  };
 }
 
 /**

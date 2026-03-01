@@ -8,8 +8,8 @@ import { compareChannelSort, getAllProviderTags, getChannelProviderLabel, getCha
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getProviderAuth } from "../../../config/health.js";
-import { getChannelListing, getChannelsParseErrorMessage, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled,
-  isUserChannel } from "../../../config/userChannels.js";
+import { getChannelListing, getChannelsParseErrorMessage, getPredefinedScopeCounts, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel,
+  isPredefinedChannelDisabled, isUserChannel } from "../../../config/userChannels.js";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
 import { CONFIG } from "../../../config/index.js";
 import type { ChannelListingEntry } from "../../../types/index.js";
@@ -624,20 +624,21 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   displayLines.push("<td class=\"col-stationid\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "stationId")) + "\">" +
     (channel.stationId ? escapeHtml(channel.stationId) : "") + "</td>");
 
-  // Profile column: show explicit profile as-is, or the auto-resolved friendly name with "(auto)" suffix in muted style. The sort key is computed once and applied
-  // uniformly to all three display branches so server-side sort order always matches client-side re-sort.
+  // Profile column: show explicit profile as-is, or the auto-resolved friendly name with "(auto)" suffix in muted style. The sort key resolves the selected
+  // provider variant internally via getChannelSortKey. The display content uses displayChannel because profile resolution is URL-dependent and a canonical's URL
+  // may differ from the selected variant's.
   const profileSortKey = escapeHtml(getChannelSortKey(channel, key, "profile"));
 
-  if(channel.profile) {
+  if(displayChannel.profile) {
 
-    displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey + "\">" + escapeHtml(channel.profile) + "</td>");
+    displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey + "\">" + escapeHtml(displayChannel.profile) + "</td>");
   } else {
 
-    const resolved = getProfileForChannel(channel);
+    const resolved = getProfileForChannel(displayChannel);
 
     if(resolved.profileName !== "default") {
 
-      const label = getChannelProviderLabel(channel);
+      const label = getChannelProviderLabel(displayChannel);
 
       displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey +
         "\"><span class=\"text-muted\">" + escapeHtml(label + " (auto)") + "</span></td>");
@@ -787,7 +788,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 }
 
 /**
- * Generates the provider filter toolbar HTML with a multi-select dropdown, dismissable chips, and a bulk-assign dropdown.
+ * Generates the provider filter toolbar HTML with a multi-select dropdown and dismissable chips.
  * @returns HTML string for the provider filter toolbar.
  */
 export function generateProviderFilterToolbar(): string {
@@ -799,7 +800,7 @@ export function generateProviderFilterToolbar(): string {
 
   lines.push("<div class=\"provider-toolbar\">");
 
-  // Left group: Provider filter dropdown and chips.
+  // Provider filter dropdown and chips.
   lines.push("<div class=\"toolbar-group\">");
   lines.push("<span class=\"toolbar-label\">Providers:</span>");
   lines.push("<div class=\"dropdown provider-dropdown\">");
@@ -848,28 +849,6 @@ export function generateProviderFilterToolbar(): string {
   lines.push("</div>");
   lines.push("</div>");
 
-  // Spacer.
-  lines.push("<div class=\"toolbar-spacer\"></div>");
-
-  // Right group: Bulk assign dropdown.
-  lines.push("<div class=\"toolbar-group\">");
-  lines.push("<span class=\"toolbar-label\">Set all channels to:</span>");
-  lines.push("<select class=\"form-select bulk-assign-select\" id=\"bulk-assign\" onchange=\"bulkAssignProvider(this)\">");
-  lines.push("<option value=\"\" disabled selected>Choose provider...</option>");
-
-  // Render all provider options so the client-side _allOptions snapshot captures them for reinsertion when the filter changes. Filtered-out options get the hidden
-  // attribute for immediate filtering in Chrome. Safari ignores hidden on option elements, so the page-load JS init calls updateBulkAssignOptions() to remove them
-  // from the DOM.
-  for(const tagInfo of allTags) {
-
-    const optionHidden = (hasFilter && !enabled.includes(tagInfo.tag) && (tagInfo.tag !== "direct")) ? " hidden" : "";
-
-    lines.push("<option value=\"" + escapeHtml(tagInfo.tag) + "\"" + optionHidden + ">" + escapeHtml(tagInfo.displayName) + "</option>");
-  }
-
-  lines.push("</select>");
-  lines.push("</div>");
-
   lines.push("</div>");
 
   return lines.join("\n");
@@ -907,10 +886,10 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     "Gracenote station ID, URL, or other properties.</p>");
   lines.push("</div>");
 
-  // Toolbar with channel operations and display controls.
+  // Toolbar with channel operations.
   lines.push("<div class=\"channel-toolbar\">");
 
-  // Left group: channel operations. Import uses a dropdown menu to consolidate M3U and JSON import into a single button.
+  // Channel operations. Import uses a dropdown menu to consolidate M3U and JSON import into a single button.
   lines.push("<div class=\"toolbar-group\">");
   lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" id=\"add-channel-btn\" onclick=\"document.getElementById('add-channel-form')",
     ".style.display='block'; this.style.display='none';\">Add Channel</button>");
@@ -925,32 +904,54 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</div>");
   lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"exportChannels()\">Export</button>");
   lines.push("<input type=\"file\" id=\"import-m3u-file\" accept=\".m3u,.m3u8\" style=\"display: none;\" onchange=\"importM3U(this)\">");
-  lines.push("</div>");
 
-  // Spacer.
-  lines.push("<div class=\"toolbar-spacer\"></div>");
-
-  // Right group: display controls.
-  lines.push("<div class=\"toolbar-group\">");
-
-  lines.push("<div class=\"dropdown bulk-actions-dropdown\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"toggleDropdown(this)\">Bulk Actions &#9662;</button>");
+  lines.push("<div class=\"dropdown quick-actions-dropdown\">");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"toggleDropdown(this)\">Quick Actions &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
-  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(true, 'all')\">Enable All Predefined</div>");
-  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(false, 'all')\">Disable All Predefined</div>");
+  // Compute initial toggle counts for predefined channel scopes. The server is the single source of truth — the client renders what we return here.
+  const scopeCounts = getPredefinedScopeCounts();
+
+  // Three toggle rows: checkbox + label + "X of Y enabled" count. Clicking toggles the group via bulkTogglePredefined(). The onclick uses event.preventDefault()
+  // to stop the native checkbox toggle — the server response drives the update.
+  const scopes: { count: number; label: string; scope: string; total: number }[] = [
+    { count: scopeCounts.all.enabled, label: "All Predefined", scope: "all", total: scopeCounts.all.total },
+    { count: scopeCounts.east.enabled, label: "East Variants", scope: "east", total: scopeCounts.east.total },
+    { count: scopeCounts.pacific.enabled, label: "Pacific Variants", scope: "pacific", total: scopeCounts.pacific.total }
+  ];
+
+  for(const s of scopes) {
+
+    const checked = (s.count === s.total) ? " checked" : "";
+
+    lines.push("<label class=\"provider-option\" onclick=\"event.preventDefault(); bulkTogglePredefined(!this.querySelector('input').checked, '" + s.scope +
+      "')\">" + "<input type=\"checkbox\" class=\"scope-toggle\" data-scope=\"" + s.scope + "\" data-total=\"" + String(s.total) + "\"" + checked + "> " +
+      s.label + "<span class=\"quick-action-count\" data-scope=\"" + s.scope + "\">" + String(s.count) + " of " + String(s.total) + " enabled</span></label>");
+  }
+
   lines.push("<div class=\"dropdown-divider\"></div>");
-  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(true, 'pacific')\">Enable Pacific Variants</div>");
-  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(false, 'pacific')\">Disable Pacific Variants</div>");
-  lines.push("<div class=\"dropdown-divider\"></div>");
-  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(true, 'east')\">Enable East Variants</div>");
-  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); bulkTogglePredefined(false, 'east')\">Disable East Variants</div>");
+
+  // Bulk assign items — one per provider. Items whose tag is filtered out are hidden so updateBulkAssignOptions() can toggle them when the filter changes.
+  const allTags = getAllProviderTags();
+  const enabled = getEnabledProviders();
+  const hasFilter = enabled.length > 0;
+
+  for(const tagInfo of allTags) {
+
+    const hidden = (hasFilter && !enabled.includes(tagInfo.tag) && (tagInfo.tag !== "direct")) ? " style=\"display: none;\"" : "";
+
+    lines.push("<div class=\"dropdown-item bulk-assign-item\" data-provider-tag=\"" + escapeHtml(tagInfo.tag) + "\"" + hidden +
+      " onclick=\"closeDropdowns(); bulkAssignProvider('" + escapeHtml(tagInfo.tag) + "')\">Set all to " + escapeHtml(tagInfo.displayName) + "</div>");
+  }
+
+  lines.push("</div>");
+  lines.push("</div>");
   lines.push("</div>");
   lines.push("</div>");
 
-  lines.push("<label class=\"toggle-label\"><input type=\"checkbox\" id=\"show-disabled-toggle\" onchange=\"toggleDisabledVisibility()\"> ",
-    "Show disabled (<span id=\"disabled-count\">" + String(totalHiddenCount) + "</span>)</label>");
-  lines.push("</div>");
-  lines.push("</div>");
+  const totalCount = listing.length;
+  const userCount = listing.filter((entry) => entry.source !== "predefined").length;
+  const predefinedCount = totalCount - userCount;
+  const enabledCount = totalCount - totalHiddenCount;
 
   // Show channels file parse error if applicable.
   if(hasChannelsParseError()) {
@@ -1051,7 +1052,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</form>");
   lines.push("</div>"); // End add-channel-form.
 
-  // Provider filter toolbar with multi-select dropdown, chips, and bulk assign. Placed after the add channel form so the form flows directly from its trigger button.
+  // Provider filter toolbar with multi-select dropdown and chips. Placed after the add channel form so the form flows directly from its trigger button.
   lines.push(generateProviderFilterToolbar());
 
   // Profile reference section (hidden by default, toggled via link in profile dropdown hint).
@@ -1073,6 +1074,14 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   const sortField = CONFIG.channels.channelSortField;
   const sortDir = CONFIG.channels.channelSortDirection;
 
+  // Channel summary line with predefined/user breakdown. The user-count span contains the entire user portion (comma, count, and label) so the client can
+  // toggle it by setting textContent. When there are no user channels, the span is empty to avoid "0 user" noise.
+  const userPortion = (userCount > 0) ? ", " + String(userCount) + " user" : "";
+
+  lines.push("<div class=\"channel-summary\"><span id=\"total-count\">" + String(totalCount) + "</span> channels " +
+    "(<span id=\"predefined-count\">" + String(predefinedCount) + "</span> predefined<span id=\"user-count\">" + userPortion + "</span>) &middot; " +
+    "<span id=\"enabled-count\">" + String(enabledCount) + "</span> enabled &middot; " +
+    "<span id=\"disabled-count\">" + String(totalHiddenCount) + "</span> disabled</div>");
   lines.push("<div class=\"channel-table-wrapper\">");
   lines.push("<table class=\"" + tableClasses.join(" ") + "\" data-sort-field=\"" + sortField + "\" data-sort-dir=\"" + sortDir + "\">");
   lines.push("<thead>");
@@ -1096,12 +1105,15 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
       hdr.label + indicator + "</th>");
   }
 
-  // Actions header with column picker dropdown.
+  // Actions header with table options dropdown.
   lines.push("<th class=\"col-actions\"><span>Actions</span>");
   lines.push("<div class=\"dropdown column-picker\">");
-  lines.push("<button type=\"button\" class=\"btn-icon btn-col-picker\" title=\"Show/hide columns\" aria-label=\"Show/hide columns\" " +
+  lines.push("<button type=\"button\" class=\"btn-icon btn-col-picker\" title=\"Table options\" aria-label=\"Table options\" " +
     "onclick=\"toggleDropdown(this)\">&#8942;</button>");
   lines.push("<div class=\"dropdown-menu column-picker-menu\">");
+  lines.push("<label class=\"provider-option\"><input type=\"checkbox\" id=\"show-disabled-toggle\" onchange=\"toggleDisabledVisibility()\"> " +
+    "Show disabled channels</label>");
+  lines.push("<div class=\"dropdown-divider\"></div>");
 
   for(const col of OPTIONAL_COLUMNS) {
 

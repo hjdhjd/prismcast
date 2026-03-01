@@ -495,11 +495,13 @@ export function generateApiReferenceContent(): string {
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/channels/toggle-predefined</code></td>",
-    "<td>Enable or disable a single predefined channel. Body: <code>{ \"key\": \"nbc\", \"enabled\": true }</code></td>",
+    "<td>Enable or disable a single predefined channel. Body: <code>{ \"key\": \"nbc\", \"enabled\": true }</code>. " +
+    "Response includes <code>counts</code> with enabled/total for all, east, and pacific scopes.</td>",
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/channels/bulk-toggle-predefined</code></td>",
-    "<td>Enable or disable predefined channels by scope. Body: <code>{ \"enabled\": true, \"scope\": \"all\" | \"pacific\" | \"east\" }</code></td>",
+    "<td>Enable or disable predefined channels by scope. Body: <code>{ \"enabled\": true, \"scope\": \"all\" | \"pacific\" | \"east\" }</code>. " +
+    "Response includes <code>counts</code> with enabled/total for all, east, and pacific scopes.</td>",
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/channels/display-prefs</code></td>",
