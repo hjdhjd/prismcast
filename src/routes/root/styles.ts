@@ -503,7 +503,7 @@ export function generateLandingPageStyles(): string {
     ".changelog-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); display: none; ",
     "align-items: center; justify-content: center; z-index: 1000; }",
     ".changelog-modal-content { background: var(--surface-overlay); padding: 30px; border-radius: var(--radius-lg); max-width: 500px; width: 90%; ",
-    "box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); }",
+    "max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); }",
     ".changelog-modal-content h3 { margin-top: 0; margin-bottom: 20px; color: var(--text-heading); }",
     ".changelog-list { margin: 0 0 20px 0; padding: 0 0 0 20px; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }",
     ".changelog-list li { margin-bottom: 8px; }",

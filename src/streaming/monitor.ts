@@ -415,7 +415,7 @@ export function monitorPlaybackHealth(
 
     if(cbResult.shouldTrip) {
 
-      LOG.error("Circuit breaker tripped after %s. Stream appears fundamentally broken.", context);
+      LOG.error("Recovery exhausted (%s) — terminating stream.", context);
 
       clearInterval(interval);
       onCircuitBreak();
@@ -463,7 +463,7 @@ export function monitorPlaybackHealth(
     metrics.currentRecoveryStartTime = null;
     metrics.currentRecoveryMethod = null;
 
-    LOG.warn("Tab replacement unsuccessful after retry.");
+    LOG.warn("Tab replacement unsuccessful after retry — stream will be terminated.");
 
     const failureOutcome = handleTabReplacementFailure(context);
 
@@ -472,7 +472,7 @@ export function monitorPlaybackHealth(
     // zombie entry in the registry. Terminate explicitly instead.
     if((failureOutcome.outcome === "failed") && currentPage.isClosed()) {
 
-      LOG.error("Tab replacement failed and old page is closed. Stream is unrecoverable. Terminating stream.");
+      LOG.error("Tab replacement failed and the original page is no longer available — terminating stream.");
 
       clearInterval(interval);
       onCircuitBreak();
@@ -846,14 +846,14 @@ export function monitorPlaybackHealth(
           }
 
           // After 3+ consecutive failures, escalate to full page navigation recovery.
-          LOG.warn("Video element not found. Attempting %s...", RECOVERY_METHODS.pageNavigation);
+          LOG.warn("Video element not found — recovering via %s.", RECOVERY_METHODS.pageNavigation);
 
           // Check circuit breaker for too many failures.
           const cbResult = checkCircuitBreaker(circuitBreaker, now);
 
           if(cbResult.shouldTrip) {
 
-            LOG.error("Circuit breaker tripped after %s failures. Stream appears fundamentally broken.", cbResult.totalCount);
+            LOG.error("Recovery failed after %s attempts — terminating stream.", cbResult.totalCount);
 
             clearInterval(interval);
             onCircuitBreak();
@@ -878,7 +878,7 @@ export function monitorPlaybackHealth(
 
           if(pageReloadTimestamps.length >= CONFIG.playback.maxPageReloads) {
 
-            LOG.error("Exceeded maximum page navigations (%s in %s minutes). Cannot recover without video element.",
+            LOG.error("Page navigation rate limit reached (%s in %s minutes) — cannot recover without video element.",
               CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
             clearInterval(interval);
@@ -919,7 +919,7 @@ export function monitorPlaybackHealth(
 
             consecutiveNavigationFailures++;
 
-            LOG.warn("Page navigation unsuccessful.");
+            LOG.warn("Page navigation did not restore playback.");
           }
 
           recoveryInProgress = false;
@@ -995,7 +995,7 @@ export function monitorPlaybackHealth(
           } else if((now - segmentWaitStartTime) > SEGMENT_STALL_TIMEOUT) {
 
             // No new segments for SEGMENT_STALL_TIMEOUT after recovery grace period. The capture pipeline is dead.
-            LOG.warn("No segments produced for %ss after recovery. Capture pipeline appears dead.", SEGMENT_STALL_TIMEOUT / 1000);
+            LOG.warn("No segments produced for %ss after recovery — capture pipeline is not responding.", SEGMENT_STALL_TIMEOUT / 1000);
 
             segmentProductionStalled = true;
           }
@@ -1022,7 +1022,7 @@ export function monitorPlaybackHealth(
 
             if(consecutiveTinySegments >= TINY_SEGMENT_COUNT_TRIGGER) {
 
-              LOG.warn("Detected %d consecutive tiny segments (%d bytes). Capture pipeline appears dead.", consecutiveTinySegments, segmentSize);
+              LOG.warn("Detected %d consecutive tiny segments (%d bytes) — capture pipeline is not responding.", consecutiveTinySegments, segmentSize);
 
               // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentProductionStalled. Return unconditionally after tab
               // replacement (matching stalled-capture and unresponsive-tab triggers) to avoid falling through the rest of the tick with stale pre-replacement state.
@@ -1063,7 +1063,7 @@ export function monitorPlaybackHealth(
            * during stream startup before the first segment has been produced. The recovery grace guard prevents false triggering during legitimate pauses (e.g.,
            * after tab replacement while the new capture pipeline is initializing).
            */
-          LOG.warn("No new segments produced for %ss. Capture pipeline appears stale.", SEGMENT_STALENESS_TIMEOUT / 1000);
+          LOG.warn("No new segments produced for %ss — capture pipeline may have stalled.", SEGMENT_STALENESS_TIMEOUT / 1000);
 
           if(onTabReplacement && !recoveryInProgress) {
 
@@ -1279,7 +1279,7 @@ export function monitorPlaybackHealth(
            */
           if(segmentProductionStalled && onTabReplacement) {
 
-            LOG.warn("Capture pipeline stalled after recovery. Escalating directly to %s...", RECOVERY_METHODS.tabReplacement);
+            LOG.warn("Capture pipeline still stalled — escalating to %s.", RECOVERY_METHODS.tabReplacement);
 
             await executeTabReplacement("capture pipeline stalled");
 
@@ -1293,7 +1293,7 @@ export function monitorPlaybackHealth(
 
             const elapsedSeconds = circuitBreaker.firstFailureTime ? Math.round((now - circuitBreaker.firstFailureTime) / 1000) : 0;
 
-            LOG.error("Circuit breaker tripped after %s failures in %ss. Stream appears fundamentally broken.", cbResult.totalCount, elapsedSeconds);
+            LOG.error("Recovery failed after %s attempts in %ss — terminating stream.", cbResult.totalCount, elapsedSeconds);
 
             clearInterval(interval);
             onCircuitBreak();
@@ -1346,13 +1346,13 @@ export function monitorPlaybackHealth(
           // If a previous recovery was pending (L1 or L2 that didn't result in healthy playback), log that it was unsuccessful before starting the new attempt.
           if(metrics.currentRecoveryMethod !== null) {
 
-            LOG.warn("%s unsuccessful. Attempting %s...", capitalize(metrics.currentRecoveryMethod), recoveryMethod);
+            LOG.warn("%s did not resolve the issue — escalating to %s.", capitalize(metrics.currentRecoveryMethod), recoveryMethod);
           } else {
 
             // First recovery attempt - log with issue description.
             const issueDesc = getIssueDescription(issueCategory);
 
-            LOG.warn("Playback %s. Attempting %s...", issueDesc, recoveryMethod);
+            LOG.warn("Playback %s — recovering via %s.", issueDesc, recoveryMethod);
           }
 
           // Record this recovery attempt in metrics.
@@ -1399,7 +1399,7 @@ export function monitorPlaybackHealth(
               // itself is broken (e.g., network issues, site blocking).
               if(consecutiveNavigationFailures >= 2) {
 
-                LOG.warn("Page navigation has failed %s consecutive times. Falling back to source reload recovery.",
+                LOG.warn("Page navigation has failed %s consecutive times — falling back to source reload.",
                   consecutiveNavigationFailures);
 
                 escalationLevel = 2;
@@ -1420,7 +1420,7 @@ export function monitorPlaybackHealth(
 
                 if(pageReloadTimestamps.length >= CONFIG.playback.maxPageReloads) {
 
-                  LOG.warn("Exceeded maximum page navigations (%s in %s minutes). Falling back to source reload.",
+                  LOG.warn("Page navigation rate limit reached (%s in %s minutes) — falling back to source reload.",
                     CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
                   escalationLevel = 2;
@@ -1461,7 +1461,7 @@ export function monitorPlaybackHealth(
 
                     consecutiveNavigationFailures++;
 
-                    LOG.warn("Page navigation unsuccessful (attempt %s/2).", consecutiveNavigationFailures);
+                    LOG.warn("Page navigation did not restore playback (attempt %s/2).", consecutiveNavigationFailures);
                   }
                 }
               }
@@ -1505,7 +1505,7 @@ export function monitorPlaybackHealth(
           // After 3 consecutive timeouts, attempt tab replacement if the callback is available.
           if((consecutiveTimeouts >= 3) && onTabReplacement) {
 
-            LOG.warn("Tab unresponsive. Attempting %s...", RECOVERY_METHODS.tabReplacement);
+            LOG.warn("Tab unresponsive — recovering via %s.", RECOVERY_METHODS.tabReplacement);
 
             await executeTabReplacement("tab unresponsive");
 
