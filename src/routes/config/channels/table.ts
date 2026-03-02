@@ -620,9 +620,9 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
   // Optional columns: Number, Station ID, Profile, Selector. All four are always rendered; visibility is controlled by CSS classes on the table element.
   displayLines.push("<td class=\"col-chnum\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelNumber")) + "\">" +
-    (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "") + "</td>");
+    (displayChannel.channelNumber ? escapeHtml(String(displayChannel.channelNumber)) : "") + "</td>");
   displayLines.push("<td class=\"col-stationid\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "stationId")) + "\">" +
-    (channel.stationId ? escapeHtml(channel.stationId) : "") + "</td>");
+    (displayChannel.stationId ? escapeHtml(displayChannel.stationId) : "") + "</td>");
 
   // Profile column: show explicit profile as-is, or the auto-resolved friendly name with "(auto)" suffix in muted style. The sort key resolves the selected
   // provider variant internally via getChannelSortKey. The display content uses displayChannel because profile resolution is URL-dependent and a canonical's URL
@@ -649,7 +649,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   }
 
   displayLines.push("<td class=\"col-selector\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelSelector")) + "\">" +
-    (channel.channelSelector ? escapeHtml(channel.channelSelector) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
+    (displayChannel.channelSelector ? escapeHtml(displayChannel.channelSelector) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
 
   // Actions column with icon buttons. Five positions per row: Edit (always), Login/placeholder, Health/placeholder, context-sensitive, and Copy URL.
   displayLines.push("<td>");
