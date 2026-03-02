@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.2 (2026-03-01)
+  * Improvement: expanded Spectrum TV predefined channel coverage.
+  * Housekeeping.
+
 ## 1.5.1 (2026-03-01)
   * New feature: Spectrum TV provider support inclusive of local affiliates. Thanks to @scottuf for the collaboration.
   * Improvement: added 40+ DirecTV Stream (thanks to @mackid1993) and Sling channel variants (thanks to @bnhf), including local affiliate support for DirecTV Stream.
