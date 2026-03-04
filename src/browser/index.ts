@@ -5,7 +5,7 @@
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
 import { LOG, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
 import { getAllStreams, getStreamCount } from "../streaming/registry.js";
-import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.js";
+import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.js";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
 import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.js";
@@ -15,7 +15,6 @@ import type { Nullable } from "../types/index.js";
 import type { SystemStatus } from "../streaming/statusEmitter.js";
 import { clearChannelSelectionCaches } from "./channelSelection.js";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.js";
-import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
@@ -39,6 +38,10 @@ const { promises: fsPromises } = fs;
 // The shared browser instance used by all streaming sessions. Created on first stream request or during warmup. Set to null when the browser is not running or
 // has disconnected.
 let currentBrowser: Nullable<Browser> = null;
+
+// The PID of the Chrome process launched by Puppeteer. Tracked in memory for fast access and persisted to a PID file on disk so that orphaned Chrome processes
+// can be cleaned up after a crash or container restart without relying on Unix-only tools like pkill/pgrep.
+let chromePid: Nullable<number> = null;
 
 // The Chrome version string (e.g., "Chrome/144.0.7559.110") captured when the browser launches. Cleared when the browser disconnects. Used by the
 // health endpoint to report the active Chrome version.
@@ -298,63 +301,175 @@ export async function ensureDataDirectory(): Promise<void> {
  */
 
 /**
+ * Persists the Chrome process PID to both the module-level variable (fast, in-memory) and a PID file on disk (survives crashes). The PID file allows the next
+ * startup to find and terminate orphaned Chrome processes even if the Node process crashed without cleanup.
+ * @param pid - The Chrome process ID to save.
+ */
+function saveChromePid(pid: number): void {
+
+  chromePid = pid;
+
+  try {
+
+    fs.writeFileSync(getChromePidFilePath(), String(pid), "utf-8");
+  } catch(error: unknown) {
+
+    LOG.warn("Failed to write Chrome PID file: %s.", formatError(error));
+  }
+}
+
+/**
+ * Loads the Chrome PID from the module-level variable (fast path) or falls back to reading the PID file on disk (crash recovery path). Returns null if no PID
+ * is available — either first run or the PID file was already cleaned up.
+ * @returns The Chrome process ID, or null if unavailable.
+ */
+function loadChromePid(): Nullable<number> {
+
+  if(chromePid !== null) {
+
+    return chromePid;
+  }
+
+  try {
+
+    const content = fs.readFileSync(getChromePidFilePath(), "utf-8").trim();
+    const pid = parseInt(content, 10);
+
+    if(!isNaN(pid)) {
+
+      return pid;
+    }
+  } catch(error: unknown) {
+
+    // ENOENT is expected on first run or after a clean shutdown that already removed the file.
+    if((error as NodeJS.ErrnoException).code !== "ENOENT") {
+
+      LOG.warn("Failed to read Chrome PID file: %s.", formatError(error));
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Clears the Chrome PID from both the module-level variable and the PID file on disk. Called after successful process cleanup to prevent stale PID reuse.
+ */
+function clearChromePid(): void {
+
+  chromePid = null;
+
+  try {
+
+    fs.unlinkSync(getChromePidFilePath());
+  } catch(error: unknown) {
+
+    if((error as NodeJS.ErrnoException).code !== "ENOENT") {
+
+      LOG.warn("Failed to remove Chrome PID file: %s.", formatError(error));
+    }
+  }
+}
+
+/**
+ * Checks whether a process with the given PID is still running. Uses the signal 0 technique: process.kill(pid, 0) throws ESRCH if the process does not exist,
+ * returns successfully if it does. EPERM (permission denied) means the process exists but belongs to another user — treated as "still running" since we cannot
+ * kill it anyway.
+ * @param pid - The process ID to check.
+ * @returns True if the process is running, false if it has exited.
+ */
+function isProcessRunning(pid: number): boolean {
+
+  try {
+
+    process.kill(pid, 0);
+
+    return true;
+  } catch(error: unknown) {
+
+    // EPERM means the process exists but we lack permission to signal it. Treat as running.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Synchronous sleep using Atomics.wait(). This is a cross-platform replacement for execSync("sleep N") that works on all platforms without shelling out.
+ * Required because killStaleChrome() runs in the synchronous process.on("exit") handler where async operations are not available.
+ * @param ms - Duration to sleep in milliseconds.
+ */
+function syncSleep(ms: number): void {
+
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
  * Ensures a clean slate for browser launch by terminating any stale Chrome processes and removing orphaned profile lock files. Chrome locks its profile directory
- * while running, and if a previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. This function uses pkill to
- * find and terminate any Chrome processes whose command line contains our profile directory path, then polls pgrep to verify the processes have actually exited.
- * After process cleanup, it removes stale lock files (SingletonLock, SingletonCookie, SingletonSocket) and DevToolsActivePort from the profile directory.
+ * while running, and if a previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. This function uses the
+ * saved Chrome PID to find and terminate the process via process.kill(), then polls for exit using signal 0. This approach is fully cross-platform — it does not
+ * rely on Unix-only tools like pkill or pgrep.
  *
  * The termination strategy escalates from SIGTERM to SIGKILL. SIGTERM is sent first, giving Chrome up to 5 seconds to flush its profile databases (LevelDB,
  * extension state, session storage) and exit cleanly. If Chrome does not exit, SIGKILL is sent as a fallback. This escalation is critical when called from the
  * process exit handler — Chrome may be running normally (e.g., after a capture probe timeout), and an immediate SIGKILL would corrupt its profile databases,
  * poisoning the Docker volume for subsequent container restarts.
  *
- * The file cleanup is essential for Docker deployments. Container restarts destroy Chrome processes without giving them a chance to release profile locks, but the
- * lock files persist in the mounted volume. Without removing them, Chrome cannot start in the new container, causing a crash loop.
+ * If no PID is available (first run or clean shutdown where the PID file was already removed), process killing is skipped entirely and only lock file cleanup
+ * runs. When a PID file does exist but the process is gone (Docker restart with a mounted volume — the PID belongs to the previous container's PID namespace),
+ * process.kill() throws ESRCH, which is caught gracefully.
  *
  * This is called at startup before launching the browser and after closeBrowser() during shutdown. It's safe to call even when no stale processes or files exist.
  */
 export function killStaleChrome(): void {
 
-  // Build the profile directory path that would appear in Chrome's command-line arguments.
   const profileDir = getChromeDataDir(CONFIG);
+  const pid = loadChromePid();
   const POLL_INTERVAL_MS = 200;
 
-  try {
+  if(pid !== null) {
 
-    // Send SIGTERM first to give Chrome a chance to flush its profile databases (LevelDB, extension state, session storage) before exiting. This is critical
-    // when called from the process exit handler — Chrome may be running normally (e.g., after a capture probe timeout) and SIGKILL would corrupt its profile
-    // databases, poisoning the Docker volume for subsequent restarts.
-    execSync([ "pkill -f \"", profileDir, "\"" ].join(""));
+    try {
 
-    LOG.debug("browser", "Sent SIGTERM to Chrome instances using %s.", profileDir);
+      // Send SIGTERM first to give Chrome a chance to flush its profile databases (LevelDB, extension state, session storage) before exiting. This is critical
+      // when called from the process exit handler — Chrome may be running normally (e.g., after a capture probe timeout) and SIGKILL would corrupt its profile
+      // databases, poisoning the Docker volume for subsequent restarts.
+      process.kill(pid, "SIGTERM");
 
-    // Wait up to 5 seconds for Chrome to flush its databases and exit after SIGTERM. Containerized environments with software rendering and shared CPU may
-    // need the full window.
-    const TERM_WAIT_MS = 5000;
+      LOG.debug("browser", "Sent SIGTERM to Chrome process %d.", pid);
 
-    if(!waitForChromeExit(profileDir, TERM_WAIT_MS, POLL_INTERVAL_MS)) {
+      // Wait up to 5 seconds for Chrome to flush its databases and exit after SIGTERM. Containerized environments with software rendering and shared CPU may
+      // need the full window.
+      const TERM_WAIT_MS = 5000;
 
-      // SIGTERM didn't work. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not respond to SIGTERM.
-      LOG.debug("browser", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
+      if(!waitForChromeExit(pid, TERM_WAIT_MS, POLL_INTERVAL_MS)) {
 
-      try {
+        // SIGTERM didn't work. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not respond to SIGTERM.
+        LOG.debug("browser", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
 
-        execSync([ "pkill -9 -f \"", profileDir, "\"" ].join(""));
-      } catch(_error) {
+        try {
 
-        // No matching processes — Chrome may have exited between the pgrep check and the pkill.
+          process.kill(pid, "SIGKILL");
+        } catch(_error) {
+
+          // ESRCH — Chrome exited between the poll check and the kill call.
+        }
+
+        const KILL_WAIT_MS = 2000;
+
+        if(!waitForChromeExit(pid, KILL_WAIT_MS, POLL_INTERVAL_MS)) {
+
+          LOG.warn("Chrome process %d did not exit after %dms of signal escalation. Proceeding anyway.", pid, TERM_WAIT_MS + KILL_WAIT_MS);
+        }
       }
+    } catch(error: unknown) {
 
-      const KILL_WAIT_MS = 2000;
+      // ESRCH means the process does not exist — expected when there are no stale processes from a clean shutdown, or in Docker where the PID belongs to a
+      // previous container's PID namespace.
+      if((error as NodeJS.ErrnoException).code !== "ESRCH") {
 
-      if(!waitForChromeExit(profileDir, KILL_WAIT_MS, POLL_INTERVAL_MS)) {
-
-        LOG.warn("Chrome processes did not exit after %sms of signal escalation. Proceeding anyway.", TERM_WAIT_MS + KILL_WAIT_MS);
+        LOG.warn("Failed to signal Chrome process %d: %s.", pid, formatError(error));
       }
     }
-  } catch(_error) {
 
-    // When pkill finds no matching processes, it returns a non-zero exit code. This is expected when there are no stale processes from a clean shutdown.
+    clearChromePid();
   }
 
   // Remove stale lock and port files left behind by an unclean Chrome exit.
@@ -362,33 +477,28 @@ export function killStaleChrome(): void {
 }
 
 /**
- * Polls pgrep until no Chrome processes matching the profile directory remain, or the timeout expires. pgrep returns exit code 0 when matching processes exist
- * and non-zero when none remain.
- * @param profileDir - The Chrome profile directory path to match against process command lines.
+ * Polls until the Chrome process with the given PID has exited, or the timeout expires. Uses process.kill(pid, 0) to check process existence — throws ESRCH
+ * when the process is gone. Between polls, sleeps synchronously using Atomics.wait() for cross-platform compatibility.
+ * @param pid - The Chrome process ID to wait for.
  * @param timeoutMs - Maximum time to wait in milliseconds.
- * @param pollIntervalMs - Time between pgrep checks in milliseconds.
- * @returns True if all matching processes exited within the timeout, false otherwise.
+ * @param pollIntervalMs - Time between existence checks in milliseconds.
+ * @returns True if the process exited within the timeout, false otherwise.
  */
-function waitForChromeExit(profileDir: string, timeoutMs: number, pollIntervalMs: number): boolean {
+function waitForChromeExit(pid: number, timeoutMs: number, pollIntervalMs: number): boolean {
 
   const deadline = Date.now() + timeoutMs;
 
   while(Date.now() < deadline) {
 
-    try {
+    if(!isProcessRunning(pid)) {
 
-      execSync([ "pgrep -f \"", profileDir, "\"" ].join(""), { stdio: "ignore" });
-
-      // Processes still exist. Wait and check again.
-      execSync([ "sleep ", String(pollIntervalMs / 1000) ].join(""));
-    } catch(_error) {
-
-      // pgrep returned non-zero — no matching processes remain.
       return true;
     }
+
+    syncSleep(pollIntervalMs);
   }
 
-  return false;
+  return !isProcessRunning(pid);
 }
 
 /**
@@ -698,9 +808,10 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
  */
 function handleBrowserDisconnect(): void {
 
-  // Clear the browser reference, launch timestamp, and cached version so getCurrentBrowser() will launch a new instance on the next call.
+  // Clear the browser reference, launch timestamp, cached version, and stale PID so getCurrentBrowser() will launch a new instance on the next call.
   currentBrowser = null;
   browserLaunchTime = null;
+  chromePid = null;
   currentChromeVersion = null;
 
   // Cancel any pending restart quiet timer since the browser is already gone.
@@ -813,6 +924,18 @@ async function launchBrowser(): Promise<Browser> {
     // The launch function from puppeteer-stream wraps standard Puppeteer launch to inject the streaming extension. We pass our custom launch function that
     // handles packaged executable extension paths.
     currentBrowser = await launch({ launch: launchWithCustomArgs }, options);
+
+    // Persist the Chrome PID for cross-platform process cleanup. The PID file survives Node crashes, allowing the next startup to find and terminate orphaned
+    // Chrome processes without relying on Unix-only tools like pkill/pgrep.
+    const launchedPid = currentBrowser.process()?.pid;
+
+    if(launchedPid) {
+
+      saveChromePid(launchedPid);
+    } else {
+
+      LOG.warn("Chrome process PID is unavailable. Orphaned process cleanup after a crash will be limited to lock file removal.");
+    }
 
     // Register a handler for browser disconnection. This ensures we clean up properly if the browser crashes or is closed unexpectedly.
     currentBrowser.on("disconnected", handleBrowserDisconnect);

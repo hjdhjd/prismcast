@@ -111,6 +111,16 @@ export function getResumeFilePath(): string {
 }
 
 /**
+ * Returns the path to the Chrome PID file. Used for cross-platform process cleanup — the PID file survives crashes and allows the next startup to find and
+ * terminate orphaned Chrome processes without relying on Unix-only tools like pkill/pgrep.
+ * @returns The absolute path to chrome.pid inside the data directory.
+ */
+export function getChromePidFilePath(): string {
+
+  return path.join(getDataDir(), "chrome.pid");
+}
+
+/**
  * Returns the Chrome user data directory. When config.paths.chromeDataDir is set, that absolute path is used directly. Otherwise, the directory is built from the
  * data directory and the configured profile name.
  * @param config - The application configuration.

@@ -390,9 +390,9 @@ if(subcommand === "service") {
    * termination — we ensure Chrome processes are cleaned up and buffered log entries are flushed to disk. Without this, fatal exits during startup (e.g., capture
    * probe timeout) silently orphan Chrome processes and lose diagnostic messages that are still in the file logger's write buffer.
    *
-   * The 'exit' event runs synchronously, so only synchronous operations are safe here. killStaleChrome() uses execSync internally, and flushLogBufferSync() writes
-   * directly to the filesystem. The graceful shutdown path (SIGTERM/SIGINT) handles cleanup via async closeBrowser() and shutdownFileLogger() — this handler is a
-   * fallback for paths that bypass graceful shutdown.
+   * The 'exit' event runs synchronously, so only synchronous operations are safe here. killStaleChrome() uses process.kill() for signaling and Atomics.wait()
+   * for polling, and flushLogBufferSync() writes directly to the filesystem. The graceful shutdown path (SIGTERM/SIGINT) handles cleanup via async closeBrowser()
+   * and shutdownFileLogger() — this handler is a fallback for paths that bypass graceful shutdown.
    *
    * This is registered only in the server branch — not for service subcommands like `prismcast service status`. Running killStaleChrome() from a service
    * subcommand would kill Chrome belonging to the running PrismCast server instance.
@@ -408,7 +408,7 @@ if(subcommand === "service") {
       killStaleChrome();
     } catch {
 
-      // Best-effort cleanup. If pkill fails for any reason, the process is exiting anyway.
+      // Best-effort process cleanup. If signaling fails for any reason, the process is exiting anyway.
     }
   });
 
