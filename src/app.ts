@@ -112,8 +112,10 @@ function setupGracefulShutdown(): void {
     // Terminate all streams. terminateStream() handles all cleanup including page closure and registry removal.
     const streams = getAllStreams();
 
-    // Collect resume state from active streams before termination destroys the segmenters. Each entry captures the final sequence numbers and timestamps so the
-    // next startup can seed from them, preventing HLS sequence resets that confuse Channels DVR.
+    // Collect resume state from active streams before termination destroys the segmenters. Each entry captures sequence numbers and timestamps so the next startup
+    // can seed from them, preventing HLS sequence resets that confuse Channels DVR. The segment index is decremented by one so the resumed playlist still includes
+    // the last completed segment. Channels DVR's HLS fetcher will have already cached that segment, so its recorder consumes the cached data instead of dropping it
+    // via drop_until_next_sequence when the playlist range would otherwise jump past it.
     const resumeEntries: ResumeStreamData[] = [];
 
     for(const stream of streams) {
@@ -125,7 +127,7 @@ function setupGracefulShutdown(): void {
           channelName: stream.info.storeKey,
           initSegment: stream.segmenter.getInitSegment(),
           initVersion: stream.segmenter.getInitVersion(),
-          segmentIndex: stream.segmenter.getSegmentIndex(),
+          segmentIndex: Math.max(0, stream.segmenter.getSegmentIndex() - 1),
           trackTimestamps: stream.segmenter.getTrackTimestamps()
         });
       }
