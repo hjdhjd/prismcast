@@ -674,6 +674,7 @@ function createTabReplacementHandler(
         },
         profile,
         streamId,
+        tabReplacement: true,
         url
       });
     } catch(error) {

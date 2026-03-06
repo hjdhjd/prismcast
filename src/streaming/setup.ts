@@ -196,6 +196,10 @@ export interface CreatePageWithCaptureOptions {
   // The stream ID string for logging (e.g., "cnn-5jecl6").
   streamId: string;
 
+  // When true, adds a settling delay between fullscreen setup and window minimize during tab replacement. Chrome's compositor may not fully stabilize the video
+  // surface after fullscreen is established, and minimizing too quickly can cause the captured content to appear zoomed into the top-left corner.
+  tabReplacement?: boolean;
+
   // The URL to navigate to and capture.
   url: string;
 
@@ -660,6 +664,13 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     minimizeBrowserWindow().catch(() => { /* Fire-and-forget; we're about to throw. */ });
 
     throw error;
+  }
+
+  // During tab replacement, allow Chrome's compositor to fully stabilize the fullscreen video surface before minimizing. Without this delay, the compositor may
+  // snapshot an incorrect scaling state during the minimize transition, causing the captured content to appear zoomed into the top-left corner.
+  if(options.tabReplacement && !profile.noVideo) {
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
   }
 
   // Resize and minimize window.

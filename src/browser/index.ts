@@ -738,20 +738,62 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
       targetPage = tempPage;
     }
 
-    // Measure display dimensions and browser chrome via JavaScript.
-    const dimensions = await evaluateWithAbort(targetPage, (): { availHeight: number; availWidth: number; chromeHeight: number; chromeWidth: number } => {
+    // Ensure the window is in normal state before measuring. Chrome restores window state from the persistent user data directory, so after a scheduled browser
+    // restart the window may launch minimized. A minimized window reports outerWidth/outerHeight as 0 while innerWidth/innerHeight retains the viewport dimensions,
+    // producing negative chrome measurements that poison all subsequent window sizing.
+    await unminimizeWindow(targetPage);
 
-      return {
+    // Measure display dimensions and browser chrome via JavaScript. The measurement is retried if chrome dimensions are negative, which indicates the macOS window
+    // manager has not yet finished the minimize-to-normal state transition (the animation is asynchronous relative to the CDP command).
+    let dimensions: { availHeight: number; availWidth: number; chromeHeight: number; chromeWidth: number } | undefined;
 
-        // Available screen dimensions (excludes taskbar, dock, menu bar).
-        availHeight: screen.availHeight,
-        availWidth: screen.availWidth,
+    for(let attempt = 0; attempt < 3; attempt++) {
 
-        // Browser chrome dimensions (title bar, toolbar, borders).
-        chromeHeight: window.outerHeight - window.innerHeight,
-        chromeWidth: window.outerWidth - window.innerWidth
-      };
-    });
+      // eslint-disable-next-line no-await-in-loop
+      dimensions = await evaluateWithAbort(targetPage, (): { availHeight: number; availWidth: number; chromeHeight: number; chromeWidth: number } => {
+
+        return {
+
+          // Available screen dimensions (excludes taskbar, dock, menu bar).
+          availHeight: screen.availHeight,
+          availWidth: screen.availWidth,
+
+          // Browser chrome dimensions (title bar, toolbar, borders).
+          chromeHeight: window.outerHeight - window.innerHeight,
+          chromeWidth: window.outerWidth - window.innerWidth
+        };
+      });
+
+      if((dimensions.chromeWidth >= 0) && (dimensions.chromeHeight >= 0)) {
+
+        break;
+      }
+
+      // Chrome dimensions are negative — the window manager is still transitioning. Wait briefly and remeasure.
+      if(attempt < 2) {
+
+        LOG.debug("browser", "Display detection measured negative chrome dimensions (%s\u00d7%s, attempt %s). Retrying after window state settles.",
+          dimensions.chromeWidth, dimensions.chromeHeight, attempt + 1);
+
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
+    }
+
+    // If all attempts produced negative chrome dimensions, skip caching to avoid poisoning window sizing. The preset system will use the configured preset without
+    // degradation, and resizeAndMinimizeWindow will fall back to measuring chrome dimensions via page.evaluate() on each call.
+    if(!dimensions) {
+
+      return;
+    }
+
+    if((dimensions.chromeWidth < 0) || (dimensions.chromeHeight < 0)) {
+
+      LOG.warn("Display detection produced invalid chrome dimensions after 3 attempts (%s\u00d7%s). Window sizing may be incorrect.",
+        dimensions.chromeWidth, dimensions.chromeHeight);
+
+      return;
+    }
 
     // Calculate maximum viewport: available screen space minus browser chrome.
     const maxWidth = dimensions.availWidth - dimensions.chromeWidth;
