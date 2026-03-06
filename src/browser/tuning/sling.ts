@@ -54,6 +54,15 @@ const FRONTIER_POLL_INTERVAL = 300;
 // lineup (where the frontier never passes the target because it IS the last channel alphabetically).
 const FRONTIER_MAX_WAIT = 5000;
 
+// Minimum expected channel count for a complete Sling guide enumeration. Sling's grid includes hundreds of channels across all subscription tiers (paid channels
+// plus Freestream). If the cache has fewer than this after the initial waitForNetworkIdle, API responses are likely still in flight on a slow connection. The
+// precache loop retries waitForNetworkIdle up to PRECACHE_MAX_NETWORK_IDLE_RETRIES additional times to give the remaining responses time to arrive.
+const PRECACHE_MIN_CHANNELS = 200;
+
+// Maximum number of additional waitForNetworkIdle attempts when the channel cache appears incomplete after the initial wait. Each retry uses the standard
+// videoTimeout (11s), giving up to ~33 additional seconds for slow connections. Retries bail early if the cache reaches PRECACHE_MIN_CHANNELS.
+const PRECACHE_MAX_NETWORK_IDLE_RETRIES = 3;
+
 /**
  * Clears all Sling TV caches: the unified channel cache, playback info base URL, row indices, and the fully-enumerated flag. Called by
  * clearChannelSelectionCaches() in the coordinator when the browser restarts, since cached state may be stale in a new browser session.
@@ -921,13 +930,27 @@ async function discoverSlingChannels(page: Page): Promise<DiscoveredChannel[]> {
 
   // Phase 2: Wait for network idle to ensure all triggered API responses have arrived. The scroll pass above fires lazy-loaded API fetches for every viewport
   // region, but some responses may still be in flight when scrolling completes. Network idle (zero in-flight requests for 500ms) confirms all data has been
-  // received and processed by the response interceptor before we read the channel cache.
+  // received and processed by the response interceptor before we read the channel cache. On slow connections, the initial wait may time out before all pages
+  // arrive. If the cache looks incomplete (below PRECACHE_MIN_CHANNELS), retry up to PRECACHE_MAX_NETWORK_IDLE_RETRIES additional times to give the remaining
+  // responses time to land. This is a background task, so the extra patience costs nothing.
   try {
 
     await page.waitForNetworkIdle({ idleTime: 500, timeout: CONFIG.streaming.videoTimeout });
   } catch {
 
-    // Timeout is non-fatal — proceed with whatever the channel cache has collected so far.
+    // Timeout is non-fatal — check cache completeness below.
+  }
+
+  for(let retry = 0; (retry < PRECACHE_MAX_NETWORK_IDLE_RETRIES) && (slingChannelCache.size < PRECACHE_MIN_CHANNELS); retry++) {
+
+    try {
+
+      // eslint-disable-next-line no-await-in-loop
+      await page.waitForNetworkIdle({ idleTime: 500, timeout: CONFIG.streaming.videoTimeout });
+    } catch {
+
+      // Timeout is non-fatal — check cache completeness on next iteration.
+    }
   }
 
   // Do not cache empty results — leave the fully-enumerated flag unset so subsequent calls retry the full walk. Empty results can indicate no subscription or
