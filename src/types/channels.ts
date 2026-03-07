@@ -21,6 +21,10 @@ export interface Channel {
   // base URL is the same but different channels require clicking different UI elements.
   channelSelector?: string;
 
+  // CSS selector for an intermittent modal or overlay to dismiss after page load. Overrides the domain-level dismissSelector for this channel. When set, the system
+  // checks for this element after navigation and clicks it if present.
+  dismissSelector?: string;
+
   // Human-readable channel name displayed in the M3U playlist. This is what users see in their channel guide. Use proper capitalization and include network
   // suffixes like "HD" or regional identifiers like "(Pacific)" where appropriate. Required for canonical channels; variants inherit from their canonical entry.
   name?: string;

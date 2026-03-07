@@ -372,7 +372,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "aetv.com": { profile: "fullscreenApi", provider: "A&E" },
   "bet.com": { profile: "fullscreenApi", provider: "BET.com" },
   "c-span.org": { profile: "brightcove", provider: "C-SPAN.org" },
-  "cbs.com": { profile: "keyboardIframe", provider: "CBS.com" },
+  "cbs.com": { dismissSelector: "#mvpd__getstarted", profile: "keyboardIframe", provider: "CBS.com" },
   "cnbc.com": { profile: "fullscreenApi", provider: "CNBC.com" },
   "cnn.com": { profile: "fullscreenApi", provider: "CNN.com" },
   "disneynow.com": { profile: "disneyNow", provider: "DisneyNOW" },
@@ -396,7 +396,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", provider: "Nat Geo" },
   "nba.com": { profile: "fullscreenApi", provider: "NBA.com" },
   "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", provider: "NBC.com" },
-  "paramountplus.com": { profile: "fullscreenApi", provider: "Paramount+", providerTag: "paramountplus" },
+  "paramountplus.com": { dismissSelector: ".ppp-watch", profile: "fullscreenApi", provider: "Paramount+", providerTag: "paramountplus" },
   "sling.com": { profile: "embeddedVolumeLock", provider: "Sling TV" },
   "starz.com": { profile: "fullscreenApi", provider: "Starz" },
   "stream.directv.com": { loginUrl: "https://stream.directv.com", profile: "directvStream", provider: "DirecTV Stream", providerTag: "directv" },
@@ -493,6 +493,9 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
 
   // Don't click to play - most sites start automatically or via other mechanisms.
   clickToPlay: false,
+
+  // No dismiss selector - most sites don't show intermittent modals.
+  dismissSelector: null,
 
   // No fullscreen key - many players work without explicit fullscreen.
   fullscreenKey: null,

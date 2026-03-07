@@ -1343,6 +1343,64 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
   }
 }
 
+// Maximum duration in milliseconds for the dismiss modal poll. The poll checks for the modal element at regular intervals during the first few seconds of the
+// video wait. If the modal hasn't appeared within this window, it's not coming.
+const DISMISS_POLL_DURATION = 5000;
+
+// Interval in milliseconds between dismiss modal poll checks.
+const DISMISS_POLL_INTERVAL = 500;
+
+/**
+ * Polls for an intermittent modal element and clicks it if found. Runs as a fire-and-forget background task alongside waitForVideoReady() to catch modals that
+ * render after page load but before video starts playing. The first check is immediate (zero-wait), followed by up to DISMISS_POLL_DURATION of periodic rechecks.
+ * Once the modal is found and clicked (or the poll window expires), the function resolves silently — it never throws.
+ * @param page - The Puppeteer page object.
+ * @param selector - The CSS selector for the modal element to dismiss.
+ */
+async function dismissModalPoll(page: Page, selector: string): Promise<void> {
+
+  const checks = Math.ceil(DISMISS_POLL_DURATION / DISMISS_POLL_INTERVAL);
+
+  for(let i = 0; i < checks; i++) {
+
+    // Delay between checks, but not before the first one — the first check is immediate.
+    if(i > 0) {
+
+      // eslint-disable-next-line no-await-in-loop
+      await delay(DISMISS_POLL_INTERVAL);
+    }
+
+    try {
+
+      // eslint-disable-next-line no-await-in-loop
+      const dismissed = await page.evaluate((sel: string): boolean => {
+
+        const el = document.querySelector(sel);
+
+        if(el) {
+
+          (el as HTMLElement).click();
+
+          return true;
+        }
+
+        return false;
+      }, selector);
+
+      if(dismissed) {
+
+        LOG.debug("browser:video", "Dismissed modal via '%s'.", selector);
+
+        return;
+      }
+    } catch {
+
+      // Page may have navigated or closed during the poll. Silently stop polling.
+      return;
+    }
+  }
+}
+
 /**
  * Performs all post-navigation channel initialization: selects the channel, finds the video context, clicks to play if needed, waits for video readiness, and
  * ensures playback with fullscreen styling. This function is separated from navigateToPage() so that retryOperation() in setup.ts can wrap only navigation with a
@@ -1424,7 +1482,14 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
     }
   }
 
-  // Wait for video to be ready (readyState >= 3). This ensures enough data is buffered for playback to begin smoothly.
+  // Wait for video to be ready (readyState >= 3). This ensures enough data is buffered for playback to begin smoothly. If a dismissSelector is configured, launch
+  // a background poll that checks for the modal during the first 5 seconds of the video wait. The poll is fire-and-forget — it never blocks the video wait. If the
+  // modal appears and is clicked, the video becomes unblocked and waitForVideoReady resolves normally.
+  if(profile.dismissSelector) {
+
+    void dismissModalPoll(page, profile.dismissSelector);
+  }
+
   await waitForVideoReady(context, profile);
 
   LOG.debug("timing:tune", "Video ready. (+%sms)", elapsed());

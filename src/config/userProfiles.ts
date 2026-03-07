@@ -24,7 +24,7 @@ const { promises: fsPromises } = fs;
 
 // Valid SiteProfile behavior flag names that users can set. Metadata fields (category, description, extends, summary) are handled separately.
 const VALID_PROFILE_FLAGS = new Set([
-  "channelSelector", "clickSelector", "clickToPlay", "fullscreenKey", "fullscreenSelector", "hideSelector", "lockVolumeProperties",
+  "channelSelector", "clickSelector", "clickToPlay", "dismissSelector", "fullscreenKey", "fullscreenSelector", "hideSelector", "lockVolumeProperties",
   "needsIframeHandling", "noVideo", "selectReadyVideo", "useRequestFullscreen", "waitForNetworkIdle"
 ]);
 
@@ -451,6 +451,12 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
 
     errors.push("Domain '" + domain + "' is already mapped to built-in provider '" + builtinProvider +
       "'. Set the profile field on individual channels to use your custom profile instead.");
+  }
+
+  // dismissSelector must be a non-empty string if specified.
+  if((config.dismissSelector !== undefined) && ((typeof config.dismissSelector !== "string") || (config.dismissSelector.trim() === ""))) {
+
+    errors.push("Domain '" + domain + "': dismissSelector must be a non-empty string.");
   }
 
   // profile must reference an existing profile if specified.

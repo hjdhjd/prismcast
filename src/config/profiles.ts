@@ -107,9 +107,14 @@ export function getProfileForUrl(url: string | undefined): ProfileResolutionResu
   const profile = config?.profile ? resolveProfile(config.profile) : { ...DEFAULT_SITE_PROFILE };
   const profileName = config?.profile ?? "default";
 
-  // Merge domain-level properties that represent site policies rather than player behaviors. maxContinuousPlayback is a site-imposed session limit, not a player
-  // characteristic, so it lives in DOMAIN_CONFIG rather than in site profiles. Note: getProfileForChannel() performs this same merge for the explicit-profile path
-  // where this function is bypassed. If adding new domain-level policies here, update getProfileForChannel() as well.
+  // Merge domain-level properties that live in DOMAIN_CONFIG rather than site profiles. These represent site-specific behaviors or policies that apply to all
+  // channels on a domain regardless of which profile they use. Note: getProfileForChannel() performs this same merge for the explicit-profile path where this
+  // function is bypassed. If adding new domain-level properties here, update getProfileForChannel() as well.
+  if(config?.dismissSelector !== undefined) {
+
+    profile.dismissSelector = config.dismissSelector;
+  }
+
   if(config?.maxContinuousPlayback !== undefined) {
 
     profile.maxContinuousPlayback = config.maxContinuousPlayback;
@@ -134,7 +139,7 @@ export function getProfileForUrl(url: string | undefined): ProfileResolutionResu
  * @returns The site profile containing behavior flags.
  */
 export function getProfileForChannel(channel: {
-  channelSelector?: string; profile?: string; scrollSelector?: string; scrollTarget?: string; scrollToBottom?: boolean; url?: string;
+  channelSelector?: string; dismissSelector?: string; profile?: string; scrollSelector?: string; scrollTarget?: string; scrollToBottom?: boolean; url?: string;
 } | undefined): ProfileResolutionResult {
 
   // No channel provided - return the default.
@@ -179,12 +184,17 @@ export function getProfileForChannel(channel: {
     }
   }
 
-  // Merge domain-level site policies that apply regardless of how the profile was resolved. These represent site-imposed constraints (like session duration limits)
-  // rather than player behaviors, so they must always be applied based on the channel's URL even when the player profile is explicitly overridden. For the URL-based
-  // path above, getProfileForUrl() already merges these — the re-application here is idempotent. For the explicit-profile path, this fills the gap.
+  // Merge domain-level properties that apply regardless of how the profile was resolved. These represent site-specific behaviors or policies that must always be
+  // applied based on the channel's URL even when the player profile is explicitly overridden. For the URL-based path above, getProfileForUrl() already merges
+  // these — the re-application here is idempotent. For the explicit-profile path, this fills the gap.
   if(channel.url) {
 
     const domainConfig = getDomainConfig(channel.url);
+
+    if(domainConfig?.dismissSelector !== undefined) {
+
+      profile = { ...profile, dismissSelector: domainConfig.dismissSelector };
+    }
 
     if(domainConfig?.maxContinuousPlayback !== undefined) {
 
@@ -192,12 +202,16 @@ export function getProfileForChannel(channel: {
     }
   }
 
-  // Merge channel-specific properties into the profile. The channelSelector on the channel overrides any channelSelector from the profile. Channel-level scroll
-  // overrides (scrollSelector, scrollTarget, scrollToBottom) are merged into the profile's channelSelection config, allowing individual channels to customize
-  // scroll behavior without changing the shared profile definition.
+  // Merge channel-specific properties into the profile. Channel-level values override domain-level and profile-level values, allowing individual channels to
+  // customize behavior without changing the shared profile or domain config.
   if(channel.channelSelector) {
 
     profile = { ...profile, channelSelector: channel.channelSelector };
+  }
+
+  if(channel.dismissSelector !== undefined) {
+
+    profile = { ...profile, dismissSelector: channel.dismissSelector };
   }
 
   if((channel.scrollSelector !== undefined) || (channel.scrollTarget !== undefined) || (channel.scrollToBottom !== undefined)) {

@@ -114,6 +114,11 @@ export interface SiteProfile {
   // element (or clickSelector target) after page load and before waiting for the video to become ready. This simulates user interaction to satisfy autoplay policies.
   clickToPlay?: boolean;
 
+  // CSS selector for an intermittent modal or overlay to dismiss after page load. Some sites (e.g., Paramount+) occasionally display a "Watch Live" or "Continue
+  // Watching" prompt that blocks video playback. When set, a background poll checks for this element during the first few seconds of the video wait — an immediate
+  // check followed by periodic rechecks. If found, the element is clicked to dismiss it. The poll is fire-and-forget and never blocks the video wait.
+  dismissSelector?: Nullable<string>;
+
   // Human-readable description of the profile for documentation purposes. This field is stripped during profile resolution and not included in the resolved
   // profile passed to stream handling code.
   description?: string;
@@ -185,6 +190,9 @@ export interface ResolvedSiteProfile {
   // Whether to click the video element to initiate playback.
   clickToPlay: boolean;
 
+  // CSS selector for an intermittent modal to dismiss after page load, or null if not applicable.
+  dismissSelector: Nullable<string>;
+
   // Keyboard key for fullscreen, or null to use CSS-based fullscreen.
   fullscreenKey: Nullable<string>;
 
@@ -240,6 +248,11 @@ export interface ProfileResolutionResult {
  * configuration and/or a provider display name for friendly UI labels. Used by both built-in domain mappings in sites.ts and user-defined mappings in profiles.json.
  */
 export interface DomainConfig {
+
+  // CSS selector for an intermittent modal or overlay to dismiss after page load. Some sites (e.g., Paramount+) occasionally display a "Watch Live" or "Continue
+  // Watching" prompt that blocks video playback. When set, the system checks for this element immediately after navigation and clicks it if present, with a parallel
+  // poll during early video wait as a safety net. Omit for sites without intermittent modals.
+  dismissSelector?: string;
 
   // URL to navigate to for authentication. Some sites show different login options on their homepage vs their player page. When set, the auth route navigates to
   // this URL instead of the channel's streaming URL. Omit for sites where the streaming URL is also the correct login page.
