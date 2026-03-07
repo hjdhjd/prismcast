@@ -299,6 +299,14 @@ export function monitorPlaybackHealth(
    */
   function emitStatusUpdate(): void {
 
+    // Do not emit after the monitor has been stopped. An in-flight async tick can resume from an await after terminateStream() has called stopMonitor() and
+    // emitStreamRemoved(). Without this guard, the emitStreamHealthChanged() call below would re-add the dead stream to the streamStatuses Map, creating a zombie
+    // entry that persists in SSE snapshots indefinitely.
+    if(intervalCleared) {
+
+      return;
+    }
+
     const now = Date.now();
 
     // Get current memory usage from the stream's HLS segment buffers.
