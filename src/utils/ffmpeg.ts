@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * ffmpeg.ts: FFmpeg process management for WebM to fMP4 transcoding.
+ * ffmpeg.ts: FFmpeg process management for PrismCast.
  */
 import type { Readable, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
@@ -149,6 +149,8 @@ export async function resolveFFmpegPath(): Promise<string | undefined> {
   return undefined;
 }
 
+// FFmpeg Process Types.
+
 /**
  * Result from spawning an FFmpeg process.
  */
@@ -160,12 +162,133 @@ export interface FFmpegProcess {
   // The underlying child process for lifecycle tracking.
   process: ChildProcess;
 
-  // Writable stream for piping WebM input to FFmpeg.
+  // Writable stream for piping input to FFmpeg.
   stdin: Writable;
 
-  // Readable stream for receiving fMP4 output from FFmpeg.
+  // Readable stream for receiving output from FFmpeg.
   stdout: Readable;
 }
+
+// MPEG-TS Output Flags.
+
+/* MPEG-TS muxer flags for the fMP4-to-MPEG-TS remuxer. Tuned to produce output resembling a real HDHomeRun CONNECT DUO (HDTC-2US) ATSC transport stream.
+ * Plex's transcoder may make assumptions about stream structure based on the reported device model (PID assignments, PAT/PMT frequency). Using ATSC-conventional
+ * values avoids "Invalid argument" failures when Plex tries to transcode the live session for remote clients. These are pure container metadata changes — the actual
+ * A/V data is untouched by -c copy.
+ */
+const MPEGTS_OUTPUT_FLAGS = [
+  "-f", "mpegts",
+  "-mpegts_pmt_start_pid", "0x0020",
+  "-mpegts_start_pid", "0x0031",
+  "-mpegts_service_type", "digital_tv",
+  "-pat_period", "0.1",
+  "-pcr_period", "40",
+  "-flush_packets", "1"
+];
+
+// Internal Helper.
+
+/**
+ * Spawns an FFmpeg process with shared lifecycle management. Handles stderr logging with noise filtering, exit and error callbacks, and graceful shutdown for all
+ * FFmpeg use cases. Callers provide the FFmpeg arguments and a descriptive label; this helper handles everything else.
+ * @param options.args - FFmpeg command-line arguments.
+ * @param options.label - Descriptive label for log messages and error strings (e.g., "FFmpeg", "MPEG-TS remuxer").
+ * @param options.onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
+ * @param options.streamId - Optional stream identifier for log prefixing.
+ * @returns FFmpeg process wrapper with stdin, stdout, and kill function.
+ */
+function spawnFFmpegProcess({ args, label, onError, streamId }: {
+  args: string[];
+  label: string;
+  onError: (error: Error) => void;
+  streamId?: string;
+}): FFmpegProcess {
+
+  const ffmpegBin = cachedFFmpegPath ?? "ffmpeg";
+
+  const ffmpeg = spawn(ffmpegBin, args, { stdio: [ "pipe", "pipe", "pipe" ] });
+  const logPrefix = streamId ? "[" + streamId + "] " : "";
+
+  // Track whether graceful shutdown has been initiated. When true, we suppress error callbacks because any exit (whether from SIGTERM or stdin close) is expected.
+  let shuttingDown = false;
+
+  // Log FFmpeg stderr output (warnings and errors). Suppress noise patterns that are not actionable.
+  ffmpeg.stderr.on("data", (data: Buffer) => {
+
+    if(shuttingDown) {
+
+      return;
+    }
+
+    const message = data.toString().trim();
+    const noisePatterns = [ "Press [q] to stop", "frame=", "size=", "time=", "bitrate=", "speed=" ];
+
+    if(noisePatterns.some((pattern) => message.includes(pattern))) {
+
+      return;
+    }
+
+    if(message.length > 0) {
+
+      LOG.debug("streaming:ffmpeg", "%s%s: %s", logPrefix, label, message);
+    }
+  });
+
+  // Handle FFmpeg process exit.
+  ffmpeg.on("exit", (code, signal) => {
+
+    if(shuttingDown) {
+
+      return;
+    }
+
+    if(signal === "SIGTERM") {
+
+      // Normal termination via kill() — do not treat as error.
+      return;
+    }
+
+    if((code !== null) && (code !== 0)) {
+
+      onError(new Error(label + " exited with code " + String(code) + "."));
+    } else if(signal) {
+
+      onError(new Error(label + " killed by signal " + signal + "."));
+    }
+  });
+
+  // Handle spawn errors (e.g., FFmpeg not found).
+  ffmpeg.on("error", (error) => {
+
+    if(shuttingDown) {
+
+      return;
+    }
+
+    onError(error);
+  });
+
+  // Kill function for graceful shutdown. Sets the shuttingDown flag before sending SIGTERM so that any exit is treated as normal termination.
+  const kill = (): void => {
+
+    shuttingDown = true;
+
+    if(!ffmpeg.killed) {
+
+      ffmpeg.kill("SIGTERM");
+    }
+  };
+
+  return {
+
+    kill,
+    process: ffmpeg,
+    stdin: ffmpeg.stdin,
+    stdout: ffmpeg.stdout
+  };
+}
+
+// Public FFmpeg Spawners.
 
 /**
  * Spawns an FFmpeg process configured to transcode WebM (H264+Opus) to fMP4 (H264+AAC). The process reads from stdin and writes to stdout, allowing it to be
@@ -188,10 +311,6 @@ export interface FFmpegProcess {
  * @returns FFmpeg process wrapper with stdin, stdout, and kill function.
  */
 export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => void, streamId?: string, comment?: string): FFmpegProcess {
-
-  // Use the cached FFmpeg path from resolveFFmpegPath(). This should always be set because isFFmpegAvailable() is called during startup, which populates the cache.
-  // If somehow not set, fall back to "ffmpeg" and let spawn handle the error.
-  const ffmpegPath = cachedFFmpegPath ?? "ffmpeg";
 
   // Use Apple's AudioToolbox AAC encoder on macOS for better quality and performance. Fall back to FFmpeg's built-in AAC encoder on other platforms.
   const aacEncoder = process.platform === "darwin" ? "aac_at" : "aac";
@@ -217,96 +336,13 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 
   ffmpegArgs.push("pipe:1");
 
-  const ffmpeg = spawn(ffmpegPath, ffmpegArgs, {
+  return spawnFFmpegProcess({
 
-    stdio: [ "pipe", "pipe", "pipe" ]
+    args: ffmpegArgs,
+    label: "FFmpeg",
+    onError,
+    streamId
   });
-
-  const logPrefix = streamId ? "[" + streamId + "] " : "";
-
-  // Track whether graceful shutdown has been initiated. When true, we suppress error callbacks because any exit (whether from SIGTERM or stdin close) is expected.
-  let shuttingDown = false;
-
-  // Log FFmpeg stderr output (warnings and errors). stderr is guaranteed to be a Readable since we set stdio: ["pipe", "pipe", "pipe"].
-  ffmpeg.stderr.on("data", (data: Buffer) => {
-
-    // Suppress warnings during shutdown - truncated input warnings are expected when the capture stream closes.
-    if(shuttingDown) {
-
-      return;
-    }
-
-    const message = data.toString().trim();
-
-    // Filter out common noise that isn't actionable.
-    const noisePatterns = [ "Press [q] to stop", "frame=", "size=", "time=", "bitrate=", "speed=" ];
-
-    if(noisePatterns.some((pattern) => message.includes(pattern))) {
-
-      return;
-    }
-
-    if(message.length > 0) {
-
-      LOG.debug("streaming:ffmpeg", "%sFFmpeg: %s", logPrefix, message);
-    }
-  });
-
-  // Handle FFmpeg process exit.
-  ffmpeg.on("exit", (code, signal) => {
-
-    // During graceful shutdown, any exit is expected (whether from SIGTERM or stdin closing).
-    if(shuttingDown) {
-
-      return;
-    }
-
-    if(signal === "SIGTERM") {
-
-      // Normal termination via kill() - don't treat as error.
-      return;
-    }
-
-    if((code !== null) && (code !== 0)) {
-
-      onError(new Error("FFmpeg exited with code " + String(code) + "."));
-    } else if(signal) {
-
-      onError(new Error("FFmpeg killed by signal " + signal + "."));
-    }
-  });
-
-  // Handle spawn errors (e.g., FFmpeg not found).
-  ffmpeg.on("error", (error) => {
-
-    // During graceful shutdown, suppress errors from stdin pipe closing.
-    if(shuttingDown) {
-
-      return;
-    }
-
-    onError(error);
-  });
-
-  // Kill function for graceful shutdown. Sets the shuttingDown flag before sending SIGTERM so that any exit (whether from SIGTERM or stdin closing due to capture
-  // stream ending) is treated as normal termination.
-  const kill = (): void => {
-
-    shuttingDown = true;
-
-    if(!ffmpeg.killed) {
-
-      ffmpeg.kill("SIGTERM");
-    }
-  };
-
-  return {
-
-    kill,
-    process: ffmpeg,
-    stdin: ffmpeg.stdin,
-    stdout: ffmpeg.stdout
-  };
 }
 
 /**
@@ -318,13 +354,7 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
  * - `-probesize 16384`: Limit input probing to 16KB (fMP4 init segment is ~1.3KB) to minimize startup delay
  * - `-f mp4 -i pipe:0`: Read fragmented MP4 from stdin
  * - `-c copy`: Copy both video and audio codecs without transcoding
- * - `-f mpegts`: Output MPEG-TS container format
- * - `-mpegts_pmt_start_pid 0x0020`: Use ATSC-conventional PMT PID range instead of FFmpeg's default (0x1000). Minimum allowed value is 0x0020 (32).
- * - `-mpegts_start_pid 0x0031`: Use ATSC-conventional elementary stream PIDs instead of FFmpeg's defaults (0x100+)
- * - `-mpegts_service_type digital_tv`: Label the service as digital TV in the PMT service descriptor
- * - `-pat_period 0.1`: Repeat PAT/PMT tables every 100ms, matching ATSC broadcast frequency
- * - `-pcr_period 40`: Insert PCR timestamps every 40ms, matching ATSC broadcast convention
- * - `-flush_packets 1`: Flush output immediately after each packet to minimize latency
+ * - MPEG-TS output flags: See MPEGTS_OUTPUT_FLAGS for ATSC-conventional settings
  * - `pipe:1`: Write output to stdout
  * @param onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
  * @param streamId - Optional stream identifier for logging.
@@ -332,12 +362,6 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
  */
 export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: string): FFmpegProcess {
 
-  const ffmpegBin = cachedFFmpegPath ?? "ffmpeg";
-
-  // MPEG-TS muxer flags are tuned to produce output resembling a real HDHomeRun CONNECT DUO (HDTC-2US) ATSC transport stream. Plex's transcoder may make
-  // assumptions about stream structure based on the reported device model (PID assignments, PAT/PMT frequency). Using ATSC-conventional values avoids "Invalid
-  // argument" failures when Plex tries to transcode the live session for remote clients. These are pure container metadata changes — the actual A/V data is
-  // untouched by -c copy.
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
@@ -345,99 +369,17 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
     "-f", "mp4",
     "-i", "pipe:0",
     "-c", "copy",
-    "-f", "mpegts",
-    "-mpegts_pmt_start_pid", "0x0020",
-    "-mpegts_start_pid", "0x0031",
-    "-mpegts_service_type", "digital_tv",
-    "-pat_period", "0.1",
-    "-pcr_period", "40",
-    "-flush_packets", "1",
+    ...MPEGTS_OUTPUT_FLAGS,
     "pipe:1"
   ];
 
-  const ffmpeg = spawn(ffmpegBin, ffmpegArgs, {
+  return spawnFFmpegProcess({
 
-    stdio: [ "pipe", "pipe", "pipe" ]
+    args: ffmpegArgs,
+    label: "MPEG-TS remuxer",
+    onError,
+    streamId
   });
-
-  const logPrefix = streamId ? "[" + streamId + "] " : "";
-
-  // Track whether graceful shutdown has been initiated. When true, we suppress error callbacks because any exit is expected.
-  let shuttingDown = false;
-
-  // Log FFmpeg stderr output (warnings and errors).
-  ffmpeg.stderr.on("data", (data: Buffer) => {
-
-    if(shuttingDown) {
-
-      return;
-    }
-
-    const message = data.toString().trim();
-    const noisePatterns = [ "Press [q] to stop", "frame=", "size=", "time=", "bitrate=", "speed=" ];
-
-    if(noisePatterns.some((pattern) => message.includes(pattern))) {
-
-      return;
-    }
-
-    if(message.length > 0) {
-
-      LOG.debug("streaming:ffmpeg", "%sMPEG-TS remuxer: %s", logPrefix, message);
-    }
-  });
-
-  // Handle FFmpeg process exit.
-  ffmpeg.on("exit", (code, signal) => {
-
-    if(shuttingDown) {
-
-      return;
-    }
-
-    if(signal === "SIGTERM") {
-
-      return;
-    }
-
-    if((code !== null) && (code !== 0)) {
-
-      onError(new Error("MPEG-TS remuxer exited with code " + String(code) + "."));
-    } else if(signal) {
-
-      onError(new Error("MPEG-TS remuxer killed by signal " + signal + "."));
-    }
-  });
-
-  // Handle spawn errors (e.g., FFmpeg not found).
-  ffmpeg.on("error", (error) => {
-
-    if(shuttingDown) {
-
-      return;
-    }
-
-    onError(error);
-  });
-
-  // Kill function for graceful shutdown.
-  const kill = (): void => {
-
-    shuttingDown = true;
-
-    if(!ffmpeg.killed) {
-
-      ffmpeg.kill("SIGTERM");
-    }
-  };
-
-  return {
-
-    kill,
-    process: ffmpeg,
-    stdin: ffmpeg.stdin,
-    stdout: ffmpeg.stdout
-  };
 }
 
 /**
