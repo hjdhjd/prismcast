@@ -4,8 +4,8 @@
  */
 import type { Channel, ChannelListingEntry, ChannelMap, StoredChannel, StoredChannelMap } from "../types/index.js";
 import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.js";
-import { buildProviderGroups, getAllProviderTags, getProviderSelections, isChannelAvailableByProvider, isProviderVariant, setEnabledProviders,
-  setProviderSelections } from "./providers.js";
+import { buildProviderGroups, getAllProviderTags, getProviderSelections, getResolvedChannel, isChannelAvailableByProvider, isProviderVariant,
+  resolveProviderKey, setEnabledProviders, setProviderSelections } from "./providers.js";
 import { getChannelsFilePath, getDataDir } from "./paths.js";
 import { CONFIG } from "./index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
@@ -431,6 +431,9 @@ function getMergedChannelMap(): ChannelMap {
  *
  * Override entries produce a new resolved Channel object (via resolveStoredChannel()), which is a different reference from PREDEFINED_CHANNELS[key]. The provider
  * system (providers.ts) relies on this reference difference to detect user overrides via isUserOverride(). Predefined-only entries preserve the original reference.
+ *
+ * The returned channel field is provider-resolved: when a non-default provider is selected for a channel, the entry's channel reflects the selected variant's URL,
+ * channelSelector, stationId, and channelNumber. The entry's key always remains the canonical key.
  * @returns Sorted array of channel listing entries.
  */
 export function getChannelListing(): ChannelListingEntry[] {
@@ -464,13 +467,18 @@ export function getChannelListing(): ChannelListingEntry[] {
     }
 
     // For user entries (including overrides), resolve the stored delta/definition into a full Channel. The resolved object is a new reference, which preserves
-    // the isUserOverride() contract in providers.ts (reference comparison against PREDEFINED_CHANNELS[key]).
+    // the isUserOverride() contract in providers.ts (reference comparison against PREDEFINED_CHANNELS[key]). Predefined-only entries keep the original reference.
     const channel: Channel = isUser ? resolveStoredChannel(key, loadedUserChannels[key]) : PREDEFINED_CHANNELS[key];
+
+    // When a non-default provider is selected, resolve the variant so consumers see the correct URL, channelSelector, stationId, and channelNumber. We skip
+    // resolution when the resolved key matches the canonical key — the channel object is already correct and preserving its reference avoids a redundant lookup.
+    const resolvedKey = resolveProviderKey(key);
+    const resolvedChannel = (resolvedKey !== key) ? getResolvedChannel(resolvedKey) : undefined;
 
     listing.push({
 
       availableByProvider: isChannelAvailableByProvider(key),
-      channel,
+      channel: resolvedChannel ?? channel,
       enabled: !isPredefinedChannelDisabled(key),
       key,
       source

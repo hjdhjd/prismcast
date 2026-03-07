@@ -3,7 +3,7 @@
  * table.ts: Channel table rendering for the PrismCast configuration interface.
  */
 import { compareChannelSort, getAllProviderTags, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey, getEnabledProviders,
-  getProviderGroup, getProviderSelection, getProviderTagForChannel, getResolvedChannel, hasMultipleProviders, isChannelAvailableByProvider,
+  getProviderGroup, getProviderSelection, getProviderTagForChannel, hasMultipleProviders, isChannelAvailableByProvider,
   isProviderTagEnabled, resolveProviderKey } from "../../../config/providers.js";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls } from "../../../browser/channelSelection.js";
@@ -536,11 +536,6 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
   const channel = listing.channel;
 
-  // Resolve the selected provider's channel data for display purposes (edit form pre-population). This ensures the values shown reflect the currently selected provider.
-  const resolvedKey = resolveProviderKey(key);
-  const resolvedChannel = getResolvedChannel(resolvedKey);
-  const displayChannel = resolvedChannel ?? channel;
-
   const isUser = isUserChannel(key);
   const isPredefined = isPredefinedChannel(key);
   const isOverride = isPredefined && isUser;
@@ -624,21 +619,19 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   displayLines.push("<td class=\"col-stationid\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "stationId")) + "\">" +
     (channel.stationId ? escapeHtml(channel.stationId) : "") + "</td>");
 
-  // Profile column: show explicit profile as-is, or the auto-resolved friendly name with "(auto)" suffix in muted style. The sort key resolves the selected
-  // provider variant internally via getChannelSortKey. The display content uses displayChannel because profile resolution is URL-dependent and a canonical's URL
-  // may differ from the selected variant's.
+  // Profile column: show explicit profile as-is, or the auto-resolved friendly name with "(auto)" suffix in muted style.
   const profileSortKey = escapeHtml(getChannelSortKey(channel, key, "profile"));
 
-  if(displayChannel.profile) {
+  if(channel.profile) {
 
-    displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey + "\">" + escapeHtml(displayChannel.profile) + "</td>");
+    displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey + "\">" + escapeHtml(channel.profile) + "</td>");
   } else {
 
-    const resolved = getProfileForChannel(displayChannel);
+    const resolved = getProfileForChannel(channel);
 
     if(resolved.profileName !== "default") {
 
-      const label = getChannelProviderLabel(displayChannel);
+      const label = getChannelProviderLabel(channel);
 
       displayLines.push("<td class=\"col-profile\" data-sort-value=\"" + profileSortKey +
         "\"><span class=\"text-muted\">" + escapeHtml(label + " (auto)") + "</span></td>");
@@ -750,14 +743,14 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapedKey + "\">");
 
   // Channel name.
-  editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", displayChannel.name ?? key, {
+  editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", channel.name ?? key, {
 
     hint: "Friendly name shown in the playlist and UI.",
     required: true
   }));
 
   // Channel URL.
-  editLines.push(...generateTextField("edit-url-" + key, "url", "Stream URL", displayChannel.url, {
+  editLines.push(...generateTextField("edit-url-" + key, "url", "Stream URL", channel.url, {
 
     hint: "The URL of the streaming page to capture.",
     required: true,
@@ -765,11 +758,11 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   }));
 
   // Profile dropdown.
-  editLines.push(...generateProfileDropdown("edit-profile-" + key, displayChannel.profile ?? "", profiles));
+  editLines.push(...generateProfileDropdown("edit-profile-" + key, channel.profile ?? "", profiles));
 
   // Advanced fields.
-  editLines.push(...generateAdvancedFields("edit-" + key, displayChannel.stationId ?? "", displayChannel.channelSelector ?? "",
-    displayChannel.channelNumber ? String(displayChannel.channelNumber) : ""));
+  editLines.push(...generateAdvancedFields("edit-" + key, channel.stationId ?? "", channel.channelSelector ?? "",
+    channel.channelNumber ? String(channel.channelNumber) : ""));
 
   // Form buttons.
   editLines.push("<div class=\"form-buttons\">");
