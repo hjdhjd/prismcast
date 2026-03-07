@@ -1182,6 +1182,10 @@ export async function closeBrowser(): Promise<void> {
         browserRef.close(),
         new Promise((_, reject) => setTimeout(() => { reject(new Error("Browser close timed out")); }, 5000))
       ]);
+
+      // Chrome closed successfully. Clear the PID so that Stage 2 and the process exit handler's killStaleChrome() skip the signal/poll loop entirely. The PID
+      // file is the safety net for crashes — on the graceful path we remove it here to avoid a redundant 1-2 second wait while Chrome flushes its databases.
+      clearChromePid();
     } catch(error) {
 
       const message = formatError(error);
