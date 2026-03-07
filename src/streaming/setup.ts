@@ -13,10 +13,13 @@ import { initializePlayback, navigateToPage } from "../browser/video.js";
 import { invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.js";
 import { CONFIG } from "../config/index.js";
 import type { FFmpegProcess } from "../utils/index.js";
+import type { ManifestInterceptorHandle } from "../native/intercept.js";
 import type { MonitorStreamInfo } from "./monitor.js";
 import type { Readable } from "node:stream";
+import { getCachedEncryption } from "../native/probe.js";
 import { getEffectiveViewport } from "../config/presets.js";
 import { getProviderDisplayName } from "../config/providers.js";
+import { installManifestInterceptor } from "../native/intercept.js";
 import { isChannelSelectionProfile } from "../types/index.js";
 import { monitorPlaybackHealth } from "./monitor.js";
 import { pipeline } from "node:stream/promises";
@@ -130,6 +133,10 @@ export interface StreamSetupResult {
   // The FFmpeg process for WebM-to-fMP4 transcoding, or null if using native fMP4 mode.
   ffmpegProcess: Nullable<FFmpegProcess>;
 
+  // Manifest interceptor handle from the CDP listener installed before navigation. Contains the interception promise and a finalize() function that the caller
+  // invokes after channel selection is complete. Null if the interceptor was not installed (tab replacement or DRM-cached channel).
+  manifestInterception: Nullable<ManifestInterceptorHandle>;
+
   // Unique numeric ID for this stream.
   numericStreamId: number;
 
@@ -193,6 +200,9 @@ export interface CreatePageWithCaptureOptions {
   // The resolved site profile for video handling.
   profile: ResolvedSiteProfile;
 
+  // When true, skips CDP manifest interception. Set when the probe cache already has a "drm" result for this channel, avoiding 15 seconds of wasted CDP overhead.
+  skipManifestInterception?: boolean;
+
   // The stream ID string for logging (e.g., "cnn-5jecl6").
   streamId: string;
 
@@ -224,6 +234,9 @@ export interface CreatePageWithCaptureResult {
 
   // The FFmpeg process if using WebM+FFmpeg mode, null otherwise.
   ffmpegProcess: Nullable<FFmpegProcess>;
+
+  // Manifest interceptor handle for native streaming, or null if interception was not installed.
+  manifestInterception: Nullable<ManifestInterceptorHandle>;
 
   // The browser page for this capture.
   page: Page;
@@ -357,6 +370,11 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   registerManagedPage(page);
 
   await page.setBypassCSP(true);
+
+  // Install CDP manifest interceptor before navigation. This listener captures .m3u8 URLs from the browser's network requests, enabling native HLS streaming for
+  // providers that use clear or AES-128 encrypted streams. Skipped for tab replacements (native proxy is independent of capture) and for channels already known to
+  // use DRM (avoids 15 seconds of wasted CDP overhead per tune). The await ensures the CDP session and Network domain are ready before navigation begins.
+  const manifestInterception = (!options.tabReplacement && !options.skipManifestInterception) ? await installManifestInterceptor(page) : null;
 
   // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable.
   const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
@@ -684,6 +702,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     context,
     directTune: usedDirectUrl || strategyDirectTune || !isChannelSelectionProfile(profile),
     ffmpegProcess,
+    manifestInterception,
     page,
     rawCaptureStream
   };
@@ -851,11 +870,16 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
     try {
 
+      // Skip CDP manifest interception if the probe cache already knows this channel uses DRM. This avoids creating a CDP session that sits idle for 15 seconds
+      // before the interceptor timeout cleans it up.
+      const skipInterception = channelName ? (getCachedEncryption(channelName) === "drm") : false;
+
       captureResult = await createPageWithCapture({
 
         comment: metadataComment,
         onFFmpegError: onCircuitBreak,
         profile,
+        skipManifestInterception: skipInterception,
         streamId,
         url
       });
@@ -878,7 +902,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.");
     }
 
-    const { captureStream, context, directTune, ffmpegProcess, page, rawCaptureStream } = captureResult;
+    const { captureStream, context, directTune, ffmpegProcess, manifestInterception, page, rawCaptureStream } = captureResult;
 
     // Monitor stream info for status updates.
     const monitorStreamInfo: MonitorStreamInfo = {
@@ -944,6 +968,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       cleanup,
       directTune,
       ffmpegProcess,
+      manifestInterception,
       numericStreamId,
       page,
       profile,

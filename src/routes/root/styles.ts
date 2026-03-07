@@ -194,6 +194,8 @@ export function generateLandingPageStyles(): string {
     ".streams-table .details-recovery { white-space: nowrap; flex-shrink: 0; }",
     ".streams-table .details-memory { white-space: nowrap; flex-shrink: 0; }",
     ".streams-table .client-count { font-size: 0.85em; color: var(--text-muted); margin-right: 8px; white-space: nowrap; }",
+    ".streams-table .native-badge { font-size: 10px; font-weight: 600; color: var(--badge-flag-text); background: var(--badge-flag-bg); padding: 1px 5px; ",
+    "  border-radius: var(--radius-sm); vertical-align: middle; letter-spacing: 0.5px; text-transform: uppercase; }",
 
     // Log viewer styles.
     ".log-viewer { background: var(--dark-surface-bg); color: var(--dark-text-secondary); padding: 15px; border-radius: var(--radius-lg); ",

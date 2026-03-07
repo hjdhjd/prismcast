@@ -14,9 +14,9 @@ import { getStream } from "./registry.js";
  * 2. Enforce segment count limits to control memory usage
  * 3. Provide access to segments and playlists for HTTP handlers
  *
- * For fMP4 HLS, there are three types of data:
+ * Data types:
  * - Init segment (init.mp4): Contains codec configuration, sent once at stream start, retained for stream lifetime
- * - Media segments (.m4s): Contain audio/video data, rotated based on maxSegments config
+ * - Media segments (.m4s or .ts): Contain audio/video data, rotated based on maxSegments config
  * - Playlist (.m3u8): Updated as new segments are produced
  *
  * Note: Stream lifecycle (creation, cleanup) is managed by the registry. This module focuses solely on segment storage operations.
@@ -25,8 +25,8 @@ import { getStream } from "./registry.js";
 // Segment Management.
 
 /**
- * Stores a media segment received from the segmenter. Enforces the segment count limit by removing the oldest segment when necessary. This is for .m4s media segments,
- * not the init segment.
+ * Stores a media segment. Enforces the segment count limit by removing the oldest segment when necessary. Handles both capture-mode .m4s segments from the fMP4
+ * segmenter and native-mode .ts segments from the HLS proxy.
  * @param streamId - The numeric stream ID.
  * @param filename - The segment filename (e.g., "segment0.m4s").
  * @param data - The segment binary data.
@@ -87,6 +87,128 @@ export function getSegment(streamId: number, filename: string): Buffer | undefin
 export function getSegmentCount(streamId: number): number {
 
   return getStream(streamId)?.hls.segments.size ?? 0;
+}
+
+// Audio Segment Management.
+
+/**
+ * Stores an audio segment for streams with separate audio renditions. Enforces the same segment count limit as video segments by removing the oldest audio segment
+ * when necessary.
+ * @param streamId - The numeric stream ID.
+ * @param filename - The audio segment filename (e.g., "audio0.ts").
+ * @param data - The segment binary data.
+ */
+export function storeAudioSegment(streamId: number, filename: string, data: Buffer): void {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    LOG.debug("streaming:hls", "Attempted to store audio segment for unknown stream %s.", streamId);
+
+    return;
+  }
+
+  stream.hls.audioSegments.set(filename, data);
+
+  // Notify consumers that a new audio segment is available.
+  stream.hls.segmentEmitter.emit("audioSegment", filename, data);
+
+  // Enforce segment limit by removing oldest audio segments.
+  while(stream.hls.audioSegments.size > CONFIG.hls.maxSegments) {
+
+    const oldestKey = stream.hls.audioSegments.keys().next().value;
+
+    if(oldestKey === undefined) {
+
+      break;
+    }
+
+    stream.hls.audioSegments.delete(oldestKey);
+  }
+}
+
+/**
+ * Gets an audio segment by filename.
+ * @param streamId - The numeric stream ID.
+ * @param filename - The audio segment filename.
+ * @returns The segment data, or undefined if not found.
+ */
+export function getAudioSegment(streamId: number, filename: string): Buffer | undefined {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    return undefined;
+  }
+
+  return stream.hls.audioSegments.get(filename);
+}
+
+// Audio Playlist Management.
+
+/**
+ * Updates the audio variant playlist content for a stream with separate audio renditions.
+ * @param streamId - The numeric stream ID.
+ * @param content - The audio m3u8 playlist content.
+ */
+export function updateAudioPlaylist(streamId: number, content: string): void {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    LOG.debug("streaming:hls", "Attempted to update audio playlist for unknown stream %s.", streamId);
+
+    return;
+  }
+
+  stream.hls.audioPlaylist = content;
+}
+
+/**
+ * Gets the current audio variant playlist for a stream.
+ * @param streamId - The numeric stream ID.
+ * @returns The audio playlist content, or undefined if not found.
+ */
+export function getAudioPlaylist(streamId: number): string | undefined {
+
+  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- intentional: convert empty string to undefined.
+  return getStream(streamId)?.hls.audioPlaylist || undefined;
+}
+
+// Video Playlist Management (Separate Audio Streams).
+
+/**
+ * Updates the video variant playlist content for a stream with separate audio renditions. When hasAudio is true, the main playlist becomes the master playlist, and
+ * the video variant playlist is stored separately.
+ * @param streamId - The numeric stream ID.
+ * @param content - The video m3u8 playlist content.
+ */
+export function updateVideoPlaylist(streamId: number, content: string): void {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    LOG.debug("streaming:hls", "Attempted to update video playlist for unknown stream %s.", streamId);
+
+    return;
+  }
+
+  stream.hls.videoPlaylist = content;
+}
+
+/**
+ * Gets the current video variant playlist for a stream with separate audio renditions.
+ * @param streamId - The numeric stream ID.
+ * @returns The video playlist content, or undefined if not found.
+ */
+export function getVideoPlaylist(streamId: number): string | undefined {
+
+  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- intentional: convert empty string to undefined.
+  return getStream(streamId)?.hls.videoPlaylist || undefined;
 }
 
 // Init Segment Management.

@@ -11,7 +11,7 @@ import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.js";
 import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.js";
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
 import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
-import { getInitSegment, getPlaylist, getSegment, waitForPlaylist } from "./hlsSegments.js";
+import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.js";
 import { getProviderTagForChannel, getResolvedChannel, resolveProviderKey } from "../config/providers.js";
 import { markChannelFailure, markChannelSuccess } from "../config/health.js";
 import { CONFIG } from "../config/index.js";
@@ -19,6 +19,8 @@ import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { StreamRegistryEntry } from "./registry.js";
 import type { TabReplacementHandlerFactory } from "./setup.js";
 import type { TabReplacementResult } from "./recovery.js";
+import { attemptNativeStreaming } from "../native/index.js";
+import { clearProbeCache } from "../native/probe.js";
 import { consumeResumeData } from "./hlsResume.js";
 import { createFMP4Segmenter } from "./fmp4Segmenter.js";
 import { createHash } from "node:crypto";
@@ -211,7 +213,8 @@ export async function handleHLSPlaylist(req: Request, res: Response): Promise<vo
 }
 
 /**
- * Handles HLS segment requests. Returns the requested segment from memory. Supports both the fMP4 initialization segment (init.mp4) and media segments (.m4s).
+ * Handles HLS segment requests. Returns the requested segment from memory. Supports the fMP4 initialization segment (init.mp4), capture-mode media segments
+ * (.m4s), native-mode video segments (.ts), and audio segments for streams with separate audio renditions.
  *
  * Route: GET /hls/:name/:segment
  *
@@ -239,7 +242,7 @@ export function handleHLSSegment(req: Request, res: Response): void {
     return;
   }
 
-  // Handle init segment (init.mp4) separately from media segments (.m4s).
+  // Handle init segment (init.mp4) separately from media segments (.m4s, .ts).
   if(segmentName === "init.mp4") {
 
     const initSegment = getInitSegment(streamId);
@@ -252,13 +255,13 @@ export function handleHLSSegment(req: Request, res: Response): void {
     }
 
     updateLastAccess(streamId);
-    sendSegment(initSegment, res);
+    sendSegment(initSegment, "init.mp4", res);
 
     return;
   }
 
-  // Handle media segments (.m4s).
-  const segment = getSegment(streamId, segmentName);
+  // Handle media segments (.m4s and .ts). Check both video and audio segment stores.
+  const segment = getSegment(streamId, segmentName) ?? getAudioSegment(streamId, segmentName);
 
   if(!segment) {
 
@@ -268,7 +271,62 @@ export function handleHLSSegment(req: Request, res: Response): void {
   }
 
   updateLastAccess(streamId);
-  sendSegment(segment, res);
+  sendSegment(segment, segmentName, res);
+}
+
+/**
+ * Handles HLS variant playlist requests for streams with separate audio renditions. Serves video.m3u8 or audio.m3u8 depending on the requested playlist name.
+ * Returns 404 for streams that don't have separate audio.
+ *
+ * Route: GET /hls/:name/video.m3u8 and GET /hls/:name/audio.m3u8
+ *
+ * @param req - Express request object.
+ * @param res - Express response object.
+ */
+export function handleHLSVariantPlaylist(req: Request, res: Response): void {
+
+  const channelName = (req.params as { name?: string }).name;
+
+  // Extract the playlist filename from the URL path. The route is registered as two explicit paths (/video.m3u8 and /audio.m3u8) rather than a parameterized route,
+  // so there is no :playlist param to read.
+  const lastSlash = req.path.lastIndexOf("/");
+  const playlistName = lastSlash >= 0 ? req.path.slice(lastSlash + 1) : undefined;
+
+  if(!channelName || !playlistName) {
+
+    res.status(400).send("Channel name and playlist name are required.");
+
+    return;
+  }
+
+  const streamId = getChannelStreamId(channelName);
+
+  if((streamId === undefined) || (streamId === -1)) {
+
+    res.status(404).send("Stream not found.");
+
+    return;
+  }
+
+  let playlist: string | undefined;
+
+  if(playlistName === "video.m3u8") {
+
+    playlist = getVideoPlaylist(streamId);
+  } else if(playlistName === "audio.m3u8") {
+
+    playlist = getAudioPlaylist(streamId);
+  }
+
+  if(!playlist) {
+
+    res.status(404).send("Playlist not found.");
+
+    return;
+  }
+
+  updateLastAccess(streamId);
+  sendPlaylist(playlist, res);
 }
 
 // Ad-Hoc Streaming.
@@ -540,14 +598,17 @@ function sendPlaylist(playlist: string, res: Response): void {
 }
 
 /**
- * Sends a segment buffer as a video/mp4 response with appropriate headers.
+ * Sends a segment buffer with appropriate Content-Type headers. MPEG-TS segments (.ts) get video/MP2T, fMP4 segments (.m4s and init.mp4) get video/mp4.
  * @param data - The segment data.
+ * @param segmentName - The segment filename (used to determine Content-Type).
  * @param res - Express response object.
  */
-function sendSegment(data: Buffer, res: Response): void {
+function sendSegment(data: Buffer, segmentName: string, res: Response): void {
+
+  const contentType = segmentName.endsWith(".ts") ? "video/MP2T" : "video/mp4";
 
   res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Content-Type", contentType);
   res.send(data);
 }
 
@@ -577,6 +638,9 @@ function cleanupOrphanedSetup(segmenter: FMP4SegmenterResult): void {
  * 6. Return the new page and context for the monitor to continue
  *
  * The handler preserves existing HLS segments and marks a discontinuity so clients know the stream parameters may have changed.
+ *
+ * Note: This handler is only invoked for capture-mode streams. Native-mode streams bypass video element monitoring entirely (the monitor early-returns for native
+ * streams), so evaluate timeouts that trigger tab replacement cannot occur.
  *
  * @param numericStreamId - The stream's numeric ID for registry lookups.
  * @param streamId - The stream's string ID for logging.
@@ -774,6 +838,11 @@ interface InitializeStreamOptions {
   // Whether to click an element to start playback. When true without clickSelector, clicks the video element.
   clickToPlay?: boolean;
 
+  // When true, the requesting client is an MPEG-TS consumer (e.g., Plex via HDHomeRun). Channels with separate audio renditions (e.g., Google DAI on BET/VH1)
+  // cannot be natively streamed to MPEG-TS clients because the independent video and audio MPEG-TS segments have incompatible PAT/PMT tables from ad splicing.
+  // These channels fall back to capture mode for MPEG-TS clients but use native streaming for HLS clients (Channels DVR).
+  mpegTsClient?: boolean;
+
   // Profile name to override auto-detection, from query parameter.
   profileOverride?: string;
 
@@ -795,7 +864,7 @@ interface InitializeStreamOptions {
  */
 export async function initializeStream(options: InitializeStreamOptions): Promise<Nullable<number>> {
 
-  const { channel, channelName, channelSelector, clickSelector, clickToPlay, clientAddress, profileOverride, url } = options;
+  const { channel, channelName, channelSelector, clickSelector, clickToPlay, clientAddress, mpegTsClient, profileOverride, url } = options;
 
   // Set a -1 sentinel to prevent duplicate stream starts while we're setting up.
   const startupSentinel = -1;
@@ -869,7 +938,6 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
   // Continue within stream context for consistent logging.
   return runWithStreamContext(
     { channelName: channel?.name, streamId: setup.streamId, url: setup.url },
-    // eslint-disable-next-line @typescript-eslint/require-await
     async () => {
 
       // Register with null segmenter first because segmenter callbacks (onError, onStop) need the stream to exist in the registry for cleanup logic. The segmenter is
@@ -887,6 +955,7 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
           storeKey: channelName
         },
         mpegTsClientCount: 0,
+        nativeProxy: null,
         page: setup.page,
         profile: setup.profile,
         rawCaptureStream: setup.rawCaptureStream,
@@ -894,74 +963,152 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
         startTime: setup.startTime,
         stopMonitor: setup.stopMonitor,
         streamIdStr: setup.streamId,
+        streamingMode: "capture",
         url: setup.url
       });
 
-      // Check for resume data from a previous shutdown. If available, the segmenter will continue from the saved sequence numbers instead of starting at 0, preventing
-      // HLS sequence resets that cause Channels DVR to produce broken recording timelines.
-      const resumeData = consumeResumeData(channelName);
+      // Attempt native streaming if a manifest interception handle is available. Signal finalize() to tell the interceptor that channel selection is complete and it
+      // should resolve with the most recently captured manifest URL. For direct-navigation sites, the manifest was captured during page load and finalize resolves
+      // immediately. For guide-based sites (Fox, Hulu, etc.), the manifest from the correct channel was captured after the strategy clicked the right entry.
+      let streamingMode: "capture" | "native" = "capture";
 
-      // Create the native fMP4 segmenter to parse the MP4/AAC stream into HLS segments.
-      const segmenter = createFMP4Segmenter({
+      if(setup.manifestInterception) {
 
-        ...(resumeData ? {
+        setup.manifestInterception.finalize(setup.directTune);
 
-          initialTrackTimestamps: resumeData.trackTimestamps,
-          pendingDiscontinuity: true,
-          previousInitSegment: resumeData.initSegment,
-          startingInitVersion: resumeData.initVersion,
-          startingSegmentIndex: resumeData.segmentIndex
-        } : {}),
+        const nativeResult = await attemptNativeStreaming({
 
-        onError: (error: Error) => {
+          channelName,
+          interceptionPromise: setup.manifestInterception.promise,
+          mpegTsClient,
+          onError: (error) => {
 
-          // Skip error handling if termination was already initiated.
-          if(isTerminationInitiated(setup.numericStreamId)) {
+            if(isTerminationInitiated(setup.numericStreamId)) {
 
-            return;
+              return;
+            }
+
+            // Log the error and clear the probe cache. The proxy has already stopped itself (set errorThresholdReached + stopped). The monitor detects
+            // hasErrored() on the next 2-second tick and triggers L3 fallback to capture mode, preserving the stream for the DVR client.
+            LOG.warn("Native proxy error for %s: %s. Falling back to capture.", channelName, error);
+
+            clearProbeCache(channelName);
+          },
+          page: setup.page,
+          streamId: setup.numericStreamId,
+          streamIdStr: setup.streamId,
+          url
+        });
+
+        if(nativeResult) {
+
+          const stream = getStream(setup.numericStreamId);
+
+          if(!stream) {
+
+            nativeResult.proxy.stop();
+
+            return null;
           }
 
-          LOG.error("Segmenter error for %s: %s.", channelName, formatError(error));
+          // Stop the capture pipeline — native streaming replaces it entirely.
+          if(!setup.rawCaptureStream.destroyed) {
 
-          terminateStream(setup.numericStreamId, channelName, "stream processing error");
-          void emitCurrentSystemStatus();
-        },
-
-        onStop: () => {
-
-          // Skip handling if termination was already initiated.
-          if(isTerminationInitiated(setup.numericStreamId)) {
-
-            return;
+            setup.rawCaptureStream.destroy();
           }
 
-          LOG.error("Segmenter stopped unexpectedly for %s.", channelName);
+          if(setup.ffmpegProcess) {
 
-          terminateStream(setup.numericStreamId, channelName, "stream ended unexpectedly");
-          void emitCurrentSystemStatus();
-        },
+            setup.ffmpegProcess.kill();
+          }
 
-        streamId: setup.numericStreamId
-      });
+          // Update the registry entry to reflect native mode.
+          stream.ffmpegProcess = null;
+          stream.hls.hasAudio = nativeResult.hasAudio;
+          stream.nativeProxy = nativeResult.proxy;
+          stream.rawCaptureStream = null;
+          stream.streamingMode = "native";
+          streamingMode = "native";
 
-      // Pipe the capture stream to the segmenter.
-      segmenter.pipe(setup.captureStream);
+          // Start the native proxy. Signal init segment readiness immediately — native MPEG-TS segments carry their own PAT/PMT codec configuration in every
+          // segment, so there is no separate init segment to wait for. Without this, MPEG-TS clients block on waitForInitSegment() and time out before the proxy's
+          // first poll cycle completes.
+          nativeResult.proxy.start();
+          stream.hls.signalInitSegmentReady();
 
-      // Store the segmenter reference in the registry.
-      const stream = getStream(setup.numericStreamId);
-
-      if(stream) {
-
-        stream.segmenter = segmenter;
-      } else {
-
-        // Stream was terminated during setup (rare race condition). Clean up the orphaned segmenter.
-        cleanupOrphanedSetup(segmenter);
-
-        return null;
+          LOG.debug("native:coordinator", "Capture pipeline stopped for %s. Native proxy active.", channelName);
+        }
       }
 
-      const captureMode = CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg" : "Native";
+      // If native streaming was not viable or not attempted, create the fMP4 segmenter for capture mode.
+      if(streamingMode === "capture") {
+
+        // Check for resume data from a previous shutdown. If available, the segmenter will continue from the saved sequence numbers instead of starting at 0,
+        // preventing HLS sequence resets that cause Channels DVR to produce broken recording timelines.
+        const resumeData = consumeResumeData(channelName);
+
+        // Create the native fMP4 segmenter to parse the MP4/AAC stream into HLS segments.
+        const segmenter = createFMP4Segmenter({
+
+          ...(resumeData ? {
+
+            initialTrackTimestamps: resumeData.trackTimestamps,
+            pendingDiscontinuity: true,
+            previousInitSegment: resumeData.initSegment,
+            startingInitVersion: resumeData.initVersion,
+            startingSegmentIndex: resumeData.segmentIndex
+          } : {}),
+
+          onError: (error: Error) => {
+
+            // Skip error handling if termination was already initiated.
+            if(isTerminationInitiated(setup.numericStreamId)) {
+
+              return;
+            }
+
+            LOG.error("Segmenter error for %s: %s.", channelName, formatError(error));
+
+            terminateStream(setup.numericStreamId, channelName, "stream processing error");
+            void emitCurrentSystemStatus();
+          },
+
+          onStop: () => {
+
+            // Skip handling if termination was already initiated.
+            if(isTerminationInitiated(setup.numericStreamId)) {
+
+              return;
+            }
+
+            LOG.error("Segmenter stopped unexpectedly for %s.", channelName);
+
+            terminateStream(setup.numericStreamId, channelName, "stream ended unexpectedly");
+            void emitCurrentSystemStatus();
+          },
+
+          streamId: setup.numericStreamId
+        });
+
+        // Pipe the capture stream to the segmenter.
+        segmenter.pipe(setup.captureStream);
+
+        // Store the segmenter reference in the registry.
+        const stream = getStream(setup.numericStreamId);
+
+        if(stream) {
+
+          stream.segmenter = segmenter;
+        } else {
+
+          // Stream was terminated during setup (rare race condition). Clean up the orphaned segmenter.
+          cleanupOrphanedSetup(segmenter);
+
+          return null;
+        }
+      }
+
+      const captureMode = streamingMode === "native" ? "native HLS" : (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg" : "Native fMP4");
       const displayName = channel?.name ?? url;
 
       const tuneTime = ((Date.now() - setup.startTime.getTime()) / 1000).toFixed(1);
@@ -987,6 +1134,7 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
         numericStreamId: setup.numericStreamId,
         providerName: setup.providerName,
         startTime: setup.startTime,
+        streamingMode,
         url: setup.url
       }));
       void emitCurrentSystemStatus();

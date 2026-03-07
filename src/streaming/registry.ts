@@ -2,10 +2,11 @@
  *
  * registry.ts: Stream tracking for PrismCast.
  */
-import type { Nullable, ResolvedSiteProfile } from "../types/index.js";
+import type { Nullable, ResolvedSiteProfile, StreamingMode } from "../types/index.js";
 import { EventEmitter } from "node:events";
 import type { FFmpegProcess } from "../utils/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
+import type { NativeProxy } from "../native/proxy.js";
 import type { Page } from "puppeteer-core";
 import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./recovery.js";
@@ -27,6 +28,16 @@ import type { RecoveryMetrics } from "./recovery.js";
  */
 export interface HLSState {
 
+  // The audio variant playlist content for streams with separate audio renditions. Empty string when not applicable.
+  audioPlaylist: string;
+
+  // Map of audio segment filenames to their binary data. Used only for streams with separate audio renditions (e.g., Google DAI on BET/VH1).
+  audioSegments: Map<string, Buffer>;
+
+  // Whether this stream has separate audio renditions. When true, stream.m3u8 serves a master playlist referencing video.m3u8 and audio.m3u8. When false (the
+  // common case), stream.m3u8 serves the variant playlist directly.
+  hasAudio: boolean;
+
   // The fMP4 initialization segment containing codec configuration. Sent once at stream start and retained for the stream's lifetime. Clients must fetch this before
   // any media segments.
   initSegment: Nullable<Buffer>;
@@ -34,7 +45,8 @@ export interface HLSState {
   // Promise that resolves when the first init segment is stored. Used by MPEG-TS consumers to wait for codec configuration before starting their FFmpeg remuxer.
   initSegmentReady: Promise<void>;
 
-  // The current m3u8 playlist content.
+  // The current m3u8 playlist content. For streams without separate audio, this is the variant playlist. For streams with separate audio, this is the master
+  // playlist referencing video.m3u8 and audio.m3u8.
   playlist: string;
 
   // Promise that resolves when the first playlist is available.
@@ -43,6 +55,7 @@ export interface HLSState {
   // EventEmitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time. Events:
   //   "initSegment" (data: Buffer) — fired when an init segment is stored
   //   "segment" (filename: string, data: Buffer) — fired when a media segment is stored
+  //   "audioSegment" (filename: string, data: Buffer) — fired when an audio segment is stored
   //   "terminated" () — fired when the stream is being terminated
   segmentEmitter: EventEmitter;
 
@@ -54,6 +67,9 @@ export interface HLSState {
 
   // Function to signal that the playlist is ready.
   signalPlaylistReady: () => void;
+
+  // The video variant playlist content for streams with separate audio renditions. Empty string when not applicable.
+  videoPlaylist: string;
 }
 
 /**
@@ -92,6 +108,9 @@ export interface StreamRegistryEntry {
   // keep the stream alive while MPEG-TS clients are connected.
   mpegTsClientCount: number;
 
+  // The native HLS proxy for streams that bypass screen capture. Null for capture-mode streams.
+  nativeProxy: Nullable<NativeProxy>;
+
   // Stream-specific info for idle detection.
   info: StreamInfo;
 
@@ -117,6 +136,9 @@ export interface StreamRegistryEntry {
 
   // String identifier for logging (e.g., "cnn-5jecl6").
   streamIdStr: string;
+
+  // Streaming mode: "capture" for screen capture via puppeteer-stream, "native" for direct HLS consumption.
+  streamingMode: StreamingMode;
 
   // URL being streamed.
   url: string;
@@ -227,6 +249,9 @@ export function createHLSState(): HLSState {
 
   return {
 
+    audioPlaylist: "",
+    audioSegments: new Map(),
+    hasAudio: false,
     initSegment: null,
     initSegmentReady,
     playlist: "",
@@ -234,7 +259,8 @@ export function createHLSState(): HLSState {
     segmentEmitter,
     segments: new Map(),
     signalInitSegmentReady,
-    signalPlaylistReady
+    signalPlaylistReady,
+    videoPlaylist: ""
   };
 }
 
@@ -268,6 +294,11 @@ export function getStreamMemoryUsage(entry: StreamRegistryEntry): StreamMemoryUs
   let segmentsSize = 0;
 
   for(const segment of entry.hls.segments.values()) {
+
+    segmentsSize += segment.length;
+  }
+
+  for(const segment of entry.hls.audioSegments.values()) {
 
     segmentsSize += segment.length;
   }

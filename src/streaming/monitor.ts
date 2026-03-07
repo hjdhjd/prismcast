@@ -14,8 +14,11 @@ import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVi
 import { getChannelLogo, getShowName } from "./showInfo.js";
 import { getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.js";
 import { CONFIG } from "../config/index.js";
+import type { StreamRegistryEntry } from "./registry.js";
+import { clearProbeCache } from "../native/probe.js";
 import { emitStreamHealthChanged } from "./statusEmitter.js";
 import { getClientSummary } from "./clients.js";
+import { refreshNativeManifest } from "../native/index.js";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 
 /* Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor
@@ -248,6 +251,303 @@ export function monitorPlaybackHealth(
   // Capture stream context for re-establishing on each interval tick. AsyncLocalStorage context is lost when entering setInterval callbacks.
   const streamContext = { channelName: streamInfo.channelName ?? undefined, streamId, url };
 
+  // Native stream health state. These variables are only used when the stream is in native mode. They track segment delivery health to detect stalled streams
+  // where the provider's manifest stops advancing or segments stop arriving. Native recovery uses the shared `recoveryInProgress` flag rather than a separate flag,
+  // since the interval callback already checks `recoveryInProgress` before dispatching to either the native or capture-mode health check path.
+  let nativeLastCheckedSegmentIndex = 0;
+  let nativeLastSegmentAdvanceTime = Date.now();
+  let nativeHealthIssueType: Nullable<string> = null;
+  let nativeHealthIssueTime: Nullable<number> = null;
+  let nativeRecoveryAttempts = 0;
+
+  /**
+   * Checks segment delivery health for native streams. Detects stalled streams by comparing the proxy's segment index and last segment timestamp against thresholds.
+   * Recovery follows three escalation levels per the plan:
+   *
+   * - L1: Re-fetch manifest (handled by the proxy's internal retry loop — consecutive failures up to the threshold)
+   * - L2: Reload page for fresh tokens (same mechanism as proactive token refresh, but triggered by segment staleness)
+   * - L3: Fall back to capture mode via tab replacement (stops native proxy, creates fresh page with capture pipeline)
+   *
+   * Note: The `recoveryInProgress` guard at the top of the interval callback prevents re-entry during async L2/L3 recovery. The native path does not need its own
+   * guard — it reuses the shared flag.
+   *
+   * @param entry - The stream registry entry for the native stream.
+   */
+  function checkNativeStreamHealth(entry: StreamRegistryEntry): void {
+
+    const proxy = entry.nativeProxy;
+
+    if(!proxy) {
+
+      emitStatusUpdate();
+
+      return;
+    }
+
+    const now = Date.now();
+    const currentSegmentIndex = proxy.getSegmentIndex();
+    const lastSegmentTime = proxy.getLastSegmentTime();
+    const targetDuration = proxy.getTargetDuration();
+    const consecutiveErrors = proxy.getConsecutiveErrors();
+    const storeKey = entry.info.storeKey;
+
+    // Fast path: if the proxy hit its error threshold and stopped itself, trigger L3 fallback immediately. This avoids waiting for the staleness threshold when hard
+    // errors (HTTP 403, network failures) have already been detected by the proxy's internal retry loop.
+    if(proxy.hasErrored()) {
+
+      LOG.debug("native:monitor", "Native proxy errored for %s. Initiating capture fallback.", storeKey);
+
+      nativeHealthIssueType = "proxy error";
+      nativeHealthIssueTime = now;
+
+      void runWithStreamContext(streamContext, async () => {
+
+        await executeNativeL3Fallback(entry);
+      });
+
+      return;
+    }
+
+    // Check if new segments have been produced since the last tick.
+    if(currentSegmentIndex > nativeLastCheckedSegmentIndex) {
+
+      nativeLastCheckedSegmentIndex = currentSegmentIndex;
+      nativeLastSegmentAdvanceTime = now;
+
+      // Clear any previous issue tracking when segments are flowing.
+      if(nativeHealthIssueType) {
+
+        nativeHealthIssueType = null;
+        nativeHealthIssueTime = null;
+        nativeRecoveryAttempts = 0;
+
+        LOG.debug("native:monitor", "Native stream healthy for %s. Segments advancing (index %s).", storeKey, currentSegmentIndex);
+      }
+    }
+
+    // Calculate staleness: time since the last new segment was produced.
+    const stalenessMs = now - nativeLastSegmentAdvanceTime;
+    const stalenessThreshold = targetDuration * 2 * 1000;
+
+    // Classify health based on segment delivery metrics.
+    let nativeHealth: StreamHealthStatus = "healthy";
+
+    if(consecutiveErrors > 0) {
+
+      nativeHealth = "recovering";
+
+      if(!nativeHealthIssueType) {
+
+        nativeHealthIssueType = "fetch errors";
+        nativeHealthIssueTime = now;
+      }
+
+      LOG.debug("native:monitor", "Native stream recovering for %s. Consecutive errors: %s.", storeKey, consecutiveErrors);
+    } else if((stalenessMs > stalenessThreshold) && (lastSegmentTime > 0)) {
+
+      // Only flag staleness after at least one segment has been produced (lastSegmentTime > 0) and the staleness exceeds the threshold.
+      nativeHealth = "stalled";
+
+      if(!nativeHealthIssueType) {
+
+        nativeHealthIssueType = "segment stall";
+        nativeHealthIssueTime = now;
+      }
+
+      const staleSec = Math.round(stalenessMs / 1000);
+
+      LOG.debug("native:monitor", "Native stream stalled for %s. No new segments in %ss (threshold: %ss).", storeKey, staleSec,
+        Math.round(stalenessThreshold / 1000));
+
+      // L2: At 4× target duration, attempt a page reload for fresh tokens. This recovers from auth expiry where the manifest URL is still valid but segment URLs
+      // are rejected. The proxy continues serving cached segments during the reload.
+      if((stalenessMs > (targetDuration * 4 * 1000)) && (nativeRecoveryAttempts === 0)) {
+
+        LOG.warn("Native stream stalled for %s. No new segments in %ss. Attempting recovery.", storeKey, staleSec);
+
+        nativeRecoveryAttempts++;
+
+        void runWithStreamContext(streamContext, async () => {
+
+          await executeNativeL2Recovery(entry);
+        });
+
+        return;
+      }
+
+      // L3: At 6× target duration (or if L2 was already attempted), fall back to capture mode via tab replacement.
+      if((stalenessMs > (targetDuration * 6 * 1000)) || ((stalenessMs > (targetDuration * 4 * 1000)) && (nativeRecoveryAttempts > 0))) {
+
+        LOG.warn("Falling back to capture mode for %s: native streaming stalled after recovery attempt.", storeKey);
+
+        void runWithStreamContext(streamContext, async () => {
+
+          await executeNativeL3Fallback(entry);
+        });
+
+        return;
+      }
+    }
+
+    emitNativeStatus(entry, nativeHealth);
+  }
+
+  /**
+   * Emits a status update with native-specific health classification. Populates meaningful fields (health, issue tracking, memory, clients) and zeroes video-specific
+   * fields that are not applicable to native streams.
+   *
+   * @param entry - The stream registry entry.
+   * @param health - The health status to report.
+   */
+  function emitNativeStatus(entry: StreamRegistryEntry, health: StreamHealthStatus): void {
+
+    if(intervalCleared) {
+
+      return;
+    }
+
+    const now = Date.now();
+    const memoryBytes = getStreamMemoryUsage(entry).total;
+    const channelKey = entry.info.storeKey;
+    const clientSummary = getClientSummary(streamInfo.numericStreamId);
+
+    const escalation = (health === "stalled") ? 1 : ((health === "recovering") ? 2 : 0);
+
+    const status: StreamStatus = {
+
+      bufferingDuration: null,
+      channel: streamInfo.channelName,
+      clientCount: clientSummary.total,
+      clients: clientSummary.clients,
+      currentTime: 0,
+      duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
+      escalationLevel: escalation,
+      health,
+      id: streamInfo.numericStreamId,
+      lastIssueTime: nativeHealthIssueTime,
+      lastIssueType: nativeHealthIssueType,
+      lastRecoveryTime: null,
+      logoUrl: channelKey ? (getChannelLogo(channelKey) ?? "") : "",
+      memoryBytes,
+      networkState: 0,
+      pageReloadsInWindow: 0,
+      providerName: streamInfo.providerName,
+      readyState: 0,
+      recoveryAttempts: nativeRecoveryAttempts,
+      showName: getShowName(streamInfo.numericStreamId),
+      startTime: streamInfo.startTime.toISOString(),
+      streamingMode: entry.streamingMode,
+      url
+    };
+
+    emitStreamHealthChanged(status);
+  }
+
+  /**
+   * L2 recovery for native streams: reloads the page to get fresh authentication tokens and re-intercepts the manifest. Delegates to the shared refreshNativeManifest
+   * helper in the coordinator module, which handles interceptor installation, navigation, probing, isStopped() guards, and proxy updates.
+   *
+   * @param entry - The stream registry entry.
+   */
+  async function executeNativeL2Recovery(entry: StreamRegistryEntry): Promise<void> {
+
+    const proxy = entry.nativeProxy;
+
+    if(!proxy || proxy.isStopped()) {
+
+      return;
+    }
+
+    recoveryInProgress = true;
+
+    LOG.debug("native:monitor", "Starting L2 recovery (page reload) for %s.", entry.info.storeKey);
+
+    try {
+
+      const success = await refreshNativeManifest({
+
+        channelName: entry.info.storeKey,
+        page: currentPage,
+        proxy,
+        streamIdStr: streamId,
+        url
+      });
+
+      if(success) {
+
+        // Reset staleness tracking so the monitor gives the refreshed stream time to produce segments.
+        nativeLastSegmentAdvanceTime = Date.now();
+      }
+    } finally {
+
+      recoveryInProgress = false;
+    }
+  }
+
+  /**
+   * L3 recovery for native streams: falls back to capture mode via tab replacement. Stops the native proxy, creates a fresh page with capture pipeline, and switches
+   * the stream to capture mode. The existing tab replacement infrastructure handles page creation, capture initialization, segmenter creation, and registry updates.
+   *
+   * If the proxy's onError fires concurrently (from the poll loop hitting its failure threshold), terminateStream runs before this async function gets a chance to
+   * execute. By the time L3 runs, the stream is already terminated and executeTabReplacement returns null, which we handle as a failed outcome.
+   *
+   * @param entry - The stream registry entry.
+   */
+  async function executeNativeL3Fallback(entry: StreamRegistryEntry): Promise<void> {
+
+    if(!onTabReplacement) {
+
+      LOG.warn("Capture fallback not available for %s: no tab replacement handler.", entry.info.storeKey);
+      onCircuitBreak();
+
+      return;
+    }
+
+    LOG.debug("native:monitor", "Starting L3 fallback (capture mode) for %s.", entry.info.storeKey);
+
+    // Stop the native proxy before tab replacement closes the page. The proxy may still be polling and would encounter errors when the page navigates away.
+    if(entry.nativeProxy) {
+
+      entry.nativeProxy.stop();
+      entry.nativeProxy = null;
+    }
+
+    // Use the existing tab replacement infrastructure. It sets recoveryInProgress = true internally and clears it in finalizeTabReplacement. It creates a new page
+    // with capture, navigates, sets up playback, creates a segmenter, and updates the registry entry (page, rawCaptureStream, ffmpegProcess, segmenter).
+    const outcome = await executeTabReplacement("native fallback to capture");
+
+    if(outcome.outcome === "success") {
+
+      // Tab replacement succeeded. Update the registry to reflect capture mode. The tab replacement handler already set page, rawCaptureStream, ffmpegProcess,
+      // and segmenter on the registry entry. We just need to update the streaming mode and clear audio state.
+      entry.streamingMode = "capture";
+
+      // Clear separate audio state from the native proxy. Without this, hasAudio remains true and the HLS handler continues serving the master playlist (referencing
+      // video.m3u8 and audio.m3u8) instead of the capture segmenter's variant playlist. Clients that cached the master playlist structure would request stale audio
+      // and video variant playlists pointing to segments that are no longer being updated.
+      entry.hls.hasAudio = false;
+      entry.hls.audioPlaylist = "";
+      entry.hls.audioSegments.clear();
+      entry.hls.videoPlaylist = "";
+
+      // Clear the probe cache so subsequent tunes to this channel don't re-attempt native streaming.
+      clearProbeCache(entry.info.storeKey);
+
+      LOG.info("Switched to capture mode for %s: native streaming failed.", entry.info.storeKey);
+
+      // The monitor's next tick will see streamingMode === "capture" and run the normal video element monitoring path. The state reset from
+      // applyTabReplacementSuccess (called by executeTabReplacement) already initialized all capture-mode monitor variables.
+    } else if(outcome.outcome === "terminated") {
+
+      // Circuit breaker tripped during tab replacement. Stream is being terminated.
+      LOG.warn("Capture fallback failed for %s: circuit breaker tripped.", entry.info.storeKey);
+    } else {
+
+      // Tab replacement failed but stream wasn't terminated. The circuit breaker will handle it on the next failure.
+      LOG.warn("Capture fallback failed for %s: tab replacement unsuccessful.", entry.info.storeKey);
+    }
+  }
+
   // Helper to mark a discontinuity in the HLS playlist after recovery events that disrupt the video source. The segmenter flushes its current fragment buffer and sets
   // a pending discontinuity flag so the next segment boundary includes an #EXT-X-DISCONTINUITY tag. This tells HLS clients to flush their decoder state.
   const markStreamDiscontinuity = (): void => {
@@ -342,6 +642,7 @@ export function monitorPlaybackHealth(
       recoveryAttempts: totalRecoveryAttempts,
       showName: getShowName(streamInfo.numericStreamId),
       startTime: streamInfo.startTime.toISOString(),
+      streamingMode: entry?.streamingMode ?? "capture",
       url
     };
 
@@ -684,6 +985,17 @@ export function monitorPlaybackHealth(
     if(profile.noVideo) {
 
       emitStatusUpdate();
+
+      return;
+    }
+
+    // For native streaming mode, monitor segment delivery health instead of video element state. We check the registry on each tick rather than caching the mode at
+    // startup because the streaming mode is set after the monitor starts (native streaming is attempted after setupStream returns).
+    const nativeEntry = getStream(streamInfo.numericStreamId);
+
+    if(nativeEntry?.streamingMode === "native") {
+
+      checkNativeStreamHealth(nativeEntry);
 
       return;
     }

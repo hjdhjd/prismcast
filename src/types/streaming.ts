@@ -104,6 +104,12 @@ export interface UrlValidationResult {
  */
 export type UrlValidation = UrlValidationResult;
 
+/**
+ * Streaming mode for an active stream. "capture" uses Chrome screen capture via puppeteer-stream. "native" intercepts the provider's HLS stream and consumes it
+ * directly in Node, bypassing screen capture entirely.
+ */
+export type StreamingMode = "capture" | "native";
+
 /* The /health endpoint returns detailed status information for monitoring and debugging. This includes browser connection state, memory usage, stream counts, and
  * configuration summary. External monitoring systems can poll this endpoint to detect problems.
  */

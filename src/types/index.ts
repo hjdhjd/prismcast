@@ -10,6 +10,6 @@ export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, Pr
 export type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule,
   TuneResult, UiSize } from "./selection.js";
 export type { ChannelSortField, Nullable, SortDirection } from "./shared.js";
-export type { HealthStatus, StreamInfo, StreamListItem, StreamListResponse, UrlValidation, UrlValidationResult, VideoSelectorType,
+export type { HealthStatus, StreamInfo, StreamListItem, StreamListResponse, StreamingMode, UrlValidation, UrlValidationResult, VideoSelectorType,
   VideoState } from "./streaming.js";
 export { isChannelSelectionProfile } from "./selection.js";

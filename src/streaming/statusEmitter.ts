@@ -3,10 +3,10 @@
  * statusEmitter.ts: Event emitter for real-time stream and system status via SSE.
  */
 import type { HealthEvent, HealthSnapshot } from "../config/health.js";
+import type { Nullable, StreamingMode } from "../types/index.js";
 import { getHealthSnapshot, subscribeToHealth } from "../config/health.js";
 import type { ClientTypeCount } from "./clients.js";
 import { EventEmitter } from "events";
-import type { Nullable } from "../types/index.js";
 
 /* These interfaces define the structure of status updates sent to SSE clients. StreamStatus contains per-stream health information, while SystemStatus contains
  * overall system health.
@@ -43,6 +43,7 @@ export interface StreamStatus {
   recoveryAttempts: number;
   showName: string;
   startTime: string;
+  streamingMode: StreamingMode;
   url: string;
 }
 
@@ -103,6 +104,7 @@ export function createInitialStreamStatus(options: {
   numericStreamId: number;
   providerName: string;
   startTime: Date;
+  streamingMode?: StreamingMode;
   url: string;
 }): StreamStatus {
 
@@ -129,6 +131,7 @@ export function createInitialStreamStatus(options: {
     recoveryAttempts: 0,
     showName: "",
     startTime: options.startTime.toISOString(),
+    streamingMode: options.streamingMode ?? "capture",
     url: options.url
   };
 }

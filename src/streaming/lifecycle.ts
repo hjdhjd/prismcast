@@ -155,6 +155,16 @@ export function terminateStream(streamId: number, channelName: string, reason: s
     destroyCaptureStream(streamInfo.rawCaptureStream);
   }
 
+  // Capture native proxy statistics before stopping. The stats are closure-scoped counters that remain valid after stop(), but reading them before stop() makes the
+  // data flow explicit and avoids relying on implementation details.
+  const nativeProxyStats = streamInfo?.nativeProxy?.getStats();
+
+  // Stop the native proxy if running. This stops the manifest polling loop and cleans up timers.
+  if(streamInfo?.nativeProxy) {
+
+    streamInfo.nativeProxy.stop();
+  }
+
   // Kill the FFmpeg process if using FFmpeg mode. This sets FFmpeg's internal shuttingDown flag, so when the segmenter stops (which closes the capture stream and
   // FFmpeg's stdin), FFmpeg won't report spurious errors about truncated input. The order matters: kill() must be called before segmenter.stop() to set the flag
   // before stdin closes.
@@ -246,6 +256,13 @@ export function terminateStream(streamId: number, channelName: string, reason: s
   } else {
 
     streamLog.info("Stream ended after %s%s.", formatDuration(durationMs), reasonSuffix);
+  }
+
+  // Log native proxy statistics at debug level when in native mode. This provides segment delivery and token refresh metrics.
+  if(nativeProxyStats) {
+
+    streamLog.debug("native:proxy", "Native proxy stopped for %s. Segments served: %s, fetch errors: %s, token refreshes: %s.",
+      channelName, nativeProxyStats.segmentsFetched, nativeProxyStats.fetchErrors, nativeProxyStats.tokenRefreshes);
   }
 
   // Log session-level segmenter statistics at debug level. This provides A-V sync, tab replacement, and data integrity metrics for diagnosing timestamp issues.
