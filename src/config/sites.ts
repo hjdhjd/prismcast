@@ -379,7 +379,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "disneyplus.com": { profile: "disneyPlus", provider: "Disney+", providerTag: "disneyplus" },
   "espn.com": { profile: "keyboardMultiVideo", provider: "ESPN.com" },
   "foodnetwork.com": { profile: "fullscreenApi", provider: "Food Network" },
-  "fox.com": { loginUrl: "https://www.fox.com", profile: "foxLive", provider: "Fox", providerTag: "foxcom" },
+  "fox.com": { loginUrl: "https://www.fox.com", profile: "foxLive", provider: "Fox One", providerTag: "foxcom" },
   "foxbusiness.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox Business" },
   "foxnews.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox News" },
   "foxsports.com": { profile: "fullscreenApi", provider: "Fox Sports" },
