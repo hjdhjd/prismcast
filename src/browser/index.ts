@@ -3,7 +3,7 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { LOG, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
+import { LOG, cancellableTimeout, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
 import { getAllStreams, getStreamCount } from "../streaming/registry.js";
 import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.js";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
@@ -416,7 +416,8 @@ function syncSleep(ms: number): void {
  * runs. When a PID file does exist but the process is gone (Docker restart with a mounted volume — the PID belongs to the previous container's PID namespace),
  * process.kill() throws ESRCH, which is caught gracefully.
  *
- * This is called at startup before launching the browser and after closeBrowser() during shutdown. It's safe to call even when no stale processes or files exist.
+ * This is called at startup before launching the browser and from the process exit handler as a crash recovery fallback. It's safe to call even when no stale
+ * processes or files exist.
  */
 export function killStaleChrome(): void {
 
@@ -1151,9 +1152,15 @@ export async function getBrowserPages(): Promise<Page[]> {
  * Closes the browser and cleans up resources. This is called during graceful shutdown to ensure Chrome exits cleanly. After this call, the browser reference is
  * cleared and any subsequent stream requests will launch a fresh browser.
  *
- * The function uses a two-stage approach to ensure Chrome actually exits:
- * 1. Try browser.close() with a 5-second timeout (DevTools Protocol graceful close)
- * 2. Run killStaleChrome() to catch anything Stage 1 missed, using SIGTERM→SIGKILL escalation to give Chrome a chance to flush its profile databases
+ * Chrome termination uses Puppeteer's ChildProcess handle and its `exit` event for detection:
+ *
+ * - browserRef.close() sends CDP Browser.close and waits for WebSocket teardown, which hangs 3-5 seconds even after Chrome exits.
+ * - browserRef.disconnect() drops the WebSocket instantly but orphans Chrome as a Node child process, creating a zombie that process.kill(pid, 0) cannot detect.
+ * - Synchronous polling (Atomics.wait) blocks the event loop, preventing Node from processing SIGCHLD to reap the child — Chrome becomes a zombie regardless
+ *   of how SIGTERM was sent.
+ *
+ * Instead, we send SIGTERM through the ChildProcess handle and listen for the `exit` event. This keeps the event loop running so Node can process SIGCHLD and
+ * reap Chrome properly. The exit event fires only after the process is fully reaped — no zombies, no polling, no event loop blocking.
  */
 export async function closeBrowser(): Promise<void> {
 
@@ -1173,36 +1180,59 @@ export async function closeBrowser(): Promise<void> {
     return;
   }
 
-  // Stage 1: Try graceful close with a timeout. We use Promise.race to avoid hanging indefinitely if Chrome is unresponsive.
-  if(browserRef.connected) {
+  // Send SIGTERM through Puppeteer's ChildProcess handle and wait for the `exit` event. The ChildProcess handle is only available when Puppeteer launched
+  // Chrome (not when connecting to an existing browser), but PrismCast always launches Chrome directly.
+  const chromeProcess = browserRef.process();
 
-    try {
+  if(chromeProcess?.pid && !chromeProcess.killed) {
 
-      await Promise.race([
-        browserRef.close(),
-        new Promise((_, reject) => setTimeout(() => { reject(new Error("Browser close timed out")); }, 5000))
-      ]);
+    const TERM_WAIT_MS = 5000;
+    const KILL_WAIT_MS = 2000;
 
-      // Chrome closed successfully. Clear the PID so that Stage 2 and the process exit handler's killStaleChrome() skip the signal/poll loop entirely. The PID
-      // file is the safety net for crashes — on the graceful path we remove it here to avoid a redundant 1-2 second wait while Chrome flushes its databases.
-      clearChromePid();
-    } catch(error) {
+    // Listen for the exit event before sending the signal. The event fires after the OS reaps the process, so there is no zombie window. Resolves to true so
+    // Promise.race can distinguish exit from timeout.
+    const exitPromise = new Promise<true>((resolve) => {
 
-      const message = formatError(error);
+      chromeProcess.on("exit", () => { resolve(true); });
+    });
 
-      if(message.includes("timed out")) {
+    chromeProcess.kill("SIGTERM");
 
-        LOG.warn("Browser did not close within 5 seconds. Forcing termination.");
-      } else {
+    LOG.debug("browser", "Sent SIGTERM to Chrome process %d.", chromeProcess.pid);
 
-        LOG.debug("browser", "Browser close error: %s.", message);
-      }
+    // Wait for Chrome to exit after SIGTERM, with a timeout. If Chrome doesn't exit in time, escalate to SIGKILL.
+    const termTimeout = cancellableTimeout(TERM_WAIT_MS);
+
+    const exitedAfterTerm = await Promise.race([ exitPromise, termTimeout.promise ]);
+
+    termTimeout.cancel();
+
+    if(!exitedAfterTerm) {
+
+      // SIGTERM didn't work within the timeout. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not
+      // respond to SIGTERM.
+      LOG.debug("browser", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
+
+      chromeProcess.kill("SIGKILL");
+
+      const killTimeout = cancellableTimeout(KILL_WAIT_MS);
+
+      await Promise.race([ exitPromise, killTimeout.promise ]);
+
+      killTimeout.cancel();
     }
   }
 
-  // Stage 2: Catch anything Stage 1 missed. If Chrome didn't respond to the DevTools close command (broken WebSocket, hung process), killStaleChrome()
-  // sends SIGTERM first to give Chrome a chance to flush its profile databases, then escalates to SIGKILL if needed.
-  killStaleChrome();
+  // Disconnect the Puppeteer WebSocket after Chrome has exited. This cleans up Puppeteer's internal state (event listeners, pending CDP calls) without
+  // waiting for the WebSocket close handshake to complete on a dead connection.
+  if(browserRef.connected) {
+
+    void browserRef.disconnect();
+  }
+
+  // Clear the PID file and remove stale Chrome profile lock files.
+  clearChromePid();
+  cleanStaleProfileFiles(getChromeDataDir(CONFIG));
 }
 
 /* These functions manage the login mode workflow, allowing users to authenticate with TV providers through the browser. The workflow is:
@@ -1649,7 +1679,7 @@ async function executeBrowserRestart(): Promise<void> {
 
   try {
 
-    // closeBrowser() sets gracefulShutdownInProgress = true internally and performs multi-stage graceful close.
+    // closeBrowser() sets gracefulShutdownInProgress = true internally and performs SIGTERM-based Chrome termination.
     await closeBrowser();
 
     // Reset the flag since the server is NOT shutting down — only the browser is restarting.
