@@ -222,6 +222,9 @@ export interface ResolvedSiteProfile {
   // Whether to use the JavaScript Fullscreen API.
   useRequestFullscreen: boolean;
 
+  // Per-domain video timeout in milliseconds, or null to use the global CONFIG.streaming.videoTimeout.
+  videoTimeout: Nullable<number>;
+
   // Whether to wait for network idle during navigation.
   waitForNetworkIdle: boolean;
 }
@@ -274,6 +277,10 @@ export interface DomainConfig {
   // service for filtering purposes. Domains that share a tag (e.g., "watch.sling.com" and a hypothetical "sling.com" variant) are treated as the same provider.
   // Omit for network-owned sites (abc.com, nbc.com, espn.com, etc.) — they are implicitly tagged "direct".
   providerTag?: string;
+
+  // Maximum time in milliseconds to wait for the video element to reach a playable state. When set, overrides the global videoTimeout setting for all channels on
+  // this domain. Useful for sites with pre-roll ads or slow player initialization that need more time than the default. Omit to use the global default.
+  videoTimeout?: number;
 }
 
 /**

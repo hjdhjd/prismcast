@@ -510,6 +510,16 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
     }
   }
 
+  // videoTimeout must be a positive integer if specified.
+  if(config.videoTimeout !== undefined) {
+
+    if((typeof config.videoTimeout !== "number") || !Number.isFinite(config.videoTimeout) || !Number.isInteger(config.videoTimeout) ||
+      (config.videoTimeout <= 0)) {
+
+      errors.push("Domain '" + domain + "': videoTimeout must be a positive integer.");
+    }
+  }
+
   return errors;
 }
 

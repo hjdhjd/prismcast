@@ -86,6 +86,30 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
 }
 
 /**
+ * Merges domain-level properties from a DomainConfig into a resolved site profile. Domain-level properties represent site-specific behaviors or policies that
+ * apply to all channels on a domain regardless of which player profile they use. When a property is present in the domain config, it overrides the corresponding
+ * value in the profile.
+ * @param profile - The resolved site profile to merge into.
+ * @param config - The domain configuration to merge from, or undefined if no domain match was found.
+ * @returns A new profile with domain-level properties applied.
+ */
+function mergeDomainProperties(profile: ResolvedSiteProfile, config: DomainConfig | undefined): ResolvedSiteProfile {
+
+  if(!config) {
+
+    return profile;
+  }
+
+  return {
+
+    ...profile,
+    ...(config.dismissSelector !== undefined ? { dismissSelector: config.dismissSelector } : {}),
+    ...(config.maxContinuousPlayback !== undefined ? { maxContinuousPlayback: config.maxContinuousPlayback } : {}),
+    ...(config.videoTimeout !== undefined ? { videoTimeout: config.videoTimeout } : {})
+  };
+}
+
+/**
  * Resolves the site profile for a given URL by looking it up in DOMAIN_CONFIG via getDomainConfig(), which tries the full hostname first for subdomain-specific
  * overrides before falling back to the concise domain. Falls back to the default profile if no matching domain is found or the matching domain has no profile
  * configured.
@@ -108,19 +132,8 @@ export function getProfileForUrl(url: string | undefined): ProfileResolutionResu
   const profileName = config?.profile ?? "default";
 
   // Merge domain-level properties that live in DOMAIN_CONFIG rather than site profiles. These represent site-specific behaviors or policies that apply to all
-  // channels on a domain regardless of which profile they use. Note: getProfileForChannel() performs this same merge for the explicit-profile path where this
-  // function is bypassed. If adding new domain-level properties here, update getProfileForChannel() as well.
-  if(config?.dismissSelector !== undefined) {
-
-    profile.dismissSelector = config.dismissSelector;
-  }
-
-  if(config?.maxContinuousPlayback !== undefined) {
-
-    profile.maxContinuousPlayback = config.maxContinuousPlayback;
-  }
-
-  return { profile, profileName };
+  // channels on a domain regardless of which profile they use.
+  return { profile: mergeDomainProperties(profile, config), profileName };
 }
 
 /**
@@ -189,17 +202,7 @@ export function getProfileForChannel(channel: {
   // these — the re-application here is idempotent. For the explicit-profile path, this fills the gap.
   if(channel.url) {
 
-    const domainConfig = getDomainConfig(channel.url);
-
-    if(domainConfig?.dismissSelector !== undefined) {
-
-      profile = { ...profile, dismissSelector: domainConfig.dismissSelector };
-    }
-
-    if(domainConfig?.maxContinuousPlayback !== undefined) {
-
-      profile = { ...profile, maxContinuousPlayback: domainConfig.maxContinuousPlayback };
-    }
+    profile = mergeDomainProperties(profile, getDomainConfig(channel.url));
   }
 
   // Merge channel-specific properties into the profile. Channel-level values override domain-level and profile-level values, allowing individual channels to

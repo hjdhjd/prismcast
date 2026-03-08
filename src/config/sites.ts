@@ -524,6 +524,9 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
   // Don't use requestFullscreen() API.
   useRequestFullscreen: false,
 
+  // No per-domain video timeout override - use the global default.
+  videoTimeout: null,
+
   // Don't wait for network idle - assume player is ready on page load.
   waitForNetworkIdle: false
 };

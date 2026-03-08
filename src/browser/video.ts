@@ -535,37 +535,89 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
  */
 export async function waitForVideoReady(context: Frame | Page, profile: ResolvedSiteProfile): Promise<void> {
 
+  // Use the per-domain video timeout if configured, otherwise fall back to the global default.
+  const timeout = profile.videoTimeout ?? CONFIG.streaming.videoTimeout;
+
   // First, wait for any video element to appear in the DOM. This catches cases where the video element is created dynamically by JavaScript.
-  await context.waitForSelector("video", { timeout: CONFIG.streaming.videoTimeout });
+  await context.waitForSelector("video", { timeout });
 
-  if(profile.selectReadyVideo) {
+  // Scroll the video into view to satisfy Chrome's Intersection Observer autoplay policy. Chrome suppresses autoplay for offscreen videos, preventing them from
+  // buffering and reaching readyState >= 3. Scrolling the video into the viewport unblocks autoplay. This is a no-op when the video is already visible.
+  const postScrollState = await context.evaluate((): string => {
 
-    // For sites with multiple video elements, wait for at least one to reach readyState >= 3. This typically identifies the main content video rather than
-    // preloaded ad videos or preview thumbnails.
-    await context.waitForFunction(
-      (): boolean => {
+    const video = document.querySelector("video");
 
-        const videos = document.querySelectorAll("video");
+    if(!video) {
 
-        return Array.from(videos).some((v) => {
+      return "no video element";
+    }
 
-          return v.readyState >= 3;
-        });
-      },
-      { timeout: CONFIG.streaming.videoTimeout }
-    );
-  } else {
+    video.scrollIntoView({ behavior: "instant", block: "center" });
 
-    // For standard sites with a single video, wait for that specific video to reach readyState >= 3.
-    await context.waitForFunction(
-      (): boolean => {
+    const src = video.src ? (video.src.slice(0, 60) + (video.src.length > 60 ? "..." : "")) : (video.currentSrc ? "currentSrc" : "none");
 
-        const video = document.querySelector("video");
+    return "readyState=" + String(video.readyState) + ", paused=" + String(video.paused) + ", muted=" + String(video.muted) +
+      ", " + String(video.videoWidth) + "x" + String(video.videoHeight) + ", src=" + src;
+  });
 
-        return !!video && (video.readyState >= 3);
-      },
-      { timeout: CONFIG.streaming.videoTimeout }
-    );
+  LOG.debug("browser:video", "Video state after scroll: %s.", postScrollState);
+
+  try {
+
+    if(profile.selectReadyVideo) {
+
+      // For sites with multiple video elements, wait for at least one to reach readyState >= 3. This typically identifies the main content video rather than
+      // preloaded ad videos or preview thumbnails.
+      await context.waitForFunction(
+        (): boolean => {
+
+          const videos = document.querySelectorAll("video");
+
+          return Array.from(videos).some((v) => {
+
+            return v.readyState >= 3;
+          });
+        },
+        { timeout }
+      );
+    } else {
+
+      // For standard sites with a single video, wait for that specific video to reach readyState >= 3.
+      await context.waitForFunction(
+        (): boolean => {
+
+          const video = document.querySelector("video");
+
+          return !!video && (video.readyState >= 3);
+        },
+        { timeout }
+      );
+    }
+  } catch(error) {
+
+    // Capture the video element's state at the moment of timeout to aid diagnosis.
+    const timeoutState = await context.evaluate((): string => {
+
+      const videos = document.querySelectorAll("video");
+
+      if(videos.length === 0) {
+
+        return "no video elements in DOM";
+      }
+
+      return Array.from(videos).map((v, i) => {
+
+        const src = v.src ? (v.src.slice(0, 60) + (v.src.length > 60 ? "..." : "")) : (v.currentSrc ? "currentSrc" : "none");
+
+        return "[" + String(i) + "] readyState=" + String(v.readyState) + ", paused=" + String(v.paused) + ", muted=" + String(v.muted) +
+          ", " + String(v.videoWidth) + "x" + String(v.videoHeight) + ", src=" + src;
+      }).join("; ");
+    }).catch((): string => "unable to query video state");
+
+    LOG.warn("Video did not reach a playable state within %sms.", timeout);
+    LOG.debug("browser:video", "Video state at timeout: %s.", timeoutState);
+
+    throw error;
   }
 }
 
