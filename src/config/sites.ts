@@ -82,12 +82,14 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
   // Profile for sites using the Brightcove player platform. Brightcove players require waiting for network activity to settle before the video player is fully
   // initialized. The player dynamically loads its configuration and stream manifest, so waitForNetworkIdle ensures we don't try to interact with the player before
-  // it's ready. Uses the JavaScript fullscreen API rather than keyboard shortcuts because Brightcove intercepts keyboard events.
+  // it's ready. Uses the JavaScript fullscreen API rather than keyboard shortcuts because Brightcove intercepts keyboard events. Uses selectReadyVideo because
+  // pages may have multiple video elements (pre-roll ads alongside the main player), and the ad video reaches readyState >= 3 before the main player.
   brightcove: {
 
     category: "api",
     description: "Brightcove player sites requiring network idle wait and API fullscreen.",
     extends: "fullscreenApi",
+    selectReadyVideo: true,
     summary: "Brightcove players (network wait)",
     waitForNetworkIdle: true
   },
@@ -371,7 +373,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "abc.com": { profile: "keyboardMultiVideo", provider: "ABC.com" },
   "aetv.com": { profile: "fullscreenApi", provider: "A&E" },
   "bet.com": { profile: "fullscreenApi", provider: "BET.com" },
-  "c-span.org": { profile: "brightcove", provider: "C-SPAN.org" },
+  "c-span.org": { dismissSelector: ".videoAdUiSkipButtonExperimentalText", profile: "brightcove", provider: "C-SPAN.org" },
   "cbs.com": { dismissSelector: "#mvpd__getstarted", profile: "keyboardIframe", provider: "CBS.com" },
   "cnbc.com": { profile: "fullscreenApi", provider: "CNBC.com" },
   "cnn.com": { profile: "fullscreenApi", provider: "CNN.com" },
