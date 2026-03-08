@@ -117,6 +117,10 @@ export interface StreamRegistryEntry {
   // The browser page for this stream.
   page: Page;
 
+  // Whether this stream was started by the pretune module ahead of a scheduled recording. Pretuned streams are exempt from idle timeout until a real client
+  // connects, at which point this flag is cleared and the stream follows normal idle timeout behavior.
+  preTuned: boolean;
+
   // The resolved site profile used for this stream. Needed for tab replacement recovery to recreate the capture with the same profile.
   profile: ResolvedSiteProfile;
 

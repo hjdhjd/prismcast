@@ -582,6 +582,17 @@ async function sendPlaylistResponse(streamId: number, clientAddress: string, res
 
   updateLastAccess(streamId);
   registerClient(streamId, clientAddress, "hls");
+
+  // Clear the pretuned flag on first real client connection. After this, the stream follows normal idle timeout behavior.
+  const stream = getStream(streamId);
+
+  if(stream?.preTuned) {
+
+    stream.preTuned = false;
+
+    LOG.debug("streaming:pretune", "Cleared pretune flag for stream %d on first client connection from %s.", streamId, clientAddress);
+  }
+
   sendPlaylist(playlist, res);
 }
 
@@ -838,6 +849,9 @@ interface InitializeStreamOptions {
   // Whether to click an element to start playback. When true without clickSelector, clicks the video element.
   clickToPlay?: boolean;
 
+  // Whether this stream is being pretuned ahead of a scheduled recording. Pretuned streams are exempt from idle timeout until a real client connects.
+  preTuned?: boolean;
+
   // When true, the requesting client is an MPEG-TS consumer (e.g., Plex via HDHomeRun). Channels with separate audio renditions (e.g., Google DAI on BET/VH1)
   // cannot be natively streamed to MPEG-TS clients because the independent video and audio MPEG-TS segments have incompatible PAT/PMT tables from ad splicing.
   // These channels fall back to capture mode for MPEG-TS clients but use native streaming for HLS clients (Channels DVR).
@@ -864,7 +878,7 @@ interface InitializeStreamOptions {
  */
 export async function initializeStream(options: InitializeStreamOptions): Promise<Nullable<number>> {
 
-  const { channel, channelName, channelSelector, clickSelector, clickToPlay, clientAddress, mpegTsClient, profileOverride, url } = options;
+  const { channel, channelName, channelSelector, clickSelector, clickToPlay, clientAddress, mpegTsClient, preTuned, profileOverride, url } = options;
 
   // Set a -1 sentinel to prevent duplicate stream starts while we're setting up.
   const startupSentinel = -1;
@@ -957,6 +971,7 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
         mpegTsClientCount: 0,
         nativeProxy: null,
         page: setup.page,
+        preTuned: preTuned ?? false,
         profile: setup.profile,
         rawCaptureStream: setup.rawCaptureStream,
         segmenter: null,
@@ -1204,6 +1219,13 @@ export function cleanupIdleStreams(): void {
 
   for(const stream of streams) {
 
+    // Skip pretuned streams. These have no clients by design and must not be terminated by the idle timer. The pretune module manages their lifecycle via a
+    // safety timeout.
+    if(stream.preTuned) {
+
+      continue;
+    }
+
     // Skip streams with active MPEG-TS clients. These streams are still being consumed even if no HLS playlist requests have been made recently.
     if(stream.mpegTsClientCount > 0) {
 
@@ -1239,6 +1261,12 @@ function reclaimIdleStream(): boolean {
   let oldest: Nullable<StreamRegistryEntry> = null;
 
   for(const stream of streams) {
+
+    // Skip pretuned streams — they should not be reclaimed for new stream capacity.
+    if(stream.preTuned) {
+
+      continue;
+    }
 
     // Skip streams with active MPEG-TS clients.
     if(stream.mpegTsClientCount > 0) {

@@ -3,6 +3,7 @@
  * showInfo.ts: Channels DVR API integration for show name lookup.
  */
 import { LOG, formatError } from "../utils/index.js";
+import { loadUserConfig, saveUserConfig } from "../config/userConfig.js";
 import type { Nullable } from "../types/index.js";
 import { getAllChannels } from "../config/userChannels.js";
 import { getAllStreams } from "./registry.js";
@@ -165,6 +166,31 @@ let pendingTrigger: Nullable<ReturnType<typeof setTimeout>> = null;
 // Public API.
 
 /**
+ * Returns the last known Channels DVR host address. Used by the pretune module to poll for upcoming scheduled recordings.
+ * @returns The DVR host address, or null if no DVR host has been discovered.
+ */
+export function getDvrHost(): Nullable<string> {
+
+  return lastKnownDvrHost;
+}
+
+/**
+ * Sets the DVR host address and persists it to the config file if it changed. Called by the discovery loop when a matching M3U device is found on a host.
+ * @param host - The DVR server hostname or IP address.
+ */
+export function setDvrHost(host: string): void {
+
+  if(lastKnownDvrHost === host) {
+
+    return;
+  }
+
+  lastKnownDvrHost = host;
+
+  void persistDvrHost(host);
+}
+
+/**
  * Starts the show info polling interval. Should be called on server startup.
  */
 export function startShowInfoPolling(): void {
@@ -173,6 +199,9 @@ export function startShowInfoPolling(): void {
 
     return;
   }
+
+  // Load the persisted DVR host from the config file so the pretune module can begin polling immediately on startup.
+  void loadPersistedDvrHost();
 
   // Run immediately on startup, then every 30 seconds.
   void updateShowNames();
@@ -299,7 +328,7 @@ async function updateShowNames(): Promise<void> {
 
       if(mappings.size > 0) {
 
-        lastKnownDvrHost = host;
+        setDvrHost(host);
       }
     })
   );
@@ -402,7 +431,7 @@ async function updateShowNamesForHost(host: string, hostStreams: { channelKey: s
  * @param host - The DVR server hostname or IP address.
  * @returns Map of DeviceID → (Map of GuideNumber → channel ID).
  */
-async function getDeviceMappings(host: string): Promise<Map<string, Map<string, string>>> {
+export async function getDeviceMappings(host: string): Promise<Map<string, Map<string, string>>> {
 
   const cached = deviceMappingsByHost.get(host);
   const now = Date.now();
@@ -545,7 +574,7 @@ async function getGuideShowNames(host: string): Promise<Map<string, string>> {
  * @param path - The API path (e.g., "/devices" or "/dvr/jobs").
  * @returns Array of results, empty array on any error.
  */
-async function fetchFromDvr<T>(host: string, path: string): Promise<T[]> {
+export async function fetchFromDvr<T>(host: string, path: string): Promise<T[]> {
 
   const url = "http://" + host + ":" + String(CHANNELS_DVR_PORT) + path;
 
@@ -580,6 +609,49 @@ async function fetchFromDvr<T>(host: string, path: string): Promise<T[]> {
     }
 
     return [];
+  }
+}
+
+/**
+ * Loads the persisted DVR host from the config file. Called on startup so the pretune module can begin polling immediately.
+ */
+async function loadPersistedDvrHost(): Promise<void> {
+
+  try {
+
+    const result = await loadUserConfig();
+
+    if(!result.parseError && result.config.dvrHost) {
+
+      lastKnownDvrHost = result.config.dvrHost;
+
+      LOG.debug("streaming:showinfo", "Loaded persisted DVR host: %s.", lastKnownDvrHost);
+    }
+  } catch {
+
+    // Ignore errors — the host will be discovered from the first stream's client address.
+  }
+}
+
+/**
+ * Persists the DVR host to the config file so it survives restarts.
+ * @param host - The DVR server hostname or IP address.
+ */
+async function persistDvrHost(host: string): Promise<void> {
+
+  try {
+
+    const result = await loadUserConfig();
+
+    if(!result.parseError) {
+
+      result.config.dvrHost = host;
+
+      await saveUserConfig(result.config);
+    }
+  } catch(error) {
+
+    LOG.debug("streaming:showinfo", "Failed to persist DVR host: %s.", formatError(error));
   }
 }
 

@@ -11,6 +11,7 @@ import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, 
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { loadResumeState, saveResumeState } from "./streaming/hlsResume.js";
 import { startHdhrServer, stopHdhrServer } from "./hdhr/index.js";
+import { startPretunePolling, stopPretunePolling } from "./streaming/pretune.js";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
 import type { CliOverrides } from "./config/index.js";
 import type { Nullable } from "./types/index.js";
@@ -106,6 +107,7 @@ function setupGracefulShutdown(): void {
     stopBrowserRestartChecking();
     stopStalePageCleanup();
     stopIdleCleanup();
+    stopPretunePolling();
     stopShowInfoPolling();
     stopUpdateChecking();
 
@@ -495,6 +497,9 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Start show info polling for Channels DVR integration.
   startShowInfoPolling();
+
+  // Start pretune polling for predictive channel pretuning from Channels DVR schedule.
+  startPretunePolling();
 
   // Start checking for updates.
   startUpdateChecking(getPackageVersion());

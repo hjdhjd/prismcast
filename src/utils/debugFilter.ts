@@ -195,6 +195,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "streaming:ffmpeg", description: "FFmpeg stderr output, pipe errors." },
   { category: "streaming:hls", description: "HLS segment storage, page close errors." },
   { category: "streaming:mpegts", description: "MPEG-TS client connections, FFmpeg remuxer spawn and errors." },
+  { category: "streaming:pretune", description: "Predictive channel pretuning: DVR job polling, timer scheduling, tune triggers." },
   { category: "streaming:segmenter", description: "fMP4 parsing: keyframes, init segments, duration clamping." },
   { category: "streaming:setup", description: "Stream setup: redirect resolution, profile override, capture init." },
   { category: "streaming:showinfo", description: "Channels DVR show name lookups, device mapping." },

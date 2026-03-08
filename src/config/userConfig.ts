@@ -737,6 +737,11 @@ export interface UserConfig {
 
   browser?: UserBrowserConfig;
   channels?: UserChannelsConfig;
+
+  // Auto-discovered Channels DVR host address. Persisted so the pretune module can begin polling immediately on startup without waiting for the first stream to
+  // trigger host discovery. Updated automatically when showInfo.ts discovers or rediscovers the DVR host from client addresses.
+  dvrHost?: string;
+
   hdhr?: UserHdhrConfig;
   hls?: UserHLSConfig;
   logging?: UserLoggingConfig;
@@ -1539,6 +1544,12 @@ export function filterDefaults(config: UserConfig): UserConfig {
   if((typeof configDebugFilter === "string") && (configDebugFilter.length > 0)) {
 
     setNestedValue(filtered, "logging.debugFilter", configDebugFilter);
+  }
+
+  // Preserve the auto-discovered DVR host across settings saves.
+  if((typeof config.dvrHost === "string") && (config.dvrHost.length > 0)) {
+
+    filtered.dvrHost = config.dvrHost;
   }
 
   // Remove any empty nested objects that resulted from filtering.
