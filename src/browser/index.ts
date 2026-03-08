@@ -3,7 +3,7 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { LOG, cancellableTimeout, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
+import { LOG, cancellableTimeout, clearPidFile, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer, writePidFile } from "../utils/index.js";
 import { getAllStreams, getStreamCount } from "../streaming/registry.js";
 import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.js";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
@@ -42,6 +42,11 @@ let currentBrowser: Nullable<Browser> = null;
 // The PID of the Chrome process launched by Puppeteer. Tracked in memory for fast access and persisted to a PID file on disk so that orphaned Chrome processes
 // can be cleaned up after a crash or container restart without relying on Unix-only tools like pkill/pgrep.
 let chromePid: Nullable<number> = null;
+
+// Tracks whether this process has taken ownership of Chrome cleanup by running killStaleChrome() during startup. The exit handler checks this flag to avoid
+// killing Chrome that belongs to another running PrismCast instance — e.g., when a duplicate instance is rejected by the instance guard and exits before
+// killStaleChrome() runs in the startup sequence.
+let ownsChromeCleanup = false;
 
 // The Chrome version string (e.g., "Chrome/144.0.7559.110") captured when the browser launches. Cleared when the browser disconnects. Used by the
 // health endpoint to report the active Chrome version.
@@ -309,13 +314,7 @@ function saveChromePid(pid: number): void {
 
   chromePid = pid;
 
-  try {
-
-    fs.writeFileSync(getChromePidFilePath(), String(pid), "utf-8");
-  } catch(error: unknown) {
-
-    LOG.warn("Failed to write Chrome PID file: %s.", formatError(error));
-  }
+  writePidFile(getChromePidFilePath(), pid, "Chrome", LOG);
 }
 
 /**
@@ -325,30 +324,7 @@ function saveChromePid(pid: number): void {
  */
 function loadChromePid(): Nullable<number> {
 
-  if(chromePid !== null) {
-
-    return chromePid;
-  }
-
-  try {
-
-    const content = fs.readFileSync(getChromePidFilePath(), "utf-8").trim();
-    const pid = parseInt(content, 10);
-
-    if(!isNaN(pid)) {
-
-      return pid;
-    }
-  } catch(error: unknown) {
-
-    // ENOENT is expected on first run or after a clean shutdown that already removed the file.
-    if((error as NodeJS.ErrnoException).code !== "ENOENT") {
-
-      LOG.warn("Failed to read Chrome PID file: %s.", formatError(error));
-    }
-  }
-
-  return null;
+  return chromePid ?? readPidFile(getChromePidFilePath(), "Chrome", LOG);
 }
 
 /**
@@ -358,37 +334,7 @@ function clearChromePid(): void {
 
   chromePid = null;
 
-  try {
-
-    fs.unlinkSync(getChromePidFilePath());
-  } catch(error: unknown) {
-
-    if((error as NodeJS.ErrnoException).code !== "ENOENT") {
-
-      LOG.warn("Failed to remove Chrome PID file: %s.", formatError(error));
-    }
-  }
-}
-
-/**
- * Checks whether a process with the given PID is still running. Uses the signal 0 technique: process.kill(pid, 0) throws ESRCH if the process does not exist,
- * returns successfully if it does. EPERM (permission denied) means the process exists but belongs to another user — treated as "still running" since we cannot
- * kill it anyway.
- * @param pid - The process ID to check.
- * @returns True if the process is running, false if it has exited.
- */
-function isProcessRunning(pid: number): boolean {
-
-  try {
-
-    process.kill(pid, 0);
-
-    return true;
-  } catch(error: unknown) {
-
-    // EPERM means the process exists but we lack permission to signal it. Treat as running.
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+  clearPidFile(getChromePidFilePath(), "Chrome", LOG);
 }
 
 /**
@@ -475,6 +421,19 @@ export function killStaleChrome(): void {
 
   // Remove stale lock and port files left behind by an unclean Chrome exit.
   cleanStaleProfileFiles(profileDir);
+
+  // Mark this process as owning Chrome cleanup. The exit handler checks this flag to avoid killing Chrome that belongs to another running instance.
+  ownsChromeCleanup = true;
+}
+
+/**
+ * Returns whether this process has taken ownership of Chrome cleanup by running killStaleChrome() during startup. Used by the exit handler to avoid killing
+ * Chrome that belongs to another running PrismCast instance.
+ * @returns True if killStaleChrome() has run in this process.
+ */
+export function canCleanupChrome(): boolean {
+
+  return ownsChromeCleanup;
 }
 
 /**

@@ -121,6 +121,16 @@ export function getChromePidFilePath(): string {
 }
 
 /**
+ * Returns the path to the server PID file. Used to detect duplicate PrismCast instances — the PID file is written immediately after the instance check passes and
+ * checked at the start of the next launch to prevent two instances from running simultaneously.
+ * @returns The absolute path to prismcast.pid inside the data directory.
+ */
+export function getServerPidFilePath(): string {
+
+  return path.join(getDataDir(), "prismcast.pid");
+}
+
+/**
  * Returns the Chrome user data directory. When config.paths.chromeDataDir is set, that absolute path is used directly. Otherwise, the directory is built from the
  * data directory and the configured profile name.
  * @param config - The application configuration.

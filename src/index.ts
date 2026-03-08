@@ -3,12 +3,12 @@
  * index.ts: Entry point for PrismCast.
  */
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.js";
-import { isGracefulShutdown, killStaleChrome } from "./browser/index.js";
+import { canCleanupChrome, isGracefulShutdown, killStaleChrome } from "./browser/index.js";
+import { clearServerPid, startServer } from "./app.js";
 import { flushLogBufferSync } from "./utils/fileLogger.js";
 import { handleServiceCommand } from "./service/index.js";
 import { initializeDataDir } from "./config/paths.js";
 import path from "node:path";
-import { startServer } from "./app.js";
 
 /* These handlers catch unhandled promise rejections and uncaught exceptions to prevent the process from crashing. For a livestreaming server, process stability is
  * critical - a single unhandled error should not terminate all active streams. The handlers log the error and allow the process to continue. Individual stream
@@ -411,7 +411,14 @@ if(subcommand === "service") {
 
     try {
 
-      killStaleChrome();
+      clearServerPid();
+
+      // Only kill Chrome if this process has taken ownership via killStaleChrome() during startup. Without this guard, a duplicate instance rejected by the
+      // instance check would kill Chrome belonging to the running server on its way out.
+      if(canCleanupChrome()) {
+
+        killStaleChrome();
+      }
     } catch {
 
       // Best-effort process cleanup. If signaling fails for any reason, the process is exiting anyway.

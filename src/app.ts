@@ -4,10 +4,11 @@
  */
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.js";
 import type { Express, NextFunction, Request, Response } from "express";
-import { LOG, createMorganStream, formatError, getCurrentPattern, getPackageVersion, isDebugLogging, resolveFFmpegPath, setConsoleLogging,
-  startUpdateChecking, stopUpdateChecking } from "./utils/index.js";
+import { LOG, clearPidFile, createMorganStream, formatError, getCurrentPattern, getPackageVersion, isDebugLogging, isProcessRunning, readPidFile,
+  resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking, writePidFile } from "./utils/index.js";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.js";
+import { getLogFilePath, getServerPidFilePath } from "./config/paths.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { loadResumeState, saveResumeState } from "./streaming/hlsResume.js";
 import { startHdhrServer, stopHdhrServer } from "./hdhr/index.js";
@@ -23,7 +24,6 @@ import compression from "compression";
 import consoleStamp from "console-stamp";
 import express from "express";
 import { getAllStreams } from "./streaming/registry.js";
-import { getLogFilePath } from "./config/paths.js";
 import { initializeUserChannels } from "./config/userChannels.js";
 import { initializeUserProfiles } from "./config/userProfiles.js";
 import { loadHealthState } from "./config/health.js";
@@ -144,6 +144,9 @@ function setupGracefulShutdown(): void {
 
     // Close the browser.
     await closeBrowser();
+
+    // Remove the server PID file so the next startup does not see a stale PID.
+    clearServerPid();
 
     // Close the HTTP server.
     try {
@@ -345,6 +348,60 @@ async function buildApp(): Promise<Express> {
   return app;
 }
 
+/* PrismCast instance guard. Only one server instance should run at a time — a second instance would launch a competing Chrome process, bind to the same port, and
+ * corrupt shared state. The guard uses a PID file written immediately after the instance check passes, before Chrome launches or the port binds. On the next
+ * startup, we check whether the stored PID is still alive and exit early if so. Stale PID files (from crashes or container restarts) are handled gracefully via
+ * isProcessRunning(), and the exit handler removes the file if startup fails.
+ *
+ * The ownsServerPid flag tracks whether this process has written the PID file. Without it, the exit handler would unconditionally remove the file — including when
+ * a duplicate instance is rejected by the guard. That would delete the legitimately running instance's PID file, allowing a third instance to bypass the check.
+ */
+
+// Tracks whether this process owns the server PID file. Set to true by saveServerPid(), checked by clearServerPid() to avoid removing another instance's file.
+let ownsServerPid = false;
+
+/**
+ * Checks for an already-running PrismCast instance by reading the server PID file and verifying the process is alive. If a live instance is detected, logs an error
+ * and exits. Stale PID files from crashed or terminated instances are silently ignored.
+ */
+function checkForRunningInstance(): void {
+
+  const pid = readPidFile(getServerPidFilePath(), "server", LOG);
+
+  if((pid !== null) && isProcessRunning(pid)) {
+
+    // eslint-disable-next-line no-console
+    console.error("Error: another PrismCast instance is already running (PID " + String(pid) + "). Stop it before starting a new one.");
+
+    process.exit(1);
+  }
+}
+
+/**
+ * Writes the current process PID to the server PID file. Called immediately after the instance check passes to claim the slot before Chrome launches or the port
+ * binds. If startup subsequently fails, the exit handler calls clearServerPid() to remove the stale file.
+ */
+function saveServerPid(): void {
+
+  writePidFile(getServerPidFilePath(), process.pid, "server", LOG);
+  ownsServerPid = true;
+}
+
+/**
+ * Removes the server PID file if this process owns it. Called during graceful shutdown and from the process exit handler as a fallback. The ownership check
+ * prevents a rejected duplicate instance from deleting the running instance's PID file during its exit handler.
+ */
+export function clearServerPid(): void {
+
+  if(!ownsServerPid) {
+
+    return;
+  }
+
+  clearPidFile(getServerPidFilePath(), "server", LOG);
+  ownsServerPid = false;
+}
+
 /* The startServer function initializes and starts the HTTP server. It validates configuration, cleans up stale processes, warms up the browser, and starts the
  * Express application.
  */
@@ -403,6 +460,12 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Ensure the data directory exists before any operations that depend on it.
   await ensureDataDirectory();
+
+  // Check for an already-running instance before launching Chrome or binding the port. This must come after ensureDataDirectory() since the PID file lives there.
+  // We write the PID immediately after the check passes to close the race window — without this, a second instance launched during Chrome startup or port binding
+  // could pass the same check. If startup subsequently fails, the exit handler calls clearServerPid() to remove the stale file.
+  checkForRunningInstance();
+  saveServerPid();
 
   // Initialize file logger if not using console logging. This must happen after config loading (to resolve the log file path) and after ensureDataDirectory()
   // (to create the parent directory). All startup log messages that should appear in the log file must come after this point.
