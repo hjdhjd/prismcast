@@ -90,6 +90,25 @@ export function getProviderTagForChannel(key: string): string {
 }
 
 /**
+ * Returns the auth domain for a channel key. Domain is the natural auth boundary — browser cookies and sessions scope to it. Multi-channel providers work correctly
+ * because all their channels share one domain, and canonical channels work correctly because each has its own domain.
+ * @param key - The channel key.
+ * @returns The extracted domain from the channel's URL, or empty string if the channel or URL cannot be resolved.
+ */
+export function getAuthDomainForChannel(key: string): string {
+
+  const channel = channelsRef[key] ?? PREDEFINED_CHANNELS[key];
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!channel?.url) {
+
+    return "";
+  }
+
+  return extractDomain(channel.url);
+}
+
+/**
  * Returns all provider tags for a channel (canonical tag + all variant suffix tags). Used to determine which providers offer this channel.
  * @param canonicalKey - The canonical channel key.
  * @returns Array of provider tag strings.

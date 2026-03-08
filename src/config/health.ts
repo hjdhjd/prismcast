@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * health.ts: Channel health and provider authentication state persistence for PrismCast.
+ * health.ts: Channel health and domain authentication state persistence for PrismCast.
  */
 import { EventEmitter } from "events";
 import { LOG } from "../utils/index.js";
@@ -12,13 +12,13 @@ const { promises: fsPromises } = fs;
 
 /* This module tracks two kinds of observed state:
  *
- * 1. Channel health — did the last tune attempt for a specific channel succeed or fail? Each channel's health is independent. Switching a channel's provider resets
- *    its health indicator because the stored providerTag no longer matches.
+ * 1. Channel health — did the last tune attempt for a specific channel succeed or fail? Each channel's health is independent. Switching a channel's domain resets its
+ *    health indicator because the stored domain no longer matches.
  *
- * 2. Provider authentication — has the user successfully tuned at least one channel on a given streaming provider? Authentication is proven by success: one successful
- *    tune on any channel from a provider turns the entire provider green. There is no "red" state — providers are either verified (green) or unknown (no entry / TTL
- *    expired). This avoids brittle heuristics for detecting auth failures (domain redirects, login page detection, MVPD picker walls) in favor of a single reliable
- *    signal: did video actually start?
+ * 2. Domain authentication — has the user successfully tuned at least one channel on a given domain? Authentication is proven by success: one successful tune on any
+ *    channel from a domain turns the entire domain green. There is no "red" state — domains are either verified (green) or unknown (no entry / TTL expired). This
+ *    avoids brittle heuristics for detecting auth failures (domain redirects, login page detection, MVPD picker walls) in favor of a single reliable signal: did video
+ *    actually start?
  *
  * State is persisted to health.json in the data directory with a 2-second debounce to avoid excessive writes during rapid tune attempts. Entries older than 7 days
  * are pruned at load time to prevent unbounded growth.
@@ -30,8 +30,8 @@ type HealthStatus = "failed" | "success";
 
 interface ChannelHealthEntry {
 
-  // The provider tag at the time of recording. Used to detect provider switches — if the current provider tag differs, the entry is stale.
-  providerTag: string;
+  // The domain at the time of recording. Used to detect domain changes — if the current domain differs, the entry is stale.
+  domain: string;
 
   // Whether the last tune succeeded or failed.
   status: HealthStatus;
@@ -44,17 +44,17 @@ interface HealthState {
 
   channels: Record<string, ChannelHealthEntry>;
 
-  // Provider auth entries are just timestamps. The presence of a non-expired entry means "verified authenticated."
-  providers: Record<string, number>;
+  // Domain auth entries are just timestamps. The presence of a non-expired entry means "verified authenticated."
+  domains: Record<string, number>;
 }
 
 /**
- * Event payload emitted when channel health or provider auth state changes.
+ * Event payload emitted when channel health or domain auth state changes.
  */
 export interface HealthEvent {
 
   channelKey: string;
-  providerTag: string;
+  domain: string;
   status: HealthStatus;
   timestamp: number;
 }
@@ -64,8 +64,8 @@ export interface HealthEvent {
  */
 export interface HealthSnapshot {
 
-  channels: Record<string, { providerTag: string; status: HealthStatus; timestamp: number }>;
-  providers: Record<string, number>;
+  channels: Record<string, { domain: string; status: HealthStatus; timestamp: number }>;
+  domains: Record<string, number>;
 }
 
 // Health event emitter. Fires on every markChannelSuccess / markChannelFailure call so SSE clients receive real-time indicator updates.
@@ -85,8 +85,8 @@ const FLUSH_DELAY = 2000;
 
 const channelHealth = new Map<string, ChannelHealthEntry>();
 
-// Provider auth is proven by success only. The presence of a non-expired timestamp means the user has successfully tuned at least one channel on the provider.
-const providerAuth = new Map<string, number>();
+// Domain auth is proven by success only. The presence of a non-expired timestamp means the user has successfully tuned at least one channel on the domain.
+const domainAuth = new Map<string, number>();
 
 // Debounce timer for flushHealthState().
 let flushTimer: Nullable<ReturnType<typeof setTimeout>> = null;
@@ -105,7 +105,7 @@ export async function loadHealthState(): Promise<void> {
     const now = Date.now();
 
     channelHealth.clear();
-    providerAuth.clear();
+    domainAuth.clear();
 
     // Load channel health entries, pruning stale ones. Runtime guard needed because the file may contain incomplete JSON.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -120,25 +120,25 @@ export async function loadHealthState(): Promise<void> {
       }
     }
 
-    // Load provider auth entries (timestamps), pruning stale ones. Runtime guard needed because the file may contain incomplete JSON.
+    // Load domain auth entries (timestamps), pruning stale ones. Runtime guard needed because the file may contain incomplete JSON.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if(state.providers) {
+    if(state.domains) {
 
-      for(const [ key, timestamp ] of Object.entries(state.providers)) {
+      for(const [ key, timestamp ] of Object.entries(state.domains)) {
 
         if((now - timestamp) < HEALTH_TTL) {
 
-          providerAuth.set(key, timestamp);
+          domainAuth.set(key, timestamp);
         }
       }
     }
 
     const channelCount = channelHealth.size;
-    const providerCount = providerAuth.size;
+    const domainCount = domainAuth.size;
 
-    if((channelCount > 0) || (providerCount > 0)) {
+    if((channelCount > 0) || (domainCount > 0)) {
 
-      LOG.info("Loaded health state: %d channel(s), %d provider(s).", channelCount, providerCount);
+      LOG.info("Loaded health state: %d channel(s), %d domain(s).", channelCount, domainCount);
     }
   } catch(error) {
 
@@ -169,14 +169,14 @@ function flushHealthState(): void {
     const state: HealthState = {
 
       channels: Object.fromEntries(channelHealth),
-      providers: Object.fromEntries(providerAuth)
+      domains: Object.fromEntries(domainAuth)
     };
 
     // Sort keys for consistent output.
     const sortedState: HealthState = {
 
       channels: Object.fromEntries(Object.entries(state.channels).sort(([a], [b]) => a.localeCompare(b))),
-      providers: Object.fromEntries(Object.entries(state.providers).sort(([a], [b]) => a.localeCompare(b)))
+      domains: Object.fromEntries(Object.entries(state.domains).sort(([a], [b]) => a.localeCompare(b)))
     };
 
     fsPromises.writeFile(getHealthFilePath(), JSON.stringify(sortedState, null, 2) + "\n", "utf-8").catch((error: unknown) => {
@@ -189,67 +189,67 @@ function flushHealthState(): void {
 // Public API.
 
 /**
- * Records a successful tune for a channel. Sets the channel's health to "success" and optionally marks the provider as verified (authenticated). Triggers a
- * debounced flush. The markAuth parameter allows callers to skip provider auth marking when a successful tune does not prove paid access (e.g., Sling Freestream
- * channels succeed without a subscription).
+ * Records a successful tune for a channel. Sets the channel's health to "success" and optionally marks the domain as verified (authenticated). Triggers a debounced
+ * flush. The markAuth parameter allows callers to skip domain auth marking when a successful tune does not prove paid access (e.g., Sling Freestream channels succeed
+ * without a subscription).
  * @param channelKey - The channel key (canonical key, e.g., "nbc").
- * @param providerTag - The provider tag for the currently selected provider variant.
- * @param markAuth - Whether to also mark the provider as authenticated (default: true).
+ * @param domain - The auth domain for the currently selected provider variant.
+ * @param markAuth - Whether to also mark the domain as authenticated (default: true).
  */
-export function markChannelSuccess(channelKey: string, providerTag: string, markAuth = true): void {
+export function markChannelSuccess(channelKey: string, domain: string, markAuth = true): void {
 
   const now = Date.now();
 
-  channelHealth.set(channelKey, { providerTag, status: "success", timestamp: now });
+  channelHealth.set(channelKey, { domain, status: "success", timestamp: now });
 
   if(markAuth) {
 
-    providerAuth.set(providerTag, now);
+    domainAuth.set(domain, now);
   }
 
   flushHealthState();
-  healthEmitter.emit("healthChanged", { channelKey, providerTag, status: "success", timestamp: now } satisfies HealthEvent);
+  healthEmitter.emit("healthChanged", { channelKey, domain, status: "success", timestamp: now } satisfies HealthEvent);
 }
 
 /**
- * Records a provider as authenticated without a specific channel context. Used when a provider action (e.g., precaching) proves the provider is accessible and logged
- * in, even though no channel was tuned. Triggers a debounced flush and emits a health event with an empty channelKey.
- * @param providerTag - The provider tag to mark as authenticated.
+ * Records a domain as authenticated without a specific channel context. Used when a domain action (e.g., precaching) proves the domain is accessible and logged in,
+ * even though no channel was tuned. Triggers a debounced flush and emits a health event with an empty channelKey.
+ * @param domain - The domain to mark as authenticated.
  */
-export function markProviderAuth(providerTag: string): void {
+export function markDomainAuth(domain: string): void {
 
   const now = Date.now();
 
-  providerAuth.set(providerTag, now);
+  domainAuth.set(domain, now);
 
   flushHealthState();
-  healthEmitter.emit("healthChanged", { channelKey: "", providerTag, status: "success", timestamp: now } satisfies HealthEvent);
+  healthEmitter.emit("healthChanged", { channelKey: "", domain, status: "success", timestamp: now } satisfies HealthEvent);
 }
 
 /**
- * Records a failed tune for a channel. Sets the channel's health to "failed". Does not affect provider auth — a single channel failure doesn't prove the provider
- * is unauthenticated. Triggers a debounced flush.
+ * Records a failed tune for a channel. Sets the channel's health to "failed". Does not affect domain auth — a single channel failure doesn't prove the domain is
+ * unauthenticated. Triggers a debounced flush.
  * @param channelKey - The channel key (canonical key, e.g., "nbc").
- * @param providerTag - The provider tag for the currently selected provider variant.
+ * @param domain - The auth domain for the currently selected provider variant.
  */
-export function markChannelFailure(channelKey: string, providerTag: string): void {
+export function markChannelFailure(channelKey: string, domain: string): void {
 
   const now = Date.now();
 
-  channelHealth.set(channelKey, { providerTag, status: "failed", timestamp: now });
+  channelHealth.set(channelKey, { domain, status: "failed", timestamp: now });
 
   flushHealthState();
-  healthEmitter.emit("healthChanged", { channelKey, providerTag, status: "failed", timestamp: now } satisfies HealthEvent);
+  healthEmitter.emit("healthChanged", { channelKey, domain, status: "failed", timestamp: now } satisfies HealthEvent);
 }
 
 /**
- * Returns the health status and timestamp for a channel. Returns null if no entry exists, the entry is stale (older than 7 days), or the stored providerTag doesn't
- * match the current one (provider was switched).
+ * Returns the health status and timestamp for a channel. Returns null if no entry exists, the entry is stale (older than 7 days), or the stored domain doesn't match
+ * the current one (domain changed).
  * @param channelKey - The channel key (canonical key, e.g., "nbc").
- * @param providerTag - The provider tag for the currently selected provider variant.
+ * @param domain - The auth domain for the currently selected provider variant.
  * @returns Object with status and timestamp, or null if unknown.
  */
-export function getChannelHealth(channelKey: string, providerTag: string): Nullable<{ status: HealthStatus; timestamp: number }> {
+export function getChannelHealth(channelKey: string, domain: string): Nullable<{ status: HealthStatus; timestamp: number }> {
 
   const entry = channelHealth.get(channelKey);
 
@@ -264,8 +264,8 @@ export function getChannelHealth(channelKey: string, providerTag: string): Nulla
     return null;
   }
 
-  // Provider was switched — the stored result is for a different provider.
-  if(entry.providerTag !== providerTag) {
+  // Domain was switched — the stored result is for a different domain.
+  if(entry.domain !== domain) {
 
     return null;
   }
@@ -274,14 +274,14 @@ export function getChannelHealth(channelKey: string, providerTag: string): Nulla
 }
 
 /**
- * Returns the timestamp when a provider was last verified as authenticated, or null if unknown. Verification is proven by at least one successful tune within the
- * TTL window. A non-null return means the provider is verified; the value is the Unix millisecond timestamp of the most recent successful tune.
- * @param providerTag - The provider tag to check.
+ * Returns the timestamp when a domain was last verified as authenticated, or null if unknown. Verification is proven by at least one successful tune within the TTL
+ * window. A non-null return means the domain is verified; the value is the Unix millisecond timestamp of the most recent successful tune.
+ * @param domain - The domain to check.
  * @returns Timestamp of last verification, or null if unknown (no entry or stale).
  */
-export function getProviderAuth(providerTag: string): Nullable<number> {
+export function getDomainAuth(domain: string): Nullable<number> {
 
-  const timestamp = providerAuth.get(providerTag);
+  const timestamp = domainAuth.get(domain);
 
   if(timestamp === undefined) {
 
@@ -299,36 +299,36 @@ export function getProviderAuth(providerTag: string): Nullable<number> {
 
 /**
  * Returns a snapshot of current health state for SSE initial payloads. Stale entries (older than HEALTH_TTL) are excluded.
- * @returns Snapshot with channel health and provider auth maps.
+ * @returns Snapshot with channel health and domain auth maps.
  */
 export function getHealthSnapshot(): HealthSnapshot {
 
   const now = Date.now();
-  const channels: Record<string, { providerTag: string; status: HealthStatus; timestamp: number }> = {};
-  const providers: Record<string, number> = {};
+  const channels: Record<string, { domain: string; status: HealthStatus; timestamp: number }> = {};
+  const domains: Record<string, number> = {};
 
   for(const [ key, entry ] of channelHealth) {
 
     if((now - entry.timestamp) < HEALTH_TTL) {
 
-      channels[key] = { providerTag: entry.providerTag, status: entry.status, timestamp: entry.timestamp };
+      channels[key] = { domain: entry.domain, status: entry.status, timestamp: entry.timestamp };
     }
   }
 
-  for(const [ tag, timestamp ] of providerAuth) {
+  for(const [ domainKey, timestamp ] of domainAuth) {
 
     if((now - timestamp) < HEALTH_TTL) {
 
-      providers[tag] = timestamp;
+      domains[domainKey] = timestamp;
     }
   }
 
-  return { channels, providers };
+  return { channels, domains };
 }
 
 /**
  * Subscribes a callback to receive health change events. Returns an unsubscribe function. Follows the same pattern as subscribeToStatus in statusEmitter.ts.
- * @param callback - Function to call when channel health or provider auth changes.
+ * @param callback - Function to call when channel health or domain auth changes.
  * @returns A function to unsubscribe the callback.
  */
 export function subscribeToHealth(callback: (event: HealthEvent) => void): () => void {

@@ -2,12 +2,12 @@
  *
  * table.ts: Channel table rendering for the PrismCast configuration interface.
  */
-import { compareChannelSort, getAllProviderTags, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey, getEnabledProviders,
+import { compareChannelSort, getAllProviderTags, getAuthDomainForChannel, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey, getEnabledProviders,
   getProviderGroup, getProviderSelection, getProviderTagForChannel, hasMultipleProviders, isChannelAvailableByProvider,
   isProviderTagEnabled, resolveProviderKey } from "../../../config/providers.js";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls } from "../../../browser/channelSelection.js";
-import { getChannelHealth, getProviderAuth } from "../../../config/health.js";
+import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
 import { getChannelListing, getChannelsParseErrorMessage, getPredefinedScopeCounts, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel,
   isPredefinedChannelDisabled, isUserChannel } from "../../../config/userChannels.js";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
@@ -650,24 +650,24 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
   const escapedKey = escapeHtml(key);
 
-  // Resolve the provider tag for the currently selected provider variant. Used for both login icon color and health icon lookups.
+  // Resolve the auth domain for the currently selected provider variant. Used for both login icon color and health icon lookups.
   const variantKey = resolveProviderKey(key);
-  const providerTag = getProviderTagForChannel(variantKey);
+  const authDomain = getAuthDomainForChannel(variantKey);
 
   // Position 1: Edit (all channels).
   displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-edit\" title=\"Edit\" aria-label=\"Edit\" onclick=\"showEditForm('" + escapedKey +
     "')\">" + ICON_EDIT + "</button>");
 
-  // Position 2: Login for enabled channels (with provider auth color), placeholder for disabled predefined. Custom channels (user-defined, not predefined) skip
+  // Position 2: Login for enabled channels (with domain auth color), placeholder for disabled predefined. Custom channels (user-defined, not predefined) skip
   // login coloring because they have no provider concept.
   if(!isDisabled) {
 
-    const authTimestamp = (isPredefined || isOverride) ? getProviderAuth(providerTag) : null;
+    const authTimestamp = (isPredefined || isOverride) ? getDomainAuth(authDomain) : null;
     const loginColorClass = authTimestamp ? " health-success" : "";
     const loginTitle = authTimestamp ? "Verified " + formatTimeAgo(authTimestamp) : "Not yet verified";
 
-    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-login" + loginColorClass + "\" data-provider-tag=\"" +
-      escapeHtml(providerTag) + "\" title=\"" + loginTitle + "\" aria-label=\"Login\" " +
+    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-login" + loginColorClass + "\" data-auth-domain=\"" +
+      escapeHtml(authDomain) + "\" title=\"" + loginTitle + "\" aria-label=\"Login\" " +
       "onclick=\"startChannelLogin('" + escapedKey + "')\">" + ICON_LOGIN + "</button>");
   } else {
 
@@ -677,7 +677,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   // Position 3: Channel health indicator. Shows last tune result via color. Non-interactive (span, not button). Disabled channels get a placeholder instead.
   if(!isDisabled) {
 
-    const channelHealthResult = getChannelHealth(key, providerTag);
+    const channelHealthResult = getChannelHealth(key, authDomain);
     const healthColorClass = (channelHealthResult?.status === "success") ? " health-success" : (channelHealthResult?.status === "failed") ? " health-failed" : "";
     const healthTitle = channelHealthResult ?
       (channelHealthResult.status === "success" ? "Succeeded " : "Failed ") + formatTimeAgo(channelHealthResult.timestamp) : "Not yet tuned";

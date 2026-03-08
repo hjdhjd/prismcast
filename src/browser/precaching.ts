@@ -2,11 +2,11 @@
  *
  * precaching.ts: Provider channel lineup precaching for PrismCast.
  */
-import { LOG, formatError, startTimer } from "../utils/index.js";
+import { LOG, extractDomain, formatError, startTimer } from "../utils/index.js";
 import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.js";
 import { CONFIG } from "../config/index.js";
 import { getProviderBySlug } from "./channelSelection.js";
-import { markProviderAuth } from "../config/health.js";
+import { markDomainAuth } from "../config/health.js";
 
 /* Precaching discovers channel lineups for selected providers at startup so that even the first tune benefits from cached lineup data. Each provider is precached
  * sequentially — discovery opens a browser page and navigates to a heavy SPA, so running all providers concurrently would stress CPU and GPU on resource-constrained
@@ -119,7 +119,7 @@ async function runPrecacheCycle(): Promise<void> {
           // even without authentication, so a non-empty result alone does not prove paid access.
           if((channels.length > 0) && (!provider.validatePrecache || provider.validatePrecache(channels))) {
 
-            markProviderAuth(slug);
+            markDomainAuth(extractDomain(provider.guideUrl));
           }
 
           succeeded++;

@@ -12,7 +12,7 @@ import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setC
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
 import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
 import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.js";
-import { getProviderTagForChannel, getResolvedChannel, resolveProviderKey } from "../config/providers.js";
+import { getAuthDomainForChannel, getProviderTagForChannel, getResolvedChannel, resolveProviderKey } from "../config/providers.js";
 import { markChannelFailure, markChannelSuccess } from "../config/health.js";
 import { CONFIG } from "../config/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
@@ -935,9 +935,9 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
     if(channel) {
 
       const failVariantKey = resolveProviderKey(channelName);
-      const failProviderTag = getProviderTagForChannel(failVariantKey);
+      const failAuthDomain = getAuthDomainForChannel(failVariantKey);
 
-      markChannelFailure(channelName, failProviderTag);
+      markChannelFailure(channelName, failAuthDomain);
     }
 
     // Remove startup sentinel on failure and re-throw for the caller to handle error responses.
@@ -1130,16 +1130,17 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
 
       LOG.info("Streaming %s (%s, %s). Tuned in %ss%s.", displayName, setup.profileName, captureMode, tuneTime, setup.directTune ? " (direct)" : "");
 
-      // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity. Provider
-      // auth is conditionally skipped when the provider defines validateTune and the tuned channel does not prove paid access (e.g., Sling Freestream channels).
+      // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity. Domain auth
+      // is conditionally skipped when the provider defines validateTune and the tuned channel does not prove paid access (e.g., Sling Freestream channels).
       if(channel) {
 
         const successVariantKey = resolveProviderKey(channelName);
+        const successAuthDomain = getAuthDomainForChannel(successVariantKey);
         const successProviderTag = getProviderTagForChannel(successVariantKey);
         const provider = getProviderBySlug(successProviderTag);
         const markAuth = !provider?.validateTune || provider.validateTune(channel.channelSelector ?? channelName);
 
-        markChannelSuccess(channelName, successProviderTag, markAuth);
+        markChannelSuccess(channelName, successAuthDomain, markAuth);
       }
 
       // Emit stream added event.
