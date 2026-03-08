@@ -2,9 +2,11 @@
  *
  * hlsResume.ts: HLS sequence number persistence across restarts.
  */
-import { LOG, formatError } from "../utils/index.js";
+import { LOG, formatDuration, formatError } from "../utils/index.js";
+import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
 import fs from "node:fs";
+import { getResolvedChannel } from "../config/providers.js";
 import { getResumeFilePath } from "../config/paths.js";
 
 /* When PrismCast restarts mid-recording, HLS media sequences reset to 0. Channels DVR detects "Playlist reset to a lower sequence" and produces unpredictable
@@ -169,7 +171,10 @@ export function consumeResumeData(channelName: string): Nullable<ResumeData> {
     return null;
   }
 
-  LOG.info("Resuming HLS sequence for '%s' from segment %d.", channelName, entry.segmentIndex);
+  const displayName = getResolvedChannel(channelName)?.name ?? channelName;
+  const priorContent = formatDuration(entry.segmentIndex * CONFIG.hls.segmentDuration * 1000);
+
+  LOG.info("Resuming stream for %s from previous session (%s of prior content).", displayName, priorContent);
 
   return {
 

@@ -3,10 +3,10 @@
  * index.ts: Entry point for PrismCast.
  */
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.js";
+import { isGracefulShutdown, killStaleChrome } from "./browser/index.js";
 import { flushLogBufferSync } from "./utils/fileLogger.js";
 import { handleServiceCommand } from "./service/index.js";
 import { initializeDataDir } from "./config/paths.js";
-import { killStaleChrome } from "./browser/index.js";
 import path from "node:path";
 import { startServer } from "./app.js";
 
@@ -16,6 +16,12 @@ import { startServer } from "./app.js";
  */
 
 process.on("unhandledRejection", (reason: unknown): void => {
+
+  // During graceful shutdown, Chrome is killed while in-flight CDP calls may still be pending. Suppress the resulting "Target closed" rejections.
+  if(isGracefulShutdown() && formatError(reason).includes("Target closed")) {
+
+    return;
+  }
 
   LOG.error("Unhandled promise rejection: %s.", formatError(reason));
 });

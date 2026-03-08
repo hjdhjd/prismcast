@@ -35,7 +35,7 @@ export function generateLandingPageStyles(): string {
     ".stream-popover-logo { height: 18px; width: auto; max-width: 80px; vertical-align: middle; }",
     ".stream-popover-channel { color: var(--text-primary); }",
     ".stream-popover-show { color: var(--text-muted); }",
-    ".stream-popover-duration { color: var(--text-muted); margin-left: auto; }",
+    ".stream-popover-duration { color: var(--text-muted); font-variant-numeric: tabular-nums; margin-left: auto; min-width: 4.5em; text-align: right; }",
 
     // Subtab styles for Configuration tab.
     ".subtab-bar { display: flex; border-bottom: 1px solid var(--border-default); margin-bottom: 20px; gap: 2px; flex-wrap: wrap; }",
