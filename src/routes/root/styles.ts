@@ -277,7 +277,7 @@ export function generateLandingPageStyles(): string {
     ".provider-toolbar .toolbar-label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }",
 
     // Provider dropdown multi-select.
-    ".provider-dropdown-menu { min-width: 200px; max-height: 300px; overflow-y: auto; }",
+    ".provider-dropdown-menu { min-width: 200px; max-height: 70vh; overflow-y: auto; }",
     ".provider-option { display: flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--text-primary); }",
     ".provider-option:hover { background: var(--surface-sunken); }",
     ".provider-option input[type=\"checkbox\"] { margin: 0; }",
