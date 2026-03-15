@@ -148,6 +148,29 @@ export function loadResumeState(): void {
 }
 
 /**
+ * Returns the saved segment index for a channel without consuming the resume data. Used by registerPendingStream() to offset the preroll playlist's
+ * MEDIA-SEQUENCE so it continues from the prior session's sequence range rather than starting at 0. Returns null if no valid resume data exists.
+ * @param channelName - The channel key to look up.
+ * @returns The saved segment index, or null if no valid resume data exists.
+ */
+export function getResumeSegmentIndex(channelName: string): Nullable<number> {
+
+  const entry = resumeMap.get(channelName);
+
+  if(!entry) {
+
+    return null;
+  }
+
+  if((Date.now() - entry.timestamp) > RESUME_TTL) {
+
+    return null;
+  }
+
+  return entry.segmentIndex;
+}
+
+/**
  * Consumes resume data for a channel. Returns the seeding parameters if the entry exists and is within TTL, or null if no resume data is available. The entry is
  * removed from the in-memory map after consumption (each channel resumes at most once).
  * @param channelName - The channel key to look up.

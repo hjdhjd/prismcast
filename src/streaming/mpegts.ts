@@ -2,13 +2,13 @@
  *
  * mpegts.ts: MPEG-TS streaming handler for PrismCast.
  */
-import type { Channel, Nullable } from "../types/index.js";
 import { LOG, formatError, spawnMpegTsRemuxer } from "../utils/index.js";
 import type { Request, Response } from "express";
-import { awaitStreamReadySilent, initializeStream, sendValidationError, validateChannel } from "./hls.js";
 import { getStream, updateLastAccess } from "./registry.js";
+import { initializeStream, sendValidationError, validateChannel } from "./hls.js";
 import { registerClient, unregisterClient } from "./clients.js";
 import { CONFIG } from "../config/index.js";
+import type { Nullable } from "../types/index.js";
 import type { StreamRegistryEntry } from "./registry.js";
 import { StreamSetupError } from "./setup.js";
 import { getChannelStreamId } from "./lifecycle.js";
@@ -54,30 +54,23 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
   // Check for an existing stream first. If one exists, we can skip validation and header flushing.
   const existingStreamId = getChannelStreamId(channelName);
 
-  // Fast path: a real stream already exists. No early flush needed — the stream data will flow quickly.
-  if((existingStreamId !== undefined) && (existingStreamId !== -1)) {
+  // Fast path: a stream already exists (either fully set up or a pending entry from an HLS request). Serve it directly.
+  if(existingStreamId !== undefined) {
 
     await serveMpegTsStream(existingStreamId, channelName, req, res);
 
     return;
   }
 
-  // If no existing stream or startup in progress, validate the channel before flushing headers. This ensures we can still return proper error responses for invalid
-  // channels, disabled channels, and login mode. Store the validated channel for use during stream initialization below.
-  let validatedChannel: Channel | undefined;
+  // No existing stream — validate the channel before flushing headers. This ensures we can still return proper error responses for invalid channels, disabled
+  // channels, and login mode.
+  const validation = validateChannel(channelName);
 
-  if(existingStreamId === undefined) {
+  if(!validation.valid) {
 
-    const validation = validateChannel(channelName);
+    sendValidationError(validation, res);
 
-    if(!validation.valid) {
-
-      sendValidationError(validation, res);
-
-      return;
-    }
-
-    validatedChannel = validation.channel;
+    return;
   }
 
   // Flush HTTP 200 headers immediately. The client sees "connection accepted, data coming" and waits patiently. After this point, we cannot send error status codes —
@@ -88,65 +81,42 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
   res.setHeader("transferMode.dlna.org", "Streaming");
   res.flushHeaders();
 
-  // Acquire the stream. If a startup is in progress (another request started it), poll silently. Otherwise, start a new stream via initializeStream().
+  // Start a new stream directly. initializeStream blocks until setup completes (no preroll for MPEG-TS clients). Since headers are already flushed, errors are logged
+  // and the connection is closed.
   let streamId: Nullable<number>;
 
-  if(existingStreamId === -1) {
+  try {
 
-    // Another request is already starting this stream. Wait silently (no error responses possible after flush).
-    streamId = await awaitStreamReadySilent(channelName);
+    streamId = await initializeStream({
 
-    if(streamId === null) {
+      channel: validation.channel,
+      channelName,
+      clientAddress: req.ip ?? req.socket.remoteAddress ?? null,
+      mpegTsClient: true,
+      profileOverride: req.query.profile as string | undefined,
+      url: validation.channel.url
+    });
+  } catch(error) {
 
-      LOG.warn("MPEG-TS stream startup failed for %s (startup did not complete).", channelName);
-      res.end();
+    if(error instanceof StreamSetupError) {
 
-      return;
-    }
-  } else {
+      LOG.warn("MPEG-TS stream startup failed for %s: %s.", channelName, error.userMessage);
+    } else {
 
-    // Start a new stream directly. validatedChannel is guaranteed set: this branch runs only when existingStreamId === undefined, which requires successful
-    // validation above. Since headers are already flushed, errors are logged and the connection is closed.
-    if(!validatedChannel) {
-
-      res.end();
-
-      return;
+      LOG.warn("MPEG-TS stream startup failed for %s: %s.", channelName, formatError(error));
     }
 
-    try {
+    res.end();
 
-      streamId = await initializeStream({
+    return;
+  }
 
-        channel: validatedChannel,
-        channelName,
-        clientAddress: req.ip ?? req.socket.remoteAddress ?? null,
-        mpegTsClient: true,
-        profileOverride: req.query.profile as string | undefined,
-        url: validatedChannel.url
-      });
-    } catch(error) {
+  if(streamId === null) {
 
-      if(error instanceof StreamSetupError) {
+    LOG.warn("MPEG-TS stream startup failed for %s (terminated during setup).", channelName);
+    res.end();
 
-        LOG.warn("MPEG-TS stream startup failed for %s: %s.", channelName, error.userMessage);
-      } else {
-
-        LOG.warn("MPEG-TS stream startup failed for %s: %s.", channelName, formatError(error));
-      }
-
-      res.end();
-
-      return;
-    }
-
-    if(streamId === null) {
-
-      LOG.warn("MPEG-TS stream startup failed for %s (terminated during setup).", channelName);
-      res.end();
-
-      return;
-    }
+    return;
   }
 
   await serveMpegTsStream(streamId, channelName, req, res);

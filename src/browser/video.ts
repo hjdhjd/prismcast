@@ -91,6 +91,12 @@ export interface VideoStateInfo {
   // Ready state (0=NOTHING, 1=METADATA, 2=CURRENT_DATA, 3=FUTURE_DATA, 4=ENOUGH_DATA).
   readyState: number;
 
+  // Intrinsic height of the video source in pixels. Reflects the provider's current ABR quality level. Zero when no video is loaded.
+  videoHeight: number;
+
+  // Intrinsic width of the video source in pixels. Reflects the provider's current ABR quality level. Zero when no video is loaded.
+  videoWidth: number;
+
   // Current volume level (0-1).
   volume: number;
 }
@@ -132,6 +138,8 @@ export async function getVideoState(context: Frame | Page, selectorType: VideoSe
       networkState: video.networkState,
       paused: video.paused,
       readyState: video.readyState,
+      videoHeight: video.videoHeight,
+      videoWidth: video.videoWidth,
       volume: video.volume
     };
   }, [selectorType]);

@@ -65,6 +65,10 @@ export interface AttemptNativeStreamingOptions {
   // The browser page (kept alive for token refresh).
   page: Page;
 
+  // Number of preroll segments preceding real content. When non-zero, the proxy starts segment numbering after the preroll range to reserve the index space. The
+  // composite playlist reads the base URL dynamically from the stream's HLS state.
+  prerollSegmentCount?: number;
+
   // Numeric stream ID for segment storage.
   streamId: number;
 
@@ -80,11 +84,17 @@ export interface AttemptNativeStreamingOptions {
  */
 export interface NativeStreamResult {
 
+  // Declared bandwidth of the selected variant in bits per second. Zero when the BANDWIDTH attribute is absent or unparseable.
+  bandwidth: number;
+
   // Whether the stream has separate audio renditions. Set once at stream creation on HLSState.hasAudio so the HLS handler knows to serve variant playlists.
   hasAudio: boolean;
 
   // The native proxy that fetches and stores segments. The proxy owns the CDP session from interception and cleans it up on stop().
   proxy: NativeProxy;
+
+  // Video resolution from the master manifest (e.g., "1920x1080"), or null when absent.
+  resolution: Nullable<string>;
 }
 
 /**
@@ -183,7 +193,12 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   }
 
   // Create the native proxy. The CDP session is passed so the proxy can clean it up on stop(), preventing session leaks when the stream terminates before a token
-  // refresh occurs. For AES-128 streams, the pre-fetched key is passed so the proxy does not need to fetch it again on the first segment.
+  // refresh occurs. For AES-128 streams, the pre-fetched key is passed so the proxy does not need to fetch it again on the first segment. The preroll segment count
+  // determines the segment index offset (reserving index space for preroll). Streams with separate audio cannot use preroll because the preroll content is muxed
+  // video+audio and can't be split into separate renditions.
+  const hasSeparateAudio = probeResult.audioVariantUrl !== null;
+  const proxyPrerollSegmentCount = (!hasSeparateAudio && options.prerollSegmentCount) ? options.prerollSegmentCount : 0;
+
   const proxy = createNativeProxy({
 
     audioVariantUrl: probeResult.audioVariantUrl,
@@ -193,6 +208,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     keyUrl: probeResult.keyUrl,
     onError,
     prefetchedKey,
+    prerollSegmentCount: proxyPrerollSegmentCount,
     streamId,
     streamIdStr,
     variantUrl: probeResult.bestVariantUrl
@@ -211,7 +227,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   LOG.debug("timing:native", "Native streaming setup completed for %s in %sms.", channelName, elapsed());
 
-  return { hasAudio: probeResult.audioVariantUrl !== null, proxy };
+  return { bandwidth: probeResult.bandwidth, hasAudio: probeResult.audioVariantUrl !== null, proxy, resolution: probeResult.resolution };
 }
 
 // Token Refresh.

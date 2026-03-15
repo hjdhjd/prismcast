@@ -282,16 +282,27 @@ export function updatePlaylist(streamId: number, content: string): void {
     return;
   }
 
-  const isFirstPlaylist = stream.hls.playlist === "";
+  const isFirstRealPlaylist = !stream.hls.hasRealPlaylist;
 
   stream.hls.playlist = content;
 
-  if(isFirstPlaylist) {
+  if(isFirstRealPlaylist) {
 
+    stream.hls.hasRealPlaylist = true;
     stream.hls.signalPlaylistReady();
+
+    // Cancel the deferred preroll timer now that real content is available. The timer may still be running for native streams where browser setup completed quickly
+    // but the proxy's first poll cycle took longer than the preroll delay (PREROLL_DELAY_MS). Without this, the timer would fire after real content is already
+    // flowing, uselessly seeding preroll state. For streams where the timer already fired (preroll is active), this is a no-op — the timer handle is already null.
+    if(stream.hls.prerollTimer) {
+
+      clearTimeout(stream.hls.prerollTimer);
+      stream.hls.prerollTimer = null;
+    }
 
     const elapsed = ((Date.now() - stream.startTime.getTime()) / 1000).toFixed(3);
 
+    LOG.debug("streaming:preroll", "Live playlist ready for stream %d.", streamId);
     LOG.debug("timing:startup", "First playlist ready in %ss.", elapsed);
   }
 }
@@ -347,12 +358,21 @@ async function waitForReady(streamId: number, getPromise: (stream: StreamRegistr
     return false;
   }
 
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
   const timeoutPromise = new Promise<boolean>((resolve) => {
 
-    setTimeout(() => { resolve(false); }, timeout);
+    timer = setTimeout(() => { resolve(false); }, timeout);
   });
 
   const readyPromise = getPromise(stream).then(() => true);
+  const result = await Promise.race([ readyPromise, timeoutPromise ]);
 
-  return Promise.race([ readyPromise, timeoutPromise ]);
+  // Clear the timeout timer to prevent an orphaned timer from firing after the result is already determined. No-op if the timeout already fired.
+  if(timer) {
+
+    clearTimeout(timer);
+  }
+
+  return result;
 }

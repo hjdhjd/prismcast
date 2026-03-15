@@ -132,6 +132,12 @@ export interface ProviderModule {
   // The existing tuning strategy contract, unchanged from the flat registry pattern.
   strategy: ChannelStrategyEntry;
 
+  // Number of consecutive tiny segments (below the size threshold) required before triggering tab replacement recovery. Defaults to 10 (~20 seconds at 2-second
+  // segments) when undefined. Providers whose normal operation includes extended periods of static or low-motion content (e.g., Xfinity commercial placeholder
+  // images) set a higher value to avoid false positive tab replacements while still detecting genuinely frozen video over longer windows. Dead capture pipelines
+  // (segments with no video trafs, hasVideo=false) always use the default count of 10 regardless of this setting, ensuring fast detection of audio-only failures.
+  tinySegmentThreshold?: number;
+
   // Links back to the site profile strategy name for derived strategy lookup.
   strategyName: ChannelSelectionStrategy;
 

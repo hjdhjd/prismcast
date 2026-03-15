@@ -23,6 +23,7 @@ import { cleanupIdleStreams } from "./streaming/hls.js";
 import compression from "compression";
 import consoleStamp from "console-stamp";
 import express from "express";
+import { generatePreroll } from "./streaming/preroll.js";
 import { getAllStreams } from "./streaming/registry.js";
 import { initializeUserChannels } from "./config/userChannels.js";
 import { initializeUserProfiles } from "./config/userProfiles.js";
@@ -531,6 +532,10 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
     throw error;
   }
+
+  // Generate the preroll fMP4 segment for immediate HLS response during stream startup. This runs after browser launch so that display detection has completed and
+  // getEffectiveViewport() returns the true dimensions — ensuring the preroll resolution matches what Chrome MediaRecorder will actually produce.
+  await generatePreroll();
 
   // Verify the capture system works before accepting requests. This detects stale tabCapture state from a previous Chrome process and exits immediately if
   // found, since the puppeteer-stream mutex would be permanently leaked. The probe also ensures the STOP_RECORDING cleanup chain completes before returning.

@@ -2,13 +2,17 @@
  *
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
-import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovTimescales } from "./mp4Parser.js";
+import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.js";
+import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.js";
 import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
 import type { MP4Box } from "./mp4Parser.js";
 import type { Nullable } from "../types/index.js";
+import type { PlaylistSegmentEntry } from "./playlistBuilder.js";
 import type { Readable } from "node:stream";
+import { buildPlaylist } from "./playlistBuilder.js";
+import { getStream } from "./registry.js";
 
 /* This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is: (1) receive MP4 data from puppeteer-stream (H.264 + AAC from
  * either native capture or FFmpeg transcoding), (2) parse MP4 box structure to identify ftyp + moov (initialization segment) and moof + mdat pairs (media fragments),
@@ -43,6 +47,13 @@ export interface FMP4SegmenterOptions {
   // If true, the first segment from this segmenter should have a discontinuity marker. Used after tab replacement to signal codec/timing change. When
   // previousInitSegment is also provided, the marker is suppressed if the new init segment is byte-identical to the previous one.
   pendingDiscontinuity?: boolean;
+
+  // The base URL for constructing absolute preroll segment URIs in the composite playlist (e.g., "http://192.168.1.100:5589"). Null when no preroll is active.
+  prerollBaseUrl?: Nullable<string>;
+
+  // Number of preroll segments preceding this segmenter's content. When non-zero, generatePlaylist() includes preroll entries for indices below startingSegmentIndex
+  // that are still within the sliding window, creating a unified playlist that bridges the preroll-to-live transition with monotonic MEDIA-SEQUENCE.
+  prerollSegmentCount?: number;
 
   // The init segment (ftyp + moov) from the previous segmenter. When provided alongside pendingDiscontinuity, the new init segment is compared against this buffer.
   // If byte-identical, the discontinuity marker is suppressed because the decoder parameters have not changed.
@@ -131,6 +142,10 @@ export interface FMP4SegmenterResult {
   // Returns a snapshot of the current keyframe detection statistics.
   getKeyframeStats: () => KeyframeStats;
 
+  // Returns whether the last segment contained at least one video traf box. Used by the monitor to distinguish dead capture pipelines (audio-only segments) from
+  // legitimate low-bitrate segments produced by static content. When the video trackId has not been identified (moov parse failure), returns null.
+  getLastSegmentHasVideo: () => Nullable<boolean>;
+
   // Get the size in bytes of the last segment stored. Used by the monitor to detect dead capture pipelines producing empty segments.
   getLastSegmentSize: () => number;
 
@@ -192,6 +207,10 @@ interface SegmenterState {
   // Timestamp of the last detected keyframe moof, for interval calculation. Null until the first keyframe is seen.
   lastKeyframeTime: Nullable<number>;
 
+  // Whether the last segment contained at least one moof with a video traf. Null when the video trackId has not been identified. Reset per-segment in
+  // resetSegmentTracking() and set to true in handleBox() when a moof contains a traf whose trackId matches the video track.
+  lastSegmentHasVideo: Nullable<boolean>;
+
   // Size in bytes of the last segment stored. Used by the monitor to detect dead capture pipelines producing empty segments.
   lastSegmentSize: number;
 
@@ -212,6 +231,14 @@ interface SegmenterState {
   // Whether the next segment should have a discontinuity marker (consumed when first segment is output).
   pendingDiscontinuity: boolean;
 
+  // The base URL for absolute preroll segment URIs in the composite playlist. Null when no preroll is active for this segmenter. Set at construction and never
+  // modified — the preroll content is generated once at startup and shared across all streams.
+  readonly prerollBaseUrl: Nullable<string>;
+
+  // Number of preroll segments preceding this segmenter's real content. When non-zero, generatePlaylist() includes preroll entries for indices below this value that
+  // are still within the sliding window. Set at construction and never modified.
+  readonly prerollSegmentCount: number;
+
   // Actual media-time durations for each segment in seconds, computed from accumulated trun sample durations divided by the track timescale. Falls back to wall-clock
   // time when media-time data is unavailable (e.g., moov timescale parsing failed). Used by generatePlaylist() for accurate #EXTINF values. Pruned to keep only
   // entries within the playlist sliding window.
@@ -226,6 +253,9 @@ interface SegmenterState {
   // Wall-clock time when the current segment started accumulating. Used for segment cutting decisions (when to start a new segment) and as a fallback for EXTINF
   // duration when media-time data is unavailable.
   segmentStartTime: number;
+
+  // Wall-clock timestamps for when each real segment was produced. Used to emit #EXT-X-PROGRAM-DATE-TIME in generatePlaylist(). Pruned alongside segmentDurations.
+  segmentTimestamps: Map<number, Date>;
 
   // Accumulated per-track trun durations for the current segment, in timescale units. Keyed by track_ID. Reset when a segment is output. Used with trackTimescales
   // to compute media-time EXTINF values that exactly match the fMP4 PTS progression.
@@ -259,6 +289,13 @@ interface SegmenterState {
   // Per-track timestamp counters, keyed by track_ID. Each value is the next expected baseMediaDecodeTime (originalTfdt + offset + duration), used for tab replacement
   // handoff via getTrackTimestamps(). Audio and video tracks have separate counters because they may use different timescales (e.g., 90000 for video, 48000 for audio).
   trackTimestamps: Map<number, bigint>;
+
+  // The trackId identified as the video track from the moov's hdlr box (handler_type === "vide"). Null until the moov is parsed or if no video track is found.
+  videoTrackId: Nullable<number>;
+
+  // Whether video trafs were seen in the current segment being accumulated. Null when the video trackId is unknown. Set to true when a moof contains a traf for the
+  // video track. Reset per-segment.
+  videoTrafsInCurrentSegment: Nullable<boolean>;
 }
 
 // Keyframe Stats Formatting.
@@ -375,8 +412,8 @@ export function formatSessionStatsSummary(stats: SessionStats, segmentCount: num
  */
 export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4SegmenterResult {
 
-  const { initialTrackTimestamps, onError, onStop, pendingDiscontinuity, previousInitSegment, priorSessionStats, startingInitVersion, startingSegmentIndex,
-    streamId } = options;
+  const { initialTrackTimestamps, onError, onStop, pendingDiscontinuity, prerollBaseUrl, prerollSegmentCount, previousInitSegment, priorSessionStats,
+    startingInitVersion, startingSegmentIndex, streamId } = options;
 
   // Initialize state.
   const state: SegmenterState = {
@@ -391,16 +428,20 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     initVersion: startingInitVersion ?? 0,
     keyframeCount: 0,
     lastKeyframeTime: null,
+    lastSegmentHasVideo: null,
     lastSegmentSize: 0,
     maxKeyframeIntervalMs: 0,
     minKeyframeIntervalMs: Infinity,
     nonKeyframeCount: 0,
     normalizedReferencePositionSec: null,
     pendingDiscontinuity: pendingDiscontinuity ?? false,
+    prerollBaseUrl: prerollBaseUrl ?? null,
+    prerollSegmentCount: prerollSegmentCount ?? 0,
     segmentDurations: new Map(),
     segmentFirstMoofChecked: false,
     segmentIndex: startingSegmentIndex ?? 0,
     segmentStartTime: Date.now(),
+    segmentTimestamps: new Map(),
     segmentTrackDurations: new Map(),
     segmentsWithoutLeadingKeyframe: 0,
     sessionStats: priorSessionStats ? { ...priorSessionStats, tabReplacementCount: priorSessionStats.tabReplacementCount + 1 } :
@@ -410,66 +451,134 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     trackOffsets: new Map(),
     trackOffsetsInitialized: new Set(),
     trackTimescales: new Map(),
-    trackTimestamps: initialTrackTimestamps ? new Map(initialTrackTimestamps) : new Map<number, bigint>()
+    trackTimestamps: initialTrackTimestamps ? new Map(initialTrackTimestamps) : new Map<number, bigint>(),
+    videoTrackId: null,
+    videoTrafsInCurrentSegment: null
   };
 
   // Reference to the input stream for cleanup.
   let inputStream: Nullable<Readable> = null;
 
   /**
-   * Generates the m3u8 playlist content.
+   * Generates the m3u8 playlist content. When preroll metadata is present (prerollSegmentCount > 0), the playlist includes both preroll entries (served from global
+   * /preroll/ routes with absolute URLs) and real entries (served from the stream's /hls/:name/ routes with relative URLs) in a single sliding window. The preroll
+   * entries use a separate #EXT-X-MAP for the preroll init segment, and a #EXT-X-DISCONTINUITY tag marks the boundary between preroll and real content. As real
+   * segments accumulate, preroll entries fall off the window naturally and the playlist becomes purely real content with zero overhead.
+   *
+   * Delegates all m3u8 formatting to the shared buildPlaylist() function. Preroll windowing and entry construction are handled by the compositor functions in
+   * preroll.ts. This function is responsible for constructing real segment entries from the segmenter's state and computing the discontinuity sequence from the
+   * segmenter's discontinuity history.
    */
   function generatePlaylist(): string {
 
-    // Compute TARGETDURATION from the maximum actual segment duration in the current playlist window. RFC 8216 requires this value to be an integer that is greater
-    // than or equal to every #EXTINF duration in the playlist. We floor at the configured segment duration to avoid under-declaring when all segments are short.
-    const startIndex = Math.max(0, state.segmentIndex - Math.min(getSegmentCount(streamId), CONFIG.hls.maxSegments));
-    let maxDuration = CONFIG.hls.segmentDuration;
+    const realInitMapUri = "init.mp4?v=" + String(state.initVersion);
 
-    for(let i = startIndex; i < state.segmentIndex; i++) {
+    // Check whether the preroll timer has fired and the client is actually watching preroll. The segment index offset (starting at prerollSegmentCount) is always
+    // applied structurally, but preroll entries are only included in the playlist when the deferred timer has fired — indicated by prerollStartTime being set on the
+    // stream's HLS state. This is the same dynamic check the native proxy uses in its generatePlaylist(). Without this, fast capture streams (tuning before the
+    // preroll delay elapses) would include unnecessary preroll entries in their first playlists.
+    const stream = getStream(streamId);
+    const prerollActive = (state.prerollSegmentCount > 0) && (stream?.hls.prerollStartTime !== null) && (stream?.hls.prerollStartTime !== undefined);
 
-      const duration = state.segmentDurations.get(i) ?? CONFIG.hls.segmentDuration;
+    // Compute the sliding window start index. When preroll is active, the compositor handles the three-way max (floor, sliding window, preroll cap). Without
+    // preroll (or when the timer hasn't fired), the standard sliding window rule applies.
+    const realSegmentCount = getSegmentCount(streamId);
 
-      if(duration > maxDuration) {
+    let startIndex: number;
 
-        maxDuration = duration;
-      }
+    if(prerollActive) {
+
+      startIndex = computePrerollWindow({
+
+        currentSegmentIndex: state.segmentIndex,
+        maxSegments: CONFIG.hls.maxSegments,
+        prerollSegmentCount: state.prerollSegmentCount,
+        realSegmentCount
+      });
+    } else {
+
+      startIndex = Math.max(0, state.segmentIndex - Math.min(realSegmentCount, CONFIG.hls.maxSegments));
     }
 
-    const lines: string[] = [
-      "#EXTM3U",
-      "#EXT-X-VERSION:7",
-      [ "#EXT-X-TARGETDURATION:", String(Math.ceil(maxDuration)) ].join(""),
-      [ "#EXT-X-MEDIA-SEQUENCE:", String(startIndex) ].join(""),
-      [ "#EXT-X-MAP:URI=\"init.mp4?v=", String(state.initVersion), "\"" ].join("")
-    ];
+    // Build preroll entries for preroll indices still in the window. Only included when the deferred preroll timer has fired and the client is watching preroll.
+    let prerollEntries: PlaylistSegmentEntry[] = [];
 
-    // Add segment entries for each segment in the current playlist window.
-    for(let i = startIndex; i < state.segmentIndex; i++) {
+    if(prerollActive && state.prerollBaseUrl && (startIndex < state.prerollSegmentCount)) {
 
-      // Add discontinuity marker before segments that follow a recovery event. Re-emit the init segment reference so clients explicitly reinitialize the decoder
-      // with the current codec parameters.
+      prerollEntries = buildPrerollEntries({ baseUrl: state.prerollBaseUrl, extension: ".m4s", prerollSegmentCount: state.prerollSegmentCount, startIndex });
+    }
+
+    // Build real segment entries from the segmenter's state. Each entry carries its duration, optional discontinuity marker with init re-emission, and wall-clock
+    // timestamp for PROGRAM-DATE-TIME. The real range starts at either the window start (when no preroll) or the preroll segment count (when preroll entries cover
+    // the earlier indices).
+    const realEntries: PlaylistSegmentEntry[] = [];
+    const realStartIndex = Math.max(startIndex, state.prerollSegmentCount);
+
+    for(let i = realStartIndex; i < state.segmentIndex; i++) {
+
+      const entry: PlaylistSegmentEntry = {
+
+        duration: state.segmentDurations.get(i) ?? CONFIG.hls.segmentDuration,
+        url: "segment" + String(i) + ".m4s"
+      };
+
+      // Add discontinuity marker and re-emit the init segment reference at preroll-to-real boundaries and recovery events. The preroll-to-real boundary is handled
+      // via the existing pendingDiscontinuity mechanism — outputSegment() adds prerollSegmentCount to discontinuityIndices when the first real segment is output.
       if(state.discontinuityIndices.has(i)) {
 
-        lines.push("#EXT-X-DISCONTINUITY");
-        lines.push([ "#EXT-X-MAP:URI=\"init.mp4?v=", String(state.initVersion), "\"" ].join(""));
+        entry.discontinuity = true;
+        entry.mapUri = realInitMapUri;
       }
 
-      // Use the actual recorded duration for this segment. Fall back to the configured target duration for segments that predate duration tracking (e.g. after
-      // a hot restart with continuation).
-      const duration = state.segmentDurations.get(i) ?? CONFIG.hls.segmentDuration;
+      // Emit PROGRAM-DATE-TIME for real segments using the recorded wall-clock timestamp. Intentionally omitted from preroll segments — preroll is synthetic
+      // placeholder content and assigning it wall-clock timestamps would create a backward time jump at the preroll-to-live boundary.
+      const timestamp = state.segmentTimestamps.get(i);
 
-      lines.push([ "#EXTINF:", duration.toFixed(3), "," ].join(""));
-      lines.push([ "segment", String(i), ".m4s" ].join(""));
+      if(timestamp) {
+
+        entry.programDateTime = timestamp.toISOString();
+      }
+
+      realEntries.push(entry);
     }
 
-    lines.push("");
+    // Compute DISCONTINUITY-SEQUENCE: the count of discontinuities that have scrolled off the beginning of the playlist window. Only provided when discontinuities
+    // exist in the stream's history — when undefined, the builder omits the tag entirely.
+    let discontinuitySequence: number | undefined;
 
-    return lines.join("\n");
+    if(state.discontinuityIndices.size > 0) {
+
+      let discSeq = 0;
+
+      for(const idx of state.discontinuityIndices) {
+
+        if(idx < startIndex) {
+
+          discSeq++;
+        }
+      }
+
+      discontinuitySequence = discSeq;
+    }
+
+    // Determine the initial MAP URI. When the window starts with preroll entries, use the preroll init segment. Otherwise, use the real init segment. The
+    // prerollBaseUrl is guaranteed non-null when prerollEntries is non-empty (guarded by the conditional above).
+    const initialMapUri = ((prerollEntries.length > 0) && state.prerollBaseUrl) ? (state.prerollBaseUrl + "/preroll/init.mp4") : realInitMapUri;
+
+    const entries = [ ...prerollEntries, ...realEntries ];
+
+    return buildPlaylist({
+
+      discontinuitySequence,
+      initialMapUri,
+      mediaSequence: startIndex,
+      targetDuration: CONFIG.hls.segmentDuration,
+      version: 7
+    }, entries);
   }
 
   /**
-   * Resets per-segment tracking state. Called after outputting a segment. Extracted to avoid duplication of the same four assignments.
+   * Resets per-segment tracking state. Called after outputting a segment. Extracted to avoid duplication of the same five assignments.
    */
   function resetSegmentTracking(): void {
 
@@ -477,6 +586,9 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     state.segmentFirstMoofChecked = false;
     state.segmentStartTime = Date.now();
     state.segmentTrackDurations = new Map();
+
+    // Reset video traf tracking for the next segment. Stays null if the video trackId is unknown; otherwise starts false until a video traf is seen.
+    state.videoTrafsInCurrentSegment = (state.videoTrackId !== null) ? false : null;
   }
 
   /**
@@ -520,6 +632,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     const actualDuration = Math.max(0.1, (mediaDuration > 0) ? mediaDuration : ((Date.now() - state.segmentStartTime) / 1000));
 
     state.segmentDurations.set(state.segmentIndex, actualDuration);
+    state.segmentTimestamps.set(state.segmentIndex, new Date());
 
     // Compute inter-track sync spread for session statistics. This measures the timing difference between audio and video tracks at each segment boundary. Only
     // computed when both tracks have known timescales and active timestamp counters.
@@ -574,15 +687,16 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     const segmentData = Buffer.concat(state.fragmentBuffer);
     const segmentName = [ "segment", String(state.segmentIndex), ".m4s" ].join("");
 
-    // Store the segment and update size for health monitoring.
+    // Store the segment and update size and track composition for health monitoring.
     storeSegment(streamId, segmentName, segmentData);
+    state.lastSegmentHasVideo = state.videoTrafsInCurrentSegment;
     state.lastSegmentSize = segmentData.length;
 
     // Increment segment index and mark the first segment as emitted.
     state.segmentIndex++;
     state.firstSegmentEmitted = true;
 
-    // Prune duration entries outside the playlist sliding window to prevent unbounded growth.
+    // Prune duration and timestamp entries outside the playlist sliding window to prevent unbounded growth.
     const pruneThreshold = Math.max(0, state.segmentIndex - CONFIG.hls.maxSegments);
 
     for(const idx of state.segmentDurations.keys()) {
@@ -590,6 +704,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       if(idx < pruneThreshold) {
 
         state.segmentDurations.delete(idx);
+        state.segmentTimestamps.delete(idx);
       }
     }
 
@@ -693,19 +808,32 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
             state.initVersion++;
           }
 
-          // Extract per-track timescale values from the moov box. These convert trun sample durations (timescale units) to seconds for media-time EXTINF values.
-          // Wrapped in try/catch so a malformed moov never prevents stream startup — EXTINF falls back to wall-clock time if parsing fails.
+          // Extract per-track metadata from the moov box in a single pass: timescales (for media-time EXTINF values) and handler types (for identifying the video
+          // track). The video trackId enables track-aware segment health monitoring — the monitor can distinguish dead capture pipelines (audio-only segments, no video
+          // trafs) from legitimate small segments produced by static content. Wrapped in try/catch so a malformed moov never prevents stream startup — EXTINF falls
+          // back to wall-clock time if parsing fails, and video traf tracking degrades gracefully to null.
           try {
 
-            state.trackTimescales = parseMoovTimescales(box.data);
+            const trackInfo = parseMoovTrackInfo(box.data);
+
+            for(const [ trackId, info ] of trackInfo) {
+
+              state.trackTimescales.set(trackId, info.timescale);
+
+              if(info.handlerType === "vide") {
+
+                state.videoTrackId = trackId;
+                state.videoTrafsInCurrentSegment = false;
+              }
+            }
 
             if(state.trackTimescales.size === 0) {
 
-              LOG.debug("streaming:segmenter", "No track timescales found in moov. EXTINF will use wall-clock fallback.");
+              LOG.debug("streaming:segmenter", "No track info found in moov. EXTINF will use wall-clock fallback.");
             }
           } catch {
 
-            LOG.debug("streaming:segmenter", "Failed to parse moov timescales. EXTINF will use wall-clock fallback.");
+            LOG.debug("streaming:segmenter", "Failed to parse moov track info. EXTINF will use wall-clock fallback.");
           }
 
           // Log init segment details for debugging timescale or codec issues.
@@ -716,8 +844,33 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
             timescaleEntries.push("track " + String(trackId) + "=" + String(timescale));
           }
 
-          LOG.debug("streaming:segmenter", "Init segment received: %d bytes, version=%d, timescales=[%s].",
-            initData.length, state.initVersion, timescaleEntries.join(", "));
+          LOG.debug("streaming:segmenter", "Init segment received: %d bytes, version=%d, timescales=[%s], videoTrackId=%s.",
+            initData.length, state.initVersion, timescaleEntries.join(", "), String(state.videoTrackId ?? "unknown"));
+
+          // Extract and log codec configuration from the moov for diagnostics. These parameters are needed to match preroll encoding with Chrome's output so
+          // CDVR's transcoder sees consistent codec parameters across the preroll-to-real DISCONTINUITY boundary.
+          try {
+
+            const codecConfig = parseMoovCodecConfig(box.data);
+
+            if(codecConfig.video) {
+
+              LOG.debug("streaming:segmenter", "Video codec: profile=%d, profileCompatibility=0x%s, level=%d.",
+                codecConfig.video.profile, codecConfig.video.profileCompatibility.toString(16).padStart(2, "0"), codecConfig.video.level);
+            }
+
+            if(codecConfig.audio) {
+
+              const sampleRates = [ 96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 ];
+              const sampleRate = sampleRates[codecConfig.audio.sampleRateIndex] ?? 0;
+
+              LOG.debug("streaming:segmenter", "Audio codec: objectType=%d (AAC-LC=%d), sampleRate=%dHz (index=%d).",
+                codecConfig.audio.objectType, codecConfig.audio.objectType === 2 ? 1 : 0, sampleRate, codecConfig.audio.sampleRateIndex);
+            }
+          } catch {
+
+            LOG.debug("streaming:segmenter", "Failed to parse codec configuration from moov.");
+          }
 
           // Compute the normalized reference position for tab replacement offset initialization. This converts the old segmenter's per-track timestamp counters
           // to seconds via the new moov's timescales (which Chrome keeps consistent across captures), then averages across tracks to produce a single shared position.
@@ -743,6 +896,16 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
               state.normalizedReferencePositionSec = totalSec / count;
             }
+          }
+
+          // When preroll is active, override the normalized reference position with the total preroll duration in seconds. This makes Chrome's real content PTS
+          // continue from where the preroll ended, eliminating the PTS discontinuity at the preroll-to-live boundary. Without this, Chrome's MediaRecorder starts at
+          // PTS 0, causing CDVR's remuxer to detect a PTS reset and apply a sentinel pts_offset (1152921504606840.75) that breaks the Apple TV's timeline display.
+          // With continuous PTS, the remuxer sees smooth progression and computes a normal offset. This overrides any resume-based reference because the new session's
+          // preroll PTS timeline takes precedence over the old session's timestamps.
+          if(state.prerollSegmentCount > 0) {
+
+            state.normalizedReferencePositionSec = getPrerollTotalDurationSec();
           }
 
           // Suppress the discontinuity marker when codec parameters are unchanged (byte-identical init). This avoids an unnecessary decoder flush on the client.
@@ -831,6 +994,13 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         if(needsRewrite) {
 
           offsetMoofTimestamps(box.data, state.trackOffsets);
+        }
+
+        // Check whether this moof contains a traf for the video track. The trackResults map contains an entry for every traf in the moof, keyed by trackId.
+        // If the video trackId is present, we know the capture pipeline is producing video data (even if the frame content is static/low-motion).
+        if((state.videoTrackId !== null) && trackResults.has(state.videoTrackId)) {
+
+          state.videoTrafsInCurrentSegment = true;
         }
 
         // Track "next expected" for future tab replacement handoff and accumulate durations for EXTINF.
@@ -966,6 +1136,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       nonKeyframeCount: state.nonKeyframeCount,
       segmentsWithoutLeadingKeyframe: state.segmentsWithoutLeadingKeyframe
     }),
+
+    getLastSegmentHasVideo: (): Nullable<boolean> => state.lastSegmentHasVideo,
 
     getLastSegmentSize: (): number => state.lastSegmentSize,
 

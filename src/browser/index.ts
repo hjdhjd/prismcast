@@ -1425,11 +1425,14 @@ export async function cleanupStalePages(): Promise<void> {
 
     for(const streamInfo of getAllStreams()) {
 
-      const pageId = getManagedPageId(streamInfo.page);
+      if(streamInfo.page) {
 
-      if(pageId) {
+        const pageId = getManagedPageId(streamInfo.page);
 
-        activePageIds.add(pageId);
+        if(pageId) {
+
+          activePageIds.add(pageId);
+        }
       }
     }
 

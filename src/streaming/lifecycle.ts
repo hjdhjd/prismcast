@@ -148,6 +148,14 @@ export function terminateStream(streamId: number, channelName: string, reason: s
     unregisterAbortController(streamInfo.streamIdStr);
   }
 
+  // Cancel the deferred preroll timer if it hasn't fired yet. Without this, a pending stream terminated during setup (idle timeout, capacity reclaim, browser
+  // disconnect) would leave an orphaned timer that writes to the now-unregistered HLS state.
+  if(streamInfo?.hls.prerollTimer) {
+
+    clearTimeout(streamInfo.hls.prerollTimer);
+    streamInfo.hls.prerollTimer = null;
+  }
+
   // Destroy the raw capture stream BEFORE killing FFmpeg or closing the page. This triggers puppeteer-stream's close handler while the browser is still connected,
   // ensuring STOP_RECORDING is called and chrome.tabCapture releases the capture. Without this, subsequent getStream() calls may hang with "active stream" errors.
   if(streamInfo) {
@@ -203,8 +211,9 @@ export function terminateStream(streamId: number, channelName: string, reason: s
       recoveryMetrics = streamInfo.stopMonitor();
     }
 
-    // Close the browser page. Skip during graceful shutdown since closeBrowser() will close all pages and we'd get spurious "Target closed" errors.
-    if(!isGracefulShutdown() && !streamInfo.page.isClosed()) {
+    // Close the browser page. Skip during graceful shutdown since closeBrowser() will close all pages and we'd get spurious "Target closed" errors. The page may be
+    // null for pending stream entries that were registered but whose async setup has not yet completed (or failed before creating a page).
+    if(streamInfo.page && !isGracefulShutdown() && !streamInfo.page.isClosed()) {
 
       streamInfo.page.close().catch((error: unknown) => {
 

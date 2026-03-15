@@ -31,6 +31,9 @@ export interface ProbeResult {
   // the video variant (no separate audio rendition).
   audioVariantUrl: Nullable<string>;
 
+  // Declared bandwidth of the selected variant in bits per second from the #EXT-X-STREAM-INF BANDWIDTH attribute. Zero when the attribute is absent or unparseable.
+  bandwidth: number;
+
   // URL of the highest-bandwidth variant playlist.
   bestVariantUrl: string;
 
@@ -39,6 +42,9 @@ export interface ProbeResult {
 
   // AES-128 key URL if encryption is "aes128". Null otherwise.
   keyUrl: Nullable<string>;
+
+  // Video resolution from the #EXT-X-STREAM-INF RESOLUTION attribute (e.g., "1920x1080"). Null when the attribute is absent.
+  resolution: Nullable<string>;
 }
 
 // Cache of encryption types keyed by channel name. Stores only the classification (clear/aes128/drm), not the full ProbeResult with URLs. Variant URLs and key URLs
@@ -87,7 +93,7 @@ export async function probeManifest(masterUrl: string, channelName: string): Pro
 
     LOG.debug("native:probe", "Probe cache hit for %s: drm.", channelName);
 
-    return { audioVariantUrl: null, bestVariantUrl: "", encryption: "drm", keyUrl: null };
+    return { audioVariantUrl: null, bandwidth: 0, bestVariantUrl: "", encryption: "drm", keyUrl: null, resolution: null };
   }
 
   const elapsed = startTimer();
@@ -105,16 +111,16 @@ export async function probeManifest(masterUrl: string, channelName: string): Pro
     }
 
     // Parse variant streams and select the highest bandwidth.
-    const bestVariantUrl = selectBestVariant(masterBody, masterUrl);
+    const bestVariant = selectBestVariant(masterBody, masterUrl);
 
-    if(!bestVariantUrl) {
+    if(!bestVariant) {
 
       LOG.debug("native:probe", "No variant streams found in master manifest for %s.", channelName);
 
       return null;
     }
 
-    LOG.debug("native:probe", "Best variant selected for %s: %s.", channelName, bestVariantUrl.slice(0, 120));
+    LOG.debug("native:probe", "Best variant selected for %s: %s.", channelName, bestVariant.url.slice(0, 120));
 
     // Check for a separate audio rendition in the master manifest.
     const audioVariantUrl = parseAudioRendition(masterBody, masterUrl);
@@ -125,7 +131,7 @@ export async function probeManifest(masterUrl: string, channelName: string): Pro
     }
 
     // Fetch the variant manifest.
-    const variantBody = await fetchManifestText(bestVariantUrl);
+    const variantBody = await fetchManifestText(bestVariant.url);
 
     if(!variantBody) {
 
@@ -135,7 +141,7 @@ export async function probeManifest(masterUrl: string, channelName: string): Pro
     }
 
     // Classify encryption.
-    const result = await classifyEncryption(variantBody, bestVariantUrl, audioVariantUrl, channelName);
+    const result = await classifyEncryption(variantBody, bestVariant, audioVariantUrl, channelName);
 
     probeCache.set(channelName, result.encryption);
 
@@ -179,16 +185,32 @@ async function fetchManifestText(url: string): Promise<Nullable<string>> {
 }
 
 /**
- * Parses #EXT-X-STREAM-INF lines from a master manifest and returns the URL of the highest-bandwidth variant.
+ * Metadata for the selected variant from the master manifest.
+ */
+interface VariantSelection {
+
+  // Declared bandwidth in bits per second from the BANDWIDTH attribute.
+  bandwidth: number;
+
+  // Video resolution from the RESOLUTION attribute (e.g., "1920x1080"), or null when absent.
+  resolution: Nullable<string>;
+
+  // Absolute URL of the selected variant playlist.
+  url: string;
+}
+
+/**
+ * Parses #EXT-X-STREAM-INF lines from a master manifest and returns the highest-bandwidth variant with its metadata.
  *
  * @param masterBody - The master manifest content.
  * @param masterUrl - The master manifest URL for resolving relative variant URLs.
- * @returns The absolute URL of the highest-bandwidth variant, or null if no variants are found.
+ * @returns The selected variant metadata, or null if no variants are found.
  */
-function selectBestVariant(masterBody: string, masterUrl: string): Nullable<string> {
+function selectBestVariant(masterBody: string, masterUrl: string): Nullable<VariantSelection> {
 
   const lines = masterBody.split("\n");
   let bestBandwidth = 0;
+  let bestResolution: Nullable<string> = null;
   let bestUrl: Nullable<string> = null;
   const bandwidths: number[] = [];
 
@@ -205,6 +227,10 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<stri
     const bandwidthMatch = /BANDWIDTH=(\d+)/.exec(line);
     const bandwidth = bandwidthMatch ? Number(bandwidthMatch[1]) : 0;
 
+    // Parse RESOLUTION attribute (e.g., RESOLUTION=1920x1080).
+    const resolutionMatch = /RESOLUTION=(\d+x\d+)/.exec(line);
+    const resolution: Nullable<string> = resolutionMatch ? resolutionMatch[1] : null;
+
     // The variant URL is on the next line.
     const variantLine = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
 
@@ -218,6 +244,7 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<stri
     if(bandwidth > bestBandwidth) {
 
       bestBandwidth = bandwidth;
+      bestResolution = resolution;
       bestUrl = variantLine;
     }
   }
@@ -230,18 +257,20 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<stri
   }
 
   // Resolve relative URLs against the master manifest URL.
-  return resolveUrl(bestUrl, masterUrl);
+  return { bandwidth: bestBandwidth, resolution: bestResolution, url: resolveUrl(bestUrl, masterUrl) };
 }
 
 /**
  * Classifies the encryption type of a variant manifest by parsing its #EXT-X-KEY tags.
  *
  * @param variantBody - The variant manifest content.
- * @param variantUrl - The variant manifest URL for resolving relative key URLs.
+ * @param variant - The selected variant metadata (URL, bandwidth, resolution).
+ * @param audioVariantUrl - The audio rendition URL, or null when audio is muxed.
  * @param channelName - The channel name for logging.
  * @returns The probe result with the classified encryption type.
  */
-async function classifyEncryption(variantBody: string, variantUrl: string, audioVariantUrl: Nullable<string>, channelName: string): Promise<ProbeResult> {
+async function classifyEncryption(variantBody: string, variant: VariantSelection, audioVariantUrl: Nullable<string>,
+  channelName: string): Promise<ProbeResult> {
 
   const lines = variantBody.split("\n");
   let encryption: EncryptionType = "clear";
@@ -278,7 +307,7 @@ async function classifyEncryption(variantBody: string, variantUrl: string, audio
         break;
       }
 
-      const rawKeyUrl = resolveUrl(uriMatch[1], variantUrl);
+      const rawKeyUrl = resolveUrl(uriMatch[1], variant.url);
 
       // Test that the key is accessible and is exactly 16 bytes.
       // eslint-disable-next-line no-await-in-loop
@@ -304,7 +333,7 @@ async function classifyEncryption(variantBody: string, variantUrl: string, audio
     break;
   }
 
-  return { audioVariantUrl, bestVariantUrl: variantUrl, encryption, keyUrl };
+  return { audioVariantUrl, bandwidth: variant.bandwidth, bestVariantUrl: variant.url, encryption, keyUrl, resolution: variant.resolution };
 }
 
 /**

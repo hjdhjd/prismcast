@@ -17,6 +17,7 @@ import type { ManifestInterceptorHandle } from "../native/intercept.js";
 import type { MonitorStreamInfo } from "./monitor.js";
 import type { Readable } from "node:stream";
 import { getCachedEncryption } from "../native/probe.js";
+import { getDomainConfig } from "../config/sites.js";
 import { getEffectiveViewport } from "../config/presets.js";
 import { getProviderDisplayName } from "../config/providers.js";
 import { installManifestInterceptor } from "../native/intercept.js";
@@ -102,12 +103,20 @@ export interface StreamSetupOptions {
   // Whether to treat this as a static page without video.
   noVideo?: boolean;
 
+  // Pre-allocated numeric stream ID from a pending registry entry. When provided, setupStream uses this instead of allocating a new ID. This ensures the abort
+  // controller, health monitor, and other internal state reference the same ID as the pending entry in the stream registry.
+  numericStreamId?: number;
+
   // Factory function to create a tab replacement handler. Called after stream IDs are generated so the handler has access to them. If not provided, tab replacement
   // recovery is disabled.
   onTabReplacementFactory?: TabReplacementHandlerFactory;
 
   // Override the autodetected profile with a specific profile name.
   profileOverride?: string;
+
+  // Pre-allocated string stream ID from a pending registry entry. When provided, setupStream uses this instead of generating a new one. Must be provided together
+  // with numericStreamId to maintain ID consistency.
+  streamId?: string;
 
   // The URL to stream. Required.
   url: string;
@@ -751,9 +760,10 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
   const { channel, channelName, channelSelector, clickSelector, clickToPlay, noVideo, onTabReplacementFactory, profileOverride, url } = options;
 
-  // Generate stream identifiers early so all log messages include them.
-  const streamId = generateStreamId(channelName, url);
-  const numericStreamId = getNextStreamId();
+  // Use pre-allocated IDs from a pending registry entry when available, or generate new ones. Pre-allocated IDs ensure the abort controller, health monitor, and
+  // tab replacement handler all reference the same stream identity as the pending entry in the registry.
+  const streamId = options.streamId ?? generateStreamId(channelName, url);
+  const numericStreamId = options.numericStreamId ?? getNextStreamId();
   const startTime = new Date();
 
   // Create and register the AbortController for this stream. This allows pending evaluate calls to be cancelled immediately when the stream is terminated.
@@ -904,12 +914,13 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
     const { captureStream, context, directTune, ffmpegProcess, manifestInterception, page, rawCaptureStream } = captureResult;
 
-    // Monitor stream info for status updates.
+    // Monitor stream info for status updates. The providerTag enables provider-specific monitoring flags (e.g., tinySegmentThreshold).
     const monitorStreamInfo: MonitorStreamInfo = {
 
       channelName: channel?.name ?? null,
       numericStreamId,
       providerName,
+      providerTag: getDomainConfig(url)?.providerTag,
       startTime
     };
 

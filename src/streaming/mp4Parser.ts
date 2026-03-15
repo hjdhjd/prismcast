@@ -768,21 +768,39 @@ export function offsetMoofTimestamps(moofData: Buffer, trackOffsets: Map<number,
   return results;
 }
 
-// Moov Timescale Extraction.
+// Moov Track Info Extraction.
 
 /**
- * Extracts per-track timescale values from a moov (movie header) box. Each track in the moov contains a tkhd box with the track_ID and an mdia > mdhd box with the
- * timescale. The timescale converts sample durations (in timescale units) to real seconds: seconds = duration / timescale. For example, a timescale of 16000 means
- * each unit is 1/16000 of a second.
+ * Per-track metadata extracted from a moov box. Combines timescale (from mdhd) and handler type (from hdlr) into a single structure, avoiding the need to walk the
+ * moov twice.
+ */
+export interface MoovTrackInfo {
+
+  // The handler type from the hdlr box: "vide" for video, "soun" for audio, "hint" for hint tracks, etc. This is the definitive way to identify which trackId
+  // corresponds to video vs audio, as timescale-based heuristics (e.g., 90000 = video) are fragile.
+  handlerType: string;
+
+  // The timescale from the mdhd box. Converts sample durations (in timescale units) to real seconds: seconds = duration / timescale.
+  timescale: number;
+}
+
+/**
+ * Extracts per-track metadata from a moov (movie header) box in a single pass. Each track's tkhd provides the track_ID, while the mdia container holds both the
+ * mdhd (timescale) and hdlr (handler type). Combining these into one walk avoids parsing the moov structure twice.
  *
- * Parsing path: moov > trak > { tkhd (track_ID), mdia > mdhd (timescale) }
+ * Parsing path: moov > trak > { tkhd (track_ID), mdia > { mdhd (timescale), hdlr (handler_type) } }
+ *
+ * Box layouts referenced:
+ * - tkhd (FullBox): [0-3] size, [4-7] "tkhd", [8] version, [9-11] flags. Version 0: track_ID at offset 20. Version 1: track_ID at offset 28.
+ * - mdhd (FullBox): [0-3] size, [4-7] "mdhd", [8] version, [9-11] flags. Version 0: timescale at offset 20. Version 1: timescale at offset 28.
+ * - hdlr (FullBox): [0-3] size, [4-7] "hdlr", [8] version, [9-11] flags, [12-15] pre_defined, [16-19] handler_type (4 ASCII chars).
  *
  * @param moovData - The complete moov box buffer including its 8-byte header.
- * @returns Map from track_ID to timescale. Empty if no valid tracks are found.
+ * @returns Map from track_ID to track info. Only includes tracks where both timescale and handler type were successfully extracted.
  */
-export function parseMoovTimescales(moovData: Buffer): Map<number, number> {
+export function parseMoovTrackInfo(moovData: Buffer): Map<number, MoovTrackInfo> {
 
-  const result = new Map<number, number>();
+  const result = new Map<number, MoovTrackInfo>();
 
   // Walk the moov's child boxes looking for trak (track) boxes.
   iterateChildBoxes(moovData, (type, data, offset, size) => {
@@ -796,16 +814,14 @@ export function parseMoovTimescales(moovData: Buffer): Map<number, number> {
 
     let trackId: Nullable<number> = null;
     let timescale: Nullable<number> = null;
+    let handlerType: Nullable<string> = null;
 
     // Walk the trak's child boxes to find tkhd (track header) and mdia (media container). The spec mandates tkhd before mdia, so trackId is available before we
-    // need it, but we don't depend on ordering — both are extracted independently and combined after iteration.
+    // need it, but we don't depend on ordering — all three fields are extracted independently and combined after iteration.
     iterateChildBoxes(trakData, (childType, childData, childOffset, childSize) => {
 
       if(childType === "tkhd") {
 
-        // tkhd layout (FullBox): [0-3] size, [4-7] "tkhd", [8] version, [9-11] flags.
-        // Version 0: [12-15] creation_time, [16-19] modification_time, [20-23] track_ID.
-        // Version 1: [12-19] creation_time, [20-27] modification_time, [28-31] track_ID.
         if(childSize < 16) {
 
           return;
@@ -822,45 +838,266 @@ export function parseMoovTimescales(moovData: Buffer): Map<number, number> {
         }
       } else if(childType === "mdia") {
 
-        // Walk the mdia's child boxes to find mdhd (media header) which contains the timescale.
+        // Walk the mdia's child boxes to find mdhd (timescale) and hdlr (handler type).
         const mdiaData = childData.subarray(childOffset, childOffset + childSize);
 
         iterateChildBoxes(mdiaData, (mdiaChildType, mdiaChildData, mdiaChildOffset, mdiaChildSize) => {
 
-          if(mdiaChildType !== "mdhd") {
+          if(mdiaChildType === "mdhd") {
 
-            return;
-          }
+            if(mdiaChildSize < 16) {
 
-          // mdhd layout (FullBox): [0-3] size, [4-7] "mdhd", [8] version, [9-11] flags.
-          // Version 0: [12-15] creation_time, [16-19] modification_time, [20-23] timescale.
-          // Version 1: [12-19] creation_time, [20-27] modification_time, [28-31] timescale.
-          if(mdiaChildSize < 16) {
+              return;
+            }
 
-            return;
-          }
+            const mdhdVersion = mdiaChildData.readUInt8(mdiaChildOffset + 8);
 
-          const mdhdVersion = mdiaChildData.readUInt8(mdiaChildOffset + 8);
+            if((mdhdVersion === 0) && (mdiaChildSize >= 24)) {
 
-          if((mdhdVersion === 0) && (mdiaChildSize >= 24)) {
+              timescale = mdiaChildData.readUInt32BE(mdiaChildOffset + 20);
+            } else if((mdhdVersion === 1) && (mdiaChildSize >= 32)) {
 
-            timescale = mdiaChildData.readUInt32BE(mdiaChildOffset + 20);
-          } else if((mdhdVersion === 1) && (mdiaChildSize >= 32)) {
+              timescale = mdiaChildData.readUInt32BE(mdiaChildOffset + 28);
+            }
+          } else if(mdiaChildType === "hdlr") {
 
-            timescale = mdiaChildData.readUInt32BE(mdiaChildOffset + 28);
+            // hdlr needs at least 20 bytes: 8 header + 4 version/flags + 4 pre_defined + 4 handler_type.
+            if(mdiaChildSize < 20) {
+
+              return;
+            }
+
+            handlerType = mdiaChildData.toString("ascii", mdiaChildOffset + 16, mdiaChildOffset + 20);
           }
         });
       }
     });
 
-    // Store the track if both trackId and timescale were successfully extracted. TypeScript's control flow analysis cannot track mutations made inside the
-    // iterateChildBoxes callbacks, so these variables appear "always null" to the linter despite being set at runtime.
+    // Store the track if all three fields were successfully extracted. TypeScript's control flow analysis cannot track mutations made inside the iterateChildBoxes
+    // callbacks, so these variables appear "always null" to the linter despite being set at runtime.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if((trackId !== null) && (timescale !== null) && (timescale > 0)) {
+    if((trackId !== null) && (timescale !== null) && (timescale > 0) && (handlerType !== null)) {
 
-      result.set(trackId, timescale);
+      result.set(trackId, { handlerType, timescale });
     }
   });
 
   return result;
+}
+
+// Codec Configuration Extraction.
+
+/**
+ * Video codec configuration extracted from the avcC box inside the moov. These are the parameters Chrome's MediaRecorder used to encode the video, needed to match
+ * the preroll's FFmpeg encoding so CDVR's transcoder sees consistent codec parameters across the preroll-to-real DISCONTINUITY boundary.
+ */
+export interface VideoCodecConfig {
+
+  // AVC level indication (e.g., 30 = level 3.0, 31 = level 3.1, 40 = level 4.0).
+  level: number;
+
+  // AVC profile indication (e.g., 66 = Baseline, 77 = Main, 100 = High).
+  profile: number;
+
+  // Profile compatibility flags byte.
+  profileCompatibility: number;
+}
+
+/**
+ * Audio codec configuration extracted from the esds box inside the moov. Contains the AAC object type and sample rate index from the AudioSpecificConfig.
+ */
+export interface AudioCodecConfig {
+
+  // AAC object type (1 = AAC-LC, 2 = HE-AAC, etc.).
+  objectType: number;
+
+  // Sample rate index from the AudioSpecificConfig frequency table (e.g., 3 = 48000 Hz, 4 = 44100 Hz).
+  sampleRateIndex: number;
+}
+
+/**
+ * Combined codec configuration from a moov box.
+ */
+export interface MoovCodecConfig {
+
+  // Audio codec configuration, or null if no mp4a/esds found.
+  audio: Nullable<AudioCodecConfig>;
+
+  // Video codec configuration, or null if no avc1/avcC found.
+  video: Nullable<VideoCodecConfig>;
+}
+
+/**
+ * Extracts video and audio codec configuration from a moov box. Walks the box tree to find the avcC box (inside moov > trak > mdia > minf > stbl > stsd > avc1) for
+ * video and the esds box (inside moov > trak > mdia > minf > stbl > stsd > mp4a) for audio.
+ *
+ * avcC layout: [0-3] size, [4-7] "avcC", [8] configurationVersion, [9] AVCProfileIndication, [10] profile_compatibility, [11] AVCLevelIndication, ...
+ * esds layout: [0-3] size, [4-7] "esds", [8] version, [9-11] flags, then descriptor tags. AudioSpecificConfig is inside the DecoderSpecificInfo descriptor.
+ *
+ * @param moovData - The complete moov box buffer including its 8-byte header.
+ * @returns The extracted codec configuration.
+ */
+export function parseMoovCodecConfig(moovData: Buffer): MoovCodecConfig {
+
+  let video: Nullable<VideoCodecConfig> = null;
+  let audio: Nullable<AudioCodecConfig> = null;
+
+  // Walk moov > trak.
+  iterateChildBoxes(moovData, (type, data, offset, size) => {
+
+    if(type !== "trak") {
+
+      return;
+    }
+
+    const trakData = data.subarray(offset, offset + size);
+
+    // Walk trak > mdia.
+    iterateChildBoxes(trakData, (childType, childData, childOffset, childSize) => {
+
+      if(childType !== "mdia") {
+
+        return;
+      }
+
+      const mdiaData = childData.subarray(childOffset, childOffset + childSize);
+
+      // Walk mdia > minf.
+      iterateChildBoxes(mdiaData, (minfType, minfData, minfOffset, minfSize) => {
+
+        if(minfType !== "minf") {
+
+          return;
+        }
+
+        const minfBox = minfData.subarray(minfOffset, minfOffset + minfSize);
+
+        // Walk minf > stbl.
+        iterateChildBoxes(minfBox, (stblType, stblData, stblOffset, stblSize) => {
+
+          if(stblType !== "stbl") {
+
+            return;
+          }
+
+          const stblBox = stblData.subarray(stblOffset, stblOffset + stblSize);
+
+          // Walk stbl > stsd. The stsd box is a FullBox with a 4-byte entry count after the version/flags.
+          iterateChildBoxes(stblBox, (stsdType, stsdData, stsdOffset, stsdSize) => {
+
+            if(stsdType !== "stsd") {
+
+              return;
+            }
+
+            // stsd is a FullBox: 8 header + 4 version/flags + 4 entry_count = 16 bytes before entries. Entries are child boxes starting at offset 16.
+            if(stsdSize < 16) {
+
+              return;
+            }
+
+            const stsdBox = stsdData.subarray(stsdOffset, stsdOffset + stsdSize);
+            const stsdEntries = Buffer.alloc(stsdSize - 16 + 8);
+
+            // Construct a synthetic container so iterateChildBoxes can parse the entries. Copy the entry data with a fake 8-byte box header.
+            stsdEntries.writeUInt32BE(stsdSize - 16 + 8, 0);
+            stsdEntries.write("stsd", 4);
+            stsdBox.copy(stsdEntries, 8, 16);
+
+            iterateChildBoxes(stsdEntries, (entryType, entryData, entryOffset, entrySize) => {
+
+              if(entryType === "avc1") {
+
+                // avc1 is a sample entry: 8 header + 6 reserved + 2 data_ref_index + 16 pre_defined/reserved + 2 width + 2 height + ... = 86 bytes minimum before
+                // child boxes. Child boxes (including avcC) start at offset 86.
+                if(entrySize < 86) {
+
+                  return;
+                }
+
+                const avc1Box = entryData.subarray(entryOffset, entryOffset + entrySize);
+                const avc1Children = Buffer.alloc(entrySize - 86 + 8);
+
+                avc1Children.writeUInt32BE(entrySize - 86 + 8, 0);
+                avc1Children.write("avc1", 4);
+                avc1Box.copy(avc1Children, 8, 86);
+
+                iterateChildBoxes(avc1Children, (avcType, avcData, avcOffset, avcSize) => {
+
+                  if((avcType === "avcC") && (avcSize >= 12)) {
+
+                    video = {
+
+                      level: avcData.readUInt8(avcOffset + 11),
+                      profile: avcData.readUInt8(avcOffset + 9),
+                      profileCompatibility: avcData.readUInt8(avcOffset + 10)
+                    };
+                  }
+                });
+              } else if(entryType === "mp4a") {
+
+                // mp4a is a sample entry: 8 header + 6 reserved + 2 data_ref_index + 8 reserved + 2 channelcount + 2 samplesize + 4 reserved + 2 samplerate +
+                // 2 reserved = 36 bytes before child boxes.
+                if(entrySize < 36) {
+
+                  return;
+                }
+
+                const mp4aBox = entryData.subarray(entryOffset, entryOffset + entrySize);
+                const mp4aChildren = Buffer.alloc(entrySize - 36 + 8);
+
+                mp4aChildren.writeUInt32BE(entrySize - 36 + 8, 0);
+                mp4aChildren.write("mp4a", 4);
+                mp4aBox.copy(mp4aChildren, 8, 36);
+
+                iterateChildBoxes(mp4aChildren, (esdsType, esdsData, esdsOffset, esdsSize) => {
+
+                  if((esdsType === "esds") && (esdsSize >= 12)) {
+
+                    // Parse the esds descriptor chain to find AudioSpecificConfig. The esds box after the FullBox header (version + flags = 4 bytes) contains an
+                    // ES_Descriptor. We scan for the DecoderSpecificInfo tag (0x05) which contains the AudioSpecificConfig. The AudioSpecificConfig's first 5 bits
+                    // are the object type, and the next 4 bits are the sample rate index.
+                    const esdsPayload = esdsData.subarray(esdsOffset + 12, esdsOffset + esdsSize);
+
+                    for(let i = 0; i < esdsPayload.length - 2; i++) {
+
+                      if(esdsPayload[i] === 0x05) {
+
+                        // Tag 0x05 = DecoderSpecificInfo. Skip the tag byte and the size byte(s). Size encoding: if byte < 0x80, it's the size. Otherwise,
+                        // extended size (we handle only single-byte sizes for simplicity).
+                        let sizeOffset = i + 1;
+
+                        while((sizeOffset < esdsPayload.length) && (esdsPayload[sizeOffset] >= 0x80)) {
+
+                          sizeOffset++;
+                        }
+
+                        const configStart = sizeOffset + 1;
+
+                        if((configStart + 1) < esdsPayload.length) {
+
+                          const byte0 = esdsPayload[configStart];
+                          const byte1 = esdsPayload[configStart + 1];
+
+                          audio = {
+
+                            objectType: (byte0 >> 3) & 0x1F,
+                            sampleRateIndex: ((byte0 & 0x07) << 1) | ((byte1 >> 7) & 0x01)
+                          };
+                        }
+
+                        break;
+                      }
+                    }
+                  }
+                });
+              }
+            });
+          });
+        });
+      });
+    });
+  });
+
+  return { audio, video };
 }

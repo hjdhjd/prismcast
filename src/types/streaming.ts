@@ -73,6 +73,12 @@ export interface VideoState {
   // Alias for currentTime. Some code uses "time" for brevity.
   time: number;
 
+  // Intrinsic height of the video source in pixels. Zero when no video is loaded.
+  videoHeight: number;
+
+  // Intrinsic width of the video source in pixels. Zero when no video is loaded.
+  videoWidth: number;
+
   // Current volume level from 0.0 (silent) to 1.0 (full volume). The health monitor enforces volume = 1.0 on each check to counter sites that lower volume.
   volume: number;
 }

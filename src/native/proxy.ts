@@ -3,19 +3,27 @@
  * proxy.ts: Native HLS proxy — manifest polling, segment fetching, and playlist generation.
  */
 import { LOG, startTimer } from "../utils/index.js";
+import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.js";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.js";
 import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.js";
 import type { CDPSession } from "puppeteer-core";
+import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
+import type { PlaylistSegmentEntry } from "../streaming/playlistBuilder.js";
+import { buildPlaylist } from "../streaming/playlistBuilder.js";
 import { getStream } from "../streaming/registry.js";
 import { removeManifestInterceptor } from "./intercept.js";
 import { resolveUrl } from "./probe.js";
 
 /* This module implements the native HLS proxy that replaces Chrome screen capture for viable streams. It polls the provider's variant manifest at regular intervals,
  * detects new segments by tracking #EXT-X-MEDIA-SEQUENCE, fetches each segment (optionally decrypting AES-128), stores them in the existing HLS segment system, and
- * generates a clean MPEG-TS HLS playlist.
+ * generates an HLS playlist that faithfully propagates upstream metadata — discontinuity markers, program timestamps, and SCTE-35 ad signaling (cue-out, cue-in,
+ * cue-out-cont).
  *
- * The proxy generates its own playlist rather than rewriting the provider's playlist, which avoids dealing with CDN-relative URLs and provider-specific quirks.
+ * The proxy generates its own playlist rather than rewriting the provider's playlist, which avoids dealing with CDN-relative URLs and provider-specific quirks. However,
+ * it preserves all playback-critical tags from the upstream manifest so that downstream consumers (Channels DVR) can correctly handle PTS resets at ad boundaries,
+ * synchronize wall-clock time, and detect commercial breaks.
+ *
  * Video segments are stored as "segment0.ts", "segment1.ts", etc. For streams with separate audio renditions, audio segments are stored as "audio0.ts",
  * "audio1.ts", etc.
  */
@@ -54,6 +62,10 @@ export interface NativeProxyOptions {
 
   // Pre-fetched AES-128 decryption key from the coordinator. When provided, the proxy uses this key directly instead of fetching it on the first segment.
   prefetchedKey: Nullable<Buffer>;
+
+  // Number of preroll segments preceding real content. When non-zero, the proxy starts segment numbering at this index to reserve the preroll index range. The
+  // composite playlist behavior (including preroll entries) is determined dynamically by checking stream.hls.prerollStartTime at playlist generation time.
+  prerollSegmentCount?: number;
 
   // Numeric stream ID for segment storage.
   streamId: number;
@@ -132,9 +144,21 @@ export interface NativeProxyStats {
 // Parsed Manifest Types.
 
 /**
- * A single segment parsed from a variant manifest, with its associated encryption state from the most recent #EXT-X-KEY tag.
+ * A single segment parsed from a variant manifest, with its associated encryption state, discontinuity flags, and upstream metadata from the most recent tags.
  */
 interface ParsedSegment {
+
+  // True if this segment is preceded by an #EXT-X-CUE-IN tag (ad break end).
+  cueIn: boolean;
+
+  // #EXT-X-CUE-OUT duration value preceding this segment (ad break start), or null if not an ad boundary.
+  cueOut: Nullable<string>;
+
+  // #EXT-X-CUE-OUT-CONT value for this segment (ad break continuation with elapsed time and duration), or null when not inside an ad break.
+  cueOutCont: Nullable<string>;
+
+  // True if this segment is preceded by an #EXT-X-DISCONTINUITY tag (PTS reset boundary).
+  discontinuity: boolean;
 
   // Segment duration from #EXTINF.
   duration: number;
@@ -144,6 +168,9 @@ interface ParsedSegment {
 
   // AES-128 key URL from #EXT-X-KEY, or null for clear segments.
   keyUrl: Nullable<string>;
+
+  // Upstream #EXT-X-PROGRAM-DATE-TIME ISO string preceding this segment, or null when the manifest omits it.
+  programDateTime: Nullable<string>;
 
   // Media sequence number for this segment.
   sequence: number;
@@ -160,18 +187,48 @@ interface ManifestParseResult {
   // #EXT-X-MEDIA-SEQUENCE value.
   mediaSequence: number;
 
-  // Parsed segment entries with duration, encryption state, and absolute URLs.
+  // Parsed segment entries with duration, encryption state, discontinuity flags, and absolute URLs.
   segments: ParsedSegment[];
 
   // #EXT-X-TARGETDURATION value.
   targetDuration: number;
 }
 
+/**
+ * Per-segment metadata tracked alongside the stored segment data. These Maps are keyed by local filename (e.g., "segment0.ts") and provide the information needed to
+ * generate a faithful playlist with upstream tags propagated.
+ */
+interface SegmentMetadata {
+
+  // Segments preceded by #EXT-X-CUE-IN in the upstream manifest.
+  cueIns: Map<string, boolean>;
+
+  // Segments with #EXT-X-CUE-OUT-CONT in the upstream manifest. Value is the full tag parameter string (elapsed time, duration, SCTE-35 data).
+  cueOutConts: Map<string, string>;
+
+  // Segments preceded by #EXT-X-CUE-OUT in the upstream manifest. Value is the duration string from the tag.
+  cueOuts: Map<string, string>;
+
+  // Segments preceded by #EXT-X-DISCONTINUITY in the upstream manifest.
+  discontinuities: Map<string, boolean>;
+
+  // Segment durations from #EXTINF tags.
+  durations: Map<string, number>;
+
+  // Wall-clock timestamps as ISO strings from #EXT-X-PROGRAM-DATE-TIME. Only present for segments where the upstream manifest provides this tag.
+  timestamps: Map<string, string>;
+
+  // Total number of discontinuities observed across all segments ever stored. Used with the count of discontinuities in the current playlist window to compute the
+  // #EXT-X-DISCONTINUITY-SEQUENCE header value.
+  totalDiscontinuities: number;
+}
+
 // Manifest Parsing Helpers.
 
 /**
- * Parses a variant manifest into its metadata and segment list. Handles #EXT-X-MEDIA-SEQUENCE, #EXT-X-TARGETDURATION, #EXT-X-KEY (AES-128 with key rotation), and
- * #EXTINF + segment URL pairs. Key/IV state is tracked per-segment so key rotation within a single manifest is handled correctly.
+ * Parses a variant manifest into its metadata and segment list. Handles #EXT-X-MEDIA-SEQUENCE, #EXT-X-TARGETDURATION, #EXT-X-KEY (AES-128 with key rotation),
+ * #EXT-X-DISCONTINUITY, #EXT-X-PROGRAM-DATE-TIME, #EXT-X-CUE-OUT, #EXT-X-CUE-OUT-CONT, #EXT-X-CUE-IN, and #EXTINF + segment URL pairs. Key/IV state and metadata
+ * flags are tracked per-segment so key rotation and discontinuities within a single manifest are handled correctly.
  *
  * @param body - The variant manifest text content.
  * @param baseUrl - Base URL for resolving relative segment and key URLs.
@@ -181,8 +238,10 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
 
   const lines = body.split("\n");
 
-  // Parse #EXT-X-MEDIA-SEQUENCE.
+  // Parse header tags: #EXT-X-MEDIA-SEQUENCE and #EXT-X-TARGETDURATION. The upstream #EXT-X-DISCONTINUITY-SEQUENCE is intentionally ignored — the proxy computes its
+  // own value from its local sliding window, which differs from the upstream's window size and rotation rate.
   let mediaSequence = 0;
+  let targetDuration = 6;
 
   for(const line of lines) {
 
@@ -191,32 +250,27 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
     if(trimmed.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
 
       mediaSequence = Number(trimmed.split(":")[1]);
-
-      break;
-    }
-  }
-
-  // Parse #EXT-X-TARGETDURATION.
-  let targetDuration = 6;
-
-  for(const line of lines) {
-
-    const trimmed = line.trim();
-
-    if(trimmed.startsWith("#EXT-X-TARGETDURATION:")) {
+    } else if(trimmed.startsWith("#EXT-X-TARGETDURATION:")) {
 
       targetDuration = Number(trimmed.split(":")[1]);
-
-      break;
     }
   }
 
   // Parse segments: each #EXTINF line is followed by the segment URL. Per the HLS spec, each #EXT-X-KEY applies to all subsequent segments until the next
-  // #EXT-X-KEY tag. We track the current key URL and IV per segment so key rotation within a single manifest is handled correctly.
+  // #EXT-X-KEY tag. We track the current key URL and IV per segment so key rotation within a single manifest is handled correctly. Metadata tags
+  // (#EXT-X-DISCONTINUITY, #EXT-X-PROGRAM-DATE-TIME, #EXT-X-CUE-OUT, #EXT-X-CUE-IN, #EXT-X-CUE-OUT-CONT) are accumulated as pending flags and attached to the
+  // next segment.
   const segments: ParsedSegment[] = [];
   let currentSequence = mediaSequence;
   let currentManifestKeyUrl: Nullable<string> = null;
   let currentIvHex: Nullable<string> = null;
+
+  // Pending metadata flags — accumulated from tags between segments and attached to the next #EXTINF.
+  let pendingCueIn = false;
+  let pendingCueOut: Nullable<string> = null;
+  let pendingCueOutCont: Nullable<string> = null;
+  let pendingDiscontinuity = false;
+  let pendingProgramDateTime: Nullable<string> = null;
 
   for(let i = 0; i < lines.length; i++) {
 
@@ -248,6 +302,48 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
       continue;
     }
 
+    if(trimmed === "#EXT-X-DISCONTINUITY") {
+
+      pendingDiscontinuity = true;
+
+      continue;
+    }
+
+    if(trimmed.startsWith("#EXT-X-PROGRAM-DATE-TIME:")) {
+
+      pendingProgramDateTime = trimmed.slice(25);
+
+      continue;
+    }
+
+    if(trimmed.startsWith("#EXT-X-CUE-OUT-CONT:")) {
+
+      pendingCueOutCont = trimmed.slice(20);
+
+      continue;
+    }
+
+    if(trimmed.startsWith("#EXT-X-CUE-OUT:")) {
+
+      pendingCueOut = trimmed.slice(15);
+
+      continue;
+    }
+
+    if(trimmed === "#EXT-X-CUE-OUT") {
+
+      pendingCueOut = "";
+
+      continue;
+    }
+
+    if(trimmed === "#EXT-X-CUE-IN") {
+
+      pendingCueIn = true;
+
+      continue;
+    }
+
     if(!trimmed.startsWith("#EXTINF:")) {
 
       continue;
@@ -264,7 +360,26 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
       continue;
     }
 
-    segments.push({ duration, ivHex: currentIvHex, keyUrl: currentManifestKeyUrl, sequence: currentSequence, url: resolveUrl(segUrl, baseUrl) });
+    segments.push({
+
+      cueIn: pendingCueIn,
+      cueOut: pendingCueOut,
+      cueOutCont: pendingCueOutCont,
+      discontinuity: pendingDiscontinuity,
+      duration,
+      ivHex: currentIvHex,
+      keyUrl: currentManifestKeyUrl,
+      programDateTime: pendingProgramDateTime,
+      sequence: currentSequence,
+      url: resolveUrl(segUrl, baseUrl)
+    });
+
+    // Reset pending flags after attaching them to a segment.
+    pendingCueIn = false;
+    pendingCueOut = null;
+    pendingCueOutCont = null;
+    pendingDiscontinuity = false;
+    pendingProgramDateTime = null;
     currentSequence++;
   }
 
@@ -272,41 +387,174 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
 }
 
 /**
- * Builds a variant playlist string from stored segment filenames and their durations. Used for both video and audio variant playlists.
+ * Builds a variant playlist string from stored segment filenames and their associated metadata. Emits #EXT-X-DISCONTINUITY, #EXT-X-DISCONTINUITY-SEQUENCE,
+ * #EXT-X-PROGRAM-DATE-TIME, #EXT-X-CUE-OUT, #EXT-X-CUE-OUT-CONT, and #EXT-X-CUE-IN tags to faithfully represent upstream ad boundaries and PTS resets.
  *
  * @param segmentEntries - Ordered list of segment filenames from the segment Map.
- * @param durations - Map of filename to #EXTINF duration.
+ * @param metadata - Per-segment metadata (durations, timestamps, discontinuities, cue markers).
  * @param prefix - Filename prefix for extracting the sequence index (e.g., "segment" or "audio").
  * @param targetDuration - #EXT-X-TARGETDURATION value.
  * @returns The formatted m3u8 playlist string.
  */
-function buildVariantPlaylist(segmentEntries: string[], durations: Map<string, number>, prefix: string, targetDuration: number): string {
+function buildVariantPlaylist(segmentEntries: string[], metadata: SegmentMetadata, prefix: string, targetDuration: number): string {
 
-  const playlistLines: string[] = [
-    "#EXTM3U",
-    "#EXT-X-VERSION:3",
-    "#EXT-X-TARGETDURATION:" + String(Math.ceil(targetDuration))
-  ];
+  // Compute MEDIA-SEQUENCE from the first filename in the window. The filename encodes the local segment index (e.g., "segment5.ts" → 5).
+  let mediaSequence = 0;
 
   if(segmentEntries.length > 0) {
 
-    const firstIndex = Number(segmentEntries[0].replace(prefix, "").replace(".ts", ""));
-
-    playlistLines.push("#EXT-X-MEDIA-SEQUENCE:" + String(firstIndex));
-  } else {
-
-    playlistLines.push("#EXT-X-MEDIA-SEQUENCE:0");
+    mediaSequence = Number(segmentEntries[0].replace(prefix, "").replace(".ts", ""));
   }
+
+  // Compute DISCONTINUITY-SEQUENCE: total discontinuities ever observed minus those still visible in the current window. Only provided when > 0 to keep playlists
+  // clean for streams that never have discontinuities.
+  let windowDiscontinuities = 0;
 
   for(const filename of segmentEntries) {
 
-    const duration = durations.get(filename) ?? targetDuration;
+    if(metadata.discontinuities.has(filename)) {
 
-    playlistLines.push("#EXTINF:" + duration.toFixed(3) + ",");
-    playlistLines.push(filename);
+      windowDiscontinuities++;
+    }
   }
 
-  return playlistLines.join("\n") + "\n";
+  const discSeq = metadata.totalDiscontinuities - windowDiscontinuities;
+  const discontinuitySequence = (discSeq > 0) ? discSeq : undefined;
+
+  const entries = segmentEntries.map((filename) => buildEntryFromMetadata(filename, metadata, targetDuration));
+
+  return buildPlaylist({ discontinuitySequence, mediaSequence, targetDuration, version: 3 }, entries);
+}
+
+/**
+ * Creates an empty SegmentMetadata instance with fresh Maps and a zeroed discontinuity counter.
+ * @returns A new SegmentMetadata instance.
+ */
+function createSegmentMetadata(): SegmentMetadata {
+
+  return {
+
+    cueIns: new Map<string, boolean>(),
+    cueOutConts: new Map<string, string>(),
+    cueOuts: new Map<string, string>(),
+    discontinuities: new Map<string, boolean>(),
+    durations: new Map<string, number>(),
+    timestamps: new Map<string, string>(),
+    totalDiscontinuities: 0
+  };
+}
+
+/**
+ * Records per-segment metadata from a parsed upstream segment into a SegmentMetadata instance. Stores duration, upstream program-date-time (when available),
+ * discontinuity flag, and SCTE-35 cue markers.
+ *
+ * @param meta - The metadata instance to update.
+ * @param filename - The local segment filename (e.g., "segment0.ts").
+ * @param seg - The parsed segment with upstream metadata.
+ */
+function storeSegmentMetadata(meta: SegmentMetadata, filename: string, seg: ParsedSegment): void {
+
+  meta.durations.set(filename, seg.duration);
+
+  if(seg.programDateTime) {
+
+    meta.timestamps.set(filename, seg.programDateTime);
+  }
+
+  if(seg.discontinuity) {
+
+    meta.discontinuities.set(filename, true);
+    meta.totalDiscontinuities++;
+  }
+
+  if(seg.cueIn) {
+
+    meta.cueIns.set(filename, true);
+  }
+
+  if(seg.cueOut !== null) {
+
+    meta.cueOuts.set(filename, seg.cueOut);
+  }
+
+  if(seg.cueOutCont !== null) {
+
+    meta.cueOutConts.set(filename, seg.cueOutCont);
+  }
+}
+
+/**
+ * Builds a PlaylistSegmentEntry from a segment's metadata. Translates the per-segment Maps (durations, timestamps, discontinuities, cue markers) into the shared entry
+ * type used by the playlist builder. Used by both buildVariantPlaylist() and buildCompositePlaylist() to avoid duplicating the field-by-field metadata lookup.
+ *
+ * @param filename - The segment filename (e.g., "segmentN.ts" where N starts at prerollSegmentCount).
+ * @param metadata - The metadata instance to read from.
+ * @param defaultDuration - Fallback duration when the metadata Map has no entry for this filename.
+ * @returns A PlaylistSegmentEntry with all applicable metadata fields set.
+ */
+function buildEntryFromMetadata(filename: string, metadata: SegmentMetadata, defaultDuration: number): PlaylistSegmentEntry {
+
+  const entry: PlaylistSegmentEntry = {
+
+    duration: metadata.durations.get(filename) ?? defaultDuration,
+    url: filename
+  };
+
+  if(metadata.discontinuities.has(filename)) {
+
+    entry.discontinuity = true;
+  }
+
+  const timestamp = metadata.timestamps.get(filename);
+
+  if(timestamp) {
+
+    entry.programDateTime = timestamp;
+  }
+
+  if(metadata.cueIns.has(filename)) {
+
+    entry.cueIn = true;
+  }
+
+  const cueOut = metadata.cueOuts.get(filename);
+
+  if(cueOut !== undefined) {
+
+    entry.cueOut = cueOut;
+  }
+
+  const cueOutCont = metadata.cueOutConts.get(filename);
+
+  if(cueOutCont !== undefined) {
+
+    entry.cueOutCont = cueOutCont;
+  }
+
+  return entry;
+}
+
+/**
+ * Prunes stale entries from a SegmentMetadata instance. Removes entries for segments that are no longer in the active segment set (evicted from the sliding window).
+ * This prevents unbounded growth over hours of streaming.
+ *
+ * @param meta - The metadata instance to prune.
+ * @param activeSegments - Set of filenames currently in the segment store.
+ */
+function pruneMetadata(meta: SegmentMetadata, activeSegments: Set<string>): void {
+
+  for(const key of meta.durations.keys()) {
+
+    if(!activeSegments.has(key)) {
+
+      meta.cueIns.delete(key);
+      meta.cueOutConts.delete(key);
+      meta.cueOuts.delete(key);
+      meta.discontinuities.delete(key);
+      meta.durations.delete(key);
+      meta.timestamps.delete(key);
+    }
+  }
 }
 
 /**
@@ -324,11 +572,16 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   let audioVariantUrl = initialAudioVariantUrl;
   let variantUrl = initialVariantUrl;
 
+  // Preroll segment index offset. When preroll is ready (prerollSegmentCount > 0), real segments start numbering after the preroll range (e.g., segmentN.ts where
+  // N = prerollSegmentCount). This offset is unconditional — it reserves the index space for preroll regardless of whether the deferred preroll timer fires.
+  // The composite playlist behavior (including preroll entries) is determined dynamically by checking stream.hls.prerollStartTime at playlist generation time.
+  const prerollSegmentCount = options.prerollSegmentCount ?? 0;
+
   // State.
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
-  let segmentIndex = 0;
+  let segmentIndex = prerollSegmentCount;
   let lastMediaSequence = -1;
   let lastSegmentSize: Nullable<number> = null;
   let lastSegmentTime = 0;
@@ -339,6 +592,15 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   let lastAudioTargetDuration = 6;
   let lastTargetDuration = 6;
   let readinessSignaled = false;
+
+  // Composite playlist discontinuity tracking. This is the composite path's independent source of truth for DISCONTINUITY-SEQUENCE computation. The Set records URLs
+  // of entries that have had discontinuity=true in any composite playlist (upstream or the synthetic preroll boundary). It grows monotonically — once a discontinuity
+  // is observed, it's tracked forever. On the first composite call, the Set is bootstrapped from videoMetadata to capture any upstream discontinuities that occurred
+  // before the composite path activated. The offset accounts for historical discontinuities that pruned out of the metadata's Map but are preserved in its counter.
+  // After bootstrap, the Set is self-sufficient. DISCONTINUITY-SEQUENCE = (offset + set.size) - windowDiscontinuities.
+  const compositeDiscontinuities = new Set<string>();
+  let compositeBaseOffset = 0;
+  let compositeSeeded = false;
 
   // Statistics.
   let totalFetchErrors = 0;
@@ -357,16 +619,16 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   // Track fetched media sequence numbers to avoid re-fetching segments.
   const fetchedSequences = new Set<number>();
 
-  // Track per-segment durations from #EXTINF tags. Keyed by segment filename (e.g., "segment0.ts") to enable accurate playlist generation. Without this, the
-  // playlist would use the target duration as a uniform approximation, causing Channels DVR to miscalculate stream timing.
-  const segmentDurations = new Map<string, number>();
+  // Per-segment metadata for the video variant. These Maps are keyed by local filename (e.g., "segment0.ts") and track the upstream manifest tags associated with
+  // each stored segment. The playlist generator reads these to emit faithful HLS output with discontinuity markers, program timestamps, and ad signaling.
+  const videoMetadata = createSegmentMetadata();
 
   // Audio-specific state for streams with separate audio renditions.
   let audioSegmentIndex = 0;
   let audioConsecutiveManifestFailures = 0;
   const audioSegmentTracker = { consecutiveFailures: 0, debugLabel: "Audio segment", label: "audio segment" };
   const audioFetchedSequences = new Set<number>();
-  const audioSegmentDurations = new Map<string, number>();
+  const audioMetadata = createSegmentMetadata();
 
   /**
    * Orchestrates the poll cycle: fetches video and audio manifests in parallel, stores segments, and generates playlists after both stores are updated.
@@ -410,6 +672,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       const body = await response.text();
 
       LOG.debug("native:proxy", "Manifest poll for %s completed in %sms.", channelName, pollElapsed());
+      LOG.debug("native:manifest", "Variant manifest for %s:\n%s", channelName, body);
 
       // Fetch and store video and audio segments in parallel so neither delays the other, and generate playlists after both stores are updated. This ensures video
       // and audio playlists are published atomically — no window where a client sees a master playlist referencing audio.m3u8 before audio segments exist.
@@ -489,8 +752,8 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     lastTargetDuration = targetDuration;
 
-    // Prune old entries from the fetchedSequences Set and segmentDurations Map. The provider's media sequence window slides forward, so entries below the current
-    // base sequence will never be checked again. Without pruning, these structures grow unboundedly over hours of streaming.
+    // Prune old entries from the fetchedSequences Set and segment metadata. The provider's media sequence window slides forward, so entries below the current base
+    // sequence will never be checked again. Without pruning, these structures grow unboundedly over hours of streaming.
     if(fetchedSequences.size > 100) {
 
       for(const seq of fetchedSequences) {
@@ -502,18 +765,12 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       }
     }
 
-    if(segmentDurations.size > 100) {
+    if(videoMetadata.durations.size > 100) {
 
       const stream = getStream(streamId);
       const activeSegments = stream ? new Set(stream.hls.segments.keys()) : new Set<string>();
 
-      for(const key of segmentDurations.keys()) {
-
-        if(!activeSegments.has(key)) {
-
-          segmentDurations.delete(key);
-        }
-      }
+      pruneMetadata(videoMetadata, activeSegments);
     }
 
     // Fetch new segments (those we haven't fetched yet).
@@ -562,7 +819,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       storeSegment(streamId, filename, segmentData);
       fetchedSequences.add(seg.sequence);
-      segmentDurations.set(filename, seg.duration);
+      storeSegmentMetadata(videoMetadata, filename, seg);
       storedAny = true;
 
       lastSegmentSize = segmentData.length;
@@ -613,8 +870,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     let data: Buffer = Buffer.from(await response.arrayBuffer());
 
-    // Decrypt if AES-128 and this segment has a key URL. Segments before the first #EXT-X-KEY tag in the manifest have segKeyUrl === null (clear).
-    if((encryption === "aes128") && segKeyUrl) {
+    // Decrypt if this segment has a key URL. The manifest's #EXT-X-KEY tag is authoritative — DAI streams can switch between clear and AES-128 mid-stream (e.g., ad
+    // pods encrypted while main content is clear), so the initial probe classification cannot be relied upon. Segments before the first #EXT-X-KEY tag have
+    // segKeyUrl === null (clear).
+    if(segKeyUrl) {
 
       // Look up the key in the per-URL cache, or fetch it if not cached.
       let key = keysByUrl.get(segKeyUrl);
@@ -780,18 +1039,12 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       }
     }
 
-    if(audioSegmentDurations.size > 100) {
+    if(audioMetadata.durations.size > 100) {
 
       const stream = getStream(streamId);
       const activeSegments = stream ? new Set(stream.hls.audioSegments.keys()) : new Set<string>();
 
-      for(const key of audioSegmentDurations.keys()) {
-
-        if(!activeSegments.has(key)) {
-
-          audioSegmentDurations.delete(key);
-        }
-      }
+      pruneMetadata(audioMetadata, activeSegments);
     }
 
     const newSegments = segments.filter((s) => !audioFetchedSequences.has(s.sequence));
@@ -824,7 +1077,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       storeAudioSegment(streamId, filename, segmentData);
       audioFetchedSequences.add(seg.sequence);
-      audioSegmentDurations.set(filename, seg.duration);
+      storeSegmentMetadata(audioMetadata, filename, seg);
       storedAny = true;
 
       audioSegmentIndex++;
@@ -837,8 +1090,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   }
 
   /**
-   * Generates playlists from the stored segments. For streams without separate audio, generates a single variant playlist. For streams with separate audio,
-   * generates a master playlist referencing video.m3u8 and audio.m3u8, plus individual variant playlists for each.
+   * Generates playlists from the stored segments. For streams without separate audio, generates a single variant playlist. When preroll is active (muxed audio only),
+   * produces a composite playlist with fMP4 preroll entries and MPEG-TS real entries bridged by a DISCONTINUITY tag. The preroll entries use the same fMP4 segments
+   * served during the standalone preroll phase, ensuring smooth MEDIA-SEQUENCE progression. For streams with separate audio, generates a master playlist referencing
+   * video.m3u8 and audio.m3u8, plus individual variant playlists for each (no preroll — preroll is muxed and can't be split into separate renditions).
    *
    * @param targetDuration - The #EXT-X-TARGETDURATION value from the provider's manifest.
    */
@@ -855,12 +1110,22 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     if(!hasAudio) {
 
-      // Muxed audio — single variant playlist served as stream.m3u8.
-      updatePlaylist(streamId, buildVariantPlaylist(segmentEntries, segmentDurations, "segment", targetDuration));
+      if((prerollSegmentCount > 0) && stream.hls.prerollStartTime && stream.hls.prerollBaseUrl) {
+
+        // Composite playlist with fMP4 preroll entries + MPEG-TS real entries. The prerollStartTime check ensures we only include preroll entries when the deferred
+        // timer has fired and the client is actually watching preroll. Without this check, fast native streams (where real content arrives before the preroll delay)
+        // would include unnecessary preroll entries. The compositor handles the sliding window with the maxPrerollInWindow cap.
+        updatePlaylist(streamId, buildCompositePlaylist(segmentEntries, targetDuration, stream.hls.prerollBaseUrl));
+      } else {
+
+        // No preroll active — standard variant playlist. The segment index may still be offset (starting at prerollSegmentCount) to reserve the index space, but no
+        // preroll entries are included.
+        updatePlaylist(streamId, buildVariantPlaylist(segmentEntries, videoMetadata, "segment", targetDuration));
+      }
     } else {
 
-      // Separate audio — generate video variant playlist and master playlist.
-      updateVideoPlaylist(streamId, buildVariantPlaylist(segmentEntries, segmentDurations, "segment", targetDuration));
+      // Separate audio — generate video variant playlist and master playlist. Preroll is not supported for separate audio streams (preroll is muxed).
+      updateVideoPlaylist(streamId, buildVariantPlaylist(segmentEntries, videoMetadata, "segment", targetDuration));
 
       // Estimate bandwidth from stored segment sizes and durations. Sum total bytes and total duration across video segments, then convert to bits per second.
       // Falls back to 5 Mbps when no duration data is available (first segment before durations are populated).
@@ -871,7 +1136,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       for(const filename of segmentEntries) {
 
         const size = stream.hls.segments.get(filename)?.length ?? 0;
-        const duration = segmentDurations.get(filename);
+        const duration = videoMetadata.durations.get(filename);
 
         if(duration) {
 
@@ -898,6 +1163,99 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   }
 
   /**
+   * Builds a composite playlist with fMP4 preroll entries and MPEG-TS real entries. Uses the same compositor and builder as the capture path's generatePlaylist(),
+   * ensuring identical windowing behavior (maxPrerollInWindow cap, progressive falloff). The DISCONTINUITY tag at the preroll-to-real boundary signals the container
+   * format change (fMP4 → MPEG-TS), which is spec-compliant per RFC 8216 Section 4.3.3.3. VERSION:7 is used to support EXT-X-MAP for the preroll init segment;
+   * after preroll entries fall off the window, VERSION:7 remains but is backward-compatible with the MPEG-TS entries.
+   *
+   * @param segmentEntries - Ordered list of stored segment filenames from the segment Map.
+   * @param targetDuration - The #EXT-X-TARGETDURATION value from the provider's manifest.
+   * @param prerollBaseUrl - The base URL for absolute preroll segment URIs, read dynamically from the stream's HLS state.
+   * @returns The formatted composite m3u8 playlist string.
+   */
+  function buildCompositePlaylist(segmentEntries: string[], targetDuration: number, prerollBaseUrl: string): string {
+
+    // Compute the sliding window start index via the compositor. The three-way max prevents negative indices, enforces the sliding window rule, and caps preroll
+    // entries at maxPrerollInWindow to force clients past preroll toward the live edge.
+    const realSegmentCount = segmentEntries.length;
+
+    const startIndex = computePrerollWindow({
+
+      currentSegmentIndex: segmentIndex,
+      maxSegments: CONFIG.hls.maxSegments,
+      prerollSegmentCount,
+      realSegmentCount
+    });
+
+    // Build fMP4 preroll entries for preroll indices still in the window. These reference the global /preroll/ routes with absolute URLs and .m4s extension.
+    let prerollEntries: PlaylistSegmentEntry[] = [];
+
+    if(startIndex < prerollSegmentCount) {
+
+      prerollEntries = buildPrerollEntries({ baseUrl: prerollBaseUrl, extension: ".m4s", prerollSegmentCount, startIndex });
+    }
+
+    // Build real MPEG-TS entries from the video metadata maps via the shared helper.
+    const realEntries = segmentEntries.map((filename) => buildEntryFromMetadata(filename, videoMetadata, targetDuration));
+
+    // Mark the preroll-to-real boundary on the first real entry when preroll entries are present in the window. This is a playlist-level concern (the stitching of
+    // preroll before real content), not a segment-level property — so it's applied here in the composite builder rather than injected into videoMetadata at segment
+    // storage time. This keeps the metadata clean (upstream discontinuities only) and avoids a stray DISCONTINUITY tag on fast streams where the composite never
+    // activates.
+    if((prerollEntries.length > 0) && (realEntries.length > 0)) {
+
+      realEntries[0].discontinuity = true;
+    }
+
+    // Bootstrap the composite discontinuity tracker on the first call. This captures any upstream discontinuities that occurred before the composite path activated
+    // (e.g., the proxy ran in non-composite mode while the preroll timer hadn't fired). The Map has filenames of currently-stored discontinuity segments; the counter
+    // includes historical ones that pruned out of the Map. The difference becomes a fixed offset for segments we can never recover by filename.
+    if(!compositeSeeded) {
+
+      for(const filename of videoMetadata.discontinuities.keys()) {
+
+        compositeDiscontinuities.add(filename);
+      }
+
+      compositeBaseOffset = videoMetadata.totalDiscontinuities - videoMetadata.discontinuities.size;
+      compositeSeeded = true;
+    }
+
+    // Compute DISCONTINUITY-SEQUENCE using the composite path's independent discontinuity tracker. For each entry with discontinuity=true (whether from upstream
+    // metadata or the synthetic preroll boundary), record its URL in the Set. The Set grows monotonically — once a discontinuity is observed, it's tracked forever.
+    // DISCONTINUITY-SEQUENCE = total ever observed (offset + Set size) minus those visible in the current window.
+    const entries = [ ...prerollEntries, ...realEntries ];
+
+    let windowDiscontinuities = 0;
+
+    for(const entry of entries) {
+
+      if(entry.discontinuity) {
+
+        compositeDiscontinuities.add(entry.url);
+        windowDiscontinuities++;
+      }
+    }
+
+    const discSeq = (compositeBaseOffset + compositeDiscontinuities.size) - windowDiscontinuities;
+    const discontinuitySequence = (discSeq > 0) ? discSeq : undefined;
+
+    // Determine the initial MAP URI. When the window starts with preroll entries, the preroll init segment (fMP4) is referenced. When the window has moved past all
+    // preroll, no MAP is needed (MPEG-TS segments are self-describing). The DISCONTINUITY tag at the preroll-to-real boundary invalidates the MAP per RFC 8216
+    // Section 4.3.3.3, so MPEG-TS entries after the boundary carry their codec config inline.
+    const initialMapUri = (prerollEntries.length > 0) ? (prerollBaseUrl + "/preroll/init.mp4") : undefined;
+
+    return buildPlaylist({
+
+      discontinuitySequence,
+      initialMapUri,
+      mediaSequence: startIndex,
+      targetDuration,
+      version: 7
+    }, entries);
+  }
+
+  /**
    * Generates the audio variant playlist from stored audio segments.
    *
    * @param targetDuration - The #EXT-X-TARGETDURATION value from the audio manifest.
@@ -913,7 +1271,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     const audioEntries = Array.from(stream.hls.audioSegments.keys());
 
-    updateAudioPlaylist(streamId, buildVariantPlaylist(audioEntries, audioSegmentDurations, "audio", targetDuration));
+    updateAudioPlaylist(streamId, buildVariantPlaylist(audioEntries, audioMetadata, "audio", targetDuration));
   }
 
   /**

@@ -38,6 +38,10 @@ export interface HLSState {
   // common case), stream.m3u8 serves the variant playlist directly.
   hasAudio: boolean;
 
+  // Whether the segmenter has produced a real playlist (as opposed to a preroll-seeded playlist). Used by updatePlaylist to detect the first real playlist for timing
+  // logs. Without this flag, the empty-string check would fail when preroll content pre-seeds the playlist field.
+  hasRealPlaylist: boolean;
+
   // The fMP4 initialization segment containing codec configuration. Sent once at stream start and retained for the stream's lifetime. Clients must fetch this before
   // any media segments.
   initSegment: Nullable<Buffer>;
@@ -51,6 +55,25 @@ export interface HLSState {
 
   // Promise that resolves when the first playlist is available.
   playlistReady: Promise<void>;
+
+  // The base URL for constructing absolute preroll segment URIs in the composite playlist (e.g., "http://192.168.1.100:5589"). Null when no preroll is active.
+  prerollBaseUrl: Nullable<string>;
+
+  // Number of preroll segments that precede real content. Zero when no preroll is active. The segmenter uses this to know which indices in the playlist sliding
+  // window are preroll entries vs real entries.
+  prerollSegmentCount: number;
+
+  // Wall-clock time when the preroll timer fired and the progressive preroll playlist began. Used to compute elapsed time on each playlist poll so the progressive
+  // window advances in real time, simulating a live stream. Null before the preroll timer fires.
+  prerollStartTime: Nullable<Date>;
+
+  // Timer handle for deferred preroll seeding. The timer fires after PREROLL_DELAY_MS; if real content hasn't arrived yet, preroll is seeded and playlistReady is
+  // signaled. Cancelled by completeStreamSetup() when the segmenter or native proxy is created, preventing races between the timer and stream setup.
+  prerollTimer: Nullable<ReturnType<typeof setTimeout>>;
+
+  // Snapshotted resume segment index from the prior session. Read once at stream registration and stored here so both the preroll timer callback and the segmenter
+  // creation in completeStreamSetup() use the same value — eliminating the TTL race that would occur if each read the resume map independently.
+  resumeSegmentIndex: number;
 
   // EventEmitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time. Events:
   //   "initSegment" (data: Buffer) — fired when an init segment is stored
@@ -114,15 +137,16 @@ export interface StreamRegistryEntry {
   // Stream-specific info for idle detection.
   info: StreamInfo;
 
-  // The browser page for this stream.
-  page: Page;
+  // The browser page for this stream. Null for pending stream entries that have been registered but whose async setup has not yet completed.
+  page: Nullable<Page>;
 
   // Whether this stream was started by the pretune module ahead of a scheduled recording. Pretuned streams are exempt from idle timeout until a real client
   // connects, at which point this flag is cleared and the stream follows normal idle timeout behavior.
   preTuned: boolean;
 
-  // The resolved site profile used for this stream. Needed for tab replacement recovery to recreate the capture with the same profile.
-  profile: ResolvedSiteProfile;
+  // The resolved site profile used for this stream. Needed for tab replacement recovery to recreate the capture with the same profile. Null for pending stream entries
+  // that have been registered but whose async setup has not yet completed.
+  profile: Nullable<ResolvedSiteProfile>;
 
   // The raw capture stream from puppeteer-stream. In FFmpeg mode, this is the WebM stream piped to FFmpeg's stdin. In native mode, this is the same as the segmenter
   // input. Must be destroyed before closing the page to ensure chrome.tabCapture releases the capture and prevents "Cannot capture a tab with an active stream" errors
@@ -256,10 +280,16 @@ export function createHLSState(): HLSState {
     audioPlaylist: "",
     audioSegments: new Map(),
     hasAudio: false,
+    hasRealPlaylist: false,
     initSegment: null,
     initSegmentReady,
     playlist: "",
     playlistReady,
+    prerollBaseUrl: null,
+    prerollSegmentCount: 0,
+    prerollStartTime: null,
+    prerollTimer: null,
+    resumeSegmentIndex: 0,
     segmentEmitter,
     segments: new Map(),
     signalInitSegmentReady,
@@ -332,6 +362,17 @@ export function getTotalSegmentMemory(): number {
 }
 
 // Segment Health.
+
+/**
+ * Returns whether the last segment contained video traf boxes. Used by the monitor to distinguish dead capture pipelines (audio-only, no video trafs) from legitimate
+ * small segments produced by static content (video trafs present but low-bitrate). Returns null if the segmenter does not exist or the video trackId is unknown.
+ * @param entry - The stream registry entry to query.
+ * @returns True if video trafs were present, false if absent, null if unknown.
+ */
+export function getLastSegmentHasVideo(entry: StreamRegistryEntry): Nullable<boolean> {
+
+  return entry.segmenter?.getLastSegmentHasVideo() ?? null;
+}
 
 /**
  * Gets the size in bytes of the last segment stored for a stream. Used by the monitor to detect dead capture pipelines that produce empty segments (18 bytes observed)

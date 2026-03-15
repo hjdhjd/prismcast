@@ -181,6 +181,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "native:coordinator", description: "Native streaming decisions: interception result, probe result, capture teardown, proxy start." },
   { category: "native:decrypt", description: "AES-128 decryption: key fetch, IV source (explicit vs. sequence), segment sizes." },
   { category: "native:intercept", description: "CDP manifest interception: listener installed, .m3u8 URLs observed, master identified, timeout." },
+  { category: "native:manifest", description: "Raw variant manifest body from provider — verbose, use for diagnosing DAI/ad stitching issues." },
   { category: "native:monitor", description: "Native health: segment staleness, error counts, L2/L3 recovery actions, capture fallback." },
   { category: "native:probe", description: "DRM probe: variant count, bandwidths, encryption classification, key accessibility, cache hit/miss." },
   { category: "native:proxy", description: "Manifest polling, segment fetch/store, playlist generation, segment rotation, key rotation." },
@@ -189,12 +190,15 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "recovery", description: "General recovery: browser re-minimize, monitor abort." },
   { category: "recovery:context", description: "Video context: frame detachment, re-search." },
   { category: "recovery:nav", description: "Page navigation recovery: new tab detection, URL validation." },
+  { category: "recovery:resolution", description: "Video resolution monitoring: ABR degradation detection, grace periods, recovery escalation." },
   { category: "recovery:segments", description: "Segment production: self-heal detection." },
   { category: "recovery:tab", description: "Tab replacement: old tab cleanup, new tab creation, retries." },
+  { category: "recovery:tracks", description: "Track composition: video traf presence in below-threshold segments." },
   { category: "retry", description: "Retry attempts, page-closed aborts." },
   { category: "streaming:ffmpeg", description: "FFmpeg stderr output, pipe errors." },
   { category: "streaming:hls", description: "HLS segment storage, page close errors." },
   { category: "streaming:mpegts", description: "MPEG-TS client connections, FFmpeg remuxer spawn and errors." },
+  { category: "streaming:preroll", description: "Preroll lifecycle: fMP4 generation, preroll playlist delivery, transition to live content." },
   { category: "streaming:pretune", description: "Predictive channel pretuning: DVR job polling, timer scheduling, tune triggers." },
   { category: "streaming:segmenter", description: "fMP4 parsing: keyframes, init segments, duration clamping." },
   { category: "streaming:setup", description: "Stream setup: redirect resolution, profile override, capture init." },
@@ -212,6 +216,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "tuning:sling", description: "Sling TV guide grid: binary search, cache, click retries." },
   { category: "tuning:spectrum", description: "Spectrum TV guide grid: channel discovery, cache, direct URL navigation." },
   { category: "tuning:tileClick", description: "Tile click strategy: scroll phase, matchSelector poll, play button retries, modal dismiss." },
+  { category: "tuning:xfinity", description: "Xfinity Stream: channelmap API interception, SPA channel switching, Watch Now modal dismissal." },
   { category: "tuning:yttv", description: "YouTube TV EPG grid navigation." }
 ];
 

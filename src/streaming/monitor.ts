@@ -12,12 +12,14 @@ import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.js";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
   validateVideoElement, verifyFullscreen } from "../browser/video.js";
 import { getChannelLogo, getShowName } from "./showInfo.js";
-import { getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.js";
+import { getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.js";
 import { CONFIG } from "../config/index.js";
 import type { StreamRegistryEntry } from "./registry.js";
 import { clearProbeCache } from "../native/probe.js";
 import { emitStreamHealthChanged } from "./statusEmitter.js";
 import { getClientSummary } from "./clients.js";
+import { getEffectiveViewport } from "../config/presets.js";
+import { getProviderBySlug } from "../browser/channelSelection.js";
 import { refreshNativeManifest } from "../native/index.js";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 
@@ -104,6 +106,10 @@ export interface MonitorStreamInfo {
   channelName: Nullable<string>;
   numericStreamId: number;
   providerName: string;
+
+  // Provider filter tag from the domain config (e.g., "xfinity", "hulu"). Used to look up the ProviderModule for provider-specific monitoring flags.
+  providerTag?: string;
+
   startTime: Date;
 }
 
@@ -227,12 +233,26 @@ export function monitorPlaybackHealth(
   // segments contain only audio data. Audio is transcoded at a controlled bitrate (max 512Kbps), so audio-only segments are at most ~192KB for 3-second segments.
   // The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset (480p/3Mbps ≈ 750KB/segment).
   const TINY_SEGMENT_THRESHOLD = 512000; // 500KB - segments below this indicate dead or degraded capture.
-  const TINY_SEGMENT_COUNT_TRIGGER = 10;  // Trigger recovery after 10 consecutive tiny segments (~20 seconds with 2-second segments).
+  const TINY_SEGMENT_COUNT_TRIGGER = 10;  // Default trigger count: 10 consecutive tiny segments (~20 seconds with 2-second segments).
+
+  // Resolve the provider-specific tiny segment count threshold once at monitor startup. Providers with extended static content (e.g., Xfinity commercial
+  // placeholders) set a higher value to tolerate longer periods of small segments without false positive tab replacements. Dead capture pipelines (segments with
+  // no video trafs) always use TINY_SEGMENT_COUNT_TRIGGER regardless of this setting.
+  const providerModule = streamInfo.providerTag ? getProviderBySlug(streamInfo.providerTag) : undefined;
+  const providerTinySegmentThreshold = providerModule?.tinySegmentThreshold ?? TINY_SEGMENT_COUNT_TRIGGER;
 
   // Segment staleness timeout. When no new segments have been produced for this duration, the capture pipeline is considered dead even though the video element may
   // appear healthy. This catches the case where Chrome's MediaRecorder silently stops emitting data without raising an error — the input stream stays "open" but no
   // data events fire. The 20-second threshold is 4x the maximum expected moof delivery interval (5 seconds) to avoid false positives during normal bursty delivery.
   const SEGMENT_STALENESS_TIMEOUT = 20000;  // 20 seconds.
+
+  // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the configured viewport, the provider's ABR is delivering
+  // low-quality content. The threshold is expressed as a ratio — if either dimension is below this fraction of the viewport, the resolution is considered degraded.
+  // 50% catches clear ABR degradation (768×432 on 1080p = 40%) while allowing legitimate 720p content on 1080p (67% > 50%).
+  const RESOLUTION_RATIO_THRESHOLD = 0.5;
+
+  // Grace period in milliseconds after stream start and after each recovery action. Gives ABR time to ramp up before flagging degradation.
+  const RESOLUTION_GRACE_PERIOD = 30000;
 
   // Fixed margin in milliseconds before the maxContinuousPlayback limit at which a proactive reload is triggered. Two minutes provides enough time for page
   // navigation and video reinitialization to complete before the site enforces its cutoff.
@@ -259,6 +279,11 @@ export function monitorPlaybackHealth(
   let nativeHealthIssueType: Nullable<string> = null;
   let nativeHealthIssueTime: Nullable<number> = null;
   let nativeRecoveryAttempts = 0;
+
+  // Resolution degradation monitoring. Separate from the existing recovery escalation (L1-L4) which handles broken playback. Resolution degradation is a quality
+  // issue — the stream works but at lower-than-expected resolution. Uses its own tracking and two-step escalation: page reload, then tab replacement.
+  let resolutionGraceEnd = Date.now() + RESOLUTION_GRACE_PERIOD;
+  let resolutionRecoveryAttempt = 0;
 
   /**
    * Checks segment delivery health for native streams. Detects stalled streams by comparing the proxy's segment index and last segment timestamp against thresholds.
@@ -689,6 +714,36 @@ export function monitorPlaybackHealth(
   }
 
   /**
+   * Resets resolution monitoring state. Called when resolution reaches expected levels or after any recovery action that restarts ABR negotiation.
+   */
+  function resetResolutionState(): void {
+
+    resolutionGraceEnd = Date.now() + RESOLUTION_GRACE_PERIOD;
+    resolutionRecoveryAttempt = 0;
+  }
+
+  /**
+   * Checks the page reload rate limit. Prunes expired timestamps, checks if the limit has been reached, and records the current timestamp if allowed. Callers are
+   * responsible for logging and handling the rate-limited case — consequences differ by context (circuit break, deferral, fallback to L2).
+   * @returns True if a page reload is allowed and the timestamp has been recorded, false if the rate limit has been reached.
+   */
+  function isPageReloadAllowed(): boolean {
+
+    const reloadWindow = Date.now() - CONFIG.playback.pageReloadWindow;
+
+    pageReloadTimestamps = pageReloadTimestamps.filter((ts) => ts > reloadWindow);
+
+    if(pageReloadTimestamps.length >= CONFIG.playback.maxPageReloads) {
+
+      return false;
+    }
+
+    pageReloadTimestamps.push(Date.now());
+
+    return true;
+  }
+
+  /**
    * Resets escalation level and related flags. Called after successful recovery to allow the stream to start from level 0 on future issues.
    */
   function resetEscalationState(): void {
@@ -756,6 +811,7 @@ export function monitorPlaybackHealth(
     resetRecoveryCounters();
     resetEscalationState();
     resetSegmentMonitoringState();
+    resetResolutionState();
     setRecoveryGracePeriod(3);
     resetCircuitBreaker(circuitBreaker);
   }
@@ -1192,11 +1248,7 @@ export function monitorPlaybackHealth(
           recordRecoveryAttempt(metrics, RECOVERY_METHODS.pageNavigation);
 
           // Check page reload limit before attempting recovery.
-          const reloadWindow = now - CONFIG.playback.pageReloadWindow;
-
-          pageReloadTimestamps = pageReloadTimestamps.filter((ts) => ts > reloadWindow);
-
-          if(pageReloadTimestamps.length >= CONFIG.playback.maxPageReloads) {
+          if(!isPageReloadAllowed()) {
 
             LOG.error("Page navigation rate limit reached (%s in %s minutes) — cannot recover without video element.",
               CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
@@ -1206,8 +1258,6 @@ export function monitorPlaybackHealth(
 
             return;
           }
-
-          pageReloadTimestamps.push(now);
 
           // Use the unified recovery function with validation.
           const recoveryResult = await performPageNavigationRecovery();
@@ -1235,6 +1285,7 @@ export function monitorPlaybackHealth(
             resetRecoveryCounters();
             resetEscalationState();
             resetSegmentMonitoringState();
+            resetResolutionState();
           } else {
 
             consecutiveNavigationFailures++;
@@ -1340,9 +1391,19 @@ export function monitorPlaybackHealth(
             consecutiveTinySegments++;
             wasInTinySegmentState = true;
 
-            if(consecutiveTinySegments >= TINY_SEGMENT_COUNT_TRIGGER) {
+            // Check track composition to determine the effective threshold. Dead capture pipelines produce audio-only segments (hasVideo=false) and always use the
+            // default count for fast detection. Segments with video trafs present (hasVideo=true or null) use the provider-specific threshold, which may be higher
+            // for providers with extended static content (e.g., Xfinity commercial placeholders lasting several minutes).
+            const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
+            const effectiveThreshold = (hasVideo === false) ? TINY_SEGMENT_COUNT_TRIGGER : providerTinySegmentThreshold;
 
-              LOG.warn("Detected %d consecutive tiny segments (%d bytes) — capture pipeline is not responding.", consecutiveTinySegments, segmentSize);
+            LOG.debug("recovery:tracks", "Below-threshold segment: %d bytes, hasVideo=%s, consecutive=%d, threshold=%d.",
+              segmentSize, String(hasVideo), consecutiveTinySegments, effectiveThreshold);
+
+            if(consecutiveTinySegments >= effectiveThreshold) {
+
+              LOG.warn("Detected %d consecutive tiny segments (%d bytes, hasVideo=%s) — capture pipeline is not responding.",
+                consecutiveTinySegments, segmentSize, String(hasVideo));
 
               // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentProductionStalled. Return unconditionally after tab
               // replacement (matching stalled-capture and unresponsive-tab triggers) to avoid falling through the rest of the tick with stale pre-replacement state.
@@ -1363,7 +1424,9 @@ export function monitorPlaybackHealth(
             // Self-healing may be transient and not require decoder reset.
             if(wasInTinySegmentState) {
 
-              LOG.debug("recovery:segments", "Segment production self-healed (%d bytes).", segmentSize);
+              const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
+
+              LOG.debug("recovery:segments", "Segment production self-healed (%d bytes, hasVideo=%s).", segmentSize, String(hasVideo));
             }
 
             // Reset tiny segment tracking.
@@ -1443,6 +1506,122 @@ export function monitorPlaybackHealth(
             LOG.info("Video fullscreen restored.");
 
             fullscreenReapplyCount = 0;
+          }
+        }
+
+        /* Resolution degradation detection. When a provider's ABR delivers content at a resolution significantly below the configured viewport, the captured frame
+         * shows a small video in the top-left corner of a larger viewport. This is distinct from fullscreen issues (which the fullscreen reinforcement above handles) —
+         * the video CSS fills the viewport, but the intrinsic media resolution is low. We monitor video.videoWidth/videoHeight and compare against the effective viewport
+         * dimensions. The check is gated by healthy playback, outside recovery grace, and non-zero intrinsic dimensions. The 30-second grace period after stream start
+         * and each recovery allows ABR time to ramp up quality. After two unsuccessful recovery attempts (page reload + tab replacement), the system accepts the
+         * resolution to avoid infinite loops on legitimately low-resolution content.
+         */
+        if(isProgressing && !state.paused && !state.error && !state.ended && !withinRecoveryGrace && (state.videoWidth > 0) && (state.videoHeight > 0)) {
+
+          const viewport = getEffectiveViewport(CONFIG);
+          const widthRatio = state.videoWidth / viewport.width;
+          const heightRatio = state.videoHeight / viewport.height;
+
+          const isDegraded = (widthRatio < RESOLUTION_RATIO_THRESHOLD) || (heightRatio < RESOLUTION_RATIO_THRESHOLD);
+
+          if(isDegraded) {
+
+            LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (viewport: %s\u00d7%s, ratio: %s%%\u00d7%s%%).",
+              String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height),
+              String(Math.round(widthRatio * 100)), String(Math.round(heightRatio * 100)));
+          }
+
+          // Escalation step 1: page reload. Forces the provider's ABR to restart quality negotiation.
+          if(isDegraded && (now >= resolutionGraceEnd) && (resolutionRecoveryAttempt === 0)) {
+
+            LOG.warn("Video resolution degraded (%s\u00d7%s in %s\u00d7%s viewport). Recovering via %s.",
+              String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height), RECOVERY_METHODS.pageNavigation);
+
+            recoveryInProgress = true;
+
+            // Check page reload rate limit before attempting.
+            if(!isPageReloadAllowed()) {
+
+              LOG.warn("Resolution recovery deferred — page navigation rate limit reached (%s in %s minutes).",
+                CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
+
+              // Defer by pushing grace end forward to avoid re-triggering every 2 seconds.
+              resolutionGraceEnd = now + RESOLUTION_GRACE_PERIOD;
+              recoveryInProgress = false;
+
+              emitStatusUpdate();
+
+              return;
+            }
+
+            pendingReMinimize = true;
+
+            const recoveryResult = await performPageNavigationRecovery();
+
+            markStreamDiscontinuity();
+
+            resolutionRecoveryAttempt = 1;
+            resolutionGraceEnd = now + RESOLUTION_GRACE_PERIOD;
+
+            if(recoveryResult.success && recoveryResult.newContext) {
+
+              currentContext = recoveryResult.newContext;
+              lastPageNavigationTime = Date.now();
+
+              LOG.info("Resolution recovery: page reload completed. Waiting for ABR ramp-up.");
+            } else {
+
+              LOG.warn("Resolution recovery: page reload unsuccessful.");
+            }
+
+            recoveryInProgress = false;
+
+            emitStatusUpdate();
+
+            return;
+          }
+
+          // Escalation step 2: tab replacement. Creates a fresh page with new capture pipeline and network connections.
+          if(isDegraded && (now >= resolutionGraceEnd) && (resolutionRecoveryAttempt === 1)) {
+
+            if(onTabReplacement) {
+
+              LOG.warn("Video resolution still degraded (%s\u00d7%s) after page reload. Recovering via %s.",
+                String(state.videoWidth), String(state.videoHeight), RECOVERY_METHODS.tabReplacement);
+
+              const outcome = await executeTabReplacement("resolution degraded");
+
+              resolutionRecoveryAttempt = 2;
+              resolutionGraceEnd = now + RESOLUTION_GRACE_PERIOD;
+
+              if(outcome.outcome === "terminated") {
+
+                return;
+              }
+
+              return;
+            }
+
+            // Tab replacement not available — skip directly to acceptance.
+            resolutionRecoveryAttempt = 2;
+          }
+
+          // Acceptance: resolution still degraded after both recovery attempts. Log once and stop retrying.
+          if(isDegraded && (now >= resolutionGraceEnd) && (resolutionRecoveryAttempt === 2)) {
+
+            LOG.warn("Video resolution remains degraded (%s\u00d7%s in %s\u00d7%s viewport) after recovery attempts. Accepting current resolution.",
+              String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height));
+
+            resolutionRecoveryAttempt = 3;
+          }
+
+          // Resolution is good: clear tracking state so future degradation starts fresh.
+          if(!isDegraded && (resolutionRecoveryAttempt > 0)) {
+
+            LOG.info("Video resolution restored (%s\u00d7%s).", String(state.videoWidth), String(state.videoHeight));
+
+            resolutionRecoveryAttempt = 0;
+            resolutionGraceEnd = 0;
           }
         }
 
@@ -1535,11 +1714,7 @@ export function monitorPlaybackHealth(
 
             // Check page reload rate limit before attempting. Proactive reload is best-effort maintenance — if the reload budget is exhausted from recent error
             // recoveries, we gracefully yield. If the site eventually cuts the stream, normal error recovery handles it.
-            const reloadWindow = now - CONFIG.playback.pageReloadWindow;
-
-            pageReloadTimestamps = pageReloadTimestamps.filter((ts) => ts > reloadWindow);
-
-            if(pageReloadTimestamps.length >= CONFIG.playback.maxPageReloads) {
+            if(!isPageReloadAllowed()) {
 
               LOG.warn("Proactive reload deferred — page navigation rate limit reached (%s in %s minutes).",
                 CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
@@ -1556,8 +1731,6 @@ export function monitorPlaybackHealth(
               return;
             }
 
-            pageReloadTimestamps.push(now);
-
             const recoveryResult = await performPageNavigationRecovery();
 
             // Page navigation disrupted the video stream. Mark a discontinuity so HLS clients resynchronize their decoders.
@@ -1573,6 +1746,7 @@ export function monitorPlaybackHealth(
 
               resetRecoveryCounters();
               resetSegmentMonitoringState();
+              resetResolutionState();
             } else {
 
               LOG.warn("Proactive reload unsuccessful. Will retry after recovery grace period.");
@@ -1710,6 +1884,7 @@ export function monitorPlaybackHealth(
 
               // Set grace period to give this recovery level time to take effect before the next check.
               recoveryGraceUntil = now + recoveryGracePeriods[escalationLevel];
+              resetResolutionState();
             } else {
 
               /* Level 3: Page navigation recovery. This is the most aggressive recovery - we navigate to the URL again and reinitialize everything.
@@ -1729,16 +1904,8 @@ export function monitorPlaybackHealth(
                 sourceReloadAttempted = false;
               } else {
 
-                // Check page reload limit to prevent excessive navigations. We allow MAX_PAGE_RELOADS within PAGE_RELOAD_WINDOW.
-                const reloadWindow = now - CONFIG.playback.pageReloadWindow;
-
-                // Prune old timestamps outside the window.
-                pageReloadTimestamps = pageReloadTimestamps.filter((ts) => {
-
-                  return ts > reloadWindow;
-                });
-
-                if(pageReloadTimestamps.length >= CONFIG.playback.maxPageReloads) {
+                // Check page reload limit to prevent excessive navigations.
+                if(!isPageReloadAllowed()) {
 
                   LOG.warn("Page navigation rate limit reached (%s in %s minutes) — falling back to source reload.",
                     CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
@@ -1748,8 +1915,6 @@ export function monitorPlaybackHealth(
                   // Reset source reload tracking so the fallback L2 gets a fair chance.
                   sourceReloadAttempted = false;
                 } else {
-
-                  pageReloadTimestamps.push(now);
 
                   // Use the unified recovery function with validation.
                   const recoveryResult = await performPageNavigationRecovery();
@@ -1777,6 +1942,7 @@ export function monitorPlaybackHealth(
                     resetRecoveryCounters();
                     resetEscalationState();
                     resetSegmentMonitoringState();
+                    resetResolutionState();
                   } else {
 
                     consecutiveNavigationFailures++;
