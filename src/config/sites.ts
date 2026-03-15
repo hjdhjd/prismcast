@@ -10,11 +10,14 @@ import { getUserDomains } from "./userProfiles.js";
  * and many have unique quirks like auto-muting or requiring specific fullscreen methods. Rather than scattering site-specific conditionals throughout the streaming
  * code, we define "site profiles" that describe each site's behavior in a declarative way.
  *
- * The profile system has three components:
+ * The profile system has four components:
  *
- * 1. SITE_PROFILES: Named behavior configurations describing how to handle different player implementations. Profiles can inherit from other profiles using the
- *    "extends" property, allowing us to define base profiles for common patterns (like "keyboardFullscreen" for sites using the f key) and then extend them with
- *    site-specific variations.
+ * 1. SITE_PROFILES: General-purpose behavior configurations that users can select for custom channels. These describe common player implementation patterns and
+ *    are shown in UI dropdowns and the provider wizard. Profiles can inherit from other profiles using the "extends" property.
+ *
+ * 1b. PROVIDER_PROFILES: Internal profiles tied to specific provider modules (Hulu, YouTube TV, Sling, etc.). These have channel selection strategies and
+ *     selectors tightly coupled to a streaming service's DOM structure. They are never shown in user-facing profile lists — users targeting these services should
+ *     use the predefined channels directly. Provider profiles can extend general profiles (e.g., fullscreenApi) and profile resolution checks both tables.
  *
  * 2. DOMAIN_CONFIG: A mapping from domain patterns to site profiles and provider display names. When streaming a URL, we check if it matches any known domain and
  *    use the corresponding profile. Provider display names give friendly labels (e.g., "Hulu" instead of "hulu.com") for the UI source column and provider
@@ -43,7 +46,7 @@ import { getUserDomains } from "./userProfiles.js";
  * - fullscreenApi: Sites requiring the JavaScript requestFullscreen() API
  * - staticPage: Non-video pages captured as static visual content
  *
- * Derived profiles (extends a base):
+ * General derived profiles (extends a base, user-selectable):
  * - keyboardDynamic: Keyboard fullscreen + network idle wait (extends keyboardFullscreen)
  * - keyboardMultiVideo: Keyboard fullscreen + multi-video selection (extends keyboardFullscreen)
  * - keyboardIframe: Keyboard fullscreen + iframe handling (extends keyboardFullscreen)
@@ -51,16 +54,13 @@ import { getUserDomains } from "./userProfiles.js";
  * - clickToPlayKeyboard: Click to start playback + keyboard fullscreen (extends keyboardFullscreen)
  * - brightcove: Brightcove players using API fullscreen + network idle wait (extends fullscreenApi)
  * - clickToPlayApi: Click to start playback + API fullscreen (extends fullscreenApi)
- * - disneyNow: DisneyNOW player with play button overlay + multi-video (extends clickToPlayApi)
  * - embeddedPlayer: Iframe-based players using fullscreen API (extends fullscreenApi)
  * - apiMultiVideo: API fullscreen + multi-video + auto-play tile channel selection via matchSelector (extends fullscreenApi)
- * - disneyPlus: API fullscreen + multi-video + tile selection via matchSelector with play button modal (extends fullscreenApi)
- * - huluLive: Hulu Live TV with guide grid channel selection + fullscreen button (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
- * - foxLive: Fox.com live guide grid with station code channel selection (extends fullscreenApi)
- * - slingLive: Sling TV with virtualized A-Z guide grid channel selection (extends fullscreenApi)
- * - youtubeTV: YouTube TV with non-virtualized EPG grid channel selection (extends fullscreenApi)
+ *
+ * Provider profiles (internal, not user-selectable — in PROVIDER_PROFILES table or registered by provider modules):
+ * - directvStream, disneyNow, disneyPlus, foxLive, hboMax, huluLive, slingLive, spectrum, xfinityStream, youtubeTV
  *
  * Each profile includes a description field documenting its purpose. This is metadata only - it's stripped during profile resolution and exists purely for
  * documentation.
@@ -116,51 +116,6 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Click-to-play ('f' key fullscreen)"
   },
 
-  // Profile for DirecTV Stream (stream.directv.com) live guide. The guide page is a React Native for Web SPA where all ~152 channel logos are always in the DOM
-  // (not virtualized). The primary tuning mechanism bypasses DOM interaction entirely by injecting into webpack internals — capturing __webpack_require__ via the
-  // chunk push array, extracting the Redux store from the React fiber tree, and dispatching the playConsumable action to switch channels. The fallback uses logo
-  // aria-label matching with DOM click (coordinate clicks are blocked by an invisible overlay). Uses selectReadyVideo because the page has multiple video elements.
-  directvStream: {
-
-    category: "multiChannel",
-    channelSelection: { strategy: "directvGrid" },
-    description: "DirecTV Stream with direct tune via webpack injection. Set Channel Selector to the channel name as shown in the guide (e.g., CNN, ESPN, NBC).",
-    extends: "fullscreenApi",
-    selectReadyVideo: true,
-    summary: "DirecTV Stream (guide grid, needs selector)"
-  },
-
-  // Profile for DisneyNOW (disneynow.com) which has a play button overlay that must be clicked to start playback and multiple video elements on the page.
-  disneyNow: {
-
-    category: "api",
-    clickSelector: ".overlay__button button",
-    description: "DisneyNOW player with play button overlay and multiple video elements.",
-    extends: "clickToPlayApi",
-    selectReadyVideo: true,
-    summary: "DisneyNOW player"
-  },
-
-  // Profile for Disney+ live channels. The live channel shelf displays tiles with network logos. Clicking a tile opens an entity modal with a "WATCH LIVE" button
-  // (playSelector) that must be clicked to start the stream. Extends fullscreenApi for requestFullscreen() behavior. The player uses Web Components with Shadow DOM
-  // for its controls — the native <toggle-fullscreen> button cannot be clicked by Puppeteer (Shadow DOM boundary), so fullscreen is handled entirely by the inherited
-  // requestFullscreen() API. The controls toolbar is hidden via hideSelector to prevent it from appearing in the captured stream. Uses selectReadyVideo because the
-  // page has multiple video elements (previews, ads, main content).
-  disneyPlus: {
-
-    category: "multiChannel",
-    channelSelection: {
-
-      matchSelector: "img[src*=\"{channel}\" i]", playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]",
-      scrollToBottom: true, strategy: "tileClick"
-    },
-    description: "Disney+ live channels with tile selection and play button modal. Channel Selector is interpolated into matchSelector to find the element.",
-    extends: "fullscreenApi",
-    hideSelector: ".controls__footer__wrapper",
-    selectReadyVideo: true,
-    summary: "Disney+ (tile + play button, needs selector)"
-  },
-
   // Profile for iframe-embedded players that also have multiple video elements (ads, placeholders, main content) and need network activity to settle. The
   // selectReadyVideo flag ensures we find the video with actual content rather than an ad placeholder. Combines iframe handling with API-based fullscreen.
   embeddedDynamicMultiVideo: {
@@ -196,19 +151,6 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Embedded players that auto-mute"
   },
 
-  // Profile for Fox.com live channel guide grid. The guide page presents all channels in a non-virtualized grid with station codes in the channel logo button
-  // titles (e.g., FOXD2C, FNC, FS1). The channelSelector property matches against these station codes. Clicking the channel logo button is an SPA state
-  // transition — the player at the top of the page switches channels without navigation. The grid renders dynamically after page load, so the strategy waits
-  // for GuideChannelContainer elements before scanning.
-  foxLive: {
-
-    category: "multiChannel",
-    channelSelection: { strategy: "foxGrid" },
-    description: "Fox.com live channel guide. Set Channel Selector to the station code (e.g., BTN, FOXD2C, FS1).",
-    extends: "fullscreenApi",
-    summary: "Fox Live (guide grid, needs selector)"
-  },
-
   // Base profile for sites that require the JavaScript fullscreen API (element.requestFullscreen()) instead of keyboard shortcuts. Many modern players intercept
   // keyboard events for their own controls, making the f key unreliable. Calling requestFullscreen() directly on the video element bypasses the player's keyboard
   // handling and reliably enters fullscreen mode.
@@ -218,35 +160,6 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     description: "Base profile for sites requiring the JavaScript fullscreen API.",
     summary: "Sites needing JavaScript fullscreen",
     useRequestFullscreen: true
-  },
-
-  // Profile for HBO Max live channels (play.hbomax.com). The HBO brand page contains a "Distribution Channels" rail showing all 5 live linear channels (HBO, HBO
-  // Hits, HBO Drama, HBO Comedy, HBO Movies) as tiles. The hboGrid strategy discovers the HBO tab URL from the homepage menu bar, navigates to it, then scrapes the
-  // channel rail for the watch URL matching the channelSelector name. Extends fullscreenApi for requestFullscreen() behavior inherited by the watch page.
-  hboMax: {
-
-    category: "multiChannel",
-    channelSelection: { strategy: "hboGrid" },
-    description: "HBO Max with live channel rail selection. Set Channel Selector to the channel name (e.g., HBO, HBO Hits).",
-    extends: "fullscreenApi",
-    summary: "HBO Max (live channels, needs selector)"
-  },
-
-  // Profile for Hulu Live TV which presents a guide grid of live channels. The channel list is revealed by clicking a tab (listSelector), then the desired channel
-  // is found by matching img.alt text. Uses the fullscreen API (inherited from fullscreenApi) plus a dedicated fullscreen button selector for the player's native
-  // maximize control. Requires selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses waitForNetworkIdle because
-  // Hulu's SPA has heavy async initialization that often prevents the load event from firing within the retryOperation timeout; the graceful networkidle2 fallback
-  // in navigateToPage() allows execution to continue to channel selection even when background requests are still pending.
-  huluLive: {
-
-    category: "multiChannel",
-    channelSelection: { listSelector: "#CHANNELS", playSelector: "[data-testid=\"generic-tile-thumbnail\"]", strategy: "guideGrid" },
-    description: "Hulu Live TV with guide grid channel selection. Set Channel Selector to the channel's internal guide name (may differ from logo).",
-    extends: "fullscreenApi",
-    fullscreenSelector: "[aria-label=\"Maximize\"]",
-    selectReadyVideo: true,
-    summary: "Hulu Live TV (guide grid, needs selector)",
-    waitForNetworkIdle: true
   },
 
   // Profile for sites that use keyboard fullscreen and also need time for network activity to settle before the player is fully initialized. These sites dynamically
@@ -305,33 +218,6 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Multi-video sites ('f' key fullscreen)"
   },
 
-  // Profile for Sling TV (watch.sling.com) live guide grid. The A-Z guide at /dashboard/grid_guide/grid_guide_a_z renders a virtualized grid of ~638 rows
-  // (120px each) with channel identification via data-testid="channel-{NAME}" attributes. The slingGrid strategy performs binary search on .guide-cell scrollTop
-  // to locate the target channel, then clicks the on-now program cell which navigates to a player page where a single <video> element auto-plays. Extends
-  // fullscreenApi for requestFullscreen() behavior. Does not use waitForNetworkIdle — the strategy's own waitForSelector on channel entries is the readiness
-  // signal, and the SPA's persistent connections would delay network idle unnecessarily.
-  slingLive: {
-
-    category: "multiChannel",
-    channelSelection: { strategy: "slingGrid" },
-    description: "Sling TV with guide grid channel selection. Set Channel Selector to the channel's internal guide name (may differ from logo).",
-    extends: "fullscreenApi",
-    summary: "Sling TV (guide grid, needs selector)"
-  },
-
-  // Profile for Spectrum TV (watch.spectrum.net) live guide grid. The guide page at /guide presents all ~442 streamable channels in a non-virtualized AngularJS
-  // DOM. Channel headers provide callsigns, channel numbers, and Gracenote station IDs (tmsid from logo image URLs). The spectrumGrid strategy reads all channels
-  // in a single evaluate pass, caches them, and navigates directly to /livetv?tmsid={stationId} — no clicking, no SPA state changes, no overlays. The channelSelector
-  // matches against clean channel names (e.g., "ESPN", "CNN", "NBC") with callsign suffix tolerance and affiliate network name resolution.
-  spectrum: {
-
-    category: "multiChannel",
-    channelSelection: { strategy: "spectrumGrid" },
-    description: "Spectrum TV with guide grid channel selection. Set Channel Selector to the channel name (e.g., ESPN, CNN, NBC).",
-    extends: "fullscreenApi",
-    summary: "Spectrum TV (guide grid, needs selector)"
-  },
-
   // Profile for non-video pages that should be captured as static visual content. Examples include weather displays (weatherscan.net), maps (windy.com), and
   // diagnostic pages. The noVideo flag tells the streaming code not to wait for a video element or set up playback monitoring - just capture whatever is displayed.
   staticPage: {
@@ -340,34 +226,45 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     description: "Base profile for non-video pages captured as static visual content.",
     noVideo: true,
     summary: "Static pages (no video)"
-  },
+  }
+};
 
-  // Profile for Xfinity Stream (xfinity.com/stream) live channels. The channelmap API at xtvapi.cloudtv.comcast.net returns the complete channel lineup (~1389
-  // entries). Tuning uses in-page SPA channel switching: after the guide page loads the Polymer SPA, the strategy calls `_watchChannelEventHandler(null, { channel })`
-  // on the `TV-APP` element to switch channels in ~2-3 seconds without page navigation. Extends fullscreenApi for requestFullscreen() behavior on the player page.
-  xfinityStream: {
+/* Provider profiles are internal profiles tied to specific provider modules. They have channel selection strategies, selectors, and flags tightly coupled to a
+ * specific streaming service's DOM structure and are not user-selectable. They live in a separate table from SITE_PROFILES so that UI-facing code (profile
+ * dropdowns, provider wizard, profile validation) can show only general-purpose profiles without maintaining an exclusion list. The extends mechanism works across
+ * both tables — a provider profile can extend a general profile (e.g., fullscreenApi) and profile resolution checks both tables transparently.
+ */
+export const PROVIDER_PROFILES: Record<string, SiteProfile> = {
 
-    category: "multiChannel",
-    channelSelection: { strategy: "xfinityDirect" },
-    description: "Xfinity Stream with in-page SPA channel switching. Set Channel Selector to the channel callSign (e.g., CNNHD, ESPND) " +
-      "or network name (e.g., CNN, ESPN).",
-    extends: "fullscreenApi",
-    summary: "Xfinity Stream (SPA tuning, needs selector)"
-  },
+  // Profile for DisneyNOW (disneynow.com) which has a play button overlay that must be clicked to start playback and multiple video elements on the page.
+  disneyNow: {
 
-  // Profile for YouTube TV (tv.youtube.com/live). The guide grid renders all ~256 channel rows in the DOM simultaneously (no virtualization), each containing a
-  // direct watch URL. The youtubeGrid strategy performs a single querySelector to find the target channel's watch link via aria-label, extracts the URL, and
-  // navigates directly — no scrolling, clicking, or timing workarounds needed. Uses selectReadyVideo because the watch page has ~36 video elements (live preview
-  // thumbnails from the guide) but only one active stream with readyState >= 3 and videoWidth > 0. Extends fullscreenApi because requestFullscreen() works
-  // directly on the active video element without gesture requirements.
-  youtubeTV: {
-
-    category: "multiChannel",
-    channelSelection: { strategy: "youtubeGrid" },
-    description: "YouTube TV with EPG grid channel selection. Set Channel Selector to the channel name as shown in the guide (e.g., CNN, ESPN, NBC).",
-    extends: "fullscreenApi",
+    category: "api",
+    clickSelector: ".overlay__button button",
+    description: "DisneyNOW player with play button overlay and multiple video elements.",
+    extends: "clickToPlayApi",
     selectReadyVideo: true,
-    summary: "YouTube TV (guide grid, needs selector)"
+    summary: "DisneyNOW player"
+  },
+
+  // Profile for Disney+ live channels. The live channel shelf displays tiles with network logos. Clicking a tile opens an entity modal with a "WATCH LIVE" button
+  // (playSelector) that must be clicked to start the stream. Extends fullscreenApi for requestFullscreen() behavior. The player uses Web Components with Shadow DOM
+  // for its controls — the native <toggle-fullscreen> button cannot be clicked by Puppeteer (Shadow DOM boundary), so fullscreen is handled entirely by the inherited
+  // requestFullscreen() API. The controls toolbar is hidden via hideSelector to prevent it from appearing in the captured stream. Uses selectReadyVideo because the
+  // page has multiple video elements (previews, ads, main content).
+  disneyPlus: {
+
+    category: "multiChannel",
+    channelSelection: {
+
+      matchSelector: "img[src*=\"{channel}\" i]", playSelector: "[data-testid=\"live-modal-watch-live-action-button\"]",
+      scrollToBottom: true, strategy: "tileClick"
+    },
+    description: "Disney+ live channels with tile selection and play button modal. Channel Selector is interpolated into matchSelector to find the element.",
+    extends: "fullscreenApi",
+    hideSelector: ".controls__footer__wrapper",
+    selectReadyVideo: true,
+    summary: "Disney+ (tile + play button, needs selector)"
   }
 };
 
@@ -478,6 +375,58 @@ export function getDomainConfig(url: string): DomainConfig | undefined {
   }
 
   return DOMAIN_CONFIG[conciseDomain] as DomainConfig | undefined;
+}
+
+// Provider module profiles registered at import time via registerProviderModuleProfile(). Provider modules define their profiles alongside their tuning code and
+// register them here so the profile resolution system can find them without importing from browser/channelSelection.ts (which would create circular dependencies).
+const providerModuleProfiles = new Map<string, SiteProfile>();
+
+/**
+ * Registers a provider module's profile. Called by the coordinator in channelSelection.ts at module evaluation time to make provider profiles available to the
+ * profile resolution system. This avoids circular dependencies — sites.ts doesn't need to import from browser/ modules.
+ * @param name - The profile name (e.g., "huluLive", "slingLive").
+ * @param profile - The SiteProfile definition.
+ */
+export function registerProviderModuleProfile(name: string, profile: SiteProfile): void {
+
+  if((name in SITE_PROFILES) || (name in PROVIDER_PROFILES)) {
+
+    throw new Error("Provider module profile '" + name + "' collides with an existing static profile. Use a unique profileName.");
+  }
+
+  providerModuleProfiles.set(name, profile);
+}
+
+/**
+ * Looks up a built-in profile by name, checking the general SITE_PROFILES table, the static PROVIDER_PROFILES table, and dynamically registered provider module
+ * profiles. This is the single lookup function for all built-in profile resolution — callers should use this instead of accessing any table directly.
+ * @param name - The profile name to look up.
+ * @returns The matching SiteProfile, or undefined if not found in any source.
+ */
+export function getBuiltinProfile(name: string): SiteProfile | undefined {
+
+  return (SITE_PROFILES[name] as SiteProfile | undefined) ?? (PROVIDER_PROFILES[name] as SiteProfile | undefined) ?? providerModuleProfiles.get(name);
+}
+
+/**
+ * Returns true if the given profile name is a provider-specific profile (either in the static PROVIDER_PROFILES table or registered by a provider module). Used
+ * by user profile validation to prevent users from extending provider-specific profiles that are tightly coupled to a streaming service's DOM structure.
+ * @param name - The profile name to check.
+ * @returns True if the profile is a provider profile.
+ */
+export function isProviderProfile(name: string): boolean {
+
+  return (name in PROVIDER_PROFILES) || providerModuleProfiles.has(name);
+}
+
+/**
+ * Returns all registered provider module profiles as an iterable of [name, profile] pairs. Used by the validation system to include dynamically registered
+ * profiles in inheritance chain checks.
+ * @returns Iterable of [name, SiteProfile] pairs.
+ */
+export function getRegisteredProviderModuleProfiles(): IterableIterator<[string, SiteProfile]> {
+
+  return providerModuleProfiles.entries();
 }
 
 /* The default profile provides baseline behavior for sites not explicitly listed in the domain mapping or channel definitions. These settings work for most

@@ -2,7 +2,7 @@
  *
  * probe.ts: DRM probe for HLS manifest encryption classification.
  */
-import { LOG, startTimer } from "../utils/index.js";
+import { LOG, chromeFetch, startTimer } from "../utils/index.js";
 import type { Nullable } from "../types/index.js";
 
 /* This module fetches an HLS master manifest, selects the highest-bandwidth variant, and inspects its #EXT-X-KEY tags to classify the encryption type. The result
@@ -166,7 +166,7 @@ async function fetchManifestText(url: string): Promise<Nullable<string>> {
 
   try {
 
-    const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    const response = await chromeFetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT) });
 
     if(!response.ok) {
 
@@ -346,7 +346,7 @@ async function testKeyAccessibility(keyUrl: string): Promise<boolean> {
 
   try {
 
-    const response = await fetch(keyUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    const response = await chromeFetch(keyUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT) });
 
     if(!response.ok) {
 

@@ -3,11 +3,11 @@
  * providers.ts: Provider profile UI and route handlers for the PrismCast configuration interface.
  */
 import type { DomainConfig, SiteProfile } from "../../types/index.js";
-import { EXCLUDED_PROFILES, deleteUserProfile, getUserDomains, getUserProfiles, saveUserProfiles, validateDomain, validateProfile,
-  validateProfileKey } from "../../config/userProfiles.js";
 import type { Express, Request, Response } from "express";
 import { ICON_DELETE, ICON_EDIT } from "./channels/index.js";
 import { LOG, escapeHtml, formatError, sanitizeString } from "../../utils/index.js";
+import { deleteUserProfile, getUserDomains, getUserProfiles, saveUserProfiles, validateDomain, validateProfile,
+  validateProfileKey } from "../../config/userProfiles.js";
 import { exportProviderPack, importProviderPack, parseProviderPack } from "../../config/providerPacks.js";
 import { getChannelListing, validateChannelUrl } from "../../config/userChannels.js";
 import type { ProfileInfo } from "../../config/profiles.js";
@@ -215,9 +215,9 @@ export function generateWizardModal(): string {
   const profiles = getProfiles();
   const groups = categorizeProfiles(profiles);
 
-  // Site-specific profiles are excluded from the wizard — they have strategies and selectors tightly coupled to a specific service's DOM structure. User-defined
-  // profiles are also excluded because chained extensions (custom B extends custom A extends built-in X) are not supported.
-  const include = (p: ProfileInfo): boolean => !EXCLUDED_PROFILES.has(p.name) && (p.source === "builtin");
+  // Only general built-in profiles are shown in the wizard. Provider profiles live in a separate table (PROVIDER_PROFILES) and are already excluded from
+  // getProfiles(). User-defined profiles are also excluded because chained extensions (custom B extends custom A extends built-in X) are not supported.
+  const include = (p: ProfileInfo): boolean => (p.source === "builtin");
 
   // Serialize profile groups as JSON for the wizard JavaScript. Each entry has name, description, and summary.
   const profileData = {

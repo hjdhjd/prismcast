@@ -3,15 +3,16 @@
  * intercept.ts: CDP Network domain listener for intercepting HLS manifest URLs.
  */
 import type { CDPSession, Page } from "puppeteer-core";
-import { LOG, startTimer } from "../utils/index.js";
+import { LOG, chromeFetch, startTimer } from "../utils/index.js";
 import type { Nullable } from "../types/index.js";
 
 /* This module installs a Chrome DevTools Protocol (CDP) listener on the Network domain to capture HLS manifest URLs as the browser's video player fetches them. Unlike
  * the per-call CDP sessions created by withCDPSession() in cdp.ts, we create a long-lived session here because the listener must remain active across multiple network
  * requests until channel selection is complete.
  *
- * The listener filters for URLs ending in .m3u8 and uses Network.getResponseBody to inspect the response content. Master manifests contain #EXT-X-STREAM-INF directives
- * (variant playlist references), which distinguishes them from variant/media playlists.
+ * The listener filters for URLs ending in .m3u8 and fetches the manifest body directly via Node.js to inspect the content. Master manifests contain #EXT-X-STREAM-INF
+ * directives (variant playlist references), which distinguishes them from variant/media playlists. We use a direct fetch rather than CDP's Network.getResponseBody
+ * because Chrome's network cache can evict response bodies before we read them, causing spurious "No data found for resource" failures.
  *
  * For multi-channel sites, the video player may load manifests for channels other than the one requested. The interceptor tracks both the first and latest master
  * manifest URLs to handle two distinct scenarios:
@@ -138,8 +139,9 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
       }
     }, timeout);
 
-    // Listen for completed responses. We use Network.responseReceived to identify .m3u8 responses, then fetch the body to inspect content.
-    const onResponseReceived = async (params: { requestId: string; response: { url: string } }): Promise<void> => {
+    // Listen for completed responses. We use Network.responseReceived to capture .m3u8 URLs, then fetch the manifest body directly from Node.js to verify it is
+    // a master manifest. This avoids CDP's Network.getResponseBody which is unreliable — Chrome's network cache can evict response bodies before we read them.
+    const onResponseReceived = async (params: { response: { url: string } }): Promise<void> => {
 
       if(resolved) {
 
@@ -158,12 +160,20 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
 
       LOG.debug("native:intercept", "Observed .m3u8 response: %s.", url.slice(0, 120));
 
-      // Fetch the response body to inspect whether this is a master manifest.
+      // Fetch the manifest body directly to inspect whether this is a master manifest. The URL contains embedded CDN auth tokens, so no cookies or special
+      // headers are needed beyond the Chrome User-Agent injected by chromeFetch().
       try {
 
-        const bodyResult = await cdpSession.send("Network.getResponseBody", { requestId: params.requestId }) as { base64Encoded: boolean; body: string };
+        const response = await chromeFetch(url, { signal: AbortSignal.timeout(5000) });
 
-        const body = bodyResult.base64Encoded ? Buffer.from(bodyResult.body, "base64").toString("utf-8") : bodyResult.body;
+        if(!response.ok) {
+
+          LOG.debug("native:intercept", "Manifest fetch returned HTTP %s for %s.", response.status, url.slice(0, 120));
+
+          return;
+        }
+
+        const body = await response.text();
 
         // Master manifests contain #EXT-X-STREAM-INF directives that reference variant playlists. Media/variant playlists contain #EXTINF or #EXT-X-TARGETDURATION
         // but not #EXT-X-STREAM-INF.
@@ -180,13 +190,12 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
         }
       } catch(error) {
 
-        // Response body may be unavailable if the request was redirected or the response was a preflight. This is expected and not an error.
-        LOG.debug("native:intercept", "Could not read .m3u8 response body: %s.", String(error));
+        LOG.debug("native:intercept", "Could not fetch .m3u8 body: %s.", String(error));
       }
     };
 
     // Wrap the async handler to avoid no-misused-promises — EventEmitter.on() does not handle returned promises.
-    const wrappedHandler = (...args: [{ requestId: string; response: { url: string } }]): void => { void onResponseReceived(...args); };
+    const wrappedHandler = (...args: [{ response: { url: string } }]): void => { void onResponseReceived(...args); };
 
     cdpSession.on("Network.responseReceived", wrappedHandler);
 

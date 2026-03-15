@@ -16,6 +16,7 @@ import type { FFmpegProcess } from "../utils/index.js";
 import type { ManifestInterceptorHandle } from "../native/intercept.js";
 import type { MonitorStreamInfo } from "./monitor.js";
 import type { Readable } from "node:stream";
+import { chromeFetch } from "../utils/index.js";
 import { getCachedEncryption } from "../native/probe.js";
 import { getDomainConfig } from "../config/sites.js";
 import { getEffectiveViewport } from "../config/presets.js";
@@ -732,7 +733,7 @@ async function resolveRedirectUrl(url: string): Promise<Nullable<string>> {
 
   try {
 
-    const response = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(3000) });
+    const response = await chromeFetch(url, { method: "HEAD", signal: AbortSignal.timeout(3000) });
 
     return response.url;
   } catch {

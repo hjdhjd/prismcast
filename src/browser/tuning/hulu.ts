@@ -2099,6 +2099,16 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
     if(callSign) {
 
       affiliateMap.set(callSign, network.toUpperCase());
+
+      // Alias the network name to the affiliate's cache entry so that resolveHuluDirectUrl can look up local affiliates by their channelSelector (e.g., "PBS")
+      // without falling through to the guide grid. Without this alias, the first tune after precaching would always be cold for local affiliates because the
+      // cache is keyed by call sign (e.g., "wttw") and findHuluChannelEntry("pbs") would find no match.
+      const affiliateEntry = huluChannelCache.get(callSign);
+
+      if(affiliateEntry) {
+
+        huluChannelCache.set(network, affiliateEntry);
+      }
     }
   }
 
@@ -2159,6 +2169,24 @@ export const huluProvider: ProviderModule = {
   guideUrl: "https://www.hulu.com/live",
   handlesOwnNavigation: true,
   label: "Hulu",
+
+  // Profile for Hulu Live TV which presents a guide grid of live channels. The channel list is revealed by clicking a tab (listSelector), then the desired channel
+  // is found by matching img.alt text. Uses the fullscreen API (inherited from fullscreenApi) plus a dedicated fullscreen button selector for the player's native
+  // maximize control. Requires selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses waitForNetworkIdle because
+  // Hulu's SPA has heavy async initialization that often prevents the load event from firing within the retryOperation timeout; the graceful networkidle2 fallback
+  // in navigateToPage() allows execution to continue to channel selection even when background requests are still pending.
+  profile: {
+
+    category: "multiChannel",
+    channelSelection: { listSelector: "#CHANNELS", playSelector: "[data-testid=\"generic-tile-thumbnail\"]", strategy: "guideGrid" },
+    description: "Hulu Live TV with guide grid channel selection. Set Channel Selector to the channel's internal guide name (may differ from logo).",
+    extends: "fullscreenApi",
+    fullscreenSelector: "[aria-label=\"Maximize\"]",
+    selectReadyVideo: true,
+    summary: "Hulu Live TV (guide grid, needs selector)",
+    waitForNetworkIdle: true
+  },
+  profileName: "huluLive",
   slug: "hulu",
   strategy: {
 

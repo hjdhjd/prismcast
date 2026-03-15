@@ -3,8 +3,8 @@
  * table.ts: Channel table rendering for the PrismCast configuration interface.
  */
 import { compareChannelSort, getAllProviderTags, getAuthDomainForChannel, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey, getEnabledProviders,
-  getProviderGroup, getProviderSelection, getProviderTagForChannel, hasMultipleProviders, isChannelAvailableByProvider,
-  isProviderTagEnabled, resolveProviderKey } from "../../../config/providers.js";
+  getProviderGroup, getProviderTagForChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled,
+  resolveProviderKey } from "../../../config/providers.js";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
@@ -587,7 +587,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
     // Multi-provider: render ALL variants with data-provider-tag attributes so client-side JS can filter options when the provider selection changes. Filtered-out
     // options get the hidden attribute for immediate filtering in Chrome. Safari ignores hidden on option elements, so the page-load JS init calls filterChannelRows()
     // to remove them from the DOM.
-    const currentSelection = getProviderSelection(key) ?? key;
+    const currentSelection = resolveProviderKey(key);
 
     displayLines.push("<select class=\"provider-select\" data-channel=\"" + escapeHtml(key) + "\" onchange=\"updateProviderSelection(this)\"" +
       contentHidden + ">");

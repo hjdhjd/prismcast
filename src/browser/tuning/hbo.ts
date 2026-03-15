@@ -434,6 +434,19 @@ export const hboProvider: ProviderModule = {
   getCachedChannels: getHboCachedChannels,
   guideUrl: "https://play.hbomax.com",
   label: "HBO Max",
+
+  // Profile for HBO Max live channels (play.hbomax.com). The HBO brand page contains a "Distribution Channels" rail showing all 5 live linear channels (HBO, HBO
+  // Hits, HBO Drama, HBO Comedy, HBO Movies) as tiles. The hboGrid strategy discovers the HBO tab URL from the homepage menu bar, navigates to it, then scrapes the
+  // channel rail for the watch URL matching the channelSelector name. Extends fullscreenApi for requestFullscreen() behavior inherited by the watch page.
+  profile: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "hboGrid" },
+    description: "HBO Max with live channel rail selection. Set Channel Selector to the channel name (e.g., HBO, HBO Hits).",
+    extends: "fullscreenApi",
+    summary: "HBO Max (live channels, needs selector)"
+  },
+  profileName: "hboMax",
   slug: "hbomax",
   strategy: {
 

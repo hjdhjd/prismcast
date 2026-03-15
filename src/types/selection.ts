@@ -2,7 +2,7 @@
  *
  * selection.ts: Channel selection, provider module, and tuning type definitions for PrismCast.
  */
-import type { ChannelSelectionStrategy, ResolvedSiteProfile } from "./profiles.js";
+import type { ChannelSelectionStrategy, ResolvedSiteProfile, SiteProfile } from "./profiles.js";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable } from "./shared.js";
 
@@ -124,6 +124,14 @@ export interface ProviderModule {
 
   // Human-readable display name (e.g., "YouTube TV", "Hulu").
   label: string;
+
+  // The site profile definition for this provider. Contains behavior flags, channel selection strategy configuration, and other provider-specific settings.
+  // When defined, this profile is registered in the provider profile namespace and can be referenced by DOMAIN_CONFIG entries and channel definitions.
+  profile?: SiteProfile;
+
+  // The profile name used to register this provider's profile (e.g., "huluLive", "slingLive"). Must match the profile name referenced in DOMAIN_CONFIG entries
+  // for this provider's domain. Required when profile is defined.
+  profileName?: string;
 
   // Provider identifier used for API endpoints and provider filter matching (e.g., "yttv", "hulu", "foxcom"). Matches the providerTag values in DOMAIN_CONFIG so that
   // slug-based lookups and provider filter comparisons use the same identifier space.

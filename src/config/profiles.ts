@@ -2,7 +2,8 @@
  *
  * profiles.ts: Site profile resolution and validation for PrismCast.
  */
-import { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig } from "./sites.js";
+import { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, getBuiltinProfile, getDomainConfig,
+  getRegisteredProviderModuleProfiles } from "./sites.js";
 import type { DomainConfig, ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
 import { getUserDomains, getUserProfiles, validateDomain, validateProfile } from "./userProfiles.js";
 import { CHANNELS } from "../channels/index.js";
@@ -10,7 +11,7 @@ import { LOG } from "../utils/index.js";
 import { extractDomain } from "../utils/index.js";
 
 // Re-export site data so existing consumers can import from either module.
-export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, SITE_PROFILES, getDomainConfig };
+export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, getBuiltinProfile, getDomainConfig };
 
 /* Profile resolution is the process of determining which behavior flags to use for a given stream. The resolution process handles inheritance, merging parent and
  * child profile properties, and falling back to defaults for unspecified flags.
@@ -55,9 +56,9 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
     return { ...DEFAULT_SITE_PROFILE };
   }
 
-  // Check built-in profiles first, then user-defined profiles. User profiles are stored separately and can only extend built-in profiles (not other user profiles),
-  // so the resolution chain always terminates at a built-in profile.
-  const profile = (SITE_PROFILES[profileName] as SiteProfile | undefined) ?? (getUserProfiles()[profileName] as SiteProfile | undefined);
+  // Check all profile sources: static built-in tables (general + provider) and registered provider module profiles via getBuiltinProfile(), then user-defined
+  // profiles. User profiles can only extend built-in profiles (not other user profiles), so the resolution chain always terminates at a built-in profile.
+  const profile = getBuiltinProfile(profileName) ?? (getUserProfiles()[profileName] as SiteProfile | undefined);
 
   if(!profile) {
 
@@ -264,9 +265,13 @@ export function validateProfiles(): void {
 
   const errors: string[] = [];
 
-  // Check for circular inheritance and invalid extends references in profiles. We walk the extends chain for each profile, tracking visited profiles to detect
-  // cycles.
-  for(const profileName of Object.keys(SITE_PROFILES)) {
+  // Check for circular inheritance and invalid extends references across all profile sources. We walk the extends chain for each profile, tracking visited profiles
+  // to detect cycles. The allBuiltinProfiles map provides a unified view for validation without merging the tables permanently.
+  const allBuiltinProfiles = new Map<string, SiteProfile>(
+    [ ...Object.entries(SITE_PROFILES), ...Object.entries(PROVIDER_PROFILES), ...getRegisteredProviderModuleProfiles() ]
+  );
+
+  for(const profileName of allBuiltinProfiles.keys()) {
 
     const visited = new Set<string>();
     let current: string | undefined = profileName;
@@ -283,14 +288,12 @@ export function validateProfiles(): void {
 
       visited.add(current);
 
-      // TypeScript's Record type doesn't capture that the key may not exist at runtime.
-      const profile = SITE_PROFILES[current] as SiteProfile | undefined;
+      const profile = allBuiltinProfiles.get(current);
 
       current = profile?.extends;
 
       // Check if the extends target exists. This catches typos and references to deleted profiles.
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      if((current !== undefined) && !SITE_PROFILES[current]) {
+      if((current !== undefined) && !allBuiltinProfiles.has(current)) {
 
         errors.push([ "Profile ", profileName, " extends non-existent profile: ", current ].join(""));
 
@@ -304,9 +307,7 @@ export function validateProfiles(): void {
 
     if(config.profile) {
 
-      const domainProfile = SITE_PROFILES[config.profile] as SiteProfile | undefined;
-
-      if(!domainProfile) {
+      if(!getBuiltinProfile(config.profile)) {
 
         errors.push([ "Domain ", domain, " references non-existent profile: ", config.profile ].join(""));
       }
@@ -320,8 +321,7 @@ export function validateProfiles(): void {
 
     const channelProfile = channel.profile;
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if((channelProfile !== undefined) && (channelProfile !== "auto") && !SITE_PROFILES[channelProfile] && !(channelProfile in userProfiles)) {
+    if((channelProfile !== undefined) && (channelProfile !== "auto") && !getBuiltinProfile(channelProfile) && !(channelProfile in userProfiles)) {
 
       errors.push([ "Channel ", channelName, " references non-existent profile: ", channelProfile ].join(""));
     }
@@ -336,7 +336,7 @@ export function validateProfiles(): void {
   // Validate user-defined profiles and domain mappings. These are warnings, not fatal errors — broken user profiles should not prevent the server from starting.
   // The user can fix them via the web UI.
   const userWarnings: string[] = [];
-  const allProfileNames = new Set([ ...Object.keys(SITE_PROFILES), ...Object.keys(userProfiles) ]);
+  const allProfileNames = new Set([ ...allBuiltinProfiles.keys(), ...Object.keys(userProfiles) ]);
 
   for(const [ key, profile ] of Object.entries(userProfiles)) {
 

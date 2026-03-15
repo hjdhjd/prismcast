@@ -12,6 +12,7 @@ import { foxProvider } from "./tuning/fox.js";
 import { hboProvider } from "./tuning/hbo.js";
 import { huluProvider } from "./tuning/hulu.js";
 import { isChannelSelectionProfile } from "../types/index.js";
+import { registerProviderModuleProfile } from "../config/sites.js";
 import { slingProvider } from "./tuning/sling.js";
 import { spectrumProvider } from "./tuning/spectrum.js";
 import { thumbnailRowStrategy } from "./tuning/thumbnailRow.js";
@@ -36,11 +37,12 @@ import { yttvProvider } from "./tuning/youtubeTv.js";
  * 2. Export a single ProviderModule object from the file. Set the required fields:
  *    - slug, label, guideUrl: Identity metadata for API endpoints and logging.
  *    - strategyName: The ChannelSelectionStrategy union value that site profiles reference.
+ *    - profile, profileName: The SiteProfile definition and its name (e.g., "huluLive"). Registered automatically by the coordinator at import time.
  *    - strategy: A ChannelStrategyEntry with at minimum an execute hook. Also set clearCache, resolveDirectUrl, and invalidateDirectUrl as needed.
  *    - discoverChannels: Reads the provider's guide for all available channels, returning DiscoveredChannel[].
  * 3. Import the provider here and add it to the providerModules array.
  * 4. Add the strategy name to the ChannelSelectionStrategy union type in types/index.ts.
- * 5. Add a site profile entry in config/sites.ts that references the new strategy name.
+ * 5. Add a DOMAIN_CONFIG entry in config/sites.ts mapping the provider's domain to the profileName.
  *
  * The coordinator handles all cross-cutting concerns (dispatch, cache clearing, direct URL resolution, matchSelector polling) through the ChannelStrategyEntry
  * interface. Strategy files may import scrollAndClick(), normalizeChannelName(), resolveMatchSelector(), and logAvailableChannels() from this module for shared
@@ -59,6 +61,16 @@ const strategies: Record<string, ChannelStrategyEntry> = Object.fromEntries([
   [ "thumbnailRow", thumbnailRowStrategy ],
   [ "tileClick", tileClickStrategy ]
 ]) as Record<string, ChannelStrategyEntry>;
+
+// Register provider module profiles with the profile resolution system. This happens at module evaluation time so profiles are available before any startup
+// code runs. Providers that define a profile and profileName have their profile registered via the setter in sites.ts, avoiding circular dependencies.
+for(const provider of providerModules) {
+
+  if(provider.profile && provider.profileName) {
+
+    registerProviderModuleProfile(provider.profileName, provider.profile);
+  }
+}
 
 /**
  * Returns a direct watch URL for the channel specified in the profile, if one can be resolved. Looks up the strategy entry's resolveDirectUrl hook and calls it

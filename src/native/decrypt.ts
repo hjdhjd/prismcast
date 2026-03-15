@@ -2,7 +2,7 @@
  *
  * decrypt.ts: AES-128 key fetching and segment decryption for native HLS streaming.
  */
-import { LOG } from "../utils/index.js";
+import { LOG, chromeFetch } from "../utils/index.js";
 import type { Nullable } from "../types/index.js";
 import { createDecipheriv } from "node:crypto";
 
@@ -27,7 +27,7 @@ export async function fetchDecryptionKey(keyUrl: string): Promise<Nullable<Buffe
 
   try {
 
-    const response = await fetch(keyUrl, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT) });
+    const response = await chromeFetch(keyUrl, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT) });
 
     if(!response.ok) {
 

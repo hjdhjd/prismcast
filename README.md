@@ -14,34 +14,27 @@
 </DIV>
 </SPAN>
 
-PrismCast captures live video from web-based TV streaming sites and delivers it as HLS streams for [Channels DVR](https://getchannels.com/) and as MPEG-TS streams for [Plex](https://www.plex.tv/) via built-in HDHomeRun emulation. It uses Google Chrome to navigate to streaming sites, captures the video output, and serves it on your network. Most channels require a cable or streaming TV subscription - log in once with your TV provider credentials and Chrome remembers your session for future use.
+PrismCast captures live video from web-based TV streaming sites and delivers it as HLS streams for [Channels DVR](https://getchannels.com/) and as MPEG-TS streams for [Plex](https://www.plex.tv/) via builtin HDHomeRun emulation. It uses Google Chrome to navigate to streaming sites, captures the video output, and serves it on your network. Most channels require a cable or streaming TV subscription - log in once with your TV provider credentials and Chrome remembers your session for future use.
 
 This project is inspired by and builds upon the excellent work of [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) by the Channels DVR team. I'm grateful to them for creating the original foundation that made PrismCast possible.
 
 The name PrismCast reflects what the project does: like a prism transforming light into a spectrum of colors, PrismCast takes video from diverse streaming sources and refracts it into a unified HLS format for your DVR.
 
-## A Note About This Project
-
-PrismCast started as an experiment: could I create a complete, production-quality application using only AI tools? Every line of code in this project was written by AI (Claude), but built on a foundation of my existing open source projects, coding style, and design philosophy. The AI learned from my prior work and preferences to produce code that feels like mine—because in many ways, it is. The result is a modern, fully-featured streaming server that I use daily.
-
-I share this not as a gimmick, but because I think it's genuinely interesting. The AI handled everything from the initial architecture to the nuanced edge cases of browser automation and video streaming. My role was to provide direction, review the output, and iterate on the design. It's been a fascinating collaboration between human taste and AI capability, and I hope the code quality speaks for itself.
-
-## Why PrismCast?
-
-If you're already using Chrome Capture for Channels and it's working well for you, that's wonderful! There's no need to switch. However, if you're looking for something different, PrismCast offers a modern TypeScript codebase, a real-time web interface, intelligent recovery, and the flexibility to easily add your own channels. The site profile system makes it straightforward to add support for new streaming sites, and contributions are always welcome!
-
 ## Features
 
 ### Channels and Streaming
-- **Preconfigured channels** - PrismCast comes ready to stream most major US television networks out of the box. Just authenticate with your TV provider and you're ready to go.
+- **8 builtin providers** - Hulu, YouTube TV, Sling TV, Fox, HBO Max, DirecTV Stream, Spectrum TV, and Xfinity Stream with hundreds of preconfigured channels ready to stream. Just authenticate with your TV provider and you're ready to go.
+- **Native HLS streaming** - For TV Everywhere sites that deliver non-DRMed streams, PrismCast automatically bypasses screen capture and consumes the stream directly — delivering full provider quality with significantly lower CPU usage. This is especially valuable for Hulu + Live TV subscribers who can use their TVE credentials to stream channels like A&E, Food Network, HGTV, History, Discovery, and many more at native quality through those networks' own sites. Also works with Fox One, Fox Sports, BET, C-SPAN, VH1, and others. DRM-protected providers automatically fall back to screen capture.
+- **User-defined provider profiles** - Add support for any streaming site without waiting for a builtin update. A step-by-step builder wizard guides you through profile creation, and shareable provider packs let you export and import complete provider setups.
 - **Custom channel support** - Easily add your own streaming sources through the web interface, from YouTube live streams to niche international channels. If a site plays video in Chrome, there's a good chance PrismCast can capture it.
-- **Plex integration** - Built-in HDHomeRun emulation lets Plex discover PrismCast as a network tuner. Add it as a DVR source in Plex for live TV and recording.
+- **Plex integration** - Builtin HDHomeRun emulation lets Plex discover PrismCast as a network tuner. Add it as a DVR source in Plex for live TV and recording.
 - **Multiple concurrent streams** - Stream up to 10 channels simultaneously (configurable), perfect for recording multiple shows at once.
 - **Session persistence** - Log in to your TV provider once and Chrome remembers your session across restarts.
-- **Quality presets** - Choose from 480p to 4K with automatic adaptation to your display capabilities.
+- **Quality presets** - Choose from 480p to 1080p presets that set the Chrome viewport dimensions. These presets influence the resolution that providers deliver, though Chrome and the provider ultimately determine the actual stream quality.
 
 ### Web Interface
 - **Real-time dashboard** - Monitor all active streams with live health status, duration, memory usage, and (when recording via Channels DVR) the name of the show being recorded.
+- **Channel health indicators** - Green/red status dots and provider authentication badges show at-a-glance which channels are working and which providers are logged in.
 - **Channel management** - Add, edit, and delete custom channels directly in the browser. No config files to edit.
 - **Live log viewer** - Stream server logs in real-time with level filtering, perfect for troubleshooting.
 - **Configuration UI** - Adjust all settings through an intuitive web interface with instant validation.
@@ -50,13 +43,15 @@ If you're already using Chrome Capture for Channels and it's working well for yo
 
 ### Reliability
 - **Intelligent playback recovery** - Issue-aware recovery system that chooses the right fix for different problems. Buffering issues get different treatment than paused playback.
+- **Resolution degradation detection** - Monitors video quality and recovers automatically when the stream drops to a lower resolution than expected.
+- **Predictive pretuning** - Reads the Channels DVR programming schedule and pre-tunes upcoming channels before recordings start, reducing tune latency to near zero.
 - **Circuit breaker protection** - Streams that fail repeatedly are automatically terminated, preventing resource exhaustion.
-- **Health monitoring** - Built-in `/health` endpoint for integration with monitoring systems.
+- **Health monitoring** - Builtin `/health` endpoint for integration with monitoring systems.
 - **Graceful degradation** - If your display can't support your chosen quality preset, PrismCast automatically uses the best available resolution.
 
 ### Technical
-- **Native HLS segmentation** - Built-in fMP4 segmenter with no external dependencies for segment generation.
-- **Flexible capture modes** - Choose between FFmpeg-based capture (more stable for long recordings) or native Chrome capture (no dependencies).
+- **Native HLS segmentation** - Builtin fMP4 segmenter with no external dependencies for segment generation.
+- **FFmpeg capture** - FFmpeg-based screen capture provides stable, reliable streaming for long recordings. Chrome also supports a native capture mode, but it is currently unavailable due to a long-standing Chrome bug that produces corrupt output after extended use.
 - **Site profile system** - Data-driven configuration for handling different streaming sites. Profiles define how to enter fullscreen, handle iframes, manage multi-channel players, and more. Adding support for a new site often requires just a few lines of configuration.
 - **Gracenote integration** - Channels can include station IDs for automatic guide data matching in Channels DVR.
 - **MPEG-TS output** - In addition to HLS, PrismCast serves MPEG-TS streams for HDHomeRun-compatible clients. FFmpeg remuxes fMP4 to MPEG-TS with codec copy (no transcoding).
@@ -81,7 +76,7 @@ The recommended way to install PrismCast on macOS:
 brew install hjdhjd/prismcast/prismcast
 ```
 
-To update to the latest version, use the built-in upgrade command or Homebrew directly:
+To update to the latest version, use the builtin upgrade command or Homebrew directly:
 
 ```sh
 prismcast upgrade
@@ -96,7 +91,7 @@ PrismCast can also be installed globally as a Node.js package:
 npm install -g prismcast
 ```
 
-To upgrade to the latest version, use the built-in upgrade command or npm directly:
+To upgrade to the latest version, use the builtin upgrade command or npm directly:
 
 ```sh
 prismcast upgrade
@@ -166,7 +161,7 @@ That's it! Your channels will appear in the Channels DVR guide. Channels with a 
 
 ## Quick Start with Plex
 
-PrismCast includes built-in HDHomeRun emulation, allowing Plex to discover it as a network tuner.
+PrismCast includes builtin HDHomeRun emulation, allowing Plex to discover it as a network tuner.
 
 1. **Start PrismCast** — HDHomeRun emulation starts automatically on port 5004
 2. **Add to Plex**:
@@ -175,15 +170,13 @@ PrismCast includes built-in HDHomeRun emulation, allowing Plex to discover it as
    - Plex will detect PrismCast as an HDHomeRun tuner and import available channels
 3. **Authenticate** — If channels require TV provider login, go to the PrismCast web interface at `http://localhost:5589` and use the Channels tab to log in
 
-HDHomeRun emulation requires FFmpeg capture mode (the default). It is automatically disabled in native capture mode.
-
 ## Configuration
 
 PrismCast includes a web-based configuration interface at `http://localhost:5589`. From there you can:
 
 - **Manage channels** - View all available channels, add your own custom channels, or override the defaults
 - **Filter providers** - Choose which streaming services are active in your environment and filter channels accordingly
-- **Adjust quality settings** - Choose from presets like 720p, 1080p, or 4K
+- **Adjust quality settings** - Choose from presets like 720p or 1080p
 - **Configure HLS parameters** - Segment duration, buffer size, idle timeout
 - **Configure HDHomeRun** - Enable or disable Plex integration, set the HDHR port and device name
 - **Tune recovery behavior** - Adjust how aggressively PrismCast recovers from playback issues
@@ -235,7 +228,7 @@ If you prefer not to use Docker Compose:
 ```bash
 docker run -d \
   --name prismcast \
-  --shm-size=1g \
+  --shm-size=2g \
   -p 5589:5589 \
   -p 5900:5900 \
   -p 6080:6080 \
@@ -255,7 +248,7 @@ docker run -d \
 
 ### TV Provider Authentication
 
-TV provider authentication requires interacting with the Chrome browser running inside the container. The container includes two built-in options:
+TV provider authentication requires interacting with the Chrome browser running inside the container. The container includes two builtin options:
 
 1. **noVNC (recommended)** - Open `http://localhost:6080/vnc.html` in any browser for a web-based view of the Chrome instance. No VNC client needed. Use this to complete TV provider logins, then return to the PrismCast web interface and click "Done" on the channel.
 2. **VNC** - Connect any VNC client to `localhost:5900` for direct access. Set the `NOVNC_PASSWORD` environment variable to require a password for VNC connections.
@@ -271,7 +264,30 @@ The virtual display resolution must match or exceed your configured quality pres
 | 480p | 854x480 |
 | 720p / 720p High | 1280x720 |
 | 1080p / 1080p High | 1920x1080 |
-| 4K | 3840x2160 |
+
+### GPU Acceleration
+
+The Docker image supports Intel GPU hardware acceleration for significantly lower CPU usage. If your host has an Intel GPU with Quick Sync Video support, pass the GPU device to the container:
+
+```yaml
+# In your Docker Compose file:
+devices:
+  - /dev/dri:/dev/dri
+```
+
+Or with `docker run`:
+
+```bash
+docker run -d \
+  --name prismcast \
+  --shm-size=2g \
+  --device /dev/dri:/dev/dri \
+  -p 5589:5589 -p 5900:5900 -p 6080:6080 -p 5004:5004 \
+  -v prismcast-data:/root/.prismcast \
+  ghcr.io/hjdhjd/prismcast:latest
+```
+
+The container auto-detects the GPU and configures VA-API acceleration. The default driver (`iHD`) supports Intel Gen 9 (Skylake) and newer. For older Intel hardware, set `LIBVA_DRIVER_NAME=i965`. When no GPU is present, the container falls back to software rendering automatically.
 
 ### Container Environment Variables
 
@@ -286,6 +302,7 @@ The container accepts environment variables for both the virtual display and Pri
 | `SCREEN_HEIGHT` | 1080 | Virtual display height in pixels |
 | `SCREEN_DEPTH` | 24 | Virtual display color depth |
 | `NOVNC_PASSWORD` | (none) | Password for VNC/noVNC access. If unset, VNC is open without authentication. |
+| `LIBVA_DRIVER_NAME` | iHD | Intel VA-API driver. Use `i965` for pre-Skylake hardware. Only relevant when GPU is passed through. |
 
 **PrismCast:**
 
@@ -294,11 +311,10 @@ The container accepts environment variables for both the virtual display and Pri
 | `PORT` | 5589 | HTTP server port |
 | `HOST` | 0.0.0.0 | HTTP server bind address |
 | `CHROME_BIN` | (auto) | Path to Chrome executable |
-| `QUALITY_PRESET` | 720p-high | Video quality: 480p, 720p, 720p-high, 1080p, 1080p-high, 4k |
+| `QUALITY_PRESET` | 720p-high | Video quality: 480p, 720p, 720p-high, 1080p, 1080p-high |
 | `VIDEO_BITRATE` | 12000000 | Video bitrate in bps |
 | `AUDIO_BITRATE` | 256000 | Audio bitrate in bps |
 | `FRAME_RATE` | 60 | Target frame rate |
-| `CAPTURE_MODE` | ffmpeg | Capture mode: "ffmpeg" (more stable) or "native" |
 | `HDHR_ENABLED` | true | Enable HDHomeRun emulation for Plex |
 | `HDHR_PORT` | 5004 | HDHomeRun emulation server port |
 | `HDHR_FRIENDLY_NAME` | PrismCast | Device name shown in Plex |

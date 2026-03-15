@@ -2,7 +2,7 @@
  *
  * proxy.ts: Native HLS proxy — manifest polling, segment fetching, and playlist generation.
  */
-import { LOG, startTimer } from "../utils/index.js";
+import { LOG, chromeFetch, startTimer } from "../utils/index.js";
 import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.js";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.js";
 import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.js";
@@ -616,8 +616,16 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     keysByUrl.set(keyUrl, options.prefetchedKey);
   }
 
-  // Track fetched media sequence numbers to avoid re-fetching segments.
+  // Track fetched media sequence numbers to avoid re-fetching segments. The high-water mark tracks the highest upstream sequence number fetched, used to filter
+  // out DAI backfill segments that appear as "new" (not in fetchedSequences) but have sequence numbers below what we've already served. Without this, Google DAI
+  // manifests that interleave multiple session windows cause the proxy to fetch old segments with discontinuous PTS, producing visible glitches in playback.
+  //
+  // The tokenRefreshPending flag handles CDNs that reset sequence numbers to 0 on token refresh (e.g., Fox Sports). After a refresh, if the first poll produces
+  // zero segments above the high-water mark, the sequence timeline has genuinely reset — we clear the high-water mark and re-process the same manifest with the
+  // tail-fill strategy. If segments do pass (e.g., Fox News DAI where sequences continue), the flag is cleared without any reset.
   const fetchedSequences = new Set<number>();
+  let highWaterSequence = -1;
+  let tokenRefreshPending = false;
 
   // Per-segment metadata for the video variant. These Maps are keyed by local filename (e.g., "segment0.ts") and track the upstream manifest tags associated with
   // each stored segment. The playlist generator reads these to emit faithful HLS output with discontinuity markers, program timestamps, and ad signaling.
@@ -628,6 +636,8 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   let audioConsecutiveManifestFailures = 0;
   const audioSegmentTracker = { consecutiveFailures: 0, debugLabel: "Audio segment", label: "audio segment" };
   const audioFetchedSequences = new Set<number>();
+  let audioHighWaterSequence = -1;
+  let audioTokenRefreshPending = false;
   const audioMetadata = createSegmentMetadata();
 
   /**
@@ -644,7 +654,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     try {
 
-      const response = await fetch(variantUrl, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
+      const response = await chromeFetch(variantUrl, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
 
       if(!response.ok) {
 
@@ -773,8 +783,39 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       pruneMetadata(videoMetadata, activeSegments);
     }
 
-    // Fetch new segments (those we haven't fetched yet).
-    const newSegments = segments.filter((s) => !fetchedSequences.has(s.sequence));
+    // Filter segments to only those that advance the live edge. On the first poll (highWaterSequence === -1), we have no baseline yet, so we take the last
+    // maxSegments entries to fill the initial playlist window. On subsequent polls, we only fetch segments with sequence numbers above the high-water mark. This
+    // filters out DAI backfill segments from interleaved session windows — segments that are "new" (not in fetchedSequences) but have lower sequence numbers than
+    // what we've already served, causing PTS discontinuities and visible playback glitches.
+    let newSegments: ParsedSegment[];
+
+    if(highWaterSequence === -1) {
+
+      // First poll — no baseline. Take the tail of the manifest to fill the playlist window.
+      newSegments = segments.slice(-CONFIG.hls.maxSegments);
+    } else {
+
+      // Subsequent polls — only fetch segments that advance past the high-water mark.
+      newSegments = segments.filter((s) => (s.sequence > highWaterSequence) && !fetchedSequences.has(s.sequence));
+
+      // Detect CDN sequence timeline reset after a token refresh. Some CDNs (e.g., Fox Sports) create a new session with sequence numbers starting at 0 when
+      // tokens are refreshed. If the first poll after a refresh produces zero segments above the high-water mark, the timeline has genuinely reset — clear the
+      // high-water mark and re-process the same manifest with the tail-fill strategy.
+      if((newSegments.length === 0) && tokenRefreshPending && (segments.length > 0)) {
+
+        LOG.debug("native:proxy", "Sequence timeline reset detected for %s after token refresh. Resetting high-water mark from %s.", channelName, highWaterSequence);
+
+        highWaterSequence = -1;
+        tokenRefreshPending = false;
+        newSegments = segments.slice(-CONFIG.hls.maxSegments);
+      }
+    }
+
+    // Clear the token refresh flag on the first poll that produces segments, whether via normal filtering or after a reset detection.
+    if((newSegments.length > 0) && tokenRefreshPending) {
+
+      tokenRefreshPending = false;
+    }
 
     if(newSegments.length === 0) {
 
@@ -819,6 +860,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       storeSegment(streamId, filename, segmentData);
       fetchedSequences.add(seg.sequence);
+      highWaterSequence = Math.max(highWaterSequence, seg.sequence);
       storeSegmentMetadata(videoMetadata, filename, seg);
       storedAny = true;
 
@@ -859,7 +901,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
    */
   async function fetchAndDecryptSegment(url: string, sequence: number, ivHex: Nullable<string>, segKeyUrl: Nullable<string>): Promise<Nullable<Buffer>> {
 
-    const response = await fetch(url, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
+    const response = await chromeFetch(url, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
 
     if(!response.ok) {
 
@@ -972,7 +1014,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     try {
 
-      const response = await fetch(audioVariantUrl, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
+      const response = await chromeFetch(audioVariantUrl, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
 
       if(!response.ok) {
 
@@ -1047,7 +1089,31 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       pruneMetadata(audioMetadata, activeSegments);
     }
 
-    const newSegments = segments.filter((s) => !audioFetchedSequences.has(s.sequence));
+    // Filter audio segments using the same high-water mark and token refresh detection as the video path.
+    let newSegments: ParsedSegment[];
+
+    if(audioHighWaterSequence === -1) {
+
+      newSegments = segments.slice(-CONFIG.hls.maxSegments);
+    } else {
+
+      newSegments = segments.filter((s) => (s.sequence > audioHighWaterSequence) && !audioFetchedSequences.has(s.sequence));
+
+      if((newSegments.length === 0) && audioTokenRefreshPending && (segments.length > 0)) {
+
+        LOG.debug("native:proxy", "Audio sequence timeline reset detected for %s after token refresh. Resetting high-water mark from %s.",
+          channelName, audioHighWaterSequence);
+
+        audioHighWaterSequence = -1;
+        audioTokenRefreshPending = false;
+        newSegments = segments.slice(-CONFIG.hls.maxSegments);
+      }
+    }
+
+    if((newSegments.length > 0) && audioTokenRefreshPending) {
+
+      audioTokenRefreshPending = false;
+    }
 
     if(newSegments.length === 0) {
 
@@ -1077,6 +1143,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       storeAudioSegment(streamId, filename, segmentData);
       audioFetchedSequences.add(seg.sequence);
+      audioHighWaterSequence = Math.max(audioHighWaterSequence, seg.sequence);
       storeSegmentMetadata(audioMetadata, filename, seg);
       storedAny = true;
 
@@ -1355,6 +1422,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       audioVariantUrl = newUrl;
       audioFetchedSequences.clear();
+      audioTokenRefreshPending = true;
 
       LOG.debug("native:proxy", "Audio variant URL updated for %s.", channelName);
     },
@@ -1371,11 +1439,13 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       variantUrl = newUrl;
       totalTokenRefreshes++;
 
-      // Clear segment tracking state. The new variant URL may point to a different CDN session with its own media sequence numbering (e.g., Fox Sports resets to 0
-      // on each new session). Without this reset, the proxy's fetchedSequences Set contains sequence numbers from the old session that overlap with the new one,
-      // causing all new segments to be incorrectly filtered as "already fetched."
+      // Clear the fetched set so sequence numbers from the old CDN session don't cause segments in the new session to be incorrectly filtered as "already fetched."
+      // The high-water mark is intentionally preserved — it's the same live stream with the same sequence timeline, just with fresh auth tokens. Resetting it would
+      // allow the proxy to re-fetch segments the client already consumed, causing PTS discontinuities and visible playback glitches. The tokenRefreshPending flag
+      // enables processManifest to detect genuine sequence timeline resets (e.g., Fox Sports) on the first poll after refresh.
       fetchedSequences.clear();
       lastMediaSequence = -1;
+      tokenRefreshPending = true;
 
       LOG.debug("native:proxy", "Variant URL updated for %s. Segment tracking reset.", channelName);
     }

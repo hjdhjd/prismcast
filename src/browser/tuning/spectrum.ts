@@ -572,6 +572,20 @@ export const spectrumProvider: ProviderModule = {
   getCachedChannels: getSpectrumCachedChannels,
   guideUrl: "https://watch.spectrum.net/guide",
   label: "Spectrum TV",
+
+  // Profile for Spectrum TV (watch.spectrum.net) live guide grid. The guide page at /guide presents all ~442 streamable channels in a non-virtualized AngularJS
+  // DOM. Channel headers provide callsigns, channel numbers, and Gracenote station IDs (tmsid from logo image URLs). The spectrumGrid strategy reads all channels
+  // in a single evaluate pass, caches them, and navigates directly to /livetv?tmsid={stationId} — no clicking, no SPA state changes, no overlays. The channelSelector
+  // matches against clean channel names (e.g., "ESPN", "CNN", "NBC") with callsign suffix tolerance and affiliate network name resolution.
+  profile: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "spectrumGrid" },
+    description: "Spectrum TV with guide grid channel selection. Set Channel Selector to the channel name (e.g., ESPN, CNN, NBC).",
+    extends: "fullscreenApi",
+    summary: "Spectrum TV (guide grid, needs selector)"
+  },
+  profileName: "spectrum",
   slug: "spectrum",
   strategy: {
 

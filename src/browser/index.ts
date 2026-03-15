@@ -18,6 +18,7 @@ import { emitSystemStatusChanged } from "../streaming/statusEmitter.js";
 import fs from "node:fs";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
+import { setChromeUserAgent } from "../utils/index.js";
 import { startPrecaching } from "./precaching.js";
 import { terminateStream } from "../streaming/lifecycle.js";
 
@@ -810,11 +811,12 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
  */
 function handleBrowserDisconnect(): void {
 
-  // Clear the browser reference, launch timestamp, cached version, and stale PID so getCurrentBrowser() will launch a new instance on the next call.
+  // Clear the browser reference, launch timestamp, cached version, user agent, and stale PID so getCurrentBrowser() will launch a new instance on the next call.
   currentBrowser = null;
   browserLaunchTime = null;
   chromePid = null;
   currentChromeVersion = null;
+  setChromeUserAgent(null);
 
   // Cancel any pending restart quiet timer since the browser is already gone.
   if(restartQuietTimer) {
@@ -968,11 +970,13 @@ async function launchBrowser(): Promise<Browser> {
     LOG.debug("timing:browser", "Display detection complete. (+%sms)", browserElapsed());
 
     // Log the Chrome version for diagnostic reference. This helps correlate browser behavior changes (tab unresponsiveness, memory pressure, capture issues)
-    // with specific Chrome releases.
+    // with specific Chrome releases. We also capture the User-Agent string so that server-side fetch() calls to provider CDNs can match Chrome's identity.
     const chromeVersion = await currentBrowser.version();
+    const userAgent = await currentBrowser.userAgent();
 
     browserLaunchTime = Date.now();
     currentChromeVersion = chromeVersion;
+    setChromeUserAgent(userAgent);
 
     LOG.info("Chrome ready: %s.", chromeVersion);
 
@@ -988,10 +992,11 @@ async function launchBrowser(): Promise<Browser> {
 
     LOG.error("Failed to launch browser: %s.", formatError(error));
 
-    // Clear the browser reference, launch timestamp, and cached version on failure so the next call will attempt to launch again.
+    // Clear the browser reference, launch timestamp, cached version, and user agent on failure so the next call will attempt to launch again.
     currentBrowser = null;
     browserLaunchTime = null;
     currentChromeVersion = null;
+    setChromeUserAgent(null);
 
     throw error;
   }
@@ -1129,10 +1134,11 @@ export async function closeBrowser(): Promise<void> {
 
   const browserRef = currentBrowser;
 
-  // Clear the reference, launch timestamp, and cached version early to prevent any new operations from using it.
+  // Clear the reference, launch timestamp, cached version, and user agent early to prevent any new operations from using it.
   currentBrowser = null;
   browserLaunchTime = null;
   currentChromeVersion = null;
+  setChromeUserAgent(null);
 
   if(!browserRef) {
 

@@ -2,7 +2,7 @@
  *
  * userProfiles.ts: User profile and domain mapping persistence for PrismCast.
  */
-import { DOMAIN_CONFIG, SITE_PROFILES } from "./sites.js";
+import { DOMAIN_CONFIG, SITE_PROFILES, getBuiltinProfile, isProviderProfile } from "./sites.js";
 import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "../types/index.js";
 import { LOG, containsNonPrintable } from "../utils/index.js";
 import { getDataDir, getProfilesFilePath } from "./paths.js";
@@ -37,10 +37,6 @@ const ALL_STRATEGIES = new Set([ "foxGrid", "guideGrid", "hboGrid", "none", "sli
 // Strategies that require a matchSelector to identify channel elements.
 const STRATEGIES_REQUIRING_MATCH_SELECTOR = new Set([ "thumbnailRow", "tileClick" ]);
 
-// Site-specific profiles that cannot be used as a base for user-defined profiles. These profiles have strategies, selectors, or flags tightly coupled to a specific
-// streaming service's DOM structure. Users targeting these services should use the predefined channels directly, not create custom profiles extending them.
-export const EXCLUDED_PROFILES = new Set([ "directvStream", "disneyNow", "disneyPlus", "foxLive", "hboMax", "huluLive", "slingLive", "spectrum",
-  "xfinityStream", "youtubeTV" ]);
 
 // Module-level storage for loaded user profiles and domains. Populated at startup and updated on save.
 let loadedUserProfiles: Record<string, SiteProfile> = {};
@@ -369,14 +365,14 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
     return errors;
   }
 
-  // extends must reference a built-in profile (not another user profile).
-  if(!(profile.extends in SITE_PROFILES)) {
+  // extends must reference a built-in general profile (not another user profile or a provider profile). Provider profiles are tightly coupled to a streaming
+  // service's DOM structure and cannot be meaningfully extended by user profiles.
+  if(!getBuiltinProfile(profile.extends)) {
 
     errors.push("Profile '" + key + "': extends references non-existent built-in profile '" + profile.extends + "'.");
-  } else if(EXCLUDED_PROFILES.has(profile.extends)) {
+  } else if(isProviderProfile(profile.extends)) {
 
-    // Site-specific profiles are tightly coupled to a streaming service's DOM structure and cannot be meaningfully extended by user profiles.
-    errors.push("Profile '" + key + "': '" + profile.extends + "' is a site-specific profile and cannot be extended. " +
+    errors.push("Profile '" + key + "': '" + profile.extends + "' is a provider-specific profile and cannot be extended. " +
       "Use the predefined channels for this service instead.");
   }
 

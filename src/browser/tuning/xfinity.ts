@@ -860,6 +860,20 @@ export const xfinityProvider: ProviderModule = {
   guideUrl: XFINITY_GUIDE_URL,
   handlesOwnNavigation: true,
   label: "Xfinity Stream",
+
+  // Profile for Xfinity Stream (xfinity.com/stream) live channels. The channelmap API at xtvapi.cloudtv.comcast.net returns the complete channel lineup (~1389
+  // entries). Tuning uses in-page SPA channel switching: after the guide page loads the Polymer SPA, the strategy calls `_watchChannelEventHandler(null, { channel })`
+  // on the `TV-APP` element to switch channels in ~2-3 seconds without page navigation. Extends fullscreenApi for requestFullscreen() behavior on the player page.
+  profile: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "xfinityDirect" },
+    description: "Xfinity Stream with in-page SPA channel switching. Set Channel Selector to the channel callSign (e.g., CNNHD, ESPND) " +
+      "or network name (e.g., CNN, ESPN).",
+    extends: "fullscreenApi",
+    summary: "Xfinity Stream (SPA tuning, needs selector)"
+  },
+  profileName: "xfinityStream",
   slug: "xfinity",
   strategy: {
 

@@ -3,7 +3,7 @@
  * sling.ts: Sling TV guide grid channel selection strategy with binary search and row caching.
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
-import { LOG, delay, formatError } from "../../utils/index.js";
+import { LOG, chromeFetch, delay, formatError } from "../../utils/index.js";
 import { logAvailableChannels, normalizeChannelName } from "../channelSelection.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
@@ -365,7 +365,7 @@ async function fetchSlingAssetId(channelGuid: string): Promise<Nullable<string>>
     return null;
   }
 
-  const response = await fetch(slingPlaybackInfoBase + "/" + channelGuid + "/schedule/now/playback_info.qvt");
+  const response = await chromeFetch(slingPlaybackInfoBase + "/" + channelGuid + "/schedule/now/playback_info.qvt");
 
   if(!response.ok) {
 
@@ -988,6 +988,20 @@ export const slingProvider: ProviderModule = {
   guideUrl: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z",
   handlesOwnNavigation: true,
   label: "Sling TV",
+
+  // Sling TV live guide grid profile. The A-Z guide renders a virtualized grid of ~638 rows (120px each) with channel identification via
+  // data-testid="channel-{NAME}" attributes. The slingGrid strategy performs binary search on .guide-cell scrollTop to locate the target channel, then clicks
+  // the on-now program cell which navigates to a player page where a single <video> element auto-plays. Does not use waitForNetworkIdle — the strategy's own
+  // waitForSelector on channel entries is the readiness signal, and the SPA's persistent connections would delay network idle unnecessarily.
+  profile: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "slingGrid" },
+    description: "Sling TV with guide grid channel selection. Set Channel Selector to the channel's internal guide name (may differ from logo).",
+    extends: "fullscreenApi",
+    summary: "Sling TV (guide grid, needs selector)"
+  },
+  profileName: "slingLive",
   slug: "sling",
   strategy: {
 

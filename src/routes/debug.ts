@@ -90,15 +90,15 @@ function generateDebugStyles(): string {
     // Category groups.
     ".debug-groups { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }",
     ".debug-group { background: var(--surface-elevated); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px; }",
-    ".debug-group-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }",
-    ".debug-group-header label { font-weight: 600; font-size: 0.95rem; color: var(--text-heading); cursor: pointer; }",
+    ".debug-group-header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }",
+    ".debug-group-header label { font-weight: 600; font-size: 0.95rem; color: var(--text-heading); cursor: pointer; min-width: 150px; }",
     ".debug-group-children { padding-left: 28px; display: flex; flex-direction: column; gap: 6px; }",
-    ".debug-child { display: flex; align-items: flex-start; gap: 8px; }",
-    ".debug-child label { cursor: pointer; font-size: 0.9rem; color: var(--text-primary); }",
+    ".debug-child { display: flex; align-items: baseline; gap: 8px; }",
+    ".debug-child label { cursor: pointer; font-size: 0.9rem; color: var(--text-primary); min-width: 150px; }",
     ".debug-child-desc { color: var(--text-muted); font-size: 0.8rem; margin-left: 4px; }",
 
     // Checkbox styling.
-    "input[type='checkbox'] { margin-top: 3px; cursor: pointer; accent-color: var(--interactive-primary); }",
+    "input[type='checkbox'] { cursor: pointer; accent-color: var(--interactive-primary); position: relative; top: 2px; }",
 
     // Action bar.
     ".debug-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 24px; }",

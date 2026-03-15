@@ -294,6 +294,20 @@ export const foxProvider: ProviderModule = {
   getCachedChannels: (): Nullable<DiscoveredChannel[]> => cachedDiscoveredChannels,
   guideUrl: "https://www.fox.com/live/channels",
   label: "Fox",
+
+  // Profile for Fox.com live channel guide grid. The guide page presents all channels in a non-virtualized grid with station codes in the channel logo button
+  // titles (e.g., FOXD2C, FNC, FS1). The channelSelector property matches against these station codes. Clicking the channel logo button is an SPA state
+  // transition — the player at the top of the page switches channels without navigation. The grid renders dynamically after page load, so the strategy waits
+  // for GuideChannelContainer elements before scanning.
+  profile: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "foxGrid" },
+    description: "Fox.com live channel guide. Set Channel Selector to the station code (e.g., BTN, FOXD2C, FS1).",
+    extends: "fullscreenApi",
+    summary: "Fox Live (guide grid, needs selector)"
+  },
+  profileName: "foxLive",
   slug: "foxcom",
   strategy: { clearCache: clearFoxCache, execute: foxGridStrategy },
   strategyName: "foxGrid"
