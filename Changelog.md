@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.6.0 (2026-03-15)
+  * New feature: Xfinity Stream provider support. Note: Xfinity's player is slow to initialize and tune — expect 15-30 seconds for channel changes. This is a limitation of the Xfinity Stream web player, not PrismCast. I'm exploring improvements for the future, but no promises — this is as good as it gets for now.
+  * New feature: native HLS streaming — PrismCast automatically detects when a provider delivers non-DRMed HLS and bypasses screen capture entirely, consuming the stream directly for higher quality with lower CPU usage. Known to work with the A&E family (A&E, History, Lifetime), BET, C-SPAN, the Food Network family (Discovery, Food Network, HGTV, OWN, TLC, Travel, and others), Fox One, Fox Sports, VH1, and more. DRM-protected providers automatically fall back to screen capture.
+  * New feature: preroll immediate response — HLS clients can receive video within seconds of a tune request rather than waiting for the full stream initialization to complete.
+  * New feature: predictive channel pretuning — PrismCast reads the Channels DVR programming schedule and pre-tunes upcoming channels before recordings start, reducing tune latency to near zero.
+  * New feature: dismiss intermittent site modals that block video playback.
+  * New feature: video resolution degradation detection and recovery.
+  * New feature: Docker Intel GPU hardware acceleration — containers with an Intel GPU can offload video processing from the CPU, significantly reducing CPU usage. Thanks to @ajvolin for the initial work and @bnhf for the contribution.
+  * Improvement: native proxy upstream metadata propagation for HLS discontinuity, SCTE-35 cues, and program date-time.
+  * Improvement: track-aware segment health monitoring with provider-specific thresholds.
+  * Improvement: video readiness enhancements with per-domain timeout, offscreen scrolling, and diagnostic logging.
+  * Improvement: increased granularity of login indicators.
+  * Improvement: cross-platform Chrome process cleanup via PID file instead of pkill/pgrep.
+  * Improvement: Sling TV precache resilience for slow connections.
+  * Improvement: additional Sling TV channel definitions.
+  * Improvement: Hulu local affiliate tuning skips the guide grid when precaching is enabled, reducing first-tune latency.
+  * Fix: channels tab provider dropdown now correctly reflects the provider filter instead of showing filtered-out providers.
+  * Fix: C-SPAN tuning failures caused by pre-roll ads and offscreen video.
+  * Fix: display detection on minimized Chrome windows and tab replacement compositor stability.
+  * Fix: prevent terminated streams from persisting in the dashboard.
+  * Fix: decrement resume segment index to prevent Channels DVR from dropping the last completed segment.
+  * Housekeeping: prevent multiple server instances from running simultaneously.
+  * Housekeeping: shutdown resiliency improvements.
+  * Housekeeping.
+
 ## 1.5.2 (2026-03-01)
   * Improvement: expanded Spectrum TV predefined channel coverage.
   * Housekeeping.
