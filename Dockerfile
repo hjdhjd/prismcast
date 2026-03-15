@@ -1,6 +1,8 @@
 # PrismCast Docker image. Published to ghcr.io/hjdhjd/prismcast on each release.
 # docker pull ghcr.io/hjdhjd/prismcast:latest
-FROM node:22-slim
+FROM lscr.io/linuxserver/xvfb:debiantrixie AS xvfb
+
+FROM debian:trixie-slim
 
 # Prevent interactive prompts during package installation.
 ENV DEBIAN_FRONTEND=noninteractive
@@ -12,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     ca-certificates \
-    # Xvfb and X11 utilities.
+    # Xvfb and X11 utilities (standard Xvfb installed here for deps; overridden below by custom build).
     xvfb \
     x11vnc \
     x11-xkb-utils \
@@ -23,9 +25,8 @@ RUN apt-get update && apt-get install -y \
     xauth \
     # noVNC for web-based VNC access.
     novnc \
-    # Chrome dependencies (comprehensive list from cc4c).
-    gconf-service \
-    libasound2 \
+    # Chrome dependencies.
+    libasound2t64 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
     libc6 \
@@ -36,9 +37,7 @@ RUN apt-get update && apt-get install -y \
     libexpat1 \
     libfontconfig1 \
     libgbm1 \
-    libgcc1 \
-    libgconf-2-4 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     libglib2.0-0 \
     libgtk-3-0 \
     libnspr4 \
@@ -67,10 +66,14 @@ RUN apt-get update && apt-get install -y \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
     fonts-thai-tlwg \
-    fonts-kacst \
     fonts-freefont-ttf \
     # Process management.
     procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 22.x via nodesource.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome. Chromium is not supported — PrismCast requires Google Chrome for the puppeteer-stream extension.
@@ -80,11 +83,27 @@ RUN wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-
     && rm /tmp/google-chrome.deb \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Intel VA-API libraries for hardware-accelerated video decoding.
+RUN sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y \
+    libva2 \
+    libva-drm2 \
+    libva-glx2 \
+    libgl1-mesa-dri \
+    libxshmfence1 \
+    mesa-va-drivers \
+    mesa-vulkan-drivers \
+    libvulkan1 \
+    i965-va-driver \
+    intel-media-va-driver \
+    vainfo \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install PrismCast globally from npm.
 RUN npm install -g prismcast
 
-# Create a Chrome wrapper script that passes --no-sandbox for container environments. Chrome refuses to run as root without this flag.
-RUN echo '#!/bin/bash\nexec /usr/bin/google-chrome-stable --no-sandbox --disable-setuid-sandbox "$@"' > /usr/local/bin/chrome-no-sandbox \
+# Create a Chrome wrapper script that passes --no-sandbox for container environments and enables Intel VA-API hardware video encoding.
+RUN printf '#!/bin/bash\nexec /usr/bin/google-chrome-stable --no-sandbox --disable-setuid-sandbox --disable-gpu-sandbox --enable-features=VaapiVideoDecoder,VaapiVideoEncoder,AcceleratedVideoEncoder,VaapiIgnoreDriverChecks --ignore-gpu-blocklist "$@"\n' > /usr/local/bin/chrome-no-sandbox \
     && chmod +x /usr/local/bin/chrome-no-sandbox
 
 # Copy the startup script into the container.
@@ -94,11 +113,18 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # Create the VNC password directory. Users can mount a password file here for authenticated VNC access.
 RUN mkdir -p /root/.vnc
 
+# Overlay the LinuxServer custom Xvfb (with DRI3/DRM -vfbdevice support) over the standard Debian binary.
+COPY --from=xvfb / /
+
 # Set environment variables for the virtual display, Chrome binary, and Puppeteer.
 ENV DISPLAY=:99
 ENV CHROME_BIN=/usr/local/bin/chrome-no-sandbox
 ENV PRISMCAST_CONTAINER=1
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV XDG_RUNTIME_DIR=/tmp/runtime-root
+ENV LIBVA_DRIVER_NAME=iHD
+ENV DISABLE_ZINK=false
+ENV DISABLE_DRI3=false
 
 # Data persistence. Mount a volume at the data directory to preserve configuration, Chrome profile, and logs across container recreations:
 #   docker run -v prismcast-data:/root/.prismcast ...

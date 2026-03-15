@@ -1,6 +1,6 @@
 #!/bin/bash
 # docker-entrypoint.sh
-# 2026.01.29
+# 2026.03.13
 
 set -e
 
@@ -11,6 +11,18 @@ SCREEN_HEIGHT=${SCREEN_HEIGHT:-1080}
 SCREEN_DEPTH=${SCREEN_DEPTH:-24}
 VNC_PORT=${VNC_PORT:-5900}
 NOVNC_PORT=${NOVNC_PORT:-6080}
+
+# Set up XDG_RUNTIME_DIR (required by libva to avoid "XDG_RUNTIME_DIR not set" errors).
+XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-root}
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export XDG_RUNTIME_DIR
+
+# Auto-select the Intel VA-API driver when a DRI render node is present and LIBVA_DRIVER_NAME hasn't been set explicitly.
+# iHD is the driver for Intel Gen 9+ (Skylake and newer). Override with LIBVA_DRIVER_NAME=i965 for older hardware.
+if [ -z "$LIBVA_DRIVER_NAME" ] && [ -e /dev/dri/renderD128 ]; then
+  export LIBVA_DRIVER_NAME=iHD
+fi
 
 # Resolve PrismCast directories from environment variables, falling back to the same defaults PrismCast uses internally.
 DATA_DIR="${PRISMCAST_DATA_DIR:-/root/.prismcast}"
@@ -25,6 +37,11 @@ echo "  VNC Port: ${VNC_PORT}"
 echo "  noVNC Port: ${NOVNC_PORT}"
 echo "  PrismCast Port: ${PORT:-5589}"
 echo "  Data Directory: ${DATA_DIR}"
+if [ -e /dev/dri/renderD128 ]; then
+  echo "  Intel GPU: /dev/dri/renderD128 present (LIBVA_DRIVER_NAME=${LIBVA_DRIVER_NAME:-not set})"
+else
+  echo "  Intel GPU: no DRI device found, using software rendering"
+fi
 
 # Graceful shutdown handler. We terminate PrismCast first because it has its own shutdown handler that closes the browser and active streams cleanly. After
 # PrismCast exits, we kill the remaining background services (Xvfb, x11vnc, noVNC, tail).
@@ -42,9 +59,47 @@ trap cleanup SIGTERM SIGINT
 # Remove stale X11 lock files from previous container runs. Without this, Xvfb refuses to start after an unclean shutdown.
 rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM}
 
-# Start Xvfb (virtual framebuffer).
+# Build the DRI3 device flag for Xvfb, mirroring the Selkies svc-xorg logic.
+# The custom LinuxServer Xvfb binary (overlaid in the Docker build) supports -vfbdevice,
+# which connects the virtual framebuffer to the GPU's DRM device and enables DRI3
+# hardware-accelerated rendering. Without this, Chrome sees software GL only and
+# disables VAAPI. DISABLE_DRI3 must be exactly "false" (string) for DRI3 to stay active.
+VFBCOMMAND=""
+if [ -e /dev/dri/renderD128 ] && ! which nvidia-smi > /dev/null 2>&1; then
+  VFBCOMMAND="-vfbdevice /dev/dri/renderD128"
+fi
+if [ -n "${DRINODE}" ]; then
+  VFBCOMMAND="-vfbdevice ${DRINODE}"
+fi
+if [ "${DISABLE_DRI3}" != "false" ]; then
+  VFBCOMMAND=""
+fi
+
+# Ensure the DRI render node is accessible.
+if [ -e /dev/dri/renderD128 ]; then
+  chmod g+rw /dev/dri/renderD128 2>/dev/null || true
+fi
+
+# Start Xvfb with GLX extensions and optional DRI3 GPU device backing.
 echo "Starting Xvfb..."
-Xvfb ${DISPLAY} -screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH} &
+Xvfb ${DISPLAY} \
+  -screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH} \
+  -dpi 96 \
+  +extension COMPOSITE \
+  +extension DAMAGE \
+  +extension GLX \
+  +extension RANDR \
+  +extension RENDER \
+  +extension MIT-SHM \
+  +extension XFIXES \
+  +extension XTEST \
+  +iglx \
+  +render \
+  -nolisten tcp \
+  -ac \
+  -noreset \
+  -shmem \
+  ${VFBCOMMAND} &
 XVFB_PID=$!
 sleep 2
 
@@ -53,7 +108,7 @@ if ! kill -0 $XVFB_PID 2>/dev/null; then
   echo "ERROR: Xvfb failed to start."
   exit 1
 fi
-echo "Xvfb started successfully."
+echo "Xvfb started successfully (DRI3: ${VFBCOMMAND:-disabled})."
 
 # Start x11vnc (VNC server for the virtual display).
 echo "Starting x11vnc..."

@@ -1,13 +1,15 @@
 services:
   prismcast:
-    # 2026.02.18
+    # 2026.03.13
     # GitHub home for this project with setup instructions: https://github.com/hjdhjd/prismcast.
     # Docker container home for this project: https://github.com/hjdhjd/prismcast/pkgs/container/prismcast.
     image: ghcr.io/hjdhjd/prismcast:${TAG:-latest}
     container_name: prismcast
     hostname: prismcast
     dns_search: ${DOMAIN:-localdomain}
-    shm_size: '1gb'
+    shm_size: '2gb'
+    #devices:
+      #- /dev/dri:/dev/dri
     ports:
       - ${HOST_PORT:-5589}:${PORT:-5589}
       - ${HOST_VNC_PORT:-5900}:${VNC_PORT:-5900}
@@ -22,6 +24,7 @@ services:
       - SCREEN_WIDTH=${SCREEN_WIDTH:-1920}
       - SCREEN_HEIGHT=${SCREEN_HEIGHT:-1080}
       - SCREEN_DEPTH=${SCREEN_DEPTH:-24}
+      - LIBVA_DRIVER_NAME=${LIBVA_DRIVER_NAME:-iHD} # Override below with LIBVA_DRIVER_NAME=i965 for older Intel GPUs (pre-Gen 9 aka Skylake).
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:${PORT:-5589}/health"]
       interval: 30s
