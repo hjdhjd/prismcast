@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
   * New feature: Xfinity Stream provider support. Note: Xfinity's player is slow to initialize and tune — expect 15-30 seconds for channel changes. This is a limitation of the Xfinity Stream web player, not PrismCast. I'm exploring improvements for the future, but no promises — this is as good as it gets for now.
   * New feature: native HLS streaming — PrismCast automatically detects when a provider delivers non-DRMed HLS and bypasses screen capture entirely, consuming the stream directly for higher quality with lower CPU usage. Known to work with the A&E family (A&E, History, Lifetime), BET, C-SPAN, the Food Network family (Discovery, Food Network, HGTV, OWN, TLC, Travel, and others), Fox One, Fox Sports, VH1, and more. DRM-protected providers automatically fall back to screen capture.
   * New feature: preroll immediate response — HLS clients can receive video within seconds of a tune request rather than waiting for the full stream initialization to complete.
-  * New feature: predictive channel pretuning — PrismCast reads the Channels DVR programming schedule and pre-tunes upcoming channels before recordings start, reducing tune latency to near zero.
+  * New feature: predictive channel pretuning — PrismCast reads the Channels DVR programming schedule and pretunes upcoming channels before recordings start, reducing tune latency to near zero.
   * New feature: dismiss intermittent site modals that block video playback.
   * New feature: video resolution degradation detection and recovery.
   * New feature: Docker Intel GPU hardware acceleration — containers with an Intel GPU can offload video processing from the CPU, significantly reducing CPU usage. Thanks to @ajvolin for the initial work and @bnhf for the contribution.
@@ -19,7 +19,7 @@ All notable changes to this project will be documented in this file.
   * Improvement: additional Sling TV channel definitions.
   * Improvement: Hulu local affiliate tuning skips the guide grid when precaching is enabled, reducing first-tune latency.
   * Fix: channels tab provider dropdown now correctly reflects the provider filter instead of showing filtered-out providers.
-  * Fix: C-SPAN tuning failures caused by pre-roll ads and offscreen video.
+  * Fix: C-SPAN tuning failures caused by preroll ads and offscreen video.
   * Fix: display detection on minimized Chrome windows and tab replacement compositor stability.
   * Fix: prevent terminated streams from persisting in the dashboard.
   * Fix: decrement resume segment index to prevent Channels DVR from dropping the last completed segment.

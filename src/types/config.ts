@@ -293,7 +293,7 @@ export interface StreamingConfig {
   videoBitsPerSecond: number;
 
   // Timeout in milliseconds for waiting for a video element to become ready. After navigating to a page, we wait for a video element with sufficient readyState.
-  // Increase for sites with slow-loading video players or heavy pre-roll content. Environment variable: VIDEO_TIMEOUT. Default: 10000ms. Valid range:
+  // Increase for sites with slow-loading video players or heavy preroll content. Environment variable: VIDEO_TIMEOUT. Default: 10000ms. Valid range:
   // 1000-600000.
   videoTimeout: number;
 }

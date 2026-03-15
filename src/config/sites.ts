@@ -83,7 +83,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   // Profile for sites using the Brightcove player platform. Brightcove players require waiting for network activity to settle before the video player is fully
   // initialized. The player dynamically loads its configuration and stream manifest, so waitForNetworkIdle ensures we don't try to interact with the player before
   // it's ready. Uses the JavaScript fullscreen API rather than keyboard shortcuts because Brightcove intercepts keyboard events. Uses selectReadyVideo because
-  // pages may have multiple video elements (pre-roll ads alongside the main player), and the ad video reaches readyState >= 3 before the main player.
+  // pages may have multiple video elements (preroll ads alongside the main player), and the ad video reaches readyState >= 3 before the main player.
   brightcove: {
 
     category: "api",

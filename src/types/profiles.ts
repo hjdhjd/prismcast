@@ -281,7 +281,7 @@ export interface DomainConfig {
   providerTag?: string;
 
   // Maximum time in milliseconds to wait for the video element to reach a playable state. When set, overrides the global videoTimeout setting for all channels on
-  // this domain. Useful for sites with pre-roll ads or slow player initialization that need more time than the default. Omit to use the global default.
+  // this domain. Useful for sites with preroll ads or slow player initialization that need more time than the default. Omit to use the global default.
   videoTimeout?: number;
 }
 
