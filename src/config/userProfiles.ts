@@ -39,7 +39,8 @@ const STRATEGIES_REQUIRING_MATCH_SELECTOR = new Set([ "thumbnailRow", "tileClick
 
 // Site-specific profiles that cannot be used as a base for user-defined profiles. These profiles have strategies, selectors, or flags tightly coupled to a specific
 // streaming service's DOM structure. Users targeting these services should use the predefined channels directly, not create custom profiles extending them.
-export const EXCLUDED_PROFILES = new Set([ "disneyNow", "disneyPlus", "foxLive", "hboMax", "huluLive", "slingLive", "spectrum", "youtubeTV" ]);
+export const EXCLUDED_PROFILES = new Set([ "directvStream", "disneyNow", "disneyPlus", "foxLive", "hboMax", "huluLive", "slingLive", "spectrum",
+  "xfinityStream", "youtubeTV" ]);
 
 // Module-level storage for loaded user profiles and domains. Populated at startup and updated on save.
 let loadedUserProfiles: Record<string, SiteProfile> = {};

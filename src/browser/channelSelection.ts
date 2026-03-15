@@ -16,6 +16,7 @@ import { slingProvider } from "./tuning/sling.js";
 import { spectrumProvider } from "./tuning/spectrum.js";
 import { thumbnailRowStrategy } from "./tuning/thumbnailRow.js";
 import { tileClickStrategy } from "./tuning/tileClick.js";
+import { xfinityProvider } from "./tuning/xfinity.js";
 import { yttvProvider } from "./tuning/youtubeTv.js";
 
 /* Multi-channel streaming sites (like USA Network) present multiple channels on a single page, with a program guide for each channel. Users must select which
@@ -48,7 +49,9 @@ import { yttvProvider } from "./tuning/youtubeTv.js";
 
 // Provider module registry. The primary registry for all provider-level operations. Each entry bundles identity metadata, tuning strategy, and channel discovery.
 // Future capabilities become additional methods on ProviderModule — no new registries needed.
-const providerModules: readonly ProviderModule[] = [ directvProvider, foxProvider, hboProvider, huluProvider, slingProvider, spectrumProvider, yttvProvider ];
+const providerModules: readonly ProviderModule[] = [
+  directvProvider, foxProvider, hboProvider, huluProvider, slingProvider, spectrumProvider, xfinityProvider, yttvProvider
+];
 
 // Strategy dispatch registry. Derived from provider modules (keyed by strategyName) plus generic strategies that are not provider-level registrations.
 const strategies: Record<string, ChannelStrategyEntry> = Object.fromEntries([

@@ -342,6 +342,19 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Static pages (no video)"
   },
 
+  // Profile for Xfinity Stream (xfinity.com/stream) live channels. The channelmap API at xtvapi.cloudtv.comcast.net returns the complete channel lineup (~1389
+  // entries). Tuning uses in-page SPA channel switching: after the guide page loads the Polymer SPA, the strategy calls `_watchChannelEventHandler(null, { channel })`
+  // on the `TV-APP` element to switch channels in ~2-3 seconds without page navigation. Extends fullscreenApi for requestFullscreen() behavior on the player page.
+  xfinityStream: {
+
+    category: "multiChannel",
+    channelSelection: { strategy: "xfinityDirect" },
+    description: "Xfinity Stream with in-page SPA channel switching. Set Channel Selector to the channel callSign (e.g., CNNHD, ESPND) " +
+      "or network name (e.g., CNN, ESPN).",
+    extends: "fullscreenApi",
+    summary: "Xfinity Stream (SPA tuning, needs selector)"
+  },
+
   // Profile for YouTube TV (tv.youtube.com/live). The guide grid renders all ~256 channel rows in the DOM simultaneously (no virtualization), each containing a
   // direct watch URL. The youtubeGrid strategy performs a single querySelector to find the target channel's watch link via aria-label, extracts the URL, and
   // navigates directly — no scrolling, clicking, or timing workarounds needed. Uses selectReadyVideo because the watch page has ~36 video elements (live preview
@@ -414,6 +427,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
   "windy.com": { profile: "staticPage", provider: "Windy" },
   "wttw.com": { profile: "fullscreenApi", provider: "WTTW" },
+  "xfinity.com": { profile: "xfinityStream", provider: "Xfinity Stream", providerTag: "xfinity" },
   "youtube.com": { profile: "keyboardDynamic", provider: "YouTube" }
 };
 

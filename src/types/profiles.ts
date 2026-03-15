@@ -29,10 +29,12 @@ import type { Nullable } from "./shared.js";
  *   USA Network.
  * - "tileClick": Find channel element using the profile's matchSelector (defaults to image URL matching), click tile, then optionally click play button if
  *   playSelector is configured. Used by Disney+.
+ * - "xfinityDirect": Wait for the Polymer SPA's channelMap to populate, find the target channel by callSign, and call `_watchChannelEventHandler` to switch
+ *   channels in-page. A fire-and-forget poll dismisses the Watch Now modal if it appears. Used by Xfinity Stream.
  * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
 export type ChannelSelectionStrategy =
-  "directvGrid" | "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "spectrumGrid" | "thumbnailRow" | "tileClick" | "youtubeGrid";
+  "directvGrid" | "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "spectrumGrid" | "thumbnailRow" | "tileClick" | "xfinityDirect" | "youtubeGrid";
 
 /**
  * Configuration for channel selection behavior within a site profile.
