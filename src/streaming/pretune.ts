@@ -5,10 +5,10 @@
 import { LOG, delay, formatError } from "../utils/index.js";
 import { fetchFromDvr, getDeviceMappings, getDvrHost } from "./showInfo.js";
 import { getChannelStreamId, terminateStream } from "./lifecycle.js";
-import { getStream, getStreamCount } from "./registry.js";
 import { initializeStream, validateChannel } from "./hls.js";
 import type { Nullable } from "../types/index.js";
 import { emitCurrentSystemStatus } from "../browser/index.js";
+import { getStream } from "./registry.js";
 
 /* This module polls the Channels DVR schedule API to discover upcoming recordings and pretunes channels 30 seconds before they start. When the DVR requests the
  * stream, it's already live with buffered segments — achieving near-instant tuning instead of 3-7 second cold starts.
@@ -19,7 +19,8 @@ import { emitCurrentSystemStatus } from "../browser/index.js";
  *
  * Key design decisions:
  * - Only pretune when a PrismCast guide number is the FIRST entry in the job's channels array (DVR's preferred source).
- * - Yield to active streams — don't disrupt an existing stream for a speculative tune.
+ * - Skip channels that are already streaming — no duplicate streams for the same channel.
+ * - Pretune alongside existing streams freely; capacity enforcement is handled by initializeStream().
  * - Retry up to 5 times within the pretune window on failure.
  * - Safety timeout at start_time + 90s handles cancelled jobs or missed client connections.
  */
@@ -275,15 +276,7 @@ async function pretuneChannel(channelId: string, jobName: string, startTimeMs: n
   // Check if the channel is already streaming.
   const existingStreamId = getChannelStreamId(channelId);
 
-  if((existingStreamId !== undefined) && (existingStreamId !== -1)) {
-
-    return;
-  }
-
-  // Check if another stream is active. Pretuning should not disrupt existing streams.
-  if(getStreamCount() > 0) {
-
-    LOG.debug("streaming:pretune", "Another stream is active. Yielding pretune for %s ('%s').", channelId, jobName);
+  if(existingStreamId !== undefined) {
 
     return;
   }
@@ -306,14 +299,6 @@ async function pretuneChannel(channelId: string, jobName: string, startTimeMs: n
   while(attempts < MAX_RETRIES) {
 
     attempts++;
-
-    // Re-check for concurrent streams before each attempt. Another stream may have started since the last check or retry.
-    if((attempts > 1) && (getStreamCount() > 0)) {
-
-      LOG.debug("streaming:pretune", "Another stream started during pretune retry. Yielding for %s.", channelId);
-
-      return;
-    }
 
     try {
 
