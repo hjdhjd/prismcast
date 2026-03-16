@@ -560,6 +560,39 @@ function cleanupOrphanedSetup(segmenter: FMP4SegmenterResult): void {
 }
 
 /**
+ * Formats the native HLS quality string for the "Streaming..." log line. Combines bandwidth (as Mbps) and resolution (as standard label like "1080p") into a
+ * compact suffix. Returns an empty string when neither value is available, or a comma-prefixed string like ", 12.1Mbps 1080p" for inclusion in the log.
+ * @param bandwidth - Declared bandwidth in bits per second from the manifest. Zero when absent.
+ * @param resolution - Resolution string from the manifest (e.g., "1920x1080"), or null when absent.
+ * @returns Formatted quality string for log output.
+ */
+function formatNativeQuality(bandwidth: number, resolution: Nullable<string>): string {
+
+  const parts: string[] = [];
+
+  if(bandwidth > 0) {
+
+    parts.push((bandwidth / 1000000).toFixed(1) + "Mbps");
+  }
+
+  if(resolution) {
+
+    // Map the vertical resolution to a standard label. Parse the height from "WIDTHxHEIGHT" format.
+    const height = resolution.split("x")[1];
+    const labels: Record<string, string> = { "1080": "1080p", "2160": "4K", "360": "360p", "480": "480p", "720": "720p" };
+
+    parts.push(labels[height] ?? resolution);
+  }
+
+  if(parts.length === 0) {
+
+    return "";
+  }
+
+  return ", " + parts.join(" ");
+}
+
+/**
  * Creates a tab replacement handler for recovery from unresponsive browser tabs. When the monitor detects 3+ consecutive evaluate timeouts, it calls this handler to:
  * 1. Stop the current segmenter and FFmpeg process
  * 2. Close the unresponsive page
@@ -1115,6 +1148,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       // Attempt native streaming if a manifest interception handle is available. Signal finalize() to tell the interceptor that channel selection is complete and it
       // should resolve with the most recently captured manifest URL. For direct-navigation sites, the manifest was captured during page load and finalize resolves
       // immediately. For guide-based sites (Fox, Hulu, etc.), the manifest from the correct channel was captured after the strategy clicked the right entry.
+      let nativeQuality = "";
       let streamingMode: "capture" | "native" = "capture";
 
       if(setup.manifestInterception) {
@@ -1189,6 +1223,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
           currentStream.rawCaptureStream = null;
           currentStream.streamingMode = "native";
           streamingMode = "native";
+          nativeQuality = formatNativeQuality(nativeResult.bandwidth, nativeResult.resolution);
 
           // Start the native proxy. Signal init segment readiness immediately — native MPEG-TS segments carry their own PAT/PMT codec configuration in every
           // segment, so there is no separate init segment to wait for. Without this, MPEG-TS clients block on waitForInitSegment() and time out before the proxy's
@@ -1288,7 +1323,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         }
       }
 
-      const captureMode = streamingMode === "native" ? "native HLS" : (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg" : "Native fMP4");
+      const captureMode = (streamingMode === "native") ? ("native HLS" + nativeQuality) : (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg" : "Native fMP4");
       const displayName = channel?.name ?? url;
 
       const tuneTime = ((Date.now() - setup.startTime.getTime()) / 1000).toFixed(1);
