@@ -39,10 +39,10 @@ jobs:
     # Execute the build activities.
     steps:
       - name: Checkout the repository.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup the node ${{ matrix.node-version }} environment.
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
 
@@ -68,10 +68,10 @@ jobs:
     # Execute the build and publish activities.
     steps:
     - name: Checkout the repository.
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Setup the node environment.
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
 
         # Use the oldest node LTS version that we support.
@@ -106,10 +106,10 @@ jobs:
     steps:
 
       - name: Checkout the repository.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Log in to GitHub Container Registry.
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -120,7 +120,7 @@ jobs:
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image.
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
