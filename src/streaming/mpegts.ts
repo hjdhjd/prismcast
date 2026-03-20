@@ -100,7 +100,7 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
 
     if(error instanceof StreamSetupError) {
 
-      LOG.warn("MPEG-TS stream startup failed for %s: %s.", channelName, error.userMessage);
+      LOG.warn("MPEG-TS stream startup failed for %s: %s", channelName, error.userMessage);
     } else {
 
       LOG.warn("MPEG-TS stream startup failed for %s: %s.", channelName, formatError(error));

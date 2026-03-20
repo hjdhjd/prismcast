@@ -254,6 +254,10 @@ export function monitorPlaybackHealth(
   // Grace period in milliseconds after stream start and after each recovery action. Gives ABR time to ramp up before flagging degradation.
   const RESOLUTION_GRACE_PERIOD = 30000;
 
+  // Number of consecutive degraded readings required before triggering recovery. At ~2 seconds per monitor tick, 15 readings = ~30 seconds of sustained
+  // degradation. This lets transient ABR dips (commercial breaks, ad transitions) self-heal without unnecessary page reloads.
+  const RESOLUTION_DEGRADED_COUNT_THRESHOLD = 15;
+
   // Fixed margin in milliseconds before the maxContinuousPlayback limit at which a proactive reload is triggered. Two minutes provides enough time for page
   // navigation and video reinitialization to complete before the site enforces its cutoff.
   const PROACTIVE_RELOAD_MARGIN_MS = 120000;
@@ -282,6 +286,7 @@ export function monitorPlaybackHealth(
 
   // Resolution degradation monitoring. Separate from the existing recovery escalation (L1-L4) which handles broken playback. Resolution degradation is a quality
   // issue — the stream works but at lower-than-expected resolution. Uses its own tracking and two-step escalation: page reload, then tab replacement.
+  let consecutiveDegradedReadings = 0;
   let resolutionGraceEnd = Date.now() + RESOLUTION_GRACE_PERIOD;
   let resolutionRecoveryAttempt = 0;
 
@@ -718,6 +723,7 @@ export function monitorPlaybackHealth(
    */
   function resetResolutionState(): void {
 
+    consecutiveDegradedReadings = 0;
     resolutionGraceEnd = Date.now() + RESOLUTION_GRACE_PERIOD;
     resolutionRecoveryAttempt = 0;
   }
@@ -1366,7 +1372,7 @@ export function monitorPlaybackHealth(
           } else if((now - segmentWaitStartTime) > SEGMENT_STALL_TIMEOUT) {
 
             // No new segments for SEGMENT_STALL_TIMEOUT after recovery grace period. The capture pipeline is dead.
-            LOG.warn("No segments produced for %ss after recovery — capture pipeline is not responding.", SEGMENT_STALL_TIMEOUT / 1000);
+            LOG.warn("No segments produced for %ss after recovery — capture pipeline may have stalled.", SEGMENT_STALL_TIMEOUT / 1000);
 
             segmentProductionStalled = true;
           }
@@ -1402,8 +1408,8 @@ export function monitorPlaybackHealth(
 
             if(consecutiveTinySegments >= effectiveThreshold) {
 
-              LOG.warn("Detected %d consecutive tiny segments (%d bytes, hasVideo=%s) — capture pipeline is not responding.",
-                consecutiveTinySegments, segmentSize, String(hasVideo));
+              LOG.warn("Detected %d consecutive undersized segments (%dKB) — capture pipeline may have stalled.",
+                consecutiveTinySegments, Math.round(segmentSize / 1024));
 
               // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentProductionStalled. Return unconditionally after tab
               // replacement (matching stalled-capture and unresponsive-tab triggers) to avoid falling through the rest of the tick with stale pre-replacement state.
@@ -1524,18 +1530,28 @@ export function monitorPlaybackHealth(
 
           const isDegraded = (widthRatio < RESOLUTION_RATIO_THRESHOLD) || (heightRatio < RESOLUTION_RATIO_THRESHOLD);
 
-          if(isDegraded) {
+          if(isDegraded && (now >= resolutionGraceEnd)) {
 
-            LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (viewport: %s\u00d7%s, ratio: %s%%\u00d7%s%%).",
+            consecutiveDegradedReadings++;
+
+            LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (viewport: %s\u00d7%s, ratio: %s%%\u00d7%s%%, consecutive: %s/%s).",
               String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height),
-              String(Math.round(widthRatio * 100)), String(Math.round(heightRatio * 100)));
+              String(Math.round(widthRatio * 100)), String(Math.round(heightRatio * 100)),
+              String(consecutiveDegradedReadings), String(RESOLUTION_DEGRADED_COUNT_THRESHOLD));
+          } else {
+
+            consecutiveDegradedReadings = 0;
           }
 
-          // Escalation step 1: page reload. Forces the provider's ABR to restart quality negotiation.
-          if(isDegraded && (now >= resolutionGraceEnd) && (resolutionRecoveryAttempt === 0)) {
+          // Escalation step 1: page reload. Forces the provider's ABR to restart quality negotiation. Only triggers after sustained degradation
+          // (RESOLUTION_DEGRADED_COUNT_THRESHOLD consecutive readings) to let transient ABR dips self-heal.
+          if((consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionRecoveryAttempt === 0)) {
 
-            LOG.warn("Video resolution degraded (%s\u00d7%s in %s\u00d7%s viewport). Recovering via %s.",
-              String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height), RECOVERY_METHODS.pageNavigation);
+            const degradedDuration = consecutiveDegradedReadings * 2;
+
+            LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s in %s\u00d7%s viewport). Attempting recovery via %s.",
+              String(degradedDuration), String(state.videoWidth), String(state.videoHeight),
+              String(viewport.width), String(viewport.height), RECOVERY_METHODS.pageNavigation);
 
             recoveryInProgress = true;
 
@@ -1560,6 +1576,7 @@ export function monitorPlaybackHealth(
 
             markStreamDiscontinuity();
 
+            consecutiveDegradedReadings = 0;
             resolutionRecoveryAttempt = 1;
             resolutionGraceEnd = now + RESOLUTION_GRACE_PERIOD;
 
@@ -1567,11 +1584,9 @@ export function monitorPlaybackHealth(
 
               currentContext = recoveryResult.newContext;
               lastPageNavigationTime = Date.now();
-
-              LOG.info("Resolution recovery: page reload completed. Waiting for ABR ramp-up.");
             } else {
 
-              LOG.warn("Resolution recovery: page reload unsuccessful.");
+              LOG.warn("Resolution recovery via page reload unsuccessful.");
             }
 
             recoveryInProgress = false;
@@ -1582,15 +1597,18 @@ export function monitorPlaybackHealth(
           }
 
           // Escalation step 2: tab replacement. Creates a fresh page with new capture pipeline and network connections.
-          if(isDegraded && (now >= resolutionGraceEnd) && (resolutionRecoveryAttempt === 1)) {
+          if((consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionRecoveryAttempt === 1)) {
 
             if(onTabReplacement) {
 
-              LOG.warn("Video resolution still degraded (%s\u00d7%s) after page reload. Recovering via %s.",
-                String(state.videoWidth), String(state.videoHeight), RECOVERY_METHODS.tabReplacement);
+              const degradedDuration = consecutiveDegradedReadings * 2;
+
+              LOG.warn("Video resolution is still degraded after %ss (%s\u00d7%s). Attempting recovery via %s.",
+                String(degradedDuration), String(state.videoWidth), String(state.videoHeight), RECOVERY_METHODS.tabReplacement);
 
               const outcome = await executeTabReplacement("resolution degraded");
 
+              consecutiveDegradedReadings = 0;
               resolutionRecoveryAttempt = 2;
               resolutionGraceEnd = now + RESOLUTION_GRACE_PERIOD;
 
@@ -1607,19 +1625,26 @@ export function monitorPlaybackHealth(
           }
 
           // Acceptance: resolution still degraded after both recovery attempts. Log once and stop retrying.
-          if(isDegraded && (now >= resolutionGraceEnd) && (resolutionRecoveryAttempt === 2)) {
+          if((consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionRecoveryAttempt === 2)) {
 
-            LOG.warn("Video resolution remains degraded (%s\u00d7%s in %s\u00d7%s viewport) after recovery attempts. Accepting current resolution.",
+            LOG.warn("Video resolution remains degraded (%s\u00d7%s in %s\u00d7%s viewport) after recovery attempts. The stream will continue at reduced quality.",
               String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height));
 
             resolutionRecoveryAttempt = 3;
           }
 
-          // Resolution is good: clear tracking state so future degradation starts fresh.
+          // Resolution is good: clear tracking state so future degradation starts fresh. Use "restored" when resolution matches the viewport, "improved" when it's
+          // above the degradation threshold but below the viewport (e.g., 800x450 in a 1280x720 viewport — no longer degraded, but not full quality). Include the
+          // recovery method so this single message tells the complete story (what happened and how it was resolved).
           if(!isDegraded && (resolutionRecoveryAttempt > 0)) {
 
-            LOG.info("Video resolution restored (%s\u00d7%s).", String(state.videoWidth), String(state.videoHeight));
+            const isFullQuality = (state.videoWidth >= viewport.width) && (state.videoHeight >= viewport.height);
+            const verb = isFullQuality ? "restored" : "improved";
+            const method = (resolutionRecoveryAttempt === 1) ? "page reload" : "tab replacement";
 
+            LOG.info("Video resolution %s to %s\u00d7%s after %s.", verb, String(state.videoWidth), String(state.videoHeight), method);
+
+            consecutiveDegradedReadings = 0;
             resolutionRecoveryAttempt = 0;
             resolutionGraceEnd = 0;
           }

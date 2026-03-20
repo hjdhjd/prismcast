@@ -1031,7 +1031,7 @@ function handleSetupFailure(numericStreamId: number, channelName: string, channe
 
     if(error instanceof StreamSetupError) {
 
-      LOG.warn("Stream setup failed for %s: %s.", channelName, error.userMessage);
+      LOG.warn("Stream setup failed for %s: %s", channelName, error.userMessage);
     } else {
 
       LOG.error("Unexpected error during stream setup for %s: %s.", channelName, formatError(error));
@@ -1328,7 +1328,8 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
 
       const tuneTime = ((Date.now() - setup.startTime.getTime()) / 1000).toFixed(1);
 
-      LOG.info("Streaming %s (%s, %s). Tuned in %ss%s.", displayName, setup.profileName, captureMode, tuneTime, setup.directTune ? " (direct)" : "");
+      LOG.info("Streaming %s (%s, %s, %s). Tuned in %ss%s.", displayName, setup.providerName, setup.profileName, captureMode,
+        tuneTime, setup.directTune ? " (direct)" : "");
 
       // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity. Domain auth
       // is conditionally skipped when the provider defines validateTune and the tuned channel does not prove paid access (e.g., Sling Freestream channels).
