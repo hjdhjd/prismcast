@@ -31,6 +31,18 @@ import { getUserDomains } from "./userProfiles.js";
 // predefined ESPN channel when the user has created a custom "espn" entry.
 const PREDEFINED_SUFFIX = ":predefined";
 
+/**
+ * Strips the :predefined suffix from a channel key if present, returning the base key. Synthetic keys like "pbs:predefined" are created when a user overrides a
+ * predefined channel — the original predefined entry gets this suffix to coexist with the user's custom version in the provider dropdown. Functions that look up
+ * channel data by key must strip the suffix to find the actual channel entry.
+ * @param key - The channel key, possibly with :predefined suffix.
+ * @returns The base key without the suffix.
+ */
+function stripPredefinedSuffix(key: string): string {
+
+  return key.endsWith(PREDEFINED_SUFFIX) ? key.slice(0, -PREDEFINED_SUFFIX.length) : key;
+}
+
 // Module-level storage for provider groups, keyed by canonical channel key.
 const providerGroups = new Map<string, ProviderGroup>();
 
@@ -53,18 +65,22 @@ let enabledProviders: string[] = [];
  */
 export function getProviderTagForChannel(key: string): string {
 
-  const group = providerGroups.get(key);
+  // Strip the :predefined suffix so synthetic keys like "pbs:predefined" resolve to the actual channel entry. Without this, the key won't match any provider
+  // group or channel, and the function falls through to the "direct" default — which bypasses the provider filter entirely (direct is always shown).
+  const effectiveKey = stripPredefinedSuffix(key);
+
+  const group = providerGroups.get(effectiveKey);
 
   // For variant keys, the suffix after the canonical key (minus the hyphen) IS the tag.
-  if(group && (group.canonicalKey !== key)) {
+  if(group && (group.canonicalKey !== effectiveKey)) {
 
-    const suffix = key.slice(group.canonicalKey.length + 1);
+    const suffix = effectiveKey.slice(group.canonicalKey.length + 1);
 
     return suffix;
   }
 
   // For canonical keys, derive from the URL domain via DOMAIN_CONFIG.
-  const channel = channelsRef[key] ?? PREDEFINED_CHANNELS[key];
+  const channel = channelsRef[effectiveKey] ?? PREDEFINED_CHANNELS[effectiveKey];
 
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if(!channel) {
@@ -97,7 +113,8 @@ export function getProviderTagForChannel(key: string): string {
  */
 export function getAuthDomainForChannel(key: string): string {
 
-  const channel = channelsRef[key] ?? PREDEFINED_CHANNELS[key];
+  const effectiveKey = stripPredefinedSuffix(key);
+  const channel = channelsRef[effectiveKey] ?? PREDEFINED_CHANNELS[effectiveKey];
 
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if(!channel?.url) {
