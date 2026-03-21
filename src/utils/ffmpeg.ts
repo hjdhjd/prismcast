@@ -15,6 +15,26 @@ import { spawn } from "node:child_process";
 // The ffmpeg-for-homebridge package has incorrect type definitions (declares named export but JS uses default export). Cast to the correct type.
 const ffmpegPath = ffmpegForHomebridge as unknown as string | undefined;
 
+// FFmpeg stderr noise patterns that are suppressed from logging. The -nostats flag suppresses most progress output, but some FFmpeg builds or versions may still
+// emit these patterns. The filter acts as a safety net to keep logs clean.
+const FFMPEG_NOISE_PATTERNS = [ "Press [q] to stop", "frame=", "size=", "time=", "bitrate=", "speed=" ];
+
+/**
+ * Returns the path to the bundled ffmpeg-for-homebridge binary if it exists on disk. This binary ships as an npm dependency and has a full encoder set (libx264,
+ * libx265, zoompan, overlay) regardless of what the user has installed. Used by preroll generation to guarantee HEVC encoding availability without depending on
+ * the Channels DVR FFmpeg (which has a minimal encoder set) or a system installation.
+ * @returns The absolute path to the bundled FFmpeg, or undefined if the package did not resolve or the binary is missing.
+ */
+export function getBundledFFmpegPath(): string | undefined {
+
+  if(ffmpegPath && existsSync(ffmpegPath)) {
+
+    return ffmpegPath;
+  }
+
+  return undefined;
+}
+
 /* When using Matroska capture mode, Chrome's MediaRecorder outputs a Matroska container with video (H264 or HEVC depending on hardware capabilities) and Opus audio.
  * For HLS compatibility, we need an fMP4 container with AAC audio. FFmpeg handles this conversion:
  *
@@ -221,9 +241,8 @@ function spawnFFmpegProcess({ args, label, onError, streamId }: {
     }
 
     const message = data.toString().trim();
-    const noisePatterns = [ "Press [q] to stop", "frame=", "size=", "time=", "bitrate=", "speed=" ];
 
-    if(noisePatterns.some((pattern) => message.includes(pattern))) {
+    if(FFMPEG_NOISE_PATTERNS.some((pattern) => message.includes(pattern))) {
 
       return;
     }
@@ -318,7 +337,10 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 
   const ffmpegArgs = [
     "-hide_banner",
+    "-nostats",
     "-loglevel", "warning",
+    "-fflags", "+discardcorrupt",
+    "-err_detect", "ignore_err",
     "-probesize", "16384",
     "-i", "pipe:0",
     "-c:v", "copy",
@@ -365,7 +387,10 @@ export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: s
 
   const ffmpegArgs = [
     "-hide_banner",
+    "-nostats",
     "-loglevel", "warning",
+    "-fflags", "+discardcorrupt",
+    "-err_detect", "ignore_err",
     "-probesize", "16384",
     "-f", "mp4",
     "-i", "pipe:0",

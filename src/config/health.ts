@@ -152,8 +152,14 @@ export async function loadHealthState(): Promise<void> {
   }
 }
 
+// Whether a write is currently in progress. When true, the debounce timer defers instead of starting a concurrent write. After the write completes, if a flush was
+// requested during the write, a new write is triggered immediately to capture the latest state.
+let writeInProgress = false;
+let flushPendingDuringWrite = false;
+
 /**
- * Writes the current in-memory health state to health.json. Debounced — multiple calls within FLUSH_DELAY are coalesced into a single write.
+ * Writes the current in-memory health state to health.json. Debounced — multiple calls within FLUSH_DELAY are coalesced into a single write. If a write is already
+ * in progress, the flush is deferred until the current write completes, then re-triggered to capture any state changes that occurred during the write.
  */
 function flushHealthState(): void {
 
@@ -162,9 +168,18 @@ function flushHealthState(): void {
     clearTimeout(flushTimer);
   }
 
+  // If a write is in progress, mark that a flush was requested so it re-triggers after the write completes. This prevents overlapping writes to the same file.
+  if(writeInProgress) {
+
+    flushPendingDuringWrite = true;
+
+    return;
+  }
+
   flushTimer = setTimeout(() => {
 
     flushTimer = null;
+    writeInProgress = true;
 
     const state: HealthState = {
 
@@ -182,6 +197,17 @@ function flushHealthState(): void {
     fsPromises.writeFile(getHealthFilePath(), JSON.stringify(sortedState, null, 2) + "\n", "utf-8").catch((error: unknown) => {
 
       LOG.warn("Failed to write health state: %s.", (error instanceof Error) ? error.message : String(error));
+    }).finally(() => {
+
+      writeInProgress = false;
+
+      // If a flush was requested while the write was in progress, trigger it now to capture the latest state.
+      if(flushPendingDuringWrite) {
+
+        flushPendingDuringWrite = false;
+
+        flushHealthState();
+      }
     });
   }, FLUSH_DELAY);
 }

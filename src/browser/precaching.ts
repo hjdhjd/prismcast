@@ -98,6 +98,23 @@ async function runPrecacheCycle(): Promise<void> {
         // eslint-disable-next-line no-await-in-loop
         const page = await browser.newPage();
 
+        // Suppress audio on precache pages. Providers like Hulu auto-play a default livestream when their guide loads. Since Chrome's --mute-audio is deliberately
+        // disabled (puppeteer-stream needs audio capture for active streams), we intercept play() at the prototype level to mute before any media element can produce
+        // audio. evaluateOnNewDocument runs before site JavaScript, so nothing slips through.
+        // eslint-disable-next-line no-await-in-loop
+        await page.evaluateOnNewDocument((): void => {
+
+          // eslint-disable-next-line @typescript-eslint/unbound-method
+          const originalPlay = HTMLMediaElement.prototype.play;
+
+          HTMLMediaElement.prototype.play = async function(this: HTMLMediaElement): Promise<void> {
+
+            this.muted = true;
+
+            return originalPlay.call(this);
+          };
+        });
+
         registerManagedPage(page);
 
         try {

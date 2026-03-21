@@ -39,7 +39,7 @@ import path from "node:path";
 export type CliOverrides = Record<string, unknown>;
 
 // The CONFIG object is initialized during startup. It starts as a copy of DEFAULTS and is replaced by the merged configuration.
-export let CONFIG: Config = JSON.parse(JSON.stringify(DEFAULTS)) as Config;
+export let CONFIG: Config = structuredClone(DEFAULTS);
 
 /**
  * Indicates whether a user config file parse error occurred during initialization. The web UI displays a warning when this is true.
@@ -97,7 +97,7 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides): Prom
  */
 export function getDefaults(): Config {
 
-  return JSON.parse(JSON.stringify(DEFAULTS)) as Config;
+  return structuredClone(DEFAULTS);
 }
 
 /* Before starting the server, we validate all configuration values to catch errors early. Invalid configurations like negative timeouts or out-of-range bitrates

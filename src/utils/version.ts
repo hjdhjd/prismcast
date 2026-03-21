@@ -115,7 +115,7 @@ export async function fetchLatestVersion(): Promise<Nullable<string>> {
     return latest ? normalizeVersion(latest) : null;
   } catch(error) {
 
-    LOG.debug("config", "Failed to fetch latest version from npm: %s.", formatError(error));
+    LOG.debug("config:general", "Failed to fetch latest version from npm: %s.", formatError(error));
 
     return null;
   }
@@ -139,7 +139,7 @@ async function fetchChangelogContent(): Promise<Nullable<string>> {
     return await response.text();
   } catch(error) {
 
-    LOG.debug("config", "Failed to fetch changelog from GitHub: %s.", formatError(error));
+    LOG.debug("config:general", "Failed to fetch changelog from GitHub: %s.", formatError(error));
 
     return null;
   }

@@ -404,7 +404,7 @@ export function buildProviderGroups(channels: ChannelMap): void {
       providerGroups.set(variantKey, group);
     }
 
-    LOG.debug("config", "Provider group '%s': variants=%s.", canonicalKey, variants.map((v) => v.key).join(", "));
+    LOG.debug("config:general", "Provider group '%s': variants=%s.", canonicalKey, variants.map((v) => v.key).join(", "));
   }
 
   // Second pass: Create groups for user overrides that don't have predefined variants. This allows users who override a single-provider channel (like nbc) to still
@@ -442,7 +442,7 @@ export function buildProviderGroups(channels: ChannelMap): void {
     const group: ProviderGroup = { canonicalKey: key, variants };
 
     providerGroups.set(key, group);
-    LOG.debug("config", "Provider group '%s' (override): variants=%s.", key, variants.map((v) => v.key).join(", "));
+    LOG.debug("config:general", "Provider group '%s' (override): variants=%s.", key, variants.map((v) => v.key).join(", "));
   }
 }
 

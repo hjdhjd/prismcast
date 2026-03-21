@@ -8,6 +8,7 @@ import type { FFmpegProcess } from "../utils/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { NativeProxy } from "../native/proxy.js";
 import type { Page } from "puppeteer-core";
+import type { PrerollCodec } from "./preroll.js";
 import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./recovery.js";
 
@@ -18,6 +19,28 @@ import type { RecoveryMetrics } from "./recovery.js";
  */
 
 // Types.
+
+/**
+ * Typed event map for segment notifications. MPEG-TS consumers and lifecycle handlers subscribe to these events. Using a typed interface ensures event names and
+ * argument types are checked at compile time, preventing misspelled event names or incorrect payloads.
+ */
+interface SegmentEmitterEventMap {
+
+  audioSegment: [filename: string, data: Buffer];
+  initSegment: [data: Buffer];
+  segment: [filename: string, data: Buffer];
+  terminated: [];
+}
+
+/**
+ * Typed EventEmitter for segment notifications. Narrows Node's untyped EventEmitter to only accept the events defined in SegmentEmitterEventMap.
+ */
+export interface SegmentEmitter extends EventEmitter {
+
+  emit<K extends keyof SegmentEmitterEventMap>(event: K, ...args: SegmentEmitterEventMap[K]): boolean;
+  off<K extends keyof SegmentEmitterEventMap>(event: K, listener: (...args: SegmentEmitterEventMap[K]) => void): this;
+  on<K extends keyof SegmentEmitterEventMap>(event: K, listener: (...args: SegmentEmitterEventMap[K]) => void): this;
+}
 
 /**
  * HLS segment and playlist storage for a stream. This includes the fMP4 initialization segment (codec configuration), media segments (.m4s files), and the current
@@ -59,6 +82,9 @@ export interface HLSState {
   // The base URL for constructing absolute preroll segment URIs in the composite playlist (e.g., "http://192.168.1.100:5589"). Null when no preroll is active.
   prerollBaseUrl: Nullable<string>;
 
+  // The preroll codec variant for this stream. Determines which preroll variant is served and referenced in playlists. Null when no preroll is active.
+  prerollCodec: Nullable<PrerollCodec>;
+
   // Number of preroll segments that precede real content. Zero when no preroll is active. The segmenter uses this to know which indices in the playlist sliding
   // window are preroll entries vs real entries.
   prerollSegmentCount: number;
@@ -68,19 +94,17 @@ export interface HLSState {
   prerollStartTime: Nullable<Date>;
 
   // Timer handle for deferred preroll seeding. The timer fires after PREROLL_DELAY_MS; if real content hasn't arrived yet, preroll is seeded and playlistReady is
-  // signaled. Cancelled by completeStreamSetup() when the segmenter or native proxy is created, preventing races between the timer and stream setup.
+  // signaled. Deliberately NOT cancelled in completeStreamSetup() — the timer must survive setup completion for native streams where the proxy's first poll cycle
+  // takes 10-15+ seconds. Cancelled in two places: updatePlaylist() in hlsSegments.ts (when the first real playlist arrives) and terminateStream() in lifecycle.ts
+  // (on stream teardown).
   prerollTimer: Nullable<ReturnType<typeof setTimeout>>;
 
   // Snapshotted resume segment index from the prior session. Read once at stream registration and stored here so both the preroll timer callback and the segmenter
   // creation in completeStreamSetup() use the same value — eliminating the TTL race that would occur if each read the resume map independently.
   resumeSegmentIndex: number;
 
-  // EventEmitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time. Events:
-  //   "initSegment" (data: Buffer) — fired when an init segment is stored
-  //   "segment" (filename: string, data: Buffer) — fired when a media segment is stored
-  //   "audioSegment" (filename: string, data: Buffer) — fired when an audio segment is stored
-  //   "terminated" () — fired when the stream is being terminated
-  segmentEmitter: EventEmitter;
+  // Typed emitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time.
+  segmentEmitter: SegmentEmitter;
 
   // Map of media segment filenames to their binary data.
   segments: Map<string, Buffer>;
@@ -125,7 +149,8 @@ export interface StreamRegistryEntry {
   // The FFmpeg process for Matroska-to-fMP4 transcoding, or null if using native fMP4 capture.
   ffmpegProcess: Nullable<FFmpegProcess>;
 
-  // Whether this stream is using hardware-accelerated video encoding. True for capture mode with GPU encoding and for native HLS mode (provider's encoder).
+  // Whether this stream is using hardware-accelerated video encoding on the local GPU. True when Chrome's MediaRecorder is using hardware encoding in capture mode.
+  // False for native HLS (pass-through, no local encoding) and software-only capture.
   hardwareAccelerated: boolean;
 
   // HLS segment storage including init segment, media segments, and playlist.
@@ -138,8 +163,14 @@ export interface StreamRegistryEntry {
   // keep the stream alive while MPEG-TS clients are connected.
   mpegTsClientCount: number;
 
+  // Declared bandwidth from the provider's HLS manifest in bits per second. Zero for capture-mode streams and when the BANDWIDTH attribute is absent.
+  nativeBandwidth: number;
+
   // The native HLS proxy for streams that bypass screen capture. Null for capture-mode streams.
   nativeProxy: Nullable<NativeProxy>;
+
+  // Video resolution from the provider's HLS manifest (e.g., "1920x1080"). Null for capture-mode streams and when absent from the manifest.
+  nativeResolution: Nullable<string>;
 
   // Stream-specific info for idle detection.
   info: StreamInfo;
@@ -277,7 +308,7 @@ export function createHLSState(): HLSState {
     signalPlaylistReady = resolve;
   });
 
-  const segmentEmitter = new EventEmitter();
+  const segmentEmitter = new EventEmitter() as SegmentEmitter;
 
   // Allow up to 20 listeners per event to support multiple concurrent MPEG-TS clients consuming the same stream.
   segmentEmitter.setMaxListeners(20);
@@ -293,6 +324,7 @@ export function createHLSState(): HLSState {
     playlist: "",
     playlistReady,
     prerollBaseUrl: null,
+    prerollCodec: null,
     prerollSegmentCount: 0,
     prerollStartTime: null,
     prerollTimer: null,
@@ -339,9 +371,12 @@ export function getStreamMemoryUsage(entry: StreamRegistryEntry): StreamMemoryUs
     segmentsSize += segment.length;
   }
 
-  for(const segment of entry.hls.audioSegments.values()) {
+  if(entry.hls.audioSegments.size > 0) {
 
-    segmentsSize += segment.length;
+    for(const segment of entry.hls.audioSegments.values()) {
+
+      segmentsSize += segment.length;
+    }
   }
 
   return {

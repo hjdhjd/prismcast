@@ -4,7 +4,7 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
 import { LOG, delay, formatError } from "../../utils/index.js";
-import { logAvailableChannels, normalizeChannelName } from "../channelSelection.js";
+import { logAvailableChannels, normalizeChannelName } from "./shared.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 

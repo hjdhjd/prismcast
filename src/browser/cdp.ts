@@ -178,7 +178,7 @@ export async function resizeAndMinimizeWindow(page: Page, shouldMinimize: boolea
       // Dimensions didn't match — the window manager may still be processing the state transition. Wait briefly before retrying.
       if(attempt < 2) {
 
-        LOG.debug("browser", "Window resize verification failed (attempt %s): expected %s\u00d7%s, got %s\u00d7%s. Retrying.",
+        LOG.debug("browser:lifecycle", "Window resize verification failed (attempt %s): expected %s\u00d7%s, got %s\u00d7%s. Retrying.",
           attempt + 1, targetWidth, targetHeight, result.bounds.width ?? 0, result.bounds.height ?? 0);
 
         // eslint-disable-next-line no-await-in-loop

@@ -22,6 +22,38 @@ import { getStream } from "./registry.js";
  * Note: Stream lifecycle (creation, cleanup) is managed by the registry. This module focuses solely on segment storage operations.
  */
 
+// Internal Segment Helpers.
+
+/**
+ * Stores a segment into the specified Map, emits an event, and enforces the segment count limit by removing the oldest entry. JavaScript Maps maintain insertion
+ * order, so the first key is always the oldest segment. This is the shared implementation for both video and audio segment storage.
+ * @param stream - The stream registry entry.
+ * @param segments - The target segment Map (video or audio).
+ * @param eventName - The event name to emit on the segment emitter.
+ * @param filename - The segment filename.
+ * @param data - The segment binary data.
+ */
+function storeSegmentToMap(stream: StreamRegistryEntry, segments: Map<string, Buffer>, eventName: "audioSegment" | "segment", filename: string, data: Buffer): void {
+
+  segments.set(filename, data);
+
+  // Notify consumers that a new segment is available. Emit before rotation so the data is guaranteed accessible in the Map.
+  stream.hls.segmentEmitter.emit(eventName, filename, data);
+
+  // Enforce segment limit by removing oldest segments.
+  while(segments.size > CONFIG.hls.maxSegments) {
+
+    const oldestKey = segments.keys().next().value;
+
+    if(oldestKey === undefined) {
+
+      break;
+    }
+
+    segments.delete(oldestKey);
+  }
+}
+
 // Segment Management.
 
 /**
@@ -42,23 +74,7 @@ export function storeSegment(streamId: number, filename: string, data: Buffer): 
     return;
   }
 
-  stream.hls.segments.set(filename, data);
-
-  // Notify MPEG-TS consumers that a new segment is available. Emit before rotation so the data is guaranteed accessible in the Map.
-  stream.hls.segmentEmitter.emit("segment", filename, data);
-
-  // Enforce segment limit by removing oldest segments. JavaScript Maps maintain insertion order, so the first key is always the oldest segment.
-  while(stream.hls.segments.size > CONFIG.hls.maxSegments) {
-
-    const oldestKey = stream.hls.segments.keys().next().value;
-
-    if(oldestKey === undefined) {
-
-      break;
-    }
-
-    stream.hls.segments.delete(oldestKey);
-  }
+  storeSegmentToMap(stream, stream.hls.segments, "segment", filename, data);
 }
 
 /**
@@ -69,14 +85,7 @@ export function storeSegment(streamId: number, filename: string, data: Buffer): 
  */
 export function getSegment(streamId: number, filename: string): Buffer | undefined {
 
-  const stream = getStream(streamId);
-
-  if(!stream) {
-
-    return undefined;
-  }
-
-  return stream.hls.segments.get(filename);
+  return getStream(streamId)?.hls.segments.get(filename);
 }
 
 /**
@@ -92,8 +101,7 @@ export function getSegmentCount(streamId: number): number {
 // Audio Segment Management.
 
 /**
- * Stores an audio segment for streams with separate audio renditions. Enforces the same segment count limit as video segments by removing the oldest audio segment
- * when necessary.
+ * Stores an audio segment for streams with separate audio renditions. Enforces the same segment count limit as video segments.
  * @param streamId - The numeric stream ID.
  * @param filename - The audio segment filename (e.g., "audio0.ts").
  * @param data - The segment binary data.
@@ -109,23 +117,7 @@ export function storeAudioSegment(streamId: number, filename: string, data: Buff
     return;
   }
 
-  stream.hls.audioSegments.set(filename, data);
-
-  // Notify consumers that a new audio segment is available.
-  stream.hls.segmentEmitter.emit("audioSegment", filename, data);
-
-  // Enforce segment limit by removing oldest audio segments.
-  while(stream.hls.audioSegments.size > CONFIG.hls.maxSegments) {
-
-    const oldestKey = stream.hls.audioSegments.keys().next().value;
-
-    if(oldestKey === undefined) {
-
-      break;
-    }
-
-    stream.hls.audioSegments.delete(oldestKey);
-  }
+  storeSegmentToMap(stream, stream.hls.audioSegments, "audioSegment", filename, data);
 }
 
 /**
@@ -136,14 +128,7 @@ export function storeAudioSegment(streamId: number, filename: string, data: Buff
  */
 export function getAudioSegment(streamId: number, filename: string): Buffer | undefined {
 
-  const stream = getStream(streamId);
-
-  if(!stream) {
-
-    return undefined;
-  }
-
-  return stream.hls.audioSegments.get(filename);
+  return getStream(streamId)?.hls.audioSegments.get(filename);
 }
 
 // Audio Playlist Management.

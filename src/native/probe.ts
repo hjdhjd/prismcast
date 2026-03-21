@@ -50,21 +50,39 @@ export interface ProbeResult {
   resolution: Nullable<string>;
 }
 
-// Cache of encryption types keyed by channel name. Stores only the classification (clear/aes128/drm), not the full ProbeResult with URLs. Variant URLs and key URLs
+// Cache of encryption types keyed by channel name. Stores the classification (clear/aes128/drm) with a timestamp for TTL expiration. Variant URLs and key URLs
 // contain session-bound auth tokens that expire between tunes, so they must never be cached — only the stable encryption type is safe to persist across sessions.
 // The DRM skip optimization in setup.ts uses this cache to avoid installing the CDP interceptor for channels known to use DRM.
-const probeCache = new Map<string, EncryptionType>();
+const probeCache = new Map<string, { encryption: EncryptionType; timestamp: number }>();
+
+// Cache entries older than this are considered stale and re-probed. 24 hours covers the case where a provider changes a channel's encryption profile (e.g., free →
+// premium DRM). The DRM short-circuit in probeManifest() still applies within the TTL, so frequently-tuned DRM channels avoid repeated probe overhead.
+const PROBE_CACHE_TTL = 24 * 60 * 60 * 1000;
 
 /**
- * Returns the cached encryption type for a channel, or null if the channel has not been probed. Used by the stream setup path to skip CDP interceptor installation
- * for channels already known to use DRM.
+ * Returns the cached encryption type for a channel, or null if the channel has not been probed or the cache entry has expired. Used by the stream setup path to skip
+ * CDP interceptor installation for channels already known to use DRM.
  *
  * @param channelName - The channel name to look up.
- * @returns The cached encryption type, or null if not probed.
+ * @returns The cached encryption type, or null if not probed or expired.
  */
 export function getCachedEncryption(channelName: string): Nullable<EncryptionType> {
 
-  return probeCache.get(channelName) ?? null;
+  const entry = probeCache.get(channelName);
+
+  if(!entry) {
+
+    return null;
+  }
+
+  if((Date.now() - entry.timestamp) > PROBE_CACHE_TTL) {
+
+    probeCache.delete(channelName);
+
+    return null;
+  }
+
+  return entry.encryption;
 }
 
 /**
@@ -88,9 +106,9 @@ export function clearProbeCache(channelName: string): void {
  */
 export async function probeManifest(masterUrl: string, channelName: string): Promise<Nullable<ProbeResult>> {
 
-  // Short-circuit for DRM channels only. The cached DRM classification is stable (providers don't change DRM type mid-process), and the caller returns null
-  // immediately on DRM without using any URLs. For clear/aes128 channels, we must re-probe to get fresh variant and key URLs with current auth tokens.
-  const cached = probeCache.get(channelName);
+  // Short-circuit for DRM channels only. The cached DRM classification is stable within the TTL window (providers rarely change DRM type), and the caller returns
+  // null immediately on DRM without using any URLs. For clear/aes128 channels, we must re-probe to get fresh variant and key URLs with current auth tokens.
+  const cached = getCachedEncryption(channelName);
 
   if(cached === "drm") {
 
@@ -146,7 +164,7 @@ export async function probeManifest(masterUrl: string, channelName: string): Pro
     // Classify encryption.
     const result = await classifyEncryption(variantBody, bestVariant, audioVariantUrl, channelName);
 
-    probeCache.set(channelName, result.encryption);
+    probeCache.set(channelName, { encryption: result.encryption, timestamp: Date.now() });
 
     LOG.debug("native:probe", "Probe completed for %s in %sms: %s.", channelName, elapsed(), result.encryption);
 
@@ -214,7 +232,7 @@ interface VariantSelection {
  */
 function selectBestVariant(masterBody: string, masterUrl: string): Nullable<VariantSelection> {
 
-  // Map video codec prefixes from CODECS attribute to human-readable labels. Defined once outside the loop to avoid repeated allocation.
+  // Map video codec prefixes from CODECS attribute to human-readable labels. Defined outside the variant iteration loop to avoid per-line allocation.
   const codecPrefixes: Record<string, string> = { "av01": "AV1", "avc1": "H264", "avc3": "H264", "hev1": "HEVC", "hvc1": "HEVC", "vp09": "VP9" };
 
   const lines = masterBody.split("\n");

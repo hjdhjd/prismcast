@@ -2,7 +2,7 @@
  *
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
-import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.js";
+import { type PrerollCodec, buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.js";
 import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.js";
 import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.js";
 import { CONFIG } from "../config/index.js";
@@ -50,6 +50,9 @@ export interface FMP4SegmenterOptions {
 
   // The base URL for constructing absolute preroll segment URIs in the composite playlist (e.g., "http://192.168.1.100:5589"). Null when no preroll is active.
   prerollBaseUrl?: Nullable<string>;
+
+  // The preroll codec variant for this segmenter's composite playlist. Determines which preroll variant is referenced in URLs and used for duration lookups.
+  prerollCodec?: PrerollCodec;
 
   // Number of preroll segments preceding this segmenter's content. When non-zero, generatePlaylist() includes preroll entries for indices below startingSegmentIndex
   // that are still within the sliding window, creating a unified playlist that bridges the preroll-to-live transition with monotonic MEDIA-SEQUENCE.
@@ -235,6 +238,9 @@ interface SegmenterState {
   // modified — the preroll content is generated once at startup and shared across all streams.
   readonly prerollBaseUrl: Nullable<string>;
 
+  // The preroll codec variant for this segmenter's composite playlist. Used for duration lookups and URL path construction.
+  readonly prerollCodec: PrerollCodec;
+
   // Number of preroll segments preceding this segmenter's real content. When non-zero, generatePlaylist() includes preroll entries for indices below this value that
   // are still within the sliding window. Set at construction and never modified.
   readonly prerollSegmentCount: number;
@@ -412,7 +418,7 @@ export function formatSessionStatsSummary(stats: SessionStats, segmentCount: num
  */
 export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4SegmenterResult {
 
-  const { initialTrackTimestamps, onError, onStop, pendingDiscontinuity, prerollBaseUrl, prerollSegmentCount, previousInitSegment, priorSessionStats,
+  const { initialTrackTimestamps, onError, onStop, pendingDiscontinuity, prerollBaseUrl, prerollCodec, prerollSegmentCount, previousInitSegment, priorSessionStats,
     startingInitVersion, startingSegmentIndex, streamId } = options;
 
   // Initialize state.
@@ -436,6 +442,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     normalizedReferencePositionSec: null,
     pendingDiscontinuity: pendingDiscontinuity ?? false,
     prerollBaseUrl: prerollBaseUrl ?? null,
+    prerollCodec: prerollCodec ?? "h264",
     prerollSegmentCount: prerollSegmentCount ?? 0,
     segmentDurations: new Map(),
     segmentFirstMoofChecked: false,
@@ -505,7 +512,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     if(prerollActive && state.prerollBaseUrl && (startIndex < state.prerollSegmentCount)) {
 
-      prerollEntries = buildPrerollEntries({ baseUrl: state.prerollBaseUrl, extension: ".m4s", prerollSegmentCount: state.prerollSegmentCount, startIndex });
+      prerollEntries = buildPrerollEntries({ baseUrl: state.prerollBaseUrl, codec: state.prerollCodec, extension: ".m4s", prerollSegmentCount: state.prerollSegmentCount,
+        startIndex });
     }
 
     // Build real segment entries from the segmenter's state. Each entry carries its duration, optional discontinuity marker with init re-emission, and wall-clock
@@ -563,7 +571,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     // Determine the initial MAP URI. When the window starts with preroll entries, use the preroll init segment. Otherwise, use the real init segment. The
     // prerollBaseUrl is guaranteed non-null when prerollEntries is non-empty (guarded by the conditional above).
-    const initialMapUri = ((prerollEntries.length > 0) && state.prerollBaseUrl) ? (state.prerollBaseUrl + "/preroll/init.mp4") : realInitMapUri;
+    const initialMapUri = ((prerollEntries.length > 0) && state.prerollBaseUrl) ?
+      (state.prerollBaseUrl + "/preroll/" + state.prerollCodec + "/init.mp4") : realInitMapUri;
 
     const entries = [ ...prerollEntries, ...realEntries ];
 
@@ -905,7 +914,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           // preroll PTS timeline takes precedence over the old session's timestamps.
           if(state.prerollSegmentCount > 0) {
 
-            state.normalizedReferencePositionSec = getPrerollTotalDurationSec();
+            state.normalizedReferencePositionSec = getPrerollTotalDurationSec(state.prerollCodec);
           }
 
           // Suppress the discontinuity marker when codec parameters are unchanged (byte-identical init). This avoids an unnecessary decoder flush on the client.

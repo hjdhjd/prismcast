@@ -5,6 +5,7 @@
 import type { HealthEvent, HealthSnapshot } from "../config/health.js";
 import type { Nullable, StreamingMode } from "../types/index.js";
 import { getHealthSnapshot, subscribeToHealth } from "../config/health.js";
+import { CONFIG } from "../config/index.js";
 import type { ClientTypeCount } from "./clients.js";
 import { EventEmitter } from "events";
 
@@ -38,6 +39,8 @@ export interface StreamStatus {
   lastRecoveryTime: Nullable<number>;
   logoUrl: string;
   memoryBytes: number;
+  nativeBandwidth: number;
+  nativeResolution: Nullable<string>;
   networkState: number;
   pageReloadsInWindow: number;
   providerName: string;
@@ -87,11 +90,32 @@ export interface StatusSnapshot {
  */
 export type StatusEventType = "healthChanged" | "snapshot" | "streamAdded" | "streamHealthChanged" | "streamRemoved" | "systemStatusChanged";
 
+/**
+ * Typed event map for status notifications. Ensures event names and argument types are checked at compile time.
+ */
+interface StatusEmitterEventMap {
+
+  streamAdded: [status: StreamStatus];
+  streamHealthChanged: [status: StreamStatus];
+  streamRemoved: [info: { id: number }];
+  systemStatusChanged: [status: SystemStatus];
+}
+
+/**
+ * Typed EventEmitter for status notifications. Narrows Node's untyped EventEmitter to only accept the events defined in StatusEmitterEventMap.
+ */
+interface StatusEmitter extends EventEmitter {
+
+  emit<K extends keyof StatusEmitterEventMap>(event: K, ...args: StatusEmitterEventMap[K]): boolean;
+  off<K extends keyof StatusEmitterEventMap>(event: K, listener: (...args: StatusEmitterEventMap[K]) => void): this;
+  on<K extends keyof StatusEmitterEventMap>(event: K, listener: (...args: StatusEmitterEventMap[K]) => void): this;
+}
+
 /* A singleton EventEmitter that broadcasts status updates to all subscribed SSE clients. The emitter maintains current state for all streams, allowing new clients
  * to receive a snapshot of current status immediately upon connecting.
  */
 
-const statusEmitter = new EventEmitter();
+const statusEmitter = new EventEmitter() as StatusEmitter;
 
 // Increase the default listener limit to support many concurrent SSE connections.
 statusEmitter.setMaxListeners(100);
@@ -130,6 +154,8 @@ export function createInitialStreamStatus(options: {
     lastRecoveryTime: null,
     logoUrl: "",
     memoryBytes: 0,
+    nativeBandwidth: 0,
+    nativeResolution: null,
     networkState: 0,
     pageReloadsInWindow: 0,
     providerName: options.providerName,
@@ -193,9 +219,11 @@ export function emitStreamHealthChanged(status: StreamStatus): void {
  */
 export function emitSystemStatusChanged(status: SystemStatus): void {
 
-  // Only emit if something meaningful changed.
+  // Only emit if something meaningful changed. The optional chain on the second condition is defensive — TypeScript narrows cachedSystemStatus as non-null after
+  // the first comparison, but at runtime the first condition can be truthy with cachedSystemStatus === null (undefined !== true).
   if((cachedSystemStatus?.browser.connected !== status.browser.connected) ||
-     (cachedSystemStatus.streams.active !== status.streams.active)) {
+     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+     (cachedSystemStatus?.streams.active !== status.streams.active)) {
 
     cachedSystemStatus = status;
     statusEmitter.emit("systemStatusChanged", status);
@@ -225,7 +253,7 @@ export function getStatusSnapshot(): StatusSnapshot {
 
       browser: { connected: false, pageCount: 0 },
       memory: { heapUsed: 0, rss: 0 },
-      streams: { active: 0, limit: 10 },
+      streams: { active: 0, limit: CONFIG.streaming.maxConcurrentStreams },
       uptime: 0
     }
   };

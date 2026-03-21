@@ -65,6 +65,11 @@ const MKV_HEVC_MIME_TYPE = "video/x-matroska;codecs=hvc1.1.6.L93.B0,opus";
 // tab with an active stream." We serialize capture initialization using a promise chain so requests execute sequentially. Once a capture is established, it runs
 // concurrently with other captures without issue.
 let captureQueue: Promise<void> = Promise.resolve();
+let captureQueueDepth = 0;
+
+// Threshold for logging a warning when the capture queue depth is unusually high. Under normal operation, the queue depth is 0-2. Higher values indicate
+// many simultaneous stream requests competing for Chrome's single-threaded capture initialization.
+const CAPTURE_QUEUE_DEPTH_WARNING = 5;
 
 // Maximum number of times createPageWithCapture() will retry when it detects that the page was closed while waiting in the capture queue (e.g., due to a browser
 // crash). An explicit guard prevents unbounded recursion.
@@ -269,12 +274,15 @@ export interface CreatePageWithCaptureResult {
 function generateRequestId(): string {
 
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = new Uint8Array(6);
+
+  crypto.getRandomValues(bytes);
 
   let result = "";
 
-  for(let i = 0; i < 6; i++) {
+  for(const byte of bytes) {
 
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+    result += chars.charAt(byte % chars.length);
   }
 
   return result;
@@ -334,13 +342,6 @@ export function validateStreamUrl(url: string | undefined): UrlValidation {
     if(!allowedProtocols.includes(parsed.protocol)) {
 
       return { reason: [ "Unsupported protocol: ", parsed.protocol ].join(""), valid: false };
-    }
-
-    // Local file access is explicitly blocked for security reasons. While the URL constructor wouldn't typically parse a file: URL through the protocol check
-    // above, we check explicitly for defense in depth.
-    if(parsed.protocol === "file:") {
-
-      return { reason: "Local file access is not permitted.", valid: false };
     }
 
     return { valid: true };
@@ -411,6 +412,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     if(!captureQueueReleased) {
 
       captureQueueReleased = true;
+      captureQueueDepth--;
       releaseCaptureQueue();
     }
   };
@@ -443,6 +445,13 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     // concurrent initialization attempts. On success, the lock is released immediately so the next caller can proceed. On failure, the lock is held until the
     // catch block decides what to do — the catch block releases the lock after handling the error.
     const previousCapture = captureQueue;
+
+    captureQueueDepth++;
+
+    if(captureQueueDepth >= CAPTURE_QUEUE_DEPTH_WARNING) {
+
+      LOG.warn("Capture queue depth is %d. Multiple stream requests are competing for Chrome's capture initialization.", captureQueueDepth);
+    }
 
     captureQueue = new Promise<void>((resolve) => {
 

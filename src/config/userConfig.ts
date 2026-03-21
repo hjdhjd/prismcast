@@ -1068,7 +1068,7 @@ export function setNestedValue(obj: Record<string, unknown>, settingPath: string
 export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOverrides): Config {
 
   // Start with a deep copy of defaults.
-  const config = JSON.parse(JSON.stringify(DEFAULTS)) as Config;
+  const config = structuredClone(DEFAULTS);
 
   // Apply user config values.
   for(const settings of Object.values(CONFIG_METADATA)) {
