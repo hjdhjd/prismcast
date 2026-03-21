@@ -31,7 +31,7 @@ export function generateLandingPageStyles(): string {
     "#stream-count.clickable { cursor: pointer; }",
     "#stream-count.clickable:hover { color: var(--text-primary); }",
     ".stream-popover .dropdown-menu { right: 0; left: auto; min-width: 220px; }",
-    ".stream-popover-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; white-space: nowrap; }",
+    ".stream-popover-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; white-space: nowrap; cursor: default; user-select: none; }",
     ".stream-popover-logo { height: 18px; width: auto; max-width: 80px; vertical-align: middle; }",
     ".stream-popover-channel { color: var(--text-primary); }",
     ".stream-popover-show { color: var(--text-muted); }",

@@ -37,6 +37,9 @@ export interface ProbeResult {
   // URL of the highest-bandwidth variant playlist.
   bestVariantUrl: string;
 
+  // Video codec label (e.g., "H264", "HEVC", "AV1"), or null when the CODECS attribute is absent or the codec is unrecognized.
+  codec: Nullable<string>;
+
   // Classified encryption type.
   encryption: EncryptionType;
 
@@ -93,7 +96,7 @@ export async function probeManifest(masterUrl: string, channelName: string): Pro
 
     LOG.debug("native:probe", "Probe cache hit for %s: drm.", channelName);
 
-    return { audioVariantUrl: null, bandwidth: 0, bestVariantUrl: "", encryption: "drm", keyUrl: null, resolution: null };
+    return { audioVariantUrl: null, bandwidth: 0, bestVariantUrl: "", codec: null, encryption: "drm", keyUrl: null, resolution: null };
   }
 
   const elapsed = startTimer();
@@ -192,6 +195,9 @@ interface VariantSelection {
   // Declared bandwidth in bits per second from the BANDWIDTH attribute.
   bandwidth: number;
 
+  // Video codec from the CODECS attribute (e.g., "H264", "HEVC", "AV1"), or null when the attribute is absent or the codec is unrecognized.
+  codec: Nullable<string>;
+
   // Video resolution from the RESOLUTION attribute (e.g., "1920x1080"), or null when absent.
   resolution: Nullable<string>;
 
@@ -208,8 +214,12 @@ interface VariantSelection {
  */
 function selectBestVariant(masterBody: string, masterUrl: string): Nullable<VariantSelection> {
 
+  // Map video codec prefixes from CODECS attribute to human-readable labels. Defined once outside the loop to avoid repeated allocation.
+  const codecPrefixes: Record<string, string> = { "av01": "AV1", "avc1": "H264", "avc3": "H264", "hev1": "HEVC", "hvc1": "HEVC", "vp09": "VP9" };
+
   const lines = masterBody.split("\n");
   let bestBandwidth = 0;
+  let bestCodec: Nullable<string> = null;
   let bestResolution: Nullable<string> = null;
   let bestUrl: Nullable<string> = null;
   const bandwidths: number[] = [];
@@ -231,6 +241,19 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
     const resolutionMatch = /RESOLUTION=(\d+x\d+)/.exec(line);
     const resolution: Nullable<string> = resolutionMatch ? resolutionMatch[1] : null;
 
+    // Parse CODECS attribute and map the video codec prefix to a human-readable label. The CODECS value contains comma-separated codec strings (e.g.,
+    // "avc1.640028,mp4a.40.2"). The video codec is identified by its prefix: avc1/avc3 → H264, hvc1/hev1 → HEVC, av01 → AV1, vp09 → VP9.
+    const codecsMatch = /CODECS="([^"]+)"/.exec(line);
+    let codec: Nullable<string> = null;
+
+    if(codecsMatch) {
+
+      const codecStr = codecsMatch[1].split(",")[0].trim();
+      const prefix = codecStr.split(".")[0];
+
+      codec = codecPrefixes[prefix] ?? null;
+    }
+
     // The variant URL is on the next line.
     const variantLine = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
 
@@ -244,6 +267,7 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
     if(bandwidth > bestBandwidth) {
 
       bestBandwidth = bandwidth;
+      bestCodec = codec;
       bestResolution = resolution;
       bestUrl = variantLine;
     }
@@ -257,7 +281,7 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
   }
 
   // Resolve relative URLs against the master manifest URL.
-  return { bandwidth: bestBandwidth, resolution: bestResolution, url: resolveUrl(bestUrl, masterUrl) };
+  return { bandwidth: bestBandwidth, codec: bestCodec, resolution: bestResolution, url: resolveUrl(bestUrl, masterUrl) };
 }
 
 /**
@@ -333,7 +357,7 @@ async function classifyEncryption(variantBody: string, variant: VariantSelection
     break;
   }
 
-  return { audioVariantUrl, bandwidth: variant.bandwidth, bestVariantUrl: variant.url, encryption, keyUrl, resolution: variant.resolution };
+  return { audioVariantUrl, bandwidth: variant.bandwidth, bestVariantUrl: variant.url, codec: variant.codec, encryption, keyUrl, resolution: variant.resolution };
 }
 
 /**

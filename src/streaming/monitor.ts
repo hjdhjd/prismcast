@@ -446,12 +446,14 @@ export function monitorPlaybackHealth(
     const status: StreamStatus = {
 
       bufferingDuration: null,
+      captureCodec: entry.captureCodec,
       channel: streamInfo.channelName,
       clientCount: clientSummary.total,
       clients: clientSummary.clients,
       currentTime: 0,
       duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
       escalationLevel: escalation,
+      hardwareAccelerated: entry.hardwareAccelerated,
       health,
       id: streamInfo.numericStreamId,
       lastIssueTime: nativeHealthIssueTime,
@@ -652,12 +654,14 @@ export function monitorPlaybackHealth(
     const status: StreamStatus = {
 
       bufferingDuration: bufferingStartTime ? Math.round((now - bufferingStartTime) / 1000) : null,
+      captureCodec: entry?.captureCodec ?? null,
       channel: streamInfo.channelName,
       clientCount: clientSummary.total,
       clients: clientSummary.clients,
       currentTime: lastVideoState?.time ?? 0,
       duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
       escalationLevel,
+      hardwareAccelerated: entry?.hardwareAccelerated ?? false,
       health: computeHealthStatus(),
       id: streamInfo.numericStreamId,
       lastIssueTime,
@@ -1166,7 +1170,7 @@ export function monitorPlaybackHealth(
 
             // Video element exists but doesn't meet readyState criteria. This is a buffering condition, not a missing video condition.
             // Apply the normal buffering grace period instead of escalating to navigation.
-            LOG.debug("recovery", "Video is buffering (readyState=%s, elements=%s).", presence.maxReadyState, presence.videoCount);
+            LOG.debug("recovery:general", "Video is buffering (readyState=%s, elements=%s).", presence.maxReadyState, presence.videoCount);
 
             // Reset video not found counter since video actually exists.
             videoNotFoundCount = 0;
@@ -1471,7 +1475,7 @@ export function monitorPlaybackHealth(
          */
         if(pendingReMinimize && isProgressing && !state.paused && !state.error && !state.ended) {
 
-          LOG.debug("recovery", "Re-minimizing browser window after successful recovery.");
+          LOG.debug("recovery:general", "Re-minimizing browser window after successful recovery.");
 
           pendingReMinimize = false;
 
@@ -2034,7 +2038,7 @@ export function monitorPlaybackHealth(
 
         if(errorMessage.includes("aborted")) {
 
-          LOG.debug("recovery", "Monitor check aborted: %s.", errorMessage);
+          LOG.debug("recovery:general", "Monitor check aborted: %s.", errorMessage);
         } else {
 
           LOG.error("Monitor check failed: %s.", errorMessage);

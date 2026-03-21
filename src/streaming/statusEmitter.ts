@@ -23,12 +23,14 @@ export type StreamHealthStatus = "buffering" | "error" | "healthy" | "recovering
 export interface StreamStatus {
 
   bufferingDuration: Nullable<number>;
+  captureCodec: Nullable<string>;
   channel: Nullable<string>;
   clientCount: number;
   clients: ClientTypeCount[];
   currentTime: number;
   duration: number;
   escalationLevel: number;
+  hardwareAccelerated: boolean;
   health: StreamHealthStatus;
   id: number;
   lastIssueTime: Nullable<number>;
@@ -100,7 +102,9 @@ statusEmitter.setMaxListeners(100);
  * @returns The initial stream status.
  */
 export function createInitialStreamStatus(options: {
+  captureCodec?: Nullable<string>;
   channelName: Nullable<string>;
+  hardwareAccelerated?: boolean;
   numericStreamId: number;
   providerName: string;
   startTime: Date;
@@ -111,12 +115,14 @@ export function createInitialStreamStatus(options: {
   return {
 
     bufferingDuration: null,
+    captureCodec: options.captureCodec ?? null,
     channel: options.channelName,
     clientCount: 0,
     clients: [],
     currentTime: 0,
     duration: 0,
     escalationLevel: 0,
+    hardwareAccelerated: options.hardwareAccelerated ?? false,
     health: "healthy",
     id: options.numericStreamId,
     lastIssueTime: null,

@@ -112,14 +112,21 @@ export interface StreamInfo {
  */
 export interface StreamRegistryEntry {
 
+  // Video codec label for this stream (e.g., "H264", "HEVC"). For capture mode, determined by GPU capabilities. For native mode, extracted from the provider's
+  // HLS manifest. Null before stream setup completes.
+  captureCodec: Nullable<string>;
+
   // Channel name if streaming a named channel, or null for arbitrary URLs.
   channelName: Nullable<string>;
 
   // IP address of the client that initiated this stream. Used to identify the Channels DVR server for show info lookup.
   clientAddress: Nullable<string>;
 
-  // The FFmpeg process for WebM-to-fMP4 transcoding, or null if using native fMP4 capture.
+  // The FFmpeg process for Matroska-to-fMP4 transcoding, or null if using native fMP4 capture.
   ffmpegProcess: Nullable<FFmpegProcess>;
+
+  // Whether this stream is using hardware-accelerated video encoding. True for capture mode with GPU encoding and for native HLS mode (provider's encoder).
+  hardwareAccelerated: boolean;
 
   // HLS segment storage including init segment, media segments, and playlist.
   hls: HLSState;
@@ -148,7 +155,7 @@ export interface StreamRegistryEntry {
   // that have been registered but whose async setup has not yet completed.
   profile: Nullable<ResolvedSiteProfile>;
 
-  // The raw capture stream from puppeteer-stream. In FFmpeg mode, this is the WebM stream piped to FFmpeg's stdin. In native mode, this is the same as the segmenter
+  // The raw capture stream from puppeteer-stream. In FFmpeg mode, this is the Matroska stream piped to FFmpeg's stdin. In native mode, this is the same as the segmenter
   // input. Must be destroyed before closing the page to ensure chrome.tabCapture releases the capture and prevents "Cannot capture a tab with an active stream" errors
   // on subsequent stream requests.
   rawCaptureStream: Nullable<Readable>;
