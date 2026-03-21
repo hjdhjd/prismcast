@@ -113,6 +113,59 @@ export interface MonitorStreamInfo {
   startTime: Date;
 }
 
+// Monitor state interfaces.
+
+/**
+ * Native stream health tracking state. Used when the stream is in native mode to monitor segment delivery health.
+ */
+interface NativeHealthState {
+
+  issueTime: Nullable<number>;
+  issueType: Nullable<string>;
+  lastCheckedSegmentIndex: number;
+  lastSegmentAdvanceTime: number;
+  recoveryAttempts: number;
+}
+
+/**
+ * Recovery lifecycle state. Tracks escalation level, failure counters, and recovery flags that control which recovery method to use and when.
+ */
+interface RecoveryState {
+
+  escalationLevel: number;
+  graceUntil: number;
+  inProgress: boolean;
+  lastRecoveryTime: number;
+  pauseCount: number;
+  sourceReloadAttempted: boolean;
+  stallCount: number;
+  totalAttempts: number;
+}
+
+/**
+ * Resolution degradation monitoring state. Tracks ABR quality relative to the configured viewport.
+ */
+interface ResolutionState {
+
+  consecutiveDegradedReadings: number;
+  graceEnd: number;
+  recoveryAttempt: number;
+}
+
+/**
+ * Segment production tracking state. Monitors both post-recovery segment verification and continuous segment size health.
+ */
+interface SegmentState {
+
+  consecutiveTinySegments: number;
+  lastCheckedIndex: number;
+  lastSegmentAdvanceTime: number;
+  preRecoveryIndex: Nullable<number>;
+  productionStalled: boolean;
+  waitStartTime: Nullable<number>;
+  wasInTinyState: boolean;
+}
+
 export function monitorPlaybackHealth(
   page: Page,
   context: Frame | Page,
@@ -124,7 +177,9 @@ export function monitorPlaybackHealth(
   onTabReplacement?: () => Promise<Nullable<TabReplacementResult>>
 ): () => RecoveryMetrics {
 
-  /* Monitor state variables. These track the video's behavior over time and control recovery decisions.
+  /* Monitor state. These track the video's behavior over time and control recovery decisions. Mutable variables are organized into typed state objects by subsystem
+   * (recovery, segments, native health, resolution) to clarify ownership and interaction boundaries. Variables that don't belong to a specific subsystem remain as
+   * standalone declarations.
    */
 
   // The current page reference. This can change after tab replacement recovery, when the old tab is closed and a new one is created. We use a mutable variable so we
@@ -133,22 +188,6 @@ export function monitorPlaybackHealth(
 
   // The video's currentTime from the previous check. Used to detect whether the video is progressing. Null on first check since we have no previous value.
   let lastTime: Nullable<number> = null;
-
-  // Number of consecutive checks where currentTime did not advance. We require multiple consecutive stalls before triggering recovery to avoid reacting to momentary
-  // hiccups. Reset to 0 when progression is detected.
-  let stallCount = 0;
-
-  // Number of consecutive checks where the video reports paused state. Like stallCount, we require multiple consecutive paused checks (> stallCountThreshold) before
-  // triggering recovery. This filters out transient rebuffer pauses where the player briefly pauses itself to refill its buffer and resumes on its own. Without this
-  // hysteresis, every transient rebuffer pause triggers an unnecessary L1 recovery (play/unmute) that logs noise but does nothing useful.
-  let pauseCount = 0;
-
-  // Current escalation level (0-4). Level 0 means no recovery needed. Each time recovery is triggered, this increments to try increasingly aggressive actions.
-  // Resets to 0 after sustained healthy playback.
-  let escalationLevel = 0;
-
-  // Timestamp of the last recovery attempt. Used to calculate healthy playback duration for escalation reset.
-  let lastRecoveryTime = 0;
 
   // Timestamp when buffering started, or null if not currently buffering. Used to apply the buffering grace period - we don't trigger recovery for buffering until
   // it exceeds BUFFERING_GRACE_PERIOD.
@@ -161,24 +200,6 @@ export function monitorPlaybackHealth(
   // stuck in a loop when navigation itself is the problem.
   let consecutiveNavigationFailures = 0;
 
-  // Track whether source reload (L2) has been attempted in the current page session. Log analysis shows the first source reload often works (~58%), but the second
-  // always fails and leaves the video at readyState=0. When this flag is true and recovery is needed, we skip L2 and go directly to L3 (page reload).
-  let sourceReloadAttempted = false;
-
-  // Segment production monitoring state. After L2/L3 recovery, we track whether segments are actually being produced. If recovery reports success but the capture
-  // pipeline is dead (MediaRecorder stopped producing data), we need to escalate to tab replacement.
-  let preRecoverySegmentIndex: Nullable<number> = null;      // Segment index when recovery started, used to detect if new segments are produced.
-  let segmentWaitStartTime: Nullable<number> = null;         // Timestamp when we started waiting for segment production after recovery grace period.
-  let segmentProductionStalled = false;                       // Flag indicating segment production has stalled after recovery.
-
-  // Continuous segment size and staleness monitoring state. Detects spontaneous capture pipeline death (no preceding recovery event) by checking segment sizes and
-  // production rate. Dead pipelines may produce tiny segments (18 bytes observed) or stop producing segments entirely, while the video element appears healthy. This
-  // complements post-recovery index monitoring.
-  let lastCheckedSegmentIndex = 0;                            // Last segment index we inspected (to detect new segments).
-  let lastSegmentAdvanceTime = Date.now();                    // Timestamp when segment index last advanced. Used for staleness detection.
-  let consecutiveTinySegments = 0;                            // Count of consecutive tiny segments.
-  let wasInTinySegmentState = false;                          // For detecting spontaneous recovery (tiny→valid transition without explicit recovery).
-
   // Track whether the browser window needs to be re-minimized after recovery. Recovery actions (especially ensureFullscreen) can cause the window to un-minimize.
   // We set this flag when recovery is triggered and clear it after the recovery grace period passes and we see a healthy check.
   let pendingReMinimize = false;
@@ -190,9 +211,6 @@ export function monitorPlaybackHealth(
 
   // Flag indicating the cleanup function was called. When true, the next interval check will clear itself.
   let intervalCleared = false;
-
-  // Flag indicating a recovery operation is in progress. We skip health checks during recovery to avoid triggering additional recovery while one is running.
-  let recoveryInProgress = false;
 
   // The current video context (page or frame). This can change after a page navigation recovery, when we need to find the new video context.
   let currentContext: Frame | Page = context;
@@ -207,9 +225,6 @@ export function monitorPlaybackHealth(
   // Counter for consecutive evaluate timeouts. When the browser tab becomes unresponsive, evaluate() calls will timeout instead of returning data. After 3
   // consecutive timeouts, we trigger tab replacement recovery (if the callback is provided). Reset to 0 on successful getVideoState().
   let consecutiveTimeouts = 0;
-
-  // Total recovery attempts for status reporting.
-  let totalRecoveryAttempts = 0;
 
   // Last known video state for status reporting.
   let lastVideoState: Nullable<VideoState> = null;
@@ -262,8 +277,6 @@ export function monitorPlaybackHealth(
   // navigation and video reinitialization to complete before the site enforces its cutoff.
   const PROACTIVE_RELOAD_MARGIN_MS = 120000;
 
-  let recoveryGraceUntil = 0;
-
   // Timestamp of the most recent full page navigation. Used to calculate elapsed continuous playback for proactive reload when maxContinuousPlayback is configured.
   // Initialized to Date.now() because the monitor starts immediately after tuneToChannel() succeeds in stream setup, meaning a page load just completed. Reset
   // after any successful page navigation recovery or tab replacement, but NOT after source reloads (L2) which preserve the page's JavaScript context.
@@ -275,20 +288,53 @@ export function monitorPlaybackHealth(
   // Capture stream context for re-establishing on each interval tick. AsyncLocalStorage context is lost when entering setInterval callbacks.
   const streamContext = { channelName: streamInfo.channelName ?? undefined, streamId, url };
 
-  // Native stream health state. These variables are only used when the stream is in native mode. They track segment delivery health to detect stalled streams
-  // where the provider's manifest stops advancing or segments stop arriving. Native recovery uses the shared `recoveryInProgress` flag rather than a separate flag,
-  // since the interval callback already checks `recoveryInProgress` before dispatching to either the native or capture-mode health check path.
-  let nativeLastCheckedSegmentIndex = 0;
-  let nativeLastSegmentAdvanceTime = Date.now();
-  let nativeHealthIssueType: Nullable<string> = null;
-  let nativeHealthIssueTime: Nullable<number> = null;
-  let nativeRecoveryAttempts = 0;
+  // Recovery state. Tracks escalation level, failure counters, and recovery lifecycle flags that control the decision to trigger recovery and which method to use.
+  const recoveryState: RecoveryState = {
 
-  // Resolution degradation monitoring. Separate from the existing recovery escalation (L1-L4) which handles broken playback. Resolution degradation is a quality
-  // issue — the stream works but at lower-than-expected resolution. Uses its own tracking and two-step escalation: page reload, then tab replacement.
-  let consecutiveDegradedReadings = 0;
-  let resolutionGraceEnd = Date.now() + RESOLUTION_GRACE_PERIOD;
-  let resolutionRecoveryAttempt = 0;
+    escalationLevel: 0,
+    graceUntil: 0,
+    inProgress: false,
+    lastRecoveryTime: 0,
+    pauseCount: 0,
+    sourceReloadAttempted: false,
+    stallCount: 0,
+    totalAttempts: 0
+  };
+
+  // Segment production state. Tracks both post-recovery segment verification and continuous segment size monitoring. After L2/L3 recovery, we verify segments are
+  // actually being produced. Independently, we monitor segment sizes on every tick to detect spontaneous capture pipeline death (dead pipelines produce tiny segments
+  // while the video element appears healthy).
+  const segmentState: SegmentState = {
+
+    consecutiveTinySegments: 0,
+    lastCheckedIndex: 0,
+    lastSegmentAdvanceTime: Date.now(),
+    preRecoveryIndex: null,
+    productionStalled: false,
+    waitStartTime: null,
+    wasInTinyState: false
+  };
+
+  // Native stream health state. Only used when the stream is in native mode. Tracks segment delivery health to detect stalled streams where the provider's manifest
+  // stops advancing or segments stop arriving. Native recovery uses recoveryState.inProgress rather than a separate flag, since the interval callback already checks
+  // that flag before dispatching to either the native or capture-mode health check path.
+  const nativeHealthState: NativeHealthState = {
+
+    issueTime: null,
+    issueType: null,
+    lastCheckedSegmentIndex: 0,
+    lastSegmentAdvanceTime: Date.now(),
+    recoveryAttempts: 0
+  };
+
+  // Resolution degradation monitoring. Separate from the recovery escalation (L1-L4) which handles broken playback. Resolution degradation is a quality issue - the
+  // stream works but at lower-than-expected resolution. Uses its own tracking and two-step escalation: page reload, then tab replacement.
+  const resolutionState: ResolutionState = {
+
+    consecutiveDegradedReadings: 0,
+    graceEnd: Date.now() + RESOLUTION_GRACE_PERIOD,
+    recoveryAttempt: 0
+  };
 
   /**
    * Checks segment delivery health for native streams. Detects stalled streams by comparing the proxy's segment index and last segment timestamp against thresholds.
@@ -298,8 +344,8 @@ export function monitorPlaybackHealth(
    * - L2: Reload page for fresh tokens (same mechanism as proactive token refresh, but triggered by segment staleness)
    * - L3: Fall back to capture mode via tab replacement (stops native proxy, creates fresh page with capture pipeline)
    *
-   * Note: The `recoveryInProgress` guard at the top of the interval callback prevents re-entry during async L2/L3 recovery. The native path does not need its own
-   * guard — it reuses the shared flag.
+   * Note: The `recoveryState.inProgress` guard at the top of the interval callback prevents re-entry during async L2/L3 recovery. The native path does not need its
+   * own guard — it reuses the shared flag.
    *
    * @param entry - The stream registry entry for the native stream.
    */
@@ -327,8 +373,8 @@ export function monitorPlaybackHealth(
 
       LOG.debug("native:monitor", "Native proxy errored for %s. Initiating capture fallback.", storeKey);
 
-      nativeHealthIssueType = "proxy error";
-      nativeHealthIssueTime = now;
+      nativeHealthState.issueType = "proxy error";
+      nativeHealthState.issueTime = now;
 
       void runWithStreamContext(streamContext, async () => {
 
@@ -339,24 +385,24 @@ export function monitorPlaybackHealth(
     }
 
     // Check if new segments have been produced since the last tick.
-    if(currentSegmentIndex > nativeLastCheckedSegmentIndex) {
+    if(currentSegmentIndex > nativeHealthState.lastCheckedSegmentIndex) {
 
-      nativeLastCheckedSegmentIndex = currentSegmentIndex;
-      nativeLastSegmentAdvanceTime = now;
+      nativeHealthState.lastCheckedSegmentIndex = currentSegmentIndex;
+      nativeHealthState.lastSegmentAdvanceTime = now;
 
       // Clear any previous issue tracking when segments are flowing.
-      if(nativeHealthIssueType) {
+      if(nativeHealthState.issueType) {
 
-        nativeHealthIssueType = null;
-        nativeHealthIssueTime = null;
-        nativeRecoveryAttempts = 0;
+        nativeHealthState.issueType = null;
+        nativeHealthState.issueTime = null;
+        nativeHealthState.recoveryAttempts = 0;
 
         LOG.debug("native:monitor", "Native stream healthy for %s. Segments advancing (index %s).", storeKey, currentSegmentIndex);
       }
     }
 
     // Calculate staleness: time since the last new segment was produced.
-    const stalenessMs = now - nativeLastSegmentAdvanceTime;
+    const stalenessMs = now - nativeHealthState.lastSegmentAdvanceTime;
     const stalenessThreshold = targetDuration * 2 * 1000;
 
     // Classify health based on segment delivery metrics.
@@ -366,10 +412,10 @@ export function monitorPlaybackHealth(
 
       nativeHealth = "recovering";
 
-      if(!nativeHealthIssueType) {
+      if(!nativeHealthState.issueType) {
 
-        nativeHealthIssueType = "fetch errors";
-        nativeHealthIssueTime = now;
+        nativeHealthState.issueType = "fetch errors";
+        nativeHealthState.issueTime = now;
       }
 
       LOG.debug("native:monitor", "Native stream recovering for %s. Consecutive errors: %s.", storeKey, consecutiveErrors);
@@ -378,10 +424,10 @@ export function monitorPlaybackHealth(
       // Only flag staleness after at least one segment has been produced (lastSegmentTime > 0) and the staleness exceeds the threshold.
       nativeHealth = "stalled";
 
-      if(!nativeHealthIssueType) {
+      if(!nativeHealthState.issueType) {
 
-        nativeHealthIssueType = "segment stall";
-        nativeHealthIssueTime = now;
+        nativeHealthState.issueType = "segment stall";
+        nativeHealthState.issueTime = now;
       }
 
       const staleSec = Math.round(stalenessMs / 1000);
@@ -391,11 +437,11 @@ export function monitorPlaybackHealth(
 
       // L2: At 4× target duration, attempt a page reload for fresh tokens. This recovers from auth expiry where the manifest URL is still valid but segment URLs
       // are rejected. The proxy continues serving cached segments during the reload.
-      if((stalenessMs > (targetDuration * 4 * 1000)) && (nativeRecoveryAttempts === 0)) {
+      if((stalenessMs > (targetDuration * 4 * 1000)) && (nativeHealthState.recoveryAttempts === 0)) {
 
         LOG.warn("Native stream stalled for %s. No new segments in %ss. Attempting recovery.", storeKey, staleSec);
 
-        nativeRecoveryAttempts++;
+        nativeHealthState.recoveryAttempts++;
 
         void runWithStreamContext(streamContext, async () => {
 
@@ -406,7 +452,7 @@ export function monitorPlaybackHealth(
       }
 
       // L3: At 6× target duration (or if L2 was already attempted), fall back to capture mode via tab replacement.
-      if((stalenessMs > (targetDuration * 6 * 1000)) || ((stalenessMs > (targetDuration * 4 * 1000)) && (nativeRecoveryAttempts > 0))) {
+      if((stalenessMs > (targetDuration * 6 * 1000)) || ((stalenessMs > (targetDuration * 4 * 1000)) && (nativeHealthState.recoveryAttempts > 0))) {
 
         LOG.warn("Falling back to capture mode for %s: native streaming stalled after recovery attempt.", storeKey);
 
@@ -456,16 +502,18 @@ export function monitorPlaybackHealth(
       hardwareAccelerated: entry.hardwareAccelerated,
       health,
       id: streamInfo.numericStreamId,
-      lastIssueTime: nativeHealthIssueTime,
-      lastIssueType: nativeHealthIssueType,
+      lastIssueTime: nativeHealthState.issueTime,
+      lastIssueType: nativeHealthState.issueType,
       lastRecoveryTime: null,
       logoUrl: channelKey ? (getChannelLogo(channelKey) ?? "") : "",
       memoryBytes,
+      nativeBandwidth: entry.nativeBandwidth,
+      nativeResolution: entry.nativeResolution,
       networkState: 0,
       pageReloadsInWindow: 0,
       providerName: streamInfo.providerName,
       readyState: 0,
-      recoveryAttempts: nativeRecoveryAttempts,
+      recoveryAttempts: nativeHealthState.recoveryAttempts,
       showName: getShowName(streamInfo.numericStreamId),
       startTime: streamInfo.startTime.toISOString(),
       streamingMode: entry.streamingMode,
@@ -490,7 +538,7 @@ export function monitorPlaybackHealth(
       return;
     }
 
-    recoveryInProgress = true;
+    recoveryState.inProgress = true;
 
     LOG.debug("native:monitor", "Starting L2 recovery (page reload) for %s.", entry.info.storeKey);
 
@@ -508,11 +556,11 @@ export function monitorPlaybackHealth(
       if(success) {
 
         // Reset staleness tracking so the monitor gives the refreshed stream time to produce segments.
-        nativeLastSegmentAdvanceTime = Date.now();
+        nativeHealthState.lastSegmentAdvanceTime = Date.now();
       }
     } finally {
 
-      recoveryInProgress = false;
+      recoveryState.inProgress = false;
     }
   }
 
@@ -544,8 +592,8 @@ export function monitorPlaybackHealth(
       entry.nativeProxy = null;
     }
 
-    // Use the existing tab replacement infrastructure. It sets recoveryInProgress = true internally and clears it in finalizeTabReplacement. It creates a new page
-    // with capture, navigates, sets up playback, creates a segmenter, and updates the registry entry (page, rawCaptureStream, ffmpegProcess, segmenter).
+    // Use the existing tab replacement infrastructure. It sets recoveryState.inProgress = true internally and clears it in finalizeTabReplacement. It creates a new
+    // page with capture, navigates, sets up playback, creates a segmenter, and updates the registry entry (page, rawCaptureStream, ffmpegProcess, segmenter).
     const outcome = await executeTabReplacement("native fallback to capture");
 
     if(outcome.outcome === "success") {
@@ -600,13 +648,13 @@ export function monitorPlaybackHealth(
     }
 
     // If we're at escalation level 3 (page reload), we're in serious trouble.
-    if(escalationLevel >= 3) {
+    if(recoveryState.escalationLevel >= 3) {
 
       return "error";
     }
 
     // If we're actively recovering (levels 1-2).
-    if(escalationLevel > 0) {
+    if(recoveryState.escalationLevel > 0) {
 
       return "recovering";
     }
@@ -618,7 +666,7 @@ export function monitorPlaybackHealth(
     }
 
     // If we have consecutive stalls but not yet triggering recovery.
-    if(stallCount > 0) {
+    if(recoveryState.stallCount > 0) {
 
       return "stalled";
     }
@@ -660,20 +708,22 @@ export function monitorPlaybackHealth(
       clients: clientSummary.clients,
       currentTime: lastVideoState?.time ?? 0,
       duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
-      escalationLevel,
+      escalationLevel: recoveryState.escalationLevel,
       hardwareAccelerated: entry?.hardwareAccelerated ?? false,
       health: computeHealthStatus(),
       id: streamInfo.numericStreamId,
       lastIssueTime,
       lastIssueType,
-      lastRecoveryTime: lastRecoveryTime > 0 ? lastRecoveryTime : null,
+      lastRecoveryTime: recoveryState.lastRecoveryTime > 0 ? recoveryState.lastRecoveryTime : null,
       logoUrl: channelKey ? (getChannelLogo(channelKey) ?? "") : "",
       memoryBytes,
+      nativeBandwidth: entry?.nativeBandwidth ?? 0,
+      nativeResolution: entry?.nativeResolution ?? null,
       networkState: lastVideoState?.networkState ?? 0,
       pageReloadsInWindow: pageReloadTimestamps.length,
       providerName: streamInfo.providerName,
       readyState: lastVideoState?.readyState ?? 0,
-      recoveryAttempts: totalRecoveryAttempts,
+      recoveryAttempts: recoveryState.totalAttempts,
       showName: getShowName(streamInfo.numericStreamId),
       startTime: streamInfo.startTime.toISOString(),
       streamingMode: entry?.streamingMode ?? "capture",
@@ -689,7 +739,7 @@ export function monitorPlaybackHealth(
    */
   function finalizeTabReplacement(): void {
 
-    recoveryInProgress = false;
+    recoveryState.inProgress = false;
 
     emitStatusUpdate();
   }
@@ -700,13 +750,13 @@ export function monitorPlaybackHealth(
    */
   function resetSegmentMonitoringState(): void {
 
-    preRecoverySegmentIndex = null;
-    segmentWaitStartTime = null;
-    segmentProductionStalled = false;
-    consecutiveTinySegments = 0;
-    wasInTinySegmentState = false;
-    lastCheckedSegmentIndex = getStream(streamInfo.numericStreamId)?.segmenter?.getSegmentIndex() ?? 0;
-    lastSegmentAdvanceTime = Date.now();
+    segmentState.preRecoveryIndex = null;
+    segmentState.waitStartTime = null;
+    segmentState.productionStalled = false;
+    segmentState.consecutiveTinySegments = 0;
+    segmentState.wasInTinyState = false;
+    segmentState.lastCheckedIndex = getStream(streamInfo.numericStreamId)?.segmenter?.getSegmentIndex() ?? 0;
+    segmentState.lastSegmentAdvanceTime = Date.now();
   }
 
   /**
@@ -717,9 +767,9 @@ export function monitorPlaybackHealth(
     consecutiveTimeouts = 0;
     consecutiveNavigationFailures = 0;
     fullscreenReapplyCount = 0;
-    pauseCount = 0;
+    recoveryState.pauseCount = 0;
+    recoveryState.stallCount = 0;
     videoNotFoundCount = 0;
-    stallCount = 0;
   }
 
   /**
@@ -727,9 +777,9 @@ export function monitorPlaybackHealth(
    */
   function resetResolutionState(): void {
 
-    consecutiveDegradedReadings = 0;
-    resolutionGraceEnd = Date.now() + RESOLUTION_GRACE_PERIOD;
-    resolutionRecoveryAttempt = 0;
+    resolutionState.consecutiveDegradedReadings = 0;
+    resolutionState.graceEnd = Date.now() + RESOLUTION_GRACE_PERIOD;
+    resolutionState.recoveryAttempt = 0;
   }
 
   /**
@@ -758,8 +808,8 @@ export function monitorPlaybackHealth(
    */
   function resetEscalationState(): void {
 
-    escalationLevel = 0;
-    sourceReloadAttempted = false;
+    recoveryState.escalationLevel = 0;
+    recoveryState.sourceReloadAttempted = false;
   }
 
   /**
@@ -770,7 +820,7 @@ export function monitorPlaybackHealth(
   function setRecoveryGracePeriod(level: number): void {
 
     pendingReMinimize = true;
-    recoveryGraceUntil = Date.now() + recoveryGracePeriods[level];
+    recoveryState.graceUntil = Date.now() + recoveryGracePeriods[level];
   }
 
   /**
@@ -877,9 +927,9 @@ export function monitorPlaybackHealth(
       return { outcome: "failed" };
     }
 
-    recoveryInProgress = true;
-    totalRecoveryAttempts++;
-    lastRecoveryTime = Date.now();
+    recoveryState.inProgress = true;
+    recoveryState.totalAttempts++;
+    recoveryState.lastRecoveryTime = Date.now();
     lastIssueType = issueType;
     lastIssueTime = Date.now();
 
@@ -1015,10 +1065,10 @@ export function monitorPlaybackHealth(
    * ensures SSE clients always have current status data (duration, memory, health) even during recovery, buffering, or video search periods. Without this, the
    * streamStatuses map becomes stale and new SSE connections receive outdated snapshots.
    *
-   * CHECK ORDER MATTERS: The recoveryInProgress check must come BEFORE the currentPage.isClosed() check. During tab replacement, the old page is intentionally closed
-   * while the handler creates a new page. If we check isClosed() first, we would terminate the interval while recovery is still in progress, causing status updates to
-   * stop permanently. The sequence is: (1) intervalCleared for explicit cleanup, (2) recoveryInProgress to continue during recovery, (3) isClosed() for unexpected
-   * page termination outside of recovery.
+   * CHECK ORDER MATTERS: The recoveryState.inProgress check must come BEFORE the currentPage.isClosed() check. During tab replacement, the old page is intentionally
+   * closed while the handler creates a new page. If we check isClosed() first, we would terminate the interval while recovery is still in progress, causing status
+   * updates to stop permanently. The sequence is: (1) intervalCleared for explicit cleanup, (2) recoveryState.inProgress to continue during recovery, (3) isClosed()
+   * for unexpected page termination outside of recovery.
    */
   const interval = setInterval((): void => {
 
@@ -1032,7 +1082,7 @@ export function monitorPlaybackHealth(
 
     // Skip health checks if a recovery operation is in progress. During tab replacement, the old page will be closed but we must keep the interval running until the
     // new page is assigned. Emit status so SSE clients see current state (health, duration, memory) even during recovery.
-    if(recoveryInProgress) {
+    if(recoveryState.inProgress) {
 
       emitStatusUpdate();
 
@@ -1249,11 +1299,11 @@ export function monitorPlaybackHealth(
 
           // Set escalation to level 3 to trigger page navigation. We skip lower levels since they require a video element.
           // Note: Keep state updates in sync with the main recovery path in the needsRecovery block below.
-          escalationLevel = 3;
-          lastRecoveryTime = now;
-          totalRecoveryAttempts++;
+          recoveryState.escalationLevel = 3;
+          recoveryState.lastRecoveryTime = now;
+          recoveryState.totalAttempts++;
           pendingReMinimize = true;
-          recoveryInProgress = true;
+          recoveryState.inProgress = true;
 
           recordRecoveryAttempt(metrics, RECOVERY_METHODS.pageNavigation);
 
@@ -1276,7 +1326,7 @@ export function monitorPlaybackHealth(
           markStreamDiscontinuity();
 
           // Set grace period to give page navigation time to take effect (L3 = 10 seconds).
-          recoveryGraceUntil = now + recoveryGracePeriods[3];
+          recoveryState.graceUntil = now + recoveryGracePeriods[3];
 
           if(recoveryResult.success && recoveryResult.newContext) {
 
@@ -1303,7 +1353,7 @@ export function monitorPlaybackHealth(
             LOG.warn("Page navigation did not restore playback.");
           }
 
-          recoveryInProgress = false;
+          recoveryState.inProgress = false;
 
           // Emit status so SSE clients see the recovery result.
           emitStatusUpdate();
@@ -1352,33 +1402,33 @@ export function monitorPlaybackHealth(
         const withinBufferingGrace = isBuffering && bufferingStartTime && ((now - bufferingStartTime) < CONFIG.playback.bufferingGracePeriod);
 
         // Check if we're within the recovery grace period (recently performed a recovery action and waiting for it to take effect).
-        const withinRecoveryGrace = now < recoveryGraceUntil;
+        const withinRecoveryGrace = now < recoveryState.graceUntil;
 
         /* Segment production monitoring. After L2/L3 recovery completes (grace period ends), we verify that segments are actually being produced. If recovery reported
          * success but the capture pipeline is dead (MediaRecorder stopped producing data, FFmpeg stdin idle), segments will stop flowing while the video element
          * appears healthy. This catches the 20+ minute freeze bug where PrismCast reports "Recovered" but Channels DVR receives no data.
          */
-        if((preRecoverySegmentIndex !== null) && !withinRecoveryGrace) {
+        if((segmentState.preRecoveryIndex !== null) && !withinRecoveryGrace) {
 
           // Start the segment wait timer when recovery grace period ends.
-          segmentWaitStartTime ??= now;
+          segmentState.waitStartTime ??= now;
 
           // Check if segments are flowing by comparing current index to pre-recovery index.
           const entry = getStream(streamInfo.numericStreamId);
           const currentSegmentIndex = entry?.segmenter?.getSegmentIndex() ?? null;
 
-          if((currentSegmentIndex !== null) && (currentSegmentIndex > preRecoverySegmentIndex)) {
+          if((currentSegmentIndex !== null) && (currentSegmentIndex > segmentState.preRecoveryIndex)) {
 
             // Segments are flowing - recovery actually succeeded. Clear tracking state.
-            preRecoverySegmentIndex = null;
-            segmentWaitStartTime = null;
-            segmentProductionStalled = false;
-          } else if((now - segmentWaitStartTime) > SEGMENT_STALL_TIMEOUT) {
+            segmentState.preRecoveryIndex = null;
+            segmentState.waitStartTime = null;
+            segmentState.productionStalled = false;
+          } else if((now - segmentState.waitStartTime) > SEGMENT_STALL_TIMEOUT) {
 
             // No new segments for SEGMENT_STALL_TIMEOUT after recovery grace period. The capture pipeline is dead.
             LOG.warn("No segments produced for %ss after recovery — capture pipeline may have stalled.", SEGMENT_STALL_TIMEOUT / 1000);
 
-            segmentProductionStalled = true;
+            segmentState.productionStalled = true;
           }
         }
 
@@ -1389,17 +1439,17 @@ export function monitorPlaybackHealth(
         const sizeCheckEntry = getStream(streamInfo.numericStreamId);
         const currentSegmentIndex = sizeCheckEntry?.segmenter?.getSegmentIndex() ?? 0;
 
-        if((currentSegmentIndex > lastCheckedSegmentIndex) && sizeCheckEntry) {
+        if((currentSegmentIndex > segmentState.lastCheckedIndex) && sizeCheckEntry) {
 
           // A new segment was produced. Update the staleness tracker and check its size.
-          lastSegmentAdvanceTime = now;
+          segmentState.lastSegmentAdvanceTime = now;
 
           const segmentSize = getLastSegmentSize(sizeCheckEntry) ?? 0;
 
           if(segmentSize < TINY_SEGMENT_THRESHOLD) {
 
-            consecutiveTinySegments++;
-            wasInTinySegmentState = true;
+            segmentState.consecutiveTinySegments++;
+            segmentState.wasInTinyState = true;
 
             // Check track composition to determine the effective threshold. Dead capture pipelines produce audio-only segments (hasVideo=false) and always use the
             // default count for fast detection. Segments with video trafs present (hasVideo=true or null) use the provider-specific threshold, which may be higher
@@ -1408,16 +1458,16 @@ export function monitorPlaybackHealth(
             const effectiveThreshold = (hasVideo === false) ? TINY_SEGMENT_COUNT_TRIGGER : providerTinySegmentThreshold;
 
             LOG.debug("recovery:tracks", "Below-threshold segment: %d bytes, hasVideo=%s, consecutive=%d, threshold=%d.",
-              segmentSize, String(hasVideo), consecutiveTinySegments, effectiveThreshold);
+              segmentSize, String(hasVideo), segmentState.consecutiveTinySegments, effectiveThreshold);
 
-            if(consecutiveTinySegments >= effectiveThreshold) {
+            if(segmentState.consecutiveTinySegments >= effectiveThreshold) {
 
               LOG.warn("Detected %d consecutive undersized segments (%dKB) — capture pipeline may have stalled.",
-                consecutiveTinySegments, Math.round(segmentSize / 1024));
+                segmentState.consecutiveTinySegments, Math.round(segmentSize / 1024));
 
-              // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentProductionStalled. Return unconditionally after tab
+              // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentState.productionStalled. Return unconditionally after tab
               // replacement (matching stalled-capture and unresponsive-tab triggers) to avoid falling through the rest of the tick with stale pre-replacement state.
-              if(onTabReplacement && !recoveryInProgress) {
+              if(onTabReplacement && !recoveryState.inProgress) {
 
                 await executeTabReplacement("tiny segments");
 
@@ -1425,14 +1475,14 @@ export function monitorPlaybackHealth(
               } else if(!onTabReplacement) {
 
                 // No tab replacement callback - set stalled flag for circuit breaker.
-                segmentProductionStalled = true;
+                segmentState.productionStalled = true;
               }
             }
           } else {
 
             // Valid segment size. Check for spontaneous recovery from tiny segment state. We don't mark discontinuity here - only tab replacement marks discontinuity.
             // Self-healing may be transient and not require decoder reset.
-            if(wasInTinySegmentState) {
+            if(segmentState.wasInTinyState) {
 
               const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
 
@@ -1440,25 +1490,26 @@ export function monitorPlaybackHealth(
             }
 
             // Reset tiny segment tracking.
-            consecutiveTinySegments = 0;
-            wasInTinySegmentState = false;
+            segmentState.consecutiveTinySegments = 0;
+            segmentState.wasInTinyState = false;
           }
 
-          lastCheckedSegmentIndex = currentSegmentIndex;
-        } else if(sizeCheckEntry && (lastCheckedSegmentIndex > 0) && !withinRecoveryGrace && ((now - lastSegmentAdvanceTime) > SEGMENT_STALENESS_TIMEOUT)) {
+          segmentState.lastCheckedIndex = currentSegmentIndex;
+        } else if(sizeCheckEntry && (segmentState.lastCheckedIndex > 0) && !withinRecoveryGrace &&
+          ((now - segmentState.lastSegmentAdvanceTime) > SEGMENT_STALENESS_TIMEOUT)) {
 
           /* Segment staleness detection. The segment index has not advanced for longer than SEGMENT_STALENESS_TIMEOUT. This catches the case where Chrome's
            * MediaRecorder silently stops emitting data — the input Readable stream stays "open" (no end/error events) but no data events fire. The segmenter
            * receives nothing, produces no new segments, and the playlist freezes at the last known sequence number. The video element on the page continues
            * playing normally (currentTime advances, no errors), so all video health checks pass. Without this check, the stale playlist persists indefinitely.
            *
-           * The sizeCheckEntry guard prevents firing on a stream that was terminated mid-tick. The lastCheckedSegmentIndex > 0 guard ensures we don't trigger
+           * The sizeCheckEntry guard prevents firing on a stream that was terminated mid-tick. The segmentState.lastCheckedIndex > 0 guard ensures we don't trigger
            * during stream startup before the first segment has been produced. The recovery grace guard prevents false triggering during legitimate pauses (e.g.,
            * after tab replacement while the new capture pipeline is initializing).
            */
           LOG.warn("No new segments produced for %ss — capture pipeline may have stalled.", SEGMENT_STALENESS_TIMEOUT / 1000);
 
-          if(onTabReplacement && !recoveryInProgress) {
+          if(onTabReplacement && !recoveryState.inProgress) {
 
             await executeTabReplacement("segment staleness");
 
@@ -1466,7 +1517,7 @@ export function monitorPlaybackHealth(
           } else if(!onTabReplacement) {
 
             // No tab replacement callback - set stalled flag for circuit breaker.
-            segmentProductionStalled = true;
+            segmentState.productionStalled = true;
           }
         }
 
@@ -1534,30 +1585,30 @@ export function monitorPlaybackHealth(
 
           const isDegraded = (widthRatio < RESOLUTION_RATIO_THRESHOLD) || (heightRatio < RESOLUTION_RATIO_THRESHOLD);
 
-          if(isDegraded && (now >= resolutionGraceEnd)) {
+          if(isDegraded && (now >= resolutionState.graceEnd)) {
 
-            consecutiveDegradedReadings++;
+            resolutionState.consecutiveDegradedReadings++;
 
             LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (viewport: %s\u00d7%s, ratio: %s%%\u00d7%s%%, consecutive: %s/%s).",
               String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height),
               String(Math.round(widthRatio * 100)), String(Math.round(heightRatio * 100)),
-              String(consecutiveDegradedReadings), String(RESOLUTION_DEGRADED_COUNT_THRESHOLD));
+              String(resolutionState.consecutiveDegradedReadings), String(RESOLUTION_DEGRADED_COUNT_THRESHOLD));
           } else {
 
-            consecutiveDegradedReadings = 0;
+            resolutionState.consecutiveDegradedReadings = 0;
           }
 
           // Escalation step 1: page reload. Forces the provider's ABR to restart quality negotiation. Only triggers after sustained degradation
           // (RESOLUTION_DEGRADED_COUNT_THRESHOLD consecutive readings) to let transient ABR dips self-heal.
-          if((consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionRecoveryAttempt === 0)) {
+          if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 0)) {
 
-            const degradedDuration = consecutiveDegradedReadings * 2;
+            const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
 
             LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s in %s\u00d7%s viewport). Attempting recovery via %s.",
               String(degradedDuration), String(state.videoWidth), String(state.videoHeight),
               String(viewport.width), String(viewport.height), RECOVERY_METHODS.pageNavigation);
 
-            recoveryInProgress = true;
+            recoveryState.inProgress = true;
 
             // Check page reload rate limit before attempting.
             if(!isPageReloadAllowed()) {
@@ -1566,8 +1617,8 @@ export function monitorPlaybackHealth(
                 CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
               // Defer by pushing grace end forward to avoid re-triggering every 2 seconds.
-              resolutionGraceEnd = now + RESOLUTION_GRACE_PERIOD;
-              recoveryInProgress = false;
+              resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
+              recoveryState.inProgress = false;
 
               emitStatusUpdate();
 
@@ -1580,9 +1631,9 @@ export function monitorPlaybackHealth(
 
             markStreamDiscontinuity();
 
-            consecutiveDegradedReadings = 0;
-            resolutionRecoveryAttempt = 1;
-            resolutionGraceEnd = now + RESOLUTION_GRACE_PERIOD;
+            resolutionState.consecutiveDegradedReadings = 0;
+            resolutionState.recoveryAttempt = 1;
+            resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
 
             if(recoveryResult.success && recoveryResult.newContext) {
 
@@ -1593,7 +1644,7 @@ export function monitorPlaybackHealth(
               LOG.warn("Resolution recovery via page reload unsuccessful.");
             }
 
-            recoveryInProgress = false;
+            recoveryState.inProgress = false;
 
             emitStatusUpdate();
 
@@ -1601,20 +1652,20 @@ export function monitorPlaybackHealth(
           }
 
           // Escalation step 2: tab replacement. Creates a fresh page with new capture pipeline and network connections.
-          if((consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionRecoveryAttempt === 1)) {
+          if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 1)) {
 
             if(onTabReplacement) {
 
-              const degradedDuration = consecutiveDegradedReadings * 2;
+              const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
 
               LOG.warn("Video resolution is still degraded after %ss (%s\u00d7%s). Attempting recovery via %s.",
                 String(degradedDuration), String(state.videoWidth), String(state.videoHeight), RECOVERY_METHODS.tabReplacement);
 
               const outcome = await executeTabReplacement("resolution degraded");
 
-              consecutiveDegradedReadings = 0;
-              resolutionRecoveryAttempt = 2;
-              resolutionGraceEnd = now + RESOLUTION_GRACE_PERIOD;
+              resolutionState.consecutiveDegradedReadings = 0;
+              resolutionState.recoveryAttempt = 2;
+              resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
 
               if(outcome.outcome === "terminated") {
 
@@ -1625,55 +1676,56 @@ export function monitorPlaybackHealth(
             }
 
             // Tab replacement not available — skip directly to acceptance.
-            resolutionRecoveryAttempt = 2;
+            resolutionState.recoveryAttempt = 2;
           }
 
           // Acceptance: resolution still degraded after both recovery attempts. Log once and stop retrying.
-          if((consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionRecoveryAttempt === 2)) {
+          if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 2)) {
 
             LOG.warn("Video resolution remains degraded (%s\u00d7%s in %s\u00d7%s viewport) after recovery attempts. The stream will continue at reduced quality.",
               String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height));
 
-            resolutionRecoveryAttempt = 3;
+            resolutionState.recoveryAttempt = 3;
           }
 
           // Resolution is good: clear tracking state so future degradation starts fresh. Use "restored" when resolution matches the viewport, "improved" when it's
           // above the degradation threshold but below the viewport (e.g., 800x450 in a 1280x720 viewport — no longer degraded, but not full quality). Include the
           // recovery method so this single message tells the complete story (what happened and how it was resolved).
-          if(!isDegraded && (resolutionRecoveryAttempt > 0)) {
+          if(!isDegraded && (resolutionState.recoveryAttempt > 0)) {
 
             const isFullQuality = (state.videoWidth >= viewport.width) && (state.videoHeight >= viewport.height);
             const verb = isFullQuality ? "restored" : "improved";
-            const method = (resolutionRecoveryAttempt === 1) ? "page reload" : "tab replacement";
+            const method = (resolutionState.recoveryAttempt === 1) ? "page reload" : "tab replacement";
 
             LOG.info("Video resolution %s to %s\u00d7%s after %s.", verb, String(state.videoWidth), String(state.videoHeight), method);
 
-            consecutiveDegradedReadings = 0;
-            resolutionRecoveryAttempt = 0;
-            resolutionGraceEnd = 0;
+            resolutionState.consecutiveDegradedReadings = 0;
+            resolutionState.recoveryAttempt = 0;
+            resolutionState.graceEnd = 0;
           }
         }
 
-        /* Stall counter management. We increment stallCount when the video is not progressing and not within buffering grace. We reset to 0 when progression resumes.
-         * This hysteresis prevents reacting to single-frame hiccups.
+        /* Stall counter management. We increment recoveryState.stallCount when the video is not progressing and not within buffering grace. We reset to 0 when
+         * progression resumes. This hysteresis prevents reacting to single-frame hiccups.
          */
         if(!isProgressing && !withinBufferingGrace) {
 
-          stallCount++;
+          recoveryState.stallCount++;
         } else if(isProgressing) {
 
-          stallCount = 0;
+          recoveryState.stallCount = 0;
         }
 
-        /* Pause counter management. We increment pauseCount when video.paused is true and reset when it clears. This provides the same hysteresis as stall detection,
-         * filtering out transient rebuffer pauses (where the player briefly pauses to refill its buffer) while still catching genuine persistent pauses.
+        /* Pause counter management. We increment recoveryState.pauseCount when video.paused is true and reset when it clears. This provides the same hysteresis as
+         * stall detection, filtering out transient rebuffer pauses (where the player briefly pauses to refill its buffer) while still catching genuine persistent
+         * pauses.
          */
         if(state.paused) {
 
-          pauseCount++;
+          recoveryState.pauseCount++;
         } else {
 
-          pauseCount = 0;
+          recoveryState.pauseCount = 0;
         }
 
         /* Recovery decision. We trigger recovery when any of these conditions are met AND we're not within the recovery grace period:
@@ -1684,9 +1736,9 @@ export function monitorPlaybackHealth(
          * - Segment production has stalled after recovery (capture pipeline dead)
          */
         const needsRecovery = !withinRecoveryGrace && (state.error || state.ended ||
-                            (state.paused && !withinBufferingGrace && (pauseCount > CONFIG.playback.stallCountThreshold)) ||
-                            (!isProgressing && !withinBufferingGrace && (stallCount > CONFIG.playback.stallCountThreshold)) ||
-                            segmentProductionStalled);
+                            (state.paused && !withinBufferingGrace && (recoveryState.pauseCount > CONFIG.playback.stallCountThreshold)) ||
+                            (!isProgressing && !withinBufferingGrace && (recoveryState.stallCount > CONFIG.playback.stallCountThreshold)) ||
+                            segmentState.productionStalled);
 
         /* Escalation reset. After sustained healthy playback (SUSTAINED_PLAYBACK_REQUIRED, default 60 seconds), we reset the escalation level and circuit breaker.
          * This allows a stream that recovered to start fresh, rather than immediately escalating to aggressive recovery on the next issue.
@@ -1703,9 +1755,9 @@ export function monitorPlaybackHealth(
             recordRecoverySuccess(metrics, metrics.currentRecoveryMethod);
           }
 
-          const healthyDuration = now - lastRecoveryTime;
+          const healthyDuration = now - recoveryState.lastRecoveryTime;
 
-          if((escalationLevel > 0) && (healthyDuration > CONFIG.playback.sustainedPlaybackRequired)) {
+          if((recoveryState.escalationLevel > 0) && (healthyDuration > CONFIG.playback.sustainedPlaybackRequired)) {
 
             // Clear buffering state. The bufferingStartTime may persist through recovery cycles due to networkState === 2 (NETWORK_LOADING) being true for live streams
             // even during healthy playback. Since we have confirmed 60 seconds of progression, the stream is definitively not buffering.
@@ -1726,7 +1778,7 @@ export function monitorPlaybackHealth(
          * in progress, the ongoing recovery will eventually perform a page navigation if needed. The page reload rate limit is also checked to avoid consuming reload
          * budget that error recovery needs. The timer resets after any successful full page navigation (proactive or recovery-triggered).
          */
-        if((profile.maxContinuousPlayback !== null) && (escalationLevel === 0) && !withinRecoveryGrace && isProgressing && !state.paused && !state.error &&
+        if((profile.maxContinuousPlayback !== null) && (recoveryState.escalationLevel === 0) && !withinRecoveryGrace && isProgressing && !state.paused && !state.error &&
           !state.ended) {
 
           const maxPlaybackMs = profile.maxContinuousPlayback * 3600000;
@@ -1739,7 +1791,7 @@ export function monitorPlaybackHealth(
             LOG.info("Proactive reload after %sh of continuous playback (site limit: %sh). Reloading page to prevent stream cutoff.",
               elapsedHours, String(profile.maxContinuousPlayback));
 
-            recoveryInProgress = true;
+            recoveryState.inProgress = true;
 
             // Check page reload rate limit before attempting. Proactive reload is best-effort maintenance — if the reload budget is exhausted from recent error
             // recoveries, we gracefully yield. If the site eventually cuts the stream, normal error recovery handles it.
@@ -1750,10 +1802,10 @@ export function monitorPlaybackHealth(
 
               // Set a grace period to prevent this deferral from re-triggering every 2 seconds while the rate limit remains in effect. The 10-second L3 grace
               // period spaces out re-checks, and the rate-limit window (default 15 minutes) will eventually expire old timestamps to allow the proactive reload. We
-              // set recoveryGraceUntil directly rather than calling setRecoveryGracePeriod() because no recovery action was performed — the window state is unchanged
-              // and pendingReMinimize should not be set.
-              recoveryGraceUntil = now + recoveryGracePeriods[3];
-              recoveryInProgress = false;
+              // set recoveryState.graceUntil directly rather than calling setRecoveryGracePeriod() because no recovery action was performed — the window state is
+              // unchanged and pendingReMinimize should not be set.
+              recoveryState.graceUntil = now + recoveryGracePeriods[3];
+              recoveryState.inProgress = false;
 
               emitStatusUpdate();
 
@@ -1781,7 +1833,7 @@ export function monitorPlaybackHealth(
               LOG.warn("Proactive reload unsuccessful. Will retry after recovery grace period.");
             }
 
-            recoveryInProgress = false;
+            recoveryState.inProgress = false;
 
             emitStatusUpdate();
 
@@ -1800,7 +1852,7 @@ export function monitorPlaybackHealth(
           /* Segment production stall handling. When we detect that segments stopped flowing after L2/L3 recovery, the capture pipeline is dead and normal recovery
            * won't help. We skip the escalation ladder and go directly to tab replacement if available.
            */
-          if(segmentProductionStalled && onTabReplacement) {
+          if(segmentState.productionStalled && onTabReplacement) {
 
             LOG.warn("Capture pipeline still stalled — escalating to %s.", RECOVERY_METHODS.tabReplacement);
 
@@ -1837,11 +1889,11 @@ export function monitorPlaybackHealth(
           const issueCategory = getIssueCategory(state, !isProgressing, isBuffering);
           let nextLevel: number;
 
-          if((issueCategory === "paused") && (escalationLevel === 0)) {
+          if((issueCategory === "paused") && (recoveryState.escalationLevel === 0)) {
 
             // Paused issues: try L1 first (play/unmute works ~50% for paused).
             nextLevel = 1;
-          } else if(!sourceReloadAttempted) {
+          } else if(!recoveryState.sourceReloadAttempted) {
 
             // First recovery attempt for buffering/other, or L1 didn't fix paused: try L2 (source reload).
             nextLevel = 2;
@@ -1852,13 +1904,13 @@ export function monitorPlaybackHealth(
           }
 
           // Note: Keep state updates in sync with the video-not-found recovery path above.
-          escalationLevel = nextLevel;
-          lastRecoveryTime = now;
-          totalRecoveryAttempts++;
+          recoveryState.escalationLevel = nextLevel;
+          recoveryState.lastRecoveryTime = now;
+          recoveryState.totalAttempts++;
           pendingReMinimize = true;
 
           // Get recovery method name for logging and metrics.
-          const recoveryMethod = getRecoveryMethod(escalationLevel);
+          const recoveryMethod = getRecoveryMethod(recoveryState.escalationLevel);
 
           // Store issue type and time for UI display.
           const issueType = formatIssueType(state, !isProgressing, isBuffering);
@@ -1882,37 +1934,37 @@ export function monitorPlaybackHealth(
           recordRecoveryAttempt(metrics, recoveryMethod);
 
           // For L2/L3 recovery, record the current segment index so we can verify segments are flowing after recovery completes.
-          if(escalationLevel >= 2) {
+          if(recoveryState.escalationLevel >= 2) {
 
             const entry = getStream(streamInfo.numericStreamId);
 
-            preRecoverySegmentIndex = entry?.segmenter?.getSegmentIndex() ?? null;
-            segmentWaitStartTime = null;  // Will be set after recovery grace period ends.
-            segmentProductionStalled = false;
+            segmentState.preRecoveryIndex = entry?.segmenter?.getSegmentIndex() ?? null;
+            segmentState.waitStartTime = null;  // Will be set after recovery grace period ends.
+            segmentState.productionStalled = false;
           }
 
           // Mark recovery in progress to prevent overlapping recovery attempts.
-          recoveryInProgress = true;
+          recoveryState.inProgress = true;
 
           try {
 
             /* Levels 1-2: In-page recovery. These levels are handled by ensurePlayback() which performs recovery actions without navigating the page.
            */
-            if(escalationLevel <= 2) {
+            if(recoveryState.escalationLevel <= 2) {
 
-              await ensurePlayback(currentPage, currentContext, profile, { recoveryLevel: escalationLevel, skipNativeFullscreen: true });
+              await ensurePlayback(currentPage, currentContext, profile, { recoveryLevel: recoveryState.escalationLevel, skipNativeFullscreen: true });
 
               // Track that source reload was attempted so we skip directly to L3 next time.
-              if(escalationLevel === 2) {
+              if(recoveryState.escalationLevel === 2) {
 
-                sourceReloadAttempted = true;
+                recoveryState.sourceReloadAttempted = true;
 
                 // The source reload disrupted the video stream. Mark a discontinuity so HLS clients resynchronize their decoders.
                 markStreamDiscontinuity();
               }
 
               // Set grace period to give this recovery level time to take effect before the next check.
-              recoveryGraceUntil = now + recoveryGracePeriods[escalationLevel];
+              recoveryState.graceUntil = now + recoveryGracePeriods[recoveryState.escalationLevel];
               resetResolutionState();
             } else {
 
@@ -1926,11 +1978,11 @@ export function monitorPlaybackHealth(
                 LOG.warn("Page navigation has failed %s consecutive times — falling back to source reload.",
                   consecutiveNavigationFailures);
 
-                escalationLevel = 2;
+                recoveryState.escalationLevel = 2;
                 consecutiveNavigationFailures = 0;
 
                 // Reset source reload tracking so the fallback L2 gets a fair chance. Without this, the next recovery cycle would skip L2 and try L3 again.
-                sourceReloadAttempted = false;
+                recoveryState.sourceReloadAttempted = false;
               } else {
 
                 // Check page reload limit to prevent excessive navigations.
@@ -1939,10 +1991,10 @@ export function monitorPlaybackHealth(
                   LOG.warn("Page navigation rate limit reached (%s in %s minutes) — falling back to source reload.",
                     CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
-                  escalationLevel = 2;
+                  recoveryState.escalationLevel = 2;
 
                   // Reset source reload tracking so the fallback L2 gets a fair chance.
-                  sourceReloadAttempted = false;
+                  recoveryState.sourceReloadAttempted = false;
                 } else {
 
                   // Use the unified recovery function with validation.
@@ -1952,7 +2004,7 @@ export function monitorPlaybackHealth(
                   markStreamDiscontinuity();
 
                   // Set grace period to give page navigation time to take effect (L3 = 10 seconds).
-                  recoveryGraceUntil = now + recoveryGracePeriods[3];
+                  recoveryState.graceUntil = now + recoveryGracePeriods[3];
 
                   if(recoveryResult.success && recoveryResult.newContext) {
 
@@ -1983,10 +2035,10 @@ export function monitorPlaybackHealth(
             }
           } catch(error) {
 
-            LOG.warn("Recovery via %s failed: %s.", getRecoveryMethod(escalationLevel), formatError(error));
+            LOG.warn("Recovery via %s failed: %s.", getRecoveryMethod(recoveryState.escalationLevel), formatError(error));
           }
 
-          recoveryInProgress = false;
+          recoveryState.inProgress = false;
         }
 
         // Update lastTime for the next stall check.
@@ -1996,7 +2048,7 @@ export function monitorPlaybackHealth(
         emitStatusUpdate();
       } catch(error) {
 
-        recoveryInProgress = false;
+        recoveryState.inProgress = false;
 
         // If the session or page was closed, stop monitoring gracefully.
         if(isSessionClosedError(error) || currentPage.isClosed()) {

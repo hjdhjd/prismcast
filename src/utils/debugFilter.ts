@@ -175,9 +175,9 @@ export interface DebugCategory {
  */
 export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
 
-  { category: "browser", description: "Browser lifecycle: launch, close, stale page cleanup, restart." },
+  { category: "browser:lifecycle", description: "Browser lifecycle: launch, close, stale page cleanup, restart." },
   { category: "browser:video", description: "Video context, fullscreen, volume locking, playback." },
-  { category: "config", description: "Provider groups, version checking." },
+  { category: "config:general", description: "Provider groups, version checking." },
   { category: "native:coordinator", description: "Native streaming decisions: interception result, probe result, capture teardown, proxy start." },
   { category: "native:decrypt", description: "AES-128 decryption: key fetch, IV source (explicit vs. sequence), segment sizes." },
   { category: "native:intercept", description: "CDP manifest interception: listener installed, .m3u8 URLs observed, master identified, timeout." },
@@ -187,7 +187,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "native:proxy", description: "Manifest polling, segment fetch/store, playlist generation, segment rotation, key rotation." },
   { category: "native:token", description: "Token refresh: expiry parsed, timer scheduled, refresh triggered, manifest acquired." },
   { category: "precache", description: "Channel lineup precaching: deferred runs, provider filter skips." },
-  { category: "recovery", description: "General recovery: browser re-minimize, monitor abort." },
+  { category: "recovery:general", description: "General recovery: browser re-minimize, monitor abort." },
   { category: "recovery:context", description: "Video context: frame detachment, re-search." },
   { category: "recovery:nav", description: "Page navigation recovery: new tab detection, URL validation." },
   { category: "recovery:resolution", description: "Video resolution monitoring: ABR degradation detection, grace periods, recovery escalation." },
@@ -220,13 +220,3 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "tuning:yttv", description: "YouTube TV EPG grid navigation." }
 ];
 
-/**
- * Creates a lightweight elapsed-time closure using performance.now(). Call the returned function to get the elapsed milliseconds since creation.
- * @returns A closure that returns elapsed milliseconds as a number.
- */
-export function startTimer(): () => number {
-
-  const start = performance.now();
-
-  return (): number => Math.round(performance.now() - start);
-}

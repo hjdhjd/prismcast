@@ -6,7 +6,7 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel,
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
-import { logAvailableChannels } from "../channelSelection.js";
+import { logAvailableChannels } from "./shared.js";
 
 // Base URL for HBO Max watch page navigation and tab URL construction.
 const HBO_MAX_BASE_URL = "https://play.hbomax.com";

@@ -6,7 +6,7 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel,
 import { LOG, delay, formatError } from "../../utils/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
-import { logAvailableChannels } from "../channelSelection.js";
+import { logAvailableChannels } from "./shared.js";
 
 /* Xfinity Stream uses a Polymer SPA (`TV-APP`) that manages channel playback via an internal `channelMap` object. The `channelMap.channels` property is populated
  * from the channelmap API during page load and contains the complete channel lineup (~1389 entries). Calling `_watchChannelEventHandler(null, { channel })` on the
@@ -27,6 +27,15 @@ import { logAvailableChannels } from "../channelSelection.js";
  * 4. A fire-and-forget poll watches for a visible "Watch Now" modal button and clicks it if it appears.
  * 5. initializePlayback continues with waitForVideoReady, fullscreen, etc.
  */
+
+// Narrow type for Xfinity's TV-APP Polymer Web Component. The actual element has a much broader API, but we only access these properties. Used in page.evaluate()
+// calls to provide type-safe access to the Polymer element's internal properties. The channels property is typed as nullable because the Polymer SPA sets it to null
+// during initialization before the channelmap API response populates it...the runtime value passes through undefined → null → empty object → populated object.
+interface XfinityTvApp {
+
+  channelMap?: { channels?: Record<string, { callSign?: string } | null> | null };
+  _watchChannelEventHandler: (event: null, data: { channel: unknown }) => void;
+}
 
 // Guide page URL. The channelmap API fires automatically when this page loads.
 const XFINITY_GUIDE_URL = "https://www.xfinity.com/stream/listings";
@@ -607,23 +616,19 @@ async function xfinityDirectStrategy(page: Page, profile: ChannelSelectionProfil
   // Wait for the SPA's channelMap.channels to populate. The channelmap API fires during page load and the SPA stores the response in this property.
   try {
 
-    /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument,
-       @typescript-eslint/no-unsafe-return, @typescript-eslint/no-explicit-any */
     await page.waitForFunction((): boolean => {
 
-      const tvApp = document.querySelector("tv-app");
+      const tvApp = document.querySelector("tv-app") as unknown as XfinityTvApp | null;
 
       if(!tvApp) {
 
         return false;
       }
 
-      const channels = (tvApp as any).channelMap?.channels;
+      const channels = tvApp.channelMap?.channels;
 
-      return channels && (typeof channels === "object") && (Object.keys(channels).length > 0);
+      return (channels !== null) && (channels !== undefined) && (typeof channels === "object") && (Object.keys(channels).length > 0);
     }, { timeout });
-    /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument,
-       @typescript-eslint/no-unsafe-return, @typescript-eslint/no-explicit-any */
   } catch {
 
     // If we served a cached response and the SPA couldn't process it, the cached data is likely stale or corrupt. Clear it so the next tune falls through to a
@@ -671,18 +676,16 @@ async function xfinityDirectStrategy(page: Page, profile: ChannelSelectionProfil
 
   try {
 
-    /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument,
-       @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
     const found = await page.evaluate((callSign: string): boolean => {
 
-      const tvApp = document.querySelector("tv-app");
+      const tvApp = document.querySelector("tv-app") as unknown as XfinityTvApp | null;
 
       if(!tvApp) {
 
         return false;
       }
 
-      const channelMap = (tvApp as any).channelMap?.channels;
+      const channelMap = tvApp.channelMap?.channels;
 
       if(!channelMap) {
 
@@ -692,9 +695,9 @@ async function xfinityDirectStrategy(page: Page, profile: ChannelSelectionProfil
       // Find the channel object by matching callSign. The channelMap is keyed by internal ID tags, so we iterate values.
       for(const channel of Object.values(channelMap)) {
 
-        if((channel as any)?.callSign === callSign) {
+        if(channel?.callSign === callSign) {
 
-          (tvApp as any)._watchChannelEventHandler(null, { channel });
+          tvApp._watchChannelEventHandler(null, { channel });
 
           return true;
         }
@@ -702,8 +705,6 @@ async function xfinityDirectStrategy(page: Page, profile: ChannelSelectionProfil
 
       return false;
     }, targetCallSign);
-    /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument,
-       @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
 
     if(!found) {
 

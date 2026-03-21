@@ -9,6 +9,7 @@ import type { ManifestInterceptionResult } from "./intercept.js";
 import type { NativeProxy } from "./proxy.js";
 import type { Nullable } from "../types/index.js";
 import type { Page } from "puppeteer-core";
+import type { PrerollCodec } from "../streaming/preroll.js";
 import type { ProbeResult } from "./probe.js";
 import { createNativeProxy } from "./proxy.js";
 import { fetchDecryptionKey } from "./decrypt.js";
@@ -64,6 +65,9 @@ export interface AttemptNativeStreamingOptions {
 
   // The browser page (kept alive for token refresh).
   page: Page;
+
+  // The preroll codec variant for composite playlist construction.
+  prerollCodec?: PrerollCodec;
 
   // Number of preroll segments preceding real content. When non-zero, the proxy starts segment numbering after the preroll range to reserve the index space. The
   // composite playlist reads the base URL dynamically from the stream's HLS state.
@@ -211,6 +215,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     keyUrl: probeResult.keyUrl,
     onError,
     prefetchedKey,
+    prerollCodec: options.prerollCodec,
     prerollSegmentCount: proxyPrerollSegmentCount,
     streamId,
     streamIdStr,

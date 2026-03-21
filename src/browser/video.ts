@@ -201,6 +201,51 @@ async function muteExistingVideos(page: Page): Promise<void> {
 }
 
 /**
+ * Suppresses audio on a browser page for native HLS streaming. Native mode fetches segments directly from the provider's CDN — the page's video element is not needed
+ * for content delivery, but the page stays alive for token refresh. Without suppression, the video continues playing audibly on the local machine.
+ *
+ * Uses two complementary mechanisms: (1) an immediate evaluate() to mute all currently playing video elements, and (2) an evaluateOnNewDocument() prototype override
+ * that intercepts future play() calls to mute before playback starts. The prototype override persists across page.goto() navigations on the same page, so token
+ * refresh cycles are handled automatically. If the stream later falls back to capture mode (L3 recovery), tab replacement creates a fresh page without the override,
+ * restoring normal audio capture.
+ *
+ * @param page - The Puppeteer page to suppress audio on.
+ */
+export async function suppressPageAudio(page: Page): Promise<void> {
+
+  // Override HTMLMediaElement.prototype.play to mute before playback. This runs before site JavaScript on all future navigations (including token refresh via
+  // page.goto), matching the pattern established in precaching.ts. The override persists on the same page instance — a new page created by tab replacement won't
+  // inherit it.
+  await page.evaluateOnNewDocument((): void => {
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Prototype interception: originalPlay is captured here and invoked with .call(this) below.
+    const originalPlay = HTMLMediaElement.prototype.play;
+
+    HTMLMediaElement.prototype.play = async function(this: HTMLMediaElement): Promise<void> {
+
+      this.muted = true;
+
+      return originalPlay.call(this);
+    };
+  });
+
+  // Mute any videos that are already playing. The prototype override only affects future play() calls, so existing playback needs a direct mute.
+  try {
+
+    await page.evaluate((): void => {
+
+      for(const video of Array.from(document.querySelectorAll("video"))) {
+
+        video.muted = true;
+      }
+    });
+  } catch {
+
+    // Best-effort. The page may be in a transient state during the native switch.
+  }
+}
+
+/**
  * Validation result for checking if a video element exists and is accessible.
  */
 export interface VideoValidationResult {

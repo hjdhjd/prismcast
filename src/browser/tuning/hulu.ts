@@ -4,7 +4,7 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.js";
-import { logAvailableChannels, normalizeChannelName, scrollAndClick } from "../channelSelection.js";
+import { logAvailableChannels, normalizeChannelName, scrollAndClick } from "./shared.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 

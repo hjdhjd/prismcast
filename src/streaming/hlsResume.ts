@@ -171,12 +171,13 @@ export function getResumeSegmentIndex(channelName: string): Nullable<number> {
 }
 
 /**
- * Consumes resume data for a channel. Returns the seeding parameters if the entry exists and is within TTL, or null if no resume data is available. The entry is
- * removed from the in-memory map after consumption (each channel resumes at most once).
+ * Reads resume data for a channel without removing it from the map. Returns the seeding parameters if the entry exists and is within TTL, or null if no resume data
+ * is available. The caller must call deleteResumeData() after successfully using the data to prevent double-consumption. This two-step pattern ensures resume data
+ * survives if segmenter creation fails — the next stream start can retry with the same resume state instead of starting from scratch.
  * @param channelName - The channel key to look up.
  * @returns Resume data for seeding the segmenter, or null.
  */
-export function consumeResumeData(channelName: string): Nullable<ResumeData> {
+export function peekResumeData(channelName: string): Nullable<ResumeData> {
 
   const entry = resumeMap.get(channelName);
 
@@ -185,11 +186,10 @@ export function consumeResumeData(channelName: string): Nullable<ResumeData> {
     return null;
   }
 
-  // Remove the entry regardless of TTL check — expired entries should not linger.
-  resumeMap.delete(channelName);
-
-  // Check TTL again in case time has passed since loadResumeState().
+  // Check TTL in case time has passed since loadResumeState(). Expired entries are cleaned up by deleteResumeData() or the next loadResumeState().
   if((Date.now() - entry.timestamp) > RESUME_TTL) {
+
+    resumeMap.delete(channelName);
 
     return null;
   }
@@ -206,6 +206,15 @@ export function consumeResumeData(channelName: string): Nullable<ResumeData> {
     segmentIndex: entry.segmentIndex,
     trackTimestamps: entry.trackTimestamps
   };
+}
+
+/**
+ * Removes resume data for a channel from the in-memory map. Called after the segmenter has been successfully created and piped, confirming the resume data was used.
+ * @param channelName - The channel key to remove.
+ */
+export function deleteResumeData(channelName: string): void {
+
+  resumeMap.delete(channelName);
 }
 
 /**

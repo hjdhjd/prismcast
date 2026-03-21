@@ -4,7 +4,7 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
 import { LOG, evaluateWithAbort } from "../../utils/index.js";
-import { resolveMatchSelector, scrollAndClick } from "../channelSelection.js";
+import { resolveMatchSelector, scrollAndClick } from "./shared.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 

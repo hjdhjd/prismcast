@@ -6,7 +6,7 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel,
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 import { evaluateWithAbort } from "../../utils/index.js";
-import { logAvailableChannels } from "../channelSelection.js";
+import { logAvailableChannels } from "./shared.js";
 
 // Raw channel info extracted from each GuideChannelContainer during discovery. The stationCode comes from the button title (e.g., "FOXD2C", "FNC"), the internalCode
 // from the first data-content-impression-id prefix (e.g., the local affiliate call sign or internal station identifier), and locked from the presence of a lock-icon

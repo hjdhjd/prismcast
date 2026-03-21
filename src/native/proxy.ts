@@ -3,7 +3,7 @@
  * proxy.ts: Native HLS proxy — manifest polling, segment fetching, and playlist generation.
  */
 import { LOG, chromeFetch, startTimer } from "../utils/index.js";
-import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.js";
+import { type PrerollCodec, buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.js";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.js";
 import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.js";
 import type { CDPSession } from "puppeteer-core";
@@ -31,11 +31,17 @@ import { resolveUrl } from "./probe.js";
 // Timeout for segment fetches.
 const SEGMENT_FETCH_TIMEOUT = 10000;
 
-// Maximum consecutive manifest poll failures before reporting an error.
+// Maximum consecutive manifest poll failures before reporting an error. Client errors (4xx) use this threshold directly. Server errors (5xx) and network timeouts
+// use double the threshold to tolerate transient CDN issues that typically self-resolve within a few retry cycles.
 const MAX_MANIFEST_FAILURES = 3;
 
 // Maximum consecutive segment fetch failures before reporting an error.
 const MAX_SEGMENT_FAILURES = 5;
+
+// Manifest poll backoff base delay and cap. On success, the poll interval returns to the base delay (half the target duration, typically ~3s). On failure, the delay
+// doubles on each consecutive failure up to the cap. Jitter of +/-20% prevents multiple streams from retrying in lockstep after a shared CDN outage.
+const MANIFEST_BACKOFF_BASE = 3000;
+const MANIFEST_BACKOFF_CAP = 15000;
 
 /**
  * Options for creating a native HLS proxy.
@@ -62,6 +68,9 @@ export interface NativeProxyOptions {
 
   // Pre-fetched AES-128 decryption key from the coordinator. When provided, the proxy uses this key directly instead of fetching it on the first segment.
   prefetchedKey: Nullable<Buffer>;
+
+  // The preroll codec variant for composite playlist construction. Determines which preroll variant URLs and durations are used.
+  prerollCodec?: PrerollCodec;
 
   // Number of preroll segments preceding real content. When non-zero, the proxy starts segment numbering at this index to reserve the preroll index range. The
   // composite playlist behavior (including preroll entries) is determined dynamically by checking stream.hls.prerollStartTime at playlist generation time.
@@ -221,6 +230,125 @@ interface SegmentMetadata {
   // Total number of discontinuities observed across all segments ever stored. Used with the count of discontinuities in the current playlist window to compute the
   // #EXT-X-DISCONTINUITY-SEQUENCE header value.
   totalDiscontinuities: number;
+}
+
+// Proxy State Types.
+
+/**
+ * Segment fetch error tracker with labels for log and error messages. Used independently for video and audio segment fetch paths with separate failure thresholds.
+ */
+interface SegmentFetchTracker {
+
+  consecutiveFailures: number;
+  debugLabel: string;
+  label: string;
+}
+
+/**
+ * Core proxy lifecycle state. Controls whether the proxy is running, tracks readiness signaling, and manages poll timing.
+ */
+interface ProxyLifecycleState {
+
+  errorThresholdReached: boolean;
+  firstPollComplete: boolean;
+  manifestBackoffMs: number;
+  pollTimer: ReturnType<typeof setTimeout> | null;
+  readinessSignaled: boolean;
+  stopped: boolean;
+  tokenRefreshTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * Video segment and manifest tracking state. Tracks media sequence progression, segment storage indices, failure counters, and token refresh coordination for the
+ * video variant.
+ */
+interface VideoTrackingState {
+
+  consecutiveManifestFailures: number;
+  fetchedSequences: Set<number>;
+  highWaterSequence: number;
+  lastMediaSequence: number;
+  lastSegmentSize: Nullable<number>;
+  lastSegmentTime: number;
+  lastTargetDuration: number;
+  metadata: SegmentMetadata;
+  segmentIndex: number;
+  segmentTracker: SegmentFetchTracker;
+  tokenRefreshPending: boolean;
+  variantUrl: string;
+}
+
+/**
+ * Audio segment and manifest tracking state. Mirrors the video tracking structure for streams with separate audio renditions. Includes the mutable audio variant URL
+ * that changes on token refresh.
+ */
+interface AudioTrackingState {
+
+  consecutiveManifestFailures: number;
+  fetchedSequences: Set<number>;
+  highWaterSequence: number;
+  lastTargetDuration: number;
+  metadata: SegmentMetadata;
+  segmentIndex: number;
+  segmentTracker: SegmentFetchTracker;
+  tokenRefreshPending: boolean;
+  variantUrl: Nullable<string>;
+}
+
+/**
+ * Composite playlist discontinuity tracking state. Independent source of truth for DISCONTINUITY-SEQUENCE computation in composite playlists that stitch fMP4 preroll
+ * entries with MPEG-TS real entries.
+ */
+interface CompositePlaylistState {
+
+  baseOffset: number;
+  discontinuities: Set<string>;
+  seeded: boolean;
+}
+
+/**
+ * Cumulative statistics tracked by the proxy for health reporting and the termination summary.
+ */
+interface ProxyStatsState {
+
+  totalFetchErrors: number;
+  totalSegmentsFetched: number;
+  totalTokenRefreshes: number;
+}
+
+/**
+ * Shared context passed from the closure to extracted module-level functions. Bundles references that don't change over the proxy's lifetime (channelName, streamId,
+ * onError callback) alongside shared mutable state objects (lifecycle, stats) that extracted functions need to read and write.
+ */
+interface ProxyContext {
+
+  channelName: string;
+  lifecycle: ProxyLifecycleState;
+  onError: (error: string) => void;
+  stats: ProxyStatsState;
+  streamId: number;
+}
+
+/**
+ * Callback type for the segment fetch function passed to extracted module-level functions. Wraps the closure-bound fetchTrackedSegment that handles HTTP fetch,
+ * AES-128 decryption, and error tracking.
+ */
+type SegmentFetchFn = (tracker: SegmentFetchTracker, url: string, sequence: number, ivHex: Nullable<string>,
+  segKeyUrl: Nullable<string>) => Promise<Nullable<Buffer>>;
+
+/**
+ * Options for building a composite playlist with fMP4 preroll entries and MPEG-TS real entries.
+ */
+interface CompositePlaylistOptions {
+
+  composite: CompositePlaylistState;
+  prerollBaseUrl: string;
+  prerollCodec: PrerollCodec;
+  prerollSegmentCount: number;
+  segmentEntries: string[];
+  segmentIndex: number;
+  targetDuration: number;
+  videoMetadata: SegmentMetadata;
 }
 
 // Manifest Parsing Helpers.
@@ -557,6 +685,262 @@ function pruneMetadata(meta: SegmentMetadata, activeSegments: Set<string>): void
   }
 }
 
+// Audio Stream Handler.
+
+/**
+ * Polls the audio variant manifest and fetches new audio segments. Combines the audio manifest poll and segment processing into a single entry point that mirrors the
+ * video path. Only called for streams with separate audio renditions.
+ *
+ * @param ctx - Shared proxy context with lifecycle state, stats, channel name, and error callback.
+ * @param audio - Audio-specific tracking state (sequence tracking, metadata, failure counters).
+ * @param fetchSegment - Closure-bound segment fetch function that handles HTTP fetch, decryption, and error tracking.
+ * @returns True if new audio segments were stored, false otherwise.
+ */
+async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, fetchSegment: SegmentFetchFn): Promise<boolean> {
+
+  if(ctx.lifecycle.stopped || !audio.variantUrl) {
+
+    return false;
+  }
+
+  try {
+
+    const response = await chromeFetch(audio.variantUrl, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
+
+    if(!response.ok) {
+
+      audio.consecutiveManifestFailures++;
+      ctx.stats.totalFetchErrors++;
+
+      LOG.debug("native:proxy", "Audio manifest poll failed for %s: HTTP %s.", ctx.channelName, response.status);
+
+      if(audio.consecutiveManifestFailures >= MAX_MANIFEST_FAILURES) {
+
+        ctx.lifecycle.errorThresholdReached = true;
+        ctx.lifecycle.stopped = true;
+        ctx.onError("audio manifest poll failed " + String(audio.consecutiveManifestFailures) + " times");
+      }
+
+      return false;
+    }
+
+    audio.consecutiveManifestFailures = 0;
+
+    const body = await response.text();
+
+    return await processAudioStream(ctx, audio, body, audio.variantUrl, fetchSegment);
+  } catch(error) {
+
+    audio.consecutiveManifestFailures++;
+    ctx.stats.totalFetchErrors++;
+
+    LOG.debug("native:proxy", "Audio manifest poll failed for %s: %s.", ctx.channelName, String(error));
+
+    if(audio.consecutiveManifestFailures >= MAX_MANIFEST_FAILURES) {
+
+      ctx.lifecycle.errorThresholdReached = true;
+      ctx.lifecycle.stopped = true;
+      ctx.onError("audio manifest poll error: " + String(error));
+    }
+
+    return false;
+  }
+}
+
+/**
+ * Parses an audio variant manifest and fetches new audio segments. Handles sequence tracking, high-water mark filtering, token refresh detection, and metadata storage.
+ * Playlist generation is handled by the caller after both video and audio segments are stored.
+ *
+ * @param ctx - Shared proxy context.
+ * @param audio - Audio-specific tracking state.
+ * @param body - The audio variant manifest text content.
+ * @param baseUrl - The audio variant URL for resolving relative segment URLs.
+ * @param fetchSegment - Closure-bound segment fetch function.
+ * @returns True if new segments were stored, false if the media sequence hadn't advanced.
+ */
+async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, body: string, baseUrl: string,
+  fetchSegment: SegmentFetchFn): Promise<boolean> {
+
+  const { mediaSequence, segments, targetDuration } = parseVariantManifest(body, baseUrl);
+
+  audio.lastTargetDuration = targetDuration;
+
+  // Prune old entries from audio fetchedSequences and audio metadata on each poll cycle.
+  for(const seq of audio.fetchedSequences) {
+
+    if(seq < mediaSequence) {
+
+      audio.fetchedSequences.delete(seq);
+    }
+  }
+
+  const audioPruneStream = getStream(ctx.streamId);
+  const activeAudioSegments = audioPruneStream ? new Set(audioPruneStream.hls.audioSegments.keys()) : new Set<string>();
+
+  pruneMetadata(audio.metadata, activeAudioSegments);
+
+  // Filter audio segments using the same high-water mark and token refresh detection as the video path.
+  let newSegments: ParsedSegment[];
+
+  if(audio.highWaterSequence === -1) {
+
+    newSegments = segments.slice(-CONFIG.hls.maxSegments);
+  } else {
+
+    newSegments = segments.filter((s) => (s.sequence > audio.highWaterSequence) && !audio.fetchedSequences.has(s.sequence));
+
+    if((newSegments.length === 0) && audio.tokenRefreshPending && (segments.length > 0)) {
+
+      LOG.debug("native:proxy", "Audio sequence timeline reset detected for %s after token refresh. Resetting high-water mark from %s.",
+        ctx.channelName, audio.highWaterSequence);
+
+      audio.highWaterSequence = -1;
+      audio.tokenRefreshPending = false;
+      newSegments = segments.slice(-CONFIG.hls.maxSegments);
+    }
+  }
+
+  if((newSegments.length > 0) && audio.tokenRefreshPending) {
+
+    audio.tokenRefreshPending = false;
+  }
+
+  if(newSegments.length === 0) {
+
+    return false;
+  }
+
+  LOG.debug("native:proxy", "Fetching %s new audio segment(s) for %s (sequence %s).", newSegments.length, ctx.channelName, mediaSequence);
+
+  let storedAny = false;
+
+  for(const seg of newSegments) {
+
+    if(ctx.lifecycle.stopped) {
+
+      break;
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    const segmentData = await fetchSegment(audio.segmentTracker, seg.url, seg.sequence, seg.ivHex, seg.keyUrl);
+
+    if(!segmentData) {
+
+      continue;
+    }
+
+    const filename = "audio" + String(audio.segmentIndex) + ".ts";
+
+    storeAudioSegment(ctx.streamId, filename, segmentData);
+    audio.fetchedSequences.add(seg.sequence);
+    audio.highWaterSequence = Math.max(audio.highWaterSequence, seg.sequence);
+    storeSegmentMetadata(audio.metadata, filename, seg);
+    storedAny = true;
+
+    audio.segmentIndex++;
+    ctx.stats.totalSegmentsFetched++;
+
+    LOG.debug("native:proxy", "Stored %s (%s bytes, seq %s) for %s.", filename, segmentData.length, seg.sequence, ctx.channelName);
+  }
+
+  return storedAny;
+}
+
+// Composite Playlist Builder.
+
+/**
+ * Builds a composite playlist with fMP4 preroll entries and MPEG-TS real entries. Uses the same compositor and builder as the capture path's generatePlaylist(),
+ * ensuring identical windowing behavior (maxPrerollInWindow cap, progressive falloff). The DISCONTINUITY tag at the preroll-to-real boundary signals the container
+ * format change (fMP4 → MPEG-TS), which is spec-compliant per RFC 8216 Section 4.3.3.3. VERSION:7 is used to support EXT-X-MAP for the preroll init segment;
+ * after preroll entries fall off the window, VERSION:7 remains but is backward-compatible with the MPEG-TS entries.
+ *
+ * @param options - Composite playlist configuration with segment data, preroll settings, and composite tracking state.
+ * @returns The formatted composite m3u8 playlist string.
+ */
+function buildCompositePlaylist(options: CompositePlaylistOptions): string {
+
+  const { composite, prerollBaseUrl, prerollCodec, prerollSegmentCount, segmentEntries, segmentIndex, targetDuration, videoMetadata } = options;
+
+  // Compute the sliding window start index via the compositor. The three-way max prevents negative indices, enforces the sliding window rule, and caps preroll
+  // entries at maxPrerollInWindow to force clients past preroll toward the live edge.
+  const realSegmentCount = segmentEntries.length;
+
+  const startIndex = computePrerollWindow({
+
+    currentSegmentIndex: segmentIndex,
+    maxSegments: CONFIG.hls.maxSegments,
+    prerollSegmentCount,
+    realSegmentCount
+  });
+
+  // Build fMP4 preroll entries for preroll indices still in the window. These reference the global /preroll/ routes with absolute URLs and .m4s extension.
+  let prerollEntries: PlaylistSegmentEntry[] = [];
+
+  if(startIndex < prerollSegmentCount) {
+
+    prerollEntries = buildPrerollEntries({ baseUrl: prerollBaseUrl, codec: prerollCodec, extension: ".m4s", prerollSegmentCount, startIndex });
+  }
+
+  // Build real MPEG-TS entries from the video metadata maps via the shared helper.
+  const realEntries = segmentEntries.map((filename) => buildEntryFromMetadata(filename, videoMetadata, targetDuration));
+
+  // Mark the preroll-to-real boundary on the first real entry when preroll entries are present in the window. This is a playlist-level concern (the stitching of
+  // preroll before real content), not a segment-level property — so it's applied here in the composite builder rather than injected into videoMetadata at segment
+  // storage time. This keeps the metadata clean (upstream discontinuities only) and avoids a stray DISCONTINUITY tag on fast streams where the composite never
+  // activates.
+  if((prerollEntries.length > 0) && (realEntries.length > 0)) {
+
+    realEntries[0].discontinuity = true;
+  }
+
+  // Bootstrap the composite discontinuity tracker on the first call. This captures any upstream discontinuities that occurred before the composite path activated
+  // (e.g., the proxy ran in non-composite mode while the preroll timer hadn't fired). The Map has filenames of currently-stored discontinuity segments; the counter
+  // includes historical ones that pruned out of the Map. The difference becomes a fixed offset for segments we can never recover by filename.
+  if(!composite.seeded) {
+
+    for(const filename of videoMetadata.discontinuities.keys()) {
+
+      composite.discontinuities.add(filename);
+    }
+
+    composite.baseOffset = videoMetadata.totalDiscontinuities - videoMetadata.discontinuities.size;
+    composite.seeded = true;
+  }
+
+  // Compute DISCONTINUITY-SEQUENCE using the composite path's independent discontinuity tracker. For each entry with discontinuity=true (whether from upstream
+  // metadata or the synthetic preroll boundary), record its URL in the Set. The Set grows monotonically — once a discontinuity is observed, it's tracked forever.
+  // DISCONTINUITY-SEQUENCE = total ever observed (offset + Set size) minus those visible in the current window.
+  const entries = [ ...prerollEntries, ...realEntries ];
+
+  let windowDiscontinuities = 0;
+
+  for(const entry of entries) {
+
+    if(entry.discontinuity) {
+
+      composite.discontinuities.add(entry.url);
+      windowDiscontinuities++;
+    }
+  }
+
+  const discSeq = (composite.baseOffset + composite.discontinuities.size) - windowDiscontinuities;
+  const discontinuitySequence = (discSeq > 0) ? discSeq : undefined;
+
+  // Determine the initial MAP URI. When the window starts with preroll entries, the preroll init segment (fMP4) is referenced. When the window has moved past all
+  // preroll, no MAP is needed (MPEG-TS segments are self-describing). The DISCONTINUITY tag at the preroll-to-real boundary invalidates the MAP per RFC 8216
+  // Section 4.3.3.3, so MPEG-TS entries after the boundary carry their codec config inline.
+  const initialMapUri = (prerollEntries.length > 0) ? (prerollBaseUrl + "/preroll/" + prerollCodec + "/init.mp4") : undefined;
+
+  return buildPlaylist({
+
+    discontinuitySequence,
+    initialMapUri,
+    mediaSequence: startIndex,
+    targetDuration,
+    version: 7
+  }, entries);
+}
+
 /**
  * Creates a native HLS proxy that polls a variant manifest, fetches segments, and generates playlists.
  *
@@ -566,46 +950,85 @@ function pruneMetadata(meta: SegmentMetadata, activeSegments: Set<string>): void
 export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
   const { channelName, encryption, keyUrl, onError, streamId } = options;
-  const { audioVariantUrl: initialAudioVariantUrl, variantUrl: initialVariantUrl } = options;
-  const hasAudio = initialAudioVariantUrl !== null;
+  const hasAudio = options.audioVariantUrl !== null;
   let activeCdpSession: CDPSession = options.cdpSession;
-  let audioVariantUrl = initialAudioVariantUrl;
-  let variantUrl = initialVariantUrl;
 
   // Preroll segment index offset. When preroll is ready (prerollSegmentCount > 0), real segments start numbering after the preroll range (e.g., segmentN.ts where
   // N = prerollSegmentCount). This offset is unconditional — it reserves the index space for preroll regardless of whether the deferred preroll timer fires.
   // The composite playlist behavior (including preroll entries) is determined dynamically by checking stream.hls.prerollStartTime at playlist generation time.
+  const prerollCodec: PrerollCodec = options.prerollCodec ?? "h264";
   const prerollSegmentCount = options.prerollSegmentCount ?? 0;
 
-  // State.
-  let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  let stopped = false;
-  let segmentIndex = prerollSegmentCount;
-  let lastMediaSequence = -1;
-  let lastSegmentSize: Nullable<number> = null;
-  let lastSegmentTime = 0;
-  let consecutiveManifestFailures = 0;
-  const videoSegmentTracker = { consecutiveFailures: 0, debugLabel: "Segment", label: "segment" };
-  let errorThresholdReached = false;
-  let firstPollComplete = false;
-  let lastAudioTargetDuration = 6;
-  let lastTargetDuration = 6;
-  let readinessSignaled = false;
+  /* Proxy state. These track segment storage, manifest polling, error thresholds, and playlist generation across the proxy's lifetime. Mutable variables are organized
+   * into typed state objects by subsystem (lifecycle, video tracking, audio tracking, composite playlist, statistics) to clarify ownership and interaction boundaries.
+   * The ProxyContext bundles immutable references with shared mutable state for extracted module-level functions.
+   */
+
+  // Proxy lifecycle state. Controls whether the proxy is running, tracks readiness signaling, and manages poll timing.
+  const lifecycle: ProxyLifecycleState = {
+
+    errorThresholdReached: false,
+    firstPollComplete: false,
+    manifestBackoffMs: MANIFEST_BACKOFF_BASE,
+    pollTimer: null,
+    readinessSignaled: false,
+    stopped: false,
+    tokenRefreshTimer: null
+  };
+
+  // Video segment and manifest tracking state.
+  const video: VideoTrackingState = {
+
+    consecutiveManifestFailures: 0,
+    fetchedSequences: new Set<number>(),
+    highWaterSequence: -1,
+    lastMediaSequence: -1,
+    lastSegmentSize: null,
+    lastSegmentTime: 0,
+    lastTargetDuration: 6,
+    metadata: createSegmentMetadata(),
+    segmentIndex: prerollSegmentCount,
+    segmentTracker: { consecutiveFailures: 0, debugLabel: "Segment", label: "segment" },
+    tokenRefreshPending: false,
+    variantUrl: options.variantUrl
+  };
+
+  // Audio segment and manifest tracking state for streams with separate audio renditions.
+  const audio: AudioTrackingState = {
+
+    consecutiveManifestFailures: 0,
+    fetchedSequences: new Set<number>(),
+    highWaterSequence: -1,
+    lastTargetDuration: 6,
+    metadata: createSegmentMetadata(),
+    segmentIndex: 0,
+    segmentTracker: { consecutiveFailures: 0, debugLabel: "Audio segment", label: "audio segment" },
+    tokenRefreshPending: false,
+    variantUrl: options.audioVariantUrl
+  };
 
   // Composite playlist discontinuity tracking. This is the composite path's independent source of truth for DISCONTINUITY-SEQUENCE computation. The Set records URLs
   // of entries that have had discontinuity=true in any composite playlist (upstream or the synthetic preroll boundary). It grows monotonically — once a discontinuity
-  // is observed, it's tracked forever. On the first composite call, the Set is bootstrapped from videoMetadata to capture any upstream discontinuities that occurred
+  // is observed, it's tracked forever. On the first composite call, the Set is bootstrapped from video.metadata to capture any upstream discontinuities that occurred
   // before the composite path activated. The offset accounts for historical discontinuities that pruned out of the metadata's Map but are preserved in its counter.
   // After bootstrap, the Set is self-sufficient. DISCONTINUITY-SEQUENCE = (offset + set.size) - windowDiscontinuities.
-  const compositeDiscontinuities = new Set<string>();
-  let compositeBaseOffset = 0;
-  let compositeSeeded = false;
+  const composite: CompositePlaylistState = {
 
-  // Statistics.
-  let totalFetchErrors = 0;
-  let totalSegmentsFetched = 0;
-  let totalTokenRefreshes = 0;
+    baseOffset: 0,
+    discontinuities: new Set<string>(),
+    seeded: false
+  };
+
+  // Cumulative statistics.
+  const stats: ProxyStatsState = {
+
+    totalFetchErrors: 0,
+    totalSegmentsFetched: 0,
+    totalTokenRefreshes: 0
+  };
+
+  // Shared context for extracted module-level functions. Bundles immutable references with shared mutable state objects.
+  const ctx: ProxyContext = { channelName, lifecycle, onError, stats, streamId };
 
   // AES-128 decryption key cache. Maps key URLs to their fetched 16-byte keys. Each segment in a manifest can reference a different key URL (key rotation), so we
   // cache by URL rather than maintaining a single "current key". The coordinator pre-fetches the initial key, which is seeded into the cache here.
@@ -616,36 +1039,25 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     keysByUrl.set(keyUrl, options.prefetchedKey);
   }
 
-  // Track fetched media sequence numbers to avoid re-fetching segments. The high-water mark tracks the highest upstream sequence number fetched, used to filter
-  // out DAI backfill segments that appear as "new" (not in fetchedSequences) but have sequence numbers below what we've already served. Without this, Google DAI
-  // manifests that interleave multiple session windows cause the proxy to fetch old segments with discontinuous PTS, producing visible glitches in playback.
-  //
-  // The tokenRefreshPending flag handles CDNs that reset sequence numbers to 0 on token refresh (e.g., Fox Sports). After a refresh, if the first poll produces
-  // zero segments above the high-water mark, the sequence timeline has genuinely reset — we clear the high-water mark and re-process the same manifest with the
-  // tail-fill strategy. If segments do pass (e.g., Fox News DAI where sequences continue), the flag is cleared without any reset.
-  const fetchedSequences = new Set<number>();
-  let highWaterSequence = -1;
-  let tokenRefreshPending = false;
+  /**
+   * Computes the next retry delay with exponential backoff and jitter. Doubles the current backoff (capped at MANIFEST_BACKOFF_CAP) and applies +/-20% jitter.
+   * @returns The jittered delay in milliseconds.
+   */
+  function nextBackoffDelay(): number {
 
-  // Per-segment metadata for the video variant. These Maps are keyed by local filename (e.g., "segment0.ts") and track the upstream manifest tags associated with
-  // each stored segment. The playlist generator reads these to emit faithful HLS output with discontinuity markers, program timestamps, and ad signaling.
-  const videoMetadata = createSegmentMetadata();
+    lifecycle.manifestBackoffMs = Math.min(lifecycle.manifestBackoffMs * 2, MANIFEST_BACKOFF_CAP);
 
-  // Audio-specific state for streams with separate audio renditions.
-  let audioSegmentIndex = 0;
-  let audioConsecutiveManifestFailures = 0;
-  const audioSegmentTracker = { consecutiveFailures: 0, debugLabel: "Audio segment", label: "audio segment" };
-  const audioFetchedSequences = new Set<number>();
-  let audioHighWaterSequence = -1;
-  let audioTokenRefreshPending = false;
-  const audioMetadata = createSegmentMetadata();
+    const jitter = 0.8 + (Math.random() * 0.4);
+
+    return Math.round(lifecycle.manifestBackoffMs * jitter);
+  }
 
   /**
    * Orchestrates the poll cycle: fetches video and audio manifests in parallel, stores segments, and generates playlists after both stores are updated.
    */
   async function pollManifest(): Promise<void> {
 
-    if(stopped) {
+    if(lifecycle.stopped) {
 
       return;
     }
@@ -654,30 +1066,37 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     try {
 
-      const response = await chromeFetch(variantUrl, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
+      const response = await chromeFetch(video.variantUrl, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
 
       if(!response.ok) {
 
-        consecutiveManifestFailures++;
-        totalFetchErrors++;
+        video.consecutiveManifestFailures++;
+        stats.totalFetchErrors++;
 
-        LOG.debug("native:proxy", "Manifest poll failed for %s: HTTP %s.", channelName, response.status);
+        // Classify the error. Client errors (4xx) typically indicate permanent issues (auth expiry, content removed) that won't self-resolve. Server errors (5xx)
+        // are transient CDN issues that usually recover within a few seconds. Client errors use the base threshold; server errors get double the attempts.
+        const isClientError = (response.status >= 400) && (response.status < 500);
+        const effectiveThreshold = isClientError ? MAX_MANIFEST_FAILURES : (MAX_MANIFEST_FAILURES * 2);
 
-        if(consecutiveManifestFailures >= MAX_MANIFEST_FAILURES) {
+        LOG.debug("native:proxy", "Manifest poll failed for %s: HTTP %s (%s, %s/%s).",
+          channelName, response.status, isClientError ? "client" : "server", video.consecutiveManifestFailures, effectiveThreshold);
 
-          errorThresholdReached = true;
-          stopped = true;
-          onError("manifest poll failed " + String(consecutiveManifestFailures) + " times");
+        if(video.consecutiveManifestFailures >= effectiveThreshold) {
+
+          lifecycle.errorThresholdReached = true;
+          lifecycle.stopped = true;
+          onError("manifest poll failed " + String(video.consecutiveManifestFailures) + " times (HTTP " + String(response.status) + ")");
 
           return;
         }
 
-        schedulePoll(5000);
+        schedulePoll(nextBackoffDelay());
 
         return;
       }
 
-      consecutiveManifestFailures = 0;
+      video.consecutiveManifestFailures = 0;
+      lifecycle.manifestBackoffMs = MANIFEST_BACKOFF_BASE;
 
       const body = await response.text();
 
@@ -691,7 +1110,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       if(hasAudio) {
 
-        [ hasNewVideoSegments, hasNewAudioSegments ] = await Promise.all([ processManifest(body), pollAudioManifest() ]);
+        [ hasNewVideoSegments, hasNewAudioSegments ] = await Promise.all([ processManifest(body), pollAudioStream(ctx, audio, fetchTrackedSegment) ]);
       } else {
 
         hasNewVideoSegments = await processManifest(body);
@@ -699,26 +1118,26 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       if(hasNewVideoSegments || hasNewAudioSegments) {
 
-        generatePlaylist(lastTargetDuration);
+        generatePlaylist(video.lastTargetDuration);
 
         if(hasAudio) {
 
-          generateAudioPlaylist(lastAudioTargetDuration);
+          generateAudioPlaylist(audio.lastTargetDuration);
         }
       }
 
       // Set firstPollComplete when segments are available. For streams with separate audio, require both video and audio segments before signaling readiness to
       // prevent publishing a master playlist before both variant playlists have content.
-      if(!firstPollComplete && (segmentIndex > 0) && (!hasAudio || (audioSegmentIndex > 0))) {
+      if(!lifecycle.firstPollComplete && (video.segmentIndex > 0) && (!hasAudio || (audio.segmentIndex > 0))) {
 
-        firstPollComplete = true;
+        lifecycle.firstPollComplete = true;
       }
 
       // Signal playlist readiness after the first poll completes. Note: initSegmentReady is signaled immediately when the proxy starts (in hls.ts) since native
       // MPEG-TS has no separate init segment.
-      if(firstPollComplete && !readinessSignaled) {
+      if(lifecycle.firstPollComplete && !lifecycle.readinessSignaled) {
 
-        readinessSignaled = true;
+        lifecycle.readinessSignaled = true;
 
         const stream = getStream(streamId);
 
@@ -727,27 +1146,35 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
           stream.hls.signalPlaylistReady();
         }
 
-        LOG.debug("native:proxy", "First poll cycle complete for %s. Segment index: %s.", channelName, segmentIndex);
+        LOG.debug("native:proxy", "First poll cycle complete for %s. Segment index: %s.", channelName, video.segmentIndex);
       }
     } catch(error) {
 
-      consecutiveManifestFailures++;
-      totalFetchErrors++;
+      // Network errors (timeouts, DNS failures, connection resets) are transient — use the extended threshold and backoff.
+      video.consecutiveManifestFailures++;
+      stats.totalFetchErrors++;
 
-      LOG.debug("native:proxy", "Manifest poll failed for %s: %s.", channelName, String(error));
+      LOG.debug("native:proxy", "Manifest poll failed for %s: %s (%s/%s).",
+        channelName, String(error), video.consecutiveManifestFailures, MAX_MANIFEST_FAILURES * 2);
 
-      if(consecutiveManifestFailures >= MAX_MANIFEST_FAILURES) {
+      if(video.consecutiveManifestFailures >= (MAX_MANIFEST_FAILURES * 2)) {
 
-        errorThresholdReached = true;
-        stopped = true;
+        lifecycle.errorThresholdReached = true;
+        lifecycle.stopped = true;
         onError("manifest poll error: " + String(error));
 
         return;
       }
+
+      schedulePoll(nextBackoffDelay());
+
+      return;
     }
 
     // Schedule the next poll at roughly half the target segment duration for timely detection of new segments.
-    schedulePoll(3000);
+    lifecycle.manifestBackoffMs = MANIFEST_BACKOFF_BASE;
+
+    schedulePoll(MANIFEST_BACKOFF_BASE);
   }
 
   /**
@@ -758,30 +1185,24 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
    */
   async function processManifest(body: string): Promise<boolean> {
 
-    const { mediaSequence, segments, targetDuration } = parseVariantManifest(body, variantUrl);
+    const { mediaSequence, segments, targetDuration } = parseVariantManifest(body, video.variantUrl);
 
-    lastTargetDuration = targetDuration;
+    video.lastTargetDuration = targetDuration;
 
-    // Prune old entries from the fetchedSequences Set and segment metadata. The provider's media sequence window slides forward, so entries below the current base
-    // sequence will never be checked again. Without pruning, these structures grow unboundedly over hours of streaming.
-    if(fetchedSequences.size > 100) {
+    // Prune old entries from the fetchedSequences Set and segment metadata on each poll cycle. The provider's media sequence window slides forward, so entries below
+    // the current base sequence will never be checked again. Without pruning, these structures grow unboundedly over hours of streaming.
+    for(const seq of video.fetchedSequences) {
 
-      for(const seq of fetchedSequences) {
+      if(seq < mediaSequence) {
 
-        if(seq < mediaSequence) {
-
-          fetchedSequences.delete(seq);
-        }
+        video.fetchedSequences.delete(seq);
       }
     }
 
-    if(videoMetadata.durations.size > 100) {
+    const pruneStream = getStream(streamId);
+    const activeVideoSegments = pruneStream ? new Set(pruneStream.hls.segments.keys()) : new Set<string>();
 
-      const stream = getStream(streamId);
-      const activeSegments = stream ? new Set(stream.hls.segments.keys()) : new Set<string>();
-
-      pruneMetadata(videoMetadata, activeSegments);
-    }
+    pruneMetadata(video.metadata, activeVideoSegments);
 
     // Filter segments to only those that advance the live edge. On the first poll (highWaterSequence === -1), we have no baseline yet, so we take the last
     // maxSegments entries to fill the initial playlist window. On subsequent polls, we only fetch segments with sequence numbers above the high-water mark. This
@@ -789,88 +1210,89 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     // what we've already served, causing PTS discontinuities and visible playback glitches.
     let newSegments: ParsedSegment[];
 
-    if(highWaterSequence === -1) {
+    if(video.highWaterSequence === -1) {
 
       // First poll — no baseline. Take the tail of the manifest to fill the playlist window.
       newSegments = segments.slice(-CONFIG.hls.maxSegments);
     } else {
 
       // Subsequent polls — only fetch segments that advance past the high-water mark.
-      newSegments = segments.filter((s) => (s.sequence > highWaterSequence) && !fetchedSequences.has(s.sequence));
+      newSegments = segments.filter((s) => (s.sequence > video.highWaterSequence) && !video.fetchedSequences.has(s.sequence));
 
       // Detect CDN sequence timeline reset after a token refresh. Some CDNs (e.g., Fox Sports) create a new session with sequence numbers starting at 0 when
       // tokens are refreshed. If the first poll after a refresh produces zero segments above the high-water mark, the timeline has genuinely reset — clear the
       // high-water mark and re-process the same manifest with the tail-fill strategy.
-      if((newSegments.length === 0) && tokenRefreshPending && (segments.length > 0)) {
+      if((newSegments.length === 0) && video.tokenRefreshPending && (segments.length > 0)) {
 
-        LOG.debug("native:proxy", "Sequence timeline reset detected for %s after token refresh. Resetting high-water mark from %s.", channelName, highWaterSequence);
+        LOG.debug("native:proxy", "Sequence timeline reset detected for %s after token refresh. Resetting high-water mark from %s.",
+          channelName, video.highWaterSequence);
 
-        highWaterSequence = -1;
-        tokenRefreshPending = false;
+        video.highWaterSequence = -1;
+        video.tokenRefreshPending = false;
         newSegments = segments.slice(-CONFIG.hls.maxSegments);
       }
     }
 
     // Clear the token refresh flag on the first poll that produces segments, whether via normal filtering or after a reset detection.
-    if((newSegments.length > 0) && tokenRefreshPending) {
+    if((newSegments.length > 0) && video.tokenRefreshPending) {
 
-      tokenRefreshPending = false;
+      video.tokenRefreshPending = false;
     }
 
     if(newSegments.length === 0) {
 
       // No new segments — the media sequence hasn't advanced.
-      if(lastMediaSequence === mediaSequence) {
+      if(video.lastMediaSequence === mediaSequence) {
 
         LOG.debug("native:proxy", "No new segments for %s (sequence still %s).", channelName, mediaSequence);
       }
 
-      lastMediaSequence = mediaSequence;
+      video.lastMediaSequence = mediaSequence;
 
       return false;
     }
 
     LOG.debug("native:proxy", "Fetching %s new segment(s) for %s (sequence %s).", newSegments.length, channelName, mediaSequence);
 
-    lastMediaSequence = mediaSequence;
+    video.lastMediaSequence = mediaSequence;
 
     // Fetch and store each new segment sequentially. Track whether at least one segment was stored so the caller only generates playlists when data actually changed.
     let storedAny = false;
 
     for(const seg of newSegments) {
 
-      if(stopped) {
+      if(lifecycle.stopped) {
 
         break;
       }
 
       // eslint-disable-next-line no-await-in-loop
-      const segmentData = await fetchTrackedSegment(videoSegmentTracker, seg.url, seg.sequence, seg.ivHex, seg.keyUrl);
+      const segmentData = await fetchTrackedSegment(video.segmentTracker, seg.url, seg.sequence, seg.ivHex, seg.keyUrl);
 
       if(!segmentData) {
 
         continue;
       }
 
-      const filename = "segment" + String(segmentIndex) + ".ts";
+      const filename = "segment" + String(video.segmentIndex) + ".ts";
 
       // Check segment count before store to detect rotation (oldest segment evicted to enforce maxSegments limit).
       const stream = getStream(streamId);
       const countBefore = stream?.hls.segments.size ?? 0;
 
       storeSegment(streamId, filename, segmentData);
-      fetchedSequences.add(seg.sequence);
-      highWaterSequence = Math.max(highWaterSequence, seg.sequence);
-      storeSegmentMetadata(videoMetadata, filename, seg);
+      video.fetchedSequences.add(seg.sequence);
+      video.highWaterSequence = Math.max(video.highWaterSequence, seg.sequence);
+      storeSegmentMetadata(video.metadata, filename, seg);
       storedAny = true;
 
-      lastSegmentSize = segmentData.length;
-      lastSegmentTime = Date.now();
-      segmentIndex++;
-      totalSegmentsFetched++;
+      video.lastSegmentSize = segmentData.length;
+      video.lastSegmentTime = Date.now();
+      video.segmentIndex++;
+      stats.totalSegmentsFetched++;
 
       // Log the first segment fetch latency for timing diagnostics.
-      if(totalSegmentsFetched === 1) {
+      if(stats.totalSegmentsFetched === 1) {
 
         LOG.debug("timing:native", "First segment fetched for %s (%s bytes).", channelName, segmentData.length);
       }
@@ -958,7 +1380,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
    * @param segKeyUrl - The key URL for this specific segment, or null for clear segments.
    * @returns The segment data (decrypted if necessary), or null on failure.
    */
-  async function fetchTrackedSegment(tracker: { consecutiveFailures: number; debugLabel: string; label: string }, url: string, sequence: number,
+  async function fetchTrackedSegment(tracker: SegmentFetchTracker, url: string, sequence: number,
     ivHex: Nullable<string>, segKeyUrl: Nullable<string>): Promise<Nullable<Buffer>> {
 
     try {
@@ -968,12 +1390,12 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       if(!data) {
 
         tracker.consecutiveFailures++;
-        totalFetchErrors++;
+        stats.totalFetchErrors++;
 
         if(tracker.consecutiveFailures >= MAX_SEGMENT_FAILURES) {
 
-          errorThresholdReached = true;
-          stopped = true;
+          lifecycle.errorThresholdReached = true;
+          lifecycle.stopped = true;
           onError(tracker.label + " fetch failed " + String(tracker.consecutiveFailures) + " times");
         }
 
@@ -986,174 +1408,19 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     } catch(error) {
 
       tracker.consecutiveFailures++;
-      totalFetchErrors++;
+      stats.totalFetchErrors++;
 
       LOG.debug("native:proxy", "%s fetch failed for %s: %s.", tracker.debugLabel, channelName, String(error));
 
       if(tracker.consecutiveFailures >= MAX_SEGMENT_FAILURES) {
 
-        errorThresholdReached = true;
-        stopped = true;
+        lifecycle.errorThresholdReached = true;
+        lifecycle.stopped = true;
         onError(tracker.label + " fetch error: " + String(error));
       }
 
       return null;
     }
-  }
-
-  /**
-   * Polls the audio variant manifest and fetches new audio segments. Returns true if new segments were stored. Only called for streams with separate audio
-   * renditions.
-   */
-  async function pollAudioManifest(): Promise<boolean> {
-
-    if(stopped || !audioVariantUrl) {
-
-      return false;
-    }
-
-    try {
-
-      const response = await chromeFetch(audioVariantUrl, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
-
-      if(!response.ok) {
-
-        audioConsecutiveManifestFailures++;
-        totalFetchErrors++;
-
-        LOG.debug("native:proxy", "Audio manifest poll failed for %s: HTTP %s.", channelName, response.status);
-
-        if(audioConsecutiveManifestFailures >= MAX_MANIFEST_FAILURES) {
-
-          errorThresholdReached = true;
-          stopped = true;
-          onError("audio manifest poll failed " + String(audioConsecutiveManifestFailures) + " times");
-        }
-
-        return false;
-      }
-
-      audioConsecutiveManifestFailures = 0;
-
-      const body = await response.text();
-
-      return await processAudioManifest(body, audioVariantUrl);
-    } catch(error) {
-
-      audioConsecutiveManifestFailures++;
-      totalFetchErrors++;
-
-      LOG.debug("native:proxy", "Audio manifest poll failed for %s: %s.", channelName, String(error));
-
-      if(audioConsecutiveManifestFailures >= MAX_MANIFEST_FAILURES) {
-
-        errorThresholdReached = true;
-        stopped = true;
-        onError("audio manifest poll error: " + String(error));
-      }
-
-      return false;
-    }
-  }
-
-  /**
-   * Parses an audio variant manifest and fetches new audio segments. Playlist generation is handled by the caller after both video and audio segments are stored.
-   *
-   * @param body - The audio variant manifest text content.
-   * @param baseUrl - The audio variant URL for resolving relative segment URLs.
-   * @returns True if new segments were stored, false if the media sequence hadn't advanced.
-   */
-  async function processAudioManifest(body: string, baseUrl: string): Promise<boolean> {
-
-    const { mediaSequence, segments, targetDuration } = parseVariantManifest(body, baseUrl);
-
-    lastAudioTargetDuration = targetDuration;
-
-    // Prune old entries from audioFetchedSequences.
-    if(audioFetchedSequences.size > 100) {
-
-      for(const seq of audioFetchedSequences) {
-
-        if(seq < mediaSequence) {
-
-          audioFetchedSequences.delete(seq);
-        }
-      }
-    }
-
-    if(audioMetadata.durations.size > 100) {
-
-      const stream = getStream(streamId);
-      const activeSegments = stream ? new Set(stream.hls.audioSegments.keys()) : new Set<string>();
-
-      pruneMetadata(audioMetadata, activeSegments);
-    }
-
-    // Filter audio segments using the same high-water mark and token refresh detection as the video path.
-    let newSegments: ParsedSegment[];
-
-    if(audioHighWaterSequence === -1) {
-
-      newSegments = segments.slice(-CONFIG.hls.maxSegments);
-    } else {
-
-      newSegments = segments.filter((s) => (s.sequence > audioHighWaterSequence) && !audioFetchedSequences.has(s.sequence));
-
-      if((newSegments.length === 0) && audioTokenRefreshPending && (segments.length > 0)) {
-
-        LOG.debug("native:proxy", "Audio sequence timeline reset detected for %s after token refresh. Resetting high-water mark from %s.",
-          channelName, audioHighWaterSequence);
-
-        audioHighWaterSequence = -1;
-        audioTokenRefreshPending = false;
-        newSegments = segments.slice(-CONFIG.hls.maxSegments);
-      }
-    }
-
-    if((newSegments.length > 0) && audioTokenRefreshPending) {
-
-      audioTokenRefreshPending = false;
-    }
-
-    if(newSegments.length === 0) {
-
-      return false;
-    }
-
-    LOG.debug("native:proxy", "Fetching %s new audio segment(s) for %s (sequence %s).", newSegments.length, channelName, mediaSequence);
-
-    let storedAny = false;
-
-    for(const seg of newSegments) {
-
-      if(stopped) {
-
-        break;
-      }
-
-      // eslint-disable-next-line no-await-in-loop
-      const segmentData = await fetchTrackedSegment(audioSegmentTracker, seg.url, seg.sequence, seg.ivHex, seg.keyUrl);
-
-      if(!segmentData) {
-
-        continue;
-      }
-
-      const filename = "audio" + String(audioSegmentIndex) + ".ts";
-
-      storeAudioSegment(streamId, filename, segmentData);
-      audioFetchedSequences.add(seg.sequence);
-      audioHighWaterSequence = Math.max(audioHighWaterSequence, seg.sequence);
-      storeSegmentMetadata(audioMetadata, filename, seg);
-      storedAny = true;
-
-      audioSegmentIndex++;
-      totalSegmentsFetched++;
-
-      LOG.debug("native:proxy", "Stored %s (%s bytes, seq %s) for %s.", filename, segmentData.length, seg.sequence, channelName);
-    }
-
-    return storedAny;
   }
 
   /**
@@ -1182,17 +1449,27 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
         // Composite playlist with fMP4 preroll entries + MPEG-TS real entries. The prerollStartTime check ensures we only include preroll entries when the deferred
         // timer has fired and the client is actually watching preroll. Without this check, fast native streams (where real content arrives before the preroll delay)
         // would include unnecessary preroll entries. The compositor handles the sliding window with the maxPrerollInWindow cap.
-        updatePlaylist(streamId, buildCompositePlaylist(segmentEntries, targetDuration, stream.hls.prerollBaseUrl));
+        updatePlaylist(streamId, buildCompositePlaylist({
+
+          composite,
+          prerollBaseUrl: stream.hls.prerollBaseUrl,
+          prerollCodec,
+          prerollSegmentCount,
+          segmentEntries,
+          segmentIndex: video.segmentIndex,
+          targetDuration,
+          videoMetadata: video.metadata
+        }));
       } else {
 
         // No preroll active — standard variant playlist. The segment index may still be offset (starting at prerollSegmentCount) to reserve the index space, but no
         // preroll entries are included.
-        updatePlaylist(streamId, buildVariantPlaylist(segmentEntries, videoMetadata, "segment", targetDuration));
+        updatePlaylist(streamId, buildVariantPlaylist(segmentEntries, video.metadata, "segment", targetDuration));
       }
     } else {
 
       // Separate audio — generate video variant playlist and master playlist. Preroll is not supported for separate audio streams (preroll is muxed).
-      updateVideoPlaylist(streamId, buildVariantPlaylist(segmentEntries, videoMetadata, "segment", targetDuration));
+      updateVideoPlaylist(streamId, buildVariantPlaylist(segmentEntries, video.metadata, "segment", targetDuration));
 
       // Estimate bandwidth from stored segment sizes and durations. Sum total bytes and total duration across video segments, then convert to bits per second.
       // Falls back to 5 Mbps when no duration data is available (first segment before durations are populated).
@@ -1203,7 +1480,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       for(const filename of segmentEntries) {
 
         const size = stream.hls.segments.get(filename)?.length ?? 0;
-        const duration = videoMetadata.durations.get(filename);
+        const duration = video.metadata.durations.get(filename);
 
         if(duration) {
 
@@ -1230,99 +1507,6 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   }
 
   /**
-   * Builds a composite playlist with fMP4 preroll entries and MPEG-TS real entries. Uses the same compositor and builder as the capture path's generatePlaylist(),
-   * ensuring identical windowing behavior (maxPrerollInWindow cap, progressive falloff). The DISCONTINUITY tag at the preroll-to-real boundary signals the container
-   * format change (fMP4 → MPEG-TS), which is spec-compliant per RFC 8216 Section 4.3.3.3. VERSION:7 is used to support EXT-X-MAP for the preroll init segment;
-   * after preroll entries fall off the window, VERSION:7 remains but is backward-compatible with the MPEG-TS entries.
-   *
-   * @param segmentEntries - Ordered list of stored segment filenames from the segment Map.
-   * @param targetDuration - The #EXT-X-TARGETDURATION value from the provider's manifest.
-   * @param prerollBaseUrl - The base URL for absolute preroll segment URIs, read dynamically from the stream's HLS state.
-   * @returns The formatted composite m3u8 playlist string.
-   */
-  function buildCompositePlaylist(segmentEntries: string[], targetDuration: number, prerollBaseUrl: string): string {
-
-    // Compute the sliding window start index via the compositor. The three-way max prevents negative indices, enforces the sliding window rule, and caps preroll
-    // entries at maxPrerollInWindow to force clients past preroll toward the live edge.
-    const realSegmentCount = segmentEntries.length;
-
-    const startIndex = computePrerollWindow({
-
-      currentSegmentIndex: segmentIndex,
-      maxSegments: CONFIG.hls.maxSegments,
-      prerollSegmentCount,
-      realSegmentCount
-    });
-
-    // Build fMP4 preroll entries for preroll indices still in the window. These reference the global /preroll/ routes with absolute URLs and .m4s extension.
-    let prerollEntries: PlaylistSegmentEntry[] = [];
-
-    if(startIndex < prerollSegmentCount) {
-
-      prerollEntries = buildPrerollEntries({ baseUrl: prerollBaseUrl, extension: ".m4s", prerollSegmentCount, startIndex });
-    }
-
-    // Build real MPEG-TS entries from the video metadata maps via the shared helper.
-    const realEntries = segmentEntries.map((filename) => buildEntryFromMetadata(filename, videoMetadata, targetDuration));
-
-    // Mark the preroll-to-real boundary on the first real entry when preroll entries are present in the window. This is a playlist-level concern (the stitching of
-    // preroll before real content), not a segment-level property — so it's applied here in the composite builder rather than injected into videoMetadata at segment
-    // storage time. This keeps the metadata clean (upstream discontinuities only) and avoids a stray DISCONTINUITY tag on fast streams where the composite never
-    // activates.
-    if((prerollEntries.length > 0) && (realEntries.length > 0)) {
-
-      realEntries[0].discontinuity = true;
-    }
-
-    // Bootstrap the composite discontinuity tracker on the first call. This captures any upstream discontinuities that occurred before the composite path activated
-    // (e.g., the proxy ran in non-composite mode while the preroll timer hadn't fired). The Map has filenames of currently-stored discontinuity segments; the counter
-    // includes historical ones that pruned out of the Map. The difference becomes a fixed offset for segments we can never recover by filename.
-    if(!compositeSeeded) {
-
-      for(const filename of videoMetadata.discontinuities.keys()) {
-
-        compositeDiscontinuities.add(filename);
-      }
-
-      compositeBaseOffset = videoMetadata.totalDiscontinuities - videoMetadata.discontinuities.size;
-      compositeSeeded = true;
-    }
-
-    // Compute DISCONTINUITY-SEQUENCE using the composite path's independent discontinuity tracker. For each entry with discontinuity=true (whether from upstream
-    // metadata or the synthetic preroll boundary), record its URL in the Set. The Set grows monotonically — once a discontinuity is observed, it's tracked forever.
-    // DISCONTINUITY-SEQUENCE = total ever observed (offset + Set size) minus those visible in the current window.
-    const entries = [ ...prerollEntries, ...realEntries ];
-
-    let windowDiscontinuities = 0;
-
-    for(const entry of entries) {
-
-      if(entry.discontinuity) {
-
-        compositeDiscontinuities.add(entry.url);
-        windowDiscontinuities++;
-      }
-    }
-
-    const discSeq = (compositeBaseOffset + compositeDiscontinuities.size) - windowDiscontinuities;
-    const discontinuitySequence = (discSeq > 0) ? discSeq : undefined;
-
-    // Determine the initial MAP URI. When the window starts with preroll entries, the preroll init segment (fMP4) is referenced. When the window has moved past all
-    // preroll, no MAP is needed (MPEG-TS segments are self-describing). The DISCONTINUITY tag at the preroll-to-real boundary invalidates the MAP per RFC 8216
-    // Section 4.3.3.3, so MPEG-TS entries after the boundary carry their codec config inline.
-    const initialMapUri = (prerollEntries.length > 0) ? (prerollBaseUrl + "/preroll/init.mp4") : undefined;
-
-    return buildPlaylist({
-
-      discontinuitySequence,
-      initialMapUri,
-      mediaSequence: startIndex,
-      targetDuration,
-      version: 7
-    }, entries);
-  }
-
-  /**
    * Generates the audio variant playlist from stored audio segments.
    *
    * @param targetDuration - The #EXT-X-TARGETDURATION value from the audio manifest.
@@ -1338,7 +1522,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     const audioEntries = Array.from(stream.hls.audioSegments.keys());
 
-    updateAudioPlaylist(streamId, buildVariantPlaylist(audioEntries, audioMetadata, "audio", targetDuration));
+    updateAudioPlaylist(streamId, buildVariantPlaylist(audioEntries, audio.metadata, "audio", targetDuration));
   }
 
   /**
@@ -1348,12 +1532,12 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
    */
   function schedulePoll(delayMs: number): void {
 
-    if(stopped) {
+    if(lifecycle.stopped) {
 
       return;
     }
 
-    pollTimer = setTimeout(() => {
+    lifecycle.pollTimer = setTimeout(() => {
 
       void pollManifest();
     }, delayMs);
@@ -1361,31 +1545,31 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
   return {
 
-    getConsecutiveErrors: (): number => videoSegmentTracker.consecutiveFailures + consecutiveManifestFailures + audioSegmentTracker.consecutiveFailures +
-      audioConsecutiveManifestFailures,
+    getConsecutiveErrors: (): number => video.segmentTracker.consecutiveFailures + video.consecutiveManifestFailures +
+      audio.segmentTracker.consecutiveFailures + audio.consecutiveManifestFailures,
 
-    getLastSegmentSize: (): Nullable<number> => lastSegmentSize,
+    getLastSegmentSize: (): Nullable<number> => video.lastSegmentSize,
 
-    getLastSegmentTime: (): number => lastSegmentTime,
+    getLastSegmentTime: (): number => video.lastSegmentTime,
 
-    getSegmentIndex: (): number => segmentIndex,
+    getSegmentIndex: (): number => video.segmentIndex,
 
     getStats: (): NativeProxyStats => ({
 
-      fetchErrors: totalFetchErrors,
-      segmentsFetched: totalSegmentsFetched,
-      tokenRefreshes: totalTokenRefreshes
+      fetchErrors: stats.totalFetchErrors,
+      segmentsFetched: stats.totalSegmentsFetched,
+      tokenRefreshes: stats.totalTokenRefreshes
     }),
 
-    getTargetDuration: (): number => lastTargetDuration,
+    getTargetDuration: (): number => video.lastTargetDuration,
 
-    hasErrored: (): boolean => errorThresholdReached,
+    hasErrored: (): boolean => lifecycle.errorThresholdReached,
 
-    isStopped: (): boolean => stopped,
+    isStopped: (): boolean => lifecycle.stopped,
 
     setTokenRefreshTimer: (timer: ReturnType<typeof setTimeout>): void => {
 
-      tokenRefreshTimer = timer;
+      lifecycle.tokenRefreshTimer = timer;
     },
 
     start: (): void => {
@@ -1396,20 +1580,20 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     stop: (): void => {
 
-      stopped = true;
+      lifecycle.stopped = true;
 
-      if(pollTimer) {
+      if(lifecycle.pollTimer) {
 
-        clearTimeout(pollTimer);
-        pollTimer = null;
+        clearTimeout(lifecycle.pollTimer);
+        lifecycle.pollTimer = null;
       }
 
       // Cancel the pending token refresh timer to prevent fire-after-termination. Without this, the timer fires on a stopped proxy and attempts to navigate a
       // potentially closed or reused page.
-      if(tokenRefreshTimer) {
+      if(lifecycle.tokenRefreshTimer) {
 
-        clearTimeout(tokenRefreshTimer);
-        tokenRefreshTimer = null;
+        clearTimeout(lifecycle.tokenRefreshTimer);
+        lifecycle.tokenRefreshTimer = null;
       }
 
       // Clean up the CDP session from manifest interception to prevent session leaks.
@@ -1420,9 +1604,9 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     updateAudioVariantUrl: (newUrl: string): void => {
 
-      audioVariantUrl = newUrl;
-      audioFetchedSequences.clear();
-      audioTokenRefreshPending = true;
+      audio.variantUrl = newUrl;
+      audio.fetchedSequences.clear();
+      audio.tokenRefreshPending = true;
 
       LOG.debug("native:proxy", "Audio variant URL updated for %s.", channelName);
     },
@@ -1436,16 +1620,16 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     updateVariantUrl: (newUrl: string): void => {
 
-      variantUrl = newUrl;
-      totalTokenRefreshes++;
+      video.variantUrl = newUrl;
+      stats.totalTokenRefreshes++;
 
       // Clear the fetched set so sequence numbers from the old CDN session don't cause segments in the new session to be incorrectly filtered as "already fetched."
       // The high-water mark is intentionally preserved — it's the same live stream with the same sequence timeline, just with fresh auth tokens. Resetting it would
       // allow the proxy to re-fetch segments the client already consumed, causing PTS discontinuities and visible playback glitches. The tokenRefreshPending flag
       // enables processManifest to detect genuine sequence timeline resets (e.g., Fox Sports) on the first poll after refresh.
-      fetchedSequences.clear();
-      lastMediaSequence = -1;
-      tokenRefreshPending = true;
+      video.fetchedSequences.clear();
+      video.lastMediaSequence = -1;
+      video.tokenRefreshPending = true;
 
       LOG.debug("native:proxy", "Variant URL updated for %s. Segment tracking reset.", channelName);
     }

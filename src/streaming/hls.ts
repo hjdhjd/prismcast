@@ -5,13 +5,13 @@
 import type { Channel, Nullable, ResolvedSiteProfile } from "../types/index.js";
 import type { HLSState, StreamRegistryEntry } from "./registry.js";
 import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.js";
+import { type PrerollCodec, generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.js";
 import type { Request, Response } from "express";
-import { StreamSetupError, createPageWithCapture, generateStreamId, setupStream } from "./setup.js";
-import { consumeResumeData, getResumeSegmentIndex } from "./hlsResume.js";
+import { StreamSetupError, type StreamSetupResult, createPageWithCapture, generateStreamId, setupStream } from "./setup.js";
 import { createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.js";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.js";
+import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.js";
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
-import { generatePrerollPlaylist, getPrerollSegmentCount, isPrerollReady } from "./preroll.js";
 import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
 import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.js";
 import { getAuthDomainForChannel, getProviderTagForChannel, getResolvedChannel, resolveProviderKey } from "../config/providers.js";
@@ -28,21 +28,27 @@ import { createHash } from "node:crypto";
 import { getGpuCapabilities } from "../browser/display.js";
 import { getProviderBySlug } from "../browser/channelSelection.js";
 import { registerClient } from "./clients.js";
+import { suppressPageAudio } from "../browser/video.js";
 import { triggerShowNameUpdate } from "./showInfo.js";
 
 /* This module handles HLS (HTTP Live Streaming) output using fMP4 (fragmented MP4) segments. HLS mode uses MP4/AAC capture from puppeteer-stream, which is then
- * segmented natively without any external dependencies. The overall flow uses a two-phase "preroll-first" architecture:
+ * segmented natively without any external dependencies. The stream initialization flow has three phases:
  *
- * 1. Client requests playlist at /hls/:name/stream.m3u8 (predefined channel) or /play?url=...&profile=... (ad-hoc URL)
- * 2. If no stream exists, a pending stream entry is registered immediately with a preroll playlist (black frame + silence). The client receives a valid, playable
- *    playlist on the first request — no blocking wait for the real stream.
- * 3. Asynchronously, setupStream() creates the browser page, navigates, captures, and creates the fMP4 segmenter. The segmenter starts at segment index 10
- *    (after the preroll range) with a pending discontinuity tag.
- * 4. When the segmenter produces its first real playlist, it overwrites the preroll playlist. The next client poll receives real content.
- * 5. Client fetches init.mp4 once, then media segments at /hls/:name/segmentN.m4s
- * 6. Idle timeout terminates streams with no recent segment requests
+ * Phase 1 — Registration (synchronous, in the request handler):
+ *   The client requests a playlist. If no stream exists and preroll is available, a pending registry entry is registered immediately with a deferred preroll timer.
+ *   The client receives a valid, playable playlist on the first request — no blocking wait for the real stream. If preroll is unavailable, the request blocks until
+ *   stream setup completes (fallback path).
  *
- * Shared streams: If multiple clients request the same channel (or the same ad-hoc URL with the same profile), they share one segmenter. The first client triggers
+ * Phase 2 — Browser setup (async, fire-and-forget from the request handler):
+ *   setupStream() creates the browser page, navigates to the URL, initializes playback, and starts capture. This produces the StreamSetupResult with the capture
+ *   stream, page, profile, and monitor. The pending registry entry is filled in with these references.
+ *
+ * Phase 3 — Streaming pipeline (async, after browser setup):
+ *   If the provider's manifest is interceptable, native HLS streaming is attempted via startNativeProxy(). If native is viable, the capture pipeline is stopped and
+ *   the proxy takes over. Otherwise, createCaptureSegmenter() creates the fMP4 segmenter and pipes the capture stream. When the first real playlist arrives
+ *   (from either the segmenter or native proxy), the preroll timer is cancelled and the client receives live content on the next poll.
+ *
+ * Shared streams: If multiple clients request the same channel (or the same ad-hoc URL with the same profile), they share one stream. The first client triggers
  * stream creation, and subsequent clients get the existing playlist and segments. Ad-hoc streams are identified by a synthetic key ("play-<hash>") derived from the
  * URL and profile, allowing them to use the same channelToStreamId deduplication mechanism as predefined channels.
  */
@@ -172,7 +178,9 @@ export async function ensureChannelStream(channelName: string, req: Request, res
 
   // When the preroll is available, register a pending stream immediately with a preroll playlist so the client gets a valid playlist on the first request. The full
   // stream setup runs asynchronously. When the preroll is not available (FFmpeg missing or failed), fall back to blocking initialization.
-  if(isPrerollReady()) {
+  const prerollCodec = getPrerollCodec();
+
+  if(isPrerollReady(prerollCodec)) {
 
     // Check capacity before registering the pending entry. The pending entry occupies a registry slot, so registering it at max capacity would cause setupStream's
     // capacity check to reject — after we've already returned a preroll playlist to the client. By gating here, we can still send a proper 503 error response.
@@ -189,7 +197,7 @@ export async function ensureChannelStream(channelName: string, req: Request, res
     }
 
     const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
-    const pending = registerPendingStream(channelName, validation.channel, clientAddress, req);
+    const pending = registerPendingStream(channelName, validation.channel, clientAddress, req, prerollCodec);
 
     // Launch async setup. Errors are caught here to clean up the pending entry and prevent unhandled rejections.
     void completeStreamSetup({
@@ -499,9 +507,9 @@ async function sendPlaylistResponse(streamId: number, clientAddress: string, res
 
   if(stream && !stream.hls.hasRealPlaylist) {
 
-    if(stream.hls.prerollBaseUrl && stream.hls.prerollStartTime) {
+    if(stream.hls.prerollBaseUrl && stream.hls.prerollCodec && stream.hls.prerollStartTime) {
 
-      playlist = generatePrerollPlaylist(stream.hls.prerollBaseUrl, stream.hls.resumeSegmentIndex, stream.hls.prerollStartTime);
+      playlist = generatePrerollPlaylist(stream.hls.prerollBaseUrl, stream.hls.prerollCodec, stream.hls.resumeSegmentIndex, stream.hls.prerollStartTime);
     }
 
     LOG.debug("streaming:preroll", "Serving preroll playlist for stream %d.", streamId);
@@ -560,6 +568,9 @@ function cleanupOrphanedSetup(segmenter: FMP4SegmenterResult): void {
   segmenter.stop();
 }
 
+// Maps vertical resolution heights to standard display labels. Used by formatNativeQuality() to convert "1920x1080" → "1080p".
+const RESOLUTION_LABELS: Record<string, string> = { "1080": "1080p", "2160": "4K", "360": "360p", "480": "480p", "720": "720p" };
+
 /**
  * Formats the native HLS quality string for the "Streaming..." log line. Combines codec, bandwidth (as Mbps), and resolution (as standard label like "1080p")
  * into a compact suffix. Returns an empty string when no values are available, or a comma-prefixed string like ", H264 12.1Mbps 1080p" for inclusion in the log.
@@ -586,9 +597,8 @@ function formatNativeQuality(bandwidth: number, codec: Nullable<string>, resolut
 
     // Map the vertical resolution to a standard label. Parse the height from "WIDTHxHEIGHT" format.
     const height = resolution.split("x")[1];
-    const labels: Record<string, string> = { "1080": "1080p", "2160": "4K", "360": "360p", "480": "480p", "720": "720p" };
 
-    parts.push(labels[height] ?? resolution);
+    parts.push(RESOLUTION_LABELS[height] ?? resolution);
   }
 
   if(parts.length === 0) {
@@ -884,9 +894,10 @@ interface PendingStreamResult {
  * @param channel - The resolved channel definition.
  * @param clientAddress - Client IP address for Channels DVR API integration.
  * @param req - Express request object for deriving the base URL.
+ * @param codec - The preroll codec variant to use for this stream.
  * @returns The allocated stream IDs.
  */
-function registerPendingStream(channelName: string, channel: Channel, clientAddress: Nullable<string>, req: Request): PendingStreamResult {
+function registerPendingStream(channelName: string, channel: Channel, clientAddress: Nullable<string>, req: Request, codec: PrerollCodec): PendingStreamResult {
 
   const numericStreamId = getNextStreamId();
   const streamIdStr = generateStreamId(channelName, channel.url);
@@ -910,21 +921,22 @@ function registerPendingStream(channelName: string, channel: Channel, clientAddr
   // Capture the stream start time at registration. This timestamp is used for the registry's startTime field (stream age display, etc.).
   const streamStartTime = new Date();
 
-  if(isPrerollReady()) {
+  if(isPrerollReady(codec)) {
 
     // Set preroll metadata immediately at registration so the segmenter and native proxy can read it regardless of whether the deferred timer has fired. The segment
-    // count and base URL are structural properties of the preroll system — they determine segment index offsets and composite playlist behavior. The timer controls
-    // only the client-facing timing (when the standalone preroll playlist begins serving). Decoupling these ensures correct behavior for fast-tune/slow-proxy
-    // scenarios (e.g., Fox native at 5s tune but 15s proxy first poll) where setup completes before the timer fires.
+    // count, codec, and base URL are structural properties of the preroll system — they determine segment index offsets, codec-aware URL paths, and composite playlist
+    // behavior. The timer controls only the client-facing timing (when the standalone preroll playlist begins serving). Decoupling these ensures correct behavior for
+    // fast-tune/slow-proxy scenarios (e.g., Fox native at 5s tune but 15s proxy first poll) where setup completes before the timer fires.
     hls.prerollBaseUrl = baseUrl;
-    hls.prerollSegmentCount = getPrerollSegmentCount();
+    hls.prerollCodec = codec;
+    hls.prerollSegmentCount = getPrerollSegmentCount(codec);
 
     hls.prerollTimer = setTimeout(() => {
 
       // Record the preroll start time and seed the initial progressive playlist. On subsequent polls, sendPlaylistResponse() regenerates the playlist with an
       // advancing window based on elapsed time from this start time, simulating a live stream.
       hls.prerollStartTime = new Date();
-      hls.playlist = generatePrerollPlaylist(baseUrl, hls.resumeSegmentIndex, hls.prerollStartTime);
+      hls.playlist = generatePrerollPlaylist(baseUrl, codec, hls.resumeSegmentIndex, hls.prerollStartTime);
       hls.signalPlaylistReady();
     }, PREROLL_DELAY_MS);
   }
@@ -995,7 +1007,9 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
       storeKey: channelName
     },
     mpegTsClientCount: 0,
+    nativeBandwidth: 0,
     nativeProxy: null,
+    nativeResolution: null,
     page: null,
     preTuned: options.preTuned ?? false,
     profile: null,
@@ -1048,7 +1062,231 @@ function handleSetupFailure(numericStreamId: number, channelName: string, channe
   }
 }
 
-// Async Stream Setup.
+// Async Stream Setup — Native and Capture Path Helpers.
+
+/**
+ * Result from attempting native streaming. Contains the fields needed by the caller to log quality info and emit status.
+ */
+interface NativeStreamingResult {
+
+  codec: Nullable<string>;
+  quality: string;
+}
+
+/**
+ * Attempts to upgrade the stream from capture to native HLS. Finalizes the manifest interception, probes the manifest, creates a native proxy, stops the capture
+ * pipeline, suppresses page audio, and updates the registry entry. Returns the codec and formatted quality string on success, or null if native is not viable.
+ * @param setup - The stream setup result from setupStream().
+ * @param numericStreamId - The stream's numeric ID.
+ * @param channelName - The channel key for logging and cache operations.
+ * @param url - The stream URL for the native proxy.
+ * @param mpegTsClient - Whether the client is an MPEG-TS consumer.
+ * @returns The native codec and quality info, or null if native streaming was not viable.
+ */
+async function startNativeProxy(setup: StreamSetupResult, numericStreamId: number, channelName: string, url: string,
+  mpegTsClient?: boolean): Promise<Nullable<NativeStreamingResult>> {
+
+  if(!setup.manifestInterception) {
+
+    return null;
+  }
+
+  setup.manifestInterception.finalize(setup.directTune);
+
+  // Read the preroll segment count from the pending entry to pass to the native coordinator. This value is set at registration time (not in the timer callback),
+  // so it's available regardless of whether the deferred preroll timer has fired. The proxy uses it for segment index offset. The base URL for composite playlists
+  // is read dynamically from the stream's HLS state at playlist generation time.
+  const pendingForNative = getStream(numericStreamId);
+  const nativePrerollSegmentCount = pendingForNative?.hls.prerollSegmentCount ?? 0;
+
+  const nativeResult = await attemptNativeStreaming({
+
+    channelName,
+    interceptionPromise: setup.manifestInterception.promise,
+    mpegTsClient,
+    onError: (error) => {
+
+      if(isTerminationInitiated(numericStreamId)) {
+
+        return;
+      }
+
+      // Log the error and clear the probe cache. The proxy has already stopped itself (set errorThresholdReached + stopped). The monitor detects
+      // hasErrored() on the next 2-second tick and triggers L3 fallback to capture mode, preserving the stream for the DVR client.
+      LOG.warn("Native proxy error for %s: %s. Falling back to capture.", channelName, error);
+
+      clearProbeCache(channelName);
+    },
+    page: setup.page,
+    prerollCodec: pendingForNative?.hls.prerollCodec ?? "h264",
+    prerollSegmentCount: nativePrerollSegmentCount,
+    streamId: numericStreamId,
+    streamIdStr: setup.streamId,
+    url
+  });
+
+  if(!nativeResult) {
+
+    return null;
+  }
+
+  const currentStream = getStream(numericStreamId);
+
+  if(!currentStream) {
+
+    nativeResult.proxy.stop();
+
+    return null;
+  }
+
+  // Stop the capture pipeline — native streaming replaces it entirely.
+  if(!setup.rawCaptureStream.destroyed) {
+
+    setup.rawCaptureStream.destroy();
+  }
+
+  if(setup.ffmpegProcess) {
+
+    setup.ffmpegProcess.kill();
+  }
+
+  // Update the registry entry to reflect native mode. For streams with separate audio, clear preroll state — preroll is muxed video+audio and can't be
+  // split into separate renditions. For muxed-audio streams, preserve preroll state so the proxy can build composite playlists with preroll entries.
+  currentStream.ffmpegProcess = null;
+  currentStream.hls.hasAudio = nativeResult.hasAudio;
+
+  if(nativeResult.hasAudio) {
+
+    currentStream.hls.prerollBaseUrl = null;
+    currentStream.hls.prerollCodec = null;
+    currentStream.hls.prerollSegmentCount = 0;
+  }
+
+  currentStream.captureCodec = nativeResult.codec;
+  currentStream.hardwareAccelerated = false;
+  currentStream.nativeBandwidth = nativeResult.bandwidth;
+  currentStream.nativeProxy = nativeResult.proxy;
+  currentStream.nativeResolution = nativeResult.resolution;
+  currentStream.rawCaptureStream = null;
+  currentStream.streamingMode = "native";
+
+  // Start the native proxy. Signal init segment readiness immediately — native MPEG-TS segments carry their own PAT/PMT codec configuration in every
+  // segment, so there is no separate init segment to wait for. Without this, MPEG-TS clients block on waitForInitSegment() and time out before the proxy's
+  // first poll cycle completes.
+  nativeResult.proxy.start();
+  currentStream.hls.signalInitSegmentReady();
+
+  // Suppress audio on the browser page. The page stays alive for token refresh but the video element's audio is not part of the native stream — without
+  // suppression, it plays audibly on the local machine.
+  await suppressPageAudio(setup.page);
+
+  LOG.debug("native:coordinator", "Capture pipeline stopped for %s. Native proxy active.", channelName);
+
+  return { codec: nativeResult.codec, quality: formatNativeQuality(nativeResult.bandwidth, nativeResult.codec, nativeResult.resolution) };
+}
+
+/**
+ * Creates the fMP4 segmenter for capture mode streams. Reads resume data, creates the segmenter with preroll and resume configuration, pipes the capture stream,
+ * and stores the segmenter in the registry. Resume data is consumed only after the segmenter is successfully stored, ensuring it survives if creation fails.
+ * @param setup - The stream setup result from setupStream().
+ * @param numericStreamId - The stream's numeric ID.
+ * @param channelName - The channel key for resume data and logging.
+ * @returns True if the segmenter was created and stored, false if the stream was terminated during setup.
+ */
+function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: number, channelName: string): boolean {
+
+  // Peek at resume data from a previous shutdown without consuming it. The data is consumed (deleted) only after the segmenter is successfully created and
+  // stored in the registry. This ensures resume data survives if segmenter creation fails — the next stream start retries with the same resume state instead
+  // of losing it and causing an HLS sequence reset.
+  const resumeData = peekResumeData(channelName);
+  const currentStream = getStream(numericStreamId);
+  const prerollSegmentCount = currentStream?.hls.prerollSegmentCount ?? 0;
+
+  // When preroll is active, use the snapshotted resume index (stored on HLS state at registration) so the segmenter's starting index is guaranteed to match
+  // the preroll playlist's MEDIA-SEQUENCE offset. When preroll is inactive, use the resume data directly — no preroll playlist to be consistent with.
+  const baseSegmentIndex = (prerollSegmentCount > 0) ? (currentStream?.hls.resumeSegmentIndex ?? 0) : (resumeData?.segmentIndex ?? 0);
+
+  // Create the fMP4 segmenter. The starting segment index accounts for both the resume offset and the preroll segment range. When preroll is active, the
+  // segmenter includes preroll entries in its sliding window via the compositor. The pending discontinuity at the preroll-to-real boundary is always needed —
+  // previousInitSegment is only passed without preroll, because the preroll init segment differs from the real init and the discontinuity must not be
+  // suppressed by an init-match comparison against the prior session.
+  const segmenter = createFMP4Segmenter({
+
+    ...(resumeData ? {
+
+      initialTrackTimestamps: resumeData.trackTimestamps,
+      ...((prerollSegmentCount === 0) ? { previousInitSegment: resumeData.initSegment } : {}),
+      startingInitVersion: resumeData.initVersion
+    } : {}),
+
+    ...((prerollSegmentCount > 0) ? {
+
+      prerollBaseUrl: currentStream?.hls.prerollBaseUrl ?? null,
+      prerollCodec: currentStream?.hls.prerollCodec ?? "h264",
+      prerollSegmentCount
+    } : {}),
+
+    ...((resumeData || (prerollSegmentCount > 0)) ? {
+
+      pendingDiscontinuity: true,
+      startingSegmentIndex: baseSegmentIndex + prerollSegmentCount
+    } : {}),
+
+    onError: (error: Error) => {
+
+      // Skip error handling if termination was already initiated.
+      if(isTerminationInitiated(numericStreamId)) {
+
+        return;
+      }
+
+      LOG.error("Segmenter error for %s: %s.", channelName, formatError(error));
+
+      terminateStream(numericStreamId, channelName, "stream processing error");
+      void emitCurrentSystemStatus();
+    },
+
+    onStop: () => {
+
+      // Skip handling if termination was already initiated.
+      if(isTerminationInitiated(numericStreamId)) {
+
+        return;
+      }
+
+      LOG.error("Segmenter stopped unexpectedly for %s.", channelName);
+
+      terminateStream(numericStreamId, channelName, "stream ended unexpectedly");
+      void emitCurrentSystemStatus();
+    },
+
+    streamId: numericStreamId
+  });
+
+  // Pipe the capture stream to the segmenter.
+  segmenter.pipe(setup.captureStream);
+
+  // Store the segmenter reference in the registry.
+  const captureStream = getStream(numericStreamId);
+
+  if(captureStream) {
+
+    captureStream.segmenter = segmenter;
+
+    // Now that the segmenter is created, piped, and stored, consume the resume data so it's not used again on a subsequent stream start for the same channel.
+    if(resumeData) {
+
+      deleteResumeData(channelName);
+    }
+
+    return true;
+  }
+
+  // Stream was terminated during setup (rare race condition). Clean up the orphaned segmenter.
+  cleanupOrphanedSetup(segmenter);
+
+  return false;
+}
 
 /**
  * Options for completing stream setup.
@@ -1154,183 +1392,24 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       // PREROLL_DELAY_MS and provides content during that gap. For the capture path, the segmenter produces its first playlist within ~2 seconds of creation, so
       // the timer is cancelled almost immediately after setup anyway.
 
-      // Attempt native streaming if a manifest interception handle is available. Signal finalize() to tell the interceptor that channel selection is complete and it
-      // should resolve with the most recently captured manifest URL. For direct-navigation sites, the manifest was captured during page load and finalize resolves
-      // immediately. For guide-based sites (Fox, Hulu, etc.), the manifest from the correct channel was captured after the strategy clicked the right entry.
+      // Attempt native streaming if a manifest interception handle is available. If native is viable, the capture pipeline is stopped and the proxy takes over.
       let nativeCodec: Nullable<string> = null;
       let nativeQuality = "";
       let streamingMode: "capture" | "native" = "capture";
 
-      if(setup.manifestInterception) {
+      const nativeStreamResult = await startNativeProxy(setup, numericStreamId, channelName, url, mpegTsClient);
 
-        setup.manifestInterception.finalize(setup.directTune);
+      if(nativeStreamResult) {
 
-        // Read the preroll segment count from the pending entry to pass to the native coordinator. This value is set at registration time (not in the timer callback),
-        // so it's available regardless of whether the deferred preroll timer has fired. The proxy uses it for segment index offset. The base URL for composite playlists
-        // is read dynamically from the stream's HLS state at playlist generation time.
-        const pendingForNative = getStream(numericStreamId);
-        const nativePrerollSegmentCount = pendingForNative?.hls.prerollSegmentCount ?? 0;
-
-        const nativeResult = await attemptNativeStreaming({
-
-          channelName,
-          interceptionPromise: setup.manifestInterception.promise,
-          mpegTsClient,
-          onError: (error) => {
-
-            if(isTerminationInitiated(numericStreamId)) {
-
-              return;
-            }
-
-            // Log the error and clear the probe cache. The proxy has already stopped itself (set errorThresholdReached + stopped). The monitor detects
-            // hasErrored() on the next 2-second tick and triggers L3 fallback to capture mode, preserving the stream for the DVR client.
-            LOG.warn("Native proxy error for %s: %s. Falling back to capture.", channelName, error);
-
-            clearProbeCache(channelName);
-          },
-          page: setup.page,
-          prerollSegmentCount: nativePrerollSegmentCount,
-          streamId: numericStreamId,
-          streamIdStr: setup.streamId,
-          url
-        });
-
-        if(nativeResult) {
-
-          const currentStream = getStream(numericStreamId);
-
-          if(!currentStream) {
-
-            nativeResult.proxy.stop();
-
-            return null;
-          }
-
-          // Stop the capture pipeline — native streaming replaces it entirely.
-          if(!setup.rawCaptureStream.destroyed) {
-
-            setup.rawCaptureStream.destroy();
-          }
-
-          if(setup.ffmpegProcess) {
-
-            setup.ffmpegProcess.kill();
-          }
-
-          // Update the registry entry to reflect native mode. For streams with separate audio, clear preroll state — preroll is muxed video+audio and can't be
-          // split into separate renditions. For muxed-audio streams, preserve preroll state so the proxy can build composite playlists with preroll entries.
-          currentStream.ffmpegProcess = null;
-          currentStream.hls.hasAudio = nativeResult.hasAudio;
-
-          if(nativeResult.hasAudio) {
-
-            currentStream.hls.prerollBaseUrl = null;
-            currentStream.hls.prerollSegmentCount = 0;
-          }
-
-          currentStream.captureCodec = nativeResult.codec;
-          currentStream.hardwareAccelerated = true;
-          currentStream.nativeProxy = nativeResult.proxy;
-          currentStream.rawCaptureStream = null;
-          currentStream.streamingMode = "native";
-          streamingMode = "native";
-          nativeCodec = nativeResult.codec;
-          nativeQuality = formatNativeQuality(nativeResult.bandwidth, nativeResult.codec, nativeResult.resolution);
-
-          // Start the native proxy. Signal init segment readiness immediately — native MPEG-TS segments carry their own PAT/PMT codec configuration in every
-          // segment, so there is no separate init segment to wait for. Without this, MPEG-TS clients block on waitForInitSegment() and time out before the proxy's
-          // first poll cycle completes.
-          nativeResult.proxy.start();
-          currentStream.hls.signalInitSegmentReady();
-
-          LOG.debug("native:coordinator", "Capture pipeline stopped for %s. Native proxy active.", channelName);
-        }
+        streamingMode = "native";
+        nativeCodec = nativeStreamResult.codec;
+        nativeQuality = nativeStreamResult.quality;
       }
 
       // If native streaming was not viable or not attempted, create the fMP4 segmenter for capture mode.
       if(streamingMode === "capture") {
 
-        // Check for resume data from a previous shutdown. If available, the segmenter continues from the saved sequence numbers instead of starting at 0,
-        // preventing HLS sequence resets that cause Channels DVR to produce broken recording timelines. Preroll and resume work together — the preroll playlist
-        // is already offset by the resume segment index (set in registerPendingStream), and the segmenter starts after the preroll range.
-        const resumeData = consumeResumeData(channelName);
-        const currentStream = getStream(numericStreamId);
-        const prerollSegmentCount = currentStream?.hls.prerollSegmentCount ?? 0;
-
-        // When preroll is active, use the snapshotted resume index (stored on HLS state at registration) so the segmenter's starting index is guaranteed to match
-        // the preroll playlist's MEDIA-SEQUENCE offset. When preroll is inactive, use the resume data directly — no preroll playlist to be consistent with.
-        const baseSegmentIndex = (prerollSegmentCount > 0) ? (currentStream?.hls.resumeSegmentIndex ?? 0) : (resumeData?.segmentIndex ?? 0);
-
-        // Create the fMP4 segmenter. The starting segment index accounts for both the resume offset and the preroll segment range. When preroll is active, the
-        // segmenter includes preroll entries in its sliding window via the compositor. The pending discontinuity at the preroll→real boundary is always needed —
-        // previousInitSegment is only passed without preroll, because the preroll init segment differs from the real init and the discontinuity must not be
-        // suppressed by an init-match comparison against the prior session.
-        const segmenter = createFMP4Segmenter({
-
-          ...(resumeData ? {
-
-            initialTrackTimestamps: resumeData.trackTimestamps,
-            ...((prerollSegmentCount === 0) ? { previousInitSegment: resumeData.initSegment } : {}),
-            startingInitVersion: resumeData.initVersion
-          } : {}),
-
-          ...((prerollSegmentCount > 0) ? {
-
-            prerollBaseUrl: currentStream?.hls.prerollBaseUrl ?? null,
-            prerollSegmentCount
-          } : {}),
-
-          ...((resumeData || (prerollSegmentCount > 0)) ? {
-
-            pendingDiscontinuity: true,
-            startingSegmentIndex: baseSegmentIndex + prerollSegmentCount
-          } : {}),
-
-          onError: (error: Error) => {
-
-            // Skip error handling if termination was already initiated.
-            if(isTerminationInitiated(numericStreamId)) {
-
-              return;
-            }
-
-            LOG.error("Segmenter error for %s: %s.", channelName, formatError(error));
-
-            terminateStream(numericStreamId, channelName, "stream processing error");
-            void emitCurrentSystemStatus();
-          },
-
-          onStop: () => {
-
-            // Skip handling if termination was already initiated.
-            if(isTerminationInitiated(numericStreamId)) {
-
-              return;
-            }
-
-            LOG.error("Segmenter stopped unexpectedly for %s.", channelName);
-
-            terminateStream(numericStreamId, channelName, "stream ended unexpectedly");
-            void emitCurrentSystemStatus();
-          },
-
-          streamId: numericStreamId
-        });
-
-        // Pipe the capture stream to the segmenter.
-        segmenter.pipe(setup.captureStream);
-
-        // Store the segmenter reference in the registry.
-        const captureStream = getStream(numericStreamId);
-
-        if(captureStream) {
-
-          captureStream.segmenter = segmenter;
-        } else {
-
-          // Stream was terminated during setup (rare race condition). Clean up the orphaned segmenter.
-          cleanupOrphanedSetup(segmenter);
+        if(!createCaptureSegmenter(setup, numericStreamId, channelName)) {
 
           return null;
         }
@@ -1360,9 +1439,10 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         markChannelSuccess(channelName, successAuthDomain, markAuth);
       }
 
-      // Update the registry entry with codec and hardware acceleration state, then emit the stream added event for the dashboard.
+      // Update the registry entry with codec and hardware acceleration state, then emit the stream added event for the dashboard. Native streams set their codec
+      // and quality fields earlier (when the native proxy is created), so only capture mode needs updating here.
       const streamCodec = (streamingMode === "native") ? nativeCodec : (gpu?.hevcHardwareEncoding ? "HEVC" : "H264");
-      const hwAccelerated = (streamingMode === "native") || (gpu?.h264HardwareEncoding === true);
+      const hwAccelerated = (streamingMode !== "native") && (gpu?.h264HardwareEncoding === true);
       const currentEntry = getStream(numericStreamId);
 
       if(currentEntry) {
@@ -1439,84 +1519,54 @@ async function startHLSStream(channelName: string, url: string, req: Request, re
 // Idle Detection.
 
 /**
+ * Returns all streams that have exceeded the idle timeout and have no active MPEG-TS clients. Pretuned streams are excluded — they have no clients by design and
+ * the pretune module manages their lifecycle via a safety timeout. The result is sorted by last access time (oldest first) so callers can efficiently pick the
+ * longest-idle stream for reclamation.
+ * @returns Idle streams sorted by last access time ascending (oldest first).
+ */
+function getIdleStreams(): StreamRegistryEntry[] {
+
+  const now = Date.now();
+
+  return getAllStreams()
+    .filter((stream) => !stream.preTuned && (stream.mpegTsClientCount === 0) && ((now - stream.info.lastPlaylistRequest) >= CONFIG.hls.idleTimeout))
+    .sort((a, b) => a.info.lastPlaylistRequest - b.info.lastPlaylistRequest);
+}
+
+/**
  * Checks for idle streams and terminates them. Called periodically by the idle detection interval.
  */
 export function cleanupIdleStreams(): void {
 
-  const streams = getAllStreams();
-  const now = Date.now();
-  let terminatedCount = 0;
+  const idle = getIdleStreams();
 
-  for(const stream of streams) {
+  for(const stream of idle) {
 
-    // Skip pretuned streams. These have no clients by design and must not be terminated by the idle timer. The pretune module manages their lifecycle via a
-    // safety timeout.
-    if(stream.preTuned) {
-
-      continue;
-    }
-
-    // Skip streams with active MPEG-TS clients. These streams are still being consumed even if no HLS playlist requests have been made recently.
-    if(stream.mpegTsClientCount > 0) {
-
-      continue;
-    }
-
-    const idleTime = now - stream.info.lastPlaylistRequest;
-
-    if(idleTime >= CONFIG.hls.idleTimeout) {
-
-      terminateStream(stream.id, stream.info.storeKey, "no active clients");
-      terminatedCount++;
-    }
+    terminateStream(stream.id, stream.info.storeKey, "no active clients");
   }
 
   // Emit system status once after all idle streams are terminated.
-  if(terminatedCount > 0) {
+  if(idle.length > 0) {
 
     void emitCurrentSystemStatus();
   }
 }
 
 /**
- * Attempts to reclaim a single idle stream to free capacity for a new request. Finds the stream that has been idle the longest and terminates it. A stream is
- * considered idle when it has no MPEG-TS clients and its last access exceeds the idle timeout. This is called when the concurrent stream limit is reached, allowing
- * channel-surfing users to get new streams without being rejected while abandoned streams linger.
+ * Attempts to reclaim a single idle stream to free capacity for a new request. Terminates the stream that has been idle the longest. This is called when the
+ * concurrent stream limit is reached, allowing channel-surfing users to get new streams without being rejected while abandoned streams linger.
  * @returns True if a stream was reclaimed, false if no idle streams exist.
  */
 function reclaimIdleStream(): boolean {
 
-  const streams = getAllStreams();
-  const now = Date.now();
-  let oldest: Nullable<StreamRegistryEntry> = null;
+  const idle = getIdleStreams();
 
-  for(const stream of streams) {
-
-    // Skip pretuned streams — they should not be reclaimed for new stream capacity.
-    if(stream.preTuned) {
-
-      continue;
-    }
-
-    // Skip streams with active MPEG-TS clients.
-    if(stream.mpegTsClientCount > 0) {
-
-      continue;
-    }
-
-    const idleTime = now - stream.info.lastPlaylistRequest;
-
-    // Only consider streams that have exceeded the idle timeout, and pick the one that has been idle the longest.
-    if((idleTime >= CONFIG.hls.idleTimeout) && (!oldest || (stream.info.lastPlaylistRequest < oldest.info.lastPlaylistRequest))) {
-
-      oldest = stream;
-    }
-  }
-
-  if(!oldest) {
+  if(idle.length === 0) {
 
     return false;
   }
+
+  const oldest = idle[0];
 
   LOG.info("Reclaiming idle stream %s (%s) to free capacity.", oldest.id, oldest.info.storeKey);
 

@@ -3,13 +3,14 @@
  * preroll.ts: Preroll generation and compositor for immediate HLS response during stream startup.
  */
 import type { Express, Request, Response } from "express";
-import { LOG, resolveFFmpegPath } from "../utils/index.js";
+import { LOG, getBundledFFmpegPath } from "../utils/index.js";
 import { createMP4BoxParser, offsetMoofTimestamps, parseMoovTrackInfo } from "./mp4Parser.js";
 import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
 import type { PlaylistSegmentEntry } from "./playlistBuilder.js";
 import { buildPlaylist } from "./playlistBuilder.js";
 import { getEffectiveViewport } from "../config/presets.js";
+import { getGpuCapabilities } from "../browser/display.js";
 import { spawn } from "node:child_process";
 
 /* When a client requests an HLS playlist for a channel that is still starting up, PrismCast returns a startup playlist immediately to prevent HTTP timeouts. Channels
@@ -17,11 +18,18 @@ import { spawn } from "node:child_process";
  * seconds of black+silence fMP4 at server startup, splits it into individual segments with naturally monotonic PTS, and serves them via global routes so the startup
  * playlist can reference valid media content.
  *
+ * Both H.264 and HEVC variants are generated when the GPU supports HEVC hardware encoding. This ensures the preroll codec matches the capture codec at the
+ * preroll-to-live boundary, eliminating a cross-codec discontinuity that would force a decoder reinitialization. The bundled ffmpeg-for-homebridge binary (which
+ * includes libx265) is used for all preroll generation, bypassing the Channels DVR FFmpeg whose minimal encoder set may lack HEVC support.
+ *
  * The preroll playlist is served progressively — segments are revealed over time based on elapsed wall-clock time, simulating a live stream. The client polls for
  * updates, sees new segments appear, and keeps playing without stalling for the full duration of the tune. When real content arrives, the fMP4 segmenter's composite
  * playlist takes over, including preroll entries in its sliding window during the transition. As real segments accumulate, preroll entries fall off the window and the
  * playlist becomes purely live content.
  */
+
+// Preroll codec identifier. Lowercase labels used as map keys and URL path segments.
+export type PrerollCodec = "h264" | "hevc";
 
 // Total duration of preroll content in seconds. FFmpeg generates this much continuous black+silence fMP4, which is then split into individual segments at keyframe
 // boundaries. The configured duration provides ample coverage for the slowest providers with the progressive playlist delivering content in real time for the full
@@ -32,56 +40,74 @@ const PREROLL_TOTAL_DURATION = 30;
 // durations from the end of a live playlist, so 4 segments gives the client 3 playable segments plus one buffer.
 const PREROLL_INITIAL_WINDOW = 4;
 
-// Cached preroll buffers. Generated once at startup, reused for all streams.
-let prerollInitSegment: Nullable<Buffer> = null;
+/**
+ * Per-codec preroll variant. Each variant contains a complete set of preroll buffers (init segment + media segments) and their durations. Both H.264 and HEVC variants
+ * are generated at startup when the GPU supports HEVC hardware encoding, so the preroll codec matches the capture codec at the preroll-to-live boundary.
+ */
+interface PrerollVariant {
 
-// Individual preroll media segment buffers. Each entry is one moof+mdat pair with naturally monotonic PTS from the continuous FFmpeg output. Unlike the previous
-// implementation that served the same buffer N times (causing PTS restarts), each segment has distinct timestamps.
-const prerollMediaSegments: Buffer[] = [];
+  durations: number[];
+  initSegment: Buffer;
+  mediaSegments: Buffer[];
+}
 
-// Per-segment durations in seconds. Derived from trun sample durations and moov timescales during splitPrerollBuffers(). Used for EXTINF values in the playlist.
-const prerollSegmentDurations: number[] = [];
+// Cached preroll variants keyed by codec label ("h264", "hevc"). Generated once at startup, reused for all streams. The H.264 variant is always generated; the HEVC
+// variant is generated when the GPU supports HEVC hardware encoding.
+const prerollVariants = new Map<string, PrerollVariant>();
 
 // Public Accessors.
 
 /**
- * Returns true when the preroll init segment and at least one media segment have been generated and are ready to serve.
+ * Returns true when the specified preroll variant has been generated and is ready to serve.
+ * @param codec - The preroll codec variant to check.
  */
-export function isPrerollReady(): boolean {
+export function isPrerollReady(codec: PrerollCodec): boolean {
 
-  return (prerollInitSegment !== null) && (prerollMediaSegments.length > 0);
+  const variant = prerollVariants.get(codec);
+
+  return (variant !== undefined) && (variant.mediaSegments.length > 0);
 }
 
 /**
- * Returns the number of preroll segments available. Used by the segmenter to determine the preroll-to-real segment index boundary.
+ * Returns the number of preroll segments available for the specified codec. Used by the segmenter to determine the preroll-to-real segment index boundary.
+ * @param codec - The preroll codec variant.
  * @returns The count of preroll media segments.
  */
-export function getPrerollSegmentCount(): number {
+export function getPrerollSegmentCount(codec: PrerollCodec): number {
 
-  return prerollMediaSegments.length;
+  return prerollVariants.get(codec)?.mediaSegments.length ?? 0;
 }
 
 /**
  * Returns the duration of a specific preroll segment in seconds. Used by the segmenter's generatePlaylist() for EXTINF values when preroll entries are in the sliding
  * window.
+ * @param codec - The preroll codec variant.
  * @param index - The zero-based segment index.
  * @returns The segment duration in seconds.
  */
-export function getPrerollSegmentDuration(index: number): number {
+export function getPrerollSegmentDuration(codec: PrerollCodec, index: number): number {
 
-  return prerollSegmentDurations[index] ?? 2;
+  return prerollVariants.get(codec)?.durations[index] ?? 2;
 }
 
 /**
  * Returns the total duration of all preroll segments in seconds. Used by the fmp4Segmenter to compute PTS offsets that make Chrome's real content timestamps continue
  * from where the preroll ended, eliminating the PTS discontinuity at the preroll-to-live boundary.
+ * @param codec - The preroll codec variant.
  * @returns The sum of all preroll segment durations in seconds.
  */
-export function getPrerollTotalDurationSec(): number {
+export function getPrerollTotalDurationSec(codec: PrerollCodec): number {
+
+  const variant = prerollVariants.get(codec);
+
+  if(!variant) {
+
+    return 0;
+  }
 
   let total = 0;
 
-  for(const duration of prerollSegmentDurations) {
+  for(const duration of variant.durations) {
 
     total += duration;
   }
@@ -90,19 +116,23 @@ export function getPrerollTotalDurationSec(): number {
 }
 
 /**
- * Returns the maximum duration across all preroll segments, rounded up to the nearest integer. Used for TARGETDURATION computation in the composite playlist.
+ * Returns the maximum duration across all preroll segments for the specified codec, rounded up to the nearest integer. Used for TARGETDURATION computation in the
+ * composite playlist.
+ * @param codec - The preroll codec variant.
  * @returns The ceiling of the maximum preroll segment duration.
  */
-export function getPrerollMaxDuration(): number {
+export function getPrerollMaxDuration(codec: PrerollCodec): number {
 
-  if(prerollSegmentDurations.length === 0) {
+  const variant = prerollVariants.get(codec);
+
+  if(!variant || (variant.durations.length === 0)) {
 
     return 2;
   }
 
   let max = 0;
 
-  for(const duration of prerollSegmentDurations) {
+  for(const duration of variant.durations) {
 
     if(duration > max) {
 
@@ -113,38 +143,93 @@ export function getPrerollMaxDuration(): number {
   return Math.ceil(max);
 }
 
+/**
+ * Returns the preroll codec that should be used for new streams. HEVC is preferred when the GPU supports HEVC hardware encoding (matching the capture codec), with
+ * H.264 as the fallback. If the preferred variant was not generated (e.g., HEVC generation failed), falls back to whichever variant is available.
+ * @returns The codec to use for preroll, or "h264" as the default.
+ */
+export function getPrerollCodec(): PrerollCodec {
+
+  const preferHevc = getGpuCapabilities()?.hevcHardwareEncoding === true;
+  const preferred: PrerollCodec = preferHevc ? "hevc" : "h264";
+
+  if(isPrerollReady(preferred)) {
+
+    return preferred;
+  }
+
+  // Fall back: if the preferred variant failed to generate, use the other one.
+  const fallback: PrerollCodec = preferHevc ? "h264" : "hevc";
+
+  if(isPrerollReady(fallback)) {
+
+    return fallback;
+  }
+
+  return "h264";
+}
+
 // Preroll Generation.
 
 /**
- * Generates the preroll fMP4 at startup. Spawns FFmpeg to create PREROLL_TOTAL_DURATION seconds of black frame + silence as fragmented MP4, then splits
- * the output into an init segment (ftyp + moov) and individual media segments (moof + mdat pairs) using the MP4 box parser. Each segment has naturally monotonic PTS
- * because it comes from a continuous FFmpeg encode. If FFmpeg is unavailable or fails, the preroll is left uninitialized and the system degrades gracefully — the
- * blocking stream setup path is used instead.
+ * Generates preroll fMP4 variants at startup. Uses the bundled ffmpeg-for-homebridge binary (which includes both libx264 and libx265) to guarantee encoder
+ * availability regardless of the user's system FFmpeg installation. The H.264 variant is always generated. The HEVC variant is generated when the GPU supports HEVC
+ * hardware encoding, so the preroll codec can match the capture codec at the preroll-to-live boundary.
+ *
+ * Each variant spawns FFmpeg to create PREROLL_TOTAL_DURATION seconds of black frame + silence as fragmented MP4, then splits the output into an init segment
+ * (ftyp + moov) and individual media segments (moof + mdat pairs) using the MP4 box parser. Each segment has naturally monotonic PTS because it comes from a
+ * continuous FFmpeg encode. If the bundled FFmpeg is unavailable or a variant fails, the system degrades gracefully — the blocking stream setup path is used instead.
  */
 export async function generatePreroll(): Promise<void> {
 
-  const ffmpegPath = await resolveFFmpegPath();
+  const ffmpegBin = getBundledFFmpegPath();
 
-  if(!ffmpegPath) {
+  if(!ffmpegBin) {
 
-    LOG.warn("FFmpeg is not available. Preroll generation skipped — startup playlists will have no segments.");
+    LOG.warn("Bundled FFmpeg is not available. Preroll generation skipped — startup playlists will have no segments.");
 
     return;
   }
 
-  // Use the effective viewport to match the resolution Chrome MediaRecorder will produce. This prevents a resolution mismatch at the preroll→live discontinuity
-  // boundary. Baseline profile and level 3.1 match Chrome's MediaRecorder output (confirmed via parseMoovCodecConfig telemetry). Slow preset and CRF 18 produce
-  // higher quality — acceptable for a short duration of simple content generated once at startup.
+  // Use the effective viewport to match the resolution Chrome MediaRecorder will produce. This prevents a resolution mismatch at the preroll-to-live discontinuity
+  // boundary.
   const viewport = getEffectiveViewport(CONFIG);
   const size = String(viewport.width) + "x" + String(viewport.height);
 
+  // Generate the H.264 variant. Baseline profile and level 3.1 match Chrome's MediaRecorder output (confirmed via parseMoovCodecConfig telemetry). Slow preset and
+  // CRF 18 produce higher quality — acceptable for a short duration of simple content generated once at startup.
+  await generateVariant(ffmpegBin, "h264", [
+    "-c:v", "libx264", "-preset", "slow", "-tune", "stillimage", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
+    "-crf", "18"
+  ], size);
+
+  // Generate the HEVC variant when the GPU supports HEVC hardware encoding. The libx265 encoder does not support the -tune stillimage option (libx264-specific), so
+  // we omit it. The -tag:v hvc1 flag ensures the output uses the hvc1 box type (matching Chrome's MediaRecorder HEVC output) rather than libx265's default hev1.
+  if(getGpuCapabilities()?.hevcHardwareEncoding === true) {
+
+    await generateVariant(ffmpegBin, "hevc", [
+      "-c:v", "libx265", "-preset", "slow", "-profile:v", "main", "-pix_fmt", "yuv420p",
+      "-crf", "18", "-tag:v", "hvc1"
+    ], size);
+  }
+}
+
+/**
+ * Generates a single preroll variant (H.264 or HEVC) and stores it in the variant cache. Constructs the FFmpeg argument list from shared parameters (input sources,
+ * duration, GOP size, audio codec, fMP4 output flags) combined with the codec-specific video encoder arguments.
+ * @param ffmpegBin - Path to the FFmpeg executable.
+ * @param codec - The codec label for this variant.
+ * @param videoArgs - Codec-specific FFmpeg arguments for the video encoder (e.g., "-c:v libx264 -preset slow ...").
+ * @param size - The output resolution as "WxH".
+ */
+async function generateVariant(ffmpegBin: string, codec: PrerollCodec, videoArgs: string[], size: string): Promise<void> {
+
   const args = [
-    "-hide_banner", "-loglevel", "warning",
+    "-hide_banner", "-nostats", "-loglevel", "warning",
     "-f", "lavfi", "-i", "color=black:size=" + size + ":rate=30:duration=" + String(PREROLL_TOTAL_DURATION),
     "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
     "-t", String(PREROLL_TOTAL_DURATION),
-    "-c:v", "libx264", "-preset", "slow", "-tune", "stillimage", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
-    "-crf", "18",
+    ...videoArgs,
     "-g", "60",
     "-c:a", "aac", "-b:a", "128000",
     "-f", "mp4",
@@ -155,26 +240,24 @@ export async function generatePreroll(): Promise<void> {
 
   try {
 
-    const output = await spawnAndCollect(ffmpegPath, args);
+    const output = await spawnAndCollect(ffmpegBin, args);
+    const variant = splitPrerollBuffers(output);
 
-    splitPrerollBuffers(output);
+    if(variant && (variant.mediaSegments.length > 0)) {
 
-    const init = prerollInitSegment;
+      prerollVariants.set(codec, variant);
 
-    if(init && (prerollMediaSegments.length > 0)) {
+      const totalSize = variant.mediaSegments.reduce((sum, seg) => sum + seg.length, 0);
 
-      const totalSize = prerollMediaSegments.reduce((sum, seg) => sum + seg.length, 0);
-
-      LOG.debug("streaming:preroll", "Preroll ready: %d segments, init=%d bytes, media=%d bytes total.", prerollMediaSegments.length, init.length, totalSize);
+      LOG.debug("streaming:preroll", "Preroll %s ready: %d segments, init=%d bytes, media=%d bytes total.",
+        codec, variant.mediaSegments.length, variant.initSegment.length, totalSize);
     } else {
 
-      LOG.warn("Preroll generation produced incomplete output — startup playlists will have no segments.");
-
-      return;
+      LOG.warn("Preroll %s generation produced incomplete output.", codec);
     }
   } catch(error) {
 
-    LOG.warn("Preroll generation failed: %s.", error instanceof Error ? error.message : String(error));
+    LOG.warn("Preroll %s generation failed: %s.", codec, error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -237,10 +320,13 @@ async function spawnAndCollect(ffmpegBin: string, args: string[]): Promise<Buffe
  * segment's EXTINF duration.
  *
  * @param data - The complete fMP4 output from FFmpeg.
+ * @returns The parsed variant, or null if the output was incomplete.
  */
-function splitPrerollBuffers(data: Buffer): void {
+function splitPrerollBuffers(data: Buffer): Nullable<PrerollVariant> {
 
   const initBoxes: Buffer[] = [];
+  const mediaSegments: Buffer[] = [];
+  const durations: number[] = [];
   let moovBox: Nullable<Buffer> = null;
 
   // Accumulator for the current moof+mdat pair. A segment is finalized when the mdat following a moof arrives.
@@ -265,7 +351,7 @@ function splitPrerollBuffers(data: Buffer): void {
       // Finalize the current segment by combining the pending moof with this mdat.
       if(pendingMoof) {
 
-        prerollMediaSegments.push(Buffer.concat([ pendingMoof, box.data ]));
+        mediaSegments.push(Buffer.concat([ pendingMoof, box.data ]));
         pendingMoof = null;
       }
     }
@@ -274,15 +360,17 @@ function splitPrerollBuffers(data: Buffer): void {
   parser.push(data);
   parser.flush();
 
-  if(initBoxes.length > 0) {
+  if(initBoxes.length === 0) {
 
-    prerollInitSegment = Buffer.concat(initBoxes);
+    return null;
   }
+
+  const initSegment = Buffer.concat(initBoxes);
 
   // Extract per-segment durations from the moov timescales and moof trun sample durations. The moov provides the timescale for converting raw sample durations to
   // seconds. Each moof's traf/trun boxes contain the accumulated sample durations for that fragment.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- moovBox is set inside the parser callback; TS can't track closure mutations.
-  if(moovBox && (prerollMediaSegments.length > 0)) {
+  if(moovBox && (mediaSegments.length > 0)) {
 
     const trackInfoMap = parseMoovTrackInfo(moovBox);
 
@@ -297,12 +385,12 @@ function splitPrerollBuffers(data: Buffer): void {
     // Extract duration from each segment's moof box. The offsetMoofTimestamps function with an empty offset map acts as a pure reader — it returns per-track
     // durations without modifying the buffer (it writes back the same tfdt values it read since the offset is 0). A fresh map is created per segment to prevent
     // state accumulation across iterations.
-    for(const segment of prerollMediaSegments) {
+    for(const segment of mediaSegments) {
 
       // The segment buffer is moof+mdat concatenated. The moof is the first box — parse it to find its size.
       if(segment.length < 8) {
 
-        prerollSegmentDurations.push(2);
+        durations.push(2);
 
         continue;
       }
@@ -331,9 +419,11 @@ function splitPrerollBuffers(data: Buffer): void {
       }
 
       // Fall back to 2 seconds if duration extraction failed (shouldn't happen with well-formed FFmpeg output).
-      prerollSegmentDurations.push(maxDurationSec > 0 ? maxDurationSec : 2);
+      durations.push(maxDurationSec > 0 ? maxDurationSec : 2);
     }
   }
+
+  return { durations, initSegment, mediaSegments };
 }
 
 // Preroll Compositor.
@@ -385,6 +475,9 @@ export interface PrerollEntryOptions {
   // Base URL for constructing absolute preroll segment URIs (e.g., "http://192.168.1.100:5589").
   baseUrl: string;
 
+  // The preroll codec variant. Determines the URL path segment (e.g., "/preroll/h264/segment0.m4s").
+  codec: PrerollCodec;
+
   // File extension for preroll segments. ".m4s" for fMP4. Parameterized for future format flexibility.
   extension: string;
 
@@ -411,8 +504,8 @@ export function buildPrerollEntries(options: PrerollEntryOptions): PlaylistSegme
 
     entries.push({
 
-      duration: getPrerollSegmentDuration(i),
-      url: options.baseUrl + "/preroll/segment" + String(i) + options.extension
+      duration: getPrerollSegmentDuration(options.codec, i),
+      url: options.baseUrl + "/preroll/" + options.codec + "/segment" + String(i) + options.extension
     });
   }
 
@@ -424,12 +517,20 @@ export function buildPrerollEntries(options: PrerollEntryOptions): PlaylistSegme
  * is revealed immediately so the client has enough content to begin playback per the HLS 3-from-end rule. Additional segments are revealed one at a time as wall-clock
  * time passes — each new segment appears when enough time has elapsed for the client to have consumed the prior content beyond the initial window.
  *
+ * @param codec - The preroll codec variant.
  * @param prerollStartTime - Wall-clock time when the preroll began.
  * @returns The number of preroll segments to reveal.
  */
-export function computeProgressiveReveal(prerollStartTime: Date): number {
+export function computeProgressiveReveal(codec: PrerollCodec, prerollStartTime: Date): number {
 
-  const totalSegments = prerollMediaSegments.length;
+  const variant = prerollVariants.get(codec);
+
+  if(!variant) {
+
+    return 0;
+  }
+
+  const totalSegments = variant.mediaSegments.length;
   const elapsedSec = (Date.now() - prerollStartTime.getTime()) / 1000;
 
   let revealCount = Math.min(PREROLL_INITIAL_WINDOW, totalSegments);
@@ -440,14 +541,14 @@ export function computeProgressiveReveal(prerollStartTime: Date): number {
 
   for(let i = 0; i < Math.min(PREROLL_INITIAL_WINDOW, totalSegments); i++) {
 
-    initialWindowDuration += prerollSegmentDurations[i] ?? 2;
+    initialWindowDuration += variant.durations[i] ?? 2;
   }
 
   let cumulativeDuration = initialWindowDuration;
 
   for(let i = PREROLL_INITIAL_WINDOW; i < totalSegments; i++) {
 
-    cumulativeDuration += prerollSegmentDurations[i] ?? 2;
+    cumulativeDuration += variant.durations[i] ?? 2;
 
     if(elapsedSec < (cumulativeDuration - initialWindowDuration)) {
 
@@ -463,11 +564,12 @@ export function computeProgressiveReveal(prerollStartTime: Date): number {
 // Playlist Generation.
 
 /**
- * Generates a progressive HLS playlist referencing the global preroll segments. The playlist simulates a live stream by revealing segments based on elapsed wall-clock
- * time since the preroll started. On each client poll, more segments become visible — the client sees new content appear and keeps playing without stalling.
+ * Generates a progressive HLS playlist referencing the global preroll segments for the specified codec. The playlist simulates a live stream by revealing segments
+ * based on elapsed wall-clock time since the preroll started. On each client poll, more segments become visible — the client sees new content appear and keeps playing
+ * without stalling.
  *
- * The playlist uses absolute URLs because preroll segments are served at global routes (/preroll/*) while the playlist itself is served under /hls/:name/. Without
- * absolute URLs, the client would request /hls/:name/preroll/segment0.m4s which does not exist. The playlist omits #EXT-X-ENDLIST so it behaves as a live playlist —
+ * The playlist uses absolute URLs because preroll segments are served at global routes (/preroll/:codec/*) while the playlist itself is served under /hls/:name/.
+ * Without absolute URLs, the client would request /hls/:name/preroll/... which does not exist. The playlist omits #EXT-X-ENDLIST so it behaves as a live playlist —
  * the client polls for updates and receives the real content playlist when ready.
  *
  * PROGRAM-DATE-TIME is intentionally omitted from the preroll playlist. Preroll is synthetic placeholder content — assigning it wall-clock timestamps would be
@@ -475,26 +577,27 @@ export function computeProgressiveReveal(prerollStartTime: Date): number {
  * seconds of content but real content typically arrives in ~15 seconds). PDT is emitted only on real segments once the segmenter produces them.
  *
  * @param baseUrl - The server's external URL (e.g., "http://192.168.1.100:5589").
+ * @param codec - The preroll codec variant.
  * @param startingSequence - The MEDIA-SEQUENCE offset. Zero for fresh starts. For resume streams, this is set to the saved segment index so the preroll
  *   playlist continues from the prior session's sequence range rather than restarting at 0.
  * @param prerollStartTime - Wall-clock time when the preroll began. Used to compute elapsed time and determine how many segments to reveal.
  * @returns The complete HLS playlist string, or an empty string if the preroll is not ready.
  */
-export function generatePrerollPlaylist(baseUrl: string, startingSequence: number, prerollStartTime: Date): string {
+export function generatePrerollPlaylist(baseUrl: string, codec: PrerollCodec, startingSequence: number, prerollStartTime: Date): string {
 
-  if(!isPrerollReady()) {
+  if(!isPrerollReady(codec)) {
 
     return "";
   }
 
-  const revealCount = computeProgressiveReveal(prerollStartTime);
-  const entries = buildPrerollEntries({ baseUrl, extension: ".m4s", prerollSegmentCount: revealCount, startIndex: 0 });
+  const revealCount = computeProgressiveReveal(codec, prerollStartTime);
+  const entries = buildPrerollEntries({ baseUrl, codec, extension: ".m4s", prerollSegmentCount: revealCount, startIndex: 0 });
 
   return buildPlaylist({
 
-    initialMapUri: baseUrl + "/preroll/init.mp4",
+    initialMapUri: baseUrl + "/preroll/" + codec + "/init.mp4",
     mediaSequence: startingSequence,
-    targetDuration: getPrerollMaxDuration(),
+    targetDuration: getPrerollMaxDuration(codec),
     version: 7
   }, entries);
 }
@@ -502,15 +605,18 @@ export function generatePrerollPlaylist(baseUrl: string, startingSequence: numbe
 // Route Setup.
 
 /**
- * Registers the preroll segment routes on the Express application. These serve the cached preroll buffers with immutable cache headers since the content never
- * changes after generation.
+ * Registers the preroll segment routes on the Express application. Routes are codec-prefixed (/preroll/:codec/init.mp4 and /preroll/:codec/segmentN.m4s) so each
+ * variant is served at a distinct path. The cached preroll buffers are served with immutable cache headers since the content never changes after generation.
  * @param app - The Express application.
  */
 export function setupPrerollRoutes(app: Express): void {
 
-  app.get("/preroll/init.mp4", (_req: Request, res: Response) => {
+  app.get("/preroll/:codec/init.mp4", (req: Request, res: Response) => {
 
-    if(!prerollInitSegment) {
+    const codec = req.params.codec;
+    const variant = ((codec === "h264") || (codec === "hevc")) ? prerollVariants.get(codec) : undefined;
+
+    if(!variant) {
 
       res.status(404).send("Preroll not available.");
 
@@ -519,14 +625,24 @@ export function setupPrerollRoutes(app: Express): void {
 
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.setHeader("Content-Type", "video/mp4");
-    res.send(prerollInitSegment);
+    res.send(variant.initSegment);
   });
 
   // Parameterized route serves individual preroll segment buffers. Each segment contains a distinct moof+mdat pair with unique PTS values from the continuous FFmpeg
   // output. The init.mp4 exact route above takes priority over this catch-all for init segment requests.
-  app.get("/preroll/:segment", (req: Request, res: Response) => {
+  app.get("/preroll/:codec/:segment", (req: Request, res: Response) => {
 
-    // Extract the segment index from the filename (e.g., "segment5.m4s" → 5).
+    const codec = req.params.codec;
+    const variant = ((codec === "h264") || (codec === "hevc")) ? prerollVariants.get(codec) : undefined;
+
+    if(!variant) {
+
+      res.status(404).send("Preroll not available.");
+
+      return;
+    }
+
+    // Extract the segment index from the filename (e.g., "segment5.m4s" -> 5).
     const segmentParam = req.params.segment;
     const match = (typeof segmentParam === "string") ? /^segment(\d+)\.m4s$/.exec(segmentParam) : null;
 
@@ -539,7 +655,7 @@ export function setupPrerollRoutes(app: Express): void {
 
     const index = parseInt(match[1], 10);
 
-    if((index < 0) || (index >= prerollMediaSegments.length)) {
+    if((index < 0) || (index >= variant.mediaSegments.length)) {
 
       res.status(404).send("Preroll segment not found.");
 
@@ -548,6 +664,6 @@ export function setupPrerollRoutes(app: Express): void {
 
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.setHeader("Content-Type", "video/mp4");
-    res.send(prerollMediaSegments[index]);
+    res.send(variant.mediaSegments[index]);
   });
 }
