@@ -245,7 +245,7 @@ export interface ServerConfig {
 
 /**
  * Capture mode for media recording. Determines how video/audio is captured from the browser and processed for HLS output.
- * - "ffmpeg": Captures WebM (H264+Opus) and uses FFmpeg to transcode audio to AAC. More stable for long recordings.
+ * - "ffmpeg": Captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC. More stable for long recordings.
  * - "native": Captures fMP4 (H264+AAC) directly from Chrome. No dependencies but may be unstable with long recordings.
  */
 export type CaptureMode = "ffmpeg" | "native";
@@ -259,7 +259,7 @@ export interface StreamingConfig {
   // stereo audio; lower values (128kbps) work for speech-heavy content. Environment variable: AUDIO_BITRATE. Default: 256000. Valid range: 32000-512000.
   audioBitsPerSecond: number;
 
-  // Capture mode determining how video/audio is captured and processed. "ffmpeg" captures WebM (H264+Opus) and uses FFmpeg to transcode audio to AAC - more stable
+  // Capture mode determining how video/audio is captured and processed. "ffmpeg" captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC - more stable
   // for long recordings but requires FFmpeg. "native" captures fMP4 (H264+AAC) directly from Chrome - no dependencies but may be unstable with long recordings.
   // Environment variable: CAPTURE_MODE. Default: "ffmpeg".
   captureMode: CaptureMode;

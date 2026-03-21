@@ -87,6 +87,9 @@ export interface NativeStreamResult {
   // Declared bandwidth of the selected variant in bits per second. Zero when the BANDWIDTH attribute is absent or unparseable.
   bandwidth: number;
 
+  // Video codec label (e.g., "H264", "HEVC", "AV1"), or null when the CODECS attribute is absent or unrecognized.
+  codec: Nullable<string>;
+
   // Whether the stream has separate audio renditions. Set once at stream creation on HLSState.hasAudio so the HLS handler knows to serve variant playlists.
   hasAudio: boolean;
 
@@ -227,7 +230,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   LOG.debug("timing:native", "Native streaming setup completed for %s in %sms.", channelName, elapsed());
 
-  return { bandwidth: probeResult.bandwidth, hasAudio: probeResult.audioVariantUrl !== null, proxy, resolution: probeResult.resolution };
+  return { bandwidth: probeResult.bandwidth, codec: probeResult.codec, hasAudio: probeResult.audioVariantUrl !== null, proxy, resolution: probeResult.resolution };
 }
 
 // Token Refresh.

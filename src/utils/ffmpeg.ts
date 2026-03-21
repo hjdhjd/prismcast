@@ -15,14 +15,14 @@ import { spawn } from "node:child_process";
 // The ffmpeg-for-homebridge package has incorrect type definitions (declares named export but JS uses default export). Cast to the correct type.
 const ffmpegPath = ffmpegForHomebridge as unknown as string | undefined;
 
-/* When using WebM capture mode, Chrome's MediaRecorder outputs WebM container with H264 video and Opus audio. For HLS compatibility, we need fMP4 container with
- * H264 video and AAC audio. FFmpeg handles this conversion:
+/* When using Matroska capture mode, Chrome's MediaRecorder outputs a Matroska container with video (H264 or HEVC depending on hardware capabilities) and Opus audio.
+ * For HLS compatibility, we need an fMP4 container with AAC audio. FFmpeg handles this conversion:
  *
  * - Video: Passed through unchanged (copy codec) - no quality loss, minimal CPU
  * - Audio: Transcoded from Opus to AAC - lightweight operation
- * - Container: Converted from WebM to fragmented MP4 with streaming-friendly flags
+ * - Container: Converted from Matroska to fragmented MP4 with streaming-friendly flags
  *
- * The FFmpeg process runs for the lifetime of the stream, reading WebM from stdin and writing fMP4 to stdout. This output feeds directly into the existing fMP4
+ * The FFmpeg process runs for the lifetime of the stream, reading Matroska from stdin and writing fMP4 to stdout. This output feeds directly into the existing fMP4
  * segmenter.
  */
 
@@ -291,14 +291,15 @@ function spawnFFmpegProcess({ args, label, onError, streamId }: {
 // Public FFmpeg Spawners.
 
 /**
- * Spawns an FFmpeg process configured to transcode WebM (H264+Opus) to fMP4 (H264+AAC). The process reads from stdin and writes to stdout, allowing it to be
- * integrated into a Node.js stream pipeline. Video is passed through unchanged; audio is transcoded from Opus to AAC for HLS compatibility.
+ * Spawns an FFmpeg process configured to remux Matroska to fMP4. Video is passed through unchanged (codec copy); audio is transcoded from Opus to AAC for HLS
+ * compatibility. The video codec (H264 or HEVC) is determined by Chrome's MediaRecorder based on hardware capabilities. The process reads from stdin and writes
+ * to stdout, allowing it to be integrated into a Node.js stream pipeline.
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
- * - `-probesize 16384`: Limit input probing to 16KB (Chrome's WebM header fits well under this) to minimize startup delay
+ * - `-probesize 16384`: Limit input probing to 16KB (Chrome's Matroska header fits well under this) to minimize startup delay
  * - `-i pipe:0`: Read input from stdin
- * - `-c:v copy`: Copy video stream without re-encoding (H264 passthrough)
+ * - `-c:v copy`: Copy video stream without re-encoding (passthrough)
  * - `-c:a aac -b:a <bitrate>`: Transcode audio to AAC at specified bitrate
  * - `-f mp4`: Output MP4 container format
  * - `-movflags frag_keyframe+empty_moov+default_base_moof`: Streaming-friendly fMP4 flags
@@ -347,7 +348,7 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 
 /**
  * Spawns an FFmpeg process configured to remux fMP4 input to MPEG-TS output with codec copy. The process reads a continuous fMP4 stream (init segment followed by
- * media segments) from stdin and writes MPEG-TS to stdout. No transcoding occurs — both video (H264) and audio (AAC) are copied unchanged — so CPU usage is minimal.
+ * media segments) from stdin and writes MPEG-TS to stdout. No transcoding occurs — both video and audio are copied unchanged — so CPU usage is minimal.
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors

@@ -25,6 +25,7 @@ import { attemptNativeStreaming } from "../native/index.js";
 import { clearProbeCache } from "../native/probe.js";
 import { createFMP4Segmenter } from "./fmp4Segmenter.js";
 import { createHash } from "node:crypto";
+import { getGpuCapabilities } from "../browser/display.js";
 import { getProviderBySlug } from "../browser/channelSelection.js";
 import { registerClient } from "./clients.js";
 import { triggerShowNameUpdate } from "./showInfo.js";
@@ -560,15 +561,21 @@ function cleanupOrphanedSetup(segmenter: FMP4SegmenterResult): void {
 }
 
 /**
- * Formats the native HLS quality string for the "Streaming..." log line. Combines bandwidth (as Mbps) and resolution (as standard label like "1080p") into a
- * compact suffix. Returns an empty string when neither value is available, or a comma-prefixed string like ", 12.1Mbps 1080p" for inclusion in the log.
+ * Formats the native HLS quality string for the "Streaming..." log line. Combines codec, bandwidth (as Mbps), and resolution (as standard label like "1080p")
+ * into a compact suffix. Returns an empty string when no values are available, or a comma-prefixed string like ", H264 12.1Mbps 1080p" for inclusion in the log.
  * @param bandwidth - Declared bandwidth in bits per second from the manifest. Zero when absent.
+ * @param codec - Video codec label (e.g., "H264", "HEVC"), or null when absent.
  * @param resolution - Resolution string from the manifest (e.g., "1920x1080"), or null when absent.
  * @returns Formatted quality string for log output.
  */
-function formatNativeQuality(bandwidth: number, resolution: Nullable<string>): string {
+function formatNativeQuality(bandwidth: number, codec: Nullable<string>, resolution: Nullable<string>): string {
 
   const parts: string[] = [];
+
+  if(codec) {
+
+    parts.push(codec);
+  }
 
   if(bandwidth > 0) {
 
@@ -975,9 +982,11 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
 
   registerStream({
 
+    captureCodec: null,
     channelName: channel?.name ?? null,
     clientAddress: options.clientAddress ?? null,
     ffmpegProcess: null,
+    hardwareAccelerated: false,
     hls,
     id: numericStreamId,
     info: {
@@ -1148,6 +1157,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       // Attempt native streaming if a manifest interception handle is available. Signal finalize() to tell the interceptor that channel selection is complete and it
       // should resolve with the most recently captured manifest URL. For direct-navigation sites, the manifest was captured during page load and finalize resolves
       // immediately. For guide-based sites (Fox, Hulu, etc.), the manifest from the correct channel was captured after the strategy clicked the right entry.
+      let nativeCodec: Nullable<string> = null;
       let nativeQuality = "";
       let streamingMode: "capture" | "native" = "capture";
 
@@ -1219,11 +1229,14 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
             currentStream.hls.prerollSegmentCount = 0;
           }
 
+          currentStream.captureCodec = nativeResult.codec;
+          currentStream.hardwareAccelerated = true;
           currentStream.nativeProxy = nativeResult.proxy;
           currentStream.rawCaptureStream = null;
           currentStream.streamingMode = "native";
           streamingMode = "native";
-          nativeQuality = formatNativeQuality(nativeResult.bandwidth, nativeResult.resolution);
+          nativeCodec = nativeResult.codec;
+          nativeQuality = formatNativeQuality(nativeResult.bandwidth, nativeResult.codec, nativeResult.resolution);
 
           // Start the native proxy. Signal init segment readiness immediately — native MPEG-TS segments carry their own PAT/PMT codec configuration in every
           // segment, so there is no separate init segment to wait for. Without this, MPEG-TS clients block on waitForInitSegment() and time out before the proxy's
@@ -1323,12 +1336,15 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         }
       }
 
-      const captureMode = (streamingMode === "native") ? ("native HLS" + nativeQuality) : (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg" : "Native fMP4");
+      const gpu = getGpuCapabilities();
+      const ffmpegCodec = gpu?.hevcHardwareEncoding ? "\u26A1 HEVC" : (gpu?.h264HardwareEncoding ? "\u26A1 H264" : "H264");
+      const captureMode = (streamingMode === "native") ? ("native HLS" + nativeQuality) :
+        (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg [" + ffmpegCodec + "]" : "Native fMP4");
       const displayName = channel?.name ?? url;
 
       const tuneTime = ((Date.now() - setup.startTime.getTime()) / 1000).toFixed(1);
 
-      LOG.info("Streaming %s (%s, %s, %s). Tuned in %ss%s.", displayName, setup.providerName, setup.profileName, captureMode,
+      LOG.info("Streaming %s: %s, %s, %s. Tuned in %ss%s.", displayName, setup.providerName, setup.profileName, captureMode,
         tuneTime, setup.directTune ? " (direct)" : "");
 
       // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity. Domain auth
@@ -1344,10 +1360,22 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         markChannelSuccess(channelName, successAuthDomain, markAuth);
       }
 
-      // Emit stream added event.
+      // Update the registry entry with codec and hardware acceleration state, then emit the stream added event for the dashboard.
+      const streamCodec = (streamingMode === "native") ? nativeCodec : (gpu?.hevcHardwareEncoding ? "HEVC" : "H264");
+      const hwAccelerated = (streamingMode === "native") || (gpu?.h264HardwareEncoding === true);
+      const currentEntry = getStream(numericStreamId);
+
+      if(currentEntry) {
+
+        currentEntry.captureCodec = streamCodec;
+        currentEntry.hardwareAccelerated = hwAccelerated;
+      }
+
       emitStreamAdded(createInitialStreamStatus({
 
+        captureCodec: streamCodec,
         channelName: channel?.name ?? null,
+        hardwareAccelerated: hwAccelerated,
         numericStreamId,
         providerName: setup.providerName,
         startTime: setup.startTime,

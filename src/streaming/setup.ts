@@ -20,6 +20,7 @@ import { chromeFetch } from "../utils/index.js";
 import { getCachedEncryption } from "../native/probe.js";
 import { getDomainConfig } from "../config/sites.js";
 import { getEffectiveViewport } from "../config/presets.js";
+import { getGpuCapabilities } from "../browser/display.js";
 import { getProviderDisplayName } from "../config/providers.js";
 import { installManifestInterceptor } from "../native/intercept.js";
 import { isChannelSelectionProfile } from "../types/index.js";
@@ -40,7 +41,7 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
  *
  * createPageWithCapture() handles:
  * - Browser page creation with CSP bypass
- * - Media stream initialization (native fMP4 or WebM+FFmpeg)
+ * - Media stream initialization (native fMP4 or Matroska+FFmpeg)
  * - Navigation with retry
  * - Video element detection and playback setup
  *
@@ -54,9 +55,11 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 // Native fMP4 capture uses MP4/AAC for direct HLS segmentation without transcoding.
 const NATIVE_FMP4_MIME_TYPE = "video/mp4;codecs=avc1,mp4a.40.2";
 
-// WebM+FFmpeg capture uses WebM/H264+Opus, which requires FFmpeg to transcode audio to AAC. This mode is more stable for long recordings because Chrome's native fMP4
-// MediaRecorder can become unstable after 20-30 minutes.
-const WEBM_FFMPEG_MIME_TYPE = "video/webm;codecs=h264,opus";
+// Matroska+FFmpeg capture MIME types. Matroska is used over WebM because it supports a broader range of codecs (including HEVC and AV1), allowing codec upgrades
+// without changing the container format. FFmpeg's demuxer handles both Matroska and WebM identically. When hardware HEVC encoding is available, HEVC is preferred
+// over H.264 for better compression at the same bitrate. All variants use Opus audio which FFmpeg transcodes to AAC.
+const MKV_H264_MIME_TYPE = "video/x-matroska;codecs=h264,opus";
+const MKV_HEVC_MIME_TYPE = "video/x-matroska;codecs=hvc1.1.6.L93.B0,opus";
 
 // Capture initialization queue. Chrome's tabCapture extension can only initialize one capture at a time — concurrent getStream() calls fail with "Cannot capture a
 // tab with an active stream." We serialize capture initialization using a promise chain so requests execute sequentially. Once a capture is established, it runs
@@ -128,7 +131,7 @@ export interface StreamSetupOptions {
  */
 export interface StreamSetupResult {
 
-  // The puppeteer-stream capture output. For native fMP4 mode, this is the raw MP4/AAC stream. For WebM+FFmpeg mode, this is FFmpeg's fMP4 output.
+  // The puppeteer-stream capture output. For native fMP4 mode, this is the raw MP4/AAC stream. For Matroska+FFmpeg mode, this is FFmpeg's fMP4 output.
   captureStream: Readable;
 
   // The channel display name if streaming a named channel.
@@ -140,7 +143,7 @@ export interface StreamSetupResult {
   // Cleanup function to release all resources. Safe to call multiple times.
   cleanup: () => Promise<void>;
 
-  // The FFmpeg process for WebM-to-fMP4 transcoding, or null if using native fMP4 mode.
+  // The FFmpeg process for Matroska-to-fMP4 transcoding, or null if using native fMP4 mode.
   ffmpegProcess: Nullable<FFmpegProcess>;
 
   // Manifest interceptor handle from the CDP listener installed before navigation. Contains the interception promise and a finalize() function that the caller
@@ -233,7 +236,7 @@ export interface CreatePageWithCaptureOptions {
  */
 export interface CreatePageWithCaptureResult {
 
-  // The output stream for the segmenter. For native fMP4 mode, this is the raw capture. For WebM+FFmpeg mode, this is FFmpeg's fMP4 output.
+  // The output stream for the segmenter. For native fMP4 mode, this is the raw capture. For Matroska+FFmpeg mode, this is FFmpeg's fMP4 output.
   captureStream: Readable;
 
   // The video context (page or frame containing the video element).
@@ -242,7 +245,7 @@ export interface CreatePageWithCaptureResult {
   // Whether the channel was tuned via a direct mechanism (cached URL or API interception) rather than DOM interaction.
   directTune: boolean;
 
-  // The FFmpeg process if using WebM+FFmpeg mode, null otherwise.
+  // The FFmpeg process if using Matroska+FFmpeg mode, null otherwise.
   ffmpegProcess: Nullable<FFmpegProcess>;
 
   // Manifest interceptor handle for native streaming, or null if interception was not installed.
@@ -354,7 +357,7 @@ export function validateStreamUrl(url: string | undefined): UrlValidation {
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
  * recovery. It handles:
  * - Creating a new browser page with CSP bypass
- * - Initializing media capture (native fMP4 or WebM+FFmpeg)
+ * - Initializing media capture (native fMP4 or Matroska+FFmpeg)
  * - Navigating to the URL with retry
  * - Setting up video playback via navigateToPage() + initializePlayback()
  *
@@ -387,8 +390,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   const manifestInterception = (!options.tabReplacement && !options.skipManifestInterception) ? await installManifestInterceptor(page) : null;
 
   // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable.
+  // When hardware HEVC encoding is available, prefer HEVC over H.264 for better compression at the same bitrate.
   const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
-  const captureMimeType = useFFmpeg ? WEBM_FFMPEG_MIME_TYPE : NATIVE_FMP4_MIME_TYPE;
+  const mkvMimeType = getGpuCapabilities()?.hevcHardwareEncoding ? MKV_HEVC_MIME_TYPE : MKV_H264_MIME_TYPE;
+  const captureMimeType = useFFmpeg ? mkvMimeType : NATIVE_FMP4_MIME_TYPE;
 
   // Track the output stream that will be sent to the segmenter and FFmpeg process if used. Also track the raw capture stream separately - it must be destroyed
   // before closing the page to ensure chrome.tabCapture releases the capture.
@@ -502,7 +507,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     // Store the raw capture stream. This must be destroyed before closing the page.
     rawCaptureStream = stream as unknown as Readable;
 
-    // For FFmpeg mode, spawn FFmpeg to transcode the WebM stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC.
+    // For FFmpeg mode, spawn FFmpeg to transcode the Matroska stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC.
     if(useFFmpeg) {
 
       const ffmpeg = spawnFFmpeg(CONFIG.streaming.audioBitsPerSecond, (error) => {
@@ -537,7 +542,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
         }
       });
 
-      // Pipe the WebM capture stream to FFmpeg's stdin using pipeline() for proper cleanup. When FFmpeg is killed during tab replacement, pipeline() automatically
+      // Pipe the Matroska capture stream to FFmpeg's stdin using pipeline() for proper cleanup. When FFmpeg is killed during tab replacement, pipeline() automatically
       // destroys the source stream, preventing "write after end" errors that would occur with .pipe().
       pipeline(stream as unknown as Readable, ffmpeg.stdin).catch((error: unknown) => {
 
@@ -950,7 +955,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         rawCaptureStream.destroy();
       }
 
-      // Kill the FFmpeg process if using WebM+FFmpeg mode.
+      // Kill the FFmpeg process if using Matroska+FFmpeg mode.
       if(ffmpegProcess) {
 
         ffmpegProcess.kill();
@@ -1070,7 +1075,8 @@ async function attemptCaptureProbe(timeout: number): Promise<Nullable<string>> {
     // Use the same capture MIME type and viewport constraints as the runtime. The stale state error occurs at the tabCapture API level before encoding matters,
     // but matching the runtime configuration ensures the probe exercises the exact same getStream() parameters.
     const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
-    const captureMimeType = useFFmpeg ? WEBM_FFMPEG_MIME_TYPE : NATIVE_FMP4_MIME_TYPE;
+    const probeMkvMimeType = getGpuCapabilities()?.hevcHardwareEncoding ? MKV_HEVC_MIME_TYPE : MKV_H264_MIME_TYPE;
+    const captureMimeType = useFFmpeg ? probeMkvMimeType : NATIVE_FMP4_MIME_TYPE;
 
     const streamOptions = {
 

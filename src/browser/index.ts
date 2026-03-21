@@ -3,13 +3,13 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
+import { type GpuCapabilities, getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.js";
 import { LOG, cancellableTimeout, clearPidFile, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer, writePidFile } from "../utils/index.js";
 import { getAllStreams, getStreamCount } from "../streaming/registry.js";
 import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.js";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
 import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.js";
-import { setBrowserChrome, setMaxSupportedViewport } from "./display.js";
 import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
 import type { SystemStatus } from "../streaming/statusEmitter.js";
@@ -33,7 +33,7 @@ const { promises: fsPromises } = fs;
  * - dataDir: The filesystem location for persistent data (Chrome profile, extension files). Resolved via config/paths.ts, which is created on startup if it doesn't
  *   exist.
  *
- * Stream tracking and ID generation have been moved to streaming/registry.ts for unified stream management across all output types (direct WebM, HLS, etc.).
+ * Stream tracking and ID generation have been moved to streaming/registry.ts for unified stream management across all output types (HLS, MPEG-TS, etc.).
  */
 
 // The shared browser instance used by all streaming sessions. Created on first stream request or during warmup. Set to null when the browser is not running or
@@ -282,7 +282,7 @@ export async function ensureDataDirectory(): Promise<void> {
 
     await fsPromises.mkdir(getDataDir(), { recursive: true });
 
-    LOG.debug("browser", "Data directory ready: %s.", getDataDir());
+    LOG.debug("browser:lifecycle", "Data directory ready: %s.", getDataDir());
   } catch(error) {
 
     LOG.error("Failed to create data directory %s: %s.", getDataDir(), formatError(error));
@@ -381,7 +381,7 @@ export function killStaleChrome(): void {
       // databases, poisoning the Docker volume for subsequent restarts.
       process.kill(pid, "SIGTERM");
 
-      LOG.debug("browser", "Sent SIGTERM to Chrome process %d.", pid);
+      LOG.debug("browser:lifecycle", "Sent SIGTERM to Chrome process %d.", pid);
 
       // Wait up to 5 seconds for Chrome to flush its databases and exit after SIGTERM. Containerized environments with software rendering and shared CPU may
       // need the full window.
@@ -390,7 +390,7 @@ export function killStaleChrome(): void {
       if(!waitForChromeExit(pid, TERM_WAIT_MS, POLL_INTERVAL_MS)) {
 
         // SIGTERM didn't work. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not respond to SIGTERM.
-        LOG.debug("browser", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
+        LOG.debug("browser:lifecycle", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
 
         try {
 
@@ -483,7 +483,7 @@ function cleanStaleProfileFiles(profileDir: string): void {
 
       fs.unlinkSync(filePath);
 
-      LOG.debug("browser", "Removed stale profile file: %s.", file);
+      LOG.debug("browser:lifecycle", "Removed stale profile file: %s.", file);
     } catch(error: unknown) {
 
       // ENOENT means the file doesn't exist, which is the expected case after a clean shutdown. Any other error (permissions, filesystem issues) is worth
@@ -681,6 +681,37 @@ async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
  * use by the preset system when determining effective viewport.
  * @param browser - The browser instance to use for detection.
  */
+
+/**
+ * Formats the GPU capabilities into a human-readable suffix for the "Chrome ready" log line. The renderer string is already cleaned (ANGLE wrapper and Metal
+ * prefix stripped) at detection time, so this function uses it directly and appends hardware-accelerated codec names in brackets when available.
+ * @param gpu - The detected GPU capabilities.
+ * @returns A formatted string like " (GPU: Apple M1 [H264, HEVC])" or " (software rendering)".
+ */
+function formatGpuSuffix(gpu: GpuCapabilities): string {
+
+  const codecs = [
+
+    gpu.av1HardwareEncoding && "AV1",
+    gpu.h264HardwareEncoding && "H264",
+    gpu.hevcHardwareEncoding && "HEVC"
+  ].filter(Boolean);
+
+  if(codecs.length > 0) {
+
+    return " (GPU: " + gpu.renderer + " [" + codecs.join(", ") + "])";
+  }
+
+  // No hardware encoding available. A GPU may be present for rendering but lack hardware encoding — show the GPU name without codecs if we have a non-trivial
+  // renderer string, otherwise label as software rendering.
+  if(gpu.renderer && (gpu.renderer !== "unknown")) {
+
+    return " (GPU: " + gpu.renderer + ")";
+  }
+
+  return " (software rendering)";
+}
+
 async function detectDisplayDimensions(browser: Browser): Promise<void> {
 
   let tempPage: Nullable<Page> = null;
@@ -733,7 +764,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
       // Chrome dimensions are negative — the window manager is still transitioning. Wait briefly and remeasure.
       if(attempt < 2) {
 
-        LOG.debug("browser", "Display detection measured negative chrome dimensions (%s\u00d7%s, attempt %s). Retrying after window state settles.",
+        LOG.debug("browser:lifecycle", "Display detection measured negative chrome dimensions (%s\u00d7%s, attempt %s). Retrying after window state settles.",
           dimensions.chromeWidth, dimensions.chromeHeight, attempt + 1);
 
         // eslint-disable-next-line no-await-in-loop
@@ -764,10 +795,121 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
     setBrowserChrome(dimensions.chromeWidth, dimensions.chromeHeight);
     setMaxSupportedViewport(maxWidth, maxHeight);
 
-    LOG.debug("browser", "Display detection complete: screen %s\u00d7%s, chrome %s\u00d7%s, max viewport %s\u00d7%s.",
+    LOG.debug("browser:lifecycle", "Display detection complete: screen %s\u00d7%s, chrome %s\u00d7%s, max viewport %s\u00d7%s.",
       dimensions.availWidth, dimensions.availHeight,
       dimensions.chromeWidth, dimensions.chromeHeight,
       maxWidth, maxHeight);
+
+    // Detect GPU capabilities via CDP SystemInfo.getInfo. This is the authoritative source for GPU identity and hardware encoding capabilities — it runs at the
+    // browser level (no page context or secure context required) and returns the actual list of hardware-accelerated video encoding profiles.
+    try {
+
+      const cdpSession = await browser.target().createCDPSession();
+
+      try {
+
+        const sysInfo = await cdpSession.send("SystemInfo.getInfo") as {
+          gpu: {
+            devices: { deviceString: string; driverVendor: string; driverVersion: string; vendorString: string }[];
+            featureStatus?: Record<string, string>;
+            videoEncoding: { maxFramerateDenominator: number; maxFramerateNumerator: number; maxResolution: { height: number; width: number }; profile: string }[];
+          };
+          modelName: string;
+        };
+
+        // Extract the GPU renderer from the primary device. The WebGL unmasked renderer provides a richer string (includes ANGLE backend info), so we query
+        // that as well and prefer it when available.
+        const deviceName = (sysInfo.gpu.devices.length > 0) ? sysInfo.gpu.devices[0].deviceString : "unknown";
+
+        // Get the unmasked WebGL renderer for a more descriptive GPU identity string.
+        const webglRenderer = await evaluateWithAbort(targetPage, (): string => {
+
+          const canvas = document.createElement("canvas");
+          const gl = canvas.getContext("webgl");
+
+          if(!gl) {
+
+            return "unknown";
+          }
+
+          const ext = gl.getExtension("WEBGL_debug_renderer_info");
+
+          return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+        });
+
+        // Extract the meaningful GPU name. ANGLE wraps the actual GPU identity: "ANGLE (Vendor, GPU Name, API Version)". The GPU name is the second
+        // comma-separated field. For non-ANGLE renderers, use the device string from CDP.
+        let renderer = webglRenderer;
+        const angleMatch = /^ANGLE \([^,]+, ([^,]+)/.exec(webglRenderer);
+
+        if(angleMatch) {
+
+          renderer = angleMatch[1].trim();
+
+          // Strip the "ANGLE Metal Renderer: " prefix that macOS adds.
+          const metalPrefix = "ANGLE Metal Renderer: ";
+
+          if(renderer.startsWith(metalPrefix)) {
+
+            renderer = renderer.slice(metalPrefix.length);
+          }
+        } else if((webglRenderer === "WebKit WebGL") || (webglRenderer === "unknown")) {
+
+          renderer = deviceName;
+        }
+
+        // Determine hardware encoding capability. Two paths:
+        // 1. featureStatus.video_encode === "enabled" — authoritative Chrome-level flag indicating the platform's hardware encoding framework is active
+        //    (VideoToolbox on macOS, VA-API on Linux, DXVA on Windows). When enabled, H.264 hardware encoding is always available.
+        // 2. videoEncoding profile array — lists specific hardware-accelerated codec profiles (e.g., "H264 Main", "HEVC Main"). Populated on Linux/Windows
+        //    via VA-API/DXVA but empty on macOS where VideoToolbox doesn't enumerate through this interface.
+        const videoEncodeEnabled = sysInfo.gpu.featureStatus?.video_encode === "enabled";
+        const h264FromProfiles = sysInfo.gpu.videoEncoding.some((e) => e.profile.startsWith("H264"));
+        const hevcFromProfiles = sysInfo.gpu.videoEncoding.some((e) => e.profile.startsWith("HEVC"));
+        const av1FromProfiles = sysInfo.gpu.videoEncoding.some((e) => e.profile.startsWith("AV1"));
+
+        // H.264 hardware encoding is available when either the feature flag or the profile list confirms it.
+        const h264Hardware = videoEncodeEnabled || h264FromProfiles;
+
+        // HEVC and AV1 hardware encoding: check the profile list first (authoritative on Linux/Windows). On macOS (empty profile list), probe via MediaRecorder
+        // in the page context — MediaRecorder.isTypeSupported works in non-secure contexts unlike VideoEncoder.
+        let hevcHardware = hevcFromProfiles;
+        let av1Hardware = av1FromProfiles;
+
+        if(videoEncodeEnabled && (!hevcHardware || !av1Hardware)) {
+
+          const [ hevcSupported, av1Supported ] = await evaluateWithAbort(targetPage, (): [boolean, boolean] => {
+
+            if(typeof MediaRecorder === "undefined") {
+
+              return [ false, false ];
+            }
+
+            return [
+
+              MediaRecorder.isTypeSupported("video/mp4;codecs=hvc1.1.6.L93.B0"),
+              MediaRecorder.isTypeSupported("video/mp4;codecs=av01.0.08M.08")
+            ];
+          });
+
+          hevcHardware ||= hevcSupported;
+          av1Hardware ||= av1Supported;
+        }
+
+        setGpuCapabilities({ av1HardwareEncoding: av1Hardware, h264HardwareEncoding: h264Hardware, hevcHardwareEncoding: hevcHardware, renderer });
+
+        LOG.debug("browser:lifecycle", "GPU detection: device=%s, renderer=%s, H.264=%s, HEVC=%s, AV1=%s, video_encode=%s, encoding profiles=%s.",
+          deviceName, renderer, h264Hardware, hevcHardware, av1Hardware, sysInfo.gpu.featureStatus?.video_encode ?? "unknown",
+          sysInfo.gpu.videoEncoding.map((e) => e.profile).join(", ") || "none");
+
+      } finally {
+
+        void cdpSession.detach().catch(() => { /* Session may already be detached. */ });
+      }
+    } catch(gpuError) {
+
+      LOG.debug("browser:lifecycle", "GPU detection failed: %s.", String(gpuError));
+    }
 
     // Check if the configured preset needs to be degraded and warn the user.
     const presetResult = getEffectivePreset(CONFIG);
@@ -978,7 +1120,10 @@ async function launchBrowser(): Promise<Browser> {
     currentChromeVersion = chromeVersion;
     setChromeUserAgent(userAgent);
 
-    LOG.info("Chrome ready: %s.", chromeVersion);
+    const gpu = getGpuCapabilities();
+    const gpuSuffix = gpu ? formatGpuSuffix(gpu) : "";
+
+    LOG.info("Chrome ready: %s%s.", chromeVersion, gpuSuffix);
 
     LOG.debug("timing:browser", "Browser ready. Total: %sms.", browserElapsed());
 
@@ -1086,7 +1231,7 @@ export async function minimizeBrowserWindow(): Promise<void> {
     }
 
     // Resizing/minimizing is not critical - log a warning but don't fail the operation.
-    LOG.debug("browser", "Could not resize and minimize browser window: %s.", formatError(error));
+    LOG.debug("browser:lifecycle", "Could not resize and minimize browser window: %s.", formatError(error));
   }
 }
 
@@ -1163,7 +1308,7 @@ export async function closeBrowser(): Promise<void> {
 
     chromeProcess.kill("SIGTERM");
 
-    LOG.debug("browser", "Sent SIGTERM to Chrome process %d.", chromeProcess.pid);
+    LOG.debug("browser:lifecycle", "Sent SIGTERM to Chrome process %d.", chromeProcess.pid);
 
     // Wait for Chrome to exit after SIGTERM, with a timeout. If Chrome doesn't exit in time, escalate to SIGKILL.
     const termTimeout = cancellableTimeout(TERM_WAIT_MS);
@@ -1176,7 +1321,7 @@ export async function closeBrowser(): Promise<void> {
 
       // SIGTERM didn't work within the timeout. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not
       // respond to SIGTERM.
-      LOG.debug("browser", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
+      LOG.debug("browser:lifecycle", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
 
       chromeProcess.kill("SIGKILL");
 
@@ -1536,12 +1681,12 @@ export async function cleanupStalePages(): Promise<void> {
     // Log only if we actually closed something, to avoid log spam from idle cleanup runs.
     if(closedCount > 0) {
 
-      LOG.debug("browser", "Cleaned up %s stale page(s).", closedCount);
+      LOG.debug("browser:lifecycle", "Cleaned up %s stale page(s).", closedCount);
     }
   } catch(error) {
 
     // Cleanup failure is not critical - log a warning and try again next interval.
-    LOG.debug("browser", "Stale page cleanup failed: %s.", formatError(error));
+    LOG.debug("browser:lifecycle", "Stale page cleanup failed: %s.", formatError(error));
   }
 }
 
@@ -1599,7 +1744,7 @@ function checkBrowserRestart(): void {
 
     if(restartQuietTimer) {
 
-      LOG.debug("browser", "Browser restart quiet period cancelled — streams are active.");
+      LOG.debug("browser:lifecycle", "Browser restart quiet period cancelled — streams are active.");
 
       clearTimeout(restartQuietTimer);
       restartQuietTimer = null;
@@ -1611,7 +1756,7 @@ function checkBrowserRestart(): void {
   // No active streams and the browser is old enough. Start the quiet timer if one is not already running.
   if(!restartQuietTimer) {
 
-    LOG.debug("browser", "Browser uptime exceeds threshold. Quiet period started — restart will proceed if no streams start within %s minutes.",
+    LOG.debug("browser:lifecycle", "Browser uptime exceeds threshold. Quiet period started — restart will proceed if no streams start within %s minutes.",
       Math.round(BROWSER_RESTART_QUIET_PERIOD / 60000));
 
     restartQuietTimer = setTimeout(() => {
@@ -1634,7 +1779,7 @@ async function executeBrowserRestart(): Promise<void> {
   // mode was activated, or the browser disconnected on its own).
   if(gracefulShutdownInProgress || loginModeActive || (getStreamCount() > 0) || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
 
-    LOG.debug("browser", "Browser restart aborted — preconditions no longer met.");
+    LOG.debug("browser:lifecycle", "Browser restart aborted — preconditions no longer met.");
 
     return;
   }
@@ -1762,7 +1907,7 @@ export async function prepareExtension(): Promise<void> {
       }
     }
 
-    LOG.debug("browser", "Extension files prepared successfully.");
+    LOG.debug("browser:lifecycle", "Extension files prepared successfully.");
   } catch(error) {
 
     LOG.error("Extension preparation failed: %s.", formatError(error));
