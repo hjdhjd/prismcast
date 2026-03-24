@@ -4,6 +4,7 @@
  */
 import type { ChannelSelectorResult, ChannelStrategyEntry, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.js";
 import { LOG, delay, evaluateWithAbort } from "../utils/index.js";
+import { getDomainConfig, registerProviderModuleProfile } from "../config/sites.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
 import { directvProvider } from "./tuning/directv.js";
@@ -11,7 +12,6 @@ import { foxProvider } from "./tuning/fox.js";
 import { hboProvider } from "./tuning/hbo.js";
 import { huluProvider } from "./tuning/hulu.js";
 import { isChannelSelectionProfile } from "../types/index.js";
-import { registerProviderModuleProfile } from "../config/sites.js";
 import { resolveMatchSelector } from "./tuning/shared.js";
 import { slingProvider } from "./tuning/sling.js";
 import { spectrumProvider } from "./tuning/spectrum.js";
@@ -142,12 +142,20 @@ export function getProviderSlugs(): string[] {
 }
 
 /**
- * Returns slug and label pairs for all registered provider modules. Used by the checkboxList setting to render precache provider checkbox labels.
- * @returns Array of objects with label and slug properties.
+ * Returns slug, label, domain, and optional icon URL for all registered provider modules. Used by the checkboxList setting for precache labels and by the
+ * browse modal for provider picker cards with icons. The domain is extracted from the guide URL. The icon URL is derived from the provider's DOMAIN_CONFIG
+ * entry — the single source of truth for provider icon URLs.
+ * @returns Array of objects with domain, iconUrl, label, and slug properties.
  */
-export function getProviderModuleInfo(): { label: string; slug: string }[] {
+export function getProviderModuleInfo(): { domain: string; iconUrl?: string; label: string; slug: string }[] {
 
-  return providerModules.map((p) => ({ label: p.label, slug: p.slug }));
+  return providerModules.map((p) => {
+
+    const domain = new URL(p.guideUrl).hostname;
+    const domainConfig = getDomainConfig(p.guideUrl);
+
+    return { domain, iconUrl: domainConfig?.iconUrl, label: p.label, slug: p.slug };
+  });
 }
 
 /**
@@ -189,9 +197,9 @@ export function getProviderGuideUrls(): Record<string, string> {
  * to merge provider-discovered channels into the channel selector datalist alongside predefined channel suggestions.
  * @returns Array of objects with hostname and entries properties.
  */
-export function getCachedProviderChannels(): { entries: { label: string; value: string }[]; hostname: string }[] {
+export function getCachedProviderChannels(): { entries: { label: string; stationId?: string; value: string }[]; hostname: string }[] {
 
-  const results: { entries: { label: string; value: string }[]; hostname: string }[] = [];
+  const results: { entries: { label: string; stationId?: string; value: string }[]; hostname: string }[] = [];
 
   for(const provider of providerModules) {
 
@@ -203,7 +211,7 @@ export function getCachedProviderChannels(): { entries: { label: string; value: 
     }
 
     const hostname = new URL(provider.guideUrl).hostname;
-    const entries = cached.map((ch) => ({ label: ch.name, value: ch.channelSelector }));
+    const entries = cached.map((ch) => ({ label: ch.name, stationId: ch.stationId, value: ch.channelSelector }));
 
     results.push({ entries, hostname });
   }

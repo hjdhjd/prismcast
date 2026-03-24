@@ -11,10 +11,11 @@ import { VALID_SORT_FIELDS, getAllProviderTags, getCanonicalKey, getChannelProvi
   setProviderSelection } from "../../../config/providers.js";
 import { filterDefaults, loadUserConfig, saveUserConfig } from "../../../config/userConfig.js";
 import { getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel, getPredefinedChannels,
-  getPredefinedScopeCounts, getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel, saveProviderSelections,
-  saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl,
+  getPredefinedScopeCounts, getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel, safeChannelKey,
+  saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl,
   validateImportedChannels } from "../../../config/userChannels.js";
 import { CONFIG } from "../../../config/index.js";
+import { PREDEFINED_CHANNELS } from "../../../channels/index.js";
 import type { UserChannel } from "../../../config/userChannels.js";
 import { getProfiles } from "../../../config/profiles.js";
 
@@ -32,6 +33,70 @@ const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this change."
 function playlistHintForStored(stored: StoredChannel): string {
 
   return M3U_FIELDS.some((f) => f in stored) ? PLAYLIST_HINT : "";
+}
+
+/**
+ * Disables one or more predefined channels by adding their keys to the disabledPredefined list in user config. Updates both the config file and the runtime
+ * CONFIG object. Shared by the toggle-predefined and bulk-add handlers to avoid duplicating the config load/save/update pattern.
+ * @param keys - The predefined channel keys to disable.
+ */
+async function disablePredefinedChannels(keys: string[]): Promise<void> {
+
+  if(keys.length === 0) {
+
+    return;
+  }
+
+  const configResult = await loadUserConfig();
+  const userConfig = configResult.config;
+
+  userConfig.channels ??= {};
+  userConfig.channels.disabledPredefined ??= [];
+
+  const disabledSet = new Set(userConfig.channels.disabledPredefined);
+
+  for(const key of keys) {
+
+    disabledSet.add(key);
+  }
+
+  userConfig.channels.disabledPredefined = [...disabledSet].sort();
+
+  await saveUserConfig(userConfig);
+
+  CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
+}
+
+/**
+ * Enables one or more predefined channels by removing their keys from the disabledPredefined list in user config. Updates both the config file and the
+ * runtime CONFIG object. Shared by the toggle-predefined and bulk-add handlers to avoid duplicating the config load/save/update pattern.
+ * @param keys - The predefined channel keys to enable.
+ */
+async function enablePredefinedChannels(keys: string[]): Promise<void> {
+
+  if(keys.length === 0) {
+
+    return;
+  }
+
+  const configResult = await loadUserConfig();
+  const userConfig = configResult.config;
+
+  userConfig.channels ??= {};
+  userConfig.channels.disabledPredefined ??= [];
+
+  const disabledSet = new Set(userConfig.channels.disabledPredefined);
+
+  for(const key of keys) {
+
+    disabledSet.delete(key);
+  }
+
+  userConfig.channels.disabledPredefined = [...disabledSet].sort();
+
+  await saveUserConfig(userConfig);
+
+  CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
 }
 
 /**
@@ -155,8 +220,8 @@ export function setupChannelRoutes(app: Express): void {
         m3uChannel.url = sanitizeString(m3uChannel.url);
         m3uChannel.stationId &&= sanitizeString(m3uChannel.stationId);
 
-        // Generate the channel key from the name.
-        const key = generateChannelKey(m3uChannel.name);
+        // Generate the channel key from the name. safeChannelKey collapses hyphens when the key would collide with the provider variant naming convention.
+        const key = safeChannelKey(generateChannelKey(m3uChannel.name));
 
         // Validate the generated key.
         if(!key || (key.length === 0)) {
@@ -253,6 +318,244 @@ export function setupChannelRoutes(app: Express): void {
     }
   });
 
+  // POST /config/channels/modify - Apply channel modifications from the browse modal. Handles four action types: 'add' creates new user channels, 'enable'
+  // re-enables a disabled predefined channel and sets its provider, 'switch' changes the provider selection for an existing channel, and 'remove' reverts a
+  // channel to its canonical provider (disabling it if no alternative provider is available). Channel writes and provider selection changes are batched into
+  // single saves to avoid redundant file I/O.
+  app.post("/config/channels/modify", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as {
+        channels?: {
+          action?: string; canonicalKey?: string; channelSelector?: string; name?: string; providerSlug?: string; stationId?: string; url?: string;
+        }[];
+      };
+
+      const channels = body.channels;
+
+      // Validate that channels array is provided and non-empty.
+      if(!Array.isArray(channels) || (channels.length === 0)) {
+
+        res.status(400).json({ error: "No channels provided.", success: false });
+
+        return;
+      }
+
+      // Load existing user channels.
+      const loadResult = await loadUserChannels();
+      const existingChannels = loadResult.parseError ? {} : loadResult.channels;
+
+      // Build a set of all existing channel keys (predefined + user) for deduplication.
+      const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(existingChannels) ]);
+
+      const disablePredefined = new Set<string>();
+      const errors: string[] = [];
+      let added = 0;
+      let removed = 0;
+      let switched = 0;
+      let channelsChanged = false;
+      let selectionsChanged = false;
+
+      // Build a UserChannel object from an entry's fields. Shared by the switch/enable and add paths to avoid duplicating channel construction logic.
+      function buildUserChannel(entry: { channelSelector?: string; name?: string; stationId?: string; url?: string },
+        channelName: string, channelUrl: string, selector: string): UserChannel {
+
+        const channel: UserChannel = {
+
+          channelSelector: selector || undefined,
+          name: channelName,
+          url: channelUrl
+        };
+
+        if(entry.stationId) {
+
+          channel.stationId = sanitizeString(entry.stationId);
+        }
+
+        return channel;
+      }
+
+      for(const entry of channels) {
+
+        const action = entry.action ?? "add";
+        const name = sanitizeString(entry.name?.trim() ?? "");
+        const providerSlug = entry.providerSlug?.trim() ?? "";
+
+        // Handle enable and switch. Enable re-enables a disabled predefined channel, then falls through to the switch logic to set the provider selection.
+        // Switch changes the provider selection for an existing channel to point to the browsed provider's variant, creating the variant if needed.
+        if((action === "switch") || (action === "enable")) {
+
+          const canonicalKey = entry.canonicalKey?.trim() ?? "";
+
+          if(!canonicalKey) {
+
+            errors.push("Entry for '" + name + "' missing canonical key.");
+
+            continue;
+          }
+
+          // Re-enable the channel if it was disabled. Must complete before setting the provider selection since the config write makes the channel
+          // visible in the lineup.
+          if(action === "enable") {
+
+            // eslint-disable-next-line no-await-in-loop -- Sequential: config state must be updated before setting provider selection.
+            await enablePredefinedChannels([canonicalKey]);
+          }
+
+          const variantKey = canonicalKey + "-" + providerSlug;
+
+          // If no variant exists for this provider, create one as a user channel.
+          if(!allKeys.has(variantKey)) {
+
+            existingChannels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
+              sanitizeString(entry.channelSelector?.trim() ?? ""));
+            allKeys.add(variantKey);
+            channelsChanged = true;
+          }
+
+          setProviderSelection(canonicalKey, variantKey);
+          selectionsChanged = true;
+          switched++;
+
+          continue;
+        }
+
+        // Handle provider removal. Reverts the channel away from this provider using a three-tier fallback: (1) clear the selection and let
+        // resolveProviderKey find the next enabled variant or canonical, (2) if the resolved provider is still this provider (no alternative exists),
+        // disable the predefined channel or delete the user channel.
+        if(action === "remove") {
+
+          const canonicalKey = entry.canonicalKey?.trim() ?? "";
+
+          if(!canonicalKey) {
+
+            errors.push("Remove entry for '" + name + "' missing canonical key.");
+
+            continue;
+          }
+
+          // Clear the provider selection. resolveProviderKey will now return the canonical or the first enabled alternative variant.
+          setProviderSelection(canonicalKey, canonicalKey);
+          selectionsChanged = true;
+
+          // Check if the resolved provider is still this provider. If so, there is no alternative — disable or delete the channel.
+          const resolvedKey = resolveProviderKey(canonicalKey);
+          const resolvedTag = getProviderTagForChannel(resolvedKey);
+
+          if(resolvedTag === providerSlug) {
+
+            // No alternative provider exists. Disable predefined channels or delete user channels.
+            if(isPredefinedChannel(canonicalKey)) {
+
+              disablePredefined.add(canonicalKey);
+            } else {
+
+              Reflect.deleteProperty(existingChannels, canonicalKey);
+              channelsChanged = true;
+            }
+          }
+
+          removed++;
+
+          continue;
+        }
+
+        // Handle add. Creates a new user channel for channels not yet in the lineup. The browse modal sends 'add' only for genuinely new channels (no
+        // existing canonical). Channels that match existing canonicals appear as 'switch' state in the modal instead.
+        const url = sanitizeString(entry.url?.trim() ?? "");
+        const channelSelector = sanitizeString(entry.channelSelector?.trim() ?? "");
+
+        if(!name) {
+
+          errors.push("Channel entry missing name.");
+
+          continue;
+        }
+
+        if(!url) {
+
+          errors.push("Channel '" + name + "' missing URL.");
+
+          continue;
+        }
+
+        const urlError = validateChannelUrl(url);
+
+        if(urlError) {
+
+          errors.push("Channel '" + name + "': " + urlError);
+
+          continue;
+        }
+
+        const baseKey = safeChannelKey(generateChannelKey(name));
+
+        if(!baseKey) {
+
+          errors.push("Could not generate key for channel '" + name + "'.");
+
+          continue;
+        }
+
+        const canonicalExists = allKeys.has(baseKey);
+        const key = (canonicalExists && providerSlug) ? baseKey + "-" + providerSlug : baseKey;
+
+        // Skip channels that already exist in the lineup.
+        if(allKeys.has(key)) {
+
+          continue;
+        }
+
+        existingChannels[key] = buildUserChannel(entry, name, url, channelSelector);
+        allKeys.add(key);
+        channelsChanged = true;
+        added++;
+      }
+
+      // Save changes. saveUserChannels() persists both channel data and provider selections in a single file write, so we only need saveProviderSelections()
+      // (which writes the same file using the module-level cache) when selections changed but no new channels were added.
+      if(channelsChanged) {
+
+        await saveUserChannels(existingChannels);
+      } else if(selectionsChanged) {
+
+        await saveProviderSelections();
+      }
+
+      // Disable predefined channels that had no alternative provider after removal.
+      await disablePredefinedChannels([...disablePredefined]);
+
+      // Build a descriptive response message.
+      const parts: string[] = [];
+
+      if(added > 0) {
+
+        parts.push("Added " + String(added) + " channel" + (added === 1 ? "" : "s") + ".");
+      }
+
+      if(switched > 0) {
+
+        parts.push("Switched " + String(switched) + " channel" + (switched === 1 ? "" : "s") + ".");
+      }
+
+      if(removed > 0) {
+
+        parts.push("Reverted " + String(removed) + " channel" + (removed === 1 ? "" : "s") + ".");
+      }
+
+      const message = (parts.length > 0 ? parts.join(" ") : "No changes made.") + PLAYLIST_HINT;
+
+      LOG.info("Browse channels completed: %d added, %d switched, %d removed.", added, switched, removed);
+
+      res.json({ added, errors, message, removed, success: true, switched });
+    } catch(error) {
+
+      LOG.error("Failed to apply browse changes: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to apply changes: " + formatError(error), success: false });
+    }
+  });
+
   // POST /config/channels/toggle-predefined - Toggle a single predefined channel's enabled/disabled state.
   app.post("/config/channels/toggle-predefined", async (req: Request, res: Response): Promise<void> => {
 
@@ -286,33 +589,14 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Load current config.
-      const configResult = await loadUserConfig();
-      const userConfig = configResult.config;
-
-      // Initialize channels.disabledPredefined if not present.
-      userConfig.channels ??= {};
-      userConfig.channels.disabledPredefined ??= [];
-
-      const disabledSet = new Set(userConfig.channels.disabledPredefined);
-
+      // Enable or disable the channel using the shared helpers that handle config file I/O and runtime CONFIG update.
       if(enabled) {
 
-        // Enable: remove from disabled list.
-        disabledSet.delete(key);
+        await enablePredefinedChannels([key]);
       } else {
 
-        // Disable: add to disabled list.
-        disabledSet.add(key);
+        await disablePredefinedChannels([key]);
       }
-
-      // Update and save config.
-      userConfig.channels.disabledPredefined = [...disabledSet].sort();
-
-      await saveUserConfig(userConfig);
-
-      // Update the runtime CONFIG to reflect the change immediately.
-      CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
 
       LOG.info("Predefined channel '%s' %s.", key, enabled ? "enabled" : "disabled");
 
@@ -554,6 +838,28 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.error("Failed to update provider filter: %s.", formatError(error));
       res.status(500).json({ error: "Failed to update provider filter: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/channels/setup-completed - Mark the Provider Setup flow as completed. Called when the wizard finishes or the user explicitly skips.
+  app.post("/config/channels/setup-completed", async (_req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      CONFIG.channels.setupCompleted = true;
+
+      const configResult = await loadUserConfig();
+
+      configResult.config.channels ??= {};
+      configResult.config.channels.setupCompleted = true;
+
+      await saveUserConfig(configResult.config);
+
+      res.json({ success: true });
+    } catch(error) {
+
+      LOG.error("Failed to save setup completed state: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to save setup state: " + formatError(error), success: false });
     }
   });
 

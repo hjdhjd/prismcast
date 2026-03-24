@@ -7,7 +7,7 @@ import { checkForUpdates, getChangelogItems, getPackageVersion, getVersionInfo }
 import { generateApiReferenceContent, generateChannelsTabContent, generateConfigContent, generateHelpContent, generateLogsContent,
   generateOverviewContent } from "./content.js";
 import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "../ui.js";
-import { generateChannelsSubtabScript, generateConfigSubtabScript, generateStatusScript } from "./scripts/index.js";
+import { generateChannelsSubtabScript, generateConfigSubtabScript, generateSharedUtilitiesScript, generateStatusScript } from "./scripts/index.js";
 import { generateLandingPageStyles } from "./styles.js";
 import { resolveBaseUrl } from "../playlist.js";
 
@@ -226,6 +226,7 @@ export function setupRootEndpoint(app: Express): void {
     // Generate scripts: tab switching, config subtab handling, then status SSE for header updates.
     const scripts = [
       generateTabScript({ localStorageKey: "prismcast-home-tab" }),
+      generateSharedUtilitiesScript(),
       generateChannelsSubtabScript(),
       generateConfigSubtabScript(),
       generateStatusScript()

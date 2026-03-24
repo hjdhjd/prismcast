@@ -182,6 +182,10 @@ export interface ChannelsConfig {
   // discovered at startup so that even the first tune benefits from cached lineup data.
   precacheProviders: string[];
 
+  // Whether the user has completed the initial Provider Setup flow. When false, the setup wizard auto-presents on the first visit to the channels tab.
+  // Set to true on completion or explicit skip — never on browser close or navigation away.
+  setupCompleted: boolean;
+
   // Optional column field names that are currently visible in the channels table. Empty array means only required columns are shown.
   visibleColumns: string[];
 }

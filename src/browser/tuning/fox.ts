@@ -308,7 +308,7 @@ export const foxProvider: ProviderModule = {
     summary: "Fox Live (guide grid, needs selector)"
   },
   profileName: "foxLive",
-  slug: "foxcom",
+  slug: "foxone",
   strategy: { clearCache: clearFoxCache, execute: foxGridStrategy },
   strategyName: "foxGrid"
 };

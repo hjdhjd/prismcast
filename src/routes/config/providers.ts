@@ -12,6 +12,7 @@ import { exportProviderPack, importProviderPack, parseProviderPack } from "../..
 import { getChannelListing, validateChannelUrl } from "../../config/userChannels.js";
 import type { ProfileInfo } from "../../config/profiles.js";
 import { categorizeProfiles } from "./index.js";
+import { generateWizardModal } from "../components.js";
 import { getProfiles } from "../../config/profiles.js";
 
 /**
@@ -38,11 +39,11 @@ function countChannelsByProfile(profileKeys: Set<string>): Record<string, number
 }
 
 /**
- * Generates the Providers panel content for the Channels tab's Providers subtab. Shows a table of user-defined profiles with their domain mappings and delete
+ * Generates the Custom Profiles panel content for the Channels tab's Custom Profiles subtab. Shows a table of user-defined profiles with their domain mappings and delete
  * buttons. The toolbar provides New Profile, Import, and Export actions. The profile builder wizard is triggered from the toolbar.
- * @returns HTML content for the Providers panel.
+ * @returns HTML content for the Custom Profiles panel.
  */
-export function generateProvidersPanel(): string {
+export function generateCustomProfilesPanel(): string {
 
   const userProfiles = getUserProfiles();
   const userDomains = getUserDomains();
@@ -74,21 +75,19 @@ export function generateProvidersPanel(): string {
   const profileKeys = Object.keys(userProfiles).sort();
 
   // Import preview modal: shows pack contents with optional skip-channels toggle. Always rendered because import is available even when no profiles exist.
-  lines.push("<div id=\"import-modal\" class=\"wizard-modal\" style=\"display: none;\">");
-  lines.push("<div class=\"wizard-modal-content\" style=\"max-width: 480px;\">");
-  lines.push("<div class=\"wizard-header\">");
-  lines.push("<h3>Import Provider Pack</h3>");
-  lines.push("<button type=\"button\" class=\"wizard-close\" aria-label=\"Close\" onclick=\"closeImportModal()\">\u2715</button>");
-  lines.push("</div>");
-  lines.push("<div id=\"import-modal-body\" class=\"export-modal-body\"></div>");
-  lines.push("<div class=\"wizard-buttons\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"closeImportModal()\">Cancel</button>");
-  lines.push("<div class=\"wizard-buttons-right\">");
-  lines.push("<button type=\"button\" id=\"import-btn\" class=\"btn btn-primary btn-sm\" onclick=\"executeImport()\">Import</button>");
-  lines.push("</div>");
-  lines.push("</div>");
-  lines.push("</div>");
-  lines.push("</div>");
+  // The content area is filled by client-side JavaScript when the user selects a file.
+  lines.push(generateWizardModal({
+
+    buttons: [
+      { label: "Cancel", onclick: "closeImportModal()", position: "right" },
+      { id: "import-btn", label: "Import", onclick: "executeImport()", position: "right", size: "sm", variant: "primary" }
+    ],
+    contentId: "import-modal-body",
+    id: "import-modal",
+    maxWidth: "480px",
+    onClose: "closeImportModal()",
+    title: "Import Provider Pack"
+  }));
 
   // Empty state when no user providers are installed.
   if(profileKeys.length === 0) {
@@ -174,42 +173,41 @@ export function generateProvidersPanel(): string {
   lines.push("</table>");
 
   // Export modal: profile checklist with select-all and include-channels toggle. The select-all row is hidden by client-side JavaScript when only one profile
-  // exists since it would be redundant with the single profile checkbox.
-  lines.push("<div id=\"export-modal\" class=\"wizard-modal\" style=\"display: none;\">");
-  lines.push("<div class=\"wizard-modal-content\" style=\"max-width: 480px;\">");
-  lines.push("<div class=\"wizard-header\">");
-  lines.push("<h3>Export Provider Profiles</h3>");
-  lines.push("<button type=\"button\" class=\"wizard-close\" aria-label=\"Close\" onclick=\"closeExportModal()\">\u2715</button>");
-  lines.push("</div>");
-  lines.push("<div class=\"export-modal-body\">");
-  lines.push("<div id=\"export-select-all-row\" class=\"export-section-header\">");
-  lines.push("<label class=\"export-option-label\">");
-  lines.push("<input type=\"checkbox\" id=\"export-select-all\" checked onchange=\"toggleExportAll(this)\"> Select all</label>");
-  lines.push("</div>");
-  lines.push("<div id=\"export-profile-list\"></div>");
-  lines.push("<div class=\"export-divider\"></div>");
-  lines.push("<label class=\"export-option-label\">");
-  lines.push("<input type=\"checkbox\" id=\"export-include-channels\"> Include channels</label>");
-  lines.push("<div class=\"export-hint\">Bundle the channel definitions assigned to these profiles so recipients can import a complete lineup.</div>");
-  lines.push("</div>");
-  lines.push("<div class=\"wizard-buttons\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"closeExportModal()\">Cancel</button>");
-  lines.push("<div class=\"wizard-buttons-right\">");
-  lines.push("<button type=\"button\" id=\"export-btn\" class=\"btn btn-primary btn-sm\" onclick=\"executeExport()\">Export</button>");
-  lines.push("</div>");
-  lines.push("</div>");
-  lines.push("</div>");
-  lines.push("</div>");
+  // exists since it would be redundant with the single profile checkbox. Body content is pre-rendered server-side.
+  const exportBody = [
+    "<div id=\"export-select-all-row\" class=\"export-section-header\">",
+    "<label class=\"export-option-label\">",
+    "<input type=\"checkbox\" id=\"export-select-all\" checked onchange=\"toggleExportAll(this)\"> Select all</label>",
+    "</div>",
+    "<div id=\"export-profile-list\"></div>",
+    "<div class=\"export-divider\"></div>",
+    "<label class=\"export-option-label\">",
+    "<input type=\"checkbox\" id=\"export-include-channels\"> Include channels</label>",
+    "<div class=\"export-hint\">Bundle the channel definitions assigned to these profiles so recipients can import a complete lineup.</div>"
+  ].join("\n");
+
+  lines.push(generateWizardModal({
+
+    body: exportBody,
+    buttons: [
+      { label: "Cancel", onclick: "closeExportModal()", position: "right" },
+      { id: "export-btn", label: "Export", onclick: "executeExport()", position: "right", size: "sm", variant: "primary" }
+    ],
+    id: "export-modal",
+    maxWidth: "480px",
+    onClose: "closeExportModal()",
+    title: "Export Provider Profiles"
+  }));
 
   return lines.join("\n");
 }
 
 /**
- * Generates the profile builder wizard modal HTML. The modal shell contains a step indicator, a dynamic content area (rendered by client-side JavaScript), and
- * navigation buttons. Profile data for Step 1 is embedded as a JSON script block for the wizard JS to consume.
+ * Generates the profile builder 5-step wizard modal. Configures the shared wizard modal shell with profile-specific steps (Base, Strategy, Flags, Domain, Save),
+ * navigation buttons, and embedded JSON data registries (profiles, strategies, flags) for the client-side wizard controller.
  * @returns HTML string for the wizard modal.
  */
-export function generateWizardModal(): string {
+export function generateProfileWizardModal(): string {
 
   // Build the profile data for Step 1 radio buttons. Include all profiles (built-in and user-defined).
   const profiles = getProfiles();
@@ -229,54 +227,9 @@ export function generateWizardModal(): string {
     special: groups.special.filter(include).map((p) => ({ description: p.description, name: p.name, summary: p.summary }))
   };
 
-  const lines: string[] = [];
-
-  lines.push("<div id=\"wizard-modal\" class=\"wizard-modal\" style=\"display: none;\">");
-  lines.push("<div class=\"wizard-modal-content\">");
-
-  // Header with title and close button. The title is updated by JavaScript to reflect edit vs. new mode.
-  lines.push("<div class=\"wizard-header\">");
-  lines.push("<h3 id=\"wizard-title\">New Provider Profile</h3>");
-  lines.push("<button type=\"button\" class=\"wizard-close\" aria-label=\"Close\" onclick=\"closeWizard()\">\u2715</button>");
-  lines.push("</div>");
-
-  // Step indicator.
-  lines.push("<div class=\"wizard-steps\">");
-  lines.push("<div class=\"wizard-step active\" data-step=\"1\"><span class=\"step-circle\">1</span><span class=\"step-label\">Base</span></div>");
-  lines.push("<div class=\"wizard-step-line\"></div>");
-  lines.push("<div class=\"wizard-step\" data-step=\"2\"><span class=\"step-circle\">2</span><span class=\"step-label\">Strategy</span></div>");
-  lines.push("<div class=\"wizard-step-line\"></div>");
-  lines.push("<div class=\"wizard-step\" data-step=\"3\"><span class=\"step-circle\">3</span><span class=\"step-label\">Flags</span></div>");
-  lines.push("<div class=\"wizard-step-line\"></div>");
-  lines.push("<div class=\"wizard-step\" data-step=\"4\"><span class=\"step-circle\">4</span><span class=\"step-label\">Domain</span></div>");
-  lines.push("<div class=\"wizard-step-line\"></div>");
-  lines.push("<div class=\"wizard-step\" data-step=\"5\"><span class=\"step-circle\">5</span><span class=\"step-label\">Save</span></div>");
-  lines.push("</div>");
-
-  // Dynamic content area — rendered by wizard JavaScript based on current step.
-  lines.push("<div id=\"wizard-content\" class=\"wizard-content\"></div>");
-
-  // Validation error area.
-  lines.push("<div id=\"wizard-error\" class=\"wizard-error\" style=\"display: none;\"></div>");
-
-  // Navigation buttons.
-  lines.push("<div class=\"wizard-buttons\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary\" id=\"wizard-back\" onclick=\"wizardBack()\" style=\"display: none;\">Back</button>");
-  lines.push("<div class=\"wizard-buttons-right\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"closeWizard()\">Cancel</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-primary\" id=\"wizard-next\" onclick=\"wizardNext()\">Next</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-primary\" id=\"wizard-save\" onclick=\"saveProfile(false)\" style=\"display: none;\">Save</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-primary\" id=\"wizard-save-test\" onclick=\"saveProfile(true)\" ",
-    "style=\"display: none;\">Save &amp; Test</button>");
-  lines.push("</div>");
-  lines.push("</div>");
-
-  lines.push("</div>");
-  lines.push("</div>");
-
   // Server-side registries for the wizard. Strategies define user-configurable channel selection approaches (provider-specific strategies like foxGrid, slingGrid,
   // etc. are built-in only and never appear in the wizard). Flags define boolean profile flags exposed in step 3. Both are serialized as JSON so the wizard client
-  // code is fully data-driven — adding a new strategy field or flag only requires updating these arrays.
+  // code is fully data-driven - adding a new strategy field or flag only requires updating these arrays.
   const WIZARD_STRATEGIES = [
     {
 
@@ -324,11 +277,26 @@ export function generateWizardModal(): string {
     { description: "Force JavaScript requestFullscreen() API.", id: "useRequestFullscreen", label: "Use request fullscreen" }
   ];
 
-  // Embedded profile data and registries for the wizard JavaScript.
-  lines.push("<script>window.__wizardProfiles = " + JSON.stringify(profileData) + ";window.__wizardStrategies = " + JSON.stringify(WIZARD_STRATEGIES) +
-    ";window.__wizardFlags = " + JSON.stringify(WIZARD_FLAGS) + ";</script>");
+  return generateWizardModal({
 
-  return lines.join("\n");
+    buttons: [
+      { id: "wizard-back", label: "Back", position: "left", role: "back", visible: false },
+      { label: "Cancel", position: "right", role: "close" },
+      { id: "wizard-next", label: "Next", position: "right", role: "next", variant: "primary" },
+      { id: "wizard-save", label: "Save", onclick: "saveProfile(false)", position: "right", variant: "primary", visible: false },
+      { id: "wizard-save-test", label: "Save & Test", onclick: "saveProfile(true)", position: "right", variant: "primary", visible: false }
+    ],
+    contentId: "wizard-content",
+    dataBlocks: [
+      "<script>window.__wizardProfiles = " + JSON.stringify(profileData) + ";window.__wizardStrategies = " + JSON.stringify(WIZARD_STRATEGIES) +
+        ";window.__wizardFlags = " + JSON.stringify(WIZARD_FLAGS) + ";</script>"
+    ],
+    errorId: "wizard-error",
+    id: "wizard-modal",
+    steps: [ "Base", "Strategy", "Flags", "Domain", "Save" ],
+    title: "New Provider Profile",
+    titleId: "wizard-title"
+  });
 }
 
 /**

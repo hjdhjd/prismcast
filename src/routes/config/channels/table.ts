@@ -2,20 +2,40 @@
  *
  * table.ts: Channel table rendering for the PrismCast configuration interface.
  */
-import { compareChannelSort, getAllProviderTags, getAuthDomainForChannel, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey, getEnabledProviders,
-  getProviderGroup, getProviderTagForChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled,
-  resolveProviderKey } from "../../../config/providers.js";
+import { compareChannelSort, getAllProviderTags, getAuthDomainForChannel, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey,
+  getEnabledProviders, getProviderGroup, getProviderTagForChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled,
+  resolvePredefinedVariant, resolveProviderKey } from "../../../config/providers.js";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
-import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls } from "../../../browser/channelSelection.js";
+import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
-import { getChannelListing, getChannelsParseErrorMessage, getPredefinedScopeCounts, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel,
-  isPredefinedChannelDisabled, isUserChannel } from "../../../config/userChannels.js";
+import { getChannelListing, getChannelsParseErrorMessage, getEastCanonicalKey, getPredefinedScopeCounts, getUserChannelsFilePath, hasChannelsParseError,
+  isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel } from "../../../config/userChannels.js";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
 import { CONFIG } from "../../../config/index.js";
 import type { ChannelListingEntry } from "../../../types/index.js";
 import { PREDEFINED_CHANNELS } from "../../../channels/index.js";
 import type { ProfileInfo } from "../../../config/profiles.js";
 import { categorizeProfiles } from "../index.js";
+import { generateWizardModal } from "../../components.js";
+import { getChannelLogo } from "../../../streaming/showInfo.js";
+
+/**
+ * Generates an annotated provider display span. The client-side page-load script processes these elements via providerIconHtml, rendering the appropriate
+ * icon + text combination. The server just emits the text with data attributes — all icon rendering is client-side through the single providerIconHtml path.
+ * @param name - The provider display name.
+ * @param domain - The provider's domain for icon fallback derivation. Undefined for providers without a known domain.
+ * @param iconUrl - Optional explicit icon URL to try before domain-derived fallbacks.
+ * @param small - When true, uses the small icon variant for chips.
+ * @returns HTML span string with data attributes for client-side processing.
+ */
+function providerDisplaySpan(name: string, domain?: string, iconUrl?: string, small?: boolean): string {
+
+  const domainAttr = domain ? " data-domain=\"" + escapeHtml(domain) + "\"" : "";
+  const iconAttr = iconUrl ? " data-icon-url=\"" + escapeHtml(iconUrl) + "\"" : "";
+  const sizeAttr = small ? " data-sm" : "";
+
+  return "<span class=\"provider-display\"" + domainAttr + iconAttr + sizeAttr + ">" + escapeHtml(name) + "</span>";
+}
 
 // SVG icon constants for channel action buttons. Each icon is 14x14px with a 16x16 viewBox, stroke-based with currentColor, and uses round line caps/joins.
 
@@ -410,10 +430,11 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
   lines.push(...generateTextField(idPrefix + "-stationId", "stationId", "Station ID", stationIdValue,
     { hint: stationIdHint, placeholder: showHints ? "e.g., 12345" : undefined }));
 
-  // Channel selector.
+  // Channel selector. The guide-based provider list is derived from the provider module registry so it stays current as providers are added.
+  const guideProviderNames = getProviderModuleInfo().map((p) => p.label).sort().join(", ");
   const channelSelectorHint = showHints ?
     "Identifies which channel to select on sites that host multiple live streams. Known values are suggested when the URL matches a supported site. " +
-    "For guide-based profiles (Fox, HBO Max, Hulu, Sling, YouTube TV), use the channel name or station code from the guide. " +
+    "For guide-based profiles (" + guideProviderNames + "), use the channel name or station code from the guide. " +
     "For tile and thumbnail profiles, right-click the channel element \u2192 Inspect \u2192 copy a unique value matching the profile's selector pattern " +
     "(typically a portion of the image src URL)." :
     undefined;
@@ -444,28 +465,32 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
  */
 function generateChannelSelectorData(): string {
 
-  const byDomain: Record<string, { label: string; value: string }[]> = {};
+  const byDomain: Record<string, { label: string; stationId?: string; value: string }[]> = {};
   const seen: Record<string, Set<string>> = {};
 
-  for(const channel of Object.values(PREDEFINED_CHANNELS)) {
+  for(const [ key, raw ] of Object.entries(PREDEFINED_CHANNELS)) {
 
-    if(!channel.channelSelector) {
+    if(!raw.channelSelector) {
 
       continue;
     }
 
+    // Use the resolved channel (with inheritance from the canonical) so stationId, name, and other inherited fields are populated correctly for variants.
+    // The channelSelector is captured from the raw entry (already validated as non-null) to avoid non-null assertions on the resolved channel's optional field.
+    const selector = raw.channelSelector;
+    const channel = resolvePredefinedVariant(key) ?? raw;
     const hostname = new URL(channel.url).hostname;
 
     seen[hostname] ??= new Set();
 
-    if(seen[hostname].has(channel.channelSelector)) {
+    if(seen[hostname].has(selector)) {
 
       continue;
     }
 
-    seen[hostname].add(channel.channelSelector);
+    seen[hostname].add(selector);
     byDomain[hostname] ??= [];
-    byDomain[hostname].push({ label: channel.name ?? channel.channelSelector, value: channel.channelSelector });
+    byDomain[hostname].push({ label: channel.name ?? selector, stationId: channel.stationId, value: selector });
   }
 
   // Merge cached provider-discovered channels into the domain map. Predefined entries take precedence — we only add discovered channels whose channelSelector
@@ -499,6 +524,76 @@ function generateChannelSelectorData(): string {
   return "var channelSelectorsByDomain = " + JSON.stringify(byDomain) + ";\n" +
     "var providerByDomain = " + JSON.stringify(providerByDomain) + ";\n" +
     "var providerGuideUrl = " + JSON.stringify(providerGuideUrl) + ";";
+}
+
+/**
+ * Generates the Browse Channels 2-step wizard modal. Step 1 is the provider picker grid, step 2 is channel discovery and management. Channel state detection
+ * (new, switch, current) is handled server-side by the annotated discovery response - no client-side matching logic is needed. Provider and guide URL data are
+ * embedded as JSON data blocks for the client-side wizard controller.
+ * @returns HTML string for the browse modal.
+ */
+function generateBrowseModal(): string {
+
+  // Build the provider info array from the provider module registry. The client uses this to render the provider picker.
+  const providers = getProviderModuleInfo();
+  const guideUrls = getProviderGuideUrls();
+
+  return generateWizardModal({
+
+    buttons: [
+      { id: "browse-back", label: "Back", position: "left", role: "back", visible: false },
+      { label: "Cancel", position: "right", role: "close" },
+      { id: "browse-add-btn", label: "Apply", onclick: "submitBrowseChannels()", position: "right", variant: "primary", visible: false }
+    ],
+    contentId: "browse-content",
+    dataBlocks: [
+      "<script type=\"application/json\" id=\"browse-providers-data\">" + JSON.stringify(providers) + "</script>",
+      "<script type=\"application/json\" id=\"browse-guide-urls-data\">" + JSON.stringify(guideUrls) + "</script>"
+    ],
+    description: "Manage your channel lineup by provider. Add new channels, switch providers for existing channels, or remove channels you no longer need.",
+    id: "browse-modal",
+    steps: [ "Provider", "Channels" ],
+    title: "Browse Channels",
+    titleId: "browse-title"
+  });
+}
+
+/**
+ * Generates the Provider Setup 3-step wizard modal. Steps: Providers (multi-select), Sign In (sequential auth), Channels (summary + finish). The
+ * setupCompleted flag is embedded as a data attribute so the client can auto-show the wizard on first visit.
+ * @returns HTML string for the setup wizard modal.
+ */
+function generateSetupWizardModal(): string {
+
+  const enabled = getEnabledProviders();
+
+  // Build provider data with enabled state from the current provider filter. getAllProviderTags is the single source of truth for provider metadata
+  // (domain, iconUrl, displayName). The enabled field lets the client pre-check providers on re-run without scraping DOM state.
+  const tags = getAllProviderTags()
+    .filter((t) => t.tag !== "direct")
+    .map((t) => ({ ...t, enabled: enabled.includes(t.tag) }));
+
+  return generateWizardModal({
+
+    buttons: [
+      { id: "setup-back", label: "Back", position: "left", role: "back", visible: false },
+      { id: "setup-skip", label: "Skip Setup", onclick: "skipSetup()", position: "right" },
+      { id: "setup-next", label: "Next", position: "right", role: "next", variant: "primary" },
+      { id: "setup-finish", label: "Finish", onclick: "finishSetup()", position: "right", variant: "primary", visible: false }
+    ],
+    contentId: "setup-content",
+    dataAttributes: { "setup-completed": CONFIG.channels.setupCompleted ? "true" : "false" },
+    dataBlocks: [
+      "<script type=\"application/json\" id=\"setup-providers-data\">" + JSON.stringify(tags) + "</script>"
+    ],
+    description: "Set up your streaming providers in three steps: select your services, sign in, and choose your channels.",
+    errorId: "setup-error",
+    id: "setup-modal",
+    steps: [ "Providers", "Sign In", "Channels" ],
+    stepsId: "setup-steps",
+    title: "Provider Setup",
+    titleId: "setup-title"
+  });
 }
 
 /**
@@ -571,7 +666,12 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
   displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + " data-provider-tags=\"" + escapeHtml(providerTags) + "\">");
   displayLines.push("<td class=\"ch-key\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "key")) + "\">" + escapeHtml(key) + "</td>");
-  displayLines.push("<td data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "name")) + "\">" + escapeHtml(channel.name ?? key) + "</td>");
+  const eastKey = getEastCanonicalKey(key);
+  const channelLogoUrl = getChannelLogo(key) ?? (eastKey ? getChannelLogo(eastKey) : undefined) ?? "";
+  const logoAttr = channelLogoUrl ? " data-logo=\"" + escapeHtml(channelLogoUrl) + "\"" : "";
+
+  displayLines.push("<td data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "name")) + "\"" + logoAttr +
+    "><span class=\"channel-name-cell\">" + escapeHtml(channel.name ?? key) + "</span></td>");
 
   // Provider column: dropdown for multi-provider channels, static provider name for single-provider. Both states always render a hidden "No available providers"
   // label alongside the provider content so that client-side filterChannelRows() can toggle between them without a page reload.
@@ -589,8 +689,8 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
     // to remove them from the DOM.
     const currentSelection = resolveProviderKey(key);
 
-    displayLines.push("<select class=\"provider-select\" data-channel=\"" + escapeHtml(key) + "\" onchange=\"updateProviderSelection(this)\"" +
-      contentHidden + ">");
+    displayLines.push("<select class=\"provider-select\" data-channel=\"" + escapeHtml(key) +
+      "\" title=\"Choose which streaming provider delivers this channel\" onchange=\"updateProviderSelection(this)\"" + contentHidden + ">");
 
     for(const variant of providerGroup.variants) {
 
@@ -789,6 +889,7 @@ export function generateProviderFilterToolbar(): string {
   const allTags = getAllProviderTags();
   const enabled = getEnabledProviders();
   const hasFilter = enabled.length > 0;
+
   const lines: string[] = [];
 
   lines.push("<div class=\"provider-toolbar\">");
@@ -800,7 +901,8 @@ export function generateProviderFilterToolbar(): string {
 
   const buttonText = hasFilter ? "Filtered" : "All Providers";
 
-  lines.push("<button type=\"button\" class=\"btn btn-sm\" id=\"provider-filter-btn\" onclick=\"toggleDropdown(this)\">" + buttonText + " &#9662;</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-sm\" id=\"provider-filter-btn\" title=\"Filter channels by streaming provider\" " +
+    "onclick=\"toggleDropdown(this)\">" + buttonText + " &#9662;</button>");
   lines.push("<div class=\"dropdown-menu provider-dropdown-menu\">");
 
   for(const tagInfo of allTags) {
@@ -812,7 +914,7 @@ export function generateProviderFilterToolbar(): string {
 
     lines.push("<label class=\"provider-option\">");
     lines.push("<input type=\"checkbox\" data-tag=\"" + escapeHtml(tagInfo.tag) + "\"" + checkedAttr + disabledAttr +
-      " onchange=\"toggleProviderTag(this)\"> " + escapeHtml(tagInfo.displayName));
+      " onchange=\"toggleProviderTag(this)\"> " + providerDisplaySpan(tagInfo.displayName, tagInfo.domain, tagInfo.iconUrl));
     lines.push("</label>");
   }
 
@@ -831,11 +933,13 @@ export function generateProviderFilterToolbar(): string {
         continue;
       }
 
-      const displayName = allTags.find((t) => t.tag === tag)?.displayName ?? tag;
+      const chipTag = allTags.find((t) => t.tag === tag);
+      const displayName = chipTag?.displayName ?? tag;
 
-      lines.push("<span class=\"provider-chip\" data-tag=\"" + escapeHtml(tag) + "\">" + escapeHtml(displayName) +
-        "<button type=\"button\" class=\"chip-close\" aria-label=\"Remove " + escapeHtml(displayName) + "\" onclick=\"removeProviderChip('" + escapeHtml(tag) +
-        "')\">&times;</button></span>");
+      lines.push("<span class=\"provider-chip\" data-tag=\"" + escapeHtml(tag) + "\">" +
+        providerDisplaySpan(displayName, chipTag?.domain, chipTag?.iconUrl, true) +
+        "<button type=\"button\" class=\"chip-close\" title=\"Remove " + escapeHtml(displayName) + " from filter\" aria-label=\"Remove " +
+        escapeHtml(displayName) + "\" onclick=\"removeProviderChip('" + escapeHtml(tag) + "')\">&times;</button></span>");
     }
   }
 
@@ -884,10 +988,15 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   // Channel operations. Import uses a dropdown menu to consolidate M3U and JSON import into a single button.
   lines.push("<div class=\"toolbar-group\">");
-  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" id=\"add-channel-btn\" onclick=\"document.getElementById('add-channel-form')",
-    ".style.display='block'; this.style.display='none';\">Add Channel</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" id=\"add-channel-btn\" title=\"Add a channel manually with a custom URL\" " +
+    "onclick=\"document.getElementById('add-channel-form').style.display='block'; this.style.display='none';\">Add Channel</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Browse and manage channels by provider\" " +
+    "onclick=\"openBrowseModal()\">Browse Channels</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Guided setup for providers, authentication, and channels\" " +
+    "onclick=\"openSetupWizard()\">Provider Setup</button>");
   lines.push("<div class=\"dropdown\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"toggleDropdown(this)\">Import &#9662;</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Import channels from JSON or M3U files\" " +
+    "onclick=\"toggleDropdown(this)\">Import &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
   lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); document.getElementById('import-channels-file').click()\">Channels (JSON)</div>");
   lines.push("<div class=\"dropdown-divider\"></div>");
@@ -895,11 +1004,13 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<label class=\"dropdown-option\"><input type=\"checkbox\" id=\"m3u-replace-duplicates\"> Replace duplicates</label>");
   lines.push("</div>");
   lines.push("</div>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"exportChannels()\">Export</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Export user channels as JSON\" " +
+    "onclick=\"exportChannels()\">Export</button>");
   lines.push("<input type=\"file\" id=\"import-m3u-file\" accept=\".m3u,.m3u8\" style=\"display: none;\" onchange=\"importM3U(this)\">");
 
   lines.push("<div class=\"dropdown quick-actions-dropdown\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"toggleDropdown(this)\">Quick Actions &#9662;</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Bulk operations for predefined channels\" " +
+    "onclick=\"toggleDropdown(this)\">Quick Actions &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
   // Compute initial toggle counts for predefined channel scopes. The server is the single source of truth — the client renders what we return here.
   const scopeCounts = getPredefinedScopeCounts();
@@ -923,18 +1034,28 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   lines.push("<div class=\"dropdown-divider\"></div>");
 
-  // Bulk assign items — one per provider. Items whose tag is filtered out are hidden so updateBulkAssignOptions() can toggle them when the filter changes.
+  // Bulk assign select — a single dropdown replacing N "Set all to X" items. Options whose tag is filtered out are hidden so updateBulkAssignOptions() can
+  // toggle them when the filter changes.
   const allTags = getAllProviderTags();
   const enabled = getEnabledProviders();
   const hasFilter = enabled.length > 0;
 
+  lines.push("<div class=\"bulk-assign-row\">");
+  lines.push("<span>Set all channels to:</span>");
+  lines.push("<select id=\"bulk-assign-select\" class=\"bulk-assign-select\" title=\"Switch all multi-provider channels to this provider\" " +
+    "onchange=\"if(this.value) { closeDropdowns(); bulkAssignProvider(this.value); this.value = ''; }\">");
+  lines.push("<option value=\"\">Select provider</option>");
+
   for(const tagInfo of allTags) {
 
-    const hidden = (hasFilter && !enabled.includes(tagInfo.tag) && (tagInfo.tag !== "direct")) ? " style=\"display: none;\"" : "";
+    const hidden = (hasFilter && !enabled.includes(tagInfo.tag) && (tagInfo.tag !== "direct")) ? " hidden" : "";
 
-    lines.push("<div class=\"dropdown-item bulk-assign-item\" data-provider-tag=\"" + escapeHtml(tagInfo.tag) + "\"" + hidden +
-      " onclick=\"closeDropdowns(); bulkAssignProvider('" + escapeHtml(tagInfo.tag) + "')\">Set all to " + escapeHtml(tagInfo.displayName) + "</div>");
+    lines.push("<option value=\"" + escapeHtml(tagInfo.tag) + "\" data-provider-tag=\"" + escapeHtml(tagInfo.tag) + "\"" + hidden + ">" +
+      escapeHtml(tagInfo.displayName) + "</option>");
   }
+
+  lines.push("</select>");
+  lines.push("</div>");
 
   lines.push("</div>");
   lines.push("</div>");
@@ -1001,6 +1122,32 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<h3>Add New Channel</h3>");
   lines.push("<form id=\"add-channel-form-el\" onsubmit=\"return submitChannelForm(event, 'add')\">");
   lines.push("<input type=\"hidden\" name=\"action\" value=\"add\">");
+
+  // Provider pills. Clicking a provider auto-fills the URL field, which triggers the existing URL-change infrastructure (datalist population, profile
+  // resolution). The pills use providerDisplaySpan for icon rendering via the shared processProviderDisplays path. Guide-grid providers fill with their
+  // guideUrl; non-guide-grid providers fill with https://{domain}/.
+  const addFormTags = getAllProviderTags();
+  const addFormGuideUrls = getProviderGuideUrls();
+
+  lines.push("<div class=\"form-row\"><label>Provider</label>");
+  lines.push("<div class=\"provider-pills\">");
+
+  for(const tagInfo of addFormTags) {
+
+    if(tagInfo.tag === "direct") {
+
+      continue;
+    }
+
+    const pillUrl = addFormGuideUrls[tagInfo.tag] ?? (tagInfo.domain ? "https://" + tagInfo.domain + "/" : "");
+
+    lines.push("<button type=\"button\" class=\"provider-pill\" data-slug=\"" + escapeHtml(tagInfo.tag) + "\" data-url=\"" + escapeHtml(pillUrl) +
+      "\" onclick=\"selectProviderPill(this)\">" + providerDisplaySpan(tagInfo.displayName, tagInfo.domain, tagInfo.iconUrl) + "</button>");
+  }
+
+  lines.push("</div>");
+  lines.push("</div>");
+  lines.push("<div class=\"hint\">Select a provider to auto-fill the URL, or enter one manually below.</div>");
 
   // Channel key (add form only).
   lines.push(...generateTextField("add-key", "key", "Channel Key", formValues?.get("key") ?? "", {
@@ -1143,6 +1290,14 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Embed channel selector data for datalist population. The client-side JavaScript uses this to offer known selector suggestions when the URL matches a
   // multi-channel site like Disney+ or USA Network.
   lines.push("<script>" + generateChannelSelectorData() + "</script>");
+
+  // Browse Channels modal. The shell is server-rendered using wizard modal CSS classes. The content area (provider picker, channel list) is rendered
+  // client-side after fetching discovered channels from the provider endpoint.
+  lines.push(generateBrowseModal());
+
+  // Provider Setup wizard modal. Follows the same wizard pattern as the provider profile builder. Three steps: pick providers, authenticate, browse channels.
+  // The setupCompleted flag is embedded as a data attribute so the client can auto-show the wizard on first visit.
+  lines.push(generateSetupWizardModal());
 
   return lines.join("\n");
 }
