@@ -2,7 +2,7 @@
  *
  * logEmitter.ts: Event emitter for real-time log streaming via SSE.
  */
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 
 /* Represents a structured log entry that can be serialized and sent to SSE clients. This type mirrors the LogEntry interface in logs.ts but is defined here to avoid
  * circular dependencies.

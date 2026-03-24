@@ -51,11 +51,17 @@ export interface SegmentEmitter extends EventEmitter {
  */
 export interface HLSState {
 
+  // Playlist content.
+
+  // The current m3u8 playlist content. For streams without separate audio, this is the variant playlist. For streams with separate audio, this is the master
+  // playlist referencing video.m3u8 and audio.m3u8.
+  playlist: string;
+
+  // The video variant playlist content for streams with separate audio renditions. Empty string when not applicable.
+  videoPlaylist: string;
+
   // The audio variant playlist content for streams with separate audio renditions. Empty string when not applicable.
   audioPlaylist: string;
-
-  // Map of audio segment filenames to their binary data. Used only for streams with separate audio renditions (e.g., Google DAI on BET/VH1).
-  audioSegments: Map<string, Buffer>;
 
   // Whether this stream has separate audio renditions. When true, stream.m3u8 serves a master playlist referencing video.m3u8 and audio.m3u8. When false (the
   // common case), stream.m3u8 serves the variant playlist directly.
@@ -65,19 +71,36 @@ export interface HLSState {
   // logs. Without this flag, the empty-string check would fail when preroll content pre-seeds the playlist field.
   hasRealPlaylist: boolean;
 
+  // Segment storage.
+
   // The fMP4 initialization segment containing codec configuration. Sent once at stream start and retained for the stream's lifetime. Clients must fetch this before
   // any media segments.
   initSegment: Nullable<Buffer>;
 
+  // Map of media segment filenames to their binary data.
+  segments: Map<string, Buffer>;
+
+  // Map of audio segment filenames to their binary data. Used only for streams with separate audio renditions (e.g., Google DAI on BET/VH1).
+  audioSegments: Map<string, Buffer>;
+
+  // Typed emitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time.
+  segmentEmitter: SegmentEmitter;
+
+  // Readiness signals.
+
   // Promise that resolves when the first init segment is stored. Used by MPEG-TS consumers to wait for codec configuration before starting their FFmpeg remuxer.
   initSegmentReady: Promise<void>;
 
-  // The current m3u8 playlist content. For streams without separate audio, this is the variant playlist. For streams with separate audio, this is the master
-  // playlist referencing video.m3u8 and audio.m3u8.
-  playlist: string;
+  // Function to signal that the init segment is ready.
+  signalInitSegmentReady: () => void;
 
   // Promise that resolves when the first playlist is available.
   playlistReady: Promise<void>;
+
+  // Function to signal that the playlist is ready.
+  signalPlaylistReady: () => void;
+
+  // Preroll management.
 
   // The base URL for constructing absolute preroll segment URIs in the composite playlist (e.g., "http://192.168.1.100:5589"). Null when no preroll is active.
   prerollBaseUrl: Nullable<string>;
@@ -94,29 +117,16 @@ export interface HLSState {
   prerollStartTime: Nullable<Date>;
 
   // Timer handle for deferred preroll seeding. The timer fires after PREROLL_DELAY_MS; if real content hasn't arrived yet, preroll is seeded and playlistReady is
-  // signaled. Deliberately NOT cancelled in completeStreamSetup() — the timer must survive setup completion for native streams where the proxy's first poll cycle
+  // signaled. Deliberately NOT cancelled in completeStreamSetup() - the timer must survive setup completion for native streams where the proxy's first poll cycle
   // takes 10-15+ seconds. Cancelled in two places: updatePlaylist() in hlsSegments.ts (when the first real playlist arrives) and terminateStream() in lifecycle.ts
   // (on stream teardown).
   prerollTimer: Nullable<ReturnType<typeof setTimeout>>;
 
+  // Resume continuity.
+
   // Snapshotted resume segment index from the prior session. Read once at stream registration and stored here so both the preroll timer callback and the segmenter
-  // creation in completeStreamSetup() use the same value — eliminating the TTL race that would occur if each read the resume map independently.
+  // creation in completeStreamSetup() use the same value - eliminating the TTL race that would occur if each read the resume map independently.
   resumeSegmentIndex: number;
-
-  // Typed emitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time.
-  segmentEmitter: SegmentEmitter;
-
-  // Map of media segment filenames to their binary data.
-  segments: Map<string, Buffer>;
-
-  // Function to signal that the init segment is ready.
-  signalInitSegmentReady: () => void;
-
-  // Function to signal that the playlist is ready.
-  signalPlaylistReady: () => void;
-
-  // The video variant playlist content for streams with separate audio renditions. Empty string when not applicable.
-  videoPlaylist: string;
 }
 
 /**

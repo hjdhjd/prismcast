@@ -7,7 +7,7 @@ import type { Nullable, StreamingMode } from "../types/index.js";
 import { getHealthSnapshot, subscribeToHealth } from "../config/health.js";
 import { CONFIG } from "../config/index.js";
 import type { ClientTypeCount } from "./clients.js";
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 
 /* These interfaces define the structure of status updates sent to SSE clients. StreamStatus contains per-stream health information, while SystemStatus contains
  * overall system health.

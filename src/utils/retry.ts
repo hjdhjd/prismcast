@@ -51,17 +51,20 @@ export async function retryOperation<T>(
 
     try {
 
-      // Race the operation against a timeout to prevent hanging on operations that never complete.
+      // Race the operation against a timeout to prevent hanging on operations that never complete. The timer ID is stored so it can be cleared when the race
+      // settles, preventing orphaned timers from holding event loop references.
+      let timeoutTimer: ReturnType<typeof setTimeout>;
+
       const timeoutPromise = new Promise<never>((_, reject) => {
 
-        setTimeout(() => {
+        timeoutTimer = setTimeout(() => {
 
           reject(new Error([ "Operation timed out after ", String(timeoutMs), "ms." ].join("")));
         }, timeoutMs);
       });
 
       // eslint-disable-next-line no-await-in-loop
-      return await Promise.race([ operation(), timeoutPromise ]);
+      return await Promise.race([ operation(), timeoutPromise ]).finally(() => { clearTimeout(timeoutTimer); });
     } catch(error) {
 
       lastError = error;
