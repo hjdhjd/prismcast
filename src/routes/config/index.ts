@@ -124,4 +124,4 @@ export type { ChannelRowHtml } from "./channels/index.js";
 export { OPTIONAL_COLUMNS, generateChannelRowHtml, generateChannelsPanel, generateProviderFilterToolbar } from "./channels/index.js";
 export { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent,
   hasEnvOverrides } from "./settings.js";
-export { generateProvidersPanel, generateWizardModal } from "./providers.js";
+export { generateCustomProfilesPanel, generateProfileWizardModal } from "./providers.js";

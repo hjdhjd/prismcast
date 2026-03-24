@@ -259,6 +259,10 @@ export interface DomainConfig {
   // poll during early video wait as a safety net. Omit for sites without intermittent modals.
   dismissSelector?: string;
 
+  // Optional URL to a provider logo or icon. When specified, tried first before the domain-derived Apple touch icon and favicon fallbacks in the provider filter
+  // dropdown, chips, and browse modal. Use for providers whose favicon or touch icon is missing, low quality, or doesn't represent the brand well.
+  iconUrl?: string;
+
   // URL to navigate to for authentication. Some sites show different login options on their homepage vs their player page. When set, the auth route navigates to
   // this URL instead of the channel's streaming URL. Omit for sites where the streaming URL is also the correct login page.
   loginUrl?: string;

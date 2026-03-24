@@ -3,8 +3,9 @@
  * content.ts: Tab content HTML generators for the PrismCast landing page.
  */
 import { escapeHtml, isRunningAsService } from "../../utils/index.js";
-import { generateAdvancedTabContent, generateChannelsPanel, generateProvidersPanel, generateSettingsFormFooter, generateSettingsTabContent, generateWizardModal,
-  hasEnvOverrides } from "../config/index.js";
+import { generateAdvancedTabContent, generateChannelsPanel, generateCustomProfilesPanel, generateProfileWizardModal, generateSettingsFormFooter,
+  generateSettingsTabContent, hasEnvOverrides } from "../config/index.js";
+import { getProviderModuleInfo } from "../../browser/channelSelection.js";
 import { getUITabs } from "../../config/userConfig.js";
 
 /**
@@ -166,13 +167,14 @@ export function generateOverviewContent(baseUrl: string): string {
 
     "<h4>Guide-Based Providers &mdash; First Tune (~5&ndash;10 seconds)</h4>",
     "<p>Sites where PrismCast navigates a live TV guide to find and select the channel. The first tune for a given channel is slower because the ",
-    "guide grid must be searched. Examples: DirecTV Stream, Fox, HBO Max, Hulu, Sling TV, Spectrum TV, Xfinity Stream, YouTube TV.</p>",
+    "guide grid must be searched. Examples: " + getProviderModuleInfo().map((p) => escapeHtml(p.label)).sort().join(", ") + ".</p>",
     "<p class=\"description-hint\">Note: Xfinity Stream's player is slow to initialize &mdash; expect 15&ndash;30 seconds for channel changes. ",
     "This is a limitation of Xfinity's web player, not PrismCast.</p>",
 
     "<h4>Guide-Based Providers &mdash; Subsequent Tunes (~3&ndash;5 seconds)</h4>",
-    "<p>After the first tune, PrismCast caches channel data for <strong>DirecTV Stream, Fox, HBO Max, Hulu, Sling TV, Spectrum TV, ",
-    "and YouTube TV</strong>. Subsequent tunes skip guide navigation entirely and are comparable to direct URL channels. ",
+    "<p>After the first tune, PrismCast caches channel data for <strong>" +
+    getProviderModuleInfo().filter((p) => p.slug !== "xfinity").map((p) => escapeHtml(p.label)).sort().join(", ") +
+    "</strong>. Subsequent tunes skip guide navigation entirely and are comparable to direct URL channels. " +
     "If cached data becomes stale, PrismCast falls back to guide navigation transparently. Xfinity Stream does not benefit from this ",
     "optimization &mdash; each tune requires a full page load of the Xfinity player.</p>",
 
@@ -233,7 +235,7 @@ export function generateOverviewContent(baseUrl: string): string {
     "section with site-specific guidance, including expected channel selector formats for known providers.</p>",
 
     "<h4>User-Defined Provider Profiles</h4>",
-    "<p>You can add support for streaming sites that PrismCast does not have builtin support for. The <a href=\"#config/providers\">Providers tab</a> ",
+    "<p>You can add support for streaming sites that PrismCast does not have builtin support for. The <a href=\"#channels/custom-profiles\">Custom Profiles tab</a> ",
     "includes a step-by-step wizard that guides you through creating a custom site profile &mdash; defining how to enter fullscreen, handle iframes, ",
     "and interact with the player. You can also export your profiles as <strong>provider packs</strong> to share with other PrismCast users, and ",
     "import packs that others have created.</p>",
@@ -583,8 +585,9 @@ export function generateApiReferenceContent(): string {
     "<tr>",
     "<td class=\"endpoint\"><code>GET /providers/:slug/channels</code></td>",
     "<td>Discover all available channels for a provider. Returns a JSON array of channel objects with <code>name</code>, <code>channelSelector</code>, " +
-    "and optional <code>affiliate</code> and <code>tier</code> fields. Provider slugs: <code>directv</code>, <code>foxcom</code>, <code>hbomax</code>, " +
-    "<code>hulu</code>, <code>sling</code>, <code>yttv</code>. Returns cached results instantly when a prior tune or discovery call has already " +
+    "and optional <code>affiliate</code> and <code>tier</code> fields. Provider slugs: " +
+    getProviderModuleInfo().map((p) => "<code>" + escapeHtml(p.slug) + "</code>").sort().join(", ") +
+    ". Returns cached results instantly when a prior tune or discovery call has already " +
     "enumerated the lineup. " +
     "Add <code>?refresh=true</code> to clear caches and force a fresh discovery walk.</td>",
     "</tr>",
@@ -729,7 +732,7 @@ export function generateChannelsTabContent(): string {
     // Channels subtab bar. Uses scoped CSS classes to avoid collision with Configuration tab subtabs.
     "<div class=\"channels-subtab-bar\" role=\"tablist\">",
     "<button type=\"button\" class=\"channels-subtab-btn active\" data-channels-subtab=\"channels\" role=\"tab\" aria-selected=\"true\">Channels</button>",
-    "<button type=\"button\" class=\"channels-subtab-btn\" data-channels-subtab=\"providers\" role=\"tab\" aria-selected=\"false\">Providers</button>",
+    "<button type=\"button\" class=\"channels-subtab-btn\" data-channels-subtab=\"custom-profiles\" role=\"tab\" aria-selected=\"false\">Custom Profiles</button>",
     "</div>",
 
     // Channels subtab panel (default active).
@@ -739,15 +742,15 @@ export function generateChannelsTabContent(): string {
     "</div>",
     "</div>",
 
-    // Providers subtab panel.
-    "<div id=\"channels-subtab-providers\" class=\"channels-subtab-panel\">",
+    // Custom Profiles subtab panel.
+    "<div id=\"channels-subtab-custom-profiles\" class=\"channels-subtab-panel\">",
     "<div class=\"section\">",
-    generateProvidersPanel(),
+    generateCustomProfilesPanel(),
     "</div>",
     "</div>",
 
     // Profile builder wizard modal.
-    generateWizardModal(),
+    generateProfileWizardModal(),
 
     // Test flow dialog. Shown when the user starts a profile test to check selectors against a live page.
     "<div id=\"test-modal\" class=\"login-modal\" style=\"display: none;\">",
@@ -934,11 +937,20 @@ export function generateLogsContent(): string {
     "  loadLogs();",
     "}",
 
+    // Resize the log viewer to fill the remaining viewport height below its top edge, with a small bottom margin for breathing room.
+    "function resizeLogViewer() {",
+    "  var top = logContainer.getBoundingClientRect().top;",
+    "  var newHeight = window.innerHeight - top - 40;",
+    "  if(newHeight > 200) { logContainer.style.height = newHeight + 'px'; }",
+    "}",
+    "window.addEventListener('resize', resizeLogViewer);",
+
     // Handle tab activation events for logs SSE connection. The onopen handler calls loadLogs() to ensure history is loaded on both initial
     // connection and reconnection after a disconnect.
     "document.addEventListener('tabactivated', function(e) {",
     "  if (e.detail.category === 'logs') {",
     "    connectSSE();",
+    "    resizeLogViewer();",
     "  } else {",
     "    disconnectSSE();",
     "  }",

@@ -4,4 +4,5 @@
  */
 export { generateChannelsSubtabScript } from "./channels.js";
 export { generateConfigSubtabScript } from "./config.js";
+export { generateSharedUtilitiesScript } from "./shared.js";
 export { generateStatusScript } from "./status.js";

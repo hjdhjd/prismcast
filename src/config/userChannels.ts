@@ -7,6 +7,7 @@ import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.js";
 import { buildProviderGroups, getAllProviderTags, getProviderSelections, getResolvedChannel, isChannelAvailableByProvider, isProviderVariant,
   resolveProviderKey, setEnabledProviders, setProviderSelections } from "./providers.js";
 import { getChannelsFilePath, getDataDir } from "./paths.js";
+import { loadUserConfig, saveUserConfig } from "./userConfig.js";
 import { CONFIG } from "./index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import fs from "node:fs";
@@ -286,16 +287,86 @@ export async function initializeUserChannels(): Promise<void> {
 
   const result = await loadUserChannels();
 
+  // Silent migration: rename "foxcom" provider references to "foxone." Migrates provider selections (channels.json) and user channel variant keys. The
+  // provider filter (config.json) is handled separately below since it's already loaded into CONFIG at this point.
+  let channelsMigrated = false;
+
+  for(const [ canonicalKey, selectedVariant ] of Object.entries(result.providerSelections)) {
+
+    if(selectedVariant.endsWith("-foxcom")) {
+
+      result.providerSelections[canonicalKey] = selectedVariant.slice(0, -6) + "foxone";
+      channelsMigrated = true;
+    }
+  }
+
+  for(const key of Object.keys(result.channels)) {
+
+    if(key.endsWith("-foxcom")) {
+
+      result.channels[key.slice(0, -6) + "foxone"] = result.channels[key];
+      Reflect.deleteProperty(result.channels, key);
+      channelsMigrated = true;
+    }
+  }
+
+  // Load provider selections before saving so that saveUserChannels (which persists both channels and selections) captures the migrated values.
+  setProviderSelections(result.providerSelections);
+
+  if(channelsMigrated) {
+
+    await saveUserChannels(result.channels);
+
+    LOG.info("Migrated Fox provider references from foxcom to foxone.");
+  }
+
   loadedUserChannels = result.channels;
   userChannelsParseError = result.parseError;
   userChannelsParseErrorMessage = result.parseErrorMessage;
 
-  // Load provider selections from the file.
-  setProviderSelections(result.providerSelections);
-
   // Load enabled providers from the configuration, validating that each tag is recognized. Invalid tags (e.g., from hand-edited config.json typos) are stripped
   // silently after logging a warning. Validation must happen after buildProviderGroups() because getAllProviderTags() depends on the groups being built.
-  const configuredProviders = CONFIG.channels.enabledProviders;
+  let configuredProviders = CONFIG.channels.enabledProviders;
+
+  // Silent migration: rename "foxcom" to "foxone" in the provider filter if present. Persisted to config.json immediately so the stale value doesn't remain.
+  if(configuredProviders.includes("foxcom")) {
+
+    configuredProviders = configuredProviders.map((tag) => (tag === "foxcom") ? "foxone" : tag);
+    CONFIG.channels.enabledProviders = configuredProviders;
+
+    const configResult = await loadUserConfig();
+
+    if(configResult.config.channels?.enabledProviders) {
+
+      configResult.config.channels.enabledProviders = configuredProviders;
+
+      await saveUserConfig(configResult.config);
+    }
+
+    LOG.info("Migrated provider filter from foxcom to foxone.");
+  }
+
+  // Upgrade inference for setupCompleted: existing users who already have providers or channels configured should not see the first-run setup wizard. If the
+  // flag is not set in the config file and evidence of prior configuration exists, infer true and persist.
+  if(!CONFIG.channels.setupCompleted) {
+
+    const hasProviders = configuredProviders.length > 0;
+    const hasUserChannels = Object.keys(loadedUserChannels).length > 0;
+
+    if(hasProviders || hasUserChannels) {
+
+      CONFIG.channels.setupCompleted = true;
+
+      const configResult = await loadUserConfig();
+
+      configResult.config.channels ??= {};
+      configResult.config.channels.setupCompleted = true;
+
+      await saveUserConfig(configResult.config);
+
+      LOG.info("Inferred Provider Setup as completed from existing configuration.");
+    }
+  }
 
   // Build the merged channels map and then build provider groups.
   const mergedChannels = getMergedChannelMap();
@@ -541,6 +612,53 @@ export function isPredefinedChannel(key: string): boolean {
 }
 
 /**
+ * Returns a channel key that is safe from provider variant collisions. The provider group system (buildProviderGroups) infers variant relationships from key
+ * patterns — a key like "pbs-kids" is misinterpreted as a variant of "pbs" with provider suffix "kids" when "pbs" exists as a channel. This function detects
+ * the collision by checking whether the prefix before the first hyphen exists as any channel (predefined or user-defined), matching the same first-hyphen
+ * split that buildProviderGroups uses. When a collision is detected, hyphens are removed to produce a safe key (e.g., "pbs-kids" → "pbskids"). When no
+ * collision exists, the original key is returned unchanged.
+ * @param key - The generated channel key to check.
+ * @returns A safe channel key that won't be misinterpreted as a provider variant.
+ */
+export function safeChannelKey(key: string): string {
+
+  const hyphenIndex = key.indexOf("-");
+
+  if(hyphenIndex === -1) {
+
+    return key;
+  }
+
+  const prefix = key.substring(0, hyphenIndex);
+
+  if(isPredefinedChannel(prefix) || isUserChannel(prefix)) {
+
+    return key.replace(/-/g, "");
+  }
+
+  return key;
+}
+
+/**
+ * Returns the East canonical key for a Pacific channel. Pacific canonicals are auto-generated by generatePacificEntries with a "p" suffix (e.g., "disneyp"
+ * from "disney"). When a Pacific canonical's logo or other brand-level metadata is unavailable, the East counterpart provides a fallback. Returns undefined
+ * when the key is not a Pacific canonical (doesn't end with "p" or the base key isn't predefined).
+ * @param key - The channel key to check.
+ * @returns The East canonical key if this is a Pacific channel, undefined otherwise.
+ */
+export function getEastCanonicalKey(key: string): string | undefined {
+
+  if(!key.endsWith("p")) {
+
+    return undefined;
+  }
+
+  const eastKey = key.slice(0, -1);
+
+  return isPredefinedChannel(eastKey) ? eastKey : undefined;
+}
+
+/**
  * Checks if a channel key exists in the user channels.
  * @param key - The channel key to check.
  * @returns True if the channel is user-defined.
@@ -736,6 +854,15 @@ export function validateChannelKey(key: string, isNew: boolean): string | undefi
   if(isNew && isUserChannel(key)) {
 
     return "A user channel with this key already exists.";
+  }
+
+  // Check for variant collision. A key like "pbs-kids" would be misinterpreted as a variant of "pbs" by the provider group system. Warn the user so they
+  // can choose a different key (e.g., "pbskids").
+  if(isNew && (key !== safeChannelKey(key))) {
+
+    const prefix = key.substring(0, key.indexOf("-"));
+
+    return "This key conflicts with the predefined channel '" + prefix + "'. Use '" + safeChannelKey(key) + "' instead.";
   }
 
   return undefined;

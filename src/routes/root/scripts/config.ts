@@ -55,45 +55,6 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  }",
 
-    // Show a toast notification. Auto-dismiss durations: success/info = 5s, warning = 8s, error = no auto-dismiss. Optional action: { label, onclick } appends an
-    // inline button between the message text and the close button.
-    "  function showToast(message, type, duration, action) {",
-    "    var container = document.getElementById('toast-container');",
-    "    if (!container) return;",
-    "    var toast = document.createElement('div');",
-    "    toast.className = 'toast ' + (type || 'info');",
-    "    toast.textContent = message;",
-    "    toast.setAttribute('role', (type === 'error' || type === 'warning') ? 'alert' : 'status');",
-    "    if (action && action.label) {",
-    "      var actionBtn = document.createElement('button');",
-    "      actionBtn.type = 'button';",
-    "      actionBtn.className = 'toast-action';",
-    "      actionBtn.textContent = action.label;",
-    "      actionBtn.onclick = function() { if (action.onclick) action.onclick(); dismissToast(toast); };",
-    "      toast.appendChild(actionBtn);",
-    "    }",
-    "    var closeBtn = document.createElement('button');",
-    "    closeBtn.type = 'button';",
-    "    closeBtn.className = 'toast-close';",
-    "    closeBtn.textContent = '\\u00d7';",
-    "    closeBtn.setAttribute('aria-label', 'Dismiss');",
-    "    closeBtn.onclick = function() { dismissToast(toast); };",
-    "    toast.appendChild(closeBtn);",
-    "    container.appendChild(toast);",
-    "    var ms = duration !== undefined ? duration : type === 'error' ? 0 : type === 'warning' ? 8000 : 5000;",
-    "    if (ms > 0) { setTimeout(function() { dismissToast(toast); }, ms); }",
-    "  }",
-
-    // Expose showToast globally so other script blocks (e.g., channels-subtab IIFE) can use the toast system.
-    "  window.showToast = showToast;",
-
-    // Dismiss a toast with slide-out animation.
-    "  function dismissToast(toast) {",
-    "    if (toast.classList.contains('toast-exit')) return;",
-    "    toast.classList.add('toast-exit');",
-    "    toast.addEventListener('animationend', function() { if (toast.parentNode) toast.parentNode.removeChild(toast); });",
-    "  }",
-
     // Hint appended to success toasts when a channel operation changes M3U playlist content that Channels DVR consumes.
     "  var PLAYLIST_HINT = ' Reload the playlist in Channels DVR to see this change.';",
 
@@ -803,13 +764,47 @@ export function generateConfigSubtabScript(): string {
     "    if (editRow) editRow.style.display = 'none';",
     "  };",
 
-    // Hide add form and show the Add Channel button.
+    // Select a provider pill in the add form. Clicking an inactive pill highlights it, fills the URL field, sets profile to autodetect (disabled), and expands
+    // the advanced section (channel selector is essential for provider channels). Clicking the active pill deselects it, clears the URL, and re-enables the
+    // profile dropdown for manual entry mode.
+    "  window.selectProviderPill = function(btn) {",
+    "    var wasActive = btn.classList.contains('active');",
+    "    var pills = btn.parentElement.querySelectorAll('.provider-pill');",
+    "    for(var i = 0; i < pills.length; i++) pills[i].classList.remove('active');",
+    "    if(!wasActive) btn.classList.add('active');",
+    "    var urlInput = document.getElementById('add-url');",
+    "    if(urlInput) {",
+    "      urlInput.value = wasActive ? '' : (btn.getAttribute('data-url') || '');",
+    "      urlInput.dispatchEvent(new Event('input', { bubbles: true }));",
+    "    }",
+    "    var profileSelect = document.getElementById('add-profile');",
+    "    if(profileSelect) {",
+    "      if(!wasActive) { profileSelect.value = ''; profileSelect.disabled = true; }",
+    "      else { profileSelect.disabled = false; }",
+    "    }",
+    "    if(!wasActive) {",
+    "      var advanced = document.getElementById('add-advanced');",
+    "      var toggle = advanced ? advanced.previousElementSibling : null;",
+    "      if(advanced && !advanced.classList.contains('show')) {",
+    "        advanced.classList.add('show');",
+    "        if(toggle) toggle.textContent = 'Hide Advanced Options';",
+    "      }",
+    "    }",
+    "  };",
+
+    // Hide the add form, reset all fields and provider pill selection, and restore the Add Channel button.
     "  window.hideAddForm = function() {",
     "    var addForm = document.getElementById('add-channel-form');",
     "    var addBtn = document.getElementById('add-channel-btn');",
     "    if (addForm) addForm.style.display = 'none';",
     "    if (addBtn) addBtn.style.display = 'inline-block';",
-    "    if (addForm) addForm.querySelector('form').reset();",
+    "    if (addForm) {",
+    "      addForm.querySelector('form').reset();",
+    "      var pills = addForm.querySelectorAll('.provider-pill');",
+    "      for(var i = 0; i < pills.length; i++) pills[i].classList.remove('active');",
+    "      var profileSelect = addForm.querySelector('#add-profile');",
+    "      if(profileSelect) profileSelect.disabled = false;",
+    "    }",
     "  };",
 
     // Insert or replace channel rows in the table. Always removes existing rows with the same key first (handles both edits and overrides of builtin channels).
@@ -849,6 +844,7 @@ export function generateConfigSubtabScript(): string {
     "      if (newEditRow) tbody.appendChild(newEditRow);",
     "    }",
     "    updateDisabledCount();",
+    "    processChannelLogos();",
     "  };",
 
     // Remove channel rows from the table.
@@ -1226,17 +1222,30 @@ export function generateConfigSubtabScript(): string {
     "      var tag = enabledTags[i];",
     "      if (tag === 'direct') continue;",
     "      var label = tag;",
+    "      var chipDomain = '';",
+    "      var chipIconUrl = '';",
     "      if (menu) {",
     "        var cb = menu.querySelector('input[data-tag=\"' + tag + '\"]');",
-    "        if (cb && cb.parentElement) label = cb.parentElement.textContent.trim();",
+    "        if (cb && cb.parentElement) {",
+    "          label = cb.parentElement.textContent.trim();",
+    "          var pd = cb.parentElement.querySelector('.provider-display');",
+    "          if (pd) {",
+    "            chipDomain = pd.getAttribute('data-domain') || '';",
+    "            chipIconUrl = pd.getAttribute('data-icon-url') || '';",
+    "          }",
+    "        }",
     "      }",
     "      var chip = document.createElement('span');",
     "      chip.className = 'provider-chip';",
     "      chip.setAttribute('data-tag', tag);",
-    "      chip.innerHTML = label + '<button type=\"button\" class=\"chip-close\" aria-label=\"Remove ' + label +",
+    "      var domainAttr = chipDomain ? ' data-domain=\"' + chipDomain + '\"' : '';",
+    "      var iconAttr = chipIconUrl ? ' data-icon-url=\"' + chipIconUrl + '\"' : '';",
+    "      chip.innerHTML = '<span class=\"provider-display\"' + domainAttr + iconAttr + ' data-sm>' + label + '</span>' +",
+    "        '<button type=\"button\" class=\"chip-close\" aria-label=\"Remove ' + label +",
     "        '\" onclick=\"removeProviderChip(\\'' + tag + '\\')\">\\u00d7</button>';",
     "      container.appendChild(chip);",
     "    }",
+    "    processProviderDisplays();",
     "  };",
 
     // Filter channel rows based on enabled provider tags. Toggles the channel-unavailable class on each row and updates Source column content. Filtered-out options
@@ -1304,13 +1313,16 @@ export function generateConfigSubtabScript(): string {
     "    if (enabledTags.length > 0) { filterChannelRows(enabledTags); }",
     "  }",
 
-    // Update bulk assign items in the Quick Actions menu to only show enabled providers. Toggles display on .bulk-assign-item elements based on the active filter.
+    // Update bulk assign options in the Quick Actions select to only show enabled providers. Toggles the hidden attribute on option elements based on the filter.
     "  function updateBulkAssignOptions(enabledTags) {",
-    "    var items = document.querySelectorAll('.bulk-assign-item');",
-    "    for (var i = 0; i < items.length; i++) {",
-    "      var tag = items[i].getAttribute('data-provider-tag');",
+    "    var select = document.getElementById('bulk-assign-select');",
+    "    if(!select) return;",
+    "    var options = select.querySelectorAll('option[data-provider-tag]');",
+    "    for(var i = 0; i < options.length; i++) {",
+    "      var tag = options[i].getAttribute('data-provider-tag');",
     "      var show = (enabledTags.length === 0) || (tag === 'direct') || (enabledTags.indexOf(tag) !== -1);",
-    "      items[i].style.display = show ? '' : 'none';",
+    "      if(show) options[i].removeAttribute('hidden');",
+    "      else options[i].setAttribute('hidden', '');",
     "    }",
     "  };",
 
@@ -1369,43 +1381,6 @@ export function generateConfigSubtabScript(): string {
     "    .catch(function(err) { showToast('Failed to revert: ' + err.message, 'error'); });",
     "  }",
 
-    // Close all open dropdown menus and remove the scroll and resize listeners.
-    "  function closeDropdowns() {",
-    "    var menus = document.querySelectorAll('.dropdown-menu.show');",
-    "    for (var i = 0; i < menus.length; i++) menus[i].classList.remove('show');",
-    "    window.removeEventListener('scroll', closeDropdowns, true);",
-    "    window.removeEventListener('resize', closeDropdowns);",
-    "  };",
-    "  window.closeDropdowns = closeDropdowns;",
-
-    // Toggle a dropdown menu open or closed. On first call for a given button, the menu is detached from its .dropdown parent and portaled to <body> with
-    // position: fixed. This allows the menu to escape overflow: auto containers like the channel table wrapper. On every open, the menu is positioned relative
-    // to the button's bounding rect, with edge-of-viewport clamping and above-button flip when it would extend below the viewport.
-    "  window.toggleDropdown = function(btn) {",
-    "    var menu = btn._portalMenu;",
-    "    var isOpen = menu && menu.classList.contains('show');",
-    "    closeDropdowns();",
-    "    if (isOpen) return;",
-    "    if (!menu) {",
-    "      menu = btn.nextElementSibling;",
-    "      if (!menu) return;",
-    "      btn._portalMenu = menu;",
-    "      document.body.appendChild(menu);",
-    "      menu.style.position = 'fixed';",
-    "      menu.style.marginTop = '0';",
-    "    }",
-    "    menu.classList.add('show');",
-    "    var rect = btn.getBoundingClientRect();",
-    "    var top = rect.bottom + 2;",
-    "    var left = rect.left;",
-    "    if (left + menu.offsetWidth > window.innerWidth - 4) left = rect.right - menu.offsetWidth;",
-    "    if (left < 4) left = 4;",
-    "    if (top + menu.offsetHeight > window.innerHeight - 4) top = rect.top - menu.offsetHeight - 2;",
-    "    menu.style.top = top + 'px';",
-    "    menu.style.left = left + 'px';",
-    "    window.addEventListener('scroll', closeDropdowns, true);",
-    "    window.addEventListener('resize', closeDropdowns);",
-    "  };",
 
     // Close dropdowns when clicking outside. After portaling, menus live on <body> outside .dropdown containers, so we also check .dropdown-menu to prevent
     // clicks on menu items (like column picker checkboxes) from triggering close.
@@ -1663,8 +1638,40 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "    var addUrlInput = document.getElementById('add-url');",
     "    if (addUrlInput) {",
-    "      addUrlInput.addEventListener('input', function() { updateSelectorSuggestions('add-url', 'add-selectorList'); });",
+    "      addUrlInput.addEventListener('input', function() {",
+    "        updateSelectorSuggestions('add-url', 'add-selectorList');",
+
+    // Deselect the active provider pill if the user manually edits the URL. Check whether the current URL still matches the active pill's URL — if not, the
+    // user has overridden the auto-fill and the pill should unhighlight. Also re-enable the profile dropdown since manual URL entry may need a custom profile.
+    "        var activePill = document.querySelector('.provider-pill.active');",
+    "        if(activePill && activePill.getAttribute('data-url') !== addUrlInput.value) {",
+    "          activePill.classList.remove('active');",
+    "          var profileSelect = document.getElementById('add-profile');",
+    "          if(profileSelect) profileSelect.disabled = false;",
+    "        }",
+    "      });",
     "      updateSelectorSuggestions('add-url', 'add-selectorList');",
+    "    }",
+
+    // Auto-fill station ID when the channelSelector matches a known entry with a stationId. Reads from the same channelSelectorsByDomain data used by the
+    // datalist. The data-auto attribute tracks whether the current value was auto-filled — user edits clear it, preventing overwrites of intentional input.
+    "    var addSelectorInput = document.getElementById('add-channelSelector');",
+    "    var addStationInput = document.getElementById('add-stationId');",
+    "    if (addSelectorInput && addStationInput) {",
+    "      addStationInput.addEventListener('input', function() { addStationInput.removeAttribute('data-auto'); });",
+    "      addSelectorInput.addEventListener('input', function() {",
+    "        if (addStationInput.value && !addStationInput.hasAttribute('data-auto')) return;",
+    "        var urlInput = document.getElementById('add-url');",
+    "        if (!urlInput || !urlInput.value) return;",
+    "        try {",
+    "          var hostname = new URL(urlInput.value).hostname;",
+    "          var entries = (typeof channelSelectorsByDomain !== 'undefined') ? channelSelectorsByDomain[hostname] : null;",
+    "          if (!entries) return;",
+    "          var match = entries.find(function(e) { return e.value === addSelectorInput.value; });",
+    "          if (match && match.stationId) { addStationInput.value = match.stationId; addStationInput.setAttribute('data-auto', '1'); }",
+    "          else if (addStationInput.hasAttribute('data-auto')) { addStationInput.value = ''; addStationInput.removeAttribute('data-auto'); }",
+    "        } catch(e) {}",
+    "      });",
     "    }",
     "  })();",
 

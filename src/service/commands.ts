@@ -23,6 +23,7 @@ interface StreamsResponse {
     channel: Nullable<string>;
     duration: number;
     id: number;
+    showName: string;
     url: string;
   }[];
 }
@@ -605,7 +606,9 @@ export async function handleStatus(): Promise<number> {
           }
         }
 
-        print("  • " + name + " (" + formatDuration(stream.duration) + ")");
+        const suffix = stream.showName ? " - " + stream.showName : "";
+
+        print("  • " + name + " (" + formatDuration(stream.duration) + ")" + suffix);
       }
     }
   }

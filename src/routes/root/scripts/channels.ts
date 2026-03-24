@@ -86,16 +86,13 @@ export function generateChannelsSubtabScript(): string {
     "        var domains = (match.domains && match.domains.length > 0) ?",
     "          match.domains.map(function(d) { return { domain: d.domain, provider: d.provider || '', providerTag: d.providerTag || '' }; }) :",
     "          [{ domain: '', provider: '', providerTag: '' }];",
-    "        wizardState = {",
-    "          currentStep: 1, editKey: key, editMode: true, highestStep: 5, profileName: key,",
+    "        profileWizard.state = {",
+    "          editKey: key, editMode: true, profileName: key,",
     "          baseProfile: p.extends || '', strategy: strat,",
     "          strategyFields: strategyFields, flags: flags,",
     "          hideSelector: p.hideSelector || '', domains: domains, description: p.description || ''",
     "        };",
-    "        var title = document.getElementById('wizard-title');",
-    "        if(title) title.textContent = 'Edit Provider Profile';",
-    "        document.getElementById('wizard-modal').style.display = 'flex';",
-    "        renderWizardStep();",
+    "        profileWizard.open({ highestStep: 5, title: 'Edit Provider Profile' });",
     "      })",
     "      .catch(function() { showToast('Failed to load profile data.', 'error'); });",
     "  };",
@@ -241,22 +238,6 @@ export function generateChannelsSubtabScript(): string {
     "    window.location.href = url;",
     "  };",
 
-    // Profile builder wizard state and rendering. highestStep tracks the furthest step the user has reached, allowing click-to-navigate back to visited steps.
-    "  var wizardState = {",
-    "    currentStep: 1,",
-    "    editKey: null,",
-    "    editMode: false,",
-    "    highestStep: 1,",
-    "    profileName: '',",
-    "    baseProfile: '',",
-    "    strategy: 'none',",
-    "    strategyFields: {},",
-    "    flags: {},",
-    "    hideSelector: '',",
-    "    domains: [{ domain: '', provider: '', providerTag: '' }],",
-    "    description: ''",
-    "  };",
-
     // Auto-generate a provider tag from a provider name: lowercase, strip non-alphanumeric.
     "  function autoProviderTag(name) {",
     "    return name.toLowerCase().replace(/[^a-z0-9]/g, '');",
@@ -274,49 +255,43 @@ export function generateChannelsSubtabScript(): string {
     "    return n + ' ' + word + (n === 1 ? '' : 's');",
     "  }",
 
-    // Render the current wizard step into the wizard-content area.
-    "  function renderWizardStep() {",
+    // Profile builder wizard. Uses the shared wizard controller for step navigation, indicator updates, and error display. The state object holds wizard-specific
+    // form data (profile name, base profile, strategy, flags, domains, description).
+    "  var profileWizard = createWizardController({",
+    "    contentId: 'wizard-content',",
+    "    errorId: 'wizard-error',",
+    "    modalId: 'wizard-modal',",
+    "    onRender: renderProfileStep,",
+    "    onValidate: validateProfileStep,",
+    "    stepCount: 5,",
+    "    titleId: 'wizard-title'",
+    "  });",
+
+    // Render the current profile wizard step into the content area. Manages button visibility and delegates to the step-specific content renderer.
+    "  function renderProfileStep(step) {",
     "    var content = document.getElementById('wizard-content');",
-    "    var errDiv = document.getElementById('wizard-error');",
-    "    var backBtn = document.getElementById('wizard-back');",
-    "    var nextBtn = document.getElementById('wizard-next');",
-    "    var saveBtn = document.getElementById('wizard-save');",
-    "    var saveTestBtn = document.getElementById('wizard-save-test');",
     "    if(!content) return;",
-    "    errDiv.style.display = 'none';",
-    "    errDiv.textContent = '';",
 
-    // Update step indicator. Steps up to highestStep are clickable for navigation.
-    "    var steps = document.querySelectorAll('.wizard-step');",
-    "    for(var i = 0; i < steps.length; i++) {",
-    "      var stepNum = parseInt(steps[i].getAttribute('data-step'), 10);",
-    "      steps[i].classList.remove('active', 'completed', 'clickable');",
-    "      if(stepNum < wizardState.currentStep) steps[i].classList.add('completed');",
-    "      if(stepNum === wizardState.currentStep) steps[i].classList.add('active');",
-    "      if(stepNum !== wizardState.currentStep && stepNum <= wizardState.highestStep) steps[i].classList.add('clickable');",
-    "      steps[i].onclick = (function(n) { return function() { wizardGoToStep(n); }; })(stepNum);",
-    "    }",
-
-    // Show/hide navigation buttons.
-    "    backBtn.style.display = (wizardState.currentStep > 1) ? '' : 'none';",
-    "    nextBtn.style.display = (wizardState.currentStep < 5) ? '' : 'none';",
-    "    saveBtn.style.display = (wizardState.currentStep === 5) ? '' : 'none';",
-    "    saveTestBtn.style.display = (wizardState.currentStep === 5) ? '' : 'none';",
+    // Show/hide navigation buttons based on the current step.
+    "    if(step > 1) { profileWizard.show('wizard-back'); } else { profileWizard.hide('wizard-back'); }",
+    "    if(step < 5) { profileWizard.show('wizard-next'); } else { profileWizard.hide('wizard-next'); }",
+    "    if(step === 5) { profileWizard.show('wizard-save'); profileWizard.show('wizard-save-test'); }",
+    "    else { profileWizard.hide('wizard-save'); profileWizard.hide('wizard-save-test'); }",
 
     "    var html = '';",
-    "    var s = wizardState;",
+    "    var s = profileWizard.state;",
 
     // Step 1: Base Profile.
-    "    if(s.currentStep === 1) {",
+    "    if(step === 1) {",
     "      html += '<div class=\"field-group\">';",
-    "      html += '<label for=\"wizard-profile-name\">Profile Name</label>';",
+    "      html += '<label class=\"wizard-label\" for=\"wizard-profile-name\">Profile Name</label>';",
     "      var nameReadonly = s.editMode ? ' readonly style=\"opacity: 0.6; cursor: not-allowed;\"' : '';",
     "      html += '<input type=\"text\" id=\"wizard-profile-name\" value=\"' + s.profileName.replace(/\"/g, '&quot;') +",
     "        '\" placeholder=\"e.g., myProvider\"' + nameReadonly + '>';",
     "      html += '<div class=\"field-hint\">' + (s.editMode ? 'Profile name cannot be changed.' :",
     "        'Unique identifier. Letters, numbers, and hyphens only.') + '</div>';",
     "      html += '</div>';",
-    "      html += '<label>Base Profile</label>';",
+    "      html += '<label class=\"wizard-label\">Base Profile</label>';",
     "      var profiles = window.__wizardProfiles || {};",
     "      var cats = [",
     "        { key: 'api', title: 'Fullscreen API',",
@@ -351,8 +326,8 @@ export function generateChannelsSubtabScript(): string {
     "    }",
 
     // Step 2: Channel Selection Strategy. Strategies and their fields are rendered from the server-side registry (window.__wizardStrategies).
-    "    if(s.currentStep === 2) {",
-    "      html += '<label>Channel Selection Strategy</label>';",
+    "    if(step === 2) {",
+    "      html += '<label class=\"wizard-label\">Channel Selection Strategy</label>';",
     "      var strategies = window.__wizardStrategies;",
     "      for(var si = 0; si < strategies.length; si++) {",
     "        var st = strategies[si];",
@@ -372,7 +347,7 @@ export function generateChannelsSubtabScript(): string {
     "            var val = (s.strategyFields[f.id] || '').replace(/\"/g, '&quot;');",
     "            var optLabel = f.required ? '' : ' <span style=\"color: var(--text-muted);\">(optional)</span>';",
     "            html += '<div class=\"field-group\">';",
-    "            html += '<label for=\"wizard-sf-' + f.id + '\">' + f.label + optLabel + '</label>';",
+    "            html += '<label class=\"wizard-label\" for=\"wizard-sf-' + f.id + '\">' + f.label + optLabel + '</label>';",
     "            html += '<input type=\"text\" id=\"wizard-sf-' + f.id + '\" data-field=\"' + f.id + '\" value=\"' + val + '\"';",
     "            if(f.placeholder) html += ' placeholder=\"' + f.placeholder.replace(/\"/g, '&quot;') + '\"';",
     "            html += '>';",
@@ -391,8 +366,8 @@ export function generateChannelsSubtabScript(): string {
     "    }",
 
     // Step 3: Override Flags. Flags are rendered from the server-side registry (window.__wizardFlags).
-    "    if(s.currentStep === 3) {",
-    "      html += '<label>Profile Flags</label>';",
+    "    if(step === 3) {",
+    "      html += '<label class=\"wizard-label\">Profile Flags</label>';",
     "      html += '<div class=\"field-hint\" style=\"margin-bottom: 12px;\">These override the base profile. ' +",
     "        'Only change what differs from ' + s.baseProfile + '.</div>';",
     "      var wizFlags = window.__wizardFlags;",
@@ -406,7 +381,7 @@ export function generateChannelsSubtabScript(): string {
     "        html += '</label>';",
     "      }",
     "      html += '<div class=\"field-group\" style=\"margin-top: 12px;\">';",
-    "      html += '<label for=\"wizard-hide-selector\">Hide Selector (CSS) <span style=\"color: var(--text-muted);\">(optional)</span></label>';",
+    "      html += '<label class=\"wizard-label\" for=\"wizard-hide-selector\">Hide Selector (CSS) <span style=\"color: var(--text-muted);\">(optional)</span></label>';",
     "      html += '<input type=\"text\" id=\"wizard-hide-selector\" value=\"' + s.hideSelector.replace(/\"/g, '&quot;') +",
     "        '\" placeholder=\"e.g., .overlay, .ad-banner\">';",
     "      html += '<div class=\"field-hint\">Overlay elements to hide during capture.</div>';",
@@ -414,34 +389,34 @@ export function generateChannelsSubtabScript(): string {
     "    }",
 
     // Step 4: Domain Mapping.
-    "    if(s.currentStep === 4) {",
-    "      html += '<label>Domain Mapping</label>';",
+    "    if(step === 4) {",
+    "      html += '<label class=\"wizard-label\">Domain Mapping</label>';",
     "      html += '<div class=\"field-hint\" style=\"margin-bottom: 12px;\">Map a streaming site domain to this profile.</div>';",
     "      for(var di = 0; di < s.domains.length; di++) {",
     "        var d = s.domains[di];",
     "        html += '<div class=\"wizard-domain-row\" data-domain-idx=\"' + di + '\">';",
     "        html += '<div class=\"field-group\">';",
-    "        html += '<label>Domain</label>';",
+    "        html += '<label class=\"wizard-label\">Domain</label>';",
     "        html += '<input type=\"text\" class=\"domain-input\" value=\"' + d.domain.replace(/\"/g, '&quot;') + '\" placeholder=\"e.g., watch.sling.com\">';",
     "        html += '</div>';",
     "        html += '<div class=\"field-group\">';",
-    "        html += '<label>Provider Name</label>';",
+    "        html += '<label class=\"wizard-label\">Provider Name</label>';",
     "        html += '<input type=\"text\" class=\"provider-input\" value=\"' + d.provider.replace(/\"/g, '&quot;') + '\" placeholder=\"e.g., Sling TV\">';",
     "        html += '</div>';",
     "        html += '<div class=\"field-group\">';",
-    "        html += '<label>Provider Tag <span style=\"color: var(--text-muted);\">(auto-filled)</span></label>';",
+    "        html += '<label class=\"wizard-label\">Provider Tag <span style=\"color: var(--text-muted);\">(auto-filled)</span></label>';",
     "        html += '<input type=\"text\" class=\"provider-tag-input\" value=\"' + d.providerTag.replace(/\"/g, '&quot;') +",
     "          '\" placeholder=\"auto-generated\">';",
     "        html += '<div class=\"field-hint\">Identifier for the provider filter. Auto-generated from provider name.</div>';",
     "        html += '</div>';",
     "        html += '</div>';",
     "      }",
-    "      html += '<button type=\"button\" class=\"wizard-add-domain\" onclick=\"addWizardDomain()\">+ Add another domain</button>';",
+    "      html += '<button type=\"button\" class=\"wizard-add-domain\" id=\"wizard-add-domain-btn\">+ Add another domain</button>';",
     "    }",
 
     // Step 5: Review and Save.
-    "    if(s.currentStep === 5) {",
-    "      html += '<label>Review</label>';",
+    "    if(step === 5) {",
+    "      html += '<label class=\"wizard-label\">Review</label>';",
     "      html += '<table class=\"wizard-review-table\">';",
     "      html += '<tr><td>Profile</td><td>' + esc(s.profileName) + '</td></tr>';",
     "      html += '<tr><td>Extends</td><td>' + esc(s.baseProfile) + '</td></tr>';",
@@ -471,7 +446,7 @@ export function generateChannelsSubtabScript(): string {
     "      if(s.hideSelector) html += '<tr><td>Hide Selector</td><td><code>' + esc(s.hideSelector) + '</code></td></tr>';",
     "      html += '</table>';",
     "      html += '<div class=\"field-group\" style=\"margin-top: 16px;\">';",
-    "      html += '<label for=\"wizard-description\">Description <span style=\"color: var(--text-muted);\">(optional)</span></label>';",
+    "      html += '<label class=\"wizard-label\" for=\"wizard-description\">Description <span style=\"color: var(--text-muted);\">(optional)</span></label>';",
     "      html += '<textarea id=\"wizard-description\" placeholder=\"Optional description for documentation.\">' + esc(s.description) + '</textarea>';",
     "      html += '</div>';",
     "    }",
@@ -479,12 +454,12 @@ export function generateChannelsSubtabScript(): string {
     "    content.innerHTML = html;",
 
     // Attach live event handlers after rendering.
-    "    attachWizardHandlers();",
+    "    attachProfileHandlers();",
     "  }",
 
-    // Attach event handlers to dynamically rendered wizard inputs.
-    "  function attachWizardHandlers() {",
-    "    var s = wizardState;",
+    // Attach event handlers to dynamically rendered profile wizard inputs.
+    "  function attachProfileHandlers() {",
+    "    var s = profileWizard.state;",
 
     // Step 1: profile name and base profile radio.
     "    var nameInput = document.getElementById('wizard-profile-name');",
@@ -494,10 +469,11 @@ export function generateChannelsSubtabScript(): string {
     "      radios[i].addEventListener('change', function() { s.baseProfile = this.value; });",
     "    }",
 
-    // Step 2: strategy radio and strategy field inputs. Text and boolean fields are bound by data-field attribute.
+    // Step 2: strategy radio and strategy field inputs. Text and boolean fields are bound by data-field attribute. Strategy radio triggers a re-render to show
+    // the selected strategy's fields.
     "    var stratRadios = document.querySelectorAll('input[name=\"strategy\"]');",
     "    for(var i = 0; i < stratRadios.length; i++) {",
-    "      stratRadios[i].addEventListener('change', function() { s.strategy = this.value; renderWizardStep(); });",
+    "      stratRadios[i].addEventListener('change', function() { s.strategy = this.value; renderProfileStep(profileWizard.getStep()); });",
     "    }",
     "    var sfTextInputs = document.querySelectorAll('#wizard-content input[type=\"text\"][data-field]');",
     "    for(var i = 0; i < sfTextInputs.length; i++) {",
@@ -522,7 +498,9 @@ export function generateChannelsSubtabScript(): string {
     "    var hideInput = document.getElementById('wizard-hide-selector');",
     "    if(hideInput) hideInput.addEventListener('input', function() { s.hideSelector = this.value; });",
 
-    // Step 4: domain inputs with auto-fill for provider tag.
+    // Step 4: add-domain button and domain inputs with auto-fill for provider tag.
+    "    var addDomainBtn = document.getElementById('wizard-add-domain-btn');",
+    "    if(addDomainBtn) addDomainBtn.addEventListener('click', addWizardDomain);",
     "    var domainRows = document.querySelectorAll('.wizard-domain-row');",
     "    for(var i = 0; i < domainRows.length; i++) {",
     "      (function(idx) {",
@@ -546,34 +524,10 @@ export function generateChannelsSubtabScript(): string {
     "    if(descInput) descInput.addEventListener('input', function() { s.description = this.value; });",
     "  }",
 
-    // Open the wizard modal and reset state.
-    "  window.openWizard = function() {",
-    "    wizardState = {",
-    "      currentStep: 1, editKey: null, editMode: false, highestStep: 1, profileName: '', baseProfile: '', strategy: 'none',",
-    "      strategyFields: {}, flags: {}, hideSelector: '',",
-    "      domains: [{ domain: '', provider: '', providerTag: '' }], description: ''",
-    "    };",
-    "    var title = document.getElementById('wizard-title');",
-    "    if(title) title.textContent = 'New Provider Profile';",
-    "    document.getElementById('wizard-modal').style.display = 'flex';",
-    "    renderWizardStep();",
-    "  };",
-
-    // Close the wizard modal.
-    "  window.closeWizard = function() {",
-    "    document.getElementById('wizard-modal').style.display = 'none';",
-    "  };",
-
-    // Add another domain row.
-    "  window.addWizardDomain = function() {",
-    "    wizardState.domains.push({ domain: '', provider: '', providerTag: '' });",
-    "    renderWizardStep();",
-    "  };",
-
-    // Validate current step. Returns error message or empty string.
-    "  function validateStep() {",
-    "    var s = wizardState;",
-    "    if(s.currentStep === 1) {",
+    // Validate the current profile wizard step. Returns an error message or empty string if valid.
+    "  function validateProfileStep(step) {",
+    "    var s = profileWizard.state;",
+    "    if(step === 1) {",
     "      if(!s.editMode) {",
     "        if(!s.profileName.trim()) return 'Profile name is required.';",
     "        if(!/^[a-zA-Z]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(s.profileName))",
@@ -582,7 +536,7 @@ export function generateChannelsSubtabScript(): string {
     "      }",
     "      if(!s.baseProfile) return 'Select a base profile.';",
     "    }",
-    "    if(s.currentStep === 2) {",
+    "    if(step === 2) {",
     "      var valStrat = window.__wizardStrategies.find(function(st) { return st.id === s.strategy; });",
     "      if(valStrat) {",
     "        for(var vi = 0; vi < valStrat.fields.length; vi++) {",
@@ -593,58 +547,32 @@ export function generateChannelsSubtabScript(): string {
     "        }",
     "      }",
     "    }",
-    "    if(s.currentStep === 4) {",
+    "    if(step === 4) {",
     "      var hasDomain = s.domains.some(function(d) { return d.domain.trim(); });",
     "      if(!hasDomain) return 'At least one domain is required.';",
     "    }",
     "    return '';",
     "  }",
 
-    // Navigate to next step.
-    "  window.wizardNext = function() {",
-    "    var err = validateStep();",
-    "    var errDiv = document.getElementById('wizard-error');",
-    "    if(err) {",
-    "      errDiv.textContent = err;",
-    "      errDiv.style.display = 'block';",
-    "      return;",
-    "    }",
-    "    if(wizardState.currentStep < 5) {",
-    "      wizardState.currentStep++;",
-    "      if(wizardState.currentStep > wizardState.highestStep) wizardState.highestStep = wizardState.currentStep;",
-    "      renderWizardStep();",
-    "    }",
+    // Open the profile builder wizard and reset state for a new profile.
+    "  window.openWizard = function() {",
+    "    profileWizard.state = {",
+    "      editKey: null, editMode: false, profileName: '', baseProfile: '', strategy: 'none',",
+    "      strategyFields: {}, flags: {}, hideSelector: '',",
+    "      domains: [{ domain: '', provider: '', providerTag: '' }], description: ''",
+    "    };",
+    "    profileWizard.open({ title: 'New Provider Profile' });",
     "  };",
 
-    // Navigate to previous step.
-    "  window.wizardBack = function() {",
-    "    if(wizardState.currentStep > 1) {",
-    "      wizardState.currentStep--;",
-    "      renderWizardStep();",
-    "    }",
-    "  };",
-
-    // Navigate to a specific step by clicking the step indicator. Going backward is always allowed for visited steps. Going forward requires validation of the
-    // current step and can only reach steps that have been visited before (up to highestStep).
-    "  function wizardGoToStep(targetStep) {",
-    "    if(targetStep === wizardState.currentStep) return;",
-    "    if(targetStep > wizardState.highestStep) return;",
-    "    if(targetStep > wizardState.currentStep) {",
-    "      var err = validateStep();",
-    "      if(err) {",
-    "        var errDiv = document.getElementById('wizard-error');",
-    "        errDiv.textContent = err;",
-    "        errDiv.style.display = 'block';",
-    "        return;",
-    "      }",
-    "    }",
-    "    wizardState.currentStep = targetStep;",
-    "    renderWizardStep();",
+    // Add another domain row to step 4 and re-render.
+    "  function addWizardDomain() {",
+    "    profileWizard.state.domains.push({ domain: '', provider: '', providerTag: '' });",
+    "    renderProfileStep(profileWizard.getStep());",
     "  }",
 
     // Save the profile to the server.
     "  window.saveProfile = function(andTest) {",
-    "    var s = wizardState;",
+    "    var s = profileWizard.state;",
     "    var profile = { extends: s.baseProfile };",
     "    if(s.strategy !== 'none') {",
     "      var cs = { strategy: s.strategy };",
@@ -681,22 +609,18 @@ export function generateChannelsSubtabScript(): string {
     "      .then(function(r) { return r.json(); })",
     "      .then(function(data) {",
     "        if(data.success) {",
-    "          closeWizard();",
+    "          profileWizard.close();",
     "          if(andTest && s.domains[0] && s.domains[0].domain) {",
     "            startProfileTest(s.domains[0].domain);",
     "          } else {",
     "            location.reload();",
     "          }",
     "        } else {",
-    "          var errDiv = document.getElementById('wizard-error');",
-    "          errDiv.textContent = data.error || 'Failed to save profile.';",
-    "          errDiv.style.display = 'block';",
+    "          profileWizard.setError(data.error || 'Failed to save profile.');",
     "        }",
     "      })",
     "      .catch(function() {",
-    "        var errDiv = document.getElementById('wizard-error');",
-    "        errDiv.textContent = 'Request failed.';",
-    "        errDiv.style.display = 'block';",
+    "        profileWizard.setError('Request failed.');",
     "      });",
     "  };",
 
@@ -705,7 +629,7 @@ export function generateChannelsSubtabScript(): string {
 
     // Start a profile test by opening the browser to a URL.
     "  window.startProfileTest = function(url) {",
-    "    var s = wizardState;",
+    "    var s = profileWizard.state;",
     "    testSelectors = {};",
     "    if(s.strategy !== 'none' && s.strategyFields.matchSelector) testSelectors.matchSelector = s.strategyFields.matchSelector;",
     "    if(s.strategyFields.playSelector) testSelectors.playSelector = s.strategyFields.playSelector;",
@@ -778,6 +702,589 @@ export function generateChannelsSubtabScript(): string {
     "        document.getElementById('test-modal').style.display = 'none';",
     "      });",
     "  };",
+
+    // Read embedded JSON data for the browse modal. Provider list and guide URLs are embedded server-side. Channel state (lineup matching) is provided by
+    // the annotated discovery response, not by embedded data.
+    "  var browseProviders = [];",
+    "  var browseGuideUrls = {};",
+    "  try {",
+    "    var pEl = document.getElementById('browse-providers-data');",
+    "    if(pEl) browseProviders = JSON.parse(pEl.textContent || '[]');",
+    "    var gEl = document.getElementById('browse-guide-urls-data');",
+    "    if(gEl) browseGuideUrls = JSON.parse(gEl.textContent || '{}');",
+    "  } catch(e) {}",
+
+    // Browse Channels wizard. Two steps: Provider (picker grid) and Channels (discovery + channel list). Uses the shared wizard controller for step navigation
+    // and indicator updates. The state object tracks the selected provider slug and label, and the filtered provider list for the current session.
+    "  var browseWizard = createWizardController({",
+    "    contentId: 'browse-content',",
+    "    modalId: 'browse-modal',",
+    "    onRender: renderBrowseStep,",
+    "    onValidate: function(step) { return (step === 1 && !browseWizard.state.slug) ? 'Select a provider.' : ''; },",
+    "    stepCount: 2,",
+    "    titleId: 'browse-title'",
+    "  });",
+
+    // Open the browse modal. If only one provider is available (or in the filter), skip step 1 and open directly on step 2 with the provider pre-selected.
+    "  window.openBrowseModal = function() {",
+
+    // Determine which providers to show. Filter to providers that are enabled in the provider filter if a filter is active.
+    "    var enabledFilter = [];",
+    "    var chips = document.querySelectorAll('.provider-chip');",
+    "    for(var i = 0; i < chips.length; i++) {",
+    "      var tag = chips[i].getAttribute('data-tag');",
+    "      if(tag) enabledFilter.push(tag);",
+    "    }",
+    "    var available = browseProviders;",
+    "    if(enabledFilter.length > 0) {",
+    "      available = browseProviders.filter(function(p) { return enabledFilter.indexOf(p.slug) !== -1; });",
+    "    }",
+
+    // If no discoverable providers match the filter, show all providers.
+    "    if(available.length === 0) available = browseProviders;",
+
+    // If exactly one provider is available, skip the picker and go straight to channel discovery on step 2.
+    "    if(available.length === 1) {",
+    "      browseWizard.state = { available: available, label: available[0].label, slug: available[0].slug };",
+    "      browseWizard.open({ highestStep: 2, step: 2 });",
+    "      return;",
+    "    }",
+
+    "    browseWizard.state = { available: available, label: null, slug: null };",
+    "    browseWizard.open();",
+    "  };",
+
+    // Select a provider from the picker grid and advance to step 2.
+    "  function selectBrowseProvider(slug, label) {",
+    "    browseWizard.state.slug = slug;",
+    "    browseWizard.state.label = label;",
+    "    browseWizard.next();",
+    "  }",
+
+    // Render the current browse step. Step 1: provider picker grid. Step 2: channel discovery and list.
+    "  function renderBrowseStep(step) {",
+    "    var content = document.getElementById('browse-content');",
+
+    // Show/hide navigation buttons. Back is only available on step 2 when there are multiple providers.
+    "    if(step > 1 && browseWizard.state.available.length > 1) { browseWizard.show('browse-back'); }",
+    "    else { browseWizard.hide('browse-back'); }",
+
+    // Reset title and apply button on each render.
+    "    browseWizard.setTitle('Browse Channels');",
+    "    browseWizard.hide('browse-add-btn');",
+
+    // Step 1: Provider picker grid. Clear the provider selection so the user must pick again (prevents the step indicator from jumping to step 2 with a stale
+    // provider after navigating back).
+    "    if(step === 1) {",
+    "      browseWizard.state.slug = null;",
+    "      browseWizard.state.label = null;",
+    "      var available = browseWizard.state.available;",
+    "      var html = '<p class=\"wizard-hint\">Select a provider to see its available channels.</p>';",
+    "      html += '<div class=\"wizard-provider-grid\">';",
+    "      for(var j = 0; j < available.length; j++) {",
+    "        var p = available[j];",
+    "        html += '<div class=\"wizard-provider-card\" data-slug=\"' + esc(p.slug) + '\" data-label=\"' + esc(p.label) + '\">';",
+    "        html += providerIconHtml(p.domain, esc(p.label), 'provider-icon', 'provider-icon-text', 'both', p.iconUrl || '');",
+    "        html += '</div>';",
+    "      }",
+    "      html += '</div>';",
+    "      content.innerHTML = html;",
+
+    // Attach click handlers to provider cards programmatically. The handler reads slug and label from data attributes, avoiding inline onclick and global scope.
+    "      var cards = content.querySelectorAll('.wizard-provider-card');",
+    "      for(var ci = 0; ci < cards.length; ci++) {",
+    "        cards[ci].addEventListener('click', function() {",
+    "          selectBrowseProvider(this.getAttribute('data-slug'), this.getAttribute('data-label'));",
+    "        });",
+    "      }",
+    "      return;",
+    "    }",
+
+    // Step 2: Fetch discovered channels and render the channel list.
+    "    var slug = browseWizard.state.slug;",
+    "    var label = browseWizard.state.label;",
+
+    // Show a spinner while fetching channels.
+    "    content.innerHTML = '<div class=\"wizard-spinner\">Discovering channels from ' + esc(label) + '...</div>';",
+
+    // Fetch discovered channels from the provider endpoint.
+    "    fetch('/providers/' + encodeURIComponent(slug) + '/channels?lineup=true')",
+    "      .then(function(r) {",
+    "        if(!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Discovery failed.'); });",
+    "        return r.json();",
+    "      })",
+    "      .then(function(channels) {",
+    "        if(browseWizard.state.slug !== slug) return;",
+    "        renderBrowseChannelList(channels, slug, label);",
+    "      })",
+    "      .catch(function(err) {",
+    "        if(browseWizard.state.slug !== slug) return;",
+    "        content.innerHTML = '<div class=\"wizard-empty\"><div class=\"wizard-empty-title\">Could not discover channels.</div>' +",
+    "          esc(err.message || 'Check that the browser is running and you are signed in to ' + label + '.') + '</div>';",
+    "      });",
+    "  }",
+
+    // Render the channel list with three-state checkboxes. Each discovered channel carries an optional lineup field from the server's annotation layer.
+    // When lineup is present, the channel exists in the user's lineup. When lineup.currentTag matches the browsed provider slug, the channel is "current"
+    // (checked). When lineup is present but the tag differs, the channel is "switch" (indeterminate). When lineup is absent, the channel is "new" (empty).
+    "  function renderBrowseChannelList(channels, slug, label) {",
+    "    if(!channels || channels.length === 0) {",
+    "      document.getElementById('browse-content').innerHTML =",
+    "        '<div class=\"wizard-empty\"><div class=\"wizard-empty-title\">No channels found.</div>' +",
+    "        'Make sure you are signed in to ' + esc(label) + ' in the browser.</div>';",
+    "      return;",
+    "    }",
+
+    // Build the channel list HTML with hint, legend, search filter, and three-state checkboxes.
+    "    var html = '';",
+    "    html += '<p class=\"wizard-hint\">Check to add or switch to this provider. Uncheck to remove. Changes take effect when you click Apply.</p>';",
+    "    html += '<div class=\"browse-toolbar\">';",
+    "    html += '<label class=\"browse-select-all\">';",
+    "    html += '<input type=\"checkbox\" id=\"browse-select-all-cb\">';",
+    "    html += 'Select All</label>';",
+    "    html += '<input type=\"text\" class=\"browse-search\" id=\"browse-search\" placeholder=\"Filter channels...\">';",
+    "    html += '</div>';",
+    "    html += '<div class=\"browse-legend\">';",
+    "    html += '<span class=\"browse-legend-item\"><input type=\"checkbox\" disabled> New channel</span>';",
+    "    html += '<span class=\"browse-legend-item\"><input type=\"checkbox\" class=\"browse-legend-indeterminate\" disabled> Available via another provider</span>';",
+    "    html += '<span class=\"browse-legend-item\"><input type=\"checkbox\" checked disabled> Active on this provider</span>';",
+    "    html += '</div>';",
+    "    html += '<div class=\"browse-channel-list\" id=\"browse-channel-list\">';",
+
+    // Render each discovered channel. The lineup field from the server annotation determines the checkbox state.
+    "    for(var i = 0; i < channels.length; i++) {",
+    "      var ch = channels[i];",
+    "      var lu = ch.lineup;",
+
+    // Determine the channel's state from the server-provided lineup annotation. Four states: new (no lineup data), disabled (predefined but disabled),
+    // switch (exists via a different provider), current (already using this provider).
+    "      var state = 'new';",
+    "      var stateLabel = '';",
+    "      if(lu) {",
+    "        if(!lu.enabled) {",
+    "          state = 'disabled';",
+    "          stateLabel = 'Disabled';",
+    "        } else if(lu.currentTag === slug) {",
+    "          state = 'current';",
+    "          stateLabel = lu.source === 'predefined' ? 'Predefined' : 'User channel';",
+    "        } else {",
+    "          state = 'switch';",
+    "          stateLabel = 'via ' + lu.currentProvider;",
+    "        }",
+    "      }",
+
+    "      var itemClass = 'browse-channel-item browse-state-' + state;",
+    "      var searchName = ((lu && lu.displayName) ? lu.displayName : ch.name).toLowerCase();",
+    "      html += '<label class=\"' + itemClass + '\" data-name=\"' + esc(searchName).replace(/\"/g, '&quot;') + '\">';",
+
+    // Checkbox with data attributes for state tracking and submission.
+    "      html += '<input type=\"checkbox\" class=\"browse-channel-cb\"';",
+    "      html += ' data-name=\"' + esc(ch.name).replace(/\"/g, '&quot;') + '\"';",
+    "      html += ' data-selector=\"' + esc(ch.channelSelector).replace(/\"/g, '&quot;') + '\"';",
+    "      html += ' data-original=\"' + state + '\"';",
+    "      if(lu) html += ' data-canonical=\"' + esc(lu.canonicalKey) + '\" data-has-alternatives=\"' + (lu.hasAlternatives ? 'true' : 'false') + '\"';",
+    "      if(ch.stationId) html += ' data-station-id=\"' + esc(ch.stationId) + '\"';",
+    "      if(state === 'current') html += ' checked';",
+    "      html += '>';",
+
+    // Channel name with optional logo and affiliate. When the channel matches a lineup entry, use the predefined display name so the browse modal shows the
+    // same names as the channels table. For new channels (no lineup match), use the raw discovery name.
+    "      var channelName = (lu && lu.displayName) ? lu.displayName : ch.name;",
+    "      html += '<span class=\"browse-channel-name\">';",
+    "      html += channelDisplayHtml(lu ? lu.logoUrl || '' : '', esc(channelName), 'browse-channel-logo', 'browse-channel-text', 'both');",
+    "      if(ch.affiliate) html += ' <span class=\"browse-affiliate\">(' + esc(ch.affiliate) + ')</span>';",
+    "      html += '</span>';",
+
+    // Right side: state label and tier badge.
+    "      html += '<span class=\"browse-channel-meta\">';",
+    "      if(stateLabel) html += '<span class=\"browse-state-label\">' + esc(stateLabel) + '</span>';",
+    "      if(ch.tier === 'free') html += '<span class=\"browse-tier-badge tier-free\">Free</span>';",
+    "      html += '</span>';",
+
+    "      html += '</label>';",
+    "    }",
+
+    "    html += '</div>';",
+    "    document.getElementById('browse-content').innerHTML = html;",
+    "    browseWizard.setTitle('Browse Channels <span class=\"browse-header-count\">(' + esc(label) + ' \\u2014 ' + channels.length + ' channels)</span>');",
+
+    // Set indeterminate state on checkboxes for channels that exist via a different provider. The indeterminate property cannot be set via HTML attributes —
+    // it must be set via JavaScript after the elements are in the DOM.
+    "    var switchCbs = document.querySelectorAll('.browse-channel-cb[data-original=\"switch\"]');",
+    "    for(var j = 0; j < switchCbs.length; j++) switchCbs[j].indeterminate = true;",
+
+    // Set the legend's indeterminate checkbox visual.
+    "    var legendInd = document.querySelector('.browse-legend-indeterminate');",
+    "    if(legendInd) legendInd.indeterminate = true;",
+
+    // Attach event handlers programmatically to keep them scoped to the IIFE closure.
+    "    var selectAllCb = document.getElementById('browse-select-all-cb');",
+    "    if(selectAllCb) selectAllCb.addEventListener('change', function() { toggleBrowseSelectAll(this.checked); });",
+    "    var searchInput = document.getElementById('browse-search');",
+    "    if(searchInput) searchInput.addEventListener('input', filterBrowseChannels);",
+    "    var channelCbs = document.querySelectorAll('.browse-channel-cb');",
+    "    for(var ci = 0; ci < channelCbs.length; ci++) {",
+    "      channelCbs[ci].addEventListener('change', function() { onBrowseCheckboxChange(this); });",
+    "    }",
+
+    // Show the apply button and update counts.
+    "    browseWizard.show('browse-add-btn');",
+    "    updateBrowseCount();",
+    "  }",
+
+    // Handle checkbox state changes. On uncheck, the visual depends on the channel's state: switch channels restore to indeterminate (they arrived that
+    // way). Current channels show indeterminate if alternatives exist (channel persists elsewhere) or empty if not (channel will be disabled). New and
+    // disabled channels stay empty on uncheck.
+    "  function onBrowseCheckboxChange(cb) {",
+    "    if(!cb.checked) {",
+    "      var original = cb.getAttribute('data-original');",
+    "      var hasAlt = cb.getAttribute('data-has-alternatives') === 'true';",
+    "      if((original === 'switch') || ((original === 'current') && hasAlt)) {",
+    "        cb.indeterminate = true;",
+    "      }",
+    "    }",
+    "    updateBrowseCount();",
+    "  }",
+
+    // Toggle all actionable checkboxes. Select-all checks all channels and clears indeterminate. Deselect-all unchecks new and disabled channels, and restores
+    // switch channels and current channels with alternatives to indeterminate (indicating the channel exists but is not selected for this provider).
+    "  function toggleBrowseSelectAll(checked) {",
+    "    var cbs = document.querySelectorAll('.browse-channel-cb');",
+    "    for(var i = 0; i < cbs.length; i++) {",
+    "      var cb = cbs[i];",
+    "      var original = cb.getAttribute('data-original');",
+    "      var row = cb.closest('.browse-channel-item');",
+    "      if(row && row.style.display === 'none') continue;",
+    "      if(checked) {",
+    "        cb.checked = true;",
+    "        cb.indeterminate = false;",
+    "      } else {",
+    "        var hasAlt = cb.getAttribute('data-has-alternatives') === 'true';",
+    "        cb.checked = false;",
+    "        cb.indeterminate = (original === 'switch') || ((original === 'current') && hasAlt);",
+    "      }",
+    "    }",
+    "    updateBrowseCount();",
+    "  }",
+
+    // Filter the channel list by search text. Hides rows whose channel name does not contain the search term.
+    "  function filterBrowseChannels() {",
+    "    var query = (document.getElementById('browse-search').value || '').toLowerCase();",
+    "    var rows = document.querySelectorAll('.browse-channel-item');",
+    "    for(var i = 0; i < rows.length; i++) {",
+    "      var name = rows[i].getAttribute('data-name') || '';",
+    "      rows[i].style.display = (!query || name.indexOf(query) !== -1) ? '' : 'none';",
+    "    }",
+    "  }",
+
+    // Update the apply button text with categorized action counts. Computes add, switch, and remove counts based on checkbox state vs data-original.
+    "  function updateBrowseCount() {",
+    "    var cbs = document.querySelectorAll('.browse-channel-cb');",
+    "    var addCount = 0;",
+    "    var switchCount = 0;",
+    "    var removeCount = 0;",
+    "    for(var i = 0; i < cbs.length; i++) {",
+    "      var cb = cbs[i];",
+    "      var original = cb.getAttribute('data-original');",
+    "      var row = cb.closest('.browse-channel-item');",
+    "      if(row && row.style.display === 'none') continue;",
+    "      if((original === 'new' || original === 'disabled') && cb.checked) addCount++;",
+    "      if(original === 'switch' && cb.checked && !cb.indeterminate) switchCount++;",
+    "      if(original === 'current' && !cb.checked) removeCount++;",
+    "    }",
+    "    var btn = document.getElementById('browse-add-btn');",
+    "    var total = addCount + switchCount + removeCount;",
+    "    var parts = [];",
+    "    if(addCount > 0) parts.push('add ' + addCount);",
+    "    if(switchCount > 0) parts.push('switch ' + switchCount);",
+    "    if(removeCount > 0) parts.push('remove ' + removeCount);",
+    "    btn.textContent = total > 0 ? 'Apply (' + parts.join(', ') + ')' : 'Apply';",
+    "    btn.disabled = total === 0;",
+
+    // Update select-all checkbox state.
+    "    var allCbs = document.querySelectorAll('.browse-channel-cb');",
+    "    var allChecked = true;",
+    "    var visibleCount = 0;",
+    "    for(var j = 0; j < allCbs.length; j++) {",
+    "      var r = allCbs[j].closest('.browse-channel-item');",
+    "      if(r && r.style.display === 'none') continue;",
+    "      visibleCount++;",
+    "      if(!allCbs[j].checked) allChecked = false;",
+    "    }",
+    "    var selectAll = document.getElementById('browse-select-all-cb');",
+    "    if(selectAll) selectAll.checked = (visibleCount > 0) && allChecked;",
+    "  }",
+
+    // Submit channel changes via the modify endpoint. Collects action types: add (new channels checked), enable (disabled channels checked), switch
+    // remove (current channels unchecked). Each entry includes an action field so the server can handle them appropriately.
+    "  window.submitBrowseChannels = function() {",
+    "    var cbs = document.querySelectorAll('.browse-channel-cb');",
+    "    var guideUrl = browseGuideUrls[browseWizard.state.slug] || '';",
+    "    var entries = [];",
+    "    for(var i = 0; i < cbs.length; i++) {",
+    "      var cb = cbs[i];",
+    "      var original = cb.getAttribute('data-original');",
+    "      var row = cb.closest('.browse-channel-item');",
+    "      if(row && row.style.display === 'none') continue;",
+    "      var action = null;",
+    "      if(original === 'new' && cb.checked) action = 'add';",
+    "      if(original === 'disabled' && cb.checked) action = 'enable';",
+    "      if(original === 'switch' && cb.checked && !cb.indeterminate) action = 'switch';",
+    "      if(original === 'current' && !cb.checked) action = 'remove';",
+    "      if(!action) continue;",
+    "      var entry = {",
+    "        action: action,",
+    "        canonicalKey: cb.getAttribute('data-canonical') || '',",
+    "        channelSelector: cb.getAttribute('data-selector'),",
+    "        name: cb.getAttribute('data-name'),",
+    "        providerSlug: browseWizard.state.slug,",
+    "        url: guideUrl",
+    "      };",
+    "      var sid = cb.getAttribute('data-station-id');",
+    "      if(sid) entry.stationId = sid;",
+    "      entries.push(entry);",
+    "    }",
+    "    if(entries.length === 0) return;",
+
+    // Disable the button to prevent double submission.
+    "    var btn = document.getElementById('browse-add-btn');",
+    "    btn.disabled = true;",
+    "    btn.textContent = 'Applying...';",
+
+    "    fetch('/config/channels/modify', {",
+    "      method: 'POST',",
+    "      headers: { 'Content-Type': 'application/json' },",
+    "      body: JSON.stringify({ channels: entries })",
+    "    })",
+    "      .then(function(r) { return r.json(); })",
+    "      .then(function(data) {",
+    "        if(data.success) {",
+    "          browseWizard.close();",
+    "          showToast(data.message || 'Channels added.', 'success');",
+    "          location.reload();",
+    "        } else {",
+    "          btn.disabled = false;",
+    "          updateBrowseCount();",
+    "          showToast('Failed to add channels: ' + (data.error || 'Unknown error.'), 'error');",
+    "        }",
+    "      })",
+    "      .catch(function() {",
+    "        btn.disabled = false;",
+    "        updateBrowseCount();",
+    "        showToast('Failed to add channels.', 'error');",
+    "      });",
+    "  };",
+
+    // Read embedded provider data for the setup wizard. Each entry includes domain, iconUrl, displayName, tag, and enabled state from the server.
+    "  var setupProviders = [];",
+    "  try {",
+    "    var spEl = document.getElementById('setup-providers-data');",
+    "    if(spEl) setupProviders = JSON.parse(spEl.textContent || '[]');",
+    "  } catch(e) {}",
+
+    // Validate the current setup step. Step 1 collects selected providers, validates at least one is selected, and saves the provider filter to the server
+    // asynchronously. Returns a Promise that resolves to an error string or empty string. Step 2+ always passes (no validation needed).
+    "  function validateSetupStep(step) {",
+    "    if(step === 1) {",
+    "      var selected = [];",
+    "      var cbs = document.querySelectorAll('.setup-provider-cb:checked');",
+    "      for(var i = 0; i < cbs.length; i++) selected.push(cbs[i].value);",
+    "      if(selected.length === 0) return 'Select at least one provider.';",
+    "      setupWizard.state.selectedProviders = selected;",
+    "      setupWizard.state.authIndex = 0;",
+    "      return fetch('/config/provider-filter', {",
+    "        method: 'POST',",
+    "        headers: { 'Content-Type': 'application/json' },",
+    "        body: JSON.stringify({ enabledProviders: selected })",
+    "      }).then(function() { return ''; })",
+    "        .catch(function() { return 'Failed to save provider selection.'; });",
+    "    }",
+    "    return '';",
+    "  }",
+
+    // Provider Setup wizard. Uses the shared wizard controller for step navigation and indicator updates. The state object tracks selected providers and
+    // the current auth index for the sequential sign-in flow.
+    "  var setupWizard = createWizardController({",
+    "    contentId: 'setup-content',",
+    "    errorId: 'setup-error',",
+    "    modalId: 'setup-modal',",
+    "    onClose: function() {",
+    "      if(setupWizard.getStep() === 2) { fetch('/auth/done', { method: 'POST' }).catch(function() {}); }",
+    "    },",
+    "    onRender: renderSetupStep,",
+    "    onValidate: validateSetupStep,",
+    "    stepCount: 3,",
+    "    stepsId: 'setup-steps',",
+    "    titleId: 'setup-title'",
+    "  });",
+
+    // Open the setup wizard and render the first step. Pre-populate selected providers from the embedded enabled state so re-running the wizard shows the
+    // current provider filter as pre-checked.
+    "  window.openSetupWizard = function() {",
+    "    var preSelected = setupProviders.filter(function(p) { return p.enabled; }).map(function(p) { return p.tag; });",
+    "    setupWizard.state = { selectedProviders: preSelected, authIndex: 0 };",
+    "    setupWizard.open();",
+    "  };",
+
+    // Skip the entire setup flow and mark as completed.
+    "  window.skipSetup = function() {",
+    "    fetch('/config/channels/setup-completed', { method: 'POST', headers: { 'Content-Type': 'application/json' } })",
+    "      .then(function() { setupWizard.close(); })",
+    "      .catch(function() { setupWizard.close(); });",
+    "  };",
+
+    // Authenticate the current provider in step 2. Opens the browser and shows a waiting prompt.
+    "  function setupAuthProvider() {",
+    "    var slug = setupWizard.state.selectedProviders[setupWizard.state.authIndex];",
+    "    var provider = setupProviders.find(function(p) { return p.tag === slug; });",
+    "    var url = provider && provider.domain ? 'https://' + provider.domain + '/' : '';",
+    "    if(!url) { setupAdvanceAuth(); return; }",
+    "    fetch('/auth/login', {",
+    "      method: 'POST',",
+    "      headers: { 'Content-Type': 'application/json' },",
+    "      body: JSON.stringify({ url: url })",
+    "    }).then(function(r) { return r.json(); })",
+    "      .then(function(data) {",
+    "        if(data.success) renderSetupAuthWaiting();",
+    "        else showToast('Failed to start login: ' + (data.error || 'Unknown error.'), 'error');",
+    "      })",
+    "      .catch(function() { showToast('Failed to start login.', 'error'); });",
+    "  }",
+
+    // Mark the current provider auth as done and advance to the next.
+    "  function setupAuthDone() {",
+    "    fetch('/auth/done', { method: 'POST' }).catch(function() {});",
+    "    setupAdvanceAuth();",
+    "  }",
+
+    // Skip the current provider auth and advance.
+    "  function setupAuthSkip() {",
+    "    fetch('/auth/done', { method: 'POST' }).catch(function() {});",
+    "    setupAdvanceAuth();",
+    "  }",
+
+    // Advance to the next provider or to step 3 if all are done.
+    "  function setupAdvanceAuth() {",
+    "    setupWizard.state.authIndex++;",
+    "    if(setupWizard.state.authIndex >= setupWizard.state.selectedProviders.length) {",
+    "      setupWizard.next();",
+    "    } else {",
+    "      renderSetupStep(setupWizard.getStep());",
+    "    }",
+    "  }",
+
+    // Finish the setup wizard. Mark as completed and reload.
+    "  window.finishSetup = function() {",
+    "    fetch('/config/channels/setup-completed', { method: 'POST', headers: { 'Content-Type': 'application/json' } })",
+    "      .then(function() {",
+    "        setupWizard.close();",
+    "        location.reload();",
+    "      })",
+    "      .catch(function() { setupWizard.close(); });",
+    "  };",
+
+    // Render the auth waiting state - shows a message while the user authenticates in Chrome.
+    "  function renderSetupAuthWaiting() {",
+    "    var slug = setupWizard.state.selectedProviders[setupWizard.state.authIndex];",
+    "    var provider = setupProviders.find(function(p) { return p.tag === slug; });",
+    "    var label = provider ? provider.displayName : slug;",
+    "    var content = document.getElementById('setup-content');",
+    "    content.innerHTML = '<div class=\"wizard-spinner\">Complete authentication for ' + esc(label) +",
+    "      ' in the Chrome browser window...</div>' +",
+    "      '<div class=\"wizard-step-centered-compact\">' +",
+    "      '<button type=\"button\" class=\"btn btn-primary\" data-action=\"auth-done\">Done</button> ' +",
+    "      '<button type=\"button\" class=\"btn btn-secondary\" data-action=\"auth-skip\">Skip</button></div>';",
+
+    // Attach handlers to the auth waiting buttons programmatically.
+    "    var waitActions = content.querySelectorAll('[data-action]');",
+    "    for(var wi = 0; wi < waitActions.length; wi++) {",
+    "      (function(btn) {",
+    "        var action = btn.getAttribute('data-action');",
+    "        if(action === 'auth-done') { btn.onclick = function() { setupAuthDone(); }; }",
+    "        else if(action === 'auth-skip') { btn.onclick = function() { setupAuthSkip(); }; }",
+    "      })(waitActions[wi]);",
+    "    }",
+    "  }",
+
+    // Render the current setup step content and update navigation buttons. The controller handles step indicator updates and error clearing.
+    "  function renderSetupStep(step) {",
+    "    var content = document.getElementById('setup-content');",
+
+    // Show/hide navigation buttons based on the current step.
+    "    if(step > 1) { setupWizard.show('setup-back'); } else { setupWizard.hide('setup-back'); }",
+    "    if(step < 3) { setupWizard.show('setup-next'); setupWizard.show('setup-skip'); }",
+    "    else { setupWizard.hide('setup-next'); setupWizard.hide('setup-skip'); }",
+    "    if(step === 3) { setupWizard.show('setup-finish'); } else { setupWizard.hide('setup-finish'); }",
+
+    "    var html = '';",
+
+    // Step 1: Provider selection with multi-select cards.
+    "    if(step === 1) {",
+    "      html += '<p class=\"wizard-hint\">Select the streaming services you subscribe to. " +
+      "This determines which channels are available in your lineup.</p>';",
+    "      html += '<div class=\"wizard-provider-grid\">';",
+    "      for(var j = 0; j < setupProviders.length; j++) {",
+    "        var p = setupProviders[j];",
+    "        var checked = (setupWizard.state.selectedProviders.indexOf(p.tag) !== -1) ? ' checked' : '';",
+    "        html += '<label class=\"wizard-provider-card\">';",
+    "        html += '<input type=\"checkbox\" class=\"setup-provider-cb\" value=\"' + p.tag + '\"' + checked + '>';",
+    "        html += providerIconHtml(p.domain || '', esc(p.displayName), 'provider-icon', 'provider-icon-text', 'both', p.iconUrl || '');",
+    "        html += '</label>';",
+    "      }",
+    "      html += '</div>';",
+    "    }",
+
+    // Step 2: Sequential authentication prompts.
+    "    if(step === 2) {",
+    "      var slug = setupWizard.state.selectedProviders[setupWizard.state.authIndex];",
+    "      var provider = setupProviders.find(function(p) { return p.tag === slug; });",
+    "      var label = provider ? provider.displayName : slug;",
+    "      var total = setupWizard.state.selectedProviders.length;",
+    "      var current = setupWizard.state.authIndex + 1;",
+    "      html += '<p class=\"wizard-hint\">Sign in to each provider in the Chrome browser window. " +
+      "PrismCast uses your login session to access live streams.</p>';",
+    "      html += '<div class=\"wizard-step-centered\">';",
+    "      html += '<p class=\"wizard-step-provider-name\">' + esc(label) + '</p>';",
+    "      html += '<p class=\"wizard-step-provider-count\">Provider ' + current + ' of ' + total + '</p>';",
+    "      html += '<button type=\"button\" class=\"btn btn-primary\" data-action=\"auth-start\">Sign In</button> ';",
+    "      html += '<button type=\"button\" class=\"btn btn-secondary\" data-action=\"auth-skip\">Skip</button>';",
+    "      html += '</div>';",
+    "    }",
+
+    // Step 3: Summary and finish.
+    "    if(step === 3) {",
+    "      html += '<p class=\"wizard-hint\">Your providers are ready. Click Finish to complete setup. " +
+      "You can browse and manage channels anytime using the Browse Channels button.</p>';",
+    "      html += '<div class=\"wizard-step-centered\">';",
+    "      html += '<p class=\"wizard-step-summary\">Selected ' + setupWizard.state.selectedProviders.length + ' provider' +",
+    "        (setupWizard.state.selectedProviders.length === 1 ? '' : 's') + '.</p>';",
+    "      html += '</div>';",
+    "    }",
+
+    "    content.innerHTML = html;",
+
+    // Attach event handlers to dynamically-rendered buttons programmatically. Uses data-action attributes to identify buttons without inline onclick.
+    "    var actions = content.querySelectorAll('[data-action]');",
+    "    for(var ai = 0; ai < actions.length; ai++) {",
+    "      (function(btn) {",
+    "        var action = btn.getAttribute('data-action');",
+    "        if(action === 'auth-start') { btn.onclick = function() { setupAuthProvider(); }; }",
+    "        else if(action === 'auth-skip') { btn.onclick = function() { setupAuthSkip(); }; }",
+    "        else if(action === 'auth-done') { btn.onclick = function() { setupAuthDone(); }; }",
+    "      })(actions[ai]);",
+    "    }",
+    "  }",
+
+    // Auto-show the setup wizard on first visit if setupCompleted is false.
+    "  var setupModal = document.getElementById('setup-modal');",
+    "  if(setupModal && setupModal.getAttribute('data-setup-completed') === 'false') {",
+    "    openSetupWizard();",
+    "  }",
+
+    // Process channel logos and provider icons on page load. These shared functions are also called after DOM mutations (row insertion, chip rebuild) to ensure
+    // dynamically added elements get the same icon rendering as the initial server-rendered content.
+    "  processChannelLogos();",
+    "  processProviderDisplays();",
 
     // Initialize channels subtab on load: hash > localStorage > default.
     "  var initialSubtab = window.initialChannelsHashSubtab;",

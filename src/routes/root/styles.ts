@@ -68,6 +68,7 @@ export function generateLandingPageStyles(): string {
     "width: 640px; max-width: 90vw; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }",
     ".wizard-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; ",
     "border-bottom: 1px solid var(--border-default); }",
+    ".wizard-header-wrap { flex-wrap: wrap; align-items: flex-start; }",
     ".wizard-header h3 { margin: 0; font-size: 18px; color: var(--text-heading); }",
     ".wizard-close { background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text-muted); padding: 4px 8px; }",
     ".wizard-close:hover { color: var(--text-primary); }",
@@ -87,7 +88,8 @@ export function generateLandingPageStyles(): string {
 
     // Wizard content area.
     ".wizard-content { padding: 20px; overflow-y: auto; flex: 1; min-height: 300px; }",
-    ".wizard-content label { display: block; margin-bottom: 6px; font-weight: 500; color: var(--text-primary); font-size: 14px; }",
+    ".wizard-content-compact { min-height: 0; }",
+    ".wizard-content .wizard-label { display: block; margin-bottom: 6px; font-weight: 500; color: var(--text-primary); font-size: 14px; }",
     ".wizard-content input[type=\"text\"], .wizard-content textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border-default); ",
     "border-radius: var(--radius-md); font-size: 14px; font-family: inherit; background: var(--surface-overlay); color: var(--text-primary); ",
     "box-sizing: border-box; }",
@@ -141,8 +143,37 @@ export function generateLandingPageStyles(): string {
     ".wizard-add-domain { background: none; border: none; color: var(--interactive-primary); cursor: pointer; font-size: 13px; padding: 4px 0; }",
     ".wizard-add-domain:hover { text-decoration: underline; }",
 
-    // Export and import modal styles: body area, profile list items, section header, and option labels.
-    ".export-modal-body { padding: 20px; overflow-y: auto; font-size: 14px; }",
+    // Shared wizard description and hint text. The description sits inside the header (below the title, above the border) providing modal-level context.
+    // Hints are used for contextual guidance within individual steps.
+    ".wizard-description { width: 100%; font-size: 13px; color: var(--text-secondary); margin-top: 6px; }",
+    ".wizard-hint { font-size: 13px; color: var(--text-secondary); margin: 0 0 10px 0; }",
+
+    // Provider picker grid and cards. Used by Browse Channels step 1 and Setup Wizard step 1 for selecting providers.
+    ".wizard-provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }",
+    ".wizard-provider-card { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--border-default); ",
+    "border-radius: var(--radius-md); cursor: pointer; transition: all 0.15s; font-size: 14px; font-weight: 500; color: var(--text-primary); ",
+    "white-space: nowrap; }",
+    ".wizard-provider-card:hover { background: var(--surface-hover); border-color: var(--interactive-primary); }",
+    "label.wizard-provider-card { cursor: pointer; }",
+    ".setup-provider-cb { margin-right: 8px; flex-shrink: 0; }",
+
+    // Spinner shown while discovering channels or performing async operations within a wizard step.
+    ".wizard-spinner { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px 20px; color: var(--text-secondary); font-size: 14px; }",
+    ".wizard-spinner::before { content: ''; width: 24px; height: 24px; border: 2px solid var(--border-default); border-top-color: var(--interactive-primary); ",
+    "border-radius: 50%; animation: spin 0.8s linear infinite; }",
+
+    // Empty state within wizard content when no results are found or an error prevents content display.
+    ".wizard-empty { text-align: center; padding: 40px 20px; color: var(--text-secondary); font-size: 14px; }",
+    ".wizard-empty-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin: 0 0 6px 0; }",
+
+    // Setup wizard step content styles. Centered layout for auth prompts and summary steps.
+    ".wizard-step-centered { text-align: center; padding: 20px 0; }",
+    ".wizard-step-centered-compact { text-align: center; padding: 12px 0 0; }",
+    ".wizard-step-provider-name { font-size: 15px; font-weight: 500; margin-bottom: 4px; }",
+    ".wizard-step-provider-count { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }",
+    ".wizard-step-summary { font-size: 14px; color: var(--text-secondary); }",
+
+    // Export and import modal styles: profile list items, section header, and option labels.
     ".export-section-header { margin-bottom: 12px; font-weight: 500; }",
     ".export-option-label { display: flex; align-items: center; gap: 8px; cursor: pointer; }",
     ".export-profile-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 4px; ",
@@ -228,6 +259,11 @@ export function generateLandingPageStyles(): string {
     ".provider-select { width: 100%; padding: 2px 4px; font-size: 12px; border: 1px solid var(--form-input-border); ",
     "border-radius: 3px; background: var(--form-input-bg); color: var(--text-primary); }",
 
+    // Channel name cell with optional logo. The cell content is a span that may be replaced by channelDisplayHtml on page load when a logo URL is available.
+    ".channel-name-cell { display: inline-flex; align-items: center; gap: 6px; }",
+    ".channel-table-logo { height: 18px; width: auto; max-width: 60px; flex-shrink: 0; }",
+    ".channel-table-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
+
     // Optional column width, alignment, and visibility rules. Generated from OPTIONAL_COLUMNS to keep a single source of truth for column metadata.
     ...OPTIONAL_COLUMNS.flatMap((col) => [
       ".channel-table ." + col.cssClass + " { min-width: " + col.width + (col.align === "center" ? "; text-align: center" : "") + "; }",
@@ -282,6 +318,11 @@ export function generateLandingPageStyles(): string {
     ".provider-option:hover { background: var(--surface-sunken); }",
     ".provider-option input[type=\"checkbox\"] { margin: 0; }",
     ".quick-action-count { margin-left: auto; font-size: 12px; color: var(--text-secondary); }",
+
+    // Bulk assign row in Quick Actions dropdown. Compact label + select on one line.
+    ".bulk-assign-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; color: var(--text-primary); }",
+    ".bulk-assign-select { flex: 1; padding: 2px 4px; font-size: 12px; border: 1px solid var(--form-input-border); border-radius: 3px; ",
+    "background: var(--form-input-bg); color: var(--text-primary); }",
 
     // Provider chips.
     ".provider-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }",
@@ -347,7 +388,9 @@ export function generateLandingPageStyles(): string {
     ".dropdown-option { display: block; padding: 2px 12px 6px 24px; font-size: 12px; color: var(--text-secondary); cursor: pointer; user-select: none; }",
     ".dropdown-divider { height: 1px; margin: 4px 0; background: var(--border-default); }",
 
-    // Channel form styles. Inputs use full width; selects use width classes from ui.ts for consistency with settings forms.
+    // Channel form styles. The colspan cell override restores normal white-space wrapping inside edit forms. Without this, the table-wide white-space: nowrap
+    // (needed for data cells to truncate with ellipsis) forces form hint text onto a single line, expanding the fit-content table wrapper to the full text width.
+    ".channel-table td[colspan] { white-space: normal; width: 1px; }",
     ".channel-form { background: var(--form-bg); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 20px; }",
     ".channel-form h3 { margin-top: 0; margin-bottom: 15px; color: var(--text-heading-secondary); }",
     ".channel-form .form-row { margin-bottom: 4px; }",
@@ -504,6 +547,73 @@ export function generateLandingPageStyles(): string {
     ".changelog-list { margin: 0 0 20px 0; padding: 0 0 0 20px; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }",
     ".changelog-list li { margin-bottom: 8px; }",
     ".changelog-list li:last-child { margin-bottom: 0; }",
-    ".changelog-modal-buttons { display: flex; gap: 12px; justify-content: flex-end; }"
+    ".changelog-modal-buttons { display: flex; gap: 12px; justify-content: flex-end; }",
+
+    // Browse Channels modal styles. Channel-list-specific styles remain browse-prefixed. Shared modal styles (description, hint, provider grid, spinner, empty
+    // state) are in the wizard section above as wizard-* classes.
+
+    // Provider display container. Inline-flex with center alignment ensures the icon and text are vertically centered regardless of image height.
+    ".provider-display { display: inline-flex; align-items: center; gap: 6px; }",
+
+    // Provider pills for the add channel form. A horizontal row of selectable provider buttons. The active pill has a highlighted border.
+    ".provider-pills { display: flex; flex-wrap: wrap; gap: 6px; }",
+    ".provider-pill { display: inline-flex; align-items: center; padding: 4px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-md); ",
+    "background: var(--surface-overlay); cursor: pointer; font-size: 12px; color: var(--text-primary); transition: all 0.15s; }",
+    ".provider-pill:hover { border-color: var(--interactive-primary); background: var(--surface-hover); }",
+    ".provider-pill.active { border-color: var(--interactive-primary); background: var(--interactive-primary); color: #fff; }",
+    ".provider-pill.active .provider-display { color: #fff; }",
+    ".provider-pill.active .provider-icon, .provider-pill.active .provider-icon-sm { filter: brightness(0) invert(1); }",
+
+    // Provider icon styles. Two sizes: standard (20px, used in provider cards and filter dropdown) and small (14px, used in chips).
+    ".provider-icon { height: 20px; width: 20px; border-radius: var(--radius-sm); flex-shrink: 0; object-fit: contain; }",
+    ".provider-icon-sm { height: 14px; width: 14px; border-radius: 2px; flex-shrink: 0; object-fit: contain; vertical-align: middle; margin-right: 4px; }",
+
+    // Checkbox state legend. Compact horizontal row explaining the three visual states, shown between the toolbar and the channel list.
+    ".browse-legend { display: flex; align-items: center; gap: 16px; padding: 4px 0 8px; font-size: 11px; color: var(--text-muted); }",
+    ".browse-legend-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }",
+    ".browse-legend-item input[type=\"checkbox\"] { margin: 0; pointer-events: none; }",
+
+    // Toolbar above the channel list with select-all and search filter.
+    ".browse-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }",
+    ".browse-select-all { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--text-primary); ",
+    "cursor: pointer; white-space: nowrap; flex-shrink: 0; }",
+    ".browse-search { flex: 1; padding: 6px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 13px; ",
+    "background: var(--surface-overlay); color: var(--text-primary); font-family: inherit; outline: none; }",
+    ".browse-search:focus { border-color: var(--interactive-primary); }",
+    ".browse-search::placeholder { color: var(--text-muted); }",
+
+    // Channel list container. Scrollable area with a maximum height so the modal does not grow unbounded.
+    ".browse-channel-list { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border-default); border-radius: var(--radius-md); }",
+
+    // Individual channel row. Scoped under .browse-channel-list for specificity (0,2,0) to beat .wizard-content label (0,1,1) which sets display:block on
+    // all labels inside the wizard content area. The name takes all remaining space (flex: 1) and truncates with ellipsis, keeping the metadata pinned right.
+    ".browse-channel-list .browse-channel-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 13px; ",
+    "color: var(--text-primary); cursor: pointer; transition: background 0.15s; border-bottom: 1px solid var(--border-light, var(--border-default)); ",
+    "margin-bottom: 0; }",
+    ".browse-channel-list .browse-channel-item:last-child { border-bottom: none; }",
+    ".browse-channel-list .browse-channel-item:hover { background: var(--table-row-hover); }",
+    ".browse-channel-item input[type=\"checkbox\"] { flex-shrink: 0; cursor: pointer; }",
+    ".browse-channel-item .browse-channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; ",
+    "display: flex; align-items: center; gap: 6px; }",
+    ".browse-channel-logo { height: 20px; width: auto; max-width: 60px; flex-shrink: 0; }",
+    ".browse-channel-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
+
+    // Right-side metadata container. Holds the state label and tier badge. flex-shrink: 0 ensures it never collapses, keeping it visible alongside the
+    // truncating channel name.
+    ".browse-channel-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }",
+
+    // State label showing the current provider or source for existing channels.
+    ".browse-state-label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }",
+
+    // Tier badge for subscription tier labeling (e.g., free channels on Sling). Positioned in the metadata area on the far right.
+    ".browse-tier-badge { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: var(--radius-sm); flex-shrink: 0; ",
+    "text-transform: uppercase; letter-spacing: 0.5px; }",
+    ".browse-tier-badge.tier-free { color: var(--badge-flag-text); background: var(--badge-flag-bg); }",
+
+    // Affiliate subtitle shown inline after the channel name.
+    ".browse-affiliate { font-size: 11px; color: var(--text-muted); font-weight: 400; }",
+
+    // Channel count display in the modal header area.
+    ".browse-header-count { font-size: 13px; color: var(--text-muted); font-weight: 400; }"
   ].join("\n");
 }

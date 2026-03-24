@@ -160,9 +160,9 @@ export function getChannelProviderTags(canonicalKey: string): string[] {
 /**
  * Scans all provider groups and collects unique provider tags with display names. Display names are derived from the provider field in DOMAIN_CONFIG entries that
  * have a providerTag.
- * @returns Array of { displayName, tag } objects sorted alphabetically by display name, with "direct" always first.
+ * @returns Array of { displayName, domain, iconUrl, tag } objects sorted alphabetically by display name, with "direct" always first.
  */
-export function getAllProviderTags(): { displayName: string; tag: string }[] {
+export function getAllProviderTags(): { displayName: string; domain?: string; iconUrl?: string; tag: string }[] {
 
   const tags = new Set<string>();
 
@@ -198,34 +198,36 @@ export function getAllProviderTags(): { displayName: string; tag: string }[] {
     }
   }
 
-  // Build a tag → display name map from DOMAIN_CONFIG's provider fields. First match wins for each tag.
-  const tagDisplayNames = new Map<string, string>();
+  // Build tag metadata maps from DOMAIN_CONFIG entries. Collects display name, domain, and icon URL for each provider tag. First match wins for each tag.
+  const tagMeta = new Map<string, { displayName: string; domain?: string; iconUrl?: string }>();
 
-  tagDisplayNames.set("direct", "Network");
+  tagMeta.set("direct", { displayName: "Channel Website" });
 
-  for(const config of Object.values(DOMAIN_CONFIG)) {
+  for(const [ domain, config ] of Object.entries(DOMAIN_CONFIG)) {
 
-    if(config.providerTag && config.provider && !tagDisplayNames.has(config.providerTag)) {
+    if(config.providerTag && config.provider && !tagMeta.has(config.providerTag)) {
 
-      tagDisplayNames.set(config.providerTag, config.provider);
+      tagMeta.set(config.providerTag, { displayName: config.provider, domain, iconUrl: config.iconUrl });
     }
   }
 
-  // Scan user domain mappings for display names not covered by built-in DOMAIN_CONFIG.
-  for(const config of Object.values(userDomains)) {
+  // Scan user domain mappings for metadata not covered by built-in DOMAIN_CONFIG.
+  for(const [ domain, config ] of Object.entries(userDomains)) {
 
-    if(config.providerTag && config.provider && !tagDisplayNames.has(config.providerTag)) {
+    if(config.providerTag && config.provider && !tagMeta.has(config.providerTag)) {
 
-      tagDisplayNames.set(config.providerTag, config.provider);
+      tagMeta.set(config.providerTag, { displayName: config.provider, domain, iconUrl: config.iconUrl });
     }
   }
 
-  // Build result with display names.
-  const result: { displayName: string; tag: string }[] = [];
+  // Build result with metadata.
+  const result: { displayName: string; domain?: string; iconUrl?: string; tag: string }[] = [];
 
   for(const tag of tags) {
 
-    result.push({ displayName: tagDisplayNames.get(tag) ?? tag, tag });
+    const meta = tagMeta.get(tag);
+
+    result.push({ displayName: meta?.displayName ?? tag, domain: meta?.domain, iconUrl: meta?.iconUrl, tag });
   }
 
   // Sort alphabetically by display name, but keep "direct" first.

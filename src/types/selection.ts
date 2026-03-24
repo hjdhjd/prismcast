@@ -133,7 +133,7 @@ export interface ProviderModule {
   // for this provider's domain. Required when profile is defined.
   profileName?: string;
 
-  // Provider identifier used for API endpoints and provider filter matching (e.g., "yttv", "hulu", "foxcom"). Matches the providerTag values in DOMAIN_CONFIG so that
+  // Provider identifier used for API endpoints and provider filter matching (e.g., "yttv", "hulu", "foxone"). Matches the providerTag values in DOMAIN_CONFIG so that
   // slug-based lookups and provider filter comparisons use the same identifier space.
   slug: string;
 

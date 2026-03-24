@@ -706,6 +706,9 @@ export interface UserChannelsConfig {
   // Provider slugs selected for precaching at startup. Empty means no precaching.
   precacheProviders?: string[];
 
+  // Whether the Provider Setup flow has been completed or skipped.
+  setupCompleted?: boolean;
+
   // Optional column field names currently visible in the channels table.
   visibleColumns?: string[];
 }
@@ -878,6 +881,7 @@ export const DEFAULTS: Config = {
     disabledPredefined: [],
     enabledProviders: [],
     precacheProviders: [],
+    setupCompleted: false,
     visibleColumns: []
   },
 

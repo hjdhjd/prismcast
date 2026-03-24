@@ -58,17 +58,6 @@ export function generateStatusScript(): string {
     "  }",
     "}",
 
-    // Build channel display HTML with an optional logo image. When a logo URL is available, renders an img element with an onerror fallback that hides the
-    // image and reveals a text span. The logoClass and textClass parameters allow callers to apply context-specific sizing.
-    "function channelDisplayHtml(logoUrl, name, logoClass, textClass) {",
-    "  if(logoUrl) {",
-    "    return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"' + name + '\" title=\"' + name + '\" ' +",
-    "      'onerror=\"this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'inline\\'\">' +",
-    "      '<span class=\"' + textClass + '\" style=\"display:none\">' + name + '</span>';",
-    "  }",
-    "  return '<span class=\"' + textClass + '\">' + name + '</span>';",
-    "}",
-
     // Get row background color based on health status. Uses CSS variables for theme support.
     "function getRowTint(health) {",
     "  var tints = {",
