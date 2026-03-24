@@ -281,20 +281,6 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
     },
     {
 
-      description: "Delay after clicking video element to initiate playback on Brightcove-based players. Currently unused — waitForVideoReady() " +
-        "handles the wait automatically.",
-      displayDivisor: 1000,
-      displayUnit: "seconds",
-      envVar: "CLICK_TO_PLAY_DELAY",
-      label: "Click to Play Delay",
-      max: 10000,
-      min: 100,
-      path: "playback.clickToPlayDelay",
-      type: "integer",
-      unit: "ms"
-    },
-    {
-
       description: "Delay for iframe content to initialize before searching for video elements.",
       displayDivisor: 1000,
       displayUnit: "seconds",
@@ -637,7 +623,6 @@ export interface UserPlaybackConfig {
   bufferingGracePeriod?: number;
   channelSelectorDelay?: number;
   channelSwitchDelay?: number;
-  clickToPlayDelay?: number;
   iframeInitDelay?: number;
   maxPageReloads?: number;
   monitorInterval?: number;
@@ -920,7 +905,6 @@ export const DEFAULTS: Config = {
     bufferingGracePeriod: 10000,
     channelSelectorDelay: 5000,
     channelSwitchDelay: 4000,
-    clickToPlayDelay: 1000,
     iframeInitDelay: 1500,
     maxPageReloads: 3,
     monitorInterval: 2000,

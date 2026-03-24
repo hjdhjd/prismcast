@@ -178,100 +178,38 @@ export function validatePositiveNumber(name: string, value: number, min?: number
  */
 export function validateConfiguration(): void {
 
+  // Collect all validation errors before throwing so the operator sees every problem at once. The check helper pushes non-null results into the errors array,
+  // reducing each validation to a single line.
   const errors: string[] = [];
+  const check = (result: string | null): void => { if(result) { errors.push(result); } };
 
-  // Validate server configuration. Port must be within the valid TCP port range (1-65535). Port 0 is reserved.
-  const portError = validatePositiveInt("PORT", CONFIG.server.port, 1, 65535);
+  // Server configuration.
+  check(validatePositiveInt("PORT", CONFIG.server.port, 1, 65535));
 
-  if(portError) {
+  // Streaming bitrates. Video: 100kbps-50Mbps. Audio: 32-512kbps.
+  check(validatePositiveInt("VIDEO_BITRATE", CONFIG.streaming.videoBitsPerSecond, 100000, 50000000));
+  check(validatePositiveInt("AUDIO_BITRATE", CONFIG.streaming.audioBitsPerSecond, 32000, 512000));
 
-    errors.push(portError);
-  }
+  // Timeouts. 1 second minimum prevents premature failures. 10 minutes maximum prevents indefinite hangs.
+  check(validatePositiveInt("NAV_TIMEOUT", CONFIG.streaming.navigationTimeout, 1000, 600000));
+  check(validatePositiveInt("VIDEO_TIMEOUT", CONFIG.streaming.videoTimeout, 1000, 600000));
 
-  // Validate streaming bitrates. Minimum video bitrate (100kbps) ensures basic video quality. Maximum (50Mbps) prevents unreasonable resource consumption.
-  // Audio range (32-512kbps) covers all common audio quality levels.
-  const videoBitrateError = validatePositiveInt("VIDEO_BITRATE", CONFIG.streaming.videoBitsPerSecond, 100000, 50000000);
+  // Concurrent stream limit.
+  check(validatePositiveInt("MAX_CONCURRENT_STREAMS", CONFIG.streaming.maxConcurrentStreams, 1, 100));
 
-  if(videoBitrateError) {
+  // Circuit breaker threshold.
+  check(validatePositiveInt("CIRCUIT_BREAKER_THRESHOLD", CONFIG.recovery.circuitBreakerThreshold, 1, 100));
 
-    errors.push(videoBitrateError);
-  }
+  // Stall threshold (float).
+  check(validatePositiveNumber("STALL_THRESHOLD", CONFIG.playback.stallThreshold, 0.01, 5));
 
-  const audioBitrateError = validatePositiveInt("AUDIO_BITRATE", CONFIG.streaming.audioBitsPerSecond, 32000, 512000);
+  // Logging. 10KB minimum ensures meaningful content. 100MB maximum prevents excessive disk usage.
+  check(validatePositiveInt("LOG_MAX_SIZE", CONFIG.logging.maxSize, 10240, 104857600));
 
-  if(audioBitrateError) {
-
-    errors.push(audioBitrateError);
-  }
-
-  // Validate timeouts. Minimum (1 second) prevents premature failures. Maximum (10 minutes) prevents indefinite hangs while allowing for very slow networks.
-  const navTimeoutError = validatePositiveInt("NAV_TIMEOUT", CONFIG.streaming.navigationTimeout, 1000, 600000);
-
-  if(navTimeoutError) {
-
-    errors.push(navTimeoutError);
-  }
-
-  const videoTimeoutError = validatePositiveInt("VIDEO_TIMEOUT", CONFIG.streaming.videoTimeout, 1000, 600000);
-
-  if(videoTimeoutError) {
-
-    errors.push(videoTimeoutError);
-  }
-
-  // Validate concurrent stream limit. At least 1 stream must be allowed. Maximum of 100 prevents resource exhaustion on most systems.
-  const concurrentError = validatePositiveInt("MAX_CONCURRENT_STREAMS", CONFIG.streaming.maxConcurrentStreams, 1, 100);
-
-  if(concurrentError) {
-
-    errors.push(concurrentError);
-  }
-
-  // Validate circuit breaker. At least 1 failure required to trip. Maximum of 100 prevents the breaker from never tripping.
-  const circuitBreakerError = validatePositiveInt("CIRCUIT_BREAKER_THRESHOLD", CONFIG.recovery.circuitBreakerThreshold, 1, 100);
-
-  if(circuitBreakerError) {
-
-    errors.push(circuitBreakerError);
-  }
-
-  // Validate stall threshold (float).
-  const stallThresholdError = validatePositiveNumber("STALL_THRESHOLD", CONFIG.playback.stallThreshold, 0.01, 5);
-
-  if(stallThresholdError) {
-
-    errors.push(stallThresholdError);
-  }
-
-  // Validate logging configuration. Minimum size (10KB) ensures meaningful log content. Maximum (100MB) prevents excessive disk usage.
-  const logMaxSizeError = validatePositiveInt("LOG_MAX_SIZE", CONFIG.logging.maxSize, 10240, 104857600);
-
-  if(logMaxSizeError) {
-
-    errors.push(logMaxSizeError);
-  }
-
-  // Validate HLS configuration. Segment duration and max segments have sensible ranges.
-  const hlsSegmentDurationError = validatePositiveInt("HLS_SEGMENT_DURATION", CONFIG.hls.segmentDuration, 1, 10);
-
-  if(hlsSegmentDurationError) {
-
-    errors.push(hlsSegmentDurationError);
-  }
-
-  const hlsMaxSegmentsError = validatePositiveInt("HLS_MAX_SEGMENTS", CONFIG.hls.maxSegments, 3, 60);
-
-  if(hlsMaxSegmentsError) {
-
-    errors.push(hlsMaxSegmentsError);
-  }
-
-  const hlsIdleTimeoutError = validatePositiveInt("HLS_IDLE_TIMEOUT", CONFIG.hls.idleTimeout, 10000, 300000);
-
-  if(hlsIdleTimeoutError) {
-
-    errors.push(hlsIdleTimeoutError);
-  }
+  // HLS configuration.
+  check(validatePositiveInt("HLS_SEGMENT_DURATION", CONFIG.hls.segmentDuration, 1, 10));
+  check(validatePositiveInt("HLS_MAX_SEGMENTS", CONFIG.hls.maxSegments, 3, 60));
+  check(validatePositiveInt("HLS_IDLE_TIMEOUT", CONFIG.hls.idleTimeout, 10000, 300000));
 
   // Force FFmpeg capture mode. Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of continuous recording. Until a future Chrome
   // release resolves this, native capture mode is disabled entirely.
@@ -297,7 +235,7 @@ export function validateConfiguration(): void {
   if(CONFIG.hdhr.enabled) {
 
     // HDHR requires FFmpeg for MPEG-TS remuxing. In native mode, FFmpeg is not guaranteed to be available. Disable HDHR and warn the operator. The string cast
-    // suppresses TS2367 because captureMode is currently forced to "ffmpeg" above — this guard will become reachable again when native mode is re-enabled.
+    // suppresses TS2367 because captureMode is currently forced to "ffmpeg" above - this guard will become reachable again when native mode is re-enabled.
     if((CONFIG.streaming.captureMode as string) === "native") {
 
       CONFIG.hdhr.enabled = false;
@@ -305,12 +243,7 @@ export function validateConfiguration(): void {
       LOG.warn("HDHomeRun emulation requires FFmpeg mode. Disabling HDHR because capture mode is set to native.");
     } else {
 
-      const hdhrPortError = validatePositiveInt("HDHR_PORT", CONFIG.hdhr.port, 1, 65535);
-
-      if(hdhrPortError) {
-
-        errors.push(hdhrPortError);
-      }
+      check(validatePositiveInt("HDHR_PORT", CONFIG.hdhr.port, 1, 65535));
 
       // Warn if HDHR port conflicts with the main server port (same host).
       if((CONFIG.hdhr.port === CONFIG.server.port) && ((CONFIG.server.host === "0.0.0.0") || (CONFIG.server.host === "::"))) {

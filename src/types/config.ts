@@ -66,10 +66,6 @@ export interface PlaybackConfig {
   // initialization before we begin monitoring playback health. Environment variable: CHANNEL_SWITCH_DELAY. Default: 4000ms.
   channelSwitchDelay: number;
 
-  // Time in milliseconds to wait after clicking the video element to initiate playback. Some players (particularly Brightcove-based) require a click to start and
-  // need time to transition from the click handler to actual playback. Environment variable: CLICK_TO_PLAY_DELAY. Default: 1000ms.
-  clickToPlayDelay: number;
-
   // Time in milliseconds to wait for iframe content to initialize before searching for video elements. When video is embedded in an iframe, the iframe document
   // loads asynchronously after the parent page. Searching too early returns no results. Environment variable: IFRAME_INIT_DELAY. Default: 1500ms.
   iframeInitDelay: number;

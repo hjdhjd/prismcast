@@ -134,10 +134,13 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
   // reject. Without this, we'd get unhandled rejection warnings when the CDP call completes after we've moved on.
   evaluatePromise.catch(() => { /* Suppress unhandled rejection from pending CDP calls after abort/timeout. */ });
 
-  // Create the timeout promise.
+  // Create the timeout promise. The timer ID is stored so it can be cleared when the race is won by another promise, preventing orphaned timers from holding
+  // event loop references for their full duration.
+  let timeoutTimer: ReturnType<typeof setTimeout>;
+
   const timeoutPromise = new Promise<never>((_, reject) => {
 
-    setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
 
       reject(new EvaluateTimeoutError(timeout));
     }, timeout);
@@ -162,11 +165,11 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
       }, { once: true });
     });
 
-    // Race all three: evaluate, timeout, and abort.
-    return Promise.race([ evaluatePromise, timeoutPromise, abortPromise ]);
+    // Race all three: evaluate, timeout, and abort. Clear the timeout timer when the race settles to prevent orphaned timers.
+    return Promise.race([ evaluatePromise, timeoutPromise, abortPromise ]).finally(() => { clearTimeout(timeoutTimer); });
   }
 
-  // No abort signal available, just race evaluate against timeout.
-  return Promise.race([ evaluatePromise, timeoutPromise ]);
+  // No abort signal available, just race evaluate against timeout. Clear the timeout timer when the race settles.
+  return Promise.race([ evaluatePromise, timeoutPromise ]).finally(() => { clearTimeout(timeoutTimer); });
 }
 

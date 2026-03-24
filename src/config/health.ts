@@ -2,7 +2,7 @@
  *
  * health.ts: Channel health and domain authentication state persistence for PrismCast.
  */
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 import { LOG } from "../utils/index.js";
 import type { Nullable } from "../types/index.js";
 import fs from "node:fs";
