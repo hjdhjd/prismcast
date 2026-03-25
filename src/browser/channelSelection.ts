@@ -7,6 +7,7 @@ import { LOG, delay, evaluateWithAbort } from "../utils/index.js";
 import { getDomainConfig, registerProviderModuleProfile } from "../config/sites.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
+import { coxProvider } from "./tuning/cox.js";
 import { directvProvider } from "./tuning/directv.js";
 import { foxProvider } from "./tuning/fox.js";
 import { hboProvider } from "./tuning/hbo.js";
@@ -52,7 +53,7 @@ import { yttvProvider } from "./tuning/youtubeTv.js";
 // Provider module registry. The primary registry for all provider-level operations. Each entry bundles identity metadata, tuning strategy, and channel discovery.
 // Future capabilities become additional methods on ProviderModule — no new registries needed.
 const providerModules: readonly ProviderModule[] = [
-  directvProvider, foxProvider, hboProvider, huluProvider, slingProvider, spectrumProvider, xfinityProvider, yttvProvider
+  coxProvider, directvProvider, foxProvider, hboProvider, huluProvider, slingProvider, spectrumProvider, xfinityProvider, yttvProvider
 ];
 
 // Strategy dispatch registry. Derived from provider modules (keyed by strategyName) plus generic strategies that are not provider-level registrations.
@@ -145,16 +146,16 @@ export function getProviderSlugs(): string[] {
  * Returns slug, label, domain, and optional icon URL for all registered provider modules. Used by the checkboxList setting for precache labels and by the
  * browse modal for provider picker cards with icons. The domain is extracted from the guide URL. The icon URL is derived from the provider's DOMAIN_CONFIG
  * entry — the single source of truth for provider icon URLs.
- * @returns Array of objects with domain, iconUrl, label, and slug properties.
+ * @returns Array of objects with domain, iconUrl, label, noDirectTuneOptimization, and slug properties.
  */
-export function getProviderModuleInfo(): { domain: string; iconUrl?: string; label: string; slug: string }[] {
+export function getProviderModuleInfo(): { domain: string; iconUrl?: string; label: string; noDirectTuneOptimization?: boolean; slug: string }[] {
 
   return providerModules.map((p) => {
 
     const domain = new URL(p.guideUrl).hostname;
     const domainConfig = getDomainConfig(p.guideUrl);
 
-    return { domain, iconUrl: domainConfig?.iconUrl, label: p.label, slug: p.slug };
+    return { domain, iconUrl: domainConfig?.iconUrl, label: p.label, noDirectTuneOptimization: p.noDirectTuneOptimization, slug: p.slug };
   });
 }
 
