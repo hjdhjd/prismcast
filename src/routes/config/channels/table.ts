@@ -8,7 +8,7 @@ import { compareChannelSort, getAllProviderTags, getAuthDomainForChannel, getCha
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
-import { getChannelListing, getChannelsParseErrorMessage, getEastCanonicalKey, getPredefinedScopeCounts, getUserChannelsFilePath, hasChannelsParseError,
+import { getChannelListing, getChannelLogo, getChannelsParseErrorMessage, getPredefinedScopeCounts, getUserChannelsFilePath, hasChannelsParseError,
   isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel } from "../../../config/userChannels.js";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
 import { CONFIG } from "../../../config/index.js";
@@ -17,7 +17,6 @@ import { PREDEFINED_CHANNELS } from "../../../channels/index.js";
 import type { ProfileInfo } from "../../../config/profiles.js";
 import { categorizeProfiles } from "../index.js";
 import { generateWizardModal } from "../../components.js";
-import { getChannelLogo } from "../../../streaming/showInfo.js";
 
 /**
  * Generates an annotated provider display span. The client-side page-load script processes these elements via providerIconHtml, rendering the appropriate
@@ -666,8 +665,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
   displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + " data-provider-tags=\"" + escapeHtml(providerTags) + "\">");
   displayLines.push("<td class=\"ch-key\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "key")) + "\">" + escapeHtml(key) + "</td>");
-  const eastKey = getEastCanonicalKey(key);
-  const channelLogoUrl = getChannelLogo(key) ?? (eastKey ? getChannelLogo(eastKey) : undefined) ?? "";
+  const channelLogoUrl = getChannelLogo(key) ?? "";
   const logoAttr = channelLogoUrl ? " data-logo=\"" + escapeHtml(channelLogoUrl) + "\"" : "";
 
   displayLines.push("<td data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "name")) + "\"" + logoAttr +

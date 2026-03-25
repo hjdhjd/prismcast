@@ -4,14 +4,13 @@
  */
 import type { DiscoveredChannel, ProviderModule } from "../types/index.js";
 import type { Express, Request, Response } from "express";
-import { getChannelListing, getEastCanonicalKey, isPredefinedChannel } from "../config/userChannels.js";
+import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.js";
 import { getChannelProviderLabel, getProviderGroup, getProviderTagForChannel, getResolvedChannel, isProviderTagEnabled,
   resolveProviderKey } from "../config/providers.js";
 import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
 import type { Page } from "puppeteer-core";
-import { getChannelLogo } from "../streaming/showInfo.js";
 import { getProviderBySlug } from "../browser/channelSelection.js";
 
 /* The providers endpoint exposes channel discovery for each registered provider. A GET request to /providers/:slug/channels creates a temporary browser page,
@@ -171,8 +170,7 @@ interface LineupState {
   // when unchecking a "current" channel: indeterminate if alternatives exist (channel persists), empty if not (channel will be disabled).
   hasAlternatives: boolean;
 
-  // Channel logo URL from the Channels DVR device mapping cache. Present when the DVR host has been discovered and the channel's logo is available.
-  // Used by the client to render logos alongside channel names via the shared channelDisplayHtml utility.
+  // Channel logo URL from the DVR logo cache. Used by the client to render logos alongside channel names via channelDisplayHtml.
   logoUrl?: string;
 
   // The stationId (Gracenote ID) for this canonical channel. Used to disambiguate when two canonicals (East and Pacific) share the same channelSelector
@@ -261,11 +259,10 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
       }
     }
 
-    const eastKey = getEastCanonicalKey(canonicalKey);
-    const logoUrl = getChannelLogo(canonicalKey) ?? (eastKey ? getChannelLogo(eastKey) : undefined);
     const state: LineupState = {
 
-      canonicalKey, currentProvider, currentTag, displayName, enabled: entry.enabled, hasAlternatives, logoUrl,
+      canonicalKey, currentProvider, currentTag, displayName, enabled: entry.enabled, hasAlternatives,
+      logoUrl: getChannelLogo(canonicalKey),
       source, stationId: entry.channel.stationId
     };
 

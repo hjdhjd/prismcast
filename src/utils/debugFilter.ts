@@ -197,6 +197,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "retry", description: "Retry attempts, page-closed aborts." },
   { category: "streaming:ffmpeg", description: "FFmpeg stderr output, pipe errors." },
   { category: "streaming:hls", description: "HLS segment storage, page close errors." },
+  { category: "streaming:logos", description: "Channel logo cache: DVR device extraction, TMS station lookups, cache population." },
   { category: "streaming:mpegts", description: "MPEG-TS client connections, FFmpeg remuxer spawn and errors." },
   { category: "streaming:preroll", description: "Preroll lifecycle: fMP4 generation, preroll playlist delivery, transition to live content." },
   { category: "streaming:pretune", description: "Predictive channel pretuning: DVR job polling, timer scheduling, tune triggers." },

@@ -658,6 +658,81 @@ export function getEastCanonicalKey(key: string): string | undefined {
   return isPredefinedChannel(eastKey) ? eastKey : undefined;
 }
 
+// Logo cache. Logo URLs are fetched from the Channels DVR API and cached by Gracenote station ID. The cache is populated in two tiers by showInfo.ts: first from
+// the DVR's /devices endpoint (covers all channels in the M3U playlist), then via TMS station name search for any remaining channels. The cache refreshes every
+// 24 hours and updates on individual channel add/edit operations.
+
+// Logo cache keyed by Gracenote station ID. Populated by showInfo.ts via setChannelLogos() and setChannelLogo().
+const logoCache = new Map<string, string>();
+
+/**
+ * Bulk-populates the logo cache from a stationId-to-URL map. Called by showInfo.ts after fetching logo data from the DVR. Existing entries are overwritten with
+ * fresh data to pick up any logo URL changes (e.g., network rebrands).
+ * @param logos - Map of Gracenote station ID to logo URL.
+ */
+export function setChannelLogos(logos: Map<string, string>): void {
+
+  for(const [ stationId, url ] of logos) {
+
+    logoCache.set(stationId, url);
+  }
+}
+
+/**
+ * Sets a single logo cache entry. Called by showInfo.ts after a TMS station name search for a single channel (tier 2 population or channel add/edit).
+ * @param stationId - The Gracenote station ID.
+ * @param url - The logo URL.
+ */
+export function setChannelLogo(stationId: string, url: string): void {
+
+  logoCache.set(stationId, url);
+}
+
+/**
+ * Clears the logo cache. Called on shutdown to release memory.
+ */
+export function clearChannelLogos(): void {
+
+  logoCache.clear();
+}
+
+/**
+ * Resolves a channel key to its effective Gracenote station ID. Pacific channels (e.g., "bravop") resolve to their east counterpart's station ID since
+ * they share the same brand logo. User channel overrides that change the stationId are reflected. Returns undefined if the channel has no stationId.
+ * @param channelKey - The channel key to resolve (e.g., "amc", "bravop").
+ * @returns The Gracenote station ID, or undefined.
+ */
+export function getChannelStationId(channelKey: string): string | undefined {
+
+  // Pacific channels are regional feeds of the same brand as their east counterparts, so we resolve to the east variant's station ID for logo purposes.
+  const effectiveKey = getEastCanonicalKey(channelKey) ?? channelKey;
+
+  // User channels take precedence - resolveStoredChannel merges deltas with the predefined base, so overrides that change the stationId are reflected here.
+  return (effectiveKey in loadedUserChannels) ?
+    resolveStoredChannel(effectiveKey, loadedUserChannels[effectiveKey]).stationId :
+    // Runtime check needed - TypeScript thinks Record indexing always returns a value, but the key may not exist.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    PREDEFINED_CHANNELS[effectiveKey]?.stationId;
+}
+
+/**
+ * Returns the logo URL for a channel from the cache. Pacific channels (e.g., "bravop") are resolved to their east counterpart automatically. The cache is
+ * populated by showInfo.ts from the Channels DVR API - this function only reads from it.
+ * @param channelKey - The channel key to look up (e.g., "amc", "bravop"). Pacific keys resolve to their east variant internally.
+ * @returns The logo URL if cached, undefined otherwise.
+ */
+export function getChannelLogo(channelKey: string): string | undefined {
+
+  const stationId = getChannelStationId(channelKey);
+
+  if(!stationId) {
+
+    return undefined;
+  }
+
+  return logoCache.get(stationId);
+}
+
 /**
  * Checks if a channel key exists in the user channels.
  * @param key - The channel key to check.

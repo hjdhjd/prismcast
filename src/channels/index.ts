@@ -90,7 +90,7 @@ const BASE_CHANNELS: ChannelMap = {
   "bbcamerica-spectrum": { channelSelector: "BBC America", url: "https://watch.spectrum.net/guide" },
   "bbcamerica-xfinity": { channelSelector: "BBC America", url: "https://www.xfinity.com/stream/listings" },
   "bbcamerica-yttv": { channelSelector: "BBC America", url: "https://tv.youtube.com/live" },
-  bbcnews: { channelSelector: "BBC News", name: "BBC News", stationId: "101449", url: "https://watchtv.cox.com/listings" },
+  bbcnews: { channelSelector: "BBC News", name: "BBC News (North America)", stationId: "101449", url: "https://watchtv.cox.com/listings" },
   "bbcnews-directv": { channelSelector: "BBC News", url: "https://stream.directv.com" },
   "bbcnews-sling": { channelSelector: "BBC News", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
   "bbcnews-spectrum": { channelSelector: "BBC World News", url: "https://watch.spectrum.net/guide" },
