@@ -87,6 +87,9 @@ function generateBackupPanel(): string {
  */
 export function generateOverviewContent(baseUrl: string): string {
 
+  const providerInfo = getProviderModuleInfo();
+  const slowProviderLabels = providerInfo.filter((p) => p.noDirectTuneOptimization).map((p) => escapeHtml(p.label)).sort();
+
   return [
 
     // Active streams table at the top.
@@ -167,16 +170,19 @@ export function generateOverviewContent(baseUrl: string): string {
 
     "<h4>Guide-Based Providers &mdash; First Tune (~5&ndash;10 seconds)</h4>",
     "<p>Sites where PrismCast navigates a live TV guide to find and select the channel. The first tune for a given channel is slower because the ",
-    "guide grid must be searched. Examples: " + getProviderModuleInfo().map((p) => escapeHtml(p.label)).sort().join(", ") + ".</p>",
-    "<p class=\"description-hint\">Note: Xfinity Stream's player is slow to initialize &mdash; expect 15&ndash;30 seconds for channel changes. ",
-    "This is a limitation of Xfinity's web player, not PrismCast.</p>",
+    "guide grid must be searched. Examples: " + providerInfo.map((p) => escapeHtml(p.label)).sort().join(", ") + ".</p>",
+    ...(slowProviderLabels.length > 0 ? [
+      "<p class=\"description-hint\">Note: " + slowProviderLabels.join(" and ") +
+      " players are slow to initialize &mdash; expect 15&ndash;30 seconds for channel changes. " +
+      "This is a limitation of the web player, not PrismCast.</p>"] : []),
 
     "<h4>Guide-Based Providers &mdash; Subsequent Tunes (~3&ndash;5 seconds)</h4>",
     "<p>After the first tune, PrismCast caches channel data for <strong>" +
-    getProviderModuleInfo().filter((p) => p.slug !== "xfinity").map((p) => escapeHtml(p.label)).sort().join(", ") +
+    providerInfo.filter((p) => !p.noDirectTuneOptimization).map((p) => escapeHtml(p.label)).sort().join(", ") +
     "</strong>. Subsequent tunes skip guide navigation entirely and are comparable to direct URL channels. " +
-    "If cached data becomes stale, PrismCast falls back to guide navigation transparently. Xfinity Stream does not benefit from this ",
-    "optimization &mdash; each tune requires a full page load of the Xfinity player.</p>",
+    "If cached data becomes stale, PrismCast falls back to guide navigation transparently." +
+    (slowProviderLabels.length > 0 ? " " + slowProviderLabels.join(" and ") +
+    " do not benefit from this optimization &mdash; each tune requires a full page load of the player." : "") + "</p>",
 
     "<h4>Idle Window</h4>",
     "<p>Streams stay alive for <strong>30 seconds</strong> after the last client disconnects (configurable in the ",
@@ -264,6 +270,8 @@ export function generateOverviewContent(baseUrl: string): string {
  * @returns HTML content for the Help tab.
  */
 export function generateHelpContent(): string {
+
+  const slowProviderLabels = getProviderModuleInfo().filter((p) => p.noDirectTuneOptimization).map((p) => escapeHtml(p.label)).sort();
 
   return [
 
@@ -381,9 +389,9 @@ export function generateHelpContent(): string {
     "<td>Click Login on the channel to re-authenticate with your TV provider. Sessions expire periodically on the provider's end.</td>",
     "</tr>",
     "<tr>",
-    "<td>Xfinity Stream tunes take 15&ndash;30 seconds</td>",
-    "<td>Xfinity's web player is inherently slow to initialize.</td>",
-    "<td>This is a limitation of the Xfinity Stream web player, not PrismCast. Each tune requires a full page load of the Xfinity player.</td>",
+    "<td>" + slowProviderLabels.join(" / ") + " tunes take 15&ndash;30 seconds</td>",
+    "<td>The web player is inherently slow to initialize.</td>",
+    "<td>This is a limitation of the web player, not PrismCast. Each tune requires a full page load of the player.</td>",
     "</tr>",
     "</table>",
     "</div>",

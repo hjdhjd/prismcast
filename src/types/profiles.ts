@@ -25,16 +25,21 @@ import type { Nullable } from "./shared.js";
  *   cell. Used by Sling TV.
  * - "spectrumGrid": Find channel by callsign or display name in a non-virtualized AngularJS guide grid, extract the Gracenote tmsid from channel logo URLs,
  *   and navigate directly to the watch URL. Caches all ~442 streamable channels on first tune. Used by Spectrum TV.
+ * - "coxDirect": Wait for the Comcast Polymer SPA's channelMap to populate, find the target channel by callSign, and call `_watchChannelEventHandler` to switch
+ *   channels in-page. A fire-and-forget poll dismisses the Watch Now modal if it appears. Used by Cox Contour TV. Shares implementation with xfinityDirect via
+ *   the comcastPolymer factory.
  * - "thumbnailRow": Find channel element using the profile's matchSelector (defaults to image URL matching), click adjacent element on the same row. Used by
  *   USA Network.
  * - "tileClick": Find channel element using the profile's matchSelector (defaults to image URL matching), click tile, then optionally click play button if
  *   playSelector is configured. Used by Disney+.
- * - "xfinityDirect": Wait for the Polymer SPA's channelMap to populate, find the target channel by callSign, and call `_watchChannelEventHandler` to switch
- *   channels in-page. A fire-and-forget poll dismisses the Watch Now modal if it appears. Used by Xfinity Stream.
+ * - "xfinityDirect": Wait for the Comcast Polymer SPA's channelMap to populate, find the target channel by callSign, and call `_watchChannelEventHandler` to switch
+ *   channels in-page. A fire-and-forget poll dismisses the Watch Now modal if it appears. Used by Xfinity Stream. Shares implementation with coxDirect via the
+ *   comcastPolymer factory.
  * - "youtubeGrid": Find channel by aria-label in a non-virtualized EPG grid, extract the watch URL, and navigate directly. Used by YouTube TV.
  */
 export type ChannelSelectionStrategy =
-  "directvGrid" | "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "spectrumGrid" | "thumbnailRow" | "tileClick" | "xfinityDirect" | "youtubeGrid";
+  "coxDirect" | "directvGrid" | "foxGrid" | "guideGrid" | "hboGrid" | "none" | "slingGrid" | "spectrumGrid" | "thumbnailRow" | "tileClick" |
+  "xfinityDirect" | "youtubeGrid";
 
 /**
  * Configuration for channel selection behavior within a site profile.

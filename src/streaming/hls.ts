@@ -54,7 +54,7 @@ import { triggerShowNameUpdate } from "./showInfo.js";
  */
 
 // Delay before seeding the preroll playlist in milliseconds. If stream setup completes before this timer fires, the preroll is skipped and the client receives real
-// content directly. This ensures fast-tuning providers (native HLS at 2-3s, most capture providers at 4-7s) never see preroll, while slow providers (Xfinity at
+// content directly. This ensures fast-tuning providers (native HLS at 2-3s, most capture providers at 4-7s) never see preroll, while slow providers (Xfinity/Cox at
 // 13-15s) get preroll content after the delay to prevent HTTP timeouts.
 const PREROLL_DELAY_MS = 9_000;
 
@@ -889,7 +889,7 @@ interface PendingStreamResult {
  * Registers a pending stream entry in the registry with deferred preroll. This is the synchronous Phase 1 of the two-phase stream initialization used by the HLS
  * playlist handler. The pending entry has a real stream ID but no playlist yet — the response is held until either the preroll timer fires (after PREROLL_DELAY_MS)
  * or real content arrives from the segmenter/native proxy. This ensures that fast-tuning streams (native, most capture providers) skip preroll entirely, while slow
- * streams (Xfinity at 13-15s) get preroll content after the delay.
+ * streams (Xfinity/Cox at 13-15s) get preroll content after the delay.
  * @param channelName - The channel key for registration and deduplication.
  * @param channel - The resolved channel definition.
  * @param clientAddress - Client IP address for Channels DVR API integration.
