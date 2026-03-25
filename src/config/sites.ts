@@ -60,7 +60,7 @@ import { getUserDomains } from "./userProfiles.js";
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
  *
  * Provider profiles (internal, not user-selectable — in PROVIDER_PROFILES table or registered by provider modules):
- * - directvStream, disneyNow, disneyPlus, foxLive, hboMax, huluLive, slingLive, spectrum, xfinityStream, youtubeTV
+ * - coxStream, directvStream, disneyNow, disneyPlus, foxLive, hboMax, huluLive, slingLive, spectrum, xfinityStream, youtubeTV
  *
  * Each profile includes a description field documenting its purpose. This is metadata only - it's stripped during profile resolution and exists purely for
  * documentation.
@@ -325,6 +325,8 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "watch.spectrum.net": { iconUrl: "https://watch.spectrum.net/assets/17.28.0/images/apple-touch-icon.png", profile: "spectrum", provider: "Spectrum TV",
     providerTag: "spectrum" },
   "watchhallmarktv.com": { profile: "fullscreenApi", provider: "Hallmark" },
+  "watchtv.cox.com": { iconUrl: "https://watchtv.cox.com/partners/cox/images/favicon-128x128.png", profile: "coxStream", provider: "Cox Contour TV",
+    providerTag: "cox" },
   "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
   "windy.com": { profile: "staticPage", provider: "Windy" },
   "wttw.com": { profile: "fullscreenApi", provider: "WTTW" },
