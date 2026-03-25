@@ -125,6 +125,10 @@ export interface ProviderModule {
   // Human-readable display name (e.g., "YouTube TV", "Hulu").
   label: string;
 
+  // When true, this provider does not benefit from cached direct-URL tuning optimization. Each tune requires a full page load of the provider's player SPA.
+  // Used by the UI to exclude these providers from the "subsequent tunes skip guide navigation" description and to generate slow-initialization warnings.
+  noDirectTuneOptimization?: boolean;
+
   // The site profile definition for this provider. Contains behavior flags, channel selection strategy configuration, and other provider-specific settings.
   // When defined, this profile is registered in the provider profile namespace and can be referenced by DOMAIN_CONFIG entries and channel definitions.
   profile?: SiteProfile;
@@ -141,9 +145,10 @@ export interface ProviderModule {
   strategy: ChannelStrategyEntry;
 
   // Number of consecutive tiny segments (below the size threshold) required before triggering tab replacement recovery. Defaults to 10 (~20 seconds at 2-second
-  // segments) when undefined. Providers whose normal operation includes extended periods of static or low-motion content (e.g., Xfinity commercial placeholder
-  // images) set a higher value to avoid false positive tab replacements while still detecting genuinely frozen video over longer windows. Dead capture pipelines
-  // (segments with no video trafs, hasVideo=false) always use the default count of 10 regardless of this setting, ensuring fast detection of audio-only failures.
+  // segments) when undefined. Providers whose normal operation includes extended periods of static or low-motion content (e.g., Comcast Polymer SPA commercial
+  // placeholder images) set a higher value to avoid false positive tab replacements while still detecting genuinely frozen video over longer windows.
+  // Dead capture pipelines (segments with no video trafs, hasVideo=false) always use the default count of 10 regardless of this setting, ensuring fast
+  // detection of audio-only failures.
   tinySegmentThreshold?: number;
 
   // Links back to the site profile strategy name for derived strategy lookup.
