@@ -18,6 +18,7 @@ import { CONFIG } from "../../../config/index.js";
 import { PREDEFINED_CHANNELS } from "../../../channels/index.js";
 import type { UserChannel } from "../../../config/userChannels.js";
 import { getProfiles } from "../../../config/profiles.js";
+import { updateChannelLogo } from "../../../streaming/showInfo.js";
 
 // Fields that appear in the generated M3U playlist and affect Channels DVR's view of the channel. Used to decide whether the playlist reload hint is shown.
 const M3U_FIELDS = [ "channelNumber", "name", "stationId", "tvgShift" ];
@@ -1469,6 +1470,12 @@ export function setupChannelRoutes(app: Express): void {
       }
 
       await saveUserChannels(result.channels);
+
+      // Trigger a logo lookup for the new or updated station ID. Fire-and-forget - the logo appears on the next page load.
+      if(stationId) {
+
+        updateChannelLogo(name || key, stationId);
+      }
 
       const actionLabel = (action === "add") ? "added" : "updated";
 

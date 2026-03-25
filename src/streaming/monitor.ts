@@ -11,15 +11,16 @@ import { RECOVERY_METHODS, capitalize, checkCircuitBreaker, createRecoveryMetric
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.js";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
   validateVideoElement, verifyFullscreen } from "../browser/video.js";
-import { getChannelLogo, getShowName } from "./showInfo.js";
 import { getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.js";
 import { CONFIG } from "../config/index.js";
 import type { StreamRegistryEntry } from "./registry.js";
 import { clearProbeCache } from "../native/probe.js";
 import { emitStreamHealthChanged } from "./statusEmitter.js";
+import { getChannelLogo } from "../config/userChannels.js";
 import { getClientSummary } from "./clients.js";
 import { getEffectiveViewport } from "../config/presets.js";
 import { getProviderBySlug } from "../browser/channelSelection.js";
+import { getShowName } from "./showInfo.js";
 import { refreshNativeManifest } from "../native/index.js";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 

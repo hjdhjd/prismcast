@@ -101,11 +101,11 @@ export function generateSharedUtilitiesScript(): string {
     "    }",
     "    if(m === 'both') {",
     "      return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"\" title=\"' + name + '\" ' +",
-    "        'onerror=\"this.style.display=\\'none\\'\">' +",
+    "        'onerror=\"imgFallback(this)\">' +",
     "        '<span class=\"' + textClass + '\">' + name + '</span>';",
     "    }",
     "    return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"' + name + '\" title=\"' + name + '\" ' +",
-    "      'onerror=\"this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'inline\\'\">' +",
+    "      'onerror=\"imgFallback(this)\">' +",
     "      '<span class=\"' + textClass + '\" style=\"display:none\">' + name + '</span>';",
     "  };",
 
