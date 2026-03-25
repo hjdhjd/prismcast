@@ -215,6 +215,20 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
   const listing = getChannelListing();
   const bySelector = new Map<string, LineupState[]>();
 
+  // Appends a lineup state to the map under the given key. Multiple states can share a key (e.g., East/Pacific pairs both using channelSelector "A&E").
+  function indexState(key: string, state: LineupState): void {
+
+    const existing = bySelector.get(key);
+
+    if(existing) {
+
+      existing.push(state);
+    } else {
+
+      bySelector.set(key, [state]);
+    }
+  }
+
   for(const entry of listing) {
 
     const canonicalKey = entry.key;
@@ -266,15 +280,7 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
 
           if(variantChannel?.channelSelector) {
 
-            const existing = bySelector.get(variantChannel.channelSelector);
-
-            if(existing) {
-
-              existing.push(state);
-            } else {
-
-              bySelector.set(variantChannel.channelSelector, [state]);
-            }
+            indexState(variantChannel.channelSelector, state);
           }
 
           break;
@@ -285,15 +291,15 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
     // Also match the canonical itself if its provider tag matches (single-provider channels or canonicals that point directly to this provider).
     if((currentTag === providerSlug) && entry.channel.channelSelector) {
 
-      const existing = bySelector.get(entry.channel.channelSelector);
+      indexState(entry.channel.channelSelector, state);
+    }
 
-      if(existing) {
+    // Index by display name when it differs from the channelSelector, so discovered channels whose names don't match any predefined channelSelector can still
+    // be annotated via the name fallback. This connects Pacific timezone variants (e.g., discovered "A&E (Pacific)") to their predefined canonical (aep with
+    // displayName "A&E (Pacific)") whose channelSelector ("A&E") wouldn't match the discovered name.
+    if(entry.channel.channelSelector && (displayName !== entry.channel.channelSelector)) {
 
-        existing.push(state);
-      } else {
-
-        bySelector.set(entry.channel.channelSelector, [state]);
-      }
+      indexState(displayName, state);
     }
   }
 
