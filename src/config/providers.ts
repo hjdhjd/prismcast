@@ -11,14 +11,9 @@ import { getUserDomains } from "./userProfiles.js";
 
 /* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
- * Grouping convention: Channels are grouped by key pattern. A key like "espn-disneyplus" is a variant of "espn" because it starts with "espn-" and "espn" exists as a
- * channel. The canonical key (the base key without suffix) is the default provider.
- *
- * IMPORTANT: When adding channels, avoid hyphenated keys that would unintentionally match an existing channel. For example, if "cnn" exists, don't add
- * "cnn-international" as a separate channel — it would become a CNN variant. Use a non-hyphenated key like "cnni" instead.
- *
- * Inheritance: Provider variants inherit `name` and `stationId` from the canonical entry (variant's own value takes precedence). `channelSelector` is NOT inherited
- * — it is provider-specific (e.g., fox.com uses station codes like "FOXD2C" while Sling uses guide names like "FOX"), so each variant must define its own.
+ * All variant relationships — predefined and user-defined — are expressed via the canonicalKey field on Channel. The flattener sets canonicalKey on predefined
+ * variant entries, the browse modal sets it on user variant entries, and the one-time migration stamps it on pre-existing user entries. buildProviderGroups
+ * scans all channels once and groups by canonicalKey. One field, one mechanism, one code path.
  *
  * User overrides: When a user defines a channel with the same key as a predefined channel, both versions appear in the provider dropdown. The user's custom version
  * is shown first (labeled "Custom") and is the default. The original predefined version uses a special key suffix (PREDEFINED_SUFFIX) to distinguish it from the
@@ -58,35 +53,12 @@ let providerSelections = new Map<string, string>();
 let enabledProviders: string[] = [];
 
 /**
- * Gets the provider tag for a channel key. For variant keys (e.g., "espn-hulu"), extracts the suffix after the canonical prefix (e.g., "hulu"). For canonical keys,
- * looks up the URL domain via getDomainConfig() and reads the providerTag field, falling back to "direct" if not found.
- * @param key - The channel key.
+ * Derives the provider tag for a channel from its URL domain, falling back to "direct" if no provider tag is configured. Checks the channel's explicit profile
+ * first (for user-defined profiles with custom providerTag), then the URL domain via getDomainConfig().
+ * @param channel - The channel to derive a tag for.
  * @returns The provider tag string.
  */
-export function getProviderTagForChannel(key: string): string {
-
-  // Strip the :predefined suffix so synthetic keys like "pbs:predefined" resolve to the actual channel entry. Without this, the key won't match any provider
-  // group or channel, and the function falls through to the "direct" default — which bypasses the provider filter entirely (direct is always shown).
-  const effectiveKey = stripPredefinedSuffix(key);
-
-  const group = providerGroups.get(effectiveKey);
-
-  // For variant keys, the suffix after the canonical key (minus the hyphen) IS the tag.
-  if(group && (group.canonicalKey !== effectiveKey)) {
-
-    const suffix = effectiveKey.slice(group.canonicalKey.length + 1);
-
-    return suffix;
-  }
-
-  // For canonical keys, derive from the URL domain via DOMAIN_CONFIG.
-  const channel = channelsRef[effectiveKey] ?? PREDEFINED_CHANNELS[effectiveKey];
-
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!channel) {
-
-    return "direct";
-  }
+function resolveProviderTag(channel: Channel): string {
 
   // If the channel specifies a user-defined profile, use that profile's providerTag rather than deriving from the URL. This ensures channels with explicit profile
   // assignments are grouped under the correct provider filter even when their URL domain has a different built-in providerTag.
@@ -103,6 +75,41 @@ export function getProviderTagForChannel(key: string): string {
   const config = getDomainConfig(channel.url);
 
   return config?.providerTag ?? "direct";
+}
+
+/**
+ * Gets the provider tag for a channel key. For channels in a provider group, reads the pre-computed tag from the group variant entry (computed at group-building
+ * time by buildProviderGroups). For standalone channels not in any group, derives the tag from the channel's URL domain. This function should not be called with
+ * :predefined synthetic keys — those only exist inside provider groups and their tags are available via the group's variant entries.
+ * @param key - The channel key.
+ * @returns The provider tag string.
+ */
+export function getProviderTagForChannel(key: string): string {
+
+  const effectiveKey = stripPredefinedSuffix(key);
+  const group = providerGroups.get(effectiveKey);
+
+  // For channels in a group, read the pre-computed tag from the variant entry.
+  if(group) {
+
+    const variant = group.variants.find((v) => (v.key === key) || (v.key === effectiveKey));
+
+    if(variant) {
+
+      return variant.tag;
+    }
+  }
+
+  // For standalone channels not in any group, derive from the channel's URL domain.
+  const channel = channelsRef[effectiveKey] ?? PREDEFINED_CHANNELS[effectiveKey];
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if(!channel) {
+
+    return "direct";
+  }
+
+  return resolveProviderTag(channel);
 }
 
 /**
@@ -132,29 +139,29 @@ export function getAuthDomainForChannel(key: string): string {
  */
 export function getChannelProviderTags(canonicalKey: string): string[] {
 
-  const tags = new Set<string>();
-
-  // Add the canonical entry's tag.
-  tags.add(getProviderTagForChannel(canonicalKey));
-
-  // Add tags for all variants.
   const group = providerGroups.get(canonicalKey);
 
+  // For grouped channels, collect tags directly from the pre-computed variant entries.
   if(group) {
+
+    const tags = new Set<string>();
 
     for(const variant of group.variants) {
 
-      // Skip predefined suffix variants — they share the canonical's tag.
+      // Skip predefined suffix variants — they share the canonical's tag (but derived from the predefined URL, which may differ from the user override).
       if(variant.key.endsWith(PREDEFINED_SUFFIX)) {
 
         continue;
       }
 
-      tags.add(getProviderTagForChannel(variant.key));
+      tags.add(variant.tag);
     }
+
+    return [...tags];
   }
 
-  return [...tags];
+  // Standalone channel — derive tag from the channel directly.
+  return [getProviderTagForChannel(canonicalKey)];
 }
 
 /**
@@ -323,8 +330,12 @@ function isUserOverride(key: string, channels: ChannelMap): boolean {
 }
 
 /**
- * Builds provider groups by scanning all channels and grouping them by key patterns. A key like "espn-disneyplus" is a variant of "espn" because it starts with
- * "espn-". Should be called at startup after channels are loaded.
+ * Builds provider groups by scanning all channels and grouping by canonicalKey. Variant entries declare their canonical via the canonicalKey field (set by the
+ * flattener for predefined channels, by the browse modal for user channels, and by the one-time migration for pre-existing user entries). This is a single
+ * pass over the merged channel map — one field, one mechanism for both predefined and user-defined variant relationships.
+ *
+ * User overrides of predefined channels (same key, different object reference) produce a two-entry group with "Custom" and the original predefined version,
+ * even for single-provider channels that don't have canonicalKey-based variants.
  * @param channels - The merged channel map (predefined + user channels).
  */
 export function buildProviderGroups(channels: ChannelMap): void {
@@ -332,59 +343,52 @@ export function buildProviderGroups(channels: ChannelMap): void {
   channelsRef = channels;
   providerGroups.clear();
 
-  // Build a set of all channel keys for quick lookup.
-  const allKeys = new Set(Object.keys(channels));
-
-  // Group variant keys by their canonical key (prefix before first hyphen).
+  // Pass 1: Collect variant keys grouped by their canonical key. Entries without canonicalKey are canonicals or standalone channels.
   const variantsByCanonical = new Map<string, string[]>();
 
-  for(const key of allKeys) {
+  for(const [ key, channel ] of Object.entries(channels)) {
 
-    const hyphenIndex = key.indexOf("-");
-
-    // Keys without hyphens are potential canonicals, not variants.
-    if(hyphenIndex === -1) {
+    if(!channel.canonicalKey) {
 
       continue;
     }
 
-    const potentialCanonical = key.slice(0, hyphenIndex);
-
-    // Only group if the canonical key exists as a channel.
-    if(!allKeys.has(potentialCanonical)) {
-
-      continue;
-    }
-
-    // This key is a variant of potentialCanonical.
-    const existing = variantsByCanonical.get(potentialCanonical);
+    const existing = variantsByCanonical.get(channel.canonicalKey);
 
     if(existing) {
 
       existing.push(key);
     } else {
 
-      variantsByCanonical.set(potentialCanonical, [key]);
+      variantsByCanonical.set(channel.canonicalKey, [key]);
     }
   }
 
-  // Build provider groups from the grouped keys.
+  // Pass 2: Build groups from the collected variants.
   for(const [ canonicalKey, variantKeys ] of variantsByCanonical) {
 
     const canonical = channels[canonicalKey];
+
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    if(!canonical) {
+
+      continue;
+    }
+
     const variants: ProviderGroup["variants"] = [];
 
+    // Handle user override of the canonical entry. The :predefined variant's tag is derived from the predefined channel (not the user override) so that provider
+    // filtering correctly reflects the predefined channel's provider, not the user's custom URL.
     if(isUserOverride(canonicalKey, channels)) {
 
-      // User has overridden the canonical channel. Show their custom version first with "Custom" label, then the original predefined version.
       const predefined = PREDEFINED_CHANNELS[canonicalKey];
 
-      variants.push({ key: canonicalKey, label: "Custom (" + extractDomain(canonical.url) + ")" });
-      variants.push({ key: canonicalKey + PREDEFINED_SUFFIX, label: predefined.provider ?? getProviderDisplayName(predefined.url) });
+      variants.push({ key: canonicalKey, label: "Custom (" + extractDomain(canonical.url) + ")", tag: resolveProviderTag(canonical) });
+      variants.push({ key: canonicalKey + PREDEFINED_SUFFIX, label: predefined.provider ?? getProviderDisplayName(predefined.url),
+        tag: resolveProviderTag(predefined) });
     } else {
 
-      // Normal case: canonical is the predefined version (or a new user-defined channel with no predefined equivalent).
-      variants.push({ key: canonicalKey, label: getChannelProviderLabel(canonical) });
+      variants.push({ key: canonicalKey, label: getChannelProviderLabel(canonical), tag: resolveProviderTag(canonical) });
     }
 
     variantKeys.sort();
@@ -393,12 +397,12 @@ export function buildProviderGroups(channels: ChannelMap): void {
 
       const variant = channels[variantKey];
 
-      variants.push({ key: variantKey, label: getChannelProviderLabel(variant) });
+      variants.push({ key: variantKey, label: getChannelProviderLabel(variant), tag: resolveProviderTag(variant) });
     }
 
     const group: ProviderGroup = { canonicalKey, variants };
 
-    // Map canonical and all variants to this group for easy lookup.
+    // Map canonical and all variant keys to this group for easy lookup.
     providerGroups.set(canonicalKey, group);
 
     for(const variantKey of variantKeys) {
@@ -409,36 +413,25 @@ export function buildProviderGroups(channels: ChannelMap): void {
     LOG.debug("config:general", "Provider group '%s': variants=%s.", canonicalKey, variants.map((v) => v.key).join(", "));
   }
 
-  // Second pass: Create groups for user overrides that don't have predefined variants. This allows users who override a single-provider channel (like nbc) to still
-  // switch between their custom definition and the original predefined version.
-  for(const key of allKeys) {
+  // Pass 3: Create groups for user overrides of single-provider predefined channels. These don't have canonicalKey-based variants but the user's custom version
+  // should be toggleable against the predefined original.
+  for(const key of Object.keys(channels)) {
 
-    // Skip if already in a group (handled in first pass).
     if(providerGroups.has(key)) {
 
       continue;
     }
 
-    // Skip variant keys (keys with hyphens where the prefix exists as a channel).
-    const hyphenIndex = key.indexOf("-");
-
-    if((hyphenIndex !== -1) && allKeys.has(key.slice(0, hyphenIndex))) {
-
-      continue;
-    }
-
-    // Check if this is a user override of a predefined channel.
     if(!isUserOverride(key, channels)) {
 
       continue;
     }
 
-    // This is a user override without variants. Create a group with custom and predefined options.
     const userChannel = channels[key];
     const predefined = PREDEFINED_CHANNELS[key];
     const variants: ProviderGroup["variants"] = [
-      { key, label: "Custom (" + extractDomain(userChannel.url) + ")" },
-      { key: key + PREDEFINED_SUFFIX, label: predefined.provider ?? getProviderDisplayName(predefined.url) }
+      { key, label: "Custom (" + extractDomain(userChannel.url) + ")", tag: resolveProviderTag(userChannel) },
+      { key: key + PREDEFINED_SUFFIX, label: predefined.provider ?? getProviderDisplayName(predefined.url), tag: resolveProviderTag(predefined) }
     ];
 
     const group: ProviderGroup = { canonicalKey: key, variants };
@@ -555,8 +548,8 @@ export const VALID_SORT_FIELDS = new Set<ChannelSortField>([ "channelNumber", "c
 export function getChannelSortKey(channel: Channel, key: string, field: ChannelSortField): string {
 
   // Resolve the selected provider variant so all sort keys reflect the user's provider selection. For URL-dependent fields (profile, provider), this is essential —
-  // a canonical's URL may differ from the selected variant's (e.g., bbcnews canonical uses youtube.com but the user selected the directv variant). For identity
-  // fields (name, stationId, channelNumber), the resolved channel has identical values via applyVariantInheritance, so behavior is unchanged.
+  // a canonical's URL may differ from the selected variant's (e.g., bbcnews canonical uses cox but the user selected the directv variant). For identity fields
+  // (name, stationId, channelNumber), the flattener eagerly sets these on all entries, so the resolved channel has identical values regardless of variant.
   const effective = getResolvedChannel(resolveProviderKey(key)) ?? channel;
 
   switch(field) {
@@ -830,7 +823,7 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
       continue;
     }
 
-    if(isProviderTagEnabled(getProviderTagForChannel(variant.key))) {
+    if(isProviderTagEnabled(variant.tag)) {
 
       return variant.key;
     }
@@ -840,11 +833,10 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 }
 
 /**
- * Applies variant inheritance: the variant's own properties take precedence, but `name`, `stationId`, and `tvgShift` fall through from the base channel when not
- * set on the variant. `tvgShift` is inherited alongside `stationId` because it modifies how guide data for that station ID is displayed — inheriting the station
- * ID without the shift would produce wrong program times. `channelSelector` is deliberately NOT inherited — it is provider-specific (e.g., fox.com uses station
- * codes like "FOXD2C" while Sling uses guide names like "FOX"), so each variant must define its own. This is the single source of truth for variant inheritance
- * rules.
+ * Applies variant inheritance: the variant's own properties take precedence, but identity fields fall through from the base channel when not set on the variant.
+ * Identity fields are channel-level metadata that apply regardless of provider: name, stationId, tvgShift, and channelNumber. `channelSelector` is deliberately
+ * NOT inherited — it is provider-specific (e.g., fox.com uses station codes like "FOXD2C" while Sling uses guide names like "FOX"), so each variant must define
+ * its own. This is the single source of truth for variant inheritance rules.
  * @param variant - The variant channel definition.
  * @param base - The canonical (base) channel to inherit from.
  * @returns A new Channel with inheritance applied.
@@ -854,6 +846,7 @@ function applyVariantInheritance(variant: Channel, base: Channel): Channel {
   return {
 
     ...variant,
+    channelNumber: variant.channelNumber ?? base.channelNumber,
     name: variant.name ?? base.name,
     stationId: variant.stationId ?? base.stationId,
     tvgShift: variant.tvgShift ?? base.tvgShift

@@ -304,6 +304,11 @@ export function generateLandingPageStyles(): string {
     ".channel-table tr.channel-unavailable td { color: var(--text-tertiary); }",
     ".channel-table tr.channel-unavailable.channel-disabled { opacity: 0.5; }",
     ".channel-table.hide-disabled tr.channel-unavailable { display: none; }",
+    // Inline editable cells. Cursor and hover indicate clickability. The inline input replaces the cell content during editing.
+    ".editable-cell { cursor: pointer; }",
+    ".editable-cell:hover { background: var(--surface-hover); }",
+    ".editable-cell input.inline-edit { width: 100%; padding: 2px 4px; font-size: 13px; border: 1px solid var(--interactive-primary); " +
+      "border-radius: 3px; outline: none; background: var(--form-input-bg); color: var(--text-primary); box-sizing: border-box; }",
     ".no-provider-label { color: var(--text-tertiary); font-size: 12px; }",
     ".text-muted { color: var(--text-muted); }",
 
@@ -323,6 +328,8 @@ export function generateLandingPageStyles(): string {
     ".bulk-assign-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; color: var(--text-primary); }",
     ".bulk-assign-select { flex: 1; padding: 2px 4px; font-size: 12px; border: 1px solid var(--form-input-border); border-radius: 3px; ",
     "background: var(--form-input-bg); color: var(--text-primary); }",
+    ".auto-number-input { width: 60px; padding: 2px 4px; font-size: 12px; border: 1px solid var(--form-input-border); border-radius: 3px; " +
+      "background: var(--form-input-bg); color: var(--text-primary); text-align: center; }",
 
     // Provider chips.
     ".provider-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }",
@@ -372,9 +379,11 @@ export function generateLandingPageStyles(): string {
     "box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15); }",
     ".btn-icon-tooltip.visible { opacity: 1; transition: opacity 0.1s; }",
 
-    // Channel toolbar with operation buttons.
+    // Channel toolbar with dropdown menus. Each dropdown button has an inline SVG icon + label + chevron.
     ".channel-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; margin-bottom: 10px; }",
     ".channel-toolbar .toolbar-group { display: flex; align-items: center; gap: 6px; }",
+    ".toolbar-dropdown-btn { display: inline-flex; align-items: center; gap: 5px; }",
+    ".toolbar-dropdown-btn svg { flex-shrink: 0; vertical-align: middle; }",
     ".channel-summary { text-align: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }",
 
     // Dropdown menu used by the Import button in the channel toolbar.
@@ -385,6 +394,8 @@ export function generateLandingPageStyles(): string {
     ".dropdown-menu.show { display: block; }",
     ".dropdown-item { padding: 6px 12px; font-size: 13px; cursor: pointer; color: var(--text-primary); }",
     ".dropdown-item:hover { background: var(--surface-sunken); }",
+    ".dropdown-item-icon { display: flex; align-items: center; gap: 6px; }",
+    ".dropdown-item-icon svg { flex-shrink: 0; }",
     ".dropdown-option { display: block; padding: 2px 12px 6px 24px; font-size: 12px; color: var(--text-secondary); cursor: pointer; user-select: none; }",
     ".dropdown-divider { height: 1px; margin: 4px 0; background: var(--border-default); }",
 

@@ -483,7 +483,8 @@ export function setupProfileRoutes(app: Express): void {
 
       LOG.info("User profile '%s' %s.", key, actionLabel);
 
-      res.json({ key, message: "Profile '" + key + "' " + actionLabel + " successfully.", success: true });
+      res.json({ key, message: "Profile '" + key + "' " + actionLabel + " successfully.", panelHtml: generateCustomProfilesPanel(),
+        success: true });
     } catch(error) {
 
       LOG.error("Failed to save profile: %s.", formatError(error));
@@ -517,7 +518,7 @@ export function setupProfileRoutes(app: Express): void {
 
       await deleteUserProfile(key);
 
-      res.json({ key, message: "Profile '" + key + "' deleted successfully.", success: true });
+      res.json({ key, message: "Profile '" + key + "' deleted successfully.", panelHtml: generateCustomProfilesPanel(), success: true });
     } catch(error) {
 
       LOG.error("Failed to delete profile: %s.", formatError(error));
@@ -583,7 +584,8 @@ export function setupProfileRoutes(app: Express): void {
         }
       }
 
-      res.json({ message: summary, success: true, summary: importResult, warnings: importResult.errors });
+      res.json({ message: summary, panelHtml: generateCustomProfilesPanel(), success: true, summary: importResult,
+        warnings: importResult.errors });
     } catch(error) {
 
       LOG.error("Failed to import provider pack: %s.", formatError(error));
@@ -751,7 +753,7 @@ export function setupProfileRoutes(app: Express): void {
 
       await endLoginMode();
 
-      res.json({ message: "Test flow ended.", success: true });
+      res.json({ message: "Test flow ended.", panelHtml: generateCustomProfilesPanel(), success: true });
     } catch(error) {
 
       LOG.error("Failed to end test flow: %s.", formatError(error));

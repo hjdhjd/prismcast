@@ -3,8 +3,8 @@
  * table.ts: Channel table rendering for the PrismCast configuration interface.
  */
 import { compareChannelSort, getAllProviderTags, getAuthDomainForChannel, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey,
-  getEnabledProviders, getProviderGroup, getProviderTagForChannel, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled,
-  resolvePredefinedVariant, resolveProviderKey } from "../../../config/providers.js";
+  getEnabledProviders, getProviderGroup, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant,
+  resolveProviderKey } from "../../../config/providers.js";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
@@ -693,10 +693,9 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
     for(const variant of providerGroup.variants) {
 
       const selected = (variant.key === currentSelection) ? " selected" : "";
-      const tag = getProviderTagForChannel(variant.key);
-      const optionHidden = !isProviderTagEnabled(tag) ? " hidden" : "";
+      const optionHidden = !isProviderTagEnabled(variant.tag) ? " hidden" : "";
 
-      displayLines.push("<option value=\"" + escapeHtml(variant.key) + "\" data-provider-tag=\"" + escapeHtml(tag) + "\"" + selected + optionHidden + ">" +
+      displayLines.push("<option value=\"" + escapeHtml(variant.key) + "\" data-provider-tag=\"" + escapeHtml(variant.tag) + "\"" + selected + optionHidden + ">" +
         escapeHtml(variant.label) + "</option>");
     }
 
@@ -712,10 +711,15 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   displayLines.push("</td>");
 
   // Optional columns: Number, Station ID, Profile, Selector. All four are always rendered; visibility is controlled by CSS classes on the table element.
-  displayLines.push("<td class=\"col-chnum\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelNumber")) + "\">" +
-    (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "") + "</td>");
-  displayLines.push("<td class=\"col-stationid\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "stationId")) + "\">" +
-    (channel.stationId ? escapeHtml(channel.stationId) : "") + "</td>");
+  const cellKey = escapeHtml(key);
+
+  displayLines.push("<td class=\"col-chnum editable-cell\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelNumber")) +
+    "\" data-field=\"channelNumber\" data-key=\"" + cellKey + "\" data-value=\"" + (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "") +
+    "\" onclick=\"startInlineEdit(this)\">" + (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "<span class=\"text-muted\">&ndash;</span>") +
+    "</td>");
+  displayLines.push("<td class=\"col-stationid editable-cell\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "stationId")) +
+    "\" data-field=\"stationId\" data-key=\"" + cellKey + "\" data-value=\"" + (channel.stationId ? escapeHtml(channel.stationId) : "") +
+    "\" onclick=\"startInlineEdit(this)\">" + (channel.stationId ? escapeHtml(channel.stationId) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
 
   // Profile column: show explicit profile as-is, or the auto-resolved friendly name with "(auto)" suffix in muted style.
   const profileSortKey = escapeHtml(getChannelSortKey(channel, key, "profile"));
@@ -878,6 +882,126 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   return { displayRow, editRow };
 }
 
+// Channel table patch system.
+
+/**
+ * Channel table state snapshot. Represents the complete set of summary counts for the channel header and scope toggles. Computed server-side as the single
+ * source of truth — the client applies these values directly to DOM elements without recalculation.
+ */
+export interface ChannelTableCounts {
+
+  // Number of predefined channels that are disabled or unavailable by provider filter.
+  disabled: number;
+
+  // Number of channels that are enabled and available by provider filter.
+  enabled: number;
+
+  // Number of predefined channels (regardless of disabled state).
+  predefined: number;
+
+  // Total number of canonical channels in the listing (predefined + user, excluding provider variants).
+  total: number;
+
+  // Number of user-defined channels (pure user + overrides of predefined).
+  user: number;
+}
+
+/**
+ * Patch response structure for channel table mutations. Contains everything the client needs to update the UI without a page reload. Mutation endpoints return
+ * this alongside their existing success/message fields. The client's applyChannelPatch function applies whichever fields are present.
+ */
+export interface ChannelTablePatch {
+
+  // Summary counts for the channel header.
+  counts: ChannelTableCounts;
+
+  // Channel logos keyed by channel key. Present when logos were resolved during the mutation.
+  logos?: Record<string, string>;
+
+  // Affected rows. Each entry specifies the channel key, an action (update or remove), and pre-rendered row HTML for updates.
+  rows: { action: "remove" | "update"; displayRow?: string; editRow?: string; key: string }[];
+
+  // Scope toggle counts for Quick Actions (all/east/pacific, each with total and enabled).
+  scopeCounts: { all: { enabled: number; total: number }; east: { enabled: number; total: number }; pacific: { enabled: number; total: number } };
+}
+
+/**
+ * Computes the complete channel table state — summary counts and scope toggle counts — from the current channel listing. This is the server-side single source
+ * of truth for all count computation, replacing the client-side DOM-scanning approach. Called once per mutation as part of building a patch.
+ * @param listing - Optional pre-fetched listing. When omitted, fetches from getChannelListing(). Passing the listing avoids a redundant computation when
+ *   buildChannelTablePatch already has it.
+ * @returns The channel table counts and scope toggle counts.
+ */
+export function buildChannelTableState(listing?: ChannelListingEntry[]): { counts: ChannelTableCounts;
+  scopeCounts: { all: { enabled: number; total: number }; east: { enabled: number; total: number }; pacific: { enabled: number; total: number } };
+} {
+
+  listing ??= getChannelListing();
+
+  let predefined = 0;
+  let user = 0;
+  let disabled = 0;
+
+  for(const entry of listing) {
+
+    if((entry.source === "user") || (entry.source === "override")) {
+
+      user++;
+    } else {
+
+      predefined++;
+    }
+
+    if(!entry.enabled || !entry.availableByProvider) {
+
+      disabled++;
+    }
+  }
+
+  const total = listing.length;
+  const enabled = total - disabled;
+
+  return {
+
+    counts: { disabled, enabled, predefined, total, user },
+    scopeCounts: getPredefinedScopeCounts()
+  };
+}
+
+/**
+ * Builds a complete channel table patch for the given set of affected channel keys. Generates row HTML for keys that exist in the listing (update action) and
+ * remove actions for keys that no longer exist. Includes the current summary counts and scope toggle counts. This is the single function mutation endpoints
+ * call to construct their patch response.
+ * @param affectedKeys - The channel keys that were added, modified, or removed by the mutation.
+ * @param profiles - Available profiles for the edit form dropdown.
+ * @returns A complete ChannelTablePatch ready for client-side application.
+ */
+export function buildChannelTablePatch(affectedKeys: string[], profiles: ProfileInfo[]): ChannelTablePatch {
+
+  const listing = getChannelListing();
+  const listingByKey = new Map(listing.map((entry) => [ entry.key, entry ]));
+  const rows: ChannelTablePatch["rows"] = [];
+
+  for(const key of affectedKeys) {
+
+    const entry = listingByKey.get(key);
+
+    if(entry) {
+
+      const rowHtml = generateChannelRowHtml(key, profiles, entry);
+
+      rows.push({ action: "update", displayRow: rowHtml.displayRow, editRow: rowHtml.editRow, key });
+    } else {
+
+      rows.push({ action: "remove", key });
+    }
+  }
+
+  const { counts, scopeCounts } = buildChannelTableState(listing);
+
+  return { counts, rows, scopeCounts };
+}
+
 /**
  * Generates the provider filter toolbar HTML with a multi-select dropdown and dismissable chips.
  * @returns HTML string for the provider filter toolbar.
@@ -981,40 +1105,84 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     "Gracenote station ID, URL, or other properties.</p>");
   lines.push("</div>");
 
-  // Toolbar with channel operations.
-  lines.push("<div class=\"channel-toolbar\">");
+  // Toolbar with three dropdown menus: Manage Channels (primary actions), Import/Export (data I/O), and Quick Actions (bulk operations). Each dropdown has an
+  // inline SVG icon + label + chevron for visual discoverability. Grouped menus reduce visual clutter and separate channel management from data I/O and bulk
+  // operations.
 
-  // Channel operations. Import uses a dropdown menu to consolidate M3U and JSON import into a single button.
+  // Toolbar-level SVG icons (14x14, stroke-based, currentColor). Defined here since they're toolbar-specific and not reused elsewhere.
+  const ICON_MANAGE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"1.5\" y=\"5\" width=\"13\" height=\"9.5\" rx=\"1.5\"/>" +
+    "<path d=\"M7 5L3.5 1\"/><path d=\"M9 5L12.5 1\"/></svg>";
+
+  const ICON_TRANSFER = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 5h10M10 2l3 3-3 3\"/><path d=\"M13 11H3M6 8l-3 3 3 3\"/></svg>";
+
+  const ICON_BOLT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M9 1.5L4 9h4l-1 5.5L12 7H8l1-5.5z\"/></svg>";
+
+  lines.push("<div class=\"channel-toolbar\">");
   lines.push("<div class=\"toolbar-group\">");
-  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" id=\"add-channel-btn\" title=\"Add a channel manually with a custom URL\" " +
-    "onclick=\"document.getElementById('add-channel-form').style.display='block'; this.style.display='none';\">Add Channel</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Browse and manage channels by provider\" " +
-    "onclick=\"openBrowseModal()\">Browse Channels</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Guided setup for providers, authentication, and channels\" " +
-    "onclick=\"openSetupWizard()\">Provider Setup</button>");
+
+  // Manage Channels dropdown — primary channel creation and setup actions.
   lines.push("<div class=\"dropdown\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Import channels from JSON or M3U files\" " +
-    "onclick=\"toggleDropdown(this)\">Import &#9662;</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm toolbar-dropdown-btn\" title=\"Add, browse, or set up channels\" " +
+    "onclick=\"toggleDropdown(this)\">" + ICON_MANAGE + " Manage Channels &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
-  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); document.getElementById('import-channels-file').click()\">Channels (JSON)</div>");
+  // Dropdown item icons (14x14, stroke-based, tinted for visual context). Each icon uses a distinct color to differentiate menu items at a glance.
+  const ICON_ADD = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#22a563\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 3v10M3 8h10\"/></svg>";
+
+  const ICON_BROWSE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#5b8def\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"2\" y=\"2\" width=\"5\" height=\"5\" rx=\"1\"/><rect x=\"9\" y=\"2\" width=\"5\" " +
+    "height=\"5\" rx=\"1\"/><rect x=\"2\" y=\"9\" width=\"5\" height=\"5\" rx=\"1\"/><rect x=\"9\" y=\"9\" width=\"5\" height=\"5\" rx=\"1\"/></svg>";
+
+  const ICON_SETUP = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#9b8cd8\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"2.5\"/><path d=\"M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 " +
+    "3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4\"/></svg>";
+
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); " +
+    "document.getElementById('add-channel-form').style.display='block';\">" + ICON_ADD + " Add Channel</div>");
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openBrowseModal()\">" + ICON_BROWSE +
+    " Browse Provider Channels</div>");
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openSetupWizard()\">" + ICON_SETUP +
+    " Provider Setup</div>");
+  lines.push("</div>");
+  lines.push("</div>");
+
+  // Import / Export dropdown — data I/O operations.
+  lines.push("<div class=\"dropdown\">");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-dropdown-btn\" title=\"Import or export channel data\" " +
+    "onclick=\"toggleDropdown(this)\">" + ICON_TRANSFER + " Import / Export &#9662;</button>");
+  lines.push("<div class=\"dropdown-menu\">");
+  const ICON_IMPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#5b8def\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 2v8M5 7l3 3 3-3\"/><path d=\"M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2\"/></svg>";
+
+  const ICON_EXPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#22a563\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 10V2M5 5l3-3 3 3\"/><path d=\"M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2\"/></svg>";
+
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); document.getElementById('import-channels-file').click()\">" +
+    ICON_IMPORT + " Import Channels (JSON)</div>");
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); document.getElementById('import-m3u-file').click()\">" +
+    ICON_IMPORT + " Import M3U Playlist</div>");
+  lines.push("<label class=\"dropdown-option\"><input type=\"checkbox\" id=\"m3u-replace-duplicates\"> Replace duplicates on M3U import</label>");
   lines.push("<div class=\"dropdown-divider\"></div>");
-  lines.push("<div class=\"dropdown-item\" onclick=\"closeDropdowns(); document.getElementById('import-m3u-file').click()\">M3U Playlist</div>");
-  lines.push("<label class=\"dropdown-option\"><input type=\"checkbox\" id=\"m3u-replace-duplicates\"> Replace duplicates</label>");
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); exportChannels()\">" +
+    ICON_EXPORT + " Export Channels (JSON)</div>");
   lines.push("</div>");
   lines.push("</div>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Export user channels as JSON\" " +
-    "onclick=\"exportChannels()\">Export</button>");
   lines.push("<input type=\"file\" id=\"import-m3u-file\" accept=\".m3u,.m3u8\" style=\"display: none;\" onchange=\"importM3U(this)\">");
 
+  // Quick Actions dropdown — bulk operations for predefined channels.
   lines.push("<div class=\"dropdown quick-actions-dropdown\">");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" title=\"Bulk operations for predefined channels\" " +
-    "onclick=\"toggleDropdown(this)\">Quick Actions &#9662;</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-dropdown-btn\" title=\"Bulk operations for predefined channels\" " +
+    "onclick=\"toggleDropdown(this)\">" + ICON_BOLT + " Quick Actions &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
+
   // Compute initial toggle counts for predefined channel scopes. The server is the single source of truth — the client renders what we return here.
   const scopeCounts = getPredefinedScopeCounts();
 
-  // Three toggle rows: checkbox + label + "X of Y enabled" count. Clicking toggles the group via bulkTogglePredefined(). The onclick uses event.preventDefault()
-  // to stop the native checkbox toggle — the server response drives the update.
+  // Three toggle rows: checkbox + label + count. Clicking toggles the group via bulkTogglePredefined(). The onclick uses event.preventDefault() to stop the
+  // native checkbox toggle — the server response drives the update.
   const scopes: { count: number; label: string; scope: string; total: number }[] = [
     { count: scopeCounts.all.enabled, label: "All Predefined", scope: "all", total: scopeCounts.all.total },
     { count: scopeCounts.east.enabled, label: "East Variants", scope: "east", total: scopeCounts.east.total },
@@ -1026,14 +1194,14 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     const checked = (s.count === s.total) ? " checked" : "";
 
     lines.push("<label class=\"provider-option\" onclick=\"event.preventDefault(); bulkTogglePredefined(!this.querySelector('input').checked, '" + s.scope +
-      "')\">" + "<input type=\"checkbox\" class=\"scope-toggle\" data-scope=\"" + s.scope + "\" data-total=\"" + String(s.total) + "\"" + checked + "> " +
-      s.label + "<span class=\"quick-action-count\" data-scope=\"" + s.scope + "\">" + String(s.count) + " of " + String(s.total) + " enabled</span></label>");
+      "')\">" + "<input type=\"checkbox\" class=\"scope-toggle\" data-scope=\"" + s.scope + "\"" + checked + "> " +
+      s.label + "<span class=\"quick-action-count\" data-scope=\"" + s.scope + "\" data-enabled=\"" + String(s.count) + "\" data-total=\"" + String(s.total) +
+      "\">" + String(s.count) + " of " + String(s.total) + " enabled</span></label>");
   }
 
   lines.push("<div class=\"dropdown-divider\"></div>");
 
-  // Bulk assign select — a single dropdown replacing N "Set all to X" items. Options whose tag is filtered out are hidden so updateBulkAssignOptions() can
-  // toggle them when the filter changes.
+  // Bulk assign select — switch all multi-provider channels to a single provider.
   const allTags = getAllProviderTags();
   const enabled = getEnabledProviders();
   const hasFilter = enabled.length > 0;
@@ -1053,6 +1221,16 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   }
 
   lines.push("</select>");
+  lines.push("</div>");
+
+  lines.push("<div class=\"dropdown-divider\"></div>");
+
+  // Auto-number channels — assign sequential channel numbers to visible channels in current sort order.
+  lines.push("<div class=\"bulk-assign-row\">");
+  lines.push("<span>Auto-number from:</span>");
+  lines.push("<input type=\"number\" id=\"auto-number-start\" class=\"auto-number-input\" value=\"1\" min=\"0\" max=\"99999\" " +
+    "placeholder=\"Clear\" onclick=\"event.stopPropagation()\">");
+  lines.push("<button type=\"button\" class=\"btn btn-sm btn-secondary\" onclick=\"closeDropdowns(); autoNumberChannels()\">Apply</button>");
   lines.push("</div>");
 
   lines.push("</div>");
@@ -1183,15 +1361,11 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Form buttons.
   lines.push("<div class=\"form-buttons\">");
   lines.push("<button type=\"submit\" class=\"btn btn-primary\">Add Channel</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"document.getElementById('add-channel-form').style.display='none'; ",
-    "document.getElementById('add-channel-btn').style.display='inline-block';\">Cancel</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"document.getElementById('add-channel-form').style.display='none';\">Cancel</button>");
   lines.push("</div>");
 
   lines.push("</form>");
   lines.push("</div>"); // End add-channel-form.
-
-  // Provider filter toolbar with multi-select dropdown and chips. Placed after the add channel form so the form flows directly from its trigger button.
-  lines.push(generateProviderFilterToolbar());
 
   // Profile reference section (hidden by default, toggled via link in profile dropdown hint).
   lines.push(generateProfileReference(profiles));
@@ -1212,14 +1386,20 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   const sortField = CONFIG.channels.channelSortField;
   const sortDir = CONFIG.channels.channelSortDirection;
 
-  // Channel summary line with predefined/user breakdown. The user-count span contains the entire user portion (comma, count, and label) so the client can
-  // toggle it by setting textContent. When there are no user channels, the span is empty to avoid "0 user" noise.
+  // Provider filter toolbar with multi-select dropdown and chips.
+  lines.push(generateProviderFilterToolbar());
+
+  // Channel summary line with predefined/user breakdown, placed directly above the table for visual proximity. The user-count span contains the entire user
+  // portion (comma, count, and label) so the client can toggle it by setting textContent. When there are no user channels, the span is empty.
   const userPortion = (userCount > 0) ? ", " + String(userCount) + " user" : "";
 
   lines.push("<div class=\"channel-summary\"><span id=\"total-count\">" + String(totalCount) + "</span> channels " +
     "(<span id=\"predefined-count\">" + String(predefinedCount) + "</span> predefined<span id=\"user-count\">" + userPortion + "</span>) &middot; " +
     "<span id=\"enabled-count\">" + String(enabledCount) + "</span> enabled &middot; " +
     "<span id=\"disabled-count\">" + String(totalHiddenCount) + "</span> disabled</div>");
+
+  // Channels table. The wrapper uses fit-content so it shrinks when columns are hidden, with max-width: 100% to prevent viewport overflow. Centered via auto
+  // margins. Dropdown menus escape the container via portal to <body>.
   lines.push("<div class=\"channel-table-wrapper\">");
   lines.push("<table class=\"" + tableClasses.join(" ") + "\" data-sort-field=\"" + sortField + "\" data-sort-dir=\"" + sortDir + "\">");
   lines.push("<thead>");
@@ -1243,7 +1423,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
       hdr.label + indicator + "</th>");
   }
 
-  // Actions header with table options dropdown.
+  // Actions header with table options dropdown (kebab menu). Contains the show-disabled toggle and column visibility checkboxes.
   lines.push("<th class=\"col-actions\"><span>Actions</span>");
   lines.push("<div class=\"dropdown column-picker\">");
   lines.push("<button type=\"button\" class=\"btn-icon btn-col-picker\" title=\"Table options\" aria-label=\"Table options\" " +
