@@ -163,8 +163,10 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
 /**
  * Saves user channels to the channels file and updates the in-memory cache. Changes take effect immediately for new stream requests without requiring a server
- * restart. Creates the data directory if it doesn't exist. Provider selections are also saved if any exist. Empty deltas (no overridden fields) for predefined
- * channel keys are stripped before saving to avoid storing no-op entries.
+ * restart. Creates the data directory if it doesn't exist. Provider selections are also saved if any exist. No-op deltas for predefined channel keys are
+ * normalized before saving: fields that match the predefined value or null-clear a field the predefined doesn't have are stripped. If the delta becomes empty
+ * after normalization, the entry is removed entirely. This ensures that any code path that writes deltas (inline edit, auto-number, browse modal, full edit)
+ * produces clean channels.json output without each handler needing to optimize its own delta.
  * @param channels - The channels to save (full definitions or delta overrides).
  * @throws If the file cannot be written.
  */
@@ -173,17 +175,67 @@ export async function saveUserChannels(channels: StoredChannelMap): Promise<void
   // Ensure data directory exists.
   await fsPromises.mkdir(getDataDir(), { recursive: true });
 
-  // Strip empty deltas for predefined keys — an empty delta means no changes were made.
+  // Normalize predefined channel deltas by stripping no-op fields. A delta field is a no-op if: (1) its value is null and the predefined doesn't have the
+  // field (clearing a nonexistent field), (2) its value is undefined, or (3) its value matches the predefined's value exactly (redundant copy). After stripping,
+  // deltas with no remaining fields are removed entirely.
   const filtered: StoredChannelMap = {};
 
   for(const [ key, stored ] of Object.entries(channels)) {
 
-    if((key in PREDEFINED_CHANNELS) && (Object.keys(stored).length === 0)) {
+    if(key in PREDEFINED_CHANNELS) {
 
-      continue;
+      const predefined = PREDEFINED_CHANNELS[key];
+      const cleaned: Record<string, unknown> = {};
+      let hasFields = false;
+
+      for(const [ field, value ] of Object.entries(stored)) {
+
+        // Skip non-delta fields (like canonicalKey) that aren't in the allowlist.
+        if(!DELTA_ALLOWED_FIELDS.has(field)) {
+
+          continue;
+        }
+
+        // Skip undefined values — they have no effect.
+        if(value === undefined) {
+
+          continue;
+        }
+
+        // Skip null values when the predefined doesn't have the field — clearing a nonexistent field is a no-op.
+        if((value === null) && !((field as keyof Channel) in predefined)) {
+
+          continue;
+        }
+
+        // Skip values that match the predefined exactly — redundant copies.
+        if((value !== null) && ((predefined as unknown as Record<string, unknown>)[field] === value)) {
+
+          continue;
+        }
+
+        cleaned[field] = value;
+        hasFields = true;
+      }
+
+      // Preserve non-delta fields (like canonicalKey) that were on the stored entry.
+      for(const [ field, value ] of Object.entries(stored)) {
+
+        if(!DELTA_ALLOWED_FIELDS.has(field) && (value !== undefined)) {
+
+          cleaned[field] = value;
+          hasFields = true;
+        }
+      }
+
+      if(hasFields) {
+
+        filtered[key] = cleaned as StoredChannel;
+      }
+    } else {
+
+      filtered[key] = stored;
     }
-
-    filtered[key] = stored;
   }
 
   // Sort channels by key for consistent output.
@@ -366,6 +418,43 @@ export async function initializeUserChannels(): Promise<void> {
 
       LOG.info("Inferred Provider Setup as completed from existing configuration.");
     }
+  }
+
+  // One-time migration: stamp canonicalKey on existing user channel variant entries that were created before explicit variant relationships were introduced.
+  // These entries have hyphenated keys where the prefix is a known predefined canonical (e.g., "espn-hulu" where "espn" exists). The heuristic runs once —
+  // new entries get canonicalKey written at creation time by the browse modal.
+  let canonicalKeyMigrated = false;
+
+  for(const [ key, channel ] of Object.entries(result.channels)) {
+
+    // Skip entries that already have canonicalKey.
+    if((channel as Channel).canonicalKey) {
+
+      continue;
+    }
+
+    const hyphenIndex = key.indexOf("-");
+
+    if(hyphenIndex === -1) {
+
+      continue;
+    }
+
+    const prefix = key.substring(0, hyphenIndex);
+
+    // Only stamp canonicalKey if the prefix exists as a predefined channel. This matches the old buildProviderGroups heuristic exactly.
+    if(prefix in PREDEFINED_CHANNELS) {
+
+      (channel as Channel).canonicalKey = prefix;
+      canonicalKeyMigrated = true;
+    }
+  }
+
+  if(canonicalKeyMigrated) {
+
+    await saveUserChannels(result.channels);
+
+    LOG.info("Migrated user channel variant entries with explicit canonical key declarations.");
   }
 
   // Build the merged channels map and then build provider groups.
@@ -611,36 +700,9 @@ export function isPredefinedChannel(key: string): boolean {
   return key in PREDEFINED_CHANNELS;
 }
 
-/**
- * Returns a channel key that is safe from provider variant collisions. The provider group system (buildProviderGroups) infers variant relationships from key
- * patterns — a key like "pbs-kids" is misinterpreted as a variant of "pbs" with provider suffix "kids" when "pbs" exists as a channel. This function detects
- * the collision by checking whether the prefix before the first hyphen exists as any channel (predefined or user-defined), matching the same first-hyphen
- * split that buildProviderGroups uses. When a collision is detected, hyphens are removed to produce a safe key (e.g., "pbs-kids" → "pbskids"). When no
- * collision exists, the original key is returned unchanged.
- * @param key - The generated channel key to check.
- * @returns A safe channel key that won't be misinterpreted as a provider variant.
- */
-export function safeChannelKey(key: string): string {
-
-  const hyphenIndex = key.indexOf("-");
-
-  if(hyphenIndex === -1) {
-
-    return key;
-  }
-
-  const prefix = key.substring(0, hyphenIndex);
-
-  if(isPredefinedChannel(prefix) || isUserChannel(prefix)) {
-
-    return key.replace(/-/g, "");
-  }
-
-  return key;
-}
 
 /**
- * Returns the East canonical key for a Pacific channel. Pacific canonicals are auto-generated by generatePacificEntries with a "p" suffix (e.g., "disneyp"
+ * Returns the East canonical key for a Pacific channel. Pacific canonicals are auto-generated by generatePacificDefinitions with a "p" suffix (e.g., "disneyp"
  * from "disney"). When a Pacific canonical's logo or other brand-level metadata is unavailable, the East counterpart provides a fallback. Returns undefined
  * when the key is not a Pacific canonical (doesn't end with "p" or the base key isn't predefined).
  * @param key - The channel key to check.
@@ -931,13 +993,36 @@ export function validateChannelKey(key: string, isNew: boolean): string | undefi
     return "A user channel with this key already exists.";
   }
 
-  // Check for variant collision. A key like "pbs-kids" would be misinterpreted as a variant of "pbs" by the provider group system. Warn the user so they
-  // can choose a different key (e.g., "pbskids").
-  if(isNew && (key !== safeChannelKey(key))) {
+  return undefined;
+}
 
-    const prefix = key.substring(0, key.indexOf("-"));
+/**
+ * Validates a channel number for range and uniqueness. Returns an error message if invalid, undefined if valid. Empty string means no channel number (valid).
+ * This is the single source of truth for channel number validation, shared by the full edit handler and the inline-edit handler.
+ * @param value - The channel number as a string (from form input or inline edit). Empty means "no number."
+ * @param excludeKey - The channel key being edited, excluded from the duplicate check.
+ * @returns Error message if invalid, undefined if valid.
+ */
+export function validateChannelNumber(value: string, excludeKey: string): string | undefined {
 
-    return "This key conflicts with the predefined channel '" + prefix + "'. Use '" + safeChannelKey(key) + "' instead.";
+  if(!value) {
+
+    return undefined;
+  }
+
+  const num = parseInt(value, 10);
+
+  if(Number.isNaN(num) || (num < 1) || (num > 99999)) {
+
+    return "Channel number must be between 1 and 99999.";
+  }
+
+  for(const entry of getChannelListing()) {
+
+    if((entry.channel.channelNumber === num) && (entry.key !== excludeKey)) {
+
+      return "Channel number " + String(num) + " is already used by '" + entry.key + "'.";
+    }
   }
 
   return undefined;

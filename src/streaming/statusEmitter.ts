@@ -88,13 +88,15 @@ export interface StatusSnapshot {
 /**
  * Event types emitted by the status emitter.
  */
-export type StatusEventType = "healthChanged" | "snapshot" | "streamAdded" | "streamHealthChanged" | "streamRemoved" | "systemStatusChanged";
+export type StatusEventType = "channelUpdate" | "healthChanged" | "snapshot" | "streamAdded" | "streamHealthChanged" | "streamRemoved" |
+  "systemStatusChanged";
 
 /**
  * Typed event map for status notifications. Ensures event names and argument types are checked at compile time.
  */
 interface StatusEmitterEventMap {
 
+  channelUpdate: [patch: Record<string, unknown>];
   streamAdded: [status: StreamStatus];
   streamHealthChanged: [status: StreamStatus];
   streamRemoved: [info: { id: number }];
@@ -279,19 +281,31 @@ export function removeStreamStatus(streamId: number): void {
 }
 
 /**
+ * Emits a channel table update event. The payload is a partial patch — any combination of rows, counts, scopeCounts, and logos. SSE clients that have the
+ * channels tab open apply the patch via applyChannelPatch. Used for server-initiated updates like logo population that have no associated client request.
+ * @param patch - The partial channel table patch to emit.
+ */
+export function emitChannelUpdate(patch: Record<string, unknown>): void {
+
+  statusEmitter.emit("channelUpdate", patch);
+}
+
+/**
  * Subscribes a callback to receive all status events. Returns an unsubscribe function.
  * @param callback - Function to call when a status event is emitted.
  * @returns A function to unsubscribe the callback.
  */
 export function subscribeToStatus(
-  callback: (event: StatusEventType, data: HealthEvent | StreamStatus | SystemStatus | StatusSnapshot | { id: number }) => void
+  callback: (event: StatusEventType, data: HealthEvent | Record<string, unknown> | StreamStatus | SystemStatus | StatusSnapshot | { id: number }) => void
 ): () => void {
 
+  const channelUpdateHandler = (data: Record<string, unknown>): void => { callback("channelUpdate", data); };
   const streamAddedHandler = (data: StreamStatus): void => { callback("streamAdded", data); };
   const streamRemovedHandler = (data: { id: number }): void => { callback("streamRemoved", data); };
   const streamHealthChangedHandler = (data: StreamStatus): void => { callback("streamHealthChanged", data); };
   const systemStatusChangedHandler = (data: SystemStatus): void => { callback("systemStatusChanged", data); };
 
+  statusEmitter.on("channelUpdate", channelUpdateHandler);
   statusEmitter.on("streamAdded", streamAddedHandler);
   statusEmitter.on("streamRemoved", streamRemovedHandler);
   statusEmitter.on("streamHealthChanged", streamHealthChangedHandler);
@@ -302,6 +316,7 @@ export function subscribeToStatus(
 
   return (): void => {
 
+    statusEmitter.off("channelUpdate", channelUpdateHandler);
     statusEmitter.off("streamAdded", streamAddedHandler);
     statusEmitter.off("streamRemoved", streamRemovedHandler);
     statusEmitter.off("streamHealthChanged", streamHealthChangedHandler);

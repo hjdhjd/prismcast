@@ -4,7 +4,8 @@
  */
 export type { BrowserConfig, CaptureMode, ChannelsConfig, Config, HdhrConfig, HLSConfig, LoggingConfig, PathsConfig, PlaybackConfig, RecoveryConfig,
   ServerConfig, StreamingConfig } from "./config.js";
-export type { Channel, ChannelDelta, ChannelListingEntry, ChannelMap, ProviderGroup, StoredChannel, StoredChannelMap } from "./channels.js";
+export type { Channel, ChannelDefinition, ChannelDelta, ChannelListingEntry, ChannelMap, ProviderGroup, ProviderVariant, StoredChannel,
+  StoredChannelMap } from "./channels.js";
 export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, ProfileCategory, ProfileResolutionResult, ProfilesValidationResult, ProviderPack,
   ResolvedSiteProfile, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "./profiles.js";
 export type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule,

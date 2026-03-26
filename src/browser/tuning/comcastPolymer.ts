@@ -329,7 +329,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
    * Sub-feeds (DATLN, TODAY) sharing the same voiceOverHint as the primary affiliate are deduplicated by the broadcast network key guard.
    *
    * Pacific timezone variants (callSigns ending with a Pacific suffix like "hdp", "hp", or "ph") are detected via isPacificCallSign and labeled with " (Pacific)"
-   * in the display name, matching the convention from generatePacificEntries() in the predefined channel system. Non-Pacific entries take priority over Pacific
+   * in the display name, matching the convention from generatePacificDefinitions() in the predefined channel system. Non-Pacific entries take priority over Pacific
    * entries for shared cache keys (stripped callSign, branchOf) via shouldClaimSharedKey, ensuring that display-name-based lookups resolve to the East feed.
    * @param data - The parsed channelmap API response.
    */
@@ -458,7 +458,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
         }
 
         // Detect Pacific timezone variants by callSign suffix. Append " (Pacific)" to the display name to distinguish them in channel discovery, matching the
-        // naming convention established by generatePacificEntries() in the predefined channel system.
+        // naming convention established by generatePacificDefinitions() in the predefined channel system.
         const pacific = isPacificCallSign(channel.callSign);
 
         if(pacific) {

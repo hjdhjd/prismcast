@@ -5,14 +5,14 @@
 import type { Channel, ChannelDelta, ChannelSortField, Nullable, StoredChannel } from "../../../types/index.js";
 import type { Express, Request, Response } from "express";
 import { LOG, formatError, generateChannelKey, parseM3U, sanitizeString } from "../../../utils/index.js";
-import { VALID_OPTIONAL_COLUMNS, generateChannelRowHtml } from "./table.js";
-import { VALID_SORT_FIELDS, getAllProviderTags, getCanonicalKey, getChannelProviderLabel, getEnabledProviders, getProviderGroup, getProviderSelection,
-  getProviderTagForChannel, getResolvedChannel, resolvePredefinedVariant, resolveProviderKey, setEnabledProviders,
+import { VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState } from "./table.js";
+import { VALID_SORT_FIELDS, compareChannelSort, getAllProviderTags, getCanonicalKey, getChannelProviderLabel, getEnabledProviders, getProviderGroup,
+  getProviderSelection, getProviderTagForChannel, getResolvedChannel, resolvePredefinedVariant, resolveProviderKey, setEnabledProviders,
   setProviderSelection } from "../../../config/providers.js";
 import { filterDefaults, loadUserConfig, saveUserConfig } from "../../../config/userConfig.js";
 import { getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel, getPredefinedChannels,
-  getPredefinedScopeCounts, getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel, safeChannelKey,
-  saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelProfile, validateChannelUrl,
+  getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel,
+  saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl,
   validateImportedChannels } from "../../../config/userChannels.js";
 import { CONFIG } from "../../../config/index.js";
 import { PREDEFINED_CHANNELS } from "../../../channels/index.js";
@@ -153,8 +153,11 @@ export function setupChannelRoutes(app: Express): void {
 
       const channelCount = Object.keys(validationResult.channels).length;
 
-      // Send success response. Changes take effect immediately due to hot-reloading in saveUserChannels().
-      res.json({ message: "Imported " + String(channelCount) + " channel" + (channelCount === 1 ? "" : "s") + " successfully.", success: true });
+      // Return a full table patch since a bulk JSON import replaces all user channels — every row in the listing may have changed.
+      const allKeys = getChannelListing().map((entry) => entry.key);
+
+      res.json({ message: "Imported " + String(channelCount) + " channel" + (channelCount === 1 ? "" : "s") + " successfully.",
+        patch: buildChannelTablePatch(allKeys, getProfiles()), success: true });
     } catch(error) {
 
       LOG.error("Failed to import channels: %s.", formatError(error));
@@ -207,6 +210,7 @@ export function setupChannelRoutes(app: Express): void {
       const existingChannels = loadResult.parseError ? {} : loadResult.channels;
 
       // Track import statistics.
+      const affectedKeys: string[] = [];
       const conflicts: string[] = [];
       const importErrors: string[] = [];
       const seenKeys = new Set<string>();
@@ -221,8 +225,8 @@ export function setupChannelRoutes(app: Express): void {
         m3uChannel.url = sanitizeString(m3uChannel.url);
         m3uChannel.stationId &&= sanitizeString(m3uChannel.stationId);
 
-        // Generate the channel key from the name. safeChannelKey collapses hyphens when the key would collide with the provider variant naming convention.
-        const key = safeChannelKey(generateChannelKey(m3uChannel.name));
+        // Generate the channel key from the name.
+        const key = generateChannelKey(m3uChannel.name);
 
         // Validate the generated key.
         if(!key || (key.length === 0)) {
@@ -294,6 +298,7 @@ export function setupChannelRoutes(app: Express): void {
 
         // Add to channels collection.
         existingChannels[key] = channel;
+        affectedKeys.push(key);
       }
 
       // Save the updated channels.
@@ -302,12 +307,13 @@ export function setupChannelRoutes(app: Express): void {
       // Log the import.
       LOG.info("M3U import completed: %d imported, %d replaced, %d skipped.", imported, replaced, skipped);
 
-      // Build response.
+      // Build response with patch for in-place UI update.
       res.json({
 
         conflicts,
         errors: [ ...parseResult.errors, ...importErrors ],
         imported,
+        patch: ((imported > 0) || (replaced > 0)) ? buildChannelTablePatch(affectedKeys, getProfiles()) : undefined,
         replaced,
         skipped,
         success: true
@@ -350,6 +356,7 @@ export function setupChannelRoutes(app: Express): void {
       // Build a set of all existing channel keys (predefined + user) for deduplication.
       const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(existingChannels) ]);
 
+      const affectedKeys = new Set<string>();
       const disablePredefined = new Set<string>();
       const errors: string[] = [];
       let added = 0;
@@ -418,6 +425,7 @@ export function setupChannelRoutes(app: Express): void {
           setProviderSelection(canonicalKey, variantKey);
           selectionsChanged = true;
           switched++;
+          affectedKeys.add(canonicalKey);
 
           continue;
         }
@@ -458,6 +466,7 @@ export function setupChannelRoutes(app: Express): void {
           }
 
           removed++;
+          affectedKeys.add(canonicalKey);
 
           continue;
         }
@@ -490,7 +499,7 @@ export function setupChannelRoutes(app: Express): void {
           continue;
         }
 
-        const baseKey = safeChannelKey(generateChannelKey(name));
+        const baseKey = generateChannelKey(name);
 
         if(!baseKey) {
 
@@ -508,10 +517,20 @@ export function setupChannelRoutes(app: Express): void {
           continue;
         }
 
-        existingChannels[key] = buildUserChannel(entry, name, url, channelSelector);
+        const newChannel = buildUserChannel(entry, name, url, channelSelector);
+
+        // When this is a provider variant (key differs from baseKey), store the canonical relationship explicitly so that buildProviderGroups can
+        // associate the user channel with its canonical via the canonicalKey field.
+        if(key !== baseKey) {
+
+          newChannel.canonicalKey = baseKey;
+        }
+
+        existingChannels[key] = newChannel;
         allKeys.add(key);
         channelsChanged = true;
         added++;
+        affectedKeys.add(canonicalExists ? baseKey : key);
       }
 
       // Save changes. saveUserChannels() persists both channel data and provider selections in a single file write, so we only need saveProviderSelections()
@@ -526,6 +545,11 @@ export function setupChannelRoutes(app: Express): void {
 
       // Disable predefined channels that had no alternative provider after removal.
       await disablePredefinedChannels([...disablePredefined]);
+
+      for(const disabledKey of disablePredefined) {
+
+        affectedKeys.add(disabledKey);
+      }
 
       // Build a descriptive response message.
       const parts: string[] = [];
@@ -549,7 +573,7 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.info("Browse channels completed: %d added, %d switched, %d removed.", added, switched, removed);
 
-      res.json({ added, errors, message, removed, success: true, switched });
+      res.json({ added, errors, message, patch: buildChannelTablePatch([...affectedKeys], getProfiles()), removed, success: true, switched });
     } catch(error) {
 
       LOG.error("Failed to apply browse changes: %s.", formatError(error));
@@ -601,7 +625,7 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.info("Predefined channel '%s' %s.", key, enabled ? "enabled" : "disabled");
 
-      res.json({ counts: getPredefinedScopeCounts(), enabled, key, success: true });
+      res.json({ enabled, key, patch: buildChannelTablePatch([key], getProfiles()), success: true });
     } catch(error) {
 
       LOG.error("Failed to toggle predefined channel: %s.", formatError(error));
@@ -671,11 +695,10 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.info("Provider for %s changed to %s.", channelName, providerLabel);
 
-      // Return full row HTML so the client can replace both the display and edit rows, keeping the edit form in sync with the selected provider.
+      // Return a channel table patch so the client can update the row and summary counts in place.
       const profiles = getProfiles();
-      const rowHtml = generateChannelRowHtml(canonicalKey, profiles);
 
-      res.json({ channel: canonicalKey, html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, provider: providerKey, success: true });
+      res.json({ channel: canonicalKey, patch: buildChannelTablePatch([canonicalKey], profiles), provider: providerKey, success: true });
     } catch(error) {
 
       LOG.error("Failed to update provider selection: %s.", formatError(error));
@@ -775,14 +798,107 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.info("%s predefined channels %s (%d affected).", scopeLabel, enabled ? "enabled" : "disabled", affected);
 
-      // Compute updated counts for all three scopes so the client can update all toggle rows from a single response.
-      const counts = getPredefinedScopeCounts();
-
-      res.json({ affected, counts, enabled, keys: targetKeys, scope, success: true });
+      res.json({ affected, enabled, keys: targetKeys, patch: buildChannelTablePatch(targetKeys, getProfiles()), scope, success: true });
     } catch(error) {
 
       LOG.error("Failed to toggle predefined channels: %s.", formatError(error));
       res.status(500).json({ error: "Failed to toggle channels: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/channels/auto-number - Assign sequential channel numbers to visible channels in the current sort order, or clear all channel numbers when
+  // start is 0. Overwrites existing channel numbers for affected channels. Only channels that are enabled and available by provider filter are affected.
+  app.post("/config/channels/auto-number", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { sortDirection?: string; sortField?: string; start?: number };
+      const start = (typeof body.start === "number") ? body.start : 1;
+      const clearMode = (start === 0);
+      const sortField: ChannelSortField = (body.sortField as ChannelSortField | undefined) ?? "name";
+      const sortDir = (body.sortDirection === "desc") ? "desc" : "asc";
+
+      if(!clearMode && ((start < 1) || (start > 99999))) {
+
+        res.status(400).json({ error: "Starting number must be between 1 and 99999.", success: false });
+
+        return;
+      }
+
+      if(!VALID_SORT_FIELDS.has(sortField)) {
+
+        res.status(400).json({ error: "Invalid sort field.", success: false });
+
+        return;
+      }
+
+      // Get visible channels (enabled + available by provider filter) sorted by the user's current sort order.
+      const listing = getChannelListing().filter((entry) => entry.enabled && entry.availableByProvider);
+
+      listing.sort((a, b) => compareChannelSort(a.channel, a.key, b.channel, b.key, sortField, sortDir));
+
+      // Load user channels for modification.
+      const result = await loadUserChannels();
+
+      if(result.parseError) {
+
+        res.status(400).json({ error: "Cannot auto-number: channels file contains invalid JSON.", success: false });
+
+        return;
+      }
+
+      const affectedKeys: string[] = [];
+
+      if(clearMode) {
+
+        // Clear channel numbers from all visible channels. For predefined channels, use null to signal removal in the delta. For user channels, use undefined.
+        for(const entry of listing) {
+
+          const existing = result.channels[entry.key] ?? {};
+          const clearValue = isPredefinedChannel(entry.key) ? null : undefined;
+
+          existing.channelNumber = clearValue;
+          result.channels[entry.key] = existing;
+          affectedKeys.push(entry.key);
+        }
+      } else {
+
+        // Assign sequential numbers starting from the requested start value.
+        for(let i = 0; i < listing.length; i++) {
+
+          const entry = listing[i];
+          const num = start + i;
+
+          if(num > 99999) {
+
+            break;
+          }
+
+          const existing = result.channels[entry.key] ?? {};
+
+          existing.channelNumber = num;
+          result.channels[entry.key] = existing;
+          affectedKeys.push(entry.key);
+        }
+      }
+
+      await saveUserChannels(result.channels);
+
+      const action = clearMode ? "Cleared" : "Numbered";
+
+      LOG.info("%s channel numbers for %d channels.", action, affectedKeys.length);
+
+      const profiles = getProfiles();
+
+      const message = clearMode ?
+        "Cleared channel numbers from " + String(affectedKeys.length) + " channels." + PLAYLIST_HINT :
+        "Numbered " + String(affectedKeys.length) + " channels." + PLAYLIST_HINT;
+
+      res.json({ affected: affectedKeys.length, message, patch: buildChannelTablePatch(affectedKeys, profiles), success: true });
+    } catch(error) {
+
+      LOG.error("Failed to auto-number channels: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to auto-number channels: " + formatError(error), success: false });
     }
   });
 
@@ -834,7 +950,10 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.info("Provider filter updated: %s.", tags.length > 0 ? tags.join(", ") : "all providers");
 
-      res.json({ enabledProviders: tags, success: true });
+      // Return counts patch so the client can update summary counts after filter change. No rows — the client applies CSS visibility changes itself.
+      const { counts, scopeCounts } = buildChannelTableState();
+
+      res.json({ enabledProviders: tags, patch: { counts, rows: [], scopeCounts }, success: true });
     } catch(error) {
 
       LOG.error("Failed to update provider filter: %s.", formatError(error));
@@ -856,7 +975,11 @@ export function setupChannelRoutes(app: Express): void {
 
       await saveUserConfig(configResult.config);
 
-      res.json({ success: true });
+      // Return a full patch so the client can refresh the channel table after the setup wizard completes. The wizard's browse step may have added channels
+      // via the modify endpoint, and the provider filter may have changed — the patch ensures the table reflects the current state.
+      const { counts, scopeCounts } = buildChannelTableState();
+
+      res.json({ patch: { counts, rows: [], scopeCounts }, success: true });
     } catch(error) {
 
       LOG.error("Failed to save setup completed state: %s.", formatError(error));
@@ -1124,11 +1247,77 @@ export function setupChannelRoutes(app: Express): void {
 
         LOG.info("Channel '%s' reverted to predefined defaults.", key);
 
-        // Generate the predefined row HTML so the client can replace the override row.
-        const rowHtml = generateChannelRowHtml(key, profiles);
+        res.json({ key, message: "Channel '" + key + "' reverted to defaults." + revertHint,
+          patch: buildChannelTablePatch([key], profiles), success: true });
 
-        res.json({ html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, key,
-          message: "Channel '" + key + "' reverted to defaults." + revertHint, success: true });
+        return;
+      }
+
+      // Handle inline-edit action — update a single field on an existing channel without requiring all fields. Used by the inline cell editing UI for channel
+      // number and station ID. Only channelNumber and stationId are supported as inline-editable fields.
+      if(action === "inline-edit") {
+
+        if(!key) {
+
+          res.status(400).json({ message: "Channel key is required.", success: false });
+
+          return;
+        }
+
+        const field = body.field;
+        const value = sanitizeString(body.value ?? "");
+
+        if((field !== "channelNumber") && (field !== "stationId")) {
+
+          res.status(400).json({ message: "Invalid inline-edit field.", success: false });
+
+          return;
+        }
+
+        // Validate channel number if the field is channelNumber.
+        if(field === "channelNumber") {
+
+          const numberError = validateChannelNumber(value, key);
+
+          if(numberError) {
+
+            res.status(400).json({ message: numberError, success: false });
+
+            return;
+          }
+        }
+
+        // Load and update the channel. For predefined channels, store a delta override with null to clear fields. For user channels, use undefined to delete.
+        const result = await loadUserChannels();
+
+        if(result.parseError) {
+
+          res.status(400).json({ message: "Cannot edit: channels file contains invalid JSON.", success: false });
+
+          return;
+        }
+
+        // Use a StoredChannelMap-compatible update. The ?? {} creates an empty ChannelDelta for predefined channels that don't have a user override yet.
+        const stored = result.channels[key] ?? {};
+        const clearValue = isPredefinedChannel(key) ? null : undefined;
+
+        if(field === "channelNumber") {
+
+          stored.channelNumber = value ? parseInt(value, 10) : clearValue;
+        } else {
+
+          stored.stationId = value || clearValue;
+        }
+
+        result.channels[key] = stored;
+
+        await saveUserChannels(result.channels);
+
+        const fieldLabel = (field === "channelNumber") ? "Channel number" : "Station ID";
+
+        LOG.info("Inline edit: %s for '%s' set to '%s'.", fieldLabel, key, value || "(cleared)");
+
+        res.json({ key, message: fieldLabel + " updated." + PLAYLIST_HINT, patch: buildChannelTablePatch([key], profiles), success: true });
 
         return;
       }
@@ -1166,13 +1355,10 @@ export function setupChannelRoutes(app: Express): void {
 
         LOG.info("User channel '%s' deleted.", key);
 
-        // If a predefined channel exists with the same key, generate its HTML so the client can replace the user channel row with the predefined version instead of
-        // just removing it. Without this, deleting a user override of a predefined channel would leave the predefined channel invisible until a page refresh.
-        const predefined = isPredefinedChannel(key) ? generateChannelRowHtml(key, profiles) : undefined;
-
-        // Return success response with key for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
-        res.json({ html: predefined, key,
-          message: "Channel '" + key + "' deleted successfully." + PLAYLIST_HINT, success: true });
+        // Return a patch. If a predefined channel exists with the same key, the patch includes an "update" row for the predefined version (so the client replaces
+        // the user channel row with the predefined original). Otherwise, the patch includes a "remove" action for the deleted key.
+        res.json({ key, message: "Channel '" + key + "' deleted successfully." + PLAYLIST_HINT,
+          patch: buildChannelTablePatch([key], profiles), success: true });
 
         return;
       }
@@ -1205,26 +1391,11 @@ export function setupChannelRoutes(app: Express): void {
       const channelNumberStr = sanitizeString(body.channelNumber ?? "");
 
       // Validate channel number if provided.
-      if(channelNumberStr) {
+      const channelNumberError = validateChannelNumber(channelNumberStr, key);
 
-        const num = parseInt(channelNumberStr, 10);
+      if(channelNumberError) {
 
-        if(Number.isNaN(num) || (num < 1) || (num > 99999)) {
-
-          formErrors.channelNumber = "Channel number must be between 1 and 99999.";
-        } else {
-
-          // Check for duplicate channel numbers across all resolved channels.
-          for(const entry of getChannelListing()) {
-
-            if((entry.channel.channelNumber === num) && (entry.key !== key)) {
-
-              formErrors.channelNumber = "Channel number " + String(num) + " is already used by '" + entry.key + "'.";
-
-              break;
-            }
-          }
-        }
+        formErrors.channelNumber = channelNumberError;
       }
 
       // Validate key (only for add action, not edit).
@@ -1361,10 +1532,8 @@ export function setupChannelRoutes(app: Express): void {
 
             LOG.info("Channel '%s' reverted to predefined defaults (edit matched predefined values).", key);
 
-            const rowHtml = generateChannelRowHtml(key, profiles);
-
-            res.json({ html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, key,
-              message: "Channel '" + key + "' reverted to defaults." + implicitRevertHint, success: true });
+            res.json({ key, message: "Channel '" + key + "' reverted to defaults." + implicitRevertHint,
+              patch: buildChannelTablePatch([key], profiles), success: true });
 
             return;
           }
@@ -1416,10 +1585,8 @@ export function setupChannelRoutes(app: Express): void {
 
           LOG.info("Channel '%s' reverted to variant '%s' (edit matched variant values).", key, matchedVariantKey);
 
-          const rowHtml = generateChannelRowHtml(key, profiles);
-
-          res.json({ html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow }, key,
-            message: "Channel '" + key + "' reverted to defaults." + variantRevertHint, success: true });
+          res.json({ key, message: "Channel '" + key + "' reverted to defaults." + variantRevertHint,
+            patch: buildChannelTablePatch([key], profiles), success: true });
 
           return;
         }
@@ -1482,18 +1649,16 @@ export function setupChannelRoutes(app: Express): void {
       LOG.info("User channel '%s' %s.", key, actionLabel);
 
       // Generate HTML for the channel row so the client can update the DOM without a full page reload.
-      const rowHtml = generateChannelRowHtml(key, profiles);
-
       // Append a playlist reload hint when the change affects M3U content that Channels DVR consumes.
       const playlistHint = playlistChanged ? PLAYLIST_HINT : "";
 
-      // Return success response with HTML for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
+      // Return success response with patch for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
       res.json({
 
-        html: { displayRow: rowHtml.displayRow, editRow: rowHtml.editRow },
         isNew: action === "add",
         key,
         message: "Channel '" + key + "' " + actionLabel + " successfully." + playlistHint,
+        patch: buildChannelTablePatch([key], profiles),
         success: true
       });
     } catch(error) {

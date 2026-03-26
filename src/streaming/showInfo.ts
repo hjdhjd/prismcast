@@ -7,6 +7,7 @@ import { clearChannelLogos, getAllChannels, getChannelListing, getChannelLogo, g
   setChannelLogos } from "../config/userChannels.js";
 import { loadUserConfig, saveUserConfig } from "../config/userConfig.js";
 import type { Nullable } from "../types/index.js";
+import { emitChannelUpdate } from "./statusEmitter.js";
 import { getAllStreams } from "./registry.js";
 
 /* This module integrates with the Channels DVR API for two purposes: show name lookup and channel logo population.
@@ -755,6 +756,24 @@ async function populateChannelLogos(): Promise<void> {
   }
 
   LOG.debug("streaming:logos", "Logo population complete: %d cached, %d from TMS search, %d total.", cachedCount, tier2Count, cachedCount + tier2Count);
+
+  // Emit a channel-update SSE event with all resolved logos so any open channels tab can populate logo images without a page reload.
+  const logos: Record<string, string> = {};
+
+  for(const entry of listing) {
+
+    const logoUrl = getChannelLogo(entry.key);
+
+    if(logoUrl) {
+
+      logos[entry.key] = logoUrl;
+    }
+  }
+
+  if(Object.keys(logos).length > 0) {
+
+    emitChannelUpdate({ logos });
+  }
 }
 
 /**

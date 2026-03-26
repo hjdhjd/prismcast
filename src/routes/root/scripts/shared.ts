@@ -353,6 +353,72 @@ export function generateSharedUtilitiesScript(): string {
     "    return ctrl;",
     "  };",
 
+    // Apply a channel table patch from a mutation response or SSE event. Handles whichever fields are present: rows (insert/remove), counts (summary header),
+    // scopeCounts (Quick Actions toggles), logos (channel logo attributes). This is the single client-side function for all channel table updates.
+    "  window.applyChannelPatch = function(patch) {",
+    "    if(!patch) return;",
+
+    // Apply row updates (insert, replace, or remove).
+    "    if(patch.rows) {",
+    "      for(var i = 0; i < patch.rows.length; i++) {",
+    "        var row = patch.rows[i];",
+    "        if(row.action === 'remove') {",
+    "          if(window.removeChannelRow) window.removeChannelRow(row.key);",
+    "        } else if(row.action === 'update' && row.displayRow) {",
+    "          if(window.insertChannelRow) window.insertChannelRow({ displayRow: row.displayRow, editRow: row.editRow || '' }, row.key);",
+    "        }",
+    "      }",
+    "    }",
+
+    // Apply summary counts directly from server-computed values. Replaces the client-side DOM-scanning updateDisabledCount pattern.
+    "    if(patch.counts) {",
+    "      var c = patch.counts;",
+    "      var el;",
+    "      el = document.getElementById('total-count'); if(el) el.textContent = String(c.total);",
+    "      el = document.getElementById('enabled-count'); if(el) el.textContent = String(c.enabled);",
+    "      el = document.getElementById('disabled-count'); if(el) el.textContent = String(c.disabled);",
+    "      el = document.getElementById('predefined-count'); if(el) el.textContent = String(c.predefined);",
+    "      el = document.getElementById('user-count'); if(el) el.textContent = (c.user > 0) ? ', ' + String(c.user) + ' user' : '';",
+    "    }",
+
+    // Apply scope toggle counts from server-computed values. Replaces the updateScopeToggles pattern.
+    "    if(patch.scopeCounts) {",
+    "      var scopes = ['all', 'east', 'pacific'];",
+    "      for(var j = 0; j < scopes.length; j++) {",
+    "        var s = scopes[j];",
+    "        var sc = patch.scopeCounts[s];",
+    "        if(!sc) continue;",
+    "        var cb = document.querySelector('.scope-toggle[data-scope=\"' + s + '\"]');",
+    "        var span = document.querySelector('.quick-action-count[data-scope=\"' + s + '\"]');",
+    "        if(cb) {",
+    "          cb.checked = (sc.enabled === sc.total);",
+    "          cb.indeterminate = (sc.enabled > 0) && (sc.enabled < sc.total);",
+    "        }",
+    "        if(span) { span.setAttribute('data-enabled', sc.enabled); span.setAttribute('data-total', sc.total); " +
+    "span.textContent = sc.enabled + ' of ' + sc.total + ' enabled'; }",
+    "      }",
+    "    }",
+
+    // Apply channel logos from a logo map (key → URL). Sets data-logo attributes on matching rows so processChannelLogos can render the images.
+    "    if(patch.logos) {",
+    "      for(var key in patch.logos) {",
+    "        var logoRow = document.getElementById('display-row-' + key);",
+    "        if(logoRow) {",
+    "          var nameCell = logoRow.querySelector('.channel-name-cell');",
+    "          if(nameCell && nameCell.parentElement) nameCell.parentElement.setAttribute('data-logo', patch.logos[key]);",
+    "        }",
+    "      }",
+    "    }",
+
+    // Post-update: refilter rows for provider filter and render any new logos.
+    "    if(patch.rows && patch.rows.length > 0) {",
+    "      if(window.refilterChannelRows) window.refilterChannelRows();",
+    "    }",
+    "    if(patch.logos || (patch.rows && patch.rows.length > 0)) {",
+    "      if(window.processChannelLogos) window.processChannelLogos();",
+    "    }",
+    "  };",
+
     "})();",
     "</script>"
   ].join("\n");

@@ -8,10 +8,10 @@ import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../confi
 import { getChannelProviderLabel, getProviderGroup, getProviderTagForChannel, getResolvedChannel, isProviderTagEnabled,
   resolveProviderKey } from "../config/providers.js";
 import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
+import { getProviderBySlug, normalizeChannelName } from "../browser/channelSelection.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
 import type { Page } from "puppeteer-core";
-import { getProviderBySlug } from "../browser/channelSelection.js";
 
 /* The providers endpoint exposes channel discovery for each registered provider. A GET request to /providers/:slug/channels creates a temporary browser page,
  * navigates to the provider's guide, runs the provider's discoverChannels implementation, and returns a sorted JSON array of discovered channels. The temporary
@@ -213,17 +213,19 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
   const listing = getChannelListing();
   const bySelector = new Map<string, LineupState[]>();
 
-  // Appends a lineup state to the map under the given key. Multiple states can share a key (e.g., East/Pacific pairs both using channelSelector "A&E").
+  // Appends a lineup state to the map under the normalized key. Normalization (lowercase, collapsed whitespace) ensures matching is resilient to casing
+  // differences between predefined channelSelectors and provider discovery output (e.g., "Cartoon Network (East)" vs "cartoon network (east)").
   function indexState(key: string, state: LineupState): void {
 
-    const existing = bySelector.get(key);
+    const normalized = normalizeChannelName(key);
+    const existing = bySelector.get(normalized);
 
     if(existing) {
 
       existing.push(state);
     } else {
 
-      bySelector.set(key, [state]);
+      bySelector.set(normalized, [state]);
     }
   }
 
@@ -305,7 +307,7 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
   // canonicals share the same key (East/Pacific pairs), the discovery entry's stationId disambiguates which canonical to assign.
   return channels.map((ch) => {
 
-    const states = bySelector.get(ch.channelSelector) ?? bySelector.get(ch.name);
+    const states = bySelector.get(normalizeChannelName(ch.channelSelector)) ?? bySelector.get(normalizeChannelName(ch.name));
 
     if(!states || (states.length === 0)) {
 
