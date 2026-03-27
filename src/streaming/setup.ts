@@ -9,7 +9,7 @@ import type { RecoveryMetrics, TabReplacementResult } from "./recovery.js";
 import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.js";
-import { initializePlayback, navigateToPage } from "../browser/video.js";
+import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.js";
 import { invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.js";
 import { CONFIG } from "../config/index.js";
 import type { FFmpegProcess } from "../utils/index.js";
@@ -385,6 +385,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   await page.setBypassCSP(true);
 
+  // Inject the shared video selector helper into the browser context. This must happen before navigation so the helper is available when evaluate calls run during
+  // initializePlayback (startVideoPlayback, applyVideoStyles, verifyFullscreen, lockVolumeProperties) and subsequent health monitoring (getVideoState).
+  await injectVideoSelector(page);
+
   // Install CDP manifest interceptor before navigation. This listener captures .m3u8 URLs from the browser's network requests, enabling native HLS streaming for
   // providers that use clear or AES-128 encrypted streams. Skipped for tab replacements (native proxy is independent of capture) and for channels already known to
   // use DRM (avoids 15 seconds of wasted CDP overhead per tune). The await ensures the CDP session and Network domain are ready before navigation begins.
@@ -638,17 +642,19 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       // Phase 1: Navigate to the page with retry. The 10-second navigationTimeout is appropriate for page loads, and retryOperation correctly reloads the page on
       // genuine navigation failures. Navigation is wrapped in retryOperation separately from channel selection so the timeout does not race with the internal click
       // retry loops in channel selection strategies (guideGrid can take 15-20 seconds for binary search + click retries).
-      await retryOperation(
-        async (): Promise<void> => {
+      await retryOperation({
+
+        backoffJitter: CONFIG.recovery.backoffJitter,
+        description: "page navigation for " + navigationUrl,
+        maxAttempts: CONFIG.streaming.maxNavigationRetries,
+        maxBackoffDelay: CONFIG.recovery.maxBackoffDelay,
+        operation: async (): Promise<void> => {
 
           await navigateToPage(page, navigationUrl, profile);
         },
-        CONFIG.streaming.maxNavigationRetries,
-        CONFIG.streaming.navigationTimeout,
-        "page navigation for " + navigationUrl,
-        undefined,
-        () => page.isClosed()
-      );
+        shouldAbort: () => page.isClosed(),
+        timeoutMs: CONFIG.streaming.navigationTimeout
+      });
 
       // Phase 2: Channel selection + video setup. When navigating to a cached direct URL, skip channel selection since the URL already targets the correct
       // channel. Runs after navigation succeeds with no outer timeout racing against internal click retries. Each sub-step (selectChannel, waitForVideoReady,

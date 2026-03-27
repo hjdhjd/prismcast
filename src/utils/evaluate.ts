@@ -4,6 +4,7 @@
  */
 import type { Frame, Page } from "puppeteer-core";
 import { getStreamId } from "./streamContext.js";
+import { raceWithTimeout } from "./delay.js";
 
 /* This module provides a wrapper around Puppeteer's page.evaluate() and frame.evaluate() that adds two critical safety mechanisms:
  *
@@ -134,19 +135,10 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
   // reject. Without this, we'd get unhandled rejection warnings when the CDP call completes after we've moved on.
   evaluatePromise.catch(() => { /* Suppress unhandled rejection from pending CDP calls after abort/timeout. */ });
 
-  // Create the timeout promise. The timer ID is stored so it can be cleared when the race is won by another promise, preventing orphaned timers from holding
-  // event loop references for their full duration.
-  let timeoutTimer: ReturnType<typeof setTimeout>;
+  // Race evaluate against timeout using the shared utility. Timer cleanup is handled by raceWithTimeout's .finally().
+  const timeoutRace = raceWithTimeout(evaluatePromise, timeout, new EvaluateTimeoutError(timeout));
 
-  const timeoutPromise = new Promise<never>((_, reject) => {
-
-    timeoutTimer = setTimeout(() => {
-
-      reject(new EvaluateTimeoutError(timeout));
-    }, timeout);
-  });
-
-  // If we have an abort signal, create an abort promise.
+  // If we have an abort signal, add a third racer that rejects when the abort fires.
   if(signal) {
 
     const abortPromise = new Promise<never>((_, reject) => {
@@ -165,11 +157,9 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
       }, { once: true });
     });
 
-    // Race all three: evaluate, timeout, and abort. Clear the timeout timer when the race settles to prevent orphaned timers.
-    return Promise.race([ evaluatePromise, timeoutPromise, abortPromise ]).finally(() => { clearTimeout(timeoutTimer); });
+    return Promise.race([ timeoutRace, abortPromise ]);
   }
 
-  // No abort signal available, just race evaluate against timeout. Clear the timeout timer when the race settles.
-  return Promise.race([ evaluatePromise, timeoutPromise ]).finally(() => { clearTimeout(timeoutTimer); });
+  return timeoutRace;
 }
 

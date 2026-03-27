@@ -52,13 +52,37 @@ export function buildVideoSelectorType(profile: ResolvedSiteProfile): VideoSelec
 /* These helper functions encapsulate common video element operations that are used in both initial setup and health monitoring. By centralizing these operations,
  * we ensure consistent behavior and reduce code duplication across the codebase.
  *
- * Many functions below contain identical video selection logic. This duplication is intentional and unavoidable due to Puppeteer's architecture. When we call
- * evaluateWithAbort(), the function body is serialized as a string and executed in Chrome's browser context. We cannot import shared modules (browser context has
- * no access to Node modules), pass function references (only serializable data crosses the boundary), or use closures over Node-side variables (they don't exist
- * in the browser). Each browser-context function must be self-contained. The duplication is the cost of operating across the Node/browser boundary. To maintain
- * consistency, all video selector blocks must use the same pattern, and when modifying the selection logic, update all functions that use this pattern.
+ * Video element selection uses a shared helper function (`__prismcastSelectVideo`) injected into the browser context via page.evaluateOnNewDocument(). This avoids
+ * duplicating the selection logic in every evaluateWithAbort() call. The injection is registered in createPageWithCapture() (the single page creation point for
+ * both initial setup and tab replacement) before the first navigation. It automatically re-runs on all subsequent navigations (including L3 recovery) and iframe
+ * attachments. Each evaluate call references the pre-injected global rather than re-declaring the pattern.
+ *
+ * The one exception is checkVideoPresence(), which needs all video elements (count, max readyState) rather than selecting one. It uses the inline selection pattern
+ * since its requirements differ from the standard single-element selection.
+ *
  * - The selectorType parameter MUST be passed as the first argument to evaluateWithAbort
  */
+
+/**
+ * Injects the shared video selector helper into the browser context. Called in createPageWithCapture() (setup.ts) after page creation and before navigation. The
+ * injection persists across all navigations via evaluateOnNewDocument, so the helper is available for all evaluate calls throughout the page's lifetime.
+ * @param page - The Puppeteer page to inject the helper into.
+ */
+export async function injectVideoSelector(page: Page): Promise<void> {
+
+  await page.evaluateOnNewDocument((): void => {
+
+    window.__prismcastSelectVideo = (type: string): HTMLVideoElement | null => {
+
+      if(type === "selectReadyVideo") {
+
+        return Array.from(document.querySelectorAll("video")).find((v) => v.readyState >= 3) ?? null;
+      }
+
+      return document.querySelector("video");
+    };
+  });
+}
 
 // Fullscreen activation queue. Chrome's Fullscreen API requires the target tab to be in the foreground (focused). When multiple streams start concurrently, each
 // tab must call page.bringToFront() before requestFullscreen() — but without serialization, tabs steal foreground from each other, causing silent failures. We
@@ -111,18 +135,7 @@ export async function getVideoState(context: Frame | Page, selectorType: VideoSe
 
   return evaluateWithAbort(context, (type: string): Nullable<VideoStateInfo> => {
 
-    let video: Nullable<HTMLVideoElement> | undefined;
-
-    if(type === "selectReadyVideo") {
-
-      video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-        return v.readyState >= 3;
-      });
-    } else {
-
-      video = document.querySelector("video");
-    }
+    const video = window.__prismcastSelectVideo?.(type) ?? null;
 
     if(!video) {
 
@@ -155,18 +168,7 @@ export async function enforceVideoVolume(context: Frame | Page, selectorType: Vi
 
   await evaluateWithAbort(context, (type: string): void => {
 
-    let video: Nullable<HTMLVideoElement> | undefined;
-
-    if(type === "selectReadyVideo") {
-
-      video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-        return v.readyState >= 3;
-      });
-    } else {
-
-      video = document.querySelector("video");
-    }
+    const video = window.__prismcastSelectVideo?.(type) ?? null;
 
     if(video) {
 
@@ -267,18 +269,7 @@ export async function validateVideoElement(context: Frame | Page, selectorType: 
 
   return evaluateWithAbort(context, (type: string): VideoValidationResult => {
 
-    let video: Nullable<HTMLVideoElement> | undefined;
-
-    if(type === "selectReadyVideo") {
-
-      video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-        return v.readyState >= 3;
-      });
-    } else {
-
-      video = document.querySelector("video");
-    }
+    const video = window.__prismcastSelectVideo?.(type) ?? null;
 
     return video ? { found: true, readyState: video.readyState } : { found: false };
   }, [selectorType]);
@@ -354,18 +345,7 @@ export async function reloadVideoSource(context: Frame | Page, selectorType: Vid
 
   await evaluateWithAbort(context, (type: string): void => {
 
-    let video: Nullable<HTMLVideoElement> | undefined;
-
-    if(type === "selectReadyVideo") {
-
-      video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-        return v.readyState >= 3;
-      });
-    } else {
-
-      video = document.querySelector("video");
-    }
+    const video = window.__prismcastSelectVideo?.(type) ?? null;
 
     if(video) {
 
@@ -389,18 +369,7 @@ export async function startVideoPlayback(context: Frame | Page, selectorType: Vi
 
   await evaluateWithAbort(context, (type: string): void => {
 
-    let video: Nullable<HTMLVideoElement> | undefined;
-
-    if(type === "selectReadyVideo") {
-
-      video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-        return v.readyState >= 3;
-      });
-    } else {
-
-      video = document.querySelector("video");
-    }
+    const video = window.__prismcastSelectVideo?.(type) ?? null;
 
     if(video) {
 
@@ -694,18 +663,7 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
   await evaluateWithAbort(context, (type: string, useImportant: boolean): void => {
 
     // Find the video element using the appropriate selection strategy.
-    let video: Nullable<HTMLVideoElement> | undefined;
-
-    if(type === "selectReadyVideo") {
-
-      video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-        return v.readyState >= 3;
-      });
-    } else {
-
-      video = document.querySelector("video");
-    }
+    const video = window.__prismcastSelectVideo?.(type) ?? null;
 
     if(!video) {
 
@@ -746,19 +704,7 @@ export async function lockVolumeProperties(context: Frame | Page, selectorType: 
 
     await evaluateWithAbort(context, (type: string): void => {
 
-      // Find the video element.
-      let video: Nullable<HTMLVideoElement> | undefined;
-
-      if(type === "selectReadyVideo") {
-
-        video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-          return v.readyState >= 3;
-        });
-      } else {
-
-        video = document.querySelector("video");
-      }
+      const video = window.__prismcastSelectVideo?.(type) ?? null;
 
       // Skip if no video found or already locked. The __volumeLocked flag prevents applying the lock multiple times, which would cause issues with the
       // property descriptors.
@@ -866,19 +812,7 @@ export async function triggerFullscreen(
 
       await evaluateWithAbort(context, async (type: string): Promise<void> => {
 
-        // Find the video element.
-        let video: Nullable<HTMLVideoElement> | undefined;
-
-        if(type === "selectReadyVideo") {
-
-          video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-            return v.readyState >= 3;
-          });
-        } else {
-
-          video = document.querySelector("video");
-        }
+        const video = window.__prismcastSelectVideo?.(type) ?? null;
 
         // Request fullscreen if the API is available. Await the promise so the transition begins before we return.
         if(video?.requestFullscreen) {
@@ -920,19 +854,7 @@ export async function verifyFullscreen(context: Frame | Page, selectorType: Vide
 
     return await evaluateWithAbort(context, (type: string): boolean => {
 
-      // Find the video element using the appropriate selection strategy.
-      let video: Nullable<HTMLVideoElement> | undefined;
-
-      if(type === "selectReadyVideo") {
-
-        video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-          return v.readyState >= 3;
-        });
-      } else {
-
-        video = document.querySelector("video");
-      }
+      const video = window.__prismcastSelectVideo?.(type) ?? null;
 
       if(!video) {
 
@@ -1002,18 +924,7 @@ async function clickVideoForActivation(page: Page, context: Frame | Page, select
 
     const coords = await evaluateWithAbort(context, (type: string): Nullable<{ x: number; y: number }> => {
 
-      let video: Nullable<HTMLVideoElement> | undefined;
-
-      if(type === "selectReadyVideo") {
-
-        video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-          return v.readyState >= 3;
-        });
-      } else {
-
-        video = document.querySelector("video");
-      }
+      const video = window.__prismcastSelectVideo?.(type) ?? null;
 
       if(!video) {
 
@@ -1055,18 +966,7 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
   await evaluateWithAbort(context, (type: string): void => {
 
     // Find the video element using the appropriate selection strategy.
-    let video: Nullable<HTMLVideoElement> | undefined;
-
-    if(type === "selectReadyVideo") {
-
-      video = Array.from(document.querySelectorAll("video")).find((v) => {
-
-        return v.readyState >= 3;
-      });
-    } else {
-
-      video = document.querySelector("video");
-    }
+    const video = window.__prismcastSelectVideo?.(type) ?? null;
 
     if(!video) {
 

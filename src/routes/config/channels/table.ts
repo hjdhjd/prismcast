@@ -1112,7 +1112,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Toolbar-level SVG icons (14x14, stroke-based, currentColor). Defined here since they're toolbar-specific and not reused elsewhere.
   const ICON_MANAGE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"1.5\" y=\"5\" width=\"13\" height=\"9.5\" rx=\"1.5\"/>" +
-    "<path d=\"M7 5L3.5 1\"/><path d=\"M9 5L12.5 1\"/></svg>";
+    "<path d=\"M7 4.5L3.5 1\"/><path d=\"M9 4.5L12.5 1\"/></svg>";
 
   const ICON_TRANSFER = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 5h10M10 2l3 3-3 3\"/><path d=\"M13 11H3M6 8l-3 3 3 3\"/></svg>";

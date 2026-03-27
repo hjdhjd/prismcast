@@ -3,8 +3,8 @@
  * retry.ts: Retry logic with exponential backoff for PrismCast.
  */
 import { formatError, isSessionClosedError } from "./errors.js";
-import { CONFIG } from "../config/index.js";
 import { LOG } from "./logger.js";
+import { raceWithTimeout } from "./delay.js";
 
 /* The retry system provides resilient operation execution with exponential backoff and jitter. When operations fail due to transient issues like network hiccups or
  * slow page loads, the system automatically retries with increasing delays. The exponential backoff prevents overwhelming struggling services, while jitter prevents
@@ -12,27 +12,47 @@ import { LOG } from "./logger.js";
  */
 
 /**
+ * Options for retryOperation. Groups all parameters into a single object to avoid positional parameter sprawl and make the function extensible.
+ */
+export interface RetryOptions<T> {
+
+  // Maximum jitter added to the backoff delay in milliseconds. Prevents synchronized retries across concurrent operations. Default: 1000ms.
+  backoffJitter?: number;
+
+  // Human-readable description for logging purposes.
+  description: string;
+
+  // Optional async function called after timeout errors. If it returns a truthy value, the operation is considered successful and retrying stops. Useful for
+  // cases where the operation succeeded but took too long (e.g., page loaded and video started playing, but networkidle2 never completed).
+  earlySuccessCheck?: () => Promise<boolean>;
+
+  // Maximum number of attempts before giving up.
+  maxAttempts: number;
+
+  // Maximum backoff delay in milliseconds between retry attempts. Caps the exponential growth to prevent excessively long waits. Default: 3000ms.
+  maxBackoffDelay?: number;
+
+  // An async function to attempt. Should throw on failure.
+  operation: () => Promise<T>;
+
+  // Optional function called before each attempt. If it returns true, retries are aborted immediately. Useful for checking if the page was closed during the
+  // backoff delay.
+  shouldAbort?: () => boolean;
+
+  // Timeout in milliseconds for each individual attempt.
+  timeoutMs: number;
+}
+
+/**
  * Implements a generic retry mechanism with exponential backoff and jitter. This function attempts an operation multiple times, waiting progressively longer between
  * attempts to avoid overwhelming failing services. The exponential backoff with jitter prevents thundering herd problems where many clients retry simultaneously.
- * @param operation - An async function to attempt. Should throw on failure.
- * @param maxAttempts - Maximum number of attempts before giving up.
- * @param timeoutMs - Timeout in milliseconds for each individual attempt.
- * @param description - Human-readable description for logging purposes.
- * @param earlySuccessCheck - Optional async function called after timeout errors. If it returns a truthy value, that value is returned as success instead of
- *                            retrying. Useful for cases where the operation succeeded but took too long.
- * @param shouldAbort - Optional function called before each attempt. If it returns true, retries are aborted immediately. Useful for checking if the page was closed
- *                      during the backoff delay.
+ * @param options - Retry configuration including the operation, attempt limits, timeouts, and optional backoff tuning.
  * @returns The result of the operation if successful.
  * @throws The last error encountered if all attempts fail.
  */
-export async function retryOperation<T>(
-  operation: () => Promise<T>,
-  maxAttempts: number,
-  timeoutMs: number,
-  description: string,
-  earlySuccessCheck?: () => Promise<boolean>,
-  shouldAbort?: () => boolean
-): Promise<T | undefined> {
+export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | undefined> {
+
+  const { backoffJitter = 1000, description, earlySuccessCheck, maxAttempts, maxBackoffDelay = 3000, operation, shouldAbort, timeoutMs } = options;
 
   let lastError: unknown = null;
 
@@ -51,20 +71,8 @@ export async function retryOperation<T>(
 
     try {
 
-      // Race the operation against a timeout to prevent hanging on operations that never complete. The timer ID is stored so it can be cleared when the race
-      // settles, preventing orphaned timers from holding event loop references.
-      let timeoutTimer: ReturnType<typeof setTimeout>;
-
-      const timeoutPromise = new Promise<never>((_, reject) => {
-
-        timeoutTimer = setTimeout(() => {
-
-          reject(new Error([ "Operation timed out after ", String(timeoutMs), "ms." ].join("")));
-        }, timeoutMs);
-      });
-
       // eslint-disable-next-line no-await-in-loop
-      return await Promise.race([ operation(), timeoutPromise ]).finally(() => { clearTimeout(timeoutTimer); });
+      return await raceWithTimeout(operation(), timeoutMs);
     } catch(error) {
 
       lastError = error;
@@ -102,8 +110,8 @@ export async function retryOperation<T>(
       // Between retry attempts, wait with exponential backoff plus random jitter.
       if(attempt < maxAttempts) {
 
-        const baseDelay = Math.min(1000 * Math.pow(2, attempt - 1), CONFIG.recovery.maxBackoffDelay);
-        const jitter = Math.random() * CONFIG.recovery.backoffJitter;
+        const baseDelay = Math.min(1000 * Math.pow(2, attempt - 1), maxBackoffDelay);
+        const jitter = Math.random() * backoffJitter;
 
         // eslint-disable-next-line no-await-in-loop
         await new Promise<void>((resolve) => {

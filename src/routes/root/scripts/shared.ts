@@ -237,20 +237,15 @@ export function generateSharedUtilitiesScript(): string {
     "      render();",
     "    }",
 
-    // Validate the current step and advance to a target step if valid. Supports both sync and async onValidate callbacks. When onValidate returns a thenable
-    // (Promise), the controller waits for resolution before advancing. Returns true/false for sync, or a Promise resolving to true/false for async.
-    "    function validateAndAdvance(target) {",
-    "      var result = config.onValidate(currentStep);",
-    "      if(result && typeof result.then === 'function') {",
-    "        return result.then(function(err) {",
-    "          if(err) { ctrl.setError(err); return false; }",
-    "          advance(target);",
-    "          return true;",
-    "        }).catch(function() { ctrl.setError('Validation failed.'); return false; });",
-    "      }",
-    "      if(result) { ctrl.setError(result); return false; }",
-    "      advance(target);",
-    "      return true;",
+    // Validate the current step and advance to a target step if valid. Supports both sync and async onValidate callbacks. The async wrapper ensures the
+    // return is always a Promise, so callers can uniformly await the result regardless of whether onValidate is sync or async.
+    "    async function validateAndAdvance(target) {",
+    "      try {",
+    "        var err = await config.onValidate(currentStep);",
+    "        if(err) { ctrl.setError(err); return false; }",
+    "        advance(target);",
+    "        return true;",
+    "      } catch(e) { ctrl.setError('Validation failed.'); return false; }",
     "    }",
 
     "    var ctrl = {",

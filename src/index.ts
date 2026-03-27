@@ -2,11 +2,13 @@
  *
  * index.ts: Entry point for PrismCast.
  */
+import { CONFIG_METADATA, DEFAULTS, getNestedValue } from "./config/userConfig.js";
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.js";
 import { canCleanupChrome, isGracefulShutdown, killStaleChrome } from "./browser/index.js";
 import { clearServerPid, startServer } from "./app.js";
 import { flushLogBufferSync } from "./utils/fileLogger.js";
 import { handleServiceCommand } from "./service/index.js";
+import { handleUpgradeCommand } from "./upgrade/index.js";
 import { initializeDataDir } from "./config/paths.js";
 import path from "node:path";
 
@@ -81,12 +83,9 @@ function printUsage(): void {
 }
 
 /**
- * Prints a complete listing of all environment variables organized by category. Generates output dynamically from CONFIG_METADATA so it is always accurate. Uses a
- * dynamic import to avoid the circular dependency: index.ts -> config/userConfig.js -> utils/index.js -> utils/retry.js -> config/index.js -> config/userConfig.js.
+ * Prints a complete listing of all environment variables organized by category. Generates output dynamically from CONFIG_METADATA so it is always accurate.
  */
-async function printEnvironmentVariables(): Promise<void> {
-
-  const { CONFIG_METADATA, DEFAULTS, getNestedValue } = await import("./config/userConfig.js");
+function printEnvironmentVariables(): void {
 
   /* eslint-disable no-console */
 
@@ -340,8 +339,8 @@ if(subcommand === "service") {
   });
 } else if(subcommand === "upgrade") {
 
-  // Handle the 'upgrade' subcommand for self-upgrading PrismCast. Uses a dynamic import to keep the upgrade module out of the main server's import graph.
-  import("./upgrade/index.js").then(async ({ handleUpgradeCommand }) => handleUpgradeCommand(rawArgs.slice(1))).then((exitCode) => {
+  // Handle the 'upgrade' subcommand for self-upgrading PrismCast.
+  handleUpgradeCommand(rawArgs.slice(1)).then((exitCode) => {
 
     process.exit(exitCode);
   }).catch((error: unknown) => {
@@ -353,18 +352,10 @@ if(subcommand === "service") {
   });
 } else if(rawArgs.includes("--list-env")) {
 
-  // Handle --list-env at the top level (like the service subcommand) to avoid starting the server. The dynamic import inside printEnvironmentVariables() is
-  // required because a static import of config/userConfig.js creates a circular dependency through the utils barrel.
-  printEnvironmentVariables().then(() => {
+  // Handle --list-env at the top level (like the service subcommand) to avoid starting the server.
+  printEnvironmentVariables();
 
-    process.exit(0);
-  }).catch((error: unknown) => {
-
-    // eslint-disable-next-line no-console
-    console.error("Error: " + formatError(error));
-
-    process.exit(1);
-  });
+  process.exit(0);
 } else {
 
   /* The main entry point parses command-line arguments, starts the server, and handles any fatal errors that occur during initialization. If startup fails, we exit

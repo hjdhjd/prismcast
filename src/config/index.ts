@@ -293,4 +293,5 @@ export function displayConfiguration(): void {
       presetResult.maxViewport.width, presetResult.maxViewport.height,
       presetResult.configuredPreset.id, presetResult.effectivePreset.id);
   }
+
 }
