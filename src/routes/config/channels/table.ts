@@ -70,13 +70,14 @@ export const OPTIONAL_COLUMNS: readonly {
 }[] = [
 
   { align: "center", cssClass: "col-chnum", field: "channelNumber", label: "Number", width: "70px" },
+  { align: "center", cssClass: "col-hdhr", field: "hdhrEnabled", label: "HDHR", width: "55px" },
   { align: "center", cssClass: "col-stationid", field: "stationId", label: "Station ID", width: "100px" },
   { align: "left", cssClass: "col-profile", field: "profile", label: "Profile", width: "130px" },
   { align: "left", cssClass: "col-selector", field: "channelSelector", label: "Selector", width: "130px" }
 ];
 
-// Total number of columns in the channels table (4 required + 4 optional).
-const TOTAL_COLUMN_COUNT = 8;
+// Total number of columns in the channels table (4 required + 5 optional).
+const TOTAL_COLUMN_COUNT = 9;
 
 // Valid optional column field names.
 export const VALID_OPTIONAL_COLUMNS = new Set(OPTIONAL_COLUMNS.map((c) => c.field));
@@ -412,7 +413,30 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
  * @param showHints - Whether to show hint text.
  * @returns Array of HTML strings for the advanced fields section.
  */
-function generateAdvancedFields(idPrefix: string, stationIdValue: string, channelSelectorValue: string, channelNumberValue: string, showHints = true): string[] {
+/**
+ * Options for the advanced fields section of the channel add/edit form.
+ */
+interface AdvancedFieldOptions {
+
+  // Current channel number value (empty string for none).
+  channelNumberValue?: string;
+
+  // Current channel selector value (empty string for none).
+  channelSelectorValue?: string;
+
+  // Whether the channel is included in the HDHomeRun/Plex lineup. Defaults to true.
+  hdhrEnabled?: boolean;
+
+  // Whether to display hint text beneath each field. Defaults to true.
+  showHints?: boolean;
+
+  // Current station ID value (empty string for none).
+  stationIdValue?: string;
+}
+
+function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions = {}): string[] {
+
+  const { channelNumberValue = "", channelSelectorValue = "", hdhrEnabled = true, showHints = true, stationIdValue = "" } = options;
 
   const lines: string[] = [];
 
@@ -448,6 +472,22 @@ function generateAdvancedFields(idPrefix: string, stationIdValue: string, channe
 
   lines.push(...generateTextField(idPrefix + "-channelNumber", "channelNumber", "Channel Number", channelNumberValue,
     { hint: channelNumberHint, placeholder: showHints ? "e.g., 501" : undefined }));
+
+  // HDHomeRun lineup inclusion. A hidden input provides the "false" value when the checkbox is unchecked (unchecked checkboxes are not submitted in FormData).
+  // When checked, the checkbox value "true" overwrites the hidden input's "false" since it appears later in DOM order.
+  const hdhrChecked = hdhrEnabled ? " checked" : "";
+  const hdhrHint = showHints ? "When unchecked, this channel is hidden from the HDHomeRun lineup and not available in Plex." : undefined;
+
+  lines.push("<div class=\"form-row form-row-checkbox\">");
+  lines.push("<label for=\"" + idPrefix + "-hdhrEnabled\">Include in HDHomeRun/Plex Lineup</label>");
+  lines.push("<input type=\"hidden\" name=\"hdhrEnabled\" value=\"false\">");
+  lines.push("<input type=\"checkbox\" id=\"" + idPrefix + "-hdhrEnabled\" name=\"hdhrEnabled\" value=\"true\"" + hdhrChecked + ">");
+  lines.push("</div>");
+
+  if(hdhrHint) {
+
+    lines.push("<div class=\"hint\">" + hdhrHint + "</div>");
+  }
 
   lines.push("</div>"); // End advanced fields.
 
@@ -710,13 +750,21 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
   displayLines.push("</td>");
 
-  // Optional columns: Number, Station ID, Profile, Selector. All four are always rendered; visibility is controlled by CSS classes on the table element.
+  // Optional columns: Number, HDHR, Station ID, Profile, Selector. All five are always rendered; visibility is controlled by CSS classes on the table element.
   const cellKey = escapeHtml(key);
 
   displayLines.push("<td class=\"col-chnum editable-cell\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelNumber")) +
     "\" data-field=\"channelNumber\" data-key=\"" + cellKey + "\" data-value=\"" + (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "") +
     "\" onclick=\"startInlineEdit(this)\">" + (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "<span class=\"text-muted\">&ndash;</span>") +
     "</td>");
+
+  // HDHR column: inline checkbox for quick toggling. The checkbox submits changes via the toggleHdhr() client-side function.
+  const hdhrCheckedAttr = (channel.hdhrEnabled !== false) ? " checked" : "";
+
+  displayLines.push("<td class=\"col-hdhr\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "hdhrEnabled")) +
+    "\"><input type=\"checkbox\" data-key=\"" + cellKey + "\"" + hdhrCheckedAttr +
+    " onchange=\"toggleHdhr(this)\" title=\"Include in HDHomeRun/Plex lineup\"></td>");
+
   displayLines.push("<td class=\"col-stationid editable-cell\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "stationId")) +
     "\" data-field=\"stationId\" data-key=\"" + cellKey + "\" data-value=\"" + (channel.stationId ? escapeHtml(channel.stationId) : "") +
     "\" onclick=\"startInlineEdit(this)\">" + (channel.stationId ? escapeHtml(channel.stationId) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
@@ -863,8 +911,13 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   editLines.push(...generateProfileDropdown("edit-profile-" + key, channel.profile ?? "", profiles));
 
   // Advanced fields.
-  editLines.push(...generateAdvancedFields("edit-" + key, channel.stationId ?? "", channel.channelSelector ?? "",
-    channel.channelNumber ? String(channel.channelNumber) : ""));
+  editLines.push(...generateAdvancedFields("edit-" + key, {
+
+    channelNumberValue: channel.channelNumber ? String(channel.channelNumber) : "",
+    channelSelectorValue: channel.channelSelector ?? "",
+    hdhrEnabled: channel.hdhrEnabled !== false,
+    stationIdValue: channel.stationId ?? ""
+  }));
 
   // Form buttons.
   editLines.push("<div class=\"form-buttons\">");
@@ -914,6 +967,9 @@ export interface ChannelTablePatch {
 
   // Summary counts for the channel header.
   counts: ChannelTableCounts;
+
+  // HDHR bulk toggle counts (enabled channels vs total) for the Quick Actions tri-state checkbox.
+  hdhrCounts: { enabled: number; total: number };
 
   // Channel logos keyed by channel key. Present when logos were resolved during the mutation.
   logos?: Record<string, string>;
@@ -969,6 +1025,34 @@ export function buildChannelTableState(listing?: ChannelListingEntry[]): { count
 }
 
 /**
+ * Counts channels included and excluded from the HDHomeRun lineup. Only counts enabled, provider-available channels (the same set visible in the table).
+ * @param listing - The channel listing entries.
+ * @returns An object with `enabled` (HDHR-included) and `total` counts.
+ */
+function getHdhrCounts(listing: ChannelListingEntry[]): { enabled: number; total: number } {
+
+  let enabled = 0;
+  let total = 0;
+
+  for(const entry of listing) {
+
+    if(!entry.enabled || !entry.availableByProvider) {
+
+      continue;
+    }
+
+    total++;
+
+    if(entry.channel.hdhrEnabled !== false) {
+
+      enabled++;
+    }
+  }
+
+  return { enabled, total };
+}
+
+/**
  * Builds a complete channel table patch for the given set of affected channel keys. Generates row HTML for keys that exist in the listing (update action) and
  * remove actions for keys that no longer exist. Includes the current summary counts and scope toggle counts. This is the single function mutation endpoints
  * call to construct their patch response.
@@ -999,7 +1083,7 @@ export function buildChannelTablePatch(affectedKeys: string[], profiles: Profile
 
   const { counts, scopeCounts } = buildChannelTableState(listing);
 
-  return { counts, rows, scopeCounts };
+  return { counts, hdhrCounts: getHdhrCounts(listing), rows, scopeCounts };
 }
 
 /**
@@ -1172,6 +1256,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</div>");
   lines.push("<input type=\"file\" id=\"import-m3u-file\" accept=\".m3u,.m3u8\" style=\"display: none;\" onchange=\"importM3U(this)\">");
 
+  // Visible column set, used by Quick Actions to gate column-dependent options and by the table header to set initial hide classes.
+  const visibleCols = new Set(CONFIG.channels.visibleColumns);
+
   // Quick Actions dropdown — bulk operations for predefined channels.
   lines.push("<div class=\"dropdown quick-actions-dropdown\">");
   lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-dropdown-btn\" title=\"Bulk operations for predefined channels\" " +
@@ -1223,14 +1310,35 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</select>");
   lines.push("</div>");
 
-  lines.push("<div class=\"dropdown-divider\"></div>");
+  // Divider before column-gated quick actions. Hidden when neither the channel number nor HDHR column is visible.
+  const dividerVisible = (visibleCols.has("channelNumber") || visibleCols.has("hdhrEnabled")) ? "" : " style=\"display: none;\"";
 
-  // Auto-number channels — assign sequential channel numbers to visible channels in current sort order.
+  lines.push("<div class=\"dropdown-divider\" id=\"quick-action-divider\"" + dividerVisible + "></div>");
+
+  // Auto-number channels — assign sequential channel numbers to visible channels in current sort order. Visible when the channel number column is shown.
+  const autoNumberVisible = visibleCols.has("channelNumber") ? "" : " style=\"display: none;\"";
+
+  lines.push("<div id=\"quick-action-autonumber\"" + autoNumberVisible + ">");
   lines.push("<div class=\"bulk-assign-row\">");
   lines.push("<span>Auto-number from:</span>");
   lines.push("<input type=\"number\" id=\"auto-number-start\" class=\"auto-number-input\" value=\"1\" min=\"0\" max=\"99999\" " +
     "placeholder=\"Clear\" onclick=\"event.stopPropagation()\">");
   lines.push("<button type=\"button\" class=\"btn btn-sm btn-secondary\" onclick=\"closeDropdowns(); autoNumberChannels()\">Apply</button>");
+  lines.push("</div>");
+  lines.push("</div>");
+
+  // HDHR bulk toggle — tri-state checkbox to enable/disable all channels for the HDHomeRun lineup. Visible when the HDHR column is shown.
+  const hdhrVisible = visibleCols.has("hdhrEnabled") ? "" : " style=\"display: none;\"";
+  const hdhrCounts = getHdhrCounts(listing);
+  const hdhrCheckedAttr = (hdhrCounts.enabled === hdhrCounts.total) ? " checked" : "";
+  const hdhrIndeterminate = ((hdhrCounts.enabled > 0) && (hdhrCounts.enabled < hdhrCounts.total)) ? " data-indeterminate=\"true\"" : "";
+
+  lines.push("<div id=\"quick-action-hdhr\"" + hdhrVisible + ">");
+  lines.push("<label class=\"provider-option\" onclick=\"event.preventDefault(); bulkToggleHdhr()\">");
+  lines.push("<input type=\"checkbox\" id=\"hdhr-bulk-toggle\"" + hdhrCheckedAttr + hdhrIndeterminate + "> ");
+  lines.push("Include all in HDHR/Plex");
+  lines.push("<span class=\"quick-action-count\" id=\"hdhr-bulk-count\">" + String(hdhrCounts.enabled) + " of " + String(hdhrCounts.total) + "</span>");
+  lines.push("</label>");
   lines.push("</div>");
 
   lines.push("</div>");
@@ -1354,9 +1462,14 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Profile dropdown.
   lines.push(...generateProfileDropdown("add-profile", formValues?.get("profile") ?? "", profiles));
 
-  // Advanced fields (station ID, channel selector, channel number).
-  lines.push(...generateAdvancedFields("add", formValues?.get("stationId") ?? "", formValues?.get("channelSelector") ?? "",
-    formValues?.get("channelNumber") ?? ""));
+  // Advanced fields (station ID, channel selector, channel number, HDHR).
+  lines.push(...generateAdvancedFields("add", {
+
+    channelNumberValue: formValues?.get("channelNumber") ?? "",
+    channelSelectorValue: formValues?.get("channelSelector") ?? "",
+    hdhrEnabled: formValues?.get("hdhrEnabled") !== "false",
+    stationIdValue: formValues?.get("stationId") ?? ""
+  }));
 
   // Form buttons.
   lines.push("<div class=\"form-buttons\">");
@@ -1372,7 +1485,6 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   // Channels table. Disabled predefined channels are hidden by default and revealed via the "Show disabled" toggle. The wrapper div enables horizontal scrolling on
   // small screens. Table classes dynamically include hide-col-* for each hidden optional column.
-  const visibleCols = new Set(CONFIG.channels.visibleColumns);
   const tableClasses = [ "channel-table", "hide-disabled" ];
 
   for(const col of OPTIONAL_COLUMNS) {

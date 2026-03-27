@@ -40,7 +40,7 @@ export interface ChannelMapEntry {
 /**
  * Builds the channel number mapping from the current channel configuration. Channels with explicit channelNumber values are assigned first, then remaining
  * channels are auto-assigned sequential numbers starting from AUTO_ASSIGN_START, skipping any numbers already claimed by explicit assignments.
- * @returns Array of channel map entries sorted by channel number, excluding noVideo and disabled channels.
+ * @returns Array of channel map entries sorted by channel number, excluding noVideo, HDHR-disabled, and disabled channels.
  */
 export function buildChannelMap(): ChannelMapEntry[] {
 
@@ -52,10 +52,10 @@ export function buildChannelMap(): ChannelMapEntry[] {
 
   for(const [ key, channel ] of Object.entries(channels)) {
 
-    // Skip non-video channels (static pages like EPGs).
+    // Skip non-video channels (static pages like EPGs) and channels excluded from the HDHR lineup.
     const profile = resolveProfile(channel.profile);
 
-    if(profile.noVideo) {
+    if(profile.noVideo || (channel.hdhrEnabled === false)) {
 
       continue;
     }
@@ -81,7 +81,7 @@ export function buildChannelMap(): ChannelMapEntry[] {
       const channel = channels[key];
       const profile = resolveProfile(channel.profile);
 
-      return !profile.noVideo && ((channel.channelNumber === undefined) || (channel.channelNumber <= 0));
+      return !profile.noVideo && (channel.hdhrEnabled !== false) && ((channel.channelNumber === undefined) || (channel.channelNumber <= 0));
     })
     .sort();
 
