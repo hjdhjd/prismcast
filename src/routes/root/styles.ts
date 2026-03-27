@@ -249,7 +249,8 @@ export function generateLandingPageStyles(): string {
       "border-radius: var(--radius-lg); overflow: auto; }",
     ".channel-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; min-width: 650px; margin: 0; }",
     ".channel-table th, .channel-table td { padding: 10px 12px; text-align: left; border: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
-    ".channel-table th { background: var(--table-header-bg); font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--border-default); }",
+    ".channel-table th { padding-top: 2px; padding-bottom: 2px; background: var(--table-header-bg); font-weight: 600; font-size: 13px; " +
+      "border-bottom: 1px solid var(--border-default); }",
     ".channel-table tbody tr:nth-child(even):not(.user-channel) { background: var(--table-row-even); }",
     ".channel-table tr:hover { background: var(--table-row-hover); }",
     ".channel-table .col-key { min-width: 170px; }",

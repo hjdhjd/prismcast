@@ -248,16 +248,6 @@ export function recordRecoverySuccess(metrics: RecoveryMetrics, method: string):
 }
 
 /**
- * Capitalizes the first letter of a string.
- * @param str - The string to capitalize.
- * @returns The string with the first letter capitalized.
- */
-export function capitalize(str: string): string {
-
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
-/**
  * Formats the recovery metrics summary for the termination log. Uses the SUCCESS_FIELDS mapping to iterate over all recovery methods, eliminating hardcoded
  * checks for each method type. This ensures new recovery methods are automatically included in the summary.
  * @param metrics - The recovery metrics object.

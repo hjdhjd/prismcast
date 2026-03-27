@@ -46,21 +46,3 @@ export function setupRoutes(app: Express): void {
   setupStreamsEndpoint(app);
   setupUpgradeEndpoint(app);
 }
-
-// Re-export individual setup functions for selective use if needed.
-export { setupAssetEndpoints } from "./assets.js";
-export { setupAuthEndpoint } from "./auth.js";
-export { setupChannelsEndpoint } from "./channels.js";
-export { setupConfigEndpoint } from "./config/index.js";
-export { setupDebugEndpoint } from "./debug.js";
-export { setupHealthEndpoint } from "./health.js";
-export { setupHLSRoutes } from "./hls.js";
-export { setupLogsEndpoint } from "./logs.js";
-export { setupMpegTsRoutes } from "./mpegts.js";
-export { setupPlayEndpoint } from "./play.js";
-export { generatePlaylistContent, resolveBaseUrl, setupPlaylistEndpoint } from "./playlist.js";
-export { setupPrerollRoutes } from "../streaming/preroll.js";
-export { setupProvidersEndpoint } from "./providers.js";
-export { setupRootEndpoint } from "./root/index.js";
-export { setupStreamsEndpoint } from "./streams.js";
-export { setupUpgradeEndpoint } from "./upgrade.js";

@@ -250,22 +250,22 @@ export function terminateStream(streamId: number, channelName: string, reason: s
   const reasonSuffix = (reason === "no active clients") ? "" : " (" + reason + ")";
   const streamLog = LOG.withStreamId(streamIdStr);
 
-  // Include recovery summary and keyframe statistics in the termination log when available.
+  // Build termination log message from optional summary components. Each component is appended only when it has meaningful content, avoiding combinatorial branching.
+  const summaryParts = ["Stream ended after " + formatDuration(durationMs) + reasonSuffix + "."];
+
+  if(recoveryMetrics && (getTotalRecoveryAttempts(recoveryMetrics) > 0)) {
+
+    summaryParts.push(formatRecoveryMetricsSummary(recoveryMetrics));
+  }
+
   const keyframeSummary = keyframeStats ? formatKeyframeStatsSummary(keyframeStats) : "";
 
-  if(recoveryMetrics && (getTotalRecoveryAttempts(recoveryMetrics) > 0) && keyframeSummary) {
+  if(keyframeSummary) {
 
-    streamLog.info("Stream ended after %s%s. %s %s", formatDuration(durationMs), reasonSuffix, formatRecoveryMetricsSummary(recoveryMetrics), keyframeSummary);
-  } else if(recoveryMetrics && (getTotalRecoveryAttempts(recoveryMetrics) > 0)) {
-
-    streamLog.info("Stream ended after %s%s. %s", formatDuration(durationMs), reasonSuffix, formatRecoveryMetricsSummary(recoveryMetrics));
-  } else if(keyframeSummary) {
-
-    streamLog.info("Stream ended after %s%s. %s", formatDuration(durationMs), reasonSuffix, keyframeSummary);
-  } else {
-
-    streamLog.info("Stream ended after %s%s.", formatDuration(durationMs), reasonSuffix);
+    summaryParts.push(keyframeSummary);
   }
+
+  streamLog.info(summaryParts.join(" "));
 
   // Log native proxy statistics at debug level when in native mode. This provides segment delivery and token refresh metrics.
   if(nativeProxyStats) {

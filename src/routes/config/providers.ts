@@ -8,6 +8,7 @@ import { ICON_DELETE, ICON_EDIT } from "./channels/index.js";
 import { LOG, escapeHtml, formatError, sanitizeString } from "../../utils/index.js";
 import { deleteUserProfile, getUserDomains, getUserProfiles, saveUserProfiles, validateDomain, validateProfile,
   validateProfileKey } from "../../config/userProfiles.js";
+import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.js";
 import { exportProviderPack, importProviderPack, parseProviderPack } from "../../config/providerPacks.js";
 import { getChannelListing, validateChannelUrl } from "../../config/userChannels.js";
 import type { ProfileInfo } from "../../config/profiles.js";
@@ -647,7 +648,6 @@ export function setupProfileRoutes(app: Express): void {
 
     try {
 
-      const { startLoginMode } = await import("../../browser/index.js");
       const body = req.body as { url?: string };
       const url = body.url?.trim();
 
@@ -690,7 +690,6 @@ export function setupProfileRoutes(app: Express): void {
 
     try {
 
-      const { getLoginPage } = await import("../../browser/index.js");
       const body = req.body as { selectors?: Record<string, string> };
       const selectors = body.selectors;
 
@@ -748,8 +747,6 @@ export function setupProfileRoutes(app: Express): void {
   app.post("/config/profiles/test/done", async (_req: Request, res: Response): Promise<void> => {
 
     try {
-
-      const { endLoginMode } = await import("../../browser/index.js");
 
       await endLoginMode();
 

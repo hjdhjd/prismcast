@@ -3,10 +3,10 @@
  * monitor.ts: Playback health monitoring for PrismCast.
  */
 import type { CircuitBreakerState, RecoveryMetrics, TabReplacementResult } from "./recovery.js";
-import { EvaluateTimeoutError, LOG, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext, startTimer } from "../utils/index.js";
+import { EvaluateTimeoutError, LOG, capitalize, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext, startTimer } from "../utils/index.js";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.js";
-import { RECOVERY_METHODS, capitalize, checkCircuitBreaker, createRecoveryMetrics, formatIssueType, formatRecoveryDuration, getIssueCategory, getIssueDescription,
+import { RECOVERY_METHODS, checkCircuitBreaker, createRecoveryMetrics, formatIssueType, formatRecoveryDuration, getIssueCategory, getIssueDescription,
   getRecoveryMethod, recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker } from "./recovery.js";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.js";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
@@ -609,6 +609,7 @@ export function monitorPlaybackHealth(
       entry.hls.hasAudio = false;
       entry.hls.audioPlaylist = "";
       entry.hls.audioSegments.clear();
+      entry.hls.audioSegmentBytes = 0;
       entry.hls.videoPlaylist = "";
 
       // Clear the probe cache so subsequent tunes to this channel don't re-attempt native streaming.
@@ -1060,6 +1061,694 @@ export function monitorPlaybackHealth(
     }
   }
 
+  // Tick phase functions. Each implements one phase of the monitoring interval, closing over monitor state and taking per-tick computed values as parameters. Functions
+  // that can exit the tick return a boolean: true means the caller should return immediately, false means continue.
+
+  /**
+   * Handles the case where no video element was found in the current context. Applies a grace period before triggering recovery: first failure waits, second failure
+   * attempts frame re-search, third failure escalates to full page navigation. Distinguishes "no video element" from "video exists but not ready" (buffering).
+   *
+   * Always exits the tick — no path falls through to subsequent health checks.
+   * @param now - Current timestamp for timing calculations.
+   */
+  async function handleVideoNotFound(now: number): Promise<void> {
+
+    // Determine context type for diagnostic logging.
+    const contextType = currentContext === currentPage ? "main page" : "iframe";
+    const frameCount = currentPage.frames().length;
+
+    // Check video presence to distinguish between "no video" and "video exists but not ready".
+    let presence: Nullable<Awaited<ReturnType<typeof checkVideoPresence>>> = null;
+
+    try {
+
+      presence = await checkVideoPresence(currentContext, selectorType);
+    } catch(_error) {
+
+    // If presence check fails (context destroyed), treat as no video.
+    }
+
+    if(presence?.anyVideoExists && !presence.readyVideoFound) {
+
+      // Video element exists but doesn't meet readyState criteria. This is a buffering condition, not a missing video condition. Apply the normal buffering grace
+      // period instead of escalating to navigation.
+      LOG.debug("recovery:general", "Video is buffering (readyState=%s, elements=%s).", presence.maxReadyState, presence.videoCount);
+
+      // Reset video not found counter since video actually exists.
+      videoNotFoundCount = 0;
+
+      emitStatusUpdate();
+
+      return;
+    }
+
+    videoNotFoundCount++;
+
+    LOG.warn("Video element not found (attempt %s/3). Context: %s, frames: %s, videoCount: %s.",
+      videoNotFoundCount, contextType, frameCount, presence?.videoCount ?? 0);
+
+    // Grace period: Wait for 2 consecutive failures before attempting context re-search, 3 before full navigation.
+    if(videoNotFoundCount < 2) {
+
+      emitStatusUpdate();
+
+      return;
+    }
+
+    // After 2+ failures, try re-searching frames to see if video moved to a different context.
+    if(videoNotFoundCount === 2) {
+
+      LOG.debug("recovery:context", "Re-searching frames for video element.");
+
+      try {
+
+        const newContext = await findVideoContext(currentPage, profile);
+        const validationState = await validateVideoElement(newContext, selectorType);
+
+        if(validationState.found) {
+
+          LOG.info("Video found in different context after re-search. readyState=%s.", validationState.readyState);
+
+          currentContext = newContext;
+          videoNotFoundCount = 0;
+
+          emitStatusUpdate();
+
+          return;
+        }
+
+        LOG.warn("Re-search did not find video in any frame.");
+      } catch(error) {
+
+        LOG.warn("Frame re-search failed: %s.", formatError(error));
+      }
+
+      emitStatusUpdate();
+
+      return;
+    }
+
+    // After 3+ consecutive failures, escalate to full page navigation recovery.
+    LOG.warn("Video element not found — recovering via %s.", RECOVERY_METHODS.pageNavigation);
+
+    // Check circuit breaker for too many failures.
+    const cbResult = checkCircuitBreaker(circuitBreaker, now);
+
+    if(cbResult.shouldTrip) {
+
+      LOG.error("Recovery failed after %s attempts — terminating stream.", cbResult.totalCount);
+
+      clearInterval(interval);
+      onCircuitBreak();
+
+      return;
+    }
+
+    // Set escalation to level 3 to trigger page navigation. We skip lower levels since they require a video element.
+    // Note: Keep state updates in sync with the main recovery path in executeRecoveryAction below.
+    recoveryState.escalationLevel = 3;
+    recoveryState.lastRecoveryTime = now;
+    recoveryState.totalAttempts++;
+    pendingReMinimize = true;
+    recoveryState.inProgress = true;
+
+    recordRecoveryAttempt(metrics, RECOVERY_METHODS.pageNavigation);
+
+    // Check page reload limit before attempting recovery.
+    if(!isPageReloadAllowed()) {
+
+      LOG.error("Page navigation rate limit reached (%s in %s minutes) — cannot recover without video element.",
+        CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
+
+      clearInterval(interval);
+      onCircuitBreak();
+
+      return;
+    }
+
+    const recoveryResult = await performPageNavigationRecovery();
+
+    // Page navigation disrupted the video stream. Mark a discontinuity regardless of navigation success so HLS clients resynchronize their decoders.
+    markStreamDiscontinuity();
+
+    // Set grace period to give page navigation time to take effect (L3 = 10 seconds).
+    recoveryState.graceUntil = now + recoveryGracePeriods[3];
+
+    if(recoveryResult.success && recoveryResult.newContext) {
+
+      currentContext = recoveryResult.newContext;
+
+      const duration = formatRecoveryDuration(metrics.currentRecoveryStartTime ?? now);
+
+      LOG.info("Recovered in %s via %s.", duration, RECOVERY_METHODS.pageNavigation);
+
+      recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
+
+      lastPageNavigationTime = Date.now();
+      resetRecoveryCounters();
+      resetEscalationState();
+      resetSegmentMonitoringState();
+      resetResolutionState();
+    } else {
+
+      consecutiveNavigationFailures++;
+
+      LOG.warn("Page navigation did not restore playback.");
+    }
+
+    recoveryState.inProgress = false;
+
+    emitStatusUpdate();
+  }
+
+  /**
+   * Monitors segment production health. Performs two independent checks:
+   *
+   * 1. Post-recovery verification: After L2/L3 recovery completes and the grace period ends, verifies that segments are actually being produced. This catches the case
+   *    where recovery reports success but the MediaRecorder/FFmpeg pipeline has silently died.
+   *
+   * 2. Continuous size monitoring: Watches segment sizes on every tick to detect spontaneous capture pipeline death. Dead pipelines produce tiny segments (18 bytes
+   *    observed) while the video element appears healthy. Also detects segment staleness when no new segments have been produced for SEGMENT_STALENESS_TIMEOUT.
+   *
+   * @param now - Current timestamp for timing calculations.
+   * @param withinRecoveryGrace - Whether the monitor is within the post-recovery grace period.
+   * @returns True if the tick should exit (after tab replacement trigger), false to continue.
+   */
+  async function monitorSegmentHealth(now: number, withinRecoveryGrace: boolean): Promise<boolean> {
+
+    // Post-recovery segment verification. After recovery grace period ends, check that segments are flowing.
+    if((segmentState.preRecoveryIndex !== null) && !withinRecoveryGrace) {
+
+      // Start the segment wait timer when recovery grace period ends.
+      segmentState.waitStartTime ??= now;
+
+      // Check if segments are flowing by comparing current index to pre-recovery index.
+      const entry = getStream(streamInfo.numericStreamId);
+      const currentIndex = entry?.segmenter?.getSegmentIndex() ?? null;
+
+      if((currentIndex !== null) && (currentIndex > segmentState.preRecoveryIndex)) {
+
+        // Segments are flowing — recovery actually succeeded. Clear tracking state.
+        segmentState.preRecoveryIndex = null;
+        segmentState.waitStartTime = null;
+        segmentState.productionStalled = false;
+      } else if((now - segmentState.waitStartTime) > SEGMENT_STALL_TIMEOUT) {
+
+        // No new segments for SEGMENT_STALL_TIMEOUT after recovery grace period. The capture pipeline is dead.
+        LOG.warn("No segments produced for %ss after recovery — capture pipeline may have stalled.", SEGMENT_STALL_TIMEOUT / 1000);
+
+        segmentState.productionStalled = true;
+      }
+    }
+
+    // Continuous segment size monitoring. Runs on every healthy interval to detect spontaneous capture pipeline death.
+    const sizeCheckEntry = getStream(streamInfo.numericStreamId);
+    const currentSegmentIndex = sizeCheckEntry?.segmenter?.getSegmentIndex() ?? 0;
+
+    if((currentSegmentIndex > segmentState.lastCheckedIndex) && sizeCheckEntry) {
+
+      // A new segment was produced. Update the staleness tracker and check its size.
+      segmentState.lastSegmentAdvanceTime = now;
+
+      const segmentSize = getLastSegmentSize(sizeCheckEntry) ?? 0;
+
+      if(segmentSize < TINY_SEGMENT_THRESHOLD) {
+
+        segmentState.consecutiveTinySegments++;
+        segmentState.wasInTinyState = true;
+
+        // Check track composition to determine the effective threshold. Dead capture pipelines produce audio-only segments (hasVideo=false) and always use the
+        // default count for fast detection. Segments with video trafs present use the provider-specific threshold, which may be higher for providers with extended
+        // static content (e.g., Xfinity commercial placeholders lasting several minutes).
+        const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
+        const effectiveThreshold = (hasVideo === false) ? TINY_SEGMENT_COUNT_TRIGGER : providerTinySegmentThreshold;
+
+        LOG.debug("recovery:tracks", "Below-threshold segment: %d bytes, hasVideo=%s, consecutive=%d, threshold=%d.",
+          segmentSize, String(hasVideo), segmentState.consecutiveTinySegments, effectiveThreshold);
+
+        if(segmentState.consecutiveTinySegments >= effectiveThreshold) {
+
+          LOG.warn("Detected %d consecutive undersized segments (%dKB) — capture pipeline may have stalled.",
+            segmentState.consecutiveTinySegments, Math.round(segmentSize / 1024));
+
+          // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentState.productionStalled.
+          if(onTabReplacement && !recoveryState.inProgress) {
+
+            await executeTabReplacement("tiny segments");
+
+            return true;
+          } else if(!onTabReplacement) {
+
+            segmentState.productionStalled = true;
+          }
+        }
+      } else {
+
+        // Valid segment size. Check for spontaneous recovery from tiny segment state.
+        if(segmentState.wasInTinyState) {
+
+          const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
+
+          LOG.debug("recovery:segments", "Segment production self-healed (%d bytes, hasVideo=%s).", segmentSize, String(hasVideo));
+        }
+
+        segmentState.consecutiveTinySegments = 0;
+        segmentState.wasInTinyState = false;
+      }
+
+      segmentState.lastCheckedIndex = currentSegmentIndex;
+    } else if(sizeCheckEntry && (segmentState.lastCheckedIndex > 0) && !withinRecoveryGrace &&
+      ((now - segmentState.lastSegmentAdvanceTime) > SEGMENT_STALENESS_TIMEOUT)) {
+
+      /* Segment staleness detection. The segment index has not advanced for longer than SEGMENT_STALENESS_TIMEOUT. This catches the case where Chrome's
+       * MediaRecorder silently stops emitting data — the input Readable stream stays "open" (no end/error events) but no data events fire. The segmenter
+       * receives nothing, produces no new segments, and the playlist freezes at the last known sequence number. The video element on the page continues
+       * playing normally (currentTime advances, no errors), so all video health checks pass. Without this check, the stale playlist persists indefinitely.
+       *
+       * The sizeCheckEntry guard prevents firing on a stream that was terminated mid-tick. The segmentState.lastCheckedIndex > 0 guard ensures we don't trigger
+       * during stream startup before the first segment has been produced. The recovery grace guard prevents false triggering during legitimate pauses (e.g.,
+       * after tab replacement while the new capture pipeline is initializing).
+       */
+      LOG.warn("No new segments produced for %ss — capture pipeline may have stalled.", SEGMENT_STALENESS_TIMEOUT / 1000);
+
+      if(onTabReplacement && !recoveryState.inProgress) {
+
+        await executeTabReplacement("segment staleness");
+
+        return true;
+      } else if(!onTabReplacement) {
+
+        segmentState.productionStalled = true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Monitors video resolution against the configured viewport and triggers recovery for sustained ABR degradation. Uses a two-step escalation: page reload (forces ABR
+   * restart), then tab replacement (fresh page with new network connections). Accepts the resolution after both attempts to avoid infinite loops on legitimately
+   * low-resolution content. Also detects and logs resolution restoration after successful recovery.
+   *
+   * @param now - Current timestamp for timing calculations.
+   * @param state - Current video state with intrinsic resolution.
+   * @param isProgressing - Whether the video is advancing.
+   * @param withinRecoveryGrace - Whether the monitor is within the post-recovery grace period.
+   * @returns True if the tick should exit (after recovery action), false to continue.
+   */
+  async function monitorResolutionDegradation(now: number, state: VideoState, isProgressing: boolean, withinRecoveryGrace: boolean): Promise<boolean> {
+
+    // Only check when playback is healthy, outside recovery grace, and the video has non-zero intrinsic dimensions.
+    if(!isProgressing || state.paused || state.error || state.ended || withinRecoveryGrace || (state.videoWidth === 0) || (state.videoHeight === 0)) {
+
+      return false;
+    }
+
+    const viewport = getEffectiveViewport(CONFIG);
+    const widthRatio = state.videoWidth / viewport.width;
+    const heightRatio = state.videoHeight / viewport.height;
+
+    const isDegraded = (widthRatio < RESOLUTION_RATIO_THRESHOLD) || (heightRatio < RESOLUTION_RATIO_THRESHOLD);
+
+    if(isDegraded && (now >= resolutionState.graceEnd)) {
+
+      resolutionState.consecutiveDegradedReadings++;
+
+      LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (viewport: %s\u00d7%s, ratio: %s%%\u00d7%s%%, consecutive: %s/%s).",
+        String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height),
+        String(Math.round(widthRatio * 100)), String(Math.round(heightRatio * 100)),
+        String(resolutionState.consecutiveDegradedReadings), String(RESOLUTION_DEGRADED_COUNT_THRESHOLD));
+    } else {
+
+      resolutionState.consecutiveDegradedReadings = 0;
+    }
+
+    // Escalation step 1: page reload. Forces the provider's ABR to restart quality negotiation. Only triggers after sustained degradation
+    // (RESOLUTION_DEGRADED_COUNT_THRESHOLD consecutive readings) to let transient ABR dips self-heal.
+    if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 0)) {
+
+      const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
+
+      LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s in %s\u00d7%s viewport). Attempting recovery via %s.",
+        String(degradedDuration), String(state.videoWidth), String(state.videoHeight),
+        String(viewport.width), String(viewport.height), RECOVERY_METHODS.pageNavigation);
+
+      recoveryState.inProgress = true;
+
+      if(!isPageReloadAllowed()) {
+
+        LOG.warn("Resolution recovery deferred — page navigation rate limit reached (%s in %s minutes).",
+          CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
+
+        // Defer by pushing grace end forward to avoid re-triggering every 2 seconds.
+        resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
+        recoveryState.inProgress = false;
+
+        emitStatusUpdate();
+
+        return true;
+      }
+
+      pendingReMinimize = true;
+
+      const recoveryResult = await performPageNavigationRecovery();
+
+      markStreamDiscontinuity();
+
+      resolutionState.consecutiveDegradedReadings = 0;
+      resolutionState.recoveryAttempt = 1;
+      resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
+
+      if(recoveryResult.success && recoveryResult.newContext) {
+
+        currentContext = recoveryResult.newContext;
+        lastPageNavigationTime = Date.now();
+      } else {
+
+        LOG.warn("Resolution recovery via page reload unsuccessful.");
+      }
+
+      recoveryState.inProgress = false;
+
+      emitStatusUpdate();
+
+      return true;
+    }
+
+    // Escalation step 2: tab replacement. Creates a fresh page with new capture pipeline and network connections.
+    if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 1)) {
+
+      if(onTabReplacement) {
+
+        const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
+
+        LOG.warn("Video resolution is still degraded after %ss (%s\u00d7%s). Attempting recovery via %s.",
+          String(degradedDuration), String(state.videoWidth), String(state.videoHeight), RECOVERY_METHODS.tabReplacement);
+
+        await executeTabReplacement("resolution degraded");
+
+        resolutionState.consecutiveDegradedReadings = 0;
+        resolutionState.recoveryAttempt = 2;
+        resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
+
+        return true;
+      }
+
+      // Tab replacement not available — skip directly to acceptance.
+      resolutionState.recoveryAttempt = 2;
+    }
+
+    // Acceptance: resolution still degraded after both recovery attempts. Log once and stop retrying.
+    if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 2)) {
+
+      LOG.warn("Video resolution remains degraded (%s\u00d7%s in %s\u00d7%s viewport) after recovery attempts. The stream will continue at reduced quality.",
+        String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height));
+
+      resolutionState.recoveryAttempt = 3;
+    }
+
+    // Resolution is good: clear tracking state so future degradation starts fresh. Use "restored" when resolution matches the viewport, "improved" when it's
+    // above the degradation threshold but below the viewport. Include the recovery method so this single message tells the complete story.
+    if(!isDegraded && (resolutionState.recoveryAttempt > 0)) {
+
+      const isFullQuality = (state.videoWidth >= viewport.width) && (state.videoHeight >= viewport.height);
+      const verb = isFullQuality ? "restored" : "improved";
+      const method = (resolutionState.recoveryAttempt === 1) ? "page reload" : "tab replacement";
+
+      LOG.info("Video resolution %s to %s\u00d7%s after %s.", verb, String(state.videoWidth), String(state.videoHeight), method);
+
+      resolutionState.consecutiveDegradedReadings = 0;
+      resolutionState.recoveryAttempt = 0;
+      resolutionState.graceEnd = 0;
+    }
+
+    return false;
+  }
+
+  /**
+   * Handles proactive page reload for sites with maxContinuousPlayback limits. Some streaming sites enforce a maximum continuous playback duration (e.g., NBC.com cuts
+   * streams after 4 hours). This function proactively reloads the page before the site's limit expires to maintain uninterrupted streaming. The reload triggers
+   * PROACTIVE_RELOAD_MARGIN_MS (2 minutes) before the configured limit.
+   *
+   * Only runs when playback is healthy (escalationLevel === 0), not within a recovery grace period, and progressing normally.
+   *
+   * @param now - Current timestamp for timing calculations.
+   * @param state - Current video state.
+   * @param isProgressing - Whether the video is advancing.
+   * @param withinRecoveryGrace - Whether the monitor is within the post-recovery grace period.
+   * @returns True if the tick should exit (after reload attempt or deferral), false to continue.
+   */
+  async function handleProactiveReload(now: number, state: VideoState, isProgressing: boolean, withinRecoveryGrace: boolean): Promise<boolean> {
+
+    if((profile.maxContinuousPlayback === null) || (recoveryState.escalationLevel !== 0) || withinRecoveryGrace || !isProgressing || state.paused || state.error ||
+      state.ended) {
+
+      return false;
+    }
+
+    const maxPlaybackMs = profile.maxContinuousPlayback * 3600000;
+    const elapsedMs = now - lastPageNavigationTime;
+
+    if(elapsedMs < (maxPlaybackMs - PROACTIVE_RELOAD_MARGIN_MS)) {
+
+      return false;
+    }
+
+    const elapsedHours = (elapsedMs / 3600000).toFixed(1);
+
+    LOG.info("Proactive reload after %sh of continuous playback (site limit: %sh). Reloading page to prevent stream cutoff.",
+      elapsedHours, String(profile.maxContinuousPlayback));
+
+    recoveryState.inProgress = true;
+
+    // Check page reload rate limit. Proactive reload is best-effort maintenance — if the reload budget is exhausted from recent error recoveries, we gracefully
+    // yield. If the site eventually cuts the stream, normal error recovery handles it.
+    if(!isPageReloadAllowed()) {
+
+      LOG.warn("Proactive reload deferred — page navigation rate limit reached (%s in %s minutes).",
+        CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
+
+      // Set a grace period to prevent this deferral from re-triggering every 2 seconds while the rate limit remains in effect. We set recoveryState.graceUntil
+      // directly rather than calling setRecoveryGracePeriod() because no recovery action was performed — the window state is unchanged and pendingReMinimize
+      // should not be set.
+      recoveryState.graceUntil = now + recoveryGracePeriods[3];
+      recoveryState.inProgress = false;
+
+      emitStatusUpdate();
+
+      return true;
+    }
+
+    const recoveryResult = await performPageNavigationRecovery();
+
+    markStreamDiscontinuity();
+    setRecoveryGracePeriod(3);
+
+    if(recoveryResult.success && recoveryResult.newContext) {
+
+      currentContext = recoveryResult.newContext;
+      lastPageNavigationTime = Date.now();
+
+      LOG.info("Proactive reload completed successfully.");
+
+      resetRecoveryCounters();
+      resetSegmentMonitoringState();
+      resetResolutionState();
+    } else {
+
+      LOG.warn("Proactive reload unsuccessful. Will retry after recovery grace period.");
+    }
+
+    recoveryState.inProgress = false;
+
+    emitStatusUpdate();
+
+    return true;
+  }
+
+  /**
+   * Executes recovery when the monitor has determined that recovery is needed. Handles issue-aware escalation:
+   * - Paused issues try L1 (play/unmute) first since it works ~50% of the time for paused state
+   * - Buffering issues skip L1 and go directly to L2 (source reload) since L1 never helps buffering
+   * - If L2 has already been attempted, skip to L3 (page reload) since a second L2 always fails
+   *
+   * Also handles segment production stalls (direct escalation to tab replacement) and circuit breaker checks. Levels 1-2 use ensurePlayback() for in-page recovery,
+   * level 3 uses performPageNavigationRecovery() for full page navigation.
+   *
+   * @param now - Current timestamp for timing calculations.
+   * @param state - Current video state.
+   * @param isProgressing - Whether the video is advancing.
+   * @param isBuffering - Whether the video is actively buffering.
+   * @returns True if the tick should exit (circuit breaker tripped or tab replacement triggered), false to continue.
+   */
+  async function executeRecoveryAction(now: number, state: VideoState, isProgressing: boolean, isBuffering: boolean): Promise<boolean> {
+
+    // Segment production stall handling. When segments stopped flowing after L2/L3 recovery, the capture pipeline is dead and normal recovery won't help. Skip the
+    // escalation ladder and go directly to tab replacement if available.
+    if(segmentState.productionStalled && onTabReplacement) {
+
+      LOG.warn("Capture pipeline still stalled — escalating to %s.", RECOVERY_METHODS.tabReplacement);
+
+      await executeTabReplacement("capture pipeline stalled");
+
+      return true;
+    }
+
+    // Check circuit breaker for too many failures.
+    const cbResult = checkCircuitBreaker(circuitBreaker, now);
+
+    if(cbResult.shouldTrip) {
+
+      const elapsedSeconds = circuitBreaker.firstFailureTime ? Math.round((now - circuitBreaker.firstFailureTime) / 1000) : 0;
+
+      LOG.error("Recovery failed after %s attempts in %ss — terminating stream.", cbResult.totalCount, elapsedSeconds);
+
+      clearInterval(interval);
+      onCircuitBreak();
+
+      return true;
+    }
+
+    // Issue-aware escalation. Determine the appropriate level based on the type of issue and whether source reload has already been attempted.
+    const issueCategory = getIssueCategory(state, !isProgressing, isBuffering);
+    let nextLevel: number;
+
+    if((issueCategory === "paused") && (recoveryState.escalationLevel === 0)) {
+
+      // Paused issues: try L1 first (play/unmute works ~50% for paused).
+      nextLevel = 1;
+    } else if(!recoveryState.sourceReloadAttempted) {
+
+      // First recovery attempt for buffering/other, or L1 didn't fix paused: try L2 (source reload).
+      nextLevel = 2;
+    } else {
+
+      // Source reload already attempted: go to L3 (page reload).
+      nextLevel = 3;
+    }
+
+    // Note: Keep state updates in sync with the video-not-found recovery path in handleVideoNotFound above.
+    recoveryState.escalationLevel = nextLevel;
+    recoveryState.lastRecoveryTime = now;
+    recoveryState.totalAttempts++;
+    pendingReMinimize = true;
+
+    // Get recovery method name for logging and metrics.
+    const recoveryMethod = getRecoveryMethod(recoveryState.escalationLevel);
+
+    // Store issue type and time for UI display.
+    const issueType = formatIssueType(state, !isProgressing, isBuffering);
+
+    lastIssueType = issueType;
+    lastIssueTime = now;
+
+    // If a previous recovery was pending (L1 or L2 that didn't result in healthy playback), log that it was unsuccessful before starting the new attempt.
+    if(metrics.currentRecoveryMethod !== null) {
+
+      LOG.warn("%s did not resolve the issue — escalating to %s.", capitalize(metrics.currentRecoveryMethod), recoveryMethod);
+    } else {
+
+      const issueDesc = getIssueDescription(issueCategory);
+
+      LOG.warn("Playback %s — recovering via %s.", issueDesc, recoveryMethod);
+    }
+
+    recordRecoveryAttempt(metrics, recoveryMethod);
+
+    // For L2/L3 recovery, record the current segment index so we can verify segments are flowing after recovery completes.
+    if(recoveryState.escalationLevel >= 2) {
+
+      const entry = getStream(streamInfo.numericStreamId);
+
+      segmentState.preRecoveryIndex = entry?.segmenter?.getSegmentIndex() ?? null;
+      segmentState.waitStartTime = null;
+      segmentState.productionStalled = false;
+    }
+
+    recoveryState.inProgress = true;
+
+    try {
+
+      // Levels 1-2: In-page recovery via ensurePlayback().
+      if(recoveryState.escalationLevel <= 2) {
+
+        await ensurePlayback(currentPage, currentContext, profile, { recoveryLevel: recoveryState.escalationLevel, skipNativeFullscreen: true });
+
+        if(recoveryState.escalationLevel === 2) {
+
+          recoveryState.sourceReloadAttempted = true;
+
+          markStreamDiscontinuity();
+        }
+
+        recoveryState.graceUntil = now + recoveryGracePeriods[recoveryState.escalationLevel];
+        resetResolutionState();
+      } else {
+
+        // Level 3: Page navigation recovery.
+
+        // Safety check: If page navigation has failed twice consecutively, fall back to source reload.
+        if(consecutiveNavigationFailures >= 2) {
+
+          LOG.warn("Page navigation has failed %s consecutive times — falling back to source reload.",
+            consecutiveNavigationFailures);
+
+          recoveryState.escalationLevel = 2;
+          consecutiveNavigationFailures = 0;
+
+          recoveryState.sourceReloadAttempted = false;
+        } else {
+
+          if(!isPageReloadAllowed()) {
+
+            LOG.warn("Page navigation rate limit reached (%s in %s minutes) — falling back to source reload.",
+              CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
+
+            recoveryState.escalationLevel = 2;
+
+            recoveryState.sourceReloadAttempted = false;
+          } else {
+
+            const recoveryResult = await performPageNavigationRecovery();
+
+            markStreamDiscontinuity();
+
+            recoveryState.graceUntil = now + recoveryGracePeriods[3];
+
+            if(recoveryResult.success && recoveryResult.newContext) {
+
+              currentContext = recoveryResult.newContext;
+
+              const duration = formatRecoveryDuration(metrics.currentRecoveryStartTime ?? now);
+
+              LOG.info("Recovered in %s via %s.", duration, RECOVERY_METHODS.pageNavigation);
+
+              recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
+
+              lastPageNavigationTime = Date.now();
+              resetRecoveryCounters();
+              resetEscalationState();
+              resetSegmentMonitoringState();
+              resetResolutionState();
+            } else {
+
+              consecutiveNavigationFailures++;
+
+              LOG.warn("Page navigation did not restore playback (attempt %s/2).", consecutiveNavigationFailures);
+            }
+          }
+        }
+      }
+    } catch(error) {
+
+      LOG.warn("Recovery via %s failed: %s.", getRecoveryMethod(recoveryState.escalationLevel), formatError(error));
+    }
+
+    recoveryState.inProgress = false;
+
+    return false;
+  }
+
   /* Main monitoring interval. This runs every MONITOR_INTERVAL milliseconds to check video state and trigger recovery when needed.
    *
    * IMPORTANT: Early returns must call emitStatusUpdate() before returning (except when the stream is terminating, e.g., page closed or circuit breaker tripped). This
@@ -1193,171 +1882,10 @@ export function monitorPlaybackHealth(
         // If re-search failed, let the normal "video not found" logic handle it.
         }
 
-        /* If no video element found, apply a grace period before triggering recovery. The video may be temporarily unavailable due to:
-         * - readyState fluctuations (selectReadyVideo finds no video with readyState >= 3)
-         * - Frame detachment/reattachment during page updates
-         * - Momentary DOM changes during ad transitions
-         *
-         * We distinguish between "no video element exists" and "video exists but not ready". The latter is treated as buffering and given more time.
-         */
+        // Video not found: apply grace period, attempt frame re-search, and escalate to page navigation recovery. Always exits the tick.
         if(!state) {
 
-          // Determine context type for diagnostic logging.
-          const contextType = currentContext === currentPage ? "main page" : "iframe";
-          const frameCount = currentPage.frames().length;
-
-          // Check video presence to distinguish between "no video" and "video exists but not ready".
-          let presence: Nullable<Awaited<ReturnType<typeof checkVideoPresence>>> = null;
-
-          try {
-
-            presence = await checkVideoPresence(currentContext, selectorType);
-          } catch(_error) {
-
-          // If presence check fails (context destroyed), treat as no video.
-          }
-
-          if(presence?.anyVideoExists && !presence.readyVideoFound) {
-
-            // Video element exists but doesn't meet readyState criteria. This is a buffering condition, not a missing video condition.
-            // Apply the normal buffering grace period instead of escalating to navigation.
-            LOG.debug("recovery:general", "Video is buffering (readyState=%s, elements=%s).", presence.maxReadyState, presence.videoCount);
-
-            // Reset video not found counter since video actually exists.
-            videoNotFoundCount = 0;
-
-            // Emit status so SSE clients see current state even during this buffering condition.
-            emitStatusUpdate();
-
-            // Let the normal buffering detection handle this on subsequent checks.
-            return;
-          }
-
-          videoNotFoundCount++;
-
-          LOG.warn("Video element not found (attempt %s/3). Context: %s, frames: %s, videoCount: %s.",
-            videoNotFoundCount, contextType, frameCount, presence?.videoCount ?? 0);
-
-          // Grace period: Wait for 2 consecutive failures before attempting context re-search, 3 before full navigation.
-          if(videoNotFoundCount < 2) {
-
-            // First failure - just log and wait for next check. Emit status so SSE clients stay current.
-            emitStatusUpdate();
-
-            return;
-          }
-
-          // After 2+ failures, try re-searching frames to see if video moved to a different context.
-          if(videoNotFoundCount === 2) {
-
-            LOG.debug("recovery:context", "Re-searching frames for video element.");
-
-            try {
-
-              const newContext = await findVideoContext(currentPage, profile);
-              const validationState = await validateVideoElement(newContext, selectorType);
-
-              if(validationState.found) {
-
-                LOG.info("Video found in different context after re-search. readyState=%s.", validationState.readyState);
-
-                currentContext = newContext;
-                videoNotFoundCount = 0;
-
-                // Emit status so SSE clients see current state.
-                emitStatusUpdate();
-
-                return;
-              }
-
-              LOG.warn("Re-search did not find video in any frame.");
-            } catch(error) {
-
-              LOG.warn("Frame re-search failed: %s.", formatError(error));
-            }
-
-            // Emit status so SSE clients stay current during video search.
-            emitStatusUpdate();
-
-            return;
-          }
-
-          // After 3+ consecutive failures, escalate to full page navigation recovery.
-          LOG.warn("Video element not found — recovering via %s.", RECOVERY_METHODS.pageNavigation);
-
-          // Check circuit breaker for too many failures.
-          const cbResult = checkCircuitBreaker(circuitBreaker, now);
-
-          if(cbResult.shouldTrip) {
-
-            LOG.error("Recovery failed after %s attempts — terminating stream.", cbResult.totalCount);
-
-            clearInterval(interval);
-            onCircuitBreak();
-
-            return;
-          }
-
-          // Set escalation to level 3 to trigger page navigation. We skip lower levels since they require a video element.
-          // Note: Keep state updates in sync with the main recovery path in the needsRecovery block below.
-          recoveryState.escalationLevel = 3;
-          recoveryState.lastRecoveryTime = now;
-          recoveryState.totalAttempts++;
-          pendingReMinimize = true;
-          recoveryState.inProgress = true;
-
-          recordRecoveryAttempt(metrics, RECOVERY_METHODS.pageNavigation);
-
-          // Check page reload limit before attempting recovery.
-          if(!isPageReloadAllowed()) {
-
-            LOG.error("Page navigation rate limit reached (%s in %s minutes) — cannot recover without video element.",
-              CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
-
-            clearInterval(interval);
-            onCircuitBreak();
-
-            return;
-          }
-
-          // Use the unified recovery function with validation.
-          const recoveryResult = await performPageNavigationRecovery();
-
-          // Page navigation disrupted the video stream. Mark a discontinuity regardless of navigation success so HLS clients resynchronize their decoders.
-          markStreamDiscontinuity();
-
-          // Set grace period to give page navigation time to take effect (L3 = 10 seconds).
-          recoveryState.graceUntil = now + recoveryGracePeriods[3];
-
-          if(recoveryResult.success && recoveryResult.newContext) {
-
-            // Update the context reference for subsequent monitor checks (only after validation succeeds).
-            currentContext = recoveryResult.newContext;
-
-            // Log success with timing.
-            const duration = formatRecoveryDuration(metrics.currentRecoveryStartTime ?? now);
-
-            LOG.info("Recovered in %s via %s.", duration, RECOVERY_METHODS.pageNavigation);
-
-            recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
-
-            // Reset state after successful page navigation recovery.
-            lastPageNavigationTime = Date.now();
-            resetRecoveryCounters();
-            resetEscalationState();
-            resetSegmentMonitoringState();
-            resetResolutionState();
-          } else {
-
-            consecutiveNavigationFailures++;
-
-            LOG.warn("Page navigation did not restore playback.");
-          }
-
-          recoveryState.inProgress = false;
-
-          // Emit status so SSE clients see the recovery result.
-          emitStatusUpdate();
+          await handleVideoNotFound(now);
 
           return;
         }
@@ -1405,121 +1933,10 @@ export function monitorPlaybackHealth(
         // Check if we're within the recovery grace period (recently performed a recovery action and waiting for it to take effect).
         const withinRecoveryGrace = now < recoveryState.graceUntil;
 
-        /* Segment production monitoring. After L2/L3 recovery completes (grace period ends), we verify that segments are actually being produced. If recovery reported
-         * success but the capture pipeline is dead (MediaRecorder stopped producing data, FFmpeg stdin idle), segments will stop flowing while the video element
-         * appears healthy. This catches the 20+ minute freeze bug where PrismCast reports "Recovered" but Channels DVR receives no data.
-         */
-        if((segmentState.preRecoveryIndex !== null) && !withinRecoveryGrace) {
+        // Segment production monitoring: post-recovery verification and continuous size/staleness checks.
+        if(await monitorSegmentHealth(now, withinRecoveryGrace)) {
 
-          // Start the segment wait timer when recovery grace period ends.
-          segmentState.waitStartTime ??= now;
-
-          // Check if segments are flowing by comparing current index to pre-recovery index.
-          const entry = getStream(streamInfo.numericStreamId);
-          const currentSegmentIndex = entry?.segmenter?.getSegmentIndex() ?? null;
-
-          if((currentSegmentIndex !== null) && (currentSegmentIndex > segmentState.preRecoveryIndex)) {
-
-            // Segments are flowing - recovery actually succeeded. Clear tracking state.
-            segmentState.preRecoveryIndex = null;
-            segmentState.waitStartTime = null;
-            segmentState.productionStalled = false;
-          } else if((now - segmentState.waitStartTime) > SEGMENT_STALL_TIMEOUT) {
-
-            // No new segments for SEGMENT_STALL_TIMEOUT after recovery grace period. The capture pipeline is dead.
-            LOG.warn("No segments produced for %ss after recovery — capture pipeline may have stalled.", SEGMENT_STALL_TIMEOUT / 1000);
-
-            segmentState.productionStalled = true;
-          }
-        }
-
-        /* Continuous segment size monitoring. Runs on every healthy interval to detect spontaneous capture pipeline death (no preceding recovery event). Dead pipelines
-         * produce tiny segments (18 bytes observed) while the video element appears healthy. This catches failures that post-recovery index monitoring misses because
-         * there's no recovery to trigger monitoring.
-         */
-        const sizeCheckEntry = getStream(streamInfo.numericStreamId);
-        const currentSegmentIndex = sizeCheckEntry?.segmenter?.getSegmentIndex() ?? 0;
-
-        if((currentSegmentIndex > segmentState.lastCheckedIndex) && sizeCheckEntry) {
-
-          // A new segment was produced. Update the staleness tracker and check its size.
-          segmentState.lastSegmentAdvanceTime = now;
-
-          const segmentSize = getLastSegmentSize(sizeCheckEntry) ?? 0;
-
-          if(segmentSize < TINY_SEGMENT_THRESHOLD) {
-
-            segmentState.consecutiveTinySegments++;
-            segmentState.wasInTinyState = true;
-
-            // Check track composition to determine the effective threshold. Dead capture pipelines produce audio-only segments (hasVideo=false) and always use the
-            // default count for fast detection. Segments with video trafs present (hasVideo=true or null) use the provider-specific threshold, which may be higher
-            // for providers with extended static content (e.g., Xfinity commercial placeholders lasting several minutes).
-            const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
-            const effectiveThreshold = (hasVideo === false) ? TINY_SEGMENT_COUNT_TRIGGER : providerTinySegmentThreshold;
-
-            LOG.debug("recovery:tracks", "Below-threshold segment: %d bytes, hasVideo=%s, consecutive=%d, threshold=%d.",
-              segmentSize, String(hasVideo), segmentState.consecutiveTinySegments, effectiveThreshold);
-
-            if(segmentState.consecutiveTinySegments >= effectiveThreshold) {
-
-              LOG.warn("Detected %d consecutive undersized segments (%dKB) — capture pipeline may have stalled.",
-                segmentState.consecutiveTinySegments, Math.round(segmentSize / 1024));
-
-              // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentState.productionStalled. Return unconditionally after tab
-              // replacement (matching stalled-capture and unresponsive-tab triggers) to avoid falling through the rest of the tick with stale pre-replacement state.
-              if(onTabReplacement && !recoveryState.inProgress) {
-
-                await executeTabReplacement("tiny segments");
-
-                return;
-              } else if(!onTabReplacement) {
-
-                // No tab replacement callback - set stalled flag for circuit breaker.
-                segmentState.productionStalled = true;
-              }
-            }
-          } else {
-
-            // Valid segment size. Check for spontaneous recovery from tiny segment state. We don't mark discontinuity here - only tab replacement marks discontinuity.
-            // Self-healing may be transient and not require decoder reset.
-            if(segmentState.wasInTinyState) {
-
-              const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
-
-              LOG.debug("recovery:segments", "Segment production self-healed (%d bytes, hasVideo=%s).", segmentSize, String(hasVideo));
-            }
-
-            // Reset tiny segment tracking.
-            segmentState.consecutiveTinySegments = 0;
-            segmentState.wasInTinyState = false;
-          }
-
-          segmentState.lastCheckedIndex = currentSegmentIndex;
-        } else if(sizeCheckEntry && (segmentState.lastCheckedIndex > 0) && !withinRecoveryGrace &&
-          ((now - segmentState.lastSegmentAdvanceTime) > SEGMENT_STALENESS_TIMEOUT)) {
-
-          /* Segment staleness detection. The segment index has not advanced for longer than SEGMENT_STALENESS_TIMEOUT. This catches the case where Chrome's
-           * MediaRecorder silently stops emitting data — the input Readable stream stays "open" (no end/error events) but no data events fire. The segmenter
-           * receives nothing, produces no new segments, and the playlist freezes at the last known sequence number. The video element on the page continues
-           * playing normally (currentTime advances, no errors), so all video health checks pass. Without this check, the stale playlist persists indefinitely.
-           *
-           * The sizeCheckEntry guard prevents firing on a stream that was terminated mid-tick. The segmentState.lastCheckedIndex > 0 guard ensures we don't trigger
-           * during stream startup before the first segment has been produced. The recovery grace guard prevents false triggering during legitimate pauses (e.g.,
-           * after tab replacement while the new capture pipeline is initializing).
-           */
-          LOG.warn("No new segments produced for %ss — capture pipeline may have stalled.", SEGMENT_STALENESS_TIMEOUT / 1000);
-
-          if(onTabReplacement && !recoveryState.inProgress) {
-
-            await executeTabReplacement("segment staleness");
-
-            return;
-          } else if(!onTabReplacement) {
-
-            // No tab replacement callback - set stalled flag for circuit breaker.
-            segmentState.productionStalled = true;
-          }
+          return;
         }
 
         /* Re-minimize check. After recovery, the browser window may have been un-minimized by fullscreen actions. As soon as the stream is healthy (progressing without
@@ -1571,139 +1988,10 @@ export function monitorPlaybackHealth(
           }
         }
 
-        /* Resolution degradation detection. When a provider's ABR delivers content at a resolution significantly below the configured viewport, the captured frame
-         * shows a small video in the top-left corner of a larger viewport. This is distinct from fullscreen issues (which the fullscreen reinforcement above handles) —
-         * the video CSS fills the viewport, but the intrinsic media resolution is low. We monitor video.videoWidth/videoHeight and compare against the effective viewport
-         * dimensions. The check is gated by healthy playback, outside recovery grace, and non-zero intrinsic dimensions. The 30-second grace period after stream start
-         * and each recovery allows ABR time to ramp up quality. After two unsuccessful recovery attempts (page reload + tab replacement), the system accepts the
-         * resolution to avoid infinite loops on legitimately low-resolution content.
-         */
-        if(isProgressing && !state.paused && !state.error && !state.ended && !withinRecoveryGrace && (state.videoWidth > 0) && (state.videoHeight > 0)) {
+        // Resolution degradation detection: two-step recovery (page reload, tab replacement) for sustained ABR degradation.
+        if(await monitorResolutionDegradation(now, state, isProgressing, withinRecoveryGrace)) {
 
-          const viewport = getEffectiveViewport(CONFIG);
-          const widthRatio = state.videoWidth / viewport.width;
-          const heightRatio = state.videoHeight / viewport.height;
-
-          const isDegraded = (widthRatio < RESOLUTION_RATIO_THRESHOLD) || (heightRatio < RESOLUTION_RATIO_THRESHOLD);
-
-          if(isDegraded && (now >= resolutionState.graceEnd)) {
-
-            resolutionState.consecutiveDegradedReadings++;
-
-            LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (viewport: %s\u00d7%s, ratio: %s%%\u00d7%s%%, consecutive: %s/%s).",
-              String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height),
-              String(Math.round(widthRatio * 100)), String(Math.round(heightRatio * 100)),
-              String(resolutionState.consecutiveDegradedReadings), String(RESOLUTION_DEGRADED_COUNT_THRESHOLD));
-          } else {
-
-            resolutionState.consecutiveDegradedReadings = 0;
-          }
-
-          // Escalation step 1: page reload. Forces the provider's ABR to restart quality negotiation. Only triggers after sustained degradation
-          // (RESOLUTION_DEGRADED_COUNT_THRESHOLD consecutive readings) to let transient ABR dips self-heal.
-          if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 0)) {
-
-            const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
-
-            LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s in %s\u00d7%s viewport). Attempting recovery via %s.",
-              String(degradedDuration), String(state.videoWidth), String(state.videoHeight),
-              String(viewport.width), String(viewport.height), RECOVERY_METHODS.pageNavigation);
-
-            recoveryState.inProgress = true;
-
-            // Check page reload rate limit before attempting.
-            if(!isPageReloadAllowed()) {
-
-              LOG.warn("Resolution recovery deferred — page navigation rate limit reached (%s in %s minutes).",
-                CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
-
-              // Defer by pushing grace end forward to avoid re-triggering every 2 seconds.
-              resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
-              recoveryState.inProgress = false;
-
-              emitStatusUpdate();
-
-              return;
-            }
-
-            pendingReMinimize = true;
-
-            const recoveryResult = await performPageNavigationRecovery();
-
-            markStreamDiscontinuity();
-
-            resolutionState.consecutiveDegradedReadings = 0;
-            resolutionState.recoveryAttempt = 1;
-            resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
-
-            if(recoveryResult.success && recoveryResult.newContext) {
-
-              currentContext = recoveryResult.newContext;
-              lastPageNavigationTime = Date.now();
-            } else {
-
-              LOG.warn("Resolution recovery via page reload unsuccessful.");
-            }
-
-            recoveryState.inProgress = false;
-
-            emitStatusUpdate();
-
-            return;
-          }
-
-          // Escalation step 2: tab replacement. Creates a fresh page with new capture pipeline and network connections.
-          if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 1)) {
-
-            if(onTabReplacement) {
-
-              const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
-
-              LOG.warn("Video resolution is still degraded after %ss (%s\u00d7%s). Attempting recovery via %s.",
-                String(degradedDuration), String(state.videoWidth), String(state.videoHeight), RECOVERY_METHODS.tabReplacement);
-
-              const outcome = await executeTabReplacement("resolution degraded");
-
-              resolutionState.consecutiveDegradedReadings = 0;
-              resolutionState.recoveryAttempt = 2;
-              resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
-
-              if(outcome.outcome === "terminated") {
-
-                return;
-              }
-
-              return;
-            }
-
-            // Tab replacement not available — skip directly to acceptance.
-            resolutionState.recoveryAttempt = 2;
-          }
-
-          // Acceptance: resolution still degraded after both recovery attempts. Log once and stop retrying.
-          if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 2)) {
-
-            LOG.warn("Video resolution remains degraded (%s\u00d7%s in %s\u00d7%s viewport) after recovery attempts. The stream will continue at reduced quality.",
-              String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height));
-
-            resolutionState.recoveryAttempt = 3;
-          }
-
-          // Resolution is good: clear tracking state so future degradation starts fresh. Use "restored" when resolution matches the viewport, "improved" when it's
-          // above the degradation threshold but below the viewport (e.g., 800x450 in a 1280x720 viewport — no longer degraded, but not full quality). Include the
-          // recovery method so this single message tells the complete story (what happened and how it was resolved).
-          if(!isDegraded && (resolutionState.recoveryAttempt > 0)) {
-
-            const isFullQuality = (state.videoWidth >= viewport.width) && (state.videoHeight >= viewport.height);
-            const verb = isFullQuality ? "restored" : "improved";
-            const method = (resolutionState.recoveryAttempt === 1) ? "page reload" : "tab replacement";
-
-            LOG.info("Video resolution %s to %s\u00d7%s after %s.", verb, String(state.videoWidth), String(state.videoHeight), method);
-
-            resolutionState.consecutiveDegradedReadings = 0;
-            resolutionState.recoveryAttempt = 0;
-            resolutionState.graceEnd = 0;
-          }
+          return;
         }
 
         /* Stall counter management. We increment recoveryState.stallCount when the video is not progressing and not within buffering grace. We reset to 0 when
@@ -1771,275 +2059,19 @@ export function monitorPlaybackHealth(
           }
         }
 
-        /* Proactive page reload. Some streaming sites enforce a maximum continuous playback duration (e.g., NBC.com cuts streams after 4 hours). When a domain
-         * configures maxContinuousPlayback, we proactively reload the page before the site's limit expires to maintain uninterrupted streaming. The reload triggers
-         * PROACTIVE_RELOAD_MARGIN_MS (2 minutes) before the configured limit, giving enough time for page navigation and video reinitialization.
-         *
-         * This check runs only when playback is healthy (escalationLevel === 0), not within a recovery grace period, and progressing normally. If recovery is already
-         * in progress, the ongoing recovery will eventually perform a page navigation if needed. The page reload rate limit is also checked to avoid consuming reload
-         * budget that error recovery needs. The timer resets after any successful full page navigation (proactive or recovery-triggered).
-         */
-        if((profile.maxContinuousPlayback !== null) && (recoveryState.escalationLevel === 0) && !withinRecoveryGrace && isProgressing && !state.paused && !state.error &&
-          !state.ended) {
+        // Proactive page reload for sites with maxContinuousPlayback limits.
+        if(await handleProactiveReload(now, state, isProgressing, withinRecoveryGrace)) {
 
-          const maxPlaybackMs = profile.maxContinuousPlayback * 3600000;
-          const elapsedMs = now - lastPageNavigationTime;
-
-          if(elapsedMs >= (maxPlaybackMs - PROACTIVE_RELOAD_MARGIN_MS)) {
-
-            const elapsedHours = (elapsedMs / 3600000).toFixed(1);
-
-            LOG.info("Proactive reload after %sh of continuous playback (site limit: %sh). Reloading page to prevent stream cutoff.",
-              elapsedHours, String(profile.maxContinuousPlayback));
-
-            recoveryState.inProgress = true;
-
-            // Check page reload rate limit before attempting. Proactive reload is best-effort maintenance — if the reload budget is exhausted from recent error
-            // recoveries, we gracefully yield. If the site eventually cuts the stream, normal error recovery handles it.
-            if(!isPageReloadAllowed()) {
-
-              LOG.warn("Proactive reload deferred — page navigation rate limit reached (%s in %s minutes).",
-                CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
-
-              // Set a grace period to prevent this deferral from re-triggering every 2 seconds while the rate limit remains in effect. The 10-second L3 grace
-              // period spaces out re-checks, and the rate-limit window (default 15 minutes) will eventually expire old timestamps to allow the proactive reload. We
-              // set recoveryState.graceUntil directly rather than calling setRecoveryGracePeriod() because no recovery action was performed — the window state is
-              // unchanged and pendingReMinimize should not be set.
-              recoveryState.graceUntil = now + recoveryGracePeriods[3];
-              recoveryState.inProgress = false;
-
-              emitStatusUpdate();
-
-              return;
-            }
-
-            const recoveryResult = await performPageNavigationRecovery();
-
-            // Page navigation disrupted the video stream. Mark a discontinuity so HLS clients resynchronize their decoders.
-            markStreamDiscontinuity();
-            setRecoveryGracePeriod(3);
-
-            if(recoveryResult.success && recoveryResult.newContext) {
-
-              currentContext = recoveryResult.newContext;
-              lastPageNavigationTime = Date.now();
-
-              LOG.info("Proactive reload completed successfully.");
-
-              resetRecoveryCounters();
-              resetSegmentMonitoringState();
-              resetResolutionState();
-            } else {
-
-              LOG.warn("Proactive reload unsuccessful. Will retry after recovery grace period.");
-            }
-
-            recoveryState.inProgress = false;
-
-            emitStatusUpdate();
-
-            return;
-          }
+          return;
         }
 
-        /* Recovery execution. When recovery is needed, we update circuit breaker state, determine the appropriate recovery level based on issue type and history, and
-         * execute the recovery action. The recovery system is issue-aware:
-         * - Paused issues try L1 (play/unmute) first since it works ~50% of the time for paused state
-         * - Buffering issues skip L1 and go directly to L2 (source reload) since L1 never helps buffering
-         * - If L2 has already been attempted, skip to L3 (page reload) since a second L2 always fails
-         */
+        // Recovery execution: issue-aware escalation (L1 play/unmute, L2 source reload, L3 page navigation) with circuit breaker.
         if(needsRecovery) {
 
-          /* Segment production stall handling. When we detect that segments stopped flowing after L2/L3 recovery, the capture pipeline is dead and normal recovery
-           * won't help. We skip the escalation ladder and go directly to tab replacement if available.
-           */
-          if(segmentState.productionStalled && onTabReplacement) {
-
-            LOG.warn("Capture pipeline still stalled — escalating to %s.", RECOVERY_METHODS.tabReplacement);
-
-            await executeTabReplacement("capture pipeline stalled");
+          if(await executeRecoveryAction(now, state, isProgressing, isBuffering)) {
 
             return;
           }
-
-          // Check circuit breaker for too many failures. The helper handles incrementing, window checks, and resetting if outside the window.
-          const cbResult = checkCircuitBreaker(circuitBreaker, now);
-
-          if(cbResult.shouldTrip) {
-
-            const elapsedSeconds = circuitBreaker.firstFailureTime ? Math.round((now - circuitBreaker.firstFailureTime) / 1000) : 0;
-
-            LOG.error("Recovery failed after %s attempts in %ss — terminating stream.", cbResult.totalCount, elapsedSeconds);
-
-            clearInterval(interval);
-            onCircuitBreak();
-
-            return;
-          }
-
-          /* Issue-aware escalation. Instead of blindly incrementing the level, we determine the appropriate level based on:
-         * 1. The type of issue (paused vs buffering vs other)
-         * 2. Whether source reload (L2) has already been attempted in this page session
-         * 3. The current escalation level
-         *
-         * Levels:
-         * - Level 1: Basic play/unmute - only for paused issues
-         * - Level 2: Reload video source - for buffering/other issues, or when L1 fails
-         * - Level 3: Page navigation - when L2 fails or has already been attempted
-         */
-          const issueCategory = getIssueCategory(state, !isProgressing, isBuffering);
-          let nextLevel: number;
-
-          if((issueCategory === "paused") && (recoveryState.escalationLevel === 0)) {
-
-            // Paused issues: try L1 first (play/unmute works ~50% for paused).
-            nextLevel = 1;
-          } else if(!recoveryState.sourceReloadAttempted) {
-
-            // First recovery attempt for buffering/other, or L1 didn't fix paused: try L2 (source reload).
-            nextLevel = 2;
-          } else {
-
-            // Source reload already attempted: go to L3 (page reload).
-            nextLevel = 3;
-          }
-
-          // Note: Keep state updates in sync with the video-not-found recovery path above.
-          recoveryState.escalationLevel = nextLevel;
-          recoveryState.lastRecoveryTime = now;
-          recoveryState.totalAttempts++;
-          pendingReMinimize = true;
-
-          // Get recovery method name for logging and metrics.
-          const recoveryMethod = getRecoveryMethod(recoveryState.escalationLevel);
-
-          // Store issue type and time for UI display.
-          const issueType = formatIssueType(state, !isProgressing, isBuffering);
-
-          lastIssueType = issueType;
-          lastIssueTime = now;
-
-          // If a previous recovery was pending (L1 or L2 that didn't result in healthy playback), log that it was unsuccessful before starting the new attempt.
-          if(metrics.currentRecoveryMethod !== null) {
-
-            LOG.warn("%s did not resolve the issue — escalating to %s.", capitalize(metrics.currentRecoveryMethod), recoveryMethod);
-          } else {
-
-            // First recovery attempt - log with issue description.
-            const issueDesc = getIssueDescription(issueCategory);
-
-            LOG.warn("Playback %s — recovering via %s.", issueDesc, recoveryMethod);
-          }
-
-          // Record this recovery attempt in metrics.
-          recordRecoveryAttempt(metrics, recoveryMethod);
-
-          // For L2/L3 recovery, record the current segment index so we can verify segments are flowing after recovery completes.
-          if(recoveryState.escalationLevel >= 2) {
-
-            const entry = getStream(streamInfo.numericStreamId);
-
-            segmentState.preRecoveryIndex = entry?.segmenter?.getSegmentIndex() ?? null;
-            segmentState.waitStartTime = null;  // Will be set after recovery grace period ends.
-            segmentState.productionStalled = false;
-          }
-
-          // Mark recovery in progress to prevent overlapping recovery attempts.
-          recoveryState.inProgress = true;
-
-          try {
-
-            /* Levels 1-2: In-page recovery. These levels are handled by ensurePlayback() which performs recovery actions without navigating the page.
-           */
-            if(recoveryState.escalationLevel <= 2) {
-
-              await ensurePlayback(currentPage, currentContext, profile, { recoveryLevel: recoveryState.escalationLevel, skipNativeFullscreen: true });
-
-              // Track that source reload was attempted so we skip directly to L3 next time.
-              if(recoveryState.escalationLevel === 2) {
-
-                recoveryState.sourceReloadAttempted = true;
-
-                // The source reload disrupted the video stream. Mark a discontinuity so HLS clients resynchronize their decoders.
-                markStreamDiscontinuity();
-              }
-
-              // Set grace period to give this recovery level time to take effect before the next check.
-              recoveryState.graceUntil = now + recoveryGracePeriods[recoveryState.escalationLevel];
-              resetResolutionState();
-            } else {
-
-              /* Level 3: Page navigation recovery. This is the most aggressive recovery - we navigate to the URL again and reinitialize everything.
-             */
-
-              // Safety check: If page navigation has failed twice consecutively, fall back to source reload. This prevents getting stuck in a loop when navigation
-              // itself is broken (e.g., network issues, site blocking).
-              if(consecutiveNavigationFailures >= 2) {
-
-                LOG.warn("Page navigation has failed %s consecutive times — falling back to source reload.",
-                  consecutiveNavigationFailures);
-
-                recoveryState.escalationLevel = 2;
-                consecutiveNavigationFailures = 0;
-
-                // Reset source reload tracking so the fallback L2 gets a fair chance. Without this, the next recovery cycle would skip L2 and try L3 again.
-                recoveryState.sourceReloadAttempted = false;
-              } else {
-
-                // Check page reload limit to prevent excessive navigations.
-                if(!isPageReloadAllowed()) {
-
-                  LOG.warn("Page navigation rate limit reached (%s in %s minutes) — falling back to source reload.",
-                    CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
-
-                  recoveryState.escalationLevel = 2;
-
-                  // Reset source reload tracking so the fallback L2 gets a fair chance.
-                  recoveryState.sourceReloadAttempted = false;
-                } else {
-
-                  // Use the unified recovery function with validation.
-                  const recoveryResult = await performPageNavigationRecovery();
-
-                  // Page navigation disrupted the video stream. Mark a discontinuity regardless of navigation success so HLS clients resynchronize their decoders.
-                  markStreamDiscontinuity();
-
-                  // Set grace period to give page navigation time to take effect (L3 = 10 seconds).
-                  recoveryState.graceUntil = now + recoveryGracePeriods[3];
-
-                  if(recoveryResult.success && recoveryResult.newContext) {
-
-                    // Update the context reference to the new context (only after validation succeeds).
-                    currentContext = recoveryResult.newContext;
-
-                    // Log success with timing.
-                    const duration = formatRecoveryDuration(metrics.currentRecoveryStartTime ?? now);
-
-                    LOG.info("Recovered in %s via %s.", duration, RECOVERY_METHODS.pageNavigation);
-
-                    recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
-
-                    // Reset state after successful page navigation recovery.
-                    lastPageNavigationTime = Date.now();
-                    resetRecoveryCounters();
-                    resetEscalationState();
-                    resetSegmentMonitoringState();
-                    resetResolutionState();
-                  } else {
-
-                    consecutiveNavigationFailures++;
-
-                    LOG.warn("Page navigation did not restore playback (attempt %s/2).", consecutiveNavigationFailures);
-                  }
-                }
-              }
-            }
-          } catch(error) {
-
-            LOG.warn("Recovery via %s failed: %s.", getRecoveryMethod(recoveryState.escalationLevel), formatError(error));
-          }
-
-          recoveryState.inProgress = false;
         }
 
         // Update lastTime for the next stall check.

@@ -5,6 +5,7 @@
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
 import { type GpuCapabilities, getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.js";
 import { LOG, cancellableTimeout, clearPidFile, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer, writePidFile } from "../utils/index.js";
+import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.js";
 import { getAllStreams, getStreamCount } from "../streaming/registry.js";
 import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.js";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
@@ -130,48 +131,14 @@ const managedPageIds = new Set<string>();
 // the configured grace period before being closed. This prevents race conditions where pages are briefly untracked during initialization or cleanup transitions.
 const potentiallyStalePages = new Map<string, number>();
 
-/* Login mode allows users to authenticate with TV providers directly from the PrismCast web UI. When login mode is active:
- *
- * - A dedicated login tab is open in the browser showing the channel's URL
- * - The browser window is un-minimized so the user can interact with it
- * - New stream requests are blocked to prevent interference with the login process
- * - A 15-minute timeout automatically ends login mode if the user forgets
- *
- * The login page is NOT registered as a managed page to exclude it from stale page cleanup. We manage its lifecycle explicitly through startLoginMode/endLoginMode.
- */
+// Login mode management. State and functions live in login.ts; re-exported here so existing consumers don't need import path changes. clearLoginState,
+// isLoginModeActive, and setBrowserAccessors are imported above; the first two for internal use, setBrowserAccessors for one-time initialization below.
+export { clearLoginState, isLoginModeActive };
+export { type LoginStatus, endLoginMode, getLoginPage, getLoginStatus, startLoginMode } from "./login.js";
 
-// Whether login mode is currently active.
-let loginModeActive = false;
-
-// The browser page (tab) used for login. Set when login starts, cleared when login ends.
-let loginPage: Nullable<Page> = null;
-
-// The URL being used for login. Stored for status reporting.
-let loginUrl: Nullable<string> = null;
-
-// Timestamp when login mode started. Used for status reporting and timeout calculation.
-let loginStartTime: Nullable<number> = null;
-
-// Timeout handle for auto-ending login mode after 15 minutes.
-let loginTimeoutHandle: Nullable<ReturnType<typeof setTimeout>> = null;
-
-// Login timeout duration (15 minutes).
-const LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
-
-/**
- * Login status information returned by getLoginStatus().
- */
-export interface LoginStatus {
-
-  // Whether login mode is currently active.
-  active: boolean;
-
-  // Timestamp when login started (milliseconds since epoch), if active.
-  startTime: Nullable<number>;
-
-  // The URL being used for login, if active.
-  url: Nullable<string>;
-}
+// Inject browser accessors into the login module. This breaks the circular dependency (login needs getBrowserInstance/minimizeBrowserWindow, index needs login
+// functions) using the same setter/getter pattern as setChromeUserAgent in chromeFetch.ts. Function declarations are hoisted, so both accessors are available here.
+setBrowserAccessors({ getBrowserInstance, minimizeBrowserWindow });
 
 /**
  * Computes the current system status and emits it to SSE subscribers. Called when browser state changes significantly or when streams are added/removed.
@@ -970,25 +937,11 @@ function handleBrowserDisconnect(): void {
   // Clear all channel selection caches. Cached state (guide row positions, discovered page URLs) may be stale in a new browser session.
   clearChannelSelectionCaches();
 
-  // Clear login state if login mode was active. We clear directly rather than calling endLoginMode() because the browser is already gone and we don't want to
-  // attempt any browser operations.
-  if(loginModeActive) {
+  // Clear login state if login mode was active. We use clearLoginState() rather than endLoginMode() because the browser is already gone and we don't want to
+  // attempt any browser operations (page close, window minimize).
+  if(clearLoginState() && !gracefulShutdownInProgress) {
 
-    if(loginTimeoutHandle) {
-
-      clearTimeout(loginTimeoutHandle);
-      loginTimeoutHandle = null;
-    }
-
-    loginModeActive = false;
-    loginPage = null;
-    loginUrl = null;
-    loginStartTime = null;
-
-    if(!gracefulShutdownInProgress) {
-
-      LOG.info("Login mode ended due to browser disconnect.");
-    }
+    LOG.info("Login mode ended due to browser disconnect.");
   }
 
   // Only log the error for unexpected disconnects. During graceful shutdown, closeBrowser() set the flag and this disconnect is intentional.
@@ -1156,6 +1109,16 @@ async function launchBrowser(): Promise<Browser> {
 export function getChromeVersion(): Nullable<string> {
 
   return currentChromeVersion;
+}
+
+/**
+ * Returns the current browser instance, or null if not launched. Unlike getCurrentBrowser(), this does not lazily launch. Used by modules that need to check
+ * browser state without triggering a launch (e.g., login mode checking connectivity before opening a tab).
+ * @returns The browser instance, or null if not running.
+ */
+export function getBrowserInstance(): Nullable<Browser> {
+
+  return currentBrowser;
 }
 
 /**
@@ -1343,187 +1306,6 @@ export async function closeBrowser(): Promise<void> {
   // Clear the PID file and remove stale Chrome profile lock files.
   clearChromePid();
   cleanStaleProfileFiles(getChromeDataDir(CONFIG));
-}
-
-/* These functions manage the login mode workflow, allowing users to authenticate with TV providers through the browser. The workflow is:
- *
- * 1. User clicks "Login" on a channel in the web UI
- * 2. startLoginMode() opens a new tab with the channel's URL and un-minimizes the browser
- * 3. User completes authentication in the visible browser window
- * 4. User clicks "Done" in the web UI, or closes the tab, or the 15-minute timeout fires
- * 5. endLoginMode() closes the login tab (if still open) and re-minimizes the browser
- *
- * During login mode, new stream requests are blocked to prevent the browser from navigating away or creating conflicting tabs.
- */
-
-/**
- * Starts login mode by opening a new browser tab with the specified URL and un-minimizing the browser window. The user can then authenticate with their TV
- * provider in the visible browser.
- *
- * Login mode blocks new stream requests until it ends (via endLoginMode, tab close detection, or timeout).
- * @param url - The URL to navigate to for authentication.
- * @returns Object indicating success or failure with optional error message.
- */
-export async function startLoginMode(url: string): Promise<{ error?: string; success: boolean }> {
-
-  // Check if login mode is already active.
-  if(loginModeActive) {
-
-    return { error: "Login is already in progress.", success: false };
-  }
-
-  // Ensure browser is available.
-  if(!currentBrowser?.connected) {
-
-    return { error: "Browser is not connected.", success: false };
-  }
-
-  try {
-
-    // Create a new page for login. We intentionally do NOT register it as a managed page so stale page cleanup ignores it.
-    loginPage = await currentBrowser.newPage();
-
-    // Set up handler for tab close detection. If the user closes the tab manually, we should end login mode automatically.
-    loginPage.on("close", () => {
-
-      // Only auto-end if this is still the active login page.
-      if(loginModeActive && loginPage) {
-
-        LOG.info("Login tab was closed. Ending login mode.");
-
-        // Use void to handle the promise without awaiting (we're in an event handler).
-        void endLoginMode();
-      }
-    });
-
-    // Navigate to the login URL.
-    await loginPage.goto(url, { waitUntil: "domcontentloaded" });
-
-    // Un-minimize the browser window so the user can see and interact with it.
-    await unminimizeWindow(loginPage);
-
-    // Set login state.
-    loginModeActive = true;
-    loginUrl = url;
-    loginStartTime = Date.now();
-
-    // Set up the 15-minute timeout.
-    loginTimeoutHandle = setTimeout(() => {
-
-      LOG.warn("Login mode timed out after 15 minutes. Ending login mode.");
-
-      void endLoginMode();
-    }, LOGIN_TIMEOUT_MS);
-
-    LOG.info("Login mode started for %s.", url);
-
-    return { success: true };
-  } catch(error) {
-
-    // Clean up on failure.
-    if(loginPage && !loginPage.isClosed()) {
-
-      try {
-
-        await loginPage.close();
-      } catch(_closeError) {
-
-        // Ignore close errors.
-      }
-    }
-
-    loginPage = null;
-
-    return { error: formatError(error), success: false };
-  }
-}
-
-/**
- * Ends login mode by closing the login tab (if still open) and re-minimizing the browser window. This function is idempotent - it's safe to call multiple times
- * or when login mode is not active.
- *
- * Called by:
- * - User clicking "Done" in the web UI (POST /auth/done)
- * - Tab close detection (user closes the tab manually)
- * - 15-minute timeout
- * - Browser disconnect handler (cleanup)
- */
-export async function endLoginMode(): Promise<void> {
-
-  // Clear the timeout if it hasn't fired yet.
-  if(loginTimeoutHandle) {
-
-    clearTimeout(loginTimeoutHandle);
-    loginTimeoutHandle = null;
-  }
-
-  // Close the login page if it's still open.
-  if(loginPage && !loginPage.isClosed()) {
-
-    try {
-
-      await loginPage.close();
-    } catch(_error) {
-
-      // Ignore close errors - the page may have already been closed.
-    }
-  }
-
-  // Clear login state.
-  const wasActive = loginModeActive;
-
-  loginModeActive = false;
-  loginPage = null;
-  loginUrl = null;
-  loginStartTime = null;
-
-  // Re-minimize the browser window.
-  if(wasActive && currentBrowser?.connected) {
-
-    await minimizeBrowserWindow();
-  }
-
-  if(wasActive) {
-
-    LOG.info("Login mode ended.");
-  }
-}
-
-/**
- * Returns whether login mode is currently active. Used by the stream handler to block new stream requests during login.
- * @returns True if login mode is active, false otherwise.
- */
-export function isLoginModeActive(): boolean {
-
-  return loginModeActive;
-}
-
-/**
- * Returns the current login status including whether active, the URL being used, and when login started. Used by the /auth/status API endpoint.
- * @returns Login status object.
- */
-export function getLoginStatus(): LoginStatus {
-
-  return {
-
-    active: loginModeActive,
-    startTime: loginStartTime,
-    url: loginUrl
-  };
-}
-
-/**
- * Returns the active login page if login mode is currently active. Used by the profile test flow to evaluate CSS selectors against the live page DOM.
- * @returns The login page, or null if login mode is not active.
- */
-export function getLoginPage(): Nullable<Page> {
-
-  if(!loginModeActive) {
-
-    return null;
-  }
-
-  return loginPage;
 }
 
 /* Over time, browser pages (tabs) may accumulate if cleanup fails during stream termination. This can happen due to race conditions, errors during cleanup, or
@@ -1726,7 +1508,7 @@ export function stopStalePageCleanup(): void {
 function checkBrowserRestart(): void {
 
   // Skip if the server is shutting down, login mode is active, or the browser is not connected.
-  if(gracefulShutdownInProgress || loginModeActive || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
+  if(gracefulShutdownInProgress || isLoginModeActive() || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
 
     return;
   }
@@ -1777,7 +1559,7 @@ async function executeBrowserRestart(): Promise<void> {
 
   // Final guard: re-check all preconditions. Conditions may have changed during the quiet period (e.g., a stream started just before the timer fired, login
   // mode was activated, or the browser disconnected on its own).
-  if(gracefulShutdownInProgress || loginModeActive || (getStreamCount() > 0) || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
+  if(gracefulShutdownInProgress || isLoginModeActive() || (getStreamCount() > 0) || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
 
     LOG.debug("browser:lifecycle", "Browser restart aborted — preconditions no longer met.");
 

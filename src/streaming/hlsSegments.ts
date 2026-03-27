@@ -2,8 +2,8 @@
  *
  * hlsSegments.ts: HLS segment storage functions for PrismCast.
  */
+import { LOG, raceWithTimeout } from "../utils/index.js";
 import { CONFIG } from "../config/index.js";
-import { LOG } from "../utils/index.js";
 import type { StreamRegistryEntry } from "./registry.js";
 import { getStream } from "./registry.js";
 
@@ -35,12 +35,24 @@ import { getStream } from "./registry.js";
  */
 function storeSegmentToMap(stream: StreamRegistryEntry, segments: Map<string, Buffer>, eventName: "audioSegment" | "segment", filename: string, data: Buffer): void {
 
+  // Determine which running byte counter to update based on the target map.
+  const isAudio = eventName === "audioSegment";
+
   segments.set(filename, data);
+
+  // Increment the running byte counter for O(1) memory reporting.
+  if(isAudio) {
+
+    stream.hls.audioSegmentBytes += data.length;
+  } else {
+
+    stream.hls.segmentBytes += data.length;
+  }
 
   // Notify consumers that a new segment is available. Emit before rotation so the data is guaranteed accessible in the Map.
   stream.hls.segmentEmitter.emit(eventName, filename, data);
 
-  // Enforce segment limit by removing oldest segments.
+  // Enforce segment limit by removing oldest segments. Decrement the running byte counter for each removed segment.
   while(segments.size > CONFIG.hls.maxSegments) {
 
     const oldestKey = segments.keys().next().value;
@@ -48,6 +60,19 @@ function storeSegmentToMap(stream: StreamRegistryEntry, segments: Map<string, Bu
     if(oldestKey === undefined) {
 
       break;
+    }
+
+    const removed = segments.get(oldestKey);
+
+    if(removed) {
+
+      if(isAudio) {
+
+        stream.hls.audioSegmentBytes -= removed.length;
+      } else {
+
+        stream.hls.segmentBytes -= removed.length;
+      }
     }
 
     segments.delete(oldestKey);
@@ -343,21 +368,5 @@ async function waitForReady(streamId: number, getPromise: (stream: StreamRegistr
     return false;
   }
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  const timeoutPromise = new Promise<boolean>((resolve) => {
-
-    timer = setTimeout(() => { resolve(false); }, timeout);
-  });
-
-  const readyPromise = getPromise(stream).then(() => true);
-  const result = await Promise.race([ readyPromise, timeoutPromise ]);
-
-  // Clear the timeout timer to prevent an orphaned timer from firing after the result is already determined. No-op if the timeout already fired.
-  if(timer) {
-
-    clearTimeout(timer);
-  }
-
-  return result;
+  return raceWithTimeout(getPromise(stream).then(() => true), timeout).catch(() => false);
 }

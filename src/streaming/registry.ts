@@ -80,8 +80,15 @@ export interface HLSState {
   // Map of media segment filenames to their binary data.
   segments: Map<string, Buffer>;
 
+  // Running total of all video segment buffer sizes in bytes. Updated by storeSegmentToMap on add and rotate. Eliminates O(n) iteration in getStreamMemoryUsage().
+  segmentBytes: number;
+
   // Map of audio segment filenames to their binary data. Used only for streams with separate audio renditions (e.g., Google DAI on BET/VH1).
   audioSegments: Map<string, Buffer>;
+
+  // Running total of all audio segment buffer sizes in bytes. Updated by storeSegmentToMap on add and rotate. Must be reset to zero when audioSegments is cleared
+  // directly (e.g., native-to-capture fallback in monitor.ts).
+  audioSegmentBytes: number;
 
   // Typed emitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time.
   segmentEmitter: SegmentEmitter;
@@ -326,6 +333,7 @@ export function createHLSState(): HLSState {
   return {
 
     audioPlaylist: "",
+    audioSegmentBytes: 0,
     audioSegments: new Map(),
     hasAudio: false,
     hasRealPlaylist: false,
@@ -339,6 +347,7 @@ export function createHLSState(): HLSState {
     prerollStartTime: null,
     prerollTimer: null,
     resumeSegmentIndex: 0,
+    segmentBytes: 0,
     segmentEmitter,
     segments: new Map(),
     signalInitSegmentReady,
@@ -365,29 +374,15 @@ export interface StreamMemoryUsage {
 }
 
 /**
- * Calculates the memory usage for a single stream's HLS segment storage. This measures the Buffer sizes of the init segment and all media segments currently retained
- * in memory.
+ * Returns the memory usage for a single stream's HLS segment storage. Uses the running byte counters maintained by storeSegmentToMap() for O(1) reads instead of
+ * iterating all segment buffers. The init segment is a single buffer read (also O(1)).
  * @param entry - The stream registry entry to measure.
  * @returns Memory usage breakdown in bytes.
  */
 export function getStreamMemoryUsage(entry: StreamRegistryEntry): StreamMemoryUsage {
 
   const initSegmentSize = entry.hls.initSegment?.length ?? 0;
-
-  let segmentsSize = 0;
-
-  for(const segment of entry.hls.segments.values()) {
-
-    segmentsSize += segment.length;
-  }
-
-  if(entry.hls.audioSegments.size > 0) {
-
-    for(const segment of entry.hls.audioSegments.values()) {
-
-      segmentsSize += segment.length;
-    }
-  }
+  const segmentsSize = entry.hls.segmentBytes + entry.hls.audioSegmentBytes;
 
   return {
 
