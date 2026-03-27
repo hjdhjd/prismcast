@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.0 (2026-03-27)
+  * New feature: hardware-accelerated HEVC capture — when PrismCast detects that Chrome is using GPU-accelerated rendering, it automatically captures in HEVC/H.265 instead of H.264, delivering higher quality at lower bitrates with significantly reduced CPU usage. No configuration needed — detection and switching are fully automatic and seamless.
+  * New feature: Cox Contour TV provider support with channel discovery. Thanks to @babsonnexus for the collaboration.
+  * New feature: Browse Channels — a new wizard on the channels tab lets you discover and manage channels by provider. Select a provider, see all available channels with their current status (new, active, available via another provider), and add, switch, or remove channels in bulk. Channel logos are displayed using artwork from your Channels DVR library.
+  * New feature: Provider Setup — a guided first-run wizard walks you through selecting your streaming providers, signing in, and building your initial channel lineup. Automatically appears on first visit and can be re-run anytime.
+  * New feature: inline editing for channel numbers and station IDs — click any Number or Station ID cell in the channels table to edit it in place. Changes save on Enter or when you click away, and Escape cancels.
+  * New feature: auto-number channels — assign sequential channel numbers to all visible channels based on the current sort order, or clear all channel numbers at once. Found in the Quick Actions menu.
+  * New feature: per-channel HDHomeRun/Plex lineup control — choose which channels appear in the HDHomeRun lineup for Plex on a per-channel basis. A new opt-in HDHR column in the channels table provides inline checkboxes for quick toggling, and a bulk toggle in Quick Actions lets you include or exclude all channels at once. The add/edit channel form also includes the setting under Advanced Options. Channels excluded from the HDHR lineup remain available in the M3U playlist for Channels DVR.
+  * Improvement: webUI improvements and refinements.
+  * Improvement: resolution degradation detection and log message refinements.
+  * Improvement: Hallmark site provider entries removed — Hallmark no longer offers direct streaming from their website. Hallmark, Hallmark Family, and Hallmark Mystery remain available through all TV provider variants (Cox, DirecTV, Hulu, Spectrum, Xfinity, YouTube TV).
+  * Fix: provider filter not applied to predefined variant options in the channels tab dropdown.
+  * Fix: user-set channel numbers on predefined channels now correctly appear when a non-default provider is selected.
+  * Fix: filtered-out provider options in the provider dropdown no longer appear when a user customizes a predefined channel.
+  * Housekeeping.
+
 ## 1.6.0 (2026-03-15)
   * New feature: Xfinity Stream provider support. Note: Xfinity's player is slow to initialize and tune — expect 15-30 seconds for channel changes. This is a limitation of the Xfinity Stream web player, not PrismCast. I'm exploring improvements for the future, but no promises — this is as good as it gets for now.
   * New feature: native HLS streaming — PrismCast automatically detects when a provider delivers non-DRMed HLS and bypasses screen capture entirely, consuming the stream directly for higher quality with lower CPU usage. Known to work with the A&E family (A&E, History, Lifetime), BET, C-SPAN, the Food Network family (Discovery, Food Network, HGTV, OWN, TLC, Travel, and others), Fox One, Fox Sports, VH1, and more. DRM-protected providers automatically fall back to screen capture.
