@@ -934,7 +934,6 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
       cox: { channelSelector: "Hallmark Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Hallmark Channel", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Hallmark Channel", url: "https://www.hulu.com/live" },
-      site: { url: "https://www.watchhallmarktv.com/playback/item/live" },
       spectrum: { channelSelector: "Hallmark Channel", url: "https://watch.spectrum.net/guide" },
       xfinity: { channelSelector: "Hallmark Channel", url: "https://www.xfinity.com/stream/listings" },
       yttv: { channelSelector: "Hallmark Channel", url: "https://tv.youtube.com/live" },
@@ -946,7 +945,6 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     stationId: "105723",
     providers: {
       cox: { channelSelector: "HFM", url: "https://watchtv.cox.com/listings" },
-      site: { url: "https://www.watchhallmarktv.com/playback/item/hdlive" },
       spectrum: { channelSelector: "Hallmark Family", url: "https://watch.spectrum.net/guide" },
       xfinity: { channelSelector: "HFM", url: "https://www.xfinity.com/stream/listings" },
       yttv: { channelSelector: "Hallmark Family", url: "https://tv.youtube.com/live" },
@@ -960,7 +958,6 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     providers: {
       cox: { channelSelector: "HMYS", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "Hallmark Mystery", url: "https://www.hulu.com/live" },
-      site: { url: "https://www.watchhallmarktv.com/playback/item/hmmlive" },
       spectrum: { channelSelector: "Hallmark Mystery", url: "https://watch.spectrum.net/guide" },
       xfinity: { channelSelector: "HMYS", url: "https://www.xfinity.com/stream/listings" },
       yttv: { channelSelector: "Hallmark Mystery", url: "https://tv.youtube.com/live" },
