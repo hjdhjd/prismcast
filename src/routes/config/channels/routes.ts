@@ -902,6 +902,72 @@ export function setupChannelRoutes(app: Express): void {
     }
   });
 
+  // POST /config/channels/hdhr-bulk - Toggle HDHomeRun lineup inclusion for all visible channels. When enable is true, all channels are included (hdhrEnabled
+  // cleared). When false, all channels are excluded (hdhrEnabled set to false).
+  app.post("/config/channels/hdhr-bulk", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { enable?: boolean };
+      const enable = body.enable === true;
+
+      // Get visible channels (enabled + available by provider filter).
+      const listing = getChannelListing().filter((entry) => entry.enabled && entry.availableByProvider);
+
+      // Load user channels for modification.
+      const result = await loadUserChannels();
+
+      if(result.parseError) {
+
+        res.status(400).json({ error: "Cannot update HDHR settings: channels file contains invalid JSON.", success: false });
+
+        return;
+      }
+
+      const affectedKeys: string[] = [];
+
+      for(const entry of listing) {
+
+        const current = entry.channel.hdhrEnabled !== false;
+
+        // Skip channels that already match the target state.
+        if(current === enable) {
+
+          continue;
+        }
+
+        const existing = result.channels[entry.key] ?? {};
+        const clearValue = isPredefinedChannel(entry.key) ? null : undefined;
+
+        existing.hdhrEnabled = enable ? clearValue : false;
+        result.channels[entry.key] = existing;
+        affectedKeys.push(entry.key);
+      }
+
+      if(affectedKeys.length === 0) {
+
+        res.json({ affected: 0, message: "No changes needed.", success: true });
+
+        return;
+      }
+
+      await saveUserChannels(result.channels);
+
+      const action = enable ? "included in" : "excluded from";
+
+      LOG.info("Bulk HDHR toggle: %d channels %s HDHR lineup.", affectedKeys.length, action);
+
+      const profiles = getProfiles();
+      const message = String(affectedKeys.length) + " channel(s) " + action + " the HDHomeRun lineup.";
+
+      res.json({ affected: affectedKeys.length, message, patch: buildChannelTablePatch(affectedKeys, profiles), success: true });
+    } catch(error) {
+
+      LOG.error("Failed to bulk-toggle HDHR: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to toggle HDHR settings: " + formatError(error), success: false });
+    }
+  });
+
   // POST /config/provider-filter - Update the provider filter (enabled provider tags).
   app.post("/config/provider-filter", async (req: Request, res: Response): Promise<void> => {
 
@@ -1254,7 +1320,7 @@ export function setupChannelRoutes(app: Express): void {
       }
 
       // Handle inline-edit action — update a single field on an existing channel without requiring all fields. Used by the inline cell editing UI for channel
-      // number and station ID. Only channelNumber and stationId are supported as inline-editable fields.
+      // number, station ID, and HDHR lineup toggles.
       if(action === "inline-edit") {
 
         if(!key) {
@@ -1267,7 +1333,7 @@ export function setupChannelRoutes(app: Express): void {
         const field = body.field;
         const value = sanitizeString(body.value ?? "");
 
-        if((field !== "channelNumber") && (field !== "stationId")) {
+        if((field !== "channelNumber") && (field !== "hdhrEnabled") && (field !== "stationId")) {
 
           res.status(400).json({ message: "Invalid inline-edit field.", success: false });
 
@@ -1304,6 +1370,11 @@ export function setupChannelRoutes(app: Express): void {
         if(field === "channelNumber") {
 
           stored.channelNumber = value ? parseInt(value, 10) : clearValue;
+        } else if(field === "hdhrEnabled") {
+
+          // hdhrEnabled: "true" means enabled (clear the override), "false" means disabled. For predefined channels, null clears the delta. For user channels,
+          // delete the field entirely to revert to the default (included).
+          stored.hdhrEnabled = (value === "false") ? false : clearValue;
         } else {
 
           stored.stationId = value || clearValue;
@@ -1313,11 +1384,15 @@ export function setupChannelRoutes(app: Express): void {
 
         await saveUserChannels(result.channels);
 
-        const fieldLabel = (field === "channelNumber") ? "Channel number" : "Station ID";
+        const fieldLabels: Record<string, string> = { channelNumber: "Channel number", hdhrEnabled: "HDHR lineup", stationId: "Station ID" };
+        const fieldLabel = fieldLabels[field] ?? field;
+        const displayValue = (field === "hdhrEnabled") ? ((value === "false") ? "excluded" : "included") : (value || "(cleared)");
 
-        LOG.info("Inline edit: %s for '%s' set to '%s'.", fieldLabel, key, value || "(cleared)");
+        LOG.info("Inline edit: %s for '%s' set to '%s'.", fieldLabel, key, displayValue);
 
-        res.json({ key, message: fieldLabel + " updated." + PLAYLIST_HINT, patch: buildChannelTablePatch([key], profiles), success: true });
+        const playlistHint = (field === "hdhrEnabled") ? "" : PLAYLIST_HINT;
+
+        res.json({ key, message: fieldLabel + " updated." + playlistHint, patch: buildChannelTablePatch([key], profiles), success: true });
 
         return;
       }
@@ -1389,6 +1464,7 @@ export function setupChannelRoutes(app: Express): void {
       const stationId = sanitizeString(body.stationId ?? "");
       const channelSelector = sanitizeString(body.channelSelector ?? "");
       const channelNumberStr = sanitizeString(body.channelNumber ?? "");
+      const hdhrEnabled = body.hdhrEnabled !== "false";
 
       // Validate channel number if provided.
       const channelNumberError = validateChannelNumber(channelNumberStr, key);
@@ -1466,11 +1542,12 @@ export function setupChannelRoutes(app: Express): void {
       if((action === "edit") && predefinedBase) {
 
         // Build a record of submitted form values keyed by channel property name. This record drives both the displayChannel comparison and the predefined delta
-        // computation, so adding a new form field only requires adding it here. String fields use "" for empty; channelNumber uses undefined.
-        const formValues: Record<string, string | number | null | undefined> = {
+        // computation, so adding a new form field only requires adding it here. String fields use "" for empty; channelNumber uses undefined; hdhrEnabled uses boolean.
+        const formValues: Record<string, boolean | string | number | null | undefined> = {
 
           channelNumber: channelNumberStr ? parseInt(channelNumberStr, 10) : undefined,
           channelSelector,
+          hdhrEnabled,
           name,
           profile,
           stationId,
@@ -1478,10 +1555,15 @@ export function setupChannelRoutes(app: Express): void {
         };
 
         // Helper to read a comparable value from a Channel object. String fields default to "" when undefined so they match the form's empty-string representation.
-        // channelNumber stays as number | undefined since the form value uses the same representation.
-        const channelValue = (ch: Channel, field: string): string | number | undefined => {
+        // channelNumber stays as number | undefined since the form value uses the same representation. hdhrEnabled defaults to true when absent.
+        const channelValue = (ch: Channel, field: string): boolean | string | number | undefined => {
 
           const val = (ch as unknown as Record<string, unknown>)[field];
+
+          if(field === "hdhrEnabled") {
+
+            return (val as boolean | undefined) !== false;
+          }
 
           return (field === "channelNumber") ? val as number | undefined : (val as string | undefined) ?? "";
         };
@@ -1510,7 +1592,7 @@ export function setupChannelRoutes(app: Express): void {
 
             const formVal = formValues[field];
 
-            (delta as Record<string, string | number | null | undefined>)[field] = ((formVal === "") || (formVal === undefined)) ? null : formVal;
+            (delta as Record<string, boolean | string | number | null | undefined>)[field] = ((formVal === "") || (formVal === undefined)) ? null : formVal;
             hasChanges = true;
           }
         }
@@ -1626,6 +1708,12 @@ export function setupChannelRoutes(app: Express): void {
         if(channelNumberStr) {
 
           channel.channelNumber = parseInt(channelNumberStr, 10);
+        }
+
+        // Only store hdhrEnabled when explicitly disabled. Absent = true (included in HDHR lineup by default).
+        if(!hdhrEnabled) {
+
+          channel.hdhrEnabled = false;
         }
 
         result.channels[key] = channel;

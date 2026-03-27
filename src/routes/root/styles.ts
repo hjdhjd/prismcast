@@ -408,6 +408,9 @@ export function generateLandingPageStyles(): string {
     ".channel-form .form-row { margin-bottom: 4px; }",
     ".channel-form .form-row:last-child { margin-bottom: 0; }",
     ".channel-form .form-input { width: 100%; box-sizing: border-box; }",
+    ".channel-form .form-row-checkbox { display: flex; align-items: center; gap: 8px; margin-top: 12px; }",
+    ".channel-form .form-row-checkbox label { margin: 0; cursor: pointer; }",
+    ".channel-form .form-row-checkbox input[type=\"checkbox\"] { margin: 0; cursor: pointer; }",
 
     // Advanced toggle styles.
     ".advanced-toggle { color: var(--interactive-primary); cursor: pointer; font-size: 13px; margin-top: 5px; margin-bottom: 15px; }",

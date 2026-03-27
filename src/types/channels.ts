@@ -97,6 +97,11 @@ export interface Channel {
   // checks for this element after navigation and clicks it if present.
   dismissSelector?: string;
 
+  // Whether this channel is included in the HDHomeRun lineup for Plex. When absent or true, the channel appears in the HDHR lineup and is available for Plex DVR
+  // tuning. When false, the channel is excluded from the HDHR lineup but remains available in the M3U playlist for Channels DVR. Only stored in the user config
+  // when explicitly set to false (sparse storage).
+  hdhrEnabled?: boolean;
+
   // Human-readable channel name displayed in the M3U playlist. This is what users see in their channel guide. Set eagerly by the flattener on all predefined
   // entries (canonical and variant alike) from the parent ChannelDefinition's name field. For user channels, set explicitly at creation time.
   name?: string;
@@ -172,6 +177,9 @@ export interface ChannelDelta {
 
   // Override for channel selector, or null to clear the predefined value.
   channelSelector?: Nullable<string>;
+
+  // Override for HDHomeRun lineup inclusion, or null to clear (revert to default included). When false, the channel is excluded from the HDHR lineup.
+  hdhrEnabled?: Nullable<boolean>;
 
   // Override for display name, or null to clear the predefined value.
   name?: Nullable<string>;

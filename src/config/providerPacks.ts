@@ -312,7 +312,11 @@ export function exportProviderPack(
 
       if(entry.channel.profile && keySet.has(entry.channel.profile)) {
 
-        channels[entry.key] = entry.channel;
+        // Strip hdhrEnabled from exported channels — it's a local deployment preference, not a provider configuration property.
+        const exportChannel = { ...entry.channel };
+
+        Reflect.deleteProperty(exportChannel, "hdhrEnabled");
+        channels[entry.key] = exportChannel;
       }
     }
 

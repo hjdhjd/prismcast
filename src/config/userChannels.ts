@@ -508,7 +508,7 @@ export async function initializeUserChannels(): Promise<void> {
 
 // Fields that users are allowed to override via delta. This allowlist prevents hand-edited channels.json from overriding fields like provider that are
 // intentionally not user-editable. Matches the fields in the ChannelDelta interface.
-const DELTA_ALLOWED_FIELDS = new Set([ "channelNumber", "channelSelector", "name", "profile", "stationId", "tvgShift", "url" ]);
+const DELTA_ALLOWED_FIELDS = new Set([ "channelNumber", "channelSelector", "hdhrEnabled", "name", "profile", "stationId", "tvgShift", "url" ]);
 
 /**
  * Resolves a stored channel entry (full definition or delta) into a fully resolved Channel. For user-defined channels with no predefined equivalent, the stored

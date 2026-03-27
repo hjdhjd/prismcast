@@ -916,6 +916,29 @@ export function generateConfigSubtabScript(): string {
     "    input.addEventListener('blur', function() { if(!saving) save(); });",
     "  };",
 
+    // Toggle HDHR lineup inclusion for a channel via inline checkbox. Uses the inline-edit endpoint with hdhrEnabled field.
+    "  window.toggleHdhr = async function(checkbox) {",
+    "    var key = checkbox.getAttribute('data-key');",
+    "    var value = checkbox.checked ? 'true' : 'false';",
+    "    try {",
+    "      var res = await fetch('/config/channels', {",
+    "        method: 'POST',",
+    "        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },",
+    "        body: JSON.stringify({ action: 'inline-edit', field: 'hdhrEnabled', key: key, value: value })",
+    "      });",
+    "      var d = await res.json();",
+    "      if(res.ok && d.success) {",
+    "        if(d.patch) { applyChannelPatch(d.patch); }",
+    "      } else {",
+    "        checkbox.checked = !checkbox.checked;",
+    "        showToast(d.message || 'Failed to update HDHR setting.', 'error');",
+    "      }",
+    "    } catch(err) {",
+    "      checkbox.checked = !checkbox.checked;",
+    "      showToast('Failed to update HDHR setting: ' + err.message, 'error');",
+    "    }",
+    "  };",
+
     // Submit channel form via AJAX (add or edit).
     "  window.submitChannelForm = async function(event, action) {",
     "    event.preventDefault();",
@@ -1085,6 +1108,33 @@ export function generateConfigSubtabScript(): string {
     "    } catch(err) {",
     "      console.error('Auto-number error:', err);",
     "      showToast('Failed to auto-number channels: ' + err.message, 'error');",
+    "    }",
+    "  };",
+
+    // Bulk toggle HDHR lineup inclusion for all visible channels. The tri-state checkbox calls this on click: from checked (all enabled) it disables all; from
+    // unchecked or indeterminate it enables all.
+    "  window.bulkToggleHdhr = async function() {",
+    "    var toggle = document.getElementById('hdhr-bulk-toggle');",
+    "    if(!toggle) return;",
+    "    var enable = !toggle.checked;",
+    "    var msg = enable ? 'Include all visible channels in the HDHomeRun/Plex lineup?' : 'Exclude all visible channels from the HDHomeRun/Plex lineup?';",
+    "    if(!confirm(msg)) return;",
+    "    try {",
+    "      var res = await fetch('/config/channels/hdhr-bulk', {",
+    "        method: 'POST',",
+    "        headers: { 'Content-Type': 'application/json' },",
+    "        body: JSON.stringify({ enable: enable })",
+    "      });",
+    "      var result = await res.json();",
+    "      if(result.success) {",
+    "        showToast(result.message || 'HDHR settings updated.', 'success');",
+    "        if(result.patch) { applyChannelPatch(result.patch); }",
+    "      } else {",
+    "        showToast(result.error || 'Failed to update HDHR settings.', 'error');",
+    "      }",
+    "    } catch(err) {",
+    "      console.error('HDHR bulk toggle error:', err);",
+    "      showToast('Failed to update HDHR settings: ' + err.message, 'error');",
     "    }",
     "  };",
 
@@ -1414,6 +1464,18 @@ export function generateConfigSubtabScript(): string {
     "        if (cbs[i].checked) cols.push(cbs[i].getAttribute('data-col-field'));",
     "      }",
     "    }",
+    // Show or hide Quick Action sections gated on column visibility.
+    "    var colField = checkbox.getAttribute('data-col-field');",
+    "    var qaMap = { channelNumber: 'quick-action-autonumber', hdhrEnabled: 'quick-action-hdhr' };",
+    "    var qaId = qaMap[colField];",
+    "    if(qaId) {",
+    "      var qaEl = document.getElementById(qaId);",
+    "      if(qaEl) qaEl.style.display = checkbox.checked ? '' : 'none';",
+    "      var divider = document.getElementById('quick-action-divider');",
+    "      var anyVisible = document.getElementById('quick-action-autonumber')?.style.display !== 'none' ||",
+    "        document.getElementById('quick-action-hdhr')?.style.display !== 'none';",
+    "      if(divider) divider.style.display = anyVisible ? '' : 'none';",
+    "    }",
     "    fetch('/config/channels/display-prefs', {",
     "      method: 'POST', headers: { 'Content-Type': 'application/json' },",
     "      body: JSON.stringify({ visibleColumns: cols })",
@@ -1422,7 +1484,7 @@ export function generateConfigSubtabScript(): string {
 
     // Read the server-stamped sort value from the data-sort-value attribute.
     "  function getSortValue(row, field) {",
-    "    var colIndex = { key: 0, name: 1, provider: 2, channelNumber: 3, stationId: 4, profile: 5, channelSelector: 6 };",
+    "    var colIndex = { key: 0, name: 1, provider: 2, channelNumber: 3, hdhrEnabled: 4, stationId: 5, profile: 6, channelSelector: 7 };",
     "    var idx = colIndex[field];",
     "    if (idx === undefined) return '';",
     "    var cell = row.children[idx];",
@@ -1598,6 +1660,10 @@ export function generateConfigSubtabScript(): string {
     "        if(cb) cb.indeterminate = true;",
     "      }",
     "    }",
+
+    // Set indeterminate state on the HDHR bulk toggle if data-indeterminate is present.
+    "    var hdhrToggle = document.getElementById('hdhr-bulk-toggle');",
+    "    if(hdhrToggle && hdhrToggle.getAttribute('data-indeterminate') === 'true') hdhrToggle.indeterminate = true;",
 
     // Run filterChannelRows on page load when a provider filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on
     // option elements. This initial pass removes those options from the DOM to enforce the filter.

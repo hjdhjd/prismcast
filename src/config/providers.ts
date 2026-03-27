@@ -534,7 +534,7 @@ export function getChannelProviderLabel(channel: Channel): string {
 
 // Valid sort field values for the channels table. Exported as the single source of truth for sort field validation, shared by the config POST handler and the
 // playlist endpoint's query parameter validation.
-export const VALID_SORT_FIELDS = new Set<ChannelSortField>([ "channelNumber", "channelSelector", "key", "name", "profile", "provider", "stationId" ]);
+export const VALID_SORT_FIELDS = new Set<ChannelSortField>([ "channelNumber", "channelSelector", "hdhrEnabled", "key", "name", "profile", "provider", "stationId" ]);
 
 /**
  * Extracts a sortable string value from a channel for the specified sort field. Channel numbers are zero-padded to 6 digits for correct numeric ordering within a
@@ -564,6 +564,12 @@ export function getChannelSortKey(channel: Channel, key: string, field: ChannelS
     case "channelSelector": {
 
       return (effective.channelSelector ?? "").toLowerCase();
+    }
+
+    case "hdhrEnabled": {
+
+      // Sort enabled channels before disabled. "0" (enabled/absent) sorts before "1" (disabled).
+      return (effective.hdhrEnabled === false) ? "1" : "0";
     }
 
     case "key": {
@@ -847,6 +853,7 @@ function applyVariantInheritance(variant: Channel, base: Channel): Channel {
 
     ...variant,
     channelNumber: variant.channelNumber ?? base.channelNumber,
+    hdhrEnabled: variant.hdhrEnabled ?? base.hdhrEnabled,
     name: variant.name ?? base.name,
     stationId: variant.stationId ?? base.stationId,
     tvgShift: variant.tvgShift ?? base.tvgShift

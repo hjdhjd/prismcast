@@ -394,6 +394,18 @@ export function generateSharedUtilitiesScript(): string {
     "      }",
     "    }",
 
+    // Apply HDHR bulk toggle counts from server-computed values.
+    "    if(patch.hdhrCounts) {",
+    "      var hc = patch.hdhrCounts;",
+    "      var htoggle = document.getElementById('hdhr-bulk-toggle');",
+    "      var hcount = document.getElementById('hdhr-bulk-count');",
+    "      if(htoggle) {",
+    "        htoggle.checked = (hc.enabled === hc.total) && (hc.total > 0);",
+    "        htoggle.indeterminate = (hc.enabled > 0) && (hc.enabled < hc.total);",
+    "      }",
+    "      if(hcount) hcount.textContent = hc.enabled + ' of ' + hc.total;",
+    "    }",
+
     // Apply channel logos from a logo map (key → URL). Sets data-logo attributes on matching rows so processChannelLogos can render the images.
     "    if(patch.logos) {",
     "      for(var key in patch.logos) {",
