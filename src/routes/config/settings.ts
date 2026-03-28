@@ -7,12 +7,57 @@ import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from
 import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault,
   loadUserConfig, saveUserConfig, setNestedValue } from "../../config/userConfig.js";
 import type { Express, Request, Response } from "express";
-import { LOG, escapeHtml, formatError, isRunningAsService } from "../../utils/index.js";
-import { getProviderModuleInfo, getProviderSlugs } from "../../browser/channelSelection.js";
+import { LOG, escapeHtml, formatError, isRunningAsService, stringifySorted } from "../../utils/index.js";
 import type { Nullable } from "../../types/index.js";
 import { getConfigFilePath } from "../../config/paths.js";
+import { getGpuCapabilities } from "../../browser/display.js";
 import { getPresetOptionsWithDegradation } from "../../config/presets.js";
+import { getProviderModuleInfo } from "../../browser/channelSelection.js";
 import { scheduleServerRestart } from "./index.js";
+
+/* The checkboxList setting type renders a grid of checkboxes backed by a hidden JSON array input. Each checkboxList field specifies a listItemsKey that identifies
+ * which item provider to use. The registry maps keys to functions that return the list of items to render. Keeping the registry in the routes layer (not the config
+ * layer) preserves the dependency direction — routes can import browser capabilities, config cannot.
+ */
+
+/**
+ * A single item in a checkboxList setting. Each item renders as a labeled checkbox with optional per-item disabled state. The item provider must return ALL valid
+ * values for the config field - both toggleable and fixed items - so that validation has the complete set.
+ */
+interface ListItem {
+
+  // When true, the checkbox is rendered as disabled with its disabledReason shown.
+  disabled?: boolean;
+
+  // Explanation shown when the item is disabled.
+  disabledReason?: string;
+
+  // When true, the item is always present in the config array and cannot be toggled by the user. Rendered as a checked, disabled checkbox to communicate the
+  // non-negotiable baseline. Fixed items are included in validation but excluded from user interaction.
+  fixed?: boolean;
+
+  // Human-readable label displayed next to the checkbox.
+  label: string;
+
+  // Value stored in the JSON array when the checkbox is checked.
+  value: string;
+}
+
+// Registry of list item providers for checkboxList settings. Each key matches a listItemsKey value in CONFIG_METADATA.
+const LIST_ITEM_PROVIDERS: Record<string, () => ListItem[]> = {
+
+  captureCodecs: (): ListItem[] => {
+
+    const gpuCaps = getGpuCapabilities();
+
+    return [
+      { fixed: true, label: "H.264 (always enabled)", value: "h264" },
+      { disabled: !gpuCaps?.hevcHardwareEncoding, disabledReason: "Requires GPU with HEVC hardware encoding.", label: "HEVC", value: "hevc" }
+    ];
+  },
+
+  providerModules: (): ListItem[] => getProviderModuleInfo().map((p) => ({ label: p.label, value: p.slug }))
+};
 
 /**
  * Formats a value for display, converting numbers to human-readable strings where appropriate.
@@ -429,7 +474,8 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   } else if(setting.type === "checkboxList") {
 
     // Render as a grid of checkboxes backed by a hidden input that holds the JSON array value. The hidden input goes inside the form-row (invisible, takes no
-    // space). The visible checkbox grid is pushed to postDescription for emission after the description, keeping it outside the form-row flex container.
+    // space). The visible checkbox grid is pushed to postDescription for emission after the description, keeping it outside the form-row flex container. The
+    // listItemsKey identifies which provider function in LIST_ITEM_PROVIDERS to call for the checkbox items.
     const currentArray = Array.isArray(currentValue) ? currentValue as string[] : [];
     const defaultArray = Array.isArray(defaultValue) ? defaultValue as string[] : [];
     const hiddenValue = escapeHtml(JSON.stringify(currentArray));
@@ -438,19 +484,30 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     lines.push("<input type=\"hidden\" id=\"" + inputId + "\" name=\"" + setting.path + "\" value=\"" + hiddenValue +
       "\" data-default=\"" + hiddenDefault + "\" data-checkbox-list>");
 
-    // Build the checkbox grid from provider module info. Pushed to postDescription for emission after the description, outside the form-row flex container.
-    const providers = getProviderModuleInfo();
+    // Look up the list item provider for this checkboxList setting. The registry is defined at the top of this file.
+    const itemProvider = setting.listItemsKey ? LIST_ITEM_PROVIDERS[setting.listItemsKey] : undefined;
+    const items = itemProvider ? itemProvider() : [];
 
     postDescription.push("<div class=\"checkbox-list-grid\" style=\"display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); " +
       "gap: 0.5rem; margin-top: 10px;\">");
 
-    for(const provider of providers) {
+    for(const item of items) {
 
-      const checked = currentArray.includes(provider.slug) ? " checked" : "";
+      // Fixed items are always checked and disabled - they represent non-negotiable baseline values. Disabled items are conditionally unavailable (e.g., GPU
+      // capability missing). Both render as disabled checkboxes but for different reasons.
+      const isDisabled = (item.fixed === true) || (item.disabled === true);
+      const checked = (item.fixed || currentArray.includes(item.value)) ? " checked" : "";
+      const labelStyle = "display: flex; align-items: center; gap: 0.5rem;" + (isDisabled ? " opacity: 0.5; cursor: not-allowed;" : " cursor: pointer;");
 
-      postDescription.push("<label style=\"display: flex; align-items: center; gap: 0.5rem; cursor: pointer;\">");
-      postDescription.push("<input type=\"checkbox\" value=\"" + escapeHtml(provider.slug) + "\"" + checked +
-        " onchange=\"updateCheckboxList(this)\"> " + escapeHtml(provider.label));
+      postDescription.push("<label style=\"" + labelStyle + "\">");
+      postDescription.push("<input type=\"checkbox\" value=\"" + escapeHtml(item.value) + "\"" + checked + (isDisabled ? " disabled" : "") +
+        " onchange=\"updateCheckboxList(this)\"> " + escapeHtml(item.label));
+
+      if(item.disabled && item.disabledReason) {
+
+        postDescription.push("<span style=\"font-size: 0.85em; opacity: 0.7;\"> - " + escapeHtml(item.disabledReason) + "</span>");
+      }
+
       postDescription.push("</label>");
     }
 
@@ -562,8 +619,10 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
   if(setting.type === "checkboxList") {
 
-    // For checkbox lists, show "none" instead of the raw JSON "[]".
-    defaultDisplay = "none";
+    // For checkbox lists, show the default items as a comma-separated list, or "none" for empty arrays.
+    const defaultArr = Array.isArray(defaultValue) ? defaultValue as string[] : [];
+
+    defaultDisplay = defaultArr.length > 0 ? defaultArr.join(", ") : "none";
   } else if(displayDefault === null) {
 
     defaultDisplay = "autodetect";
@@ -647,13 +706,15 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
         return "Must be an array.";
       }
 
-      const knownSlugs = new Set(getProviderSlugs());
+      // Derive valid values from the list item provider registry. Each checkboxList validates against its own provider's items, not a hardcoded set.
+      const itemProvider = setting.listItemsKey ? LIST_ITEM_PROVIDERS[setting.listItemsKey] : undefined;
+      const validValues = itemProvider ? new Set(itemProvider().map((item) => item.value)) : new Set<string>();
 
-      for(const slug of value as string[]) {
+      for(const entry of value as string[]) {
 
-        if(!knownSlugs.has(slug)) {
+        if(!validValues.has(entry)) {
 
-          return "Unknown provider: " + slug + ".";
+          return "Unrecognized value: " + entry + ".";
         }
       }
 
@@ -1033,7 +1094,7 @@ export function setupSettingsRoutes(app: Express): void {
 
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Content-Disposition", "attachment; filename=\"prismcast-config.json\"");
-      res.send(JSON.stringify(result.config, null, 2) + "\n");
+      res.send(stringifySorted(result.config) + "\n");
     } catch(error) {
 
       LOG.error("Failed to export configuration: %s.", formatError(error));

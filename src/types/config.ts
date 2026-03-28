@@ -259,6 +259,10 @@ export interface StreamingConfig {
   // stereo audio; lower values (128kbps) work for speech-heavy content. Environment variable: AUDIO_BITRATE. Default: 256000. Valid range: 32000-512000.
   audioBitsPerSecond: number;
 
+  // Codecs allowed for browser capture. H.264 is always available as the universal baseline. HEVC provides better compression at the same bitrate when GPU hardware
+  // encoding is available. The system selects the highest-priority allowed codec that the GPU supports. Environment variable: CAPTURE_CODECS. Default: ["h264", "hevc"].
+  captureCodecs: string[];
+
   // Capture mode determining how video/audio is captured and processed. "ffmpeg" captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC - more stable
   // for long recordings but requires FFmpeg. "native" captures fMP4 (H264+AAC) directly from Chrome - no dependencies but may be unstable with long recordings.
   // Environment variable: CAPTURE_MODE. Default: "ffmpeg".

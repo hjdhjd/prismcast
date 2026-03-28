@@ -7,6 +7,7 @@ import { DEFAULTS, loadUserConfig, mergeConfiguration } from "./userConfig.js";
 import { LOG, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.js";
 import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.js";
 import { getChromeDataDir, getConfigFilePath } from "./paths.js";
+import { RECOGNIZED_CODECS } from "../types/index.js";
 import path from "node:path";
 
 /* The CONFIG object centralizes all tunable parameters for the application. Configuration uses a layered approach with the following priority (highest to lowest):
@@ -211,6 +212,17 @@ export function validateConfiguration(): void {
   check(validatePositiveInt("HLS_MAX_SEGMENTS", CONFIG.hls.maxSegments, 3, 60));
   check(validatePositiveInt("HLS_IDLE_TIMEOUT", CONFIG.hls.idleTimeout, 10000, 300000));
 
+  // Validate and normalize captureCodecs. Ensure h264 is always present (universal baseline) and filter out unrecognized codec identifiers. The recognized set
+  // is derived from RECOGNIZED_CODECS in types/streaming.ts - the single definition for all capture codec identifiers.
+  const recognizedCodecSet = new Set<string>(RECOGNIZED_CODECS);
+
+  CONFIG.streaming.captureCodecs = CONFIG.streaming.captureCodecs.filter((c) => recognizedCodecSet.has(c));
+
+  if(!CONFIG.streaming.captureCodecs.includes("h264")) {
+
+    CONFIG.streaming.captureCodecs.unshift("h264");
+  }
+
   // Force FFmpeg capture mode. Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of continuous recording. Until a future Chrome
   // release resolves this, native capture mode is disabled entirely.
   if(CONFIG.streaming.captureMode !== "ffmpeg") {
@@ -277,6 +289,7 @@ export function displayConfiguration(): void {
   LOG.info("  Chrome profile: %s", getChromeDataDir(CONFIG));
   LOG.info("  Server port: %s", CONFIG.server.port);
   LOG.info("  Quality preset: %s", presetStatus);
+  LOG.info("  Capture codecs: %s", CONFIG.streaming.captureCodecs.join(", "));
   LOG.info("  Video bitrate: %s", CONFIG.streaming.videoBitsPerSecond);
   LOG.info("  Max retries: %s", CONFIG.streaming.maxNavigationRetries);
   LOG.info("  Max concurrent streams: %s", CONFIG.streaming.maxConcurrentStreams);

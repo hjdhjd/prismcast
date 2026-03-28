@@ -18,9 +18,9 @@ import type { MonitorStreamInfo } from "./monitor.js";
 import type { Readable } from "node:stream";
 import { chromeFetch } from "../utils/index.js";
 import { getCachedEncryption } from "../native/probe.js";
+import { getCaptureMimeType } from "./codec.js";
 import { getDomainConfig } from "../config/sites.js";
 import { getEffectiveViewport } from "../config/presets.js";
-import { getGpuCapabilities } from "../browser/display.js";
 import { getProviderDisplayName } from "../config/providers.js";
 import { installManifestInterceptor } from "../native/intercept.js";
 import { isChannelSelectionProfile } from "../types/index.js";
@@ -54,12 +54,6 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 
 // Native fMP4 capture uses MP4/AAC for direct HLS segmentation without transcoding.
 const NATIVE_FMP4_MIME_TYPE = "video/mp4;codecs=avc1,mp4a.40.2";
-
-// Matroska+FFmpeg capture MIME types. Matroska is used over WebM because it supports a broader range of codecs (including HEVC and AV1), allowing codec upgrades
-// without changing the container format. FFmpeg's demuxer handles both Matroska and WebM identically. When hardware HEVC encoding is available, HEVC is preferred
-// over H.264 for better compression at the same bitrate. All variants use Opus audio which FFmpeg transcodes to AAC.
-const MKV_H264_MIME_TYPE = "video/x-matroska;codecs=h264,opus";
-const MKV_HEVC_MIME_TYPE = "video/x-matroska;codecs=hvc1.1.6.L93.B0,opus";
 
 // Capture initialization queue. Chrome's tabCapture extension can only initialize one capture at a time — concurrent getStream() calls fail with "Cannot capture a
 // tab with an active stream." We serialize capture initialization using a promise chain so requests execute sequentially. Once a capture is established, it runs
@@ -394,11 +388,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // use DRM (avoids 15 seconds of wasted CDP overhead per tune). The await ensures the CDP session and Network domain are ready before navigation begins.
   const manifestInterception = (!options.tabReplacement && !options.skipManifestInterception) ? await installManifestInterceptor(page) : null;
 
-  // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable.
-  // When hardware HEVC encoding is available, prefer HEVC over H.264 for better compression at the same bitrate.
+  // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable. The
+  // codec decision (H.264 vs HEVC) is delegated to the codec module, which considers the user's allowlist and GPU hardware capabilities.
   const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
-  const mkvMimeType = getGpuCapabilities()?.hevcHardwareEncoding ? MKV_HEVC_MIME_TYPE : MKV_H264_MIME_TYPE;
-  const captureMimeType = useFFmpeg ? mkvMimeType : NATIVE_FMP4_MIME_TYPE;
+  const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
 
   // Track the output stream that will be sent to the segmenter and FFmpeg process if used. Also track the raw capture stream separately - it must be destroyed
   // before closing the page to ensure chrome.tabCapture releases the capture.
@@ -1090,8 +1083,7 @@ async function attemptCaptureProbe(timeout: number): Promise<Nullable<string>> {
     // Use the same capture MIME type and viewport constraints as the runtime. The stale state error occurs at the tabCapture API level before encoding matters,
     // but matching the runtime configuration ensures the probe exercises the exact same getStream() parameters.
     const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
-    const probeMkvMimeType = getGpuCapabilities()?.hevcHardwareEncoding ? MKV_HEVC_MIME_TYPE : MKV_H264_MIME_TYPE;
-    const captureMimeType = useFFmpeg ? probeMkvMimeType : NATIVE_FMP4_MIME_TYPE;
+    const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
 
     const streamOptions = {
 

@@ -458,6 +458,15 @@ export function generateApiReferenceContent(): string {
     "</div>",
 
     "<div class=\"api-index-group\">",
+    "<a href=\"#api-profiles\" class=\"api-index-heading\">Profiles</a>",
+    "<span class=\"api-index-desc\">Custom site profiles and provider packs.</span>",
+    "<a href=\"#api-profiles\"><code>GET /config/profiles</code></a>",
+    "<a href=\"#api-profiles\"><code>POST /config/profiles</code></a>",
+    "<a href=\"#api-profiles\"><code>POST /config/profiles/import</code></a>",
+    "<a href=\"#api-profiles\"><code>GET /config/profiles/export</code></a>",
+    "</div>",
+
+    "<div class=\"api-index-group\">",
     "<a href=\"#api-auth\" class=\"api-index-heading\">Authentication</a>",
     "<span class=\"api-index-desc\">TV provider login sessions.</span>",
     "<a href=\"#api-auth\"><code>POST /auth/login</code></a>",
@@ -616,6 +625,39 @@ export function generateApiReferenceContent(): string {
     "<td class=\"endpoint\"><code>POST /config/provider-bulk-restore</code></td>",
     "<td>Restore previous provider selections (undo bulk assign). Body: <code>{ \"selections\": { \"nbc\": \"nbc-hulu\", \"fox\": null } }</code>. " +
     "A <code>null</code> value restores the channel to its default provider.</td>",
+    "</tr>",
+    "</table>",
+    "</div>",
+
+    // Profile endpoints.
+    "<div class=\"section\">",
+    "<h3 id=\"api-profiles\">Profiles</h3>",
+    "<p>Custom site profiles and provider pack distribution. Profiles define how PrismCast interacts with a streaming site. " +
+    "Provider packs bundle profiles, domain mappings, and optional channels for sharing across instances.</p>",
+    "<table>",
+    "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>GET /config/profiles</code></td>",
+    "<td>List all user-defined profiles and domain mappings with associated channel counts.</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config/profiles</code></td>",
+    "<td>Create or update a user-defined profile with optional domain mappings. Body: <code>{ \"key\": \"myProfile\", " +
+    "\"profile\": { \"extends\": \"embeddedPlayer\", ... }, \"domains\": { \"example.com\": { \"profile\": \"myProfile\" } } }</code></td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>DELETE /config/profiles/:key</code></td>",
+    "<td>Delete a user-defined profile and its associated domain mappings.</td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>POST /config/profiles/import</code></td>",
+    "<td>Import a provider pack JSON file. Validates profiles, domains, and optional channels. " +
+    "Body: <code>{ \"data\": { ... }, \"skipChannels\": false }</code></td>",
+    "</tr>",
+    "<tr>",
+    "<td class=\"endpoint\"><code>GET /config/profiles/export</code></td>",
+    "<td>Export user profile(s) as a provider pack JSON file download. Query params: <code>?profile=key1,key2</code> (required), " +
+    "<code>&amp;channels=1</code> (include channels), <code>&amp;domains=0</code> (exclude domains), <code>&amp;name=</code> (pack display name).</td>",
     "</tr>",
     "</table>",
     "</div>",

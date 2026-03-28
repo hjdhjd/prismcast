@@ -6,6 +6,17 @@ import type { Nullable } from "./shared.js";
 import type { Page } from "puppeteer-core";
 import type { RecoveryMetrics } from "../streaming/recovery.js";
 
+/**
+ * All recognized capture codec identifiers. H.264 is the universal baseline; additional codecs require GPU hardware encoding. This array is the single definition
+ * from which the CaptureCodec type, MIME type lookup, and config validation all derive.
+ */
+export const RECOGNIZED_CODECS = [ "h264", "hevc" ] as const;
+
+/**
+ * Video codec identifier for browser capture, derived from RECOGNIZED_CODECS.
+ */
+export type CaptureCodec = typeof RECOGNIZED_CODECS[number];
+
 /* These types track active streaming sessions throughout their lifecycle. When a stream request arrives, we create a StreamInfo object to track the session's
  * state. This allows the /streams endpoint to list active streams, the graceful shutdown handler to close streams cleanly, and the stream handler to coordinate
  * cleanup when streams end.

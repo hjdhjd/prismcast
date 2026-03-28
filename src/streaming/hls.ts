@@ -2,16 +2,17 @@
  *
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
+import { type CaptureCodec, getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.js";
 import type { Channel, Nullable, ResolvedSiteProfile } from "../types/index.js";
 import type { HLSState, StreamRegistryEntry } from "./registry.js";
 import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.js";
-import { type PrerollCodec, generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.js";
 import type { Request, Response } from "express";
 import { StreamSetupError, type StreamSetupResult, createPageWithCapture, generateStreamId, setupStream } from "./setup.js";
 import { createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.js";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.js";
 import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.js";
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
+import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.js";
 import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
 import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.js";
 import { getAuthDomainForChannel, getProviderTagForChannel, getResolvedChannel, resolveProviderKey } from "../config/providers.js";
@@ -25,7 +26,6 @@ import { attemptNativeStreaming } from "../native/index.js";
 import { clearProbeCache } from "../native/probe.js";
 import { createFMP4Segmenter } from "./fmp4Segmenter.js";
 import { createHash } from "node:crypto";
-import { getGpuCapabilities } from "../browser/display.js";
 import { getProviderBySlug } from "../browser/channelSelection.js";
 import { registerClient } from "./clients.js";
 import { suppressPageAudio } from "../browser/video.js";
@@ -897,7 +897,7 @@ interface PendingStreamResult {
  * @param codec - The preroll codec variant to use for this stream.
  * @returns The allocated stream IDs.
  */
-function registerPendingStream(channelName: string, channel: Channel, clientAddress: Nullable<string>, req: Request, codec: PrerollCodec): PendingStreamResult {
+function registerPendingStream(channelName: string, channel: Channel, clientAddress: Nullable<string>, req: Request, codec: CaptureCodec): PendingStreamResult {
 
   const numericStreamId = getNextStreamId();
   const streamIdStr = generateStreamId(channelName, channel.url);
@@ -1415,8 +1415,9 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         }
       }
 
-      const gpu = getGpuCapabilities();
-      const ffmpegCodec = gpu?.hevcHardwareEncoding ? "\u26A1 HEVC" : (gpu?.h264HardwareEncoding ? "\u26A1 H264" : "H264");
+      const effectiveCodec = getEffectiveCaptureCodec();
+      const captureHwAccel = isCaptureHardwareAccelerated();
+      const ffmpegCodec = captureHwAccel ? ("\u26A1 " + effectiveCodec.toUpperCase()) : effectiveCodec.toUpperCase();
       const captureMode = (streamingMode === "native") ? ("native HLS" + nativeQuality) :
         (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg [" + ffmpegCodec + "]" : "Native fMP4");
       const displayName = channel?.name ?? url;
@@ -1441,8 +1442,8 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
 
       // Update the registry entry with codec and hardware acceleration state, then emit the stream added event for the dashboard. Native streams set their codec
       // and quality fields earlier (when the native proxy is created), so only capture mode needs updating here.
-      const streamCodec = (streamingMode === "native") ? nativeCodec : (gpu?.hevcHardwareEncoding ? "HEVC" : "H264");
-      const hwAccelerated = (streamingMode !== "native") && (gpu?.h264HardwareEncoding === true);
+      const streamCodec = (streamingMode === "native") ? nativeCodec : effectiveCodec.toUpperCase();
+      const hwAccelerated = (streamingMode !== "native") && captureHwAccel;
       const currentEntry = getStream(numericStreamId);
 
       if(currentEntry) {

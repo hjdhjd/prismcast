@@ -3,9 +3,9 @@
  * userConfig.ts: User configuration file management for PrismCast.
  */
 import type { Config, Nullable } from "../types/index.js";
+import { LOG, stringifySorted } from "../utils/index.js";
 import { getConfigFilePath, getDataDir } from "./paths.js";
 import type { CliOverrides } from "./index.js";
-import { LOG } from "../utils/index.js";
 import fs from "node:fs";
 import { getValidPresetIds } from "./presets.js";
 
@@ -69,6 +69,10 @@ export interface SettingMetadata {
   // Dot-separated path to the setting (e.g., "browser.initTimeout").
   path: string;
 
+  // Key identifying which list item provider to use when rendering a checkboxList. The provider is looked up in the LIST_ITEM_PROVIDERS registry in the settings
+  // renderer. This keeps the config layer free of browser/runtime dependencies — the routes layer owns the registry and can safely import browser capabilities.
+  listItemsKey?: string;
+
   // Data type for validation and form field rendering.
   type: "boolean" | "checkboxList" | "float" | "host" | "integer" | "path" | "port" | "string";
 
@@ -117,6 +121,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
         "enabled in the Channels tab provider filter are skipped at startup. Ensure you've logged into each provider before enabling.",
       envVar: null,
       label: "Channel Lineup Precaching",
+      listItemsKey: "providerModules",
       path: "channels.precacheProviders",
       type: "checkboxList"
     }
@@ -491,6 +496,16 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
     },
     {
 
+      description: "Video codecs allowed for browser capture. H.264 is always available as the universal baseline. Additional codecs require GPU hardware " +
+        "encoding support - codecs without hardware support are shown as disabled.",
+      envVar: "CAPTURE_CODECS",
+      label: "Capture Codecs",
+      listItemsKey: "captureCodecs",
+      path: "streaming.captureCodecs",
+      type: "checkboxList"
+    },
+    {
+
       description: "Video quality preset. Determines capture resolution. Bitrate and frame rate can be further customized.",
       envVar: "QUALITY_PRESET",
       label: "Quality Preset",
@@ -661,6 +676,7 @@ export interface UserServerConfig {
 export interface UserStreamingConfig {
 
   audioBitsPerSecond?: number;
+  captureCodecs?: string[];
   captureMode?: string;
   frameRate?: number;
   maxConcurrentStreams?: number;
@@ -810,8 +826,8 @@ export async function saveUserConfig(config: UserConfig): Promise<void> {
   // Ensure data directory exists.
   await fsPromises.mkdir(getDataDir(), { recursive: true });
 
-  // Write config with pretty formatting for readability.
-  const content = JSON.stringify(config, null, 2);
+  // Write config with pretty formatting and sorted keys for consistent, diff-friendly output.
+  const content = stringifySorted(config);
 
   await fsPromises.writeFile(getConfigFilePath(), content + "\n", "utf-8");
 
@@ -934,6 +950,7 @@ export const DEFAULTS: Config = {
   streaming: {
 
     audioBitsPerSecond: 256000,
+    captureCodecs: [ "h264", "hevc" ],
     captureMode: "ffmpeg",
     frameRate: 60,
     maxConcurrentStreams: 10,
@@ -951,7 +968,7 @@ export const DEFAULTS: Config = {
  * @param type - The expected type of the setting.
  * @returns The parsed value, or undefined if parsing fails.
  */
-function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<boolean | number | string> | undefined {
+function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<boolean | number | string | string[]> | undefined {
 
   switch(type) {
 
@@ -981,6 +998,12 @@ function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<b
     case "host": {
 
       return value;
+    }
+
+    case "checkboxList": {
+
+      // Accept comma-separated values (e.g., "h264,hevc").
+      return value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
     }
 
     case "path": {
@@ -1097,6 +1120,11 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
   if(Array.isArray(userConfig.channels?.visibleColumns)) {
 
     config.channels.visibleColumns = [...userConfig.channels.visibleColumns];
+  }
+
+  if(Array.isArray(userConfig.streaming?.captureCodecs)) {
+
+    config.streaming.captureCodecs = [...userConfig.streaming.captureCodecs];
   }
 
   if((typeof userConfig.channels?.channelSortField === "string") && (userConfig.channels.channelSortField.length > 0)) {
@@ -1239,7 +1267,8 @@ const SETTINGS_TAB_SECTIONS: { displayName: string; id: string; paths: string[] 
 
     displayName: "Capture",
     id: "capture",
-    paths: [ "streaming.captureMode", "streaming.qualityPreset", "streaming.videoBitsPerSecond", "streaming.audioBitsPerSecond", "streaming.frameRate" ]
+    paths: [ "streaming.captureMode", "streaming.captureCodecs", "streaming.qualityPreset", "streaming.videoBitsPerSecond", "streaming.audioBitsPerSecond",
+      "streaming.frameRate" ]
   },
   {
 
@@ -1504,6 +1533,15 @@ export function filterDefaults(config: UserConfig): UserConfig {
   if(Array.isArray(configVisibleColumns) && (configVisibleColumns.length > 0)) {
 
     setNestedValue(filtered, "channels.visibleColumns", configVisibleColumns);
+  }
+
+  // Preserve captureCodecs when it differs from the default. The default includes all recognized codecs, so a shorter list means the user has disabled one.
+  const configCaptureCodecs = getNestedValue(config, "streaming.captureCodecs") as string[] | undefined;
+  const defaultCaptureCodecs = getNestedValue(DEFAULTS, "streaming.captureCodecs") as string[];
+
+  if(Array.isArray(configCaptureCodecs) && (JSON.stringify(configCaptureCodecs.slice().sort()) !== JSON.stringify(defaultCaptureCodecs.slice().sort()))) {
+
+    setNestedValue(filtered, "streaming.captureCodecs", configCaptureCodecs);
   }
 
   const configSortField = getNestedValue(config, "channels.channelSortField") as string | undefined;
