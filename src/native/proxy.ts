@@ -3,11 +3,12 @@
  * proxy.ts: Native HLS proxy — manifest polling, segment fetching, and playlist generation.
  */
 import { LOG, chromeFetch, startTimer } from "../utils/index.js";
-import { type PrerollCodec, buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.js";
+import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.js";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.js";
 import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.js";
 import type { CDPSession } from "puppeteer-core";
 import { CONFIG } from "../config/index.js";
+import type { CaptureCodec } from "../streaming/codec.js";
 import type { Nullable } from "../types/index.js";
 import type { PlaylistSegmentEntry } from "../streaming/playlistBuilder.js";
 import { buildPlaylist } from "../streaming/playlistBuilder.js";
@@ -70,7 +71,7 @@ export interface NativeProxyOptions {
   prefetchedKey: Nullable<Buffer>;
 
   // The preroll codec variant for composite playlist construction. Determines which preroll variant URLs and durations are used.
-  prerollCodec?: PrerollCodec;
+  prerollCodec?: CaptureCodec;
 
   // Number of preroll segments preceding real content. When non-zero, the proxy starts segment numbering at this index to reserve the preroll index range. The
   // composite playlist behavior (including preroll entries) is determined dynamically by checking stream.hls.prerollStartTime at playlist generation time.
@@ -343,7 +344,7 @@ interface CompositePlaylistOptions {
 
   composite: CompositePlaylistState;
   prerollBaseUrl: string;
-  prerollCodec: PrerollCodec;
+  prerollCodec: CaptureCodec;
   prerollSegmentCount: number;
   segmentEntries: string[];
   segmentIndex: number;
@@ -956,7 +957,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   // Preroll segment index offset. When preroll is ready (prerollSegmentCount > 0), real segments start numbering after the preroll range (e.g., segmentN.ts where
   // N = prerollSegmentCount). This offset is unconditional — it reserves the index space for preroll regardless of whether the deferred preroll timer fires.
   // The composite playlist behavior (including preroll entries) is determined dynamically by checking stream.hls.prerollStartTime at playlist generation time.
-  const prerollCodec: PrerollCodec = options.prerollCodec ?? "h264";
+  const prerollCodec: CaptureCodec = options.prerollCodec ?? "h264";
   const prerollSegmentCount = options.prerollSegmentCount ?? 0;
 
   /* Proxy state. These track segment storage, manifest polling, error thresholds, and playlist generation across the proxy's lifetime. Mutable variables are organized

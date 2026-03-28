@@ -2,10 +2,11 @@
  *
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
-import { type PrerollCodec, buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.js";
+import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.js";
 import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.js";
 import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.js";
 import { CONFIG } from "../config/index.js";
+import type { CaptureCodec } from "./codec.js";
 import { LOG } from "../utils/index.js";
 import type { MP4Box } from "./mp4Parser.js";
 import type { Nullable } from "../types/index.js";
@@ -52,7 +53,7 @@ export interface FMP4SegmenterOptions {
   prerollBaseUrl?: Nullable<string>;
 
   // The preroll codec variant for this segmenter's composite playlist. Determines which preroll variant is referenced in URLs and used for duration lookups.
-  prerollCodec?: PrerollCodec;
+  prerollCodec?: CaptureCodec;
 
   // Number of preroll segments preceding this segmenter's content. When non-zero, generatePlaylist() includes preroll entries for indices below startingSegmentIndex
   // that are still within the sliding window, creating a unified playlist that bridges the preroll-to-live transition with monotonic MEDIA-SEQUENCE.
@@ -239,7 +240,7 @@ interface SegmenterState {
   readonly prerollBaseUrl: Nullable<string>;
 
   // The preroll codec variant for this segmenter's composite playlist. Used for duration lookups and URL path construction.
-  readonly prerollCodec: PrerollCodec;
+  readonly prerollCodec: CaptureCodec;
 
   // Number of preroll segments preceding this segmenter's real content. When non-zero, generatePlaylist() includes preroll entries for indices below this value that
   // are still within the sliding window. Set at construction and never modified.

@@ -3,12 +3,12 @@
  * registry.ts: Stream tracking for PrismCast.
  */
 import type { Nullable, ResolvedSiteProfile, StreamingMode } from "../types/index.js";
+import type { CaptureCodec } from "./codec.js";
 import { EventEmitter } from "node:events";
 import type { FFmpegProcess } from "../utils/index.js";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
 import type { NativeProxy } from "../native/proxy.js";
 import type { Page } from "puppeteer-core";
-import type { PrerollCodec } from "./preroll.js";
 import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./recovery.js";
 
@@ -113,7 +113,7 @@ export interface HLSState {
   prerollBaseUrl: Nullable<string>;
 
   // The preroll codec variant for this stream. Determines which preroll variant is served and referenced in playlists. Null when no preroll is active.
-  prerollCodec: Nullable<PrerollCodec>;
+  prerollCodec: Nullable<CaptureCodec>;
 
   // Number of preroll segments that precede real content. Zero when no preroll is active. The segmenter uses this to know which indices in the playlist sliding
   // window are preroll entries vs real entries.
