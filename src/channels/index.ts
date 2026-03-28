@@ -453,6 +453,18 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     },
   },
 
+  destinationamerica: {
+    name: "Destination America",
+    stationId: "60468",
+    providers: {
+      cox: { channelSelector: "Destination America", url: "https://watchtv.cox.com/listings" },
+      directv: { channelSelector: "Destination America HD", url: "https://stream.directv.com" },
+      site: { url: "https://watch.foodnetwork.com/channel/destination-america" },
+      spectrum: { channelSelector: "Destination America", url: "https://watch.spectrum.net/guide" },
+      xfinity: { channelSelector: "Destination America", url: "https://www.xfinity.com/stream/listings" },
+    },
+  },
+
   discovery: {
     name: "Discovery",
     pacificStationId: "80399",
