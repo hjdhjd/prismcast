@@ -4,28 +4,31 @@
  */
 
 /**
- * Formats a duration in milliseconds as a human-readable string. The format varies based on duration length:
+ * Formats a duration as a human-readable string. The format varies based on duration length:
  * - Less than 60 seconds: "17s"
  * - Less than 1 hour: "6m 39s"
  * - 1 hour or more: "1h 23m"
- * @param ms - Duration in milliseconds.
+ *
+ * Zero-value trailing components are omitted (e.g., exactly 2 minutes returns "2m", not "2m 0s").
+ * @param value - Duration value.
+ * @param unit - The unit of the value: "ms" (default) or "s".
  * @returns Formatted duration string.
  */
-export function formatDuration(ms: number): string {
+export function formatDuration(value: number, unit: "ms" | "s" = "ms"): string {
 
-  const totalSeconds = Math.round(ms / 1000);
+  const totalSeconds = unit === "ms" ? Math.round(value / 1000) : value;
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
 
   if(hours > 0) {
 
-    return [ String(hours), "h ", String(minutes), "m" ].join("");
+    return minutes > 0 ? [ String(hours), "h ", String(minutes), "m" ].join("") : [ String(hours), "h" ].join("");
   }
 
   if(minutes > 0) {
 
-    return [ String(minutes), "m ", String(seconds), "s" ].join("");
+    return seconds > 0 ? [ String(minutes), "m ", String(seconds), "s" ].join("") : [ String(minutes), "m" ].join("");
   }
 
   return [ String(seconds), "s" ].join("");

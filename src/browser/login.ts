@@ -82,6 +82,17 @@ export interface LoginStatus {
   url: Nullable<string>;
 }
 
+/**
+ * Resets all login state variables to their initial values. Shared by endLoginMode() (normal cleanup) and clearLoginState() (browser crash cleanup).
+ */
+function resetLoginState(): void {
+
+  loginModeActive = false;
+  loginPage = null;
+  loginUrl = null;
+  loginStartTime = null;
+}
+
 // Functions.
 
 /**
@@ -206,10 +217,7 @@ export async function endLoginMode(): Promise<void> {
   // Clear login state.
   const wasActive = loginModeActive;
 
-  loginModeActive = false;
-  loginPage = null;
-  loginUrl = null;
-  loginStartTime = null;
+  resetLoginState();
 
   // Re-minimize the browser window.
   if(wasActive) {
@@ -278,10 +286,7 @@ export function clearLoginState(): boolean {
     loginTimeoutHandle = null;
   }
 
-  loginModeActive = false;
-  loginPage = null;
-  loginUrl = null;
-  loginStartTime = null;
+  resetLoginState();
 
   return true;
 }

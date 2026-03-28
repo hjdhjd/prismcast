@@ -4,7 +4,7 @@
  */
 import { DOMAIN_CONFIG, SITE_PROFILES, getBuiltinProfile, isProviderProfile } from "./sites.js";
 import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "../types/index.js";
-import { LOG, containsNonPrintable } from "../utils/index.js";
+import { LOG, containsNonPrintable, stringifySorted } from "../utils/index.js";
 import { getDataDir, getProfilesFilePath } from "./paths.js";
 import { extractDomain } from "../utils/format.js";
 import fs from "node:fs";
@@ -37,6 +37,30 @@ const ALL_STRATEGIES = new Set([ "foxGrid", "guideGrid", "hboGrid", "none", "sli
 // Strategies that require a matchSelector to identify channel elements.
 const STRATEGIES_REQUIRING_MATCH_SELECTOR = new Set([ "thumbnailRow", "tileClick" ]);
 
+
+/**
+ * Extracts a typed record from an unknown parsed value. Validates that the value is a plain object (not null, not an array) and that each entry is also a plain
+ * object. Non-object entries are silently skipped.
+ * @param raw - The raw parsed value to extract from.
+ * @returns A record of valid object entries.
+ */
+function extractObjectMap<T>(raw: unknown): Record<string, T> {
+
+  const result: Record<string, T> = {};
+
+  if((typeof raw === "object") && (raw !== null) && !Array.isArray(raw)) {
+
+    for(const [ key, value ] of Object.entries(raw as Record<string, unknown>)) {
+
+      if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
+
+        result[key] = value as T;
+      }
+    }
+  }
+
+  return result;
+}
 
 // Module-level storage for loaded user profiles and domains. Populated at startup and updated on save.
 let loadedUserProfiles: Record<string, SiteProfile> = {};
@@ -96,36 +120,8 @@ export async function loadUserProfiles(): Promise<UserProfilesLoadResult> {
       // Parse as an untyped record to manually validate structure before assigning to typed interfaces.
       const parsed = JSON.parse(content) as Record<string, unknown>;
 
-      const profiles: Record<string, SiteProfile> = {};
-      const domains: Record<string, DomainConfig> = {};
-
-      // Extract profiles if present and valid.
-      const rawProfiles = parsed.profiles;
-
-      if((typeof rawProfiles === "object") && (rawProfiles !== null) && !Array.isArray(rawProfiles)) {
-
-        for(const [ key, value ] of Object.entries(rawProfiles as Record<string, unknown>)) {
-
-          if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
-
-            profiles[key] = value as SiteProfile;
-          }
-        }
-      }
-
-      // Extract domains if present and valid.
-      const rawDomains = parsed.domains;
-
-      if((typeof rawDomains === "object") && (rawDomains !== null) && !Array.isArray(rawDomains)) {
-
-        for(const [ key, value ] of Object.entries(rawDomains as Record<string, unknown>)) {
-
-          if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
-
-            domains[key] = value as DomainConfig;
-          }
-        }
-      }
+      const profiles = extractObjectMap<SiteProfile>(parsed.profiles);
+      const domains = extractObjectMap<DomainConfig>(parsed.domains);
 
       return { domains, parseError: false, profiles };
     } catch(parseError) {
@@ -163,39 +159,21 @@ export async function saveUserProfiles(profiles: Record<string, SiteProfile>, do
   // Ensure data directory exists.
   await fsPromises.mkdir(getDataDir(), { recursive: true });
 
-  // Build the file contents with sorted keys for consistent output.
+  // Build the file contents. Only include sections that have entries.
   const file: UserProfilesFile = {};
 
-  // Only include sections that have entries.
-  const sortedDomainKeys = Object.keys(domains).sort();
-  const sortedProfileKeys = Object.keys(profiles).sort();
+  if(Object.keys(domains).length > 0) {
 
-  if(sortedDomainKeys.length > 0) {
-
-    const sortedDomains: Record<string, DomainConfig> = {};
-
-    for(const key of sortedDomainKeys) {
-
-      sortedDomains[key] = domains[key];
-    }
-
-    file.domains = sortedDomains;
+    file.domains = domains;
   }
 
-  if(sortedProfileKeys.length > 0) {
+  if(Object.keys(profiles).length > 0) {
 
-    const sortedProfiles: Record<string, SiteProfile> = {};
-
-    for(const key of sortedProfileKeys) {
-
-      sortedProfiles[key] = profiles[key];
-    }
-
-    file.profiles = sortedProfiles;
+    file.profiles = profiles;
   }
 
-  // Write with pretty formatting for readability.
-  const content = JSON.stringify(file, null, 2);
+  // Write with pretty formatting and sorted keys for consistent, diff-friendly output.
+  const content = stringifySorted(file);
 
   await fsPromises.writeFile(getProfilesFilePath(), content + "\n", "utf-8");
 

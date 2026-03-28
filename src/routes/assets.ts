@@ -12,15 +12,14 @@ import { readFile } from "fs/promises";
  * serving.
  */
 
-// Cached asset data. Populated on first request and reused for subsequent requests.
-let svgData: Nullable<Buffer> = null;
-let pngData: Nullable<Buffer> = null;
+// Cached asset data keyed by filename. Populated on first request and reused for subsequent requests.
+const assetCache = new Map<string, Nullable<Buffer>>();
 
 // Resolve the project root directory (two levels up from src/routes/).
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /**
- * Loads an asset file from the project root, caching it for subsequent requests.
+ * Loads an asset file from the project root.
  * @param filename - The filename to load from the project root.
  * @returns The file contents as a Buffer, or null if the file could not be read.
  */
@@ -36,72 +35,43 @@ async function loadAsset(filename: string): Promise<Nullable<Buffer>> {
 }
 
 /**
+ * Registers a cached asset route. On first request, the asset is loaded from disk and cached; subsequent requests serve the cached copy.
+ * @param app - The Express application.
+ * @param routePath - The URL path to serve the asset on.
+ * @param filename - The filename to load from the project root.
+ * @param contentType - The Content-Type header value.
+ */
+function registerAssetRoute(app: Express, routePath: string, filename: string, contentType: string): void {
+
+  app.get(routePath, async (_req: Request, res: Response): Promise<void> => {
+
+    if(!assetCache.has(filename)) {
+
+      assetCache.set(filename, await loadAsset(filename));
+    }
+
+    const data = assetCache.get(filename) ?? null;
+
+    if(data) {
+
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.send(data);
+    } else {
+
+      res.status(404).send("Not found");
+    }
+  });
+}
+
+/**
  * Configures routes for serving static assets (logo and favicon).
  * @param app - The Express application.
  */
 export function setupAssetEndpoints(app: Express): void {
 
-  // Serve the SVG favicon.
-  app.get("/favicon.svg", async (_req: Request, res: Response): Promise<void> => {
-
-    svgData ??= await loadAsset("prismcast.svg");
-
-    if(svgData) {
-
-      res.setHeader("Content-Type", "image/svg+xml");
-      res.setHeader("Cache-Control", "public, max-age=86400");
-      res.send(svgData);
-    } else {
-
-      res.status(404).send("Not found");
-    }
-  });
-
-  // Serve the PNG favicon (alternative for browsers that prefer PNG).
-  app.get("/favicon.png", async (_req: Request, res: Response): Promise<void> => {
-
-    pngData ??= await loadAsset("prismcast.png");
-
-    if(pngData) {
-
-      res.setHeader("Content-Type", "image/png");
-      res.setHeader("Cache-Control", "public, max-age=86400");
-      res.send(pngData);
-    } else {
-
-      res.status(404).send("Not found");
-    }
-  });
-
-  // Serve the PNG logo (used for apple-touch-icon which requires PNG format).
-  app.get("/logo.png", async (_req: Request, res: Response): Promise<void> => {
-
-    pngData ??= await loadAsset("prismcast.png");
-
-    if(pngData) {
-
-      res.setHeader("Content-Type", "image/png");
-      res.setHeader("Cache-Control", "public, max-age=86400");
-      res.send(pngData);
-    } else {
-
-      res.status(404).send("Not found");
-    }
-  });
-
-  // Serve the SVG logo (used for the homepage header).
-  app.get("/logo.svg", async (_req: Request, res: Response): Promise<void> => {
-
-    svgData ??= await loadAsset("prismcast.svg");
-
-    if(svgData) {
-
-      res.setHeader("Content-Type", "image/svg+xml");
-      res.setHeader("Cache-Control", "public, max-age=86400");
-      res.send(svgData);
-    } else {
-
-      res.status(404).send("Not found");
-    }
-  });
+  registerAssetRoute(app, "/favicon.svg", "prismcast.svg", "image/svg+xml");
+  registerAssetRoute(app, "/favicon.png", "prismcast.png", "image/png");
+  registerAssetRoute(app, "/logo.png", "prismcast.png", "image/png");
+  registerAssetRoute(app, "/logo.svg", "prismcast.svg", "image/svg+xml");
 }
