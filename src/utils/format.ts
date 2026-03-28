@@ -103,3 +103,23 @@ export function capitalize(str: string): string {
 
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
+
+/**
+ * Serializes a value to JSON with all object keys sorted alphabetically at every depth. This ensures consistent, diff-friendly output for all persisted JSON
+ * files and exported JSON responses. Array element order is preserved.
+ * @param data - The value to serialize.
+ * @param indent - Number of spaces for indentation (default: 2). Pass 0 for compact output.
+ * @returns The JSON string.
+ */
+export function stringifySorted(data: unknown, indent = 2): string {
+
+  return JSON.stringify(data, (_key: string, value: unknown) => {
+
+    if(value && (typeof value === "object") && !Array.isArray(value)) {
+
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)));
+    }
+
+    return value;
+  }, indent);
+}

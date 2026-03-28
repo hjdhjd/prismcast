@@ -4,7 +4,7 @@
  */
 import type { Channel, ChannelDelta, ChannelSortField, Nullable, StoredChannel } from "../../../types/index.js";
 import type { Express, Request, Response } from "express";
-import { LOG, formatError, generateChannelKey, parseM3U, sanitizeString } from "../../../utils/index.js";
+import { LOG, formatError, generateChannelKey, parseM3U, sanitizeString, stringifySorted } from "../../../utils/index.js";
 import { VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState } from "./table.js";
 import { VALID_SORT_FIELDS, compareChannelSort, getAllProviderTags, getCanonicalKey, getChannelProviderLabel, getEnabledProviders, getProviderGroup,
   getProviderSelection, getProviderTagForChannel, getResolvedChannel, resolvePredefinedVariant, resolveProviderKey, setEnabledProviders,
@@ -122,7 +122,7 @@ export function setupChannelRoutes(app: Express): void {
 
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Content-Disposition", "attachment; filename=\"prismcast-channels.json\"");
-      res.send(JSON.stringify(resolved, null, 2) + "\n");
+      res.send(stringifySorted(resolved) + "\n");
     } catch(error) {
 
       LOG.error("Failed to export channels: %s.", formatError(error));
