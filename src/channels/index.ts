@@ -721,8 +721,8 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     providers: {
       cox: { channelSelector: "Fox", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "FOX", url: "https://stream.directv.com" },
-      foxone: { channelSelector: "FOXD2C", url: "https://www.fox.com/live/channels" },
       hulu: { channelSelector: "Fox", url: "https://www.hulu.com/live" },
+      site: { channelSelector: "FOXD2C", url: "https://www.fox.com/live/channels" },
       sling: { channelSelector: "FOX", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
       spectrum: { channelSelector: "FOX", url: "https://watch.spectrum.net/guide" },
       xfinity: { channelSelector: "Fox", url: "https://www.xfinity.com/stream/listings" },
