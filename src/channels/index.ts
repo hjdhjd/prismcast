@@ -2323,39 +2323,14 @@ function buildFlatEntry(def: ChannelDefinition, variant: ProviderVariant): Chann
   }
 
   // Provider-specific fields from ProviderVariant.
-  if(variant.channelSelector) {
+  const variantKeys = [ "channelSelector", "dismissSelector", "profile", "provider", "scrollSelector", "scrollTarget", "scrollToBottom" ] as const;
 
-    entry.channelSelector = variant.channelSelector;
-  }
+  for(const key of variantKeys) {
 
-  if(variant.dismissSelector) {
+    if(variant[key] !== undefined) {
 
-    entry.dismissSelector = variant.dismissSelector;
-  }
-
-  if(variant.profile) {
-
-    entry.profile = variant.profile;
-  }
-
-  if(variant.provider) {
-
-    entry.provider = variant.provider;
-  }
-
-  if(variant.scrollSelector) {
-
-    entry.scrollSelector = variant.scrollSelector;
-  }
-
-  if(variant.scrollTarget) {
-
-    entry.scrollTarget = variant.scrollTarget;
-  }
-
-  if(variant.scrollToBottom !== undefined) {
-
-    entry.scrollToBottom = variant.scrollToBottom;
+      (entry as unknown as Record<string, unknown>)[key] = variant[key];
+    }
   }
 
   return entry;

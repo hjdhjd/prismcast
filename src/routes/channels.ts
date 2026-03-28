@@ -66,24 +66,14 @@ export function setupChannelsEndpoint(app: Express): void {
       };
 
       // Add optional fields only when present.
-      if(entry.channel.channelNumber !== undefined) {
+      const optionalFields = [ "channelNumber", "channelSelector", "profile", "stationId" ] as const;
 
-        channelEntry.channelNumber = entry.channel.channelNumber;
-      }
+      for(const field of optionalFields) {
 
-      if(entry.channel.channelSelector) {
+        if(entry.channel[field] !== undefined) {
 
-        channelEntry.channelSelector = entry.channel.channelSelector;
-      }
-
-      if(entry.channel.profile) {
-
-        channelEntry.profile = entry.channel.profile;
-      }
-
-      if(entry.channel.stationId) {
-
-        channelEntry.stationId = entry.channel.stationId;
+          (channelEntry as unknown as Record<string, unknown>)[field] = entry.channel[field];
+        }
       }
 
       channels.push(channelEntry);

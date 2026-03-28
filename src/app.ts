@@ -425,21 +425,20 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   }
 
   // Build CLI overrides from parsed arguments. These have the highest priority in the merge order (CLI > env > config.json > defaults).
+  const cliOverrideMap: [keyof ParsedArgs, string][] = [
+    [ "chromeDataDir", "paths.chromeDataDir" ],
+    [ "logFile", "paths.logFile" ],
+    [ "port", "server.port" ]
+  ];
+
   const cliOverrides: CliOverrides = {};
 
-  if(parsedArgs.chromeDataDir !== undefined) {
+  for(const [ argKey, configPath ] of cliOverrideMap) {
 
-    cliOverrides["paths.chromeDataDir"] = parsedArgs.chromeDataDir;
-  }
+    if(parsedArgs[argKey] !== undefined) {
 
-  if(parsedArgs.logFile !== undefined) {
-
-    cliOverrides["paths.logFile"] = parsedArgs.logFile;
-  }
-
-  if(parsedArgs.port !== undefined) {
-
-    cliOverrides["server.port"] = parsedArgs.port;
+      cliOverrides[configPath] = parsedArgs[argKey] as string | number;
+    }
   }
 
   // Initialize configuration from file and environment variables, then validate. CLI overrides are applied as the highest-priority merge pass. User profiles are

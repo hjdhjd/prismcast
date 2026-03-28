@@ -3,6 +3,7 @@
  * commands.ts: Upgrade command handlers for PrismCast CLI.
  */
 import { fetchLatestVersion, getPackageVersion, isVersionLessThan, normalizeVersion } from "../utils/version.js";
+import { print, printError } from "../utils/cliOutput.js";
 import type { InstallInfo } from "./detection.js";
 import type { Nullable } from "../types/index.js";
 import { detectInstallMethod } from "./detection.js";
@@ -12,26 +13,6 @@ import { isRunningAsService } from "../utils/platform.js";
 /* These handlers implement the `prismcast upgrade` subcommand for detecting the installation method, checking for updates, and executing the appropriate upgrade
  * command. The pattern mirrors the service subcommand handlers in service/commands.ts.
  */
-
-/**
- * Prints a message to stdout.
- * @param message - The message to print.
- */
-function print(message: string): void {
-
-  // eslint-disable-next-line no-console
-  console.log(message);
-}
-
-/**
- * Prints an error message to stderr.
- * @param message - The error message to print.
- */
-function printError(message: string): void {
-
-  // eslint-disable-next-line no-console
-  console.error(message);
-}
 
 /**
  * Formats the display name for an installation method.

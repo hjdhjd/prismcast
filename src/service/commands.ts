@@ -5,8 +5,10 @@
 import { DEFAULTS, loadUserConfig } from "../config/userConfig.js";
 import { SERVICE_NAME, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getServiceFilePath } from "../utils/platform.js";
 import { collectServiceEnvironment, detectStalePaths, getServiceGenerator, getServicePaths } from "./generators.js";
+import { print, printError } from "../utils/cliOutput.js";
 import type { Nullable } from "../types/index.js";
 import type { ServiceGenerator } from "./generators.js";
+import { formatDuration } from "../utils/format.js";
 import { getDataDir } from "../config/paths.js";
 import path from "node:path";
 
@@ -31,26 +33,6 @@ interface StreamsResponse {
 /* These handlers implement the `prismcast service` subcommands for installing, uninstalling, and checking the status of PrismCast as a system service. Each handler
  * prints its output directly to the console and exits with an appropriate status code.
  */
-
-/**
- * Prints a message to stdout.
- * @param message - The message to print.
- */
-function print(message: string): void {
-
-  // eslint-disable-next-line no-console
-  console.log(message);
-}
-
-/**
- * Prints an error message to stderr.
- * @param message - The error message to print.
- */
-function printError(message: string): void {
-
-  // eslint-disable-next-line no-console
-  console.error(message);
-}
 
 /**
  * Prints a stale path warning block to stderr. Called by handleStatus() when the service file references paths that no longer exist on disk.
@@ -78,32 +60,6 @@ function printStalePathWarning(): void {
   }
 
   printError("Run 'prismcast service restart' to update the service file.");
-}
-
-/**
- * Formats a duration in seconds to a human-readable string.
- * @param seconds - The duration in seconds.
- * @returns Formatted duration (e.g., "45s", "2m 15s", "1h 23m").
- */
-function formatDuration(seconds: number): string {
-
-  if(seconds < 60) {
-
-    return String(seconds) + "s";
-  }
-
-  if(seconds < 3600) {
-
-    const minutes = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-
-    return secs > 0 ? String(minutes) + "m " + String(secs) + "s" : String(minutes) + "m";
-  }
-
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-
-  return minutes > 0 ? String(hours) + "h " + String(minutes) + "m" : String(hours) + "h";
 }
 
 /**
@@ -608,7 +564,7 @@ export async function handleStatus(): Promise<number> {
 
         const suffix = stream.showName ? " - " + stream.showName : "";
 
-        print("  • " + name + " (" + formatDuration(stream.duration) + ")" + suffix);
+        print("  • " + name + " (" + formatDuration(stream.duration, "s") + ")" + suffix);
       }
     }
   }

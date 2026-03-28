@@ -5,11 +5,11 @@
 import { LOG, formatError, startTimer } from "../utils/index.js";
 import { clearProbeCache, probeManifest } from "./probe.js";
 import { installManifestInterceptor, removeManifestInterceptor } from "./intercept.js";
+import type { CaptureCodec } from "../streaming/codec.js";
 import type { ManifestInterceptionResult } from "./intercept.js";
 import type { NativeProxy } from "./proxy.js";
 import type { Nullable } from "../types/index.js";
 import type { Page } from "puppeteer-core";
-import type { PrerollCodec } from "../streaming/preroll.js";
 import type { ProbeResult } from "./probe.js";
 import { createNativeProxy } from "./proxy.js";
 import { fetchDecryptionKey } from "./decrypt.js";
@@ -67,7 +67,7 @@ export interface AttemptNativeStreamingOptions {
   page: Page;
 
   // The preroll codec variant for composite playlist construction.
-  prerollCodec?: PrerollCodec;
+  prerollCodec?: CaptureCodec;
 
   // Number of preroll segments preceding real content. When non-zero, the proxy starts segment numbering after the preroll range to reserve the index space. The
   // composite playlist reads the base URL dynamically from the stream's HLS state.
@@ -262,45 +262,25 @@ interface TokenRefreshOptions {
  */
 function parseTokenExpiry(url: string): Nullable<number> {
 
-  // Pattern 1: exp=N (plain query parameter).
-  const expMatch = /[?&]exp=(\d{10,13})/.exec(url);
+  // Each pattern captures a 10-13 digit expiration timestamp from a different token format. The patterns are tried in order; the first match wins.
+  const expiryPatterns = [
+    /[?&]exp=(\d{10,13})/,       // Plain query parameter: exp=N.
+    /~exp=(\d{10,13})~/,          // Akamai token in query parameter: hdnea=...~exp=N~...
+    /\/exp=(\d{10,13})~/,         // Akamai token in URL path: /exp=N~acl=...
+    /exp%3D(\d{10,13})/           // URL-encoded hdnts parameter: exp%3DN.
+  ];
 
-  if(expMatch) {
+  for(const pattern of expiryPatterns) {
 
-    const value = Number(expMatch[1]);
+    const match = pattern.exec(url);
 
-    // If the value is 10 digits, it's seconds; if 13, it's milliseconds.
-    return value < 1e12 ? value * 1000 : value;
-  }
+    if(match) {
 
-  // Pattern 2: hdnea=...~exp=N~... (Akamai token in query parameter).
-  const hdneaExpMatch = /~exp=(\d{10,13})~/.exec(url);
+      const value = Number(match[1]);
 
-  if(hdneaExpMatch) {
-
-    const value = Number(hdneaExpMatch[1]);
-
-    return value < 1e12 ? value * 1000 : value;
-  }
-
-  // Pattern 3: /exp=N~ (Akamai token in URL path, e.g., foxvideo-sports.akamaized.net/exp=N~acl=...).
-  const pathExpMatch = /\/exp=(\d{10,13})~/.exec(url);
-
-  if(pathExpMatch) {
-
-    const value = Number(pathExpMatch[1]);
-
-    return value < 1e12 ? value * 1000 : value;
-  }
-
-  // Pattern 4: URL-encoded exp%3D (hdnts parameter).
-  const encodedExpMatch = /exp%3D(\d{10,13})/.exec(url);
-
-  if(encodedExpMatch) {
-
-    const value = Number(encodedExpMatch[1]);
-
-    return value < 1e12 ? value * 1000 : value;
+      // If the value is 10 digits, it's seconds; if 13, it's milliseconds.
+      return value < 1e12 ? value * 1000 : value;
+    }
   }
 
   return null;

@@ -2,8 +2,8 @@
  *
  * health.ts: Channel health and domain authentication state persistence for PrismCast.
  */
+import { LOG, stringifySorted } from "../utils/index.js";
 import { EventEmitter } from "node:events";
-import { LOG } from "../utils/index.js";
 import type { Nullable } from "../types/index.js";
 import fs from "node:fs";
 import { getHealthFilePath } from "./paths.js";
@@ -81,6 +81,9 @@ const HEALTH_TTL = 7 * 24 * 60 * 60 * 1000;
 // Debounce interval for writes to health.json.
 const FLUSH_DELAY = 2000;
 
+// Returns true if the given timestamp is older than HEALTH_TTL.
+const isHealthExpired = (timestamp: number): boolean => (Date.now() - timestamp) >= HEALTH_TTL;
+
 // In-memory state.
 
 const channelHealth = new Map<string, ChannelHealthEntry>();
@@ -102,7 +105,6 @@ export async function loadHealthState(): Promise<void> {
 
     const content = await fsPromises.readFile(getHealthFilePath(), "utf-8");
     const state = JSON.parse(content) as HealthState;
-    const now = Date.now();
 
     channelHealth.clear();
     domainAuth.clear();
@@ -113,7 +115,7 @@ export async function loadHealthState(): Promise<void> {
 
       for(const [ key, entry ] of Object.entries(state.channels)) {
 
-        if((now - entry.timestamp) < HEALTH_TTL) {
+        if(!isHealthExpired(entry.timestamp)) {
 
           channelHealth.set(key, entry);
         }
@@ -126,7 +128,7 @@ export async function loadHealthState(): Promise<void> {
 
       for(const [ key, timestamp ] of Object.entries(state.domains)) {
 
-        if((now - timestamp) < HEALTH_TTL) {
+        if(!isHealthExpired(timestamp)) {
 
           domainAuth.set(key, timestamp);
         }
@@ -187,14 +189,7 @@ function flushHealthState(): void {
       domains: Object.fromEntries(domainAuth)
     };
 
-    // Sort keys for consistent output.
-    const sortedState: HealthState = {
-
-      channels: Object.fromEntries(Object.entries(state.channels).sort(([a], [b]) => a.localeCompare(b))),
-      domains: Object.fromEntries(Object.entries(state.domains).sort(([a], [b]) => a.localeCompare(b)))
-    };
-
-    fsPromises.writeFile(getHealthFilePath(), JSON.stringify(sortedState, null, 2) + "\n", "utf-8").catch((error: unknown) => {
+    fsPromises.writeFile(getHealthFilePath(), stringifySorted(state) + "\n", "utf-8").catch((error: unknown) => {
 
       LOG.warn("Failed to write health state: %s.", (error instanceof Error) ? error.message : String(error));
     }).finally(() => {
@@ -285,7 +280,7 @@ export function getChannelHealth(channelKey: string, domain: string): Nullable<{
   }
 
   // Stale entry — older than TTL.
-  if((Date.now() - entry.timestamp) >= HEALTH_TTL) {
+  if(isHealthExpired(entry.timestamp)) {
 
     return null;
   }
@@ -315,7 +310,7 @@ export function getDomainAuth(domain: string): Nullable<number> {
   }
 
   // Stale entry — older than TTL.
-  if((Date.now() - timestamp) >= HEALTH_TTL) {
+  if(isHealthExpired(timestamp)) {
 
     return null;
   }
@@ -329,13 +324,12 @@ export function getDomainAuth(domain: string): Nullable<number> {
  */
 export function getHealthSnapshot(): HealthSnapshot {
 
-  const now = Date.now();
   const channels: Record<string, { domain: string; status: HealthStatus; timestamp: number }> = {};
   const domains: Record<string, number> = {};
 
   for(const [ key, entry ] of channelHealth) {
 
-    if((now - entry.timestamp) < HEALTH_TTL) {
+    if(!isHealthExpired(entry.timestamp)) {
 
       channels[key] = { domain: entry.domain, status: entry.status, timestamp: entry.timestamp };
     }
@@ -343,7 +337,7 @@ export function getHealthSnapshot(): HealthSnapshot {
 
   for(const [ domainKey, timestamp ] of domainAuth) {
 
-    if((now - timestamp) < HEALTH_TTL) {
+    if(!isHealthExpired(timestamp)) {
 
       domains[domainKey] = timestamp;
     }

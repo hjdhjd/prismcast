@@ -218,19 +218,21 @@ export function getProfileForChannel(channel: {
     profile = { ...profile, dismissSelector: channel.dismissSelector };
   }
 
-  if((channel.scrollSelector !== undefined) || (channel.scrollTarget !== undefined) || (channel.scrollToBottom !== undefined)) {
+  // Merge scroll-related channel selection overrides into the profile's channelSelection object.
+  const scrollKeys = [ "scrollSelector", "scrollTarget", "scrollToBottom" ] as const;
+  const scrollOverrides: Record<string, unknown> = {};
 
-    profile = {
+  for(const key of scrollKeys) {
 
-      ...profile,
-      channelSelection: {
+    if(channel[key] !== undefined) {
 
-        ...profile.channelSelection,
-        ...(channel.scrollSelector !== undefined ? { scrollSelector: channel.scrollSelector } : {}),
-        ...(channel.scrollTarget !== undefined ? { scrollTarget: channel.scrollTarget } : {}),
-        ...(channel.scrollToBottom !== undefined ? { scrollToBottom: channel.scrollToBottom } : {})
-      }
-    };
+      scrollOverrides[key] = channel[key];
+    }
+  }
+
+  if(Object.keys(scrollOverrides).length > 0) {
+
+    profile = { ...profile, channelSelection: { ...profile.channelSelection, ...scrollOverrides } };
   }
 
   return { profile, profileName };

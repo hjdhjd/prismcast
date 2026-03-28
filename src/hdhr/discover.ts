@@ -199,32 +199,20 @@ export function setupHdhrEndpoints(app: Express): void {
       const channelEntry = channelByKey.get(stream.info.storeKey);
 
       // Build the tuner entry. Active tuners include channel info and signal stats. Signal values are hardcoded at 100 since PrismCast streams are network-based and
-      // either working or not — there is no analog signal quality to report.
+      // either working or not — there is no analog signal quality to report. Channel info is merged conditionally: prefer the channel map for VctNumber (numeric
+      // channel) and VctName (display name), fall back to stream.channelName for VctName if the channel was removed from the map after the stream started. Client
+      // address is normalized to strip IPv6-mapped IPv4 prefixes (::ffff:192.168.1.1 → 192.168.1.1).
       const tuner: TunerStatusEntry = {
 
         Frequency: 0,
         Resource: "tuner" + String(i),
         SignalQualityPercent: 100,
         SignalStrengthPercent: 100,
-        SymbolQualityPercent: 100
+        SymbolQualityPercent: 100,
+        ...(channelEntry ? { VctName: channelEntry.name, VctNumber: String(channelEntry.number) } : {}),
+        ...(!channelEntry && stream.channelName ? { VctName: stream.channelName } : {}),
+        ...(stream.clientAddress ? { TargetIP: stream.clientAddress.startsWith("::ffff:") ? stream.clientAddress.slice(7) : stream.clientAddress } : {})
       };
-
-      // Add channel info if available. Prefer the channel map for VctNumber (numeric channel) and VctName (display name). Fall back to stream.channelName for VctName
-      // if the channel was removed from the map after the stream started.
-      if(channelEntry) {
-
-        tuner.VctName = channelEntry.name;
-        tuner.VctNumber = String(channelEntry.number);
-      } else if(stream.channelName) {
-
-        tuner.VctName = stream.channelName;
-      }
-
-      // Add client address if known. Normalize IPv6-mapped IPv4 addresses (::ffff:192.168.1.1 → 192.168.1.1).
-      if(stream.clientAddress) {
-
-        tuner.TargetIP = stream.clientAddress.startsWith("::ffff:") ? stream.clientAddress.slice(7) : stream.clientAddress;
-      }
 
       tuners.push(tuner);
     }

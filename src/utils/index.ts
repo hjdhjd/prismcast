@@ -3,6 +3,7 @@
  * index.ts: Utility module exports for PrismCast.
  */
 export * from "./chromeFetch.js";
+export * from "./cliOutput.js";
 export * from "./debugFilter.js";
 export * from "./delay.js";
 export * from "./errors.js";
