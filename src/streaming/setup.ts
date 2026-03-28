@@ -2,7 +2,7 @@
  *
  * setup.ts: Common stream setup logic for PrismCast.
  */
-import type { Channel, Nullable, ResolvedSiteProfile, UrlValidation } from "../types/index.js";
+import type { Channel, Nullable, ResolvedSiteProfile, UrlValidationResult } from "../types/index.js";
 import type { Frame, Page } from "puppeteer-core";
 import { LOG, delay, extractDomain, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.js";
 import type { RecoveryMetrics, TabReplacementResult } from "./recovery.js";
@@ -317,7 +317,7 @@ export function generateStreamId(channelName: string | undefined, url: string | 
  * @param url - The URL to validate.
  * @returns Validation result with optional reason for failure.
  */
-export function validateStreamUrl(url: string | undefined): UrlValidation {
+export function validateStreamUrl(url: string | undefined): UrlValidationResult {
 
   // A URL is required. This catches both undefined and empty string.
   if(!url) {

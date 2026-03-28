@@ -3,8 +3,6 @@
  * streaming.ts: Stream session and playback state type definitions for PrismCast.
  */
 import type { Nullable } from "./shared.js";
-import type { Page } from "puppeteer-core";
-import type { RecoveryMetrics } from "../streaming/recovery.js";
 
 /**
  * All recognized capture codec identifiers. H.264 is the universal baseline; additional codecs require GPU hardware encoding. This array is the single definition
@@ -16,37 +14,6 @@ export const RECOGNIZED_CODECS = [ "h264", "hevc" ] as const;
  * Video codec identifier for browser capture, derived from RECOGNIZED_CODECS.
  */
 export type CaptureCodec = typeof RECOGNIZED_CODECS[number];
-
-/* These types track active streaming sessions throughout their lifecycle. When a stream request arrives, we create a StreamInfo object to track the session's
- * state. This allows the /streams endpoint to list active streams, the graceful shutdown handler to close streams cleanly, and the stream handler to coordinate
- * cleanup when streams end.
- */
-
-/**
- * Information about an active streaming session. Created when a stream request is received and deleted when the stream ends.
- */
-export interface StreamInfo {
-
-  // Channel name if streaming a named channel from the CHANNELS configuration, or null if streaming an arbitrary URL via the url query parameter.
-  channelName: Nullable<string>;
-
-  // Unique numeric identifier for this stream session. Used by the /streams/:id endpoint for stream management and in log messages for correlation.
-  id: number;
-
-  // Puppeteer Page object for the browser tab running this stream. Used for cleanup when the stream ends and for the graceful shutdown handler to close all
-  // streams.
-  page: Page;
-
-  // Timestamp when the stream was initiated. Used to calculate stream duration for logging and the /streams endpoint.
-  startTime: Date;
-
-  // Function to stop the playback health monitor for this stream, or null if monitoring hasn't started yet. Called during cleanup to stop the monitoring
-  // interval and prevent the monitor from trying to recover a stream that's being terminated. Returns recovery metrics for the termination summary.
-  stopMonitor: Nullable<() => RecoveryMetrics>;
-
-  // URL being streamed. Logged for debugging and displayed in the /streams endpoint.
-  url: string;
-}
 
 /* These types represent the state of HTML5 video elements as reported by the browser. The playback health monitor periodically evaluates video state to detect
  * problems and trigger recovery. Understanding these values is essential for diagnosing playback issues.
@@ -115,11 +82,6 @@ export interface UrlValidationResult {
   // Whether the URL passed validation and is safe to navigate to.
   valid: boolean;
 }
-
-/**
- * Alias for UrlValidationResult maintained for backward compatibility with existing code.
- */
-export type UrlValidation = UrlValidationResult;
 
 /**
  * Streaming mode for an active stream. "capture" uses Chrome screen capture via puppeteer-stream. "native" intercepts the provider's HLS stream and consumes it

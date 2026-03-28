@@ -2,9 +2,9 @@
  *
  * retry.ts: Retry logic with exponential backoff for PrismCast.
  */
+import { delay, raceWithTimeout } from "./delay.js";
 import { formatError, isSessionClosedError } from "./errors.js";
 import { LOG } from "./logger.js";
-import { raceWithTimeout } from "./delay.js";
 
 /* The retry system provides resilient operation execution with exponential backoff and jitter. When operations fail due to transient issues like network hiccups or
  * slow page loads, the system automatically retries with increasing delays. The exponential backoff prevents overwhelming struggling services, while jitter prevents
@@ -114,10 +114,7 @@ export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | u
         const jitter = Math.random() * backoffJitter;
 
         // eslint-disable-next-line no-await-in-loop
-        await new Promise<void>((resolve) => {
-
-          setTimeout(resolve, baseDelay + jitter);
-        });
+        await delay(baseDelay + jitter);
       }
     }
   }
