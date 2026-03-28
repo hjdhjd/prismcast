@@ -3,7 +3,7 @@
  * userChannels.ts: User channel file management for PrismCast.
  */
 import type { Channel, ChannelListingEntry, ChannelMap, StoredChannel, StoredChannelMap } from "../types/index.js";
-import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.js";
+import { LOG, containsNonPrintable, sanitizeString, stringifySorted } from "../utils/index.js";
 import { buildProviderGroups, getAllProviderTags, getProviderSelections, getResolvedChannel, isChannelAvailableByProvider, isProviderVariant,
   resolveProviderKey, setEnabledProviders, setProviderSelections } from "./providers.js";
 import { getChannelsFilePath, getDataDir } from "./paths.js";
@@ -238,34 +238,17 @@ export async function saveUserChannels(channels: StoredChannelMap): Promise<void
     }
   }
 
-  // Sort channels by key for consistent output.
-  const sortedChannels: Record<string, Record<string, string> | StoredChannel> = {};
-  const sortedKeys = Object.keys(filtered).sort();
-
-  for(const key of sortedKeys) {
-
-    sortedChannels[key] = filtered[key];
-  }
-
   // Include provider selections if any exist.
   const selections = getProviderSelections();
+  const output: Record<string, unknown> = { ...filtered };
 
   if(Object.keys(selections).length > 0) {
 
-    // Sort provider selections for consistent output.
-    const sortedSelections: Record<string, string> = {};
-    const selectionKeys = Object.keys(selections).sort();
-
-    for(const key of selectionKeys) {
-
-      sortedSelections[key] = selections[key];
-    }
-
-    sortedChannels.providerSelections = sortedSelections;
+    output.providerSelections = selections;
   }
 
-  // Write channels with pretty formatting for readability.
-  const content = JSON.stringify(sortedChannels, null, 2);
+  // Write channels with pretty formatting and sorted keys for consistent, diff-friendly output.
+  const content = stringifySorted(output);
 
   await fsPromises.writeFile(getChannelsFilePath(), content + "\n", "utf-8");
 

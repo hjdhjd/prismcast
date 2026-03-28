@@ -2,7 +2,7 @@
  *
  * hlsResume.ts: HLS sequence number persistence across restarts.
  */
-import { LOG, formatDuration, formatError } from "../utils/index.js";
+import { LOG, formatDuration, formatError, stringifySorted } from "../utils/index.js";
 import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
 import fs from "node:fs";
@@ -285,7 +285,7 @@ export function saveResumeState(entries: ResumeStreamData[]): void {
 
   try {
 
-    fs.writeFileSync(getResumeFilePath(), JSON.stringify(obj), "utf-8");
+    fs.writeFileSync(getResumeFilePath(), stringifySorted(obj) + "\n", "utf-8");
 
     LOG.info("Saved HLS resume state for %d channel%s.", merged.size, merged.size === 1 ? "" : "s");
   } catch(error) {

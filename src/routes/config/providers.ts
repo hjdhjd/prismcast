@@ -5,7 +5,7 @@
 import type { DomainConfig, SiteProfile } from "../../types/index.js";
 import type { Express, Request, Response } from "express";
 import { ICON_DELETE, ICON_EDIT } from "./channels/index.js";
-import { LOG, escapeHtml, formatError, sanitizeString } from "../../utils/index.js";
+import { LOG, escapeHtml, formatError, sanitizeString, stringifySorted } from "../../utils/index.js";
 import { deleteUserProfile, getUserDomains, getUserProfiles, saveUserProfiles, validateDomain, validateProfile,
   validateProfileKey } from "../../config/userProfiles.js";
 import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.js";
@@ -635,7 +635,7 @@ export function setupProfileRoutes(app: Express): void {
 
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Content-Disposition", "attachment; filename=\"" + filename + "-provider-pack.json\"");
-      res.send(JSON.stringify(pack, null, 2) + "\n");
+      res.send(stringifySorted(pack) + "\n");
     } catch(error) {
 
       LOG.error("Failed to export provider pack: %s.", formatError(error));
