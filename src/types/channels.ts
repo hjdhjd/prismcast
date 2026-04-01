@@ -32,6 +32,10 @@ export interface ChannelDefinition {
   // Gracenote station ID for electronic program guide integration. Inherited by all provider variants.
   stationId?: string;
 
+  // Organizational tags for playlist filtering. Inherited by all provider variants. Tags are lowercase alphanumeric strings with hyphens, managed via the tag
+  // registry. Channels can have multiple tags (e.g., ["sports", "local"]). Used by the ?tag= playlist query parameter for custom playlist generation.
+  tags?: string[];
+
   // EPG time shift in hours. Inherited by all provider variants.
   tvgShift?: number;
 }
@@ -134,6 +138,10 @@ export interface Channel {
   // allowing Channels DVR to fetch program guide data for the channel.
   stationId?: string;
 
+  // Organizational tags for playlist filtering. Set by the flattener from the parent ChannelDefinition's tags field. Used by the ?tag= playlist query parameter
+  // to generate filtered playlists (e.g., /playlist?tag=sports). Tags are lowercase alphanumeric strings with hyphens.
+  tags?: string[];
+
   // EPG time shift in hours. When set, this value is included in the M3U playlist as the tvg-shift attribute, telling Channels DVR to offset the guide data by
   // this many hours. Useful for time-delayed feeds that share a station ID with the primary feed (e.g., Pacific feeds that air 3 hours after the East feed).
   tvgShift?: number;
@@ -189,6 +197,9 @@ export interface ChannelDelta {
 
   // Override for station ID, or null to clear the predefined value.
   stationId?: Nullable<string>;
+
+  // Override for organizational tags, or null to clear the predefined tags. When set, replaces the predefined tags entirely (full replacement, not additive).
+  tags?: Nullable<string[]>;
 
   // Override for EPG time shift, or null to clear the predefined value.
   tvgShift?: Nullable<number>;

@@ -6,10 +6,11 @@ import { compareChannelSort, getAllProviderTags, getAuthDomainForChannel, getCha
   getEnabledProviders, getProviderGroup, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant,
   resolveProviderKey } from "../../../config/providers.js";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
+import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getChannelLogo, getChannelsParseErrorMessage,
+  getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled,
+  isUserChannel } from "../../../config/userChannels.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
-import { getChannelListing, getChannelLogo, getChannelsParseErrorMessage, getPredefinedScopeCounts, getUserChannelsFilePath, hasChannelsParseError,
-  isPredefinedChannel, isPredefinedChannelDisabled, isUserChannel } from "../../../config/userChannels.js";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
 import { CONFIG } from "../../../config/index.js";
 import type { ChannelListingEntry } from "../../../types/index.js";
@@ -73,11 +74,12 @@ export const OPTIONAL_COLUMNS: readonly {
   { align: "center", cssClass: "col-hdhr", field: "hdhrEnabled", label: "HDHR", width: "55px" },
   { align: "center", cssClass: "col-stationid", field: "stationId", label: "Station ID", width: "100px" },
   { align: "left", cssClass: "col-profile", field: "profile", label: "Profile", width: "130px" },
-  { align: "left", cssClass: "col-selector", field: "channelSelector", label: "Selector", width: "130px" }
+  { align: "left", cssClass: "col-selector", field: "channelSelector", label: "Selector", width: "130px" },
+  { align: "left", cssClass: "col-tags", field: "tags", label: "Tags", width: "150px" }
 ];
 
-// Total number of columns in the channels table (4 required + 5 optional).
-const TOTAL_COLUMN_COUNT = 9;
+// Total number of columns in the channels table (4 required + 6 optional).
+const TOTAL_COLUMN_COUNT = 10;
 
 // Valid optional column field names.
 export const VALID_OPTIONAL_COLUMNS = new Set(OPTIONAL_COLUMNS.map((c) => c.field));
@@ -432,11 +434,14 @@ interface AdvancedFieldOptions {
 
   // Current station ID value (empty string for none).
   stationIdValue?: string;
+
+  // Current tags as a comma-separated string (empty string for none).
+  tagsValue?: string;
 }
 
 function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions = {}): string[] {
 
-  const { channelNumberValue = "", channelSelectorValue = "", hdhrEnabled = true, showHints = true, stationIdValue = "" } = options;
+  const { channelNumberValue = "", channelSelectorValue = "", hdhrEnabled = true, showHints = true, stationIdValue = "", tagsValue = "" } = options;
 
   const lines: string[] = [];
 
@@ -472,6 +477,38 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 
   lines.push(...generateTextField(idPrefix + "-channelNumber", "channelNumber", "Channel Number", channelNumberValue,
     { hint: channelNumberHint, placeholder: showHints ? "e.g., 501" : undefined }));
+
+  // Tags field: checkbox grid of the active tag vocabulary. Checked tags are collected into a hidden input as a comma-separated value on form submission.
+  // This prevents users from entering tag names that don't exist in the managed vocabulary.
+  const vocabulary = getActiveTagVocabulary();
+  const currentTags = new Set(tagsValue ? tagsValue.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0) : []);
+
+  if(vocabulary.length > 0) {
+
+    lines.push("<div class=\"form-row\">");
+    lines.push("<label>Tags</label>");
+    lines.push("<input type=\"hidden\" name=\"tags\" id=\"" + idPrefix + "-tags-hidden\" value=\"" + escapeHtml(tagsValue) + "\">");
+    lines.push("<div class=\"tag-checkbox-grid\">");
+
+    for(const tag of vocabulary) {
+
+      const checked = currentTags.has(tag) ? " checked" : "";
+
+      lines.push("<label class=\"tag-checkbox-label\">" +
+        "<input type=\"checkbox\" class=\"tag-checkbox\" data-tag=\"" + escapeHtml(tag) + "\"" + checked +
+        " onchange=\"updateTagsHidden(this.closest('.form-row'))\">" +
+        "<span class=\"tag-badge\">" + escapeHtml(tag) + "</span></label>");
+    }
+
+    lines.push("</div>");
+
+    if(showHints) {
+
+      lines.push("<div class=\"hint\">Select tags for playlist filtering. Manage available tags via Manage Channels &gt; Manage Tags.</div>");
+    }
+
+    lines.push("</div>");
+  }
 
   // HDHomeRun lineup inclusion. A hidden input provides the "false" value when the checkbox is unchecked (unchecked checkboxes are not submitted in FormData).
   // When checked, the checkbox value "true" overwrites the hidden input's "false" since it appears later in DOM order.
@@ -563,6 +600,102 @@ function generateChannelSelectorData(): string {
   return "var channelSelectorsByDomain = " + JSON.stringify(byDomain) + ";\n" +
     "var providerByDomain = " + JSON.stringify(providerByDomain) + ";\n" +
     "var providerGuideUrl = " + JSON.stringify(providerGuideUrl) + ";";
+}
+
+/**
+ * Generates the tag column filter dropdown content. This is the single source of truth for the filter checkbox list — used for both the initial header render
+ * and for incremental updates after tag CRUD operations. The dropdown shell (button, dropdown-menu wrapper) is rendered by the header generator; this function
+ * provides only the inner content (checkbox labels + "Show All" item).
+ * @returns HTML string for the filter dropdown content.
+ */
+export function generateTagFilterContent(): string {
+
+  const vocabulary = getActiveTagVocabulary();
+  const lines: string[] = [];
+
+  for(const tag of vocabulary) {
+
+    lines.push("<label class=\"provider-option\" onclick=\"event.stopPropagation()\">" +
+      "<input type=\"checkbox\" class=\"tag-filter-checkbox\" data-tag=\"" + escapeHtml(tag) + "\" checked onchange=\"applyTagColumnFilter()\"> " +
+      escapeHtml(tag) + "</label>");
+  }
+
+  if(vocabulary.length > 0) {
+
+    lines.push("<div class=\"dropdown-divider\"></div>");
+    lines.push("<div class=\"dropdown-item\" id=\"tag-filter-toggle\" onclick=\"event.stopPropagation(); toggleTagColumnFilter()\">Show None</div>");
+  }
+
+  return lines.join("");
+}
+
+/**
+ * Generates the Tag Management modal body HTML. This is the single source of truth for tag manager content — used for both the initial server render and for
+ * incremental updates after tag CRUD operations. The endpoints return this HTML in the response so the client can replace the modal content without a page reload.
+ * @returns HTML string for the tag manager body (tag list, input field, deleted tags section).
+ */
+export function generateTagManagerBody(): string {
+
+  const vocabulary = getActiveTagVocabulary();
+  const registry = getTagRegistry();
+
+  // Build the tag list HTML. Each tag is a badge with a delete button and inline rename on click.
+  const tagListItems: string[] = [];
+
+  for(const tag of vocabulary) {
+
+    tagListItems.push("<div class=\"tag-manager-item\" data-tag=\"" + escapeHtml(tag) + "\">" +
+      "<span class=\"tag-badge tag-editable\" title=\"Click to rename\" onclick=\"startTagRename(this, '" + escapeHtml(tag) +
+      "')\">" + escapeHtml(tag) + "</span>" +
+      "<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete tag\" onclick=\"deleteTag('" + escapeHtml(tag) +
+      "')\">" + ICON_DELETE + "</button></div>");
+  }
+
+  // Deleted predefined tags section — show restore option for tags the user has deleted.
+  const deletedItems: string[] = [];
+
+  for(const tag of registry.deletedTags) {
+
+    deletedItems.push("<div class=\"tag-manager-item tag-deleted\" data-tag=\"" + escapeHtml(tag) + "\">" +
+      "<span class=\"tag-badge tag-badge-deleted\">" + escapeHtml(tag) + "</span> <span class=\"tag-annotation\">(deleted)</span>" +
+      "<button type=\"button\" class=\"btn-icon\" title=\"Restore tag\" onclick=\"restoreTag('" + escapeHtml(tag) +
+      "')\">" + ICON_REVERT + "</button></div>");
+  }
+
+  return "<div class=\"tag-manager\">" +
+    "<p class=\"wizard-hint\">Create and manage the tag vocabulary. Tags can be assigned to channels via the channel table " +
+    "for playlist filtering and organization.</p>" +
+    "<div class=\"tag-manager-add\">" +
+    "<input type=\"text\" id=\"tag-manager-input\" placeholder=\"New tag name\" maxlength=\"30\" " +
+    "pattern=\"[a-z0-9]([a-z0-9-]*[a-z0-9])?\" onkeydown=\"if(event.key==='Enter'){event.preventDefault();createTag();}\">" +
+    "<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"createTag()\">Add</button>" +
+    "</div>" +
+    "<div id=\"tag-manager-error\" class=\"wizard-error\" style=\"display: none;\"></div>" +
+    "<div id=\"tag-manager-list\" class=\"tag-manager-list\">" +
+    (tagListItems.length > 0 ? tagListItems.join("") : "<div class=\"empty-state-text\">No tags defined.</div>") +
+    "</div>" +
+    (deletedItems.length > 0 ? "<div class=\"tag-manager-section-label\">Deleted Predefined Tags</div>" +
+      "<div id=\"tag-manager-deleted\" class=\"tag-manager-list\">" + deletedItems.join("") + "</div>" : "") +
+    "</div>";
+}
+
+/**
+ * Generates the Tag Management modal shell using the wizard modal infrastructure for consistent styling.
+ * @returns HTML string for the complete tag management modal.
+ */
+function generateTagManagementModal(): string {
+
+  return generateWizardModal({
+
+    body: generateTagManagerBody(),
+    buttons: [
+      { label: "Done", onclick: "closeTagManager()", position: "right", variant: "primary" }
+    ],
+    id: "tag-manager-modal",
+    maxWidth: "420px",
+    onClose: "closeTagManager()",
+    title: "Manage Tags"
+  });
 }
 
 /**
@@ -703,7 +836,12 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
   const rowClassAttr = (rowClasses.length > 0) ? " class=\"" + rowClasses.join(" ") + "\"" : "";
 
-  displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + " data-provider-tags=\"" + escapeHtml(providerTags) + "\">");
+  // Compute effective tags early — used for both the row data attribute (tag column filter) and the Tags column cell rendering below.
+  const effectiveTags = getChannelEffectiveTags(channel);
+  const channelTagsAttr = (effectiveTags.length > 0) ? " data-channel-tags=\"" + escapeHtml(effectiveTags.join(",")) + "\"" : "";
+
+  displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + " data-provider-tags=\"" + escapeHtml(providerTags) +
+    "\"" + channelTagsAttr + ">");
   displayLines.push("<td class=\"ch-key\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "key")) + "\">" + escapeHtml(key) + "</td>");
   const channelLogoUrl = getChannelLogo(key) ?? "";
   const logoAttr = channelLogoUrl ? " data-logo=\"" + escapeHtml(channelLogoUrl) + "\"" : "";
@@ -794,6 +932,16 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   displayLines.push("<td class=\"col-selector\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelSelector")) + "\">" +
     (channel.channelSelector ? escapeHtml(channel.channelSelector) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
 
+  // Tags column: render effective tags as pills. Clicking the cell opens a shared portal dropdown (rendered in <body>, positioned via getBoundingClientRect)
+  // for inline tag editing. The cell carries data-key and data-tags so the dropdown can populate the correct checked state.
+  const tagsHtml = (effectiveTags.length > 0) ?
+    effectiveTags.map((tag) => "<span class=\"tag-badge\">" + escapeHtml(tag) + "</span>").join(" ") :
+    "<span class=\"text-muted\">&ndash;</span>";
+
+  displayLines.push("<td class=\"col-tags editable-cell dropdown\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "tags")) +
+    "\" data-key=\"" + cellKey + "\" data-tags=\"" + escapeHtml(effectiveTags.join(",")) +
+    "\" onclick=\"toggleInlineTagDropdown(this)\">" + tagsHtml + "</td>");
+
   // Actions column with icon buttons. Five positions per row: Edit (always), Login/placeholder, Health/placeholder, context-sensitive, and Copy URL.
   displayLines.push("<td>");
   displayLines.push("<div class=\"btn-group\">");
@@ -839,20 +987,10 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
     displayLines.push("<span class=\"btn-icon-placeholder\"></span>");
   }
 
-  // Position 4: varies by row type.
-  if(isOverride) {
+  // Position 4: enable/disable toggle for predefined channels (regardless of override state), delete for user-defined channels. The enable/disable state and
+  // property overrides are independent concerns — a predefined channel can be disabled AND have customizations, and the toggle always reflects the visibility state.
+  if(isPredefined) {
 
-    // Override: revert to predefined defaults.
-    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-revert\" title=\"Revert to defaults\" aria-label=\"Revert to defaults\"" +
-      " onclick=\"revertChannel('" + escapedKey + "')\">" + ICON_REVERT + "</button>");
-  } else if(isUser && !isPredefined) {
-
-    // User-defined (not an override): delete.
-    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete\" aria-label=\"Delete\" onclick=\"deleteChannel('" +
-      escapedKey + "')\">" + ICON_DELETE + "</button>");
-  } else if(isPredefined) {
-
-    // Predefined (no override): enable/disable toggle.
     if(isDisabled) {
 
       displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-enable\" title=\"Enable\" aria-label=\"Enable\" onclick=\"togglePredefinedChannel('" +
@@ -862,6 +1000,10 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
       displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-disable\" title=\"Disable\" aria-label=\"Disable\" onclick=\"togglePredefinedChannel('" +
         escapedKey + "', false)\">" + ICON_DISABLE + "</button>");
     }
+  } else if(isUser) {
+
+    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete\" aria-label=\"Delete\" onclick=\"deleteChannel('" +
+      escapedKey + "')\">" + ICON_DELETE + "</button>");
   }
 
   // Position 5: Copy URL dropdown (all channels).
@@ -916,13 +1058,21 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
     channelNumberValue: channel.channelNumber ? String(channel.channelNumber) : "",
     channelSelectorValue: channel.channelSelector ?? "",
     hdhrEnabled: channel.hdhrEnabled !== false,
-    stationIdValue: channel.stationId ?? ""
+    stationIdValue: channel.stationId ?? "",
+    tagsValue: effectiveTags.join(", ")
   }));
 
   // Form buttons.
   editLines.push("<div class=\"form-buttons\">");
   editLines.push("<button type=\"submit\" class=\"btn btn-primary\">Save Changes</button>");
   editLines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"hideEditForm('" + escapedKey + "')\">Cancel</button>");
+
+  if(isOverride) {
+
+    editLines.push("<button type=\"button\" class=\"btn btn-secondary btn-revert\" onclick=\"revertChannel('" + escapedKey +
+      "')\">Revert to Defaults</button>");
+  }
+
   editLines.push("</div>");
 
   editLines.push("</form>");
@@ -979,6 +1129,10 @@ export interface ChannelTablePatch {
 
   // Scope toggle counts for Quick Actions (all/east/pacific, each with total and enabled).
   scopeCounts: { all: { enabled: number; total: number }; east: { enabled: number; total: number }; pacific: { enabled: number; total: number } };
+
+  // Tag bulk toggle counts for Quick Actions. Maps each active tag to how many enabled channels have it vs total enabled channels. Omitted when the tags column
+  // is not visible (no tag toggles to update).
+  tagCounts?: Record<string, { count: number; total: number }>;
 }
 
 /**
@@ -1053,6 +1207,70 @@ function getHdhrCounts(listing: ChannelListingEntry[]): { enabled: number; total
 }
 
 /**
+ * Computes per-tag channel counts for the Quick Actions tag bulk toggles. For each tag in the active vocabulary, counts how many enabled, provider-available
+ * channels have that tag in their effective tags. Returns undefined when the tags column is not visible (no tag toggles to update).
+ * @param listing - The channel listing entries.
+ * @returns A record mapping tag names to { count, total }, or undefined when hidden.
+ */
+function getTagCounts(listing: ChannelListingEntry[]): Record<string, { count: number; total: number }> | undefined {
+
+  const visibleCols = new Set(CONFIG.channels.visibleColumns);
+
+  if(!visibleCols.has("tags")) {
+
+    return undefined;
+  }
+
+  const vocabulary = getActiveTagVocabulary();
+
+  if(vocabulary.length === 0) {
+
+    return undefined;
+  }
+
+  const result: Record<string, { count: number; total: number }> = {};
+  let total = 0;
+
+  // Pre-compute the vocabulary Set once for the per-channel effective tags filter.
+  const vocabularySet = new Set(vocabulary);
+  const counts = new Map<string, number>();
+
+  for(const tag of vocabulary) {
+
+    counts.set(tag, 0);
+  }
+
+  for(const entry of listing) {
+
+    if(!entry.enabled || !entry.availableByProvider) {
+
+      continue;
+    }
+
+    total++;
+
+    const effectiveTags = entry.channel.tags ? entry.channel.tags.filter((tag) => vocabularySet.has(tag)) : [];
+
+    for(const tag of effectiveTags) {
+
+      const current = counts.get(tag);
+
+      if(current !== undefined) {
+
+        counts.set(tag, current + 1);
+      }
+    }
+  }
+
+  for(const tag of vocabulary) {
+
+    result[tag] = { count: counts.get(tag) ?? 0, total };
+  }
+
+  return result;
+}
+
+/**
  * Builds a complete channel table patch for the given set of affected channel keys. Generates row HTML for keys that exist in the listing (update action) and
  * remove actions for keys that no longer exist. Includes the current summary counts and scope toggle counts. This is the single function mutation endpoints
  * call to construct their patch response.
@@ -1083,7 +1301,7 @@ export function buildChannelTablePatch(affectedKeys: string[], profiles: Profile
 
   const { counts, scopeCounts } = buildChannelTableState(listing);
 
-  return { counts, hdhrCounts: getHdhrCounts(listing), rows, scopeCounts };
+  return { counts, hdhrCounts: getHdhrCounts(listing), rows, scopeCounts, tagCounts: getTagCounts(listing) };
 }
 
 /**
@@ -1228,6 +1446,12 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     "document.getElementById('add-channel-form').style.display='block';\">" + ICON_ADD + " Add Channel</div>");
   lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openBrowseModal()\">" + ICON_BROWSE +
     " Browse Provider Channels</div>");
+  const ICON_TAG = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#9b59b6\" stroke-width=\"1.5\" " +
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1.5 8.7V2.5a1 1 0 011-1h6.2a1 1 0 01.7.3l5.1 5.1a1 1 0 010 1.4l-5.5 5.5a1 " +
+    "1 0 01-1.4 0L1.8 9.4a1 1 0 01-.3-.7z\"/><circle cx=\"5\" cy=\"5\" r=\"1\"/></svg>";
+
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openTagManager()\">" + ICON_TAG +
+    " Manage Tags</div>");
   lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openSetupWizard()\">" + ICON_SETUP +
     " Provider Setup</div>");
   lines.push("</div>");
@@ -1340,6 +1564,59 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<span class=\"quick-action-count\" id=\"hdhr-bulk-count\">" + String(hdhrCounts.enabled) + " of " + String(hdhrCounts.total) + "</span>");
   lines.push("</label>");
   lines.push("</div>");
+
+  // Bulk tag toggles — tristate checkboxes for each tag in the active vocabulary. Visible when the tags column is shown. Each checkbox shows how many enabled
+  // channels have the tag, and clicking it adds or removes the tag on all visible channels.
+  const tagsVisible = visibleCols.has("tags") ? "" : " style=\"display: none;\"";
+  const tagsVocabulary = getActiveTagVocabulary();
+
+  if(tagsVocabulary.length > 0) {
+
+    // Count how many enabled, provider-available channels have each tag.
+    const enabledListing = listing.filter((entry) => entry.enabled && entry.availableByProvider);
+    const totalEnabled = enabledListing.length;
+    const tagCountMap = new Map<string, number>();
+
+    for(const tag of tagsVocabulary) {
+
+      tagCountMap.set(tag, 0);
+    }
+
+    for(const entry of enabledListing) {
+
+      const effectiveTags = getChannelEffectiveTags(entry.channel);
+
+      for(const tag of effectiveTags) {
+
+        const current = tagCountMap.get(tag);
+
+        if(current !== undefined) {
+
+          tagCountMap.set(tag, current + 1);
+        }
+      }
+    }
+
+    lines.push("<div class=\"dropdown-divider\" id=\"quick-action-tags-divider\"" + tagsVisible + "></div>");
+    lines.push("<div id=\"quick-action-tags\"" + tagsVisible + ">");
+    lines.push("<div class=\"quick-action-section-label\">Tag Channels</div>");
+
+    for(const tag of tagsVocabulary) {
+
+      const count = tagCountMap.get(tag) ?? 0;
+      const checkedAttr = (count === totalEnabled) ? " checked" : "";
+      const indeterminate = ((count > 0) && (count < totalEnabled)) ? " data-indeterminate=\"true\"" : "";
+
+      lines.push("<label class=\"provider-option\" onclick=\"event.preventDefault(); bulkToggleTag('" + escapeHtml(tag) +
+        "', !this.querySelector('input').checked)\">" +
+        "<input type=\"checkbox\" class=\"tag-bulk-toggle\" data-tag=\"" + escapeHtml(tag) + "\"" + checkedAttr + indeterminate + "> " +
+        escapeHtml(tag) +
+        "<span class=\"quick-action-count\" data-tag-count=\"" + escapeHtml(tag) + "\">" +
+        String(count) + " of " + String(totalEnabled) + "</span></label>");
+    }
+
+    lines.push("</div>");
+  }
 
   lines.push("</div>");
   lines.push("</div>");
@@ -1526,13 +1803,48 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     ...OPTIONAL_COLUMNS
   ];
 
+  // All sortable headers use the same DOM structure: <th onclick> wraps a <span class="sort-label"> for the label text. The sort update logic targets
+  // .sort-label to modify only the label — never touching other children like the Tags filter dropdown. Clicking anywhere on the <th> triggers sort;
+  // additional children (like the filter button) use event.stopPropagation() to prevent sort when interacting with them.
   for(const hdr of sortableHeaders) {
 
     const isActive = (sortField === hdr.field);
-    const indicator = isActive ? ((sortDir === "asc") ? " &#9650;" : " &#9660;") : "";
+    const activeIndicator = isActive ? ((sortDir === "asc") ? " &#9650;" : " &#9660;") : "";
 
-    lines.push("<th class=\"" + hdr.cssClass + " sortable\" data-sort-field=\"" + hdr.field + "\" onclick=\"sortChannelTable('" + hdr.field + "')\">" +
-      hdr.label + indicator + "</th>");
+    lines.push("<th class=\"" + hdr.cssClass + " sortable\" data-sort-field=\"" + hdr.field +
+      "\" onclick=\"sortChannelTable('" + hdr.field + "')\">");
+    lines.push("<span class=\"sort-label\">" + hdr.label + activeIndicator + "</span>");
+
+    // Tags header: additional filter dropdown alongside the sort label. The dropdown is a client-side-only view filter (transient, not persisted) that
+    // shows/hides rows based on their data-channel-tags attribute. The dropdown content comes from generateTagFilterContent() — the single source of truth
+    // shared with the tag CRUD incremental update path.
+    if(hdr.field === "tags") {
+
+      const tagFilterIcon = "<svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+        "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 2h14l-5 6v5l-4 2V8z\"/></svg>";
+
+      lines.push("<div class=\"dropdown tag-filter-dropdown\" style=\"display: inline;\">");
+      lines.push("<button type=\"button\" class=\"btn-icon btn-tag-filter\" title=\"Filter by tag\" " +
+        "onclick=\"event.stopPropagation(); toggleDropdown(this)\">" + tagFilterIcon + "</button>");
+      lines.push("<div class=\"dropdown-menu\" id=\"tag-filter-menu\">" + generateTagFilterContent() + "</div>");
+      lines.push("</div>");
+
+      // Playlist hint icon. Hidden by default, shown by applyTagColumnFilter() when the filter is active. Clicking opens a popover with the playlist URL
+      // that corresponds to the current tag filter, so users can copy it for Channels DVR configuration.
+      const playlistHintIcon = "<svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+        "stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
+        "<path d=\"M6 10a3.5 3.5 0 0 1 0-5l2-2a3.5 3.5 0 0 1 5 5l-1 1\"/>" +
+        "<path d=\"M10 6a3.5 3.5 0 0 1 0 5l-2 2a3.5 3.5 0 0 1-5-5l1-1\"/></svg>";
+
+      lines.push("<div class=\"dropdown\" style=\"display: inline;\">");
+      lines.push("<button type=\"button\" class=\"btn-icon btn-playlist-hint\" id=\"playlist-hint-btn\" " +
+        "title=\"Playlist URL for this filter\" style=\"display: none;\" " +
+        "onclick=\"event.stopPropagation(); showPlaylistHint(this)\">" + playlistHintIcon + "</button>");
+      lines.push("<div class=\"dropdown-menu playlist-hint-menu\"></div>");
+      lines.push("</div>");
+    }
+
+    lines.push("</th>");
   }
 
   // Actions header with table options dropdown (kebab menu). Contains the show-disabled toggle and column visibility checkboxes.
@@ -1588,6 +1900,24 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Provider Setup wizard modal. Follows the same wizard pattern as the provider profile builder. Three steps: pick providers, authenticate, browse channels.
   // The setupCompleted flag is embedded as a data attribute so the client can auto-show the wizard on first visit.
   lines.push(generateSetupWizardModal());
+
+  // Tag Management modal. A simple dialog for creating, deleting, and restoring organizational tags. Client-side handlers drive the CRUD operations via the
+  // tag management API endpoints.
+  lines.push(generateTagManagementModal());
+
+  // Inline tag edit portal — a shared dropdown portaled to <body> on first use by getTagPortal() in config.ts. One instance shared across all channel rows;
+  // populated dynamically from the clicked cell's data-tags attribute. Positioned via getBoundingClientRect() to escape the table wrapper's overflow:auto clipping.
+  const vocabulary = getActiveTagVocabulary();
+
+  lines.push("<div id=\"inline-tag-portal\" class=\"dropdown-menu inline-tag-menu\">");
+
+  for(const tag of vocabulary) {
+
+    lines.push("<label class=\"provider-option\" onclick=\"event.stopPropagation()\">" +
+      "<input type=\"checkbox\" class=\"inline-tag-checkbox\" data-tag=\"" + escapeHtml(tag) + "\"> " + escapeHtml(tag) + "</label>");
+  }
+
+  lines.push("</div>");
 
   return lines.join("\n");
 }

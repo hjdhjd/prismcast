@@ -305,6 +305,56 @@ export function generateLandingPageStyles(): string {
     ".channel-table tr.channel-unavailable td { color: var(--text-tertiary); }",
     ".channel-table tr.channel-unavailable.channel-disabled { opacity: 0.5; }",
     ".channel-table.hide-disabled tr.channel-unavailable { display: none; }",
+    // Tag pills — rounded labels for tag display in the channel table, tag manager modal, and edit form. The pill shape provides clear visual identity and
+    // scannability across all surfaces where tags appear.
+    ".tag-badge { display: inline-block; padding: 1px 7px; margin: 1px 2px; font-size: 11px; border-radius: 10px; " +
+      "background: var(--surface-elevated); border: 1px solid var(--border-default); color: var(--text-secondary); font-weight: 500; }",
+    ".tag-badge-deleted { opacity: 0.5; text-decoration: line-through; }",
+    // Tag checkbox grid in the channel edit form. Each tag is a pill-styled checkbox label.
+    ".tag-checkbox-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }",
+    ".tag-checkbox-label { cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }",
+    ".tag-checkbox-label input { margin: 0; }",
+    ".tag-checkbox-label .tag-badge { cursor: pointer; }",
+
+    // Inline tag edit portal — shared dropdown portaled to <body> via JS. The td has the dropdown class so the document click handler recognizes it as a dropdown
+    // context. The display override preserves table-cell layout (the .dropdown class defaults to display: inline-block for div-based dropdowns).
+    "td.dropdown { display: table-cell; }",
+    ".inline-tag-menu { min-width: 140px; }",
+
+    ".tag-editable { cursor: pointer; }",
+    ".tag-editable:hover { background: var(--surface-hover); }",
+    ".tag-rename-input { font-size: 11px; padding: 1px 4px; border: 1px solid var(--interactive-primary); border-radius: 10px; " +
+      "outline: none; width: 120px; }",
+
+    // Tag manager modal — list of tags with add/delete/restore actions. Hint and error styling use shared wizard classes.
+    ".tag-manager-add { display: flex; gap: 8px; margin-bottom: 8px; }",
+    ".tag-manager-add input { flex: 1; padding: 4px 8px; font-size: 13px; border: 1px solid var(--form-input-border); border-radius: 4px; }",
+    ".tag-manager-list { display: flex; flex-direction: column; gap: 4px; }",
+    ".tag-manager-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; }",
+    ".tag-manager-item .btn-icon { margin-left: auto; }",
+    ".tag-manager-section-label { font-size: 11px; text-transform: uppercase; color: var(--text-tertiary); margin-top: 12px; margin-bottom: 4px; " +
+      "letter-spacing: 0.5px; }",
+    ".tag-annotation { font-size: 10px; color: var(--text-tertiary); }",
+
+    // Tag column filter. Rows hidden by the tag filter are completely removed from view. This is a transient client-side filter, not a persistent setting.
+    ".channel-table tr.tag-filtered { display: none; }",
+
+    // Tag filter dropdown button in the column header. Sized to sit inline with the column label.
+    ".btn-tag-filter { padding: 0 3px; margin-left: 4px; vertical-align: middle; opacity: 0.6; }",
+    ".btn-tag-filter:hover { opacity: 1; }",
+
+    // Playlist hint icon. Appears next to the tag filter funnel when the filter is active, providing the corresponding playlist URL for Channels DVR.
+    ".btn-playlist-hint { padding: 0 3px; margin-left: 2px; vertical-align: middle; opacity: 0.6; color: var(--accent); }",
+    ".btn-playlist-hint:hover { opacity: 1; }",
+    ".playlist-hint-content { padding: 10px 14px; max-width: 420px; }",
+    ".playlist-hint-content p { margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.4; }",
+    ".playlist-hint-url { display: flex; align-items: center; gap: 8px; }",
+    ".playlist-hint-url code { flex: 1; font-size: 12px; padding: 5px 8px; background: var(--surface-sunken); border: 1px solid var(--border-default); " +
+      "border-radius: var(--radius-sm); word-break: break-all; color: var(--text-primary); }",
+
+    // Quick Actions tag section label.
+    ".quick-action-section-label { font-size: 11px; text-transform: uppercase; color: var(--text-tertiary); padding: 4px 12px 2px; letter-spacing: 0.5px; }",
+
     // Inline editable cells. Cursor and hover indicate clickability. The inline input replaces the cell content during editing.
     ".editable-cell { cursor: pointer; }",
     ".editable-cell:hover { background: var(--surface-hover); }",

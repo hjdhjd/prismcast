@@ -1138,22 +1138,133 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
+    // Bulk add or remove a tag on all visible channels. The add parameter controls the direction: true adds the tag, false removes it. The tristate checkbox in
+    // Quick Actions calls this on click — from checked (all have tag) it removes; from unchecked or indeterminate it adds. Uses applyTagResponse (defined in
+    // channels.ts, exposed on window) to update the tag manager modal, filter dropdown, and channel table in one call.
+    "  window.bulkToggleTag = async function(tag, add) {",
+    "    try {",
+    "      var res = await fetch('/config/channels/bulk-tags', {",
+    "        method: 'POST',",
+    "        headers: { 'Content-Type': 'application/json' },",
+    "        body: JSON.stringify({ action: add ? 'add' : 'remove', tag: tag })",
+    "      });",
+    "      var result = await res.json();",
+    "      if(result.success) {",
+    "        if(window.applyTagResponse) { window.applyTagResponse(result, result.message || 'Tags updated.'); }",
+    "      } else {",
+    "        showToast(result.error || 'Failed to update tags.', 'error');",
+    "      }",
+    "    } catch(err) {",
+    "      console.error('Bulk tag error:', err);",
+    "      showToast('Failed to update tags: ' + err.message, 'error');",
+    "    }",
+    "  };",
+
+    // Inline tag edit portal — a single shared dropdown portaled to <body> on first use. Follows the toggleDropdown pattern in shared.ts: portal to body, position
+    // fixed, .show class, viewport edge clamping. Dismissal is handled by the existing document click handler (recognizes .dropdown on the td and .dropdown-menu on
+    // the portal) and closeDropdowns() (removes .show). The batch-save lifecycle layers on top: on open, capture the original state. On close (detected by the next
+    // open or by observing .show removal), compare and save if changed.
+    "  var activeTagDropdown = null;",
+    "  var tagPortal = null;",
+
+    "  function getTagPortal() {",
+    "    if(!tagPortal) {",
+    "      tagPortal = document.getElementById('inline-tag-portal');",
+    "      if(tagPortal) {",
+    "        document.body.appendChild(tagPortal);",
+    "        tagPortal.style.position = 'fixed';",
+    "        tagPortal.style.marginTop = '0';",
+    "      }",
+    "    }",
+    "    return tagPortal;",
+    "  }",
+
+    "  function saveTagDropdownIfChanged() {",
+    "    if(!activeTagDropdown) return;",
+    "    var portal = getTagPortal();",
+    "    if(!portal) return;",
+    "    var original = activeTagDropdown.original;",
+    "    var key = activeTagDropdown.key;",
+    "    var checkboxes = portal.querySelectorAll('.inline-tag-checkbox');",
+    "    var tags = [];",
+    "    for(var i = 0; i < checkboxes.length; i++) {",
+    "      if(checkboxes[i].checked) tags.push(checkboxes[i].getAttribute('data-tag'));",
+    "    }",
+    "    var newValue = tags.sort().join(',');",
+    "    activeTagDropdown = null;",
+    "    if(newValue === original) return;",
+    "    fetch('/config/channels', {",
+    "      method: 'POST',",
+    "      headers: { 'Content-Type': 'application/json' },",
+    "      body: JSON.stringify({ action: 'inline-edit', field: 'tags', key: key, value: newValue })",
+    "    }).then(function(res) { return res.json(); }).then(function(d) {",
+    "      if(d.success && d.patch) { applyChannelPatch(d.patch); }",
+    "      else if(!d.success) { showToast(d.message || 'Failed to update tags.', 'error'); }",
+    "    }).catch(function(err) {",
+    "      showToast('Failed to update tags: ' + err.message, 'error');",
+    "    });",
+    "  }",
+
+    // Wrap window.closeDropdowns to save pending tag changes before closing all dropdowns. This ensures click-outside, scroll, and resize dismissal all trigger
+    // the batch save. The wrap is on window.closeDropdowns (the global reference) so it applies to all callers — the document click handler, toggleDropdown,
+    // and any inline onclick that calls closeDropdowns().
+    "  var origCloseDropdowns = window.closeDropdowns;",
+    "  window.closeDropdowns = function() {",
+    "    saveTagDropdownIfChanged();",
+    "    origCloseDropdowns();",
+    "  };",
+
+    "  window.toggleInlineTagDropdown = function(td) {",
+    "    var portal = getTagPortal();",
+    "    if(!portal) return;",
+    "    var isOpen = activeTagDropdown && (activeTagDropdown.td === td);",
+    "    closeDropdowns();",
+    "    if(isOpen) return;",
+    // Populate checkbox state from the cell's data-tags attribute.
+    "    var currentTags = (td.getAttribute('data-tags') || '').split(',').filter(function(t) { return t.length > 0; });",
+    "    var tagSet = {};",
+    "    for(var i = 0; i < currentTags.length; i++) tagSet[currentTags[i]] = true;",
+    "    var checkboxes = portal.querySelectorAll('.inline-tag-checkbox');",
+    "    for(var j = 0; j < checkboxes.length; j++) {",
+    "      checkboxes[j].checked = !!tagSet[checkboxes[j].getAttribute('data-tag')];",
+    "    }",
+    // Position below the cell with viewport edge clamping and above-cell flip — same logic as toggleDropdown in shared.ts.
+    "    portal.classList.add('show');",
+    "    var rect = td.getBoundingClientRect();",
+    "    var top = rect.bottom + 2;",
+    "    var left = rect.left;",
+    "    if(left + portal.offsetWidth > window.innerWidth - 4) left = rect.right - portal.offsetWidth;",
+    "    if(left < 4) left = 4;",
+    "    if(top + portal.offsetHeight > window.innerHeight - 4) top = rect.top - portal.offsetHeight - 2;",
+    "    portal.style.top = top + 'px';",
+    "    portal.style.left = left + 'px';",
+    "    activeTagDropdown = { key: td.getAttribute('data-key'), original: currentTags.sort().join(','), td: td };",
+    "    window.addEventListener('scroll', window.closeDropdowns, true);",
+    "    window.addEventListener('resize', window.closeDropdowns);",
+    "  };",
+
+    // Collect checked tag checkboxes into the hidden tags input for form submission. Called when any tag checkbox changes in the channel edit form.
+    "  window.updateTagsHidden = function(formRow) {",
+    "    var checkboxes = formRow.querySelectorAll('.tag-checkbox:checked');",
+    "    var tags = [];",
+    "    for(var i = 0; i < checkboxes.length; i++) tags.push(checkboxes[i].getAttribute('data-tag'));",
+    "    var hidden = formRow.querySelector('input[type=\"hidden\"][name=\"tags\"]');",
+    "    if(hidden) hidden.value = tags.sort().join(', ');",
+    "  };",
+
     // Revert a channel override back to predefined defaults.
     "  window.revertChannel = async function(key) {",
-    "    if (!confirm('Revert channel ' + key + ' to predefined defaults?')) return;",
+    "    if(!confirm('Revert channel ' + key + ' to predefined defaults?')) return;",
     "    try {",
     "      var res = await fetch('/config/channels', {",
     "        method: 'POST',",
-    "        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },",
+    "        headers: { 'Content-Type': 'application/json' },",
     "        body: JSON.stringify({ action: 'revert', key: key })",
     "      });",
     "      var d = await res.json();",
-    "      if (res.ok && d.success) {",
+    "      if(res.ok && d.success) {",
     "        showToast(d.message, 'success');",
-    "        if (d.html) {",
-    "          insertChannelRow(d.html, d.key || key);",
-    "          refilterChannelRows();",
-    "        }",
+    "        if(d.patch) { applyChannelPatch(d.patch); }",
     "      } else {",
     "        showToast(d.message || 'Failed to revert channel.', 'error');",
     "      }",
@@ -1482,13 +1593,19 @@ export function generateConfigSubtabScript(): string {
     "    }).catch(function() {});",
     "  };",
 
-    // Read the server-stamped sort value from the data-sort-value attribute.
+    // Read the server-stamped sort value from the data-sort-value attribute. The column index is derived from the header row's data-sort-field attributes rather
+    // than a hardcoded map — new columns are automatically supported without updating client-side code.
+    "  var colIndexCache = null;",
     "  function getSortValue(row, field) {",
-    "    var colIndex = { key: 0, name: 1, provider: 2, channelNumber: 3, hdhrEnabled: 4, stationId: 5, profile: 6, channelSelector: 7 };",
-    "    var idx = colIndex[field];",
-    "    if (idx === undefined) return '';",
+    "    if(!colIndexCache) {",
+    "      colIndexCache = {};",
+    "      var ths = document.querySelectorAll('.channel-table th[data-sort-field]');",
+    "      for(var i = 0; i < ths.length; i++) { colIndexCache[ths[i].getAttribute('data-sort-field')] = i; }",
+    "    }",
+    "    var idx = colIndexCache[field];",
+    "    if(idx === undefined) return '';",
     "    var cell = row.children[idx];",
-    "    if (!cell) return '';",
+    "    if(!cell) return '';",
     "    return cell.getAttribute('data-sort-value') || '';",
     "  }",
 
@@ -1524,14 +1641,16 @@ export function generateConfigSubtabScript(): string {
     "      tbody.appendChild(pairs[j].displayRow);",
     "      if (pairs[j].editRow) tbody.appendChild(pairs[j].editRow);",
     "    }",
-    // Update header indicators.
+    // Update header sort indicators. Targets .sort-label within each <th> so other children (like the tag filter dropdown) are untouched.
     "    var headers = table.querySelectorAll('th.sortable');",
-    "    for (var h = 0; h < headers.length; h++) {",
+    "    for(var h = 0; h < headers.length; h++) {",
     "      var th = headers[h];",
     "      var hField = th.getAttribute('data-sort-field');",
-    "      var label = th.textContent.replace(/[\\u25B2\\u25BC]/g, '').trim();",
-    "      if (hField === field) { th.innerHTML = label + (dir === 'asc' ? ' &#9650;' : ' &#9660;'); }",
-    "      else { th.textContent = label; }",
+    "      var sortLabel = th.querySelector('.sort-label');",
+    "      if(!sortLabel) continue;",
+    "      var label = sortLabel.textContent.replace(/[\\u25B2\\u25BC]/g, '').trim();",
+    "      if(hField === field) { sortLabel.innerHTML = label + (dir === 'asc' ? ' &#9650;' : ' &#9660;'); }",
+    "      else { sortLabel.textContent = label; }",
     "    }",
     // Persist sort preference.
     "    fetch('/config/channels/display-prefs', {",
@@ -1664,6 +1783,10 @@ export function generateConfigSubtabScript(): string {
     // Set indeterminate state on the HDHR bulk toggle if data-indeterminate is present.
     "    var hdhrToggle = document.getElementById('hdhr-bulk-toggle');",
     "    if(hdhrToggle && hdhrToggle.getAttribute('data-indeterminate') === 'true') hdhrToggle.indeterminate = true;",
+
+    // Set indeterminate state on tag bulk toggle checkboxes. Same pattern as HDHR — HTML has no indeterminate attribute, so JS must set it on page load.
+    "    var tagToggles = document.querySelectorAll('.tag-bulk-toggle[data-indeterminate=\"true\"]');",
+    "    for(var ti = 0; ti < tagToggles.length; ti++) tagToggles[ti].indeterminate = true;",
 
     // Run filterChannelRows on page load when a provider filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on
     // option elements. This initial pass removes those options from the DOM to enforce the filter.

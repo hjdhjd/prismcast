@@ -5,38 +5,42 @@
 import type { ChannelSortField, SortDirection } from "../types/index.js";
 import type { Express, Request, Response } from "express";
 import { VALID_SORT_FIELDS, compareChannelSort, getAllProviderTags, getProviderTagForChannel, resolveProviderKey } from "../config/providers.js";
+import { getActiveTagVocabulary, getAllChannels } from "../config/userChannels.js";
 import { CONFIG } from "../config/index.js";
-import { getAllChannels } from "../config/userChannels.js";
 import { resolveProfile } from "../config/profiles.js";
 
 /* The playlist endpoint generates an M3U playlist in Channels DVR format. The playlist includes all configured video channels with their stream URLs dynamically
  * constructed from the request host header so the playlist works regardless of how the server is accessed.
  */
 
-// Provider Filter Types.
+// Include/Exclude Filter.
 
-/* A parsed provider filter specifies which channels to include or exclude based on their provider tags. In include mode, only channels matching at least one of the
- * specified tags are included. In exclude mode, channels matching any of the specified tags are excluded.
+/* A parsed include/exclude filter specifies which items to include or exclude based on a set of string tags. In include mode, only items matching at least one of
+ * the specified tags are included. In exclude mode, items matching any of the specified tags are excluded. Used by both provider filtering (?provider=) and tag
+ * filtering (?tag=) with different validation sources.
  */
-interface ProviderFilter {
+interface IncludeExcludeFilter {
 
   readonly exclude: boolean;
   readonly tags: string[];
 }
 
 /**
- * Parses and validates a provider filter query parameter. The parameter is a comma-separated list of provider tags with optional `-` prefix for exclusion mode. All
- * tags must be either include (no prefix) or exclude (`-` prefix) — mixing is not allowed. Tags are case-insensitive and validated against known provider tags.
- * @param param - The raw query parameter string (e.g., "yttv,sling" or "-hulu,-sling").
+ * Parses and validates an include/exclude filter query parameter. The parameter is a comma-separated list of values with optional `-` prefix for exclusion mode.
+ * All values must be either include (no prefix) or exclude (`-` prefix) — mixing is not allowed. Values are case-insensitive and validated against a known set.
+ * @param param - The raw query parameter string (e.g., "sports,news" or "-kids").
+ * @param entityName - Human-readable name for error messages (e.g., "provider tag", "tag").
+ * @param knownValues - Array of valid values to validate against.
  * @returns An object with `filter` on success, or `error` with a descriptive message and `validTags` list on failure.
  */
-function parseProviderFilter(param: string): { error: string; validTags: string[] } | { filter: ProviderFilter } {
+function parseIncludeExcludeFilter(param: string, entityName: string,
+  knownValues: string[]): { error: string; validTags: string[] } | { filter: IncludeExcludeFilter } {
 
   const tokens = param.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0);
 
   if(tokens.length === 0) {
 
-    return { error: "Empty provider filter.", validTags: [] };
+    return { error: "Empty " + entityName + " filter.", validTags: [] };
   }
 
   // Classify tokens as include or exclude based on the `-` prefix.
@@ -57,23 +61,42 @@ function parseProviderFilter(param: string): { error: string; validTags: string[
   // Reject mixed mode — all tokens must be either include or exclude.
   if((excludeTokens.length > 0) && (includeTokens.length > 0)) {
 
-    return { error: "Cannot mix include and exclude filters. Use either \"tag1,tag2\" (include) or \"-tag1,-tag2\" (exclude).", validTags: [] };
+    return { error: "Cannot mix include and exclude " + entityName + " filters. Use either \"a,b\" (include) or \"-a,-b\" (exclude).", validTags: [] };
   }
 
   const isExclude = excludeTokens.length > 0;
-  const tags = isExclude ? excludeTokens : includeTokens;
+  const filterTags = isExclude ? excludeTokens : includeTokens;
 
-  // Validate all tags against known provider tags.
-  const allTags = getAllProviderTags();
-  const knownTags = new Set(allTags.map((p) => p.tag));
-  const unknownTags = tags.filter((tag) => !knownTags.has(tag));
+  // Validate all values against the known set.
+  const knownSet = new Set(knownValues);
+  const unknownTags = filterTags.filter((tag) => !knownSet.has(tag));
 
   if(unknownTags.length > 0) {
 
-    return { error: "Unknown provider tag(s): " + unknownTags.join(", ") + ".", validTags: allTags.map((p) => p.tag).sort() };
+    return { error: "Unknown " + entityName + "(s): " + unknownTags.join(", ") + ".", validTags: knownValues.sort() };
   }
 
-  return { filter: { exclude: isExclude, tags } };
+  return { filter: { exclude: isExclude, tags: filterTags } };
+}
+
+/**
+ * Parses a provider filter by validating against known provider tags.
+ * @param param - The raw query parameter string (e.g., "yttv,sling" or "-hulu,-sling").
+ * @returns An object with `filter` on success, or `error` with a descriptive message and `validTags` list on failure.
+ */
+function parseProviderFilter(param: string): { error: string; validTags: string[] } | { filter: IncludeExcludeFilter } {
+
+  return parseIncludeExcludeFilter(param, "provider tag", getAllProviderTags().map((p) => p.tag));
+}
+
+/**
+ * Parses a tag filter by validating against the active tag vocabulary.
+ * @param param - The raw query parameter string (e.g., "sports,news" or "-kids").
+ * @returns An object with `filter` on success, or `error` with a descriptive message and `validTags` list on failure.
+ */
+function parseTagFilter(param: string): { error: string; validTags: string[] } | { filter: IncludeExcludeFilter } {
+
+  return parseIncludeExcludeFilter(param, "tag", getActiveTagVocabulary());
 }
 
 /**
@@ -108,40 +131,59 @@ export function resolveBaseUrl(req: Request): string {
  * Generates the M3U playlist content for display on the landing page or the playlist endpoint. The playlist includes all configured video channels with their
  * stream URLs dynamically constructed from the provided base URL.
  * @param baseUrl - The base URL to use for stream URLs (e.g., "http://localhost:5589").
- * @param filter - Optional provider filter based on the currently selected provider for each channel. In include mode, only channels whose selected provider matches
- * a filter tag are included. In exclude mode, channels whose selected provider matches any filter tag are excluded. When omitted, all channels are included.
+ * @param providerFilter - Optional provider filter based on the currently selected provider for each channel. In include mode, only channels whose selected
+ * provider matches a filter tag are included. In exclude mode, channels whose selected provider matches any filter tag are excluded.
+ * @param tagFilter - Optional tag filter based on the channel's effective organizational tags. In include mode, only channels with at least one matching tag are
+ * included. In exclude mode, channels with any matching tag are excluded. Tag and provider filters compose via intersection.
  * @param sort - Optional sort field override. When provided, channels are sorted by this field instead of the user's saved preference. Validated against
  * VALID_SORT_FIELDS before calling.
  * @param direction - Optional sort direction override ("asc" or "desc"). When provided, overrides the user's saved sort direction.
  * @returns The M3U playlist content.
  */
-export function generatePlaylistContent(baseUrl: string, filter?: ProviderFilter, sort?: ChannelSortField, direction?: SortDirection): string {
+export function generatePlaylistContent(baseUrl: string, providerFilter?: IncludeExcludeFilter, tagFilter?: IncludeExcludeFilter,
+  sort?: ChannelSortField, direction?: SortDirection): string {
 
   const channels = getAllChannels();
   const lines = [ "#EXTM3U", "" ];
   const sortField = sort ?? CONFIG.channels.channelSortField;
   const sortDir = direction ?? CONFIG.channels.channelSortDirection;
 
+  // Pre-compute the vocabulary Set once so the per-channel tag intersection below doesn't rebuild it on every iteration.
+  const vocabularySet = tagFilter ? new Set(getActiveTagVocabulary()) : undefined;
+
   // Sort channel keys using the specified (or saved) sort field and direction. Default is name ascending.
   const channelNames = Object.keys(channels).sort((a, b) => compareChannelSort(channels[a], a, channels[b], b, sortField, sortDir));
 
   for(const name of channelNames) {
 
+    const channel = channels[name];
+
     // Apply the provider filter if specified.
-    if(filter) {
+    if(providerFilter) {
 
       const selectedKey = resolveProviderKey(name);
       const selectedTag = getProviderTagForChannel(selectedKey);
-      const hasMatch = filter.tags.includes(selectedTag);
+      const hasMatch = providerFilter.tags.includes(selectedTag);
 
-      // In include mode, skip channels whose selected provider doesn't match any filter tag. In exclude mode, skip channels whose selected provider matches a filter tag.
-      if(filter.exclude ? hasMatch : !hasMatch) {
+      // In include mode, skip channels whose selected provider doesn't match any filter tag. In exclude mode, skip channels whose selected provider matches.
+      if(providerFilter.exclude ? hasMatch : !hasMatch) {
 
         continue;
       }
     }
 
-    const channel = channels[name];
+    // Apply the tag filter if specified. Tags are intersected with the active vocabulary so deleted tags are invisible.
+    if(tagFilter && vocabularySet) {
+
+      const effectiveTags = channel.tags ? channel.tags.filter((tag) => vocabularySet.has(tag)) : [];
+      const hasMatch = tagFilter.tags.some((tag) => effectiveTags.includes(tag));
+
+      // In include mode, skip channels that don't have any matching tag. In exclude mode, skip channels that have a matching tag.
+      if(tagFilter.exclude ? hasMatch : !hasMatch) {
+
+        continue;
+      }
+    }
 
     // Skip channels that are marked as static pages since they are not video streams.
     const profile = resolveProfile(channel.profile);
@@ -182,15 +224,17 @@ const VALID_SORT_DIRECTIONS = new Set<SortDirection>([ "asc", "desc" ]);
  */
 export function setupPlaylistEndpoint(app: Express): void {
 
-  // GET /playlist - Returns the M3U playlist file. Supports optional query parameters: ?provider= for filtering by streaming provider, ?sort= for sort field
-  // override, and ?direction= for sort direction override.
+  // GET /playlist - Returns the M3U playlist file. Supports optional query parameters: ?provider= for filtering by streaming provider, ?tag= for filtering by
+  // organizational tags, ?sort= for sort field override, and ?direction= for sort direction override.
   app.get("/playlist", (req: Request, res: Response): void => {
 
     const baseUrl = resolveBaseUrl(req);
     const providerParam = typeof req.query.provider === "string" ? req.query.provider.trim() : undefined;
+    const tagParam = typeof req.query.tag === "string" ? req.query.tag.trim() : undefined;
     const sortParam = typeof req.query.sort === "string" ? req.query.sort.trim() || undefined : undefined;
     const directionParam = typeof req.query.direction === "string" ? req.query.direction.trim().toLowerCase() || undefined : undefined;
-    let filter: ProviderFilter | undefined;
+    let providerFilter: IncludeExcludeFilter | undefined;
+    let tagFilter: IncludeExcludeFilter | undefined;
 
     // Parse and validate the provider filter if specified.
     if(providerParam) {
@@ -204,7 +248,22 @@ export function setupPlaylistEndpoint(app: Express): void {
         return;
       }
 
-      filter = result.filter;
+      providerFilter = result.filter;
+    }
+
+    // Parse and validate the tag filter if specified.
+    if(tagParam) {
+
+      const result = parseTagFilter(tagParam);
+
+      if("error" in result) {
+
+        res.status(400).json({ error: result.error, validTags: result.validTags });
+
+        return;
+      }
+
+      tagFilter = result.filter;
     }
 
     // Validate the sort field if specified.
@@ -225,7 +284,7 @@ export function setupPlaylistEndpoint(app: Express): void {
 
     const sort = sortParam as ChannelSortField | undefined;
     const direction = directionParam as SortDirection | undefined;
-    const playlist = generatePlaylistContent(baseUrl, filter, sort, direction);
+    const playlist = generatePlaylistContent(baseUrl, providerFilter, tagFilter, sort, direction);
 
     res.set("Content-Type", "audio/x-mpegurl");
     res.send(playlist);

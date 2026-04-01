@@ -1032,37 +1032,31 @@ export function setupSettingsRoutes(app: Express): void {
         return;
       }
 
-      // The settings form submits CONFIG_METADATA values (scalars and checkboxLists). The config file also stores fields managed by their own endpoints: disabled
-      // channel list, enabled provider filter, and the auto-generated HDHomeRun device ID. We must preserve these from the existing file, otherwise saving wipes them.
+      // Merge form values into the existing config rather than building from scratch. The settings form only manages CONFIG_METADATA fields, but config.json also
+      // stores fields managed by separate endpoints (disabledPredefined, enabledProviders, visibleColumns, setupCompleted, channelSortField, channelSortDirection,
+      // dvrHost, hdhr.deviceId, etc.). Loading the existing config and merging form values into it preserves all non-form fields automatically — no carry-forward
+      // list to maintain. New fields stored in config.json by other endpoints are preserved without any changes here.
       const existingResult = await loadUserConfig();
-      const existingConfig = existingResult.config;
+      const mergedConfig = existingResult.config;
 
-      if(Array.isArray(existingConfig.channels?.disabledPredefined) && (existingConfig.channels.disabledPredefined.length > 0)) {
+      for(const [ path, value ] of Object.entries(newConfig as Record<string, unknown>)) {
 
-        newConfig.channels ??= {};
-        newConfig.channels.disabledPredefined = existingConfig.channels.disabledPredefined;
-      }
+        if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
 
-      if(Array.isArray(existingConfig.channels?.enabledProviders) && (existingConfig.channels.enabledProviders.length > 0)) {
+          (mergedConfig as Record<string, unknown>)[path] ??= {};
 
-        newConfig.channels ??= {};
-        newConfig.channels.enabledProviders = existingConfig.channels.enabledProviders;
-      }
+          for(const [ subPath, subValue ] of Object.entries(value as Record<string, unknown>)) {
 
-      if((typeof existingConfig.hdhr?.deviceId === "string") && (existingConfig.hdhr.deviceId.length > 0)) {
+            ((mergedConfig as Record<string, unknown>)[path] as Record<string, unknown>)[subPath] = subValue;
+          }
+        } else {
 
-        newConfig.hdhr ??= {};
-        newConfig.hdhr.deviceId = existingConfig.hdhr.deviceId;
-      }
-
-      if((typeof existingConfig.logging?.debugFilter === "string") && (existingConfig.logging.debugFilter.length > 0)) {
-
-        newConfig.logging ??= {};
-        newConfig.logging.debugFilter = existingConfig.logging.debugFilter;
+          (mergedConfig as Record<string, unknown>)[path] = value;
+        }
       }
 
       // Filter out values that match defaults to keep the config file clean.
-      const filteredConfig = filterDefaults(newConfig);
+      const filteredConfig = filterDefaults(mergedConfig);
 
       // Save the configuration.
       await saveUserConfig(filteredConfig);

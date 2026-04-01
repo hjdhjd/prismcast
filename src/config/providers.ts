@@ -2,10 +2,11 @@
  *
  * providers.ts: Provider group management for multi-provider channels.
  */
+import { CHANNEL_IDENTITY_FIELDS, PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { Channel, ChannelMap, ChannelSortField, ProviderGroup, SortDirection } from "../types/index.js";
 import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
-import { PREDEFINED_CHANNELS } from "../channels/index.js";
+import { getChannelEffectiveTags } from "./userChannels.js";
 import { getProfileForChannel } from "./profiles.js";
 import { getUserDomains } from "./userProfiles.js";
 
@@ -534,7 +535,9 @@ export function getChannelProviderLabel(channel: Channel): string {
 
 // Valid sort field values for the channels table. Exported as the single source of truth for sort field validation, shared by the config POST handler and the
 // playlist endpoint's query parameter validation.
-export const VALID_SORT_FIELDS = new Set<ChannelSortField>([ "channelNumber", "channelSelector", "hdhrEnabled", "key", "name", "profile", "provider", "stationId" ]);
+export const VALID_SORT_FIELDS = new Set<ChannelSortField>(
+  [ "channelNumber", "channelSelector", "hdhrEnabled", "key", "name", "profile", "provider", "stationId", "tags" ]
+);
 
 /**
  * Extracts a sortable string value from a channel for the specified sort field. Channel numbers are zero-padded to 6 digits for correct numeric ordering within a
@@ -614,6 +617,13 @@ export function getChannelSortKey(channel: Channel, key: string, field: ChannelS
       const id = effective.stationId;
 
       return id ? id.padStart(6, "0") : "zzzzzz";
+    }
+
+    case "tags": {
+
+      const effectiveTags = getChannelEffectiveTags(effective);
+
+      return (effectiveTags.length > 0) ? effectiveTags.join(",") : "zz";
     }
 
     default: {
@@ -839,25 +849,33 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 }
 
 /**
- * Applies variant inheritance: the variant's own properties take precedence, but identity fields fall through from the base channel when not set on the variant.
- * Identity fields are channel-level metadata that apply regardless of provider: name, stationId, tvgShift, and channelNumber. `channelSelector` is deliberately
- * NOT inherited — it is provider-specific (e.g., fox.com uses station codes like "FOXD2C" while Sling uses guide names like "FOX"), so each variant must define
- * its own. This is the single source of truth for variant inheritance rules.
- * @param variant - The variant channel definition.
- * @param base - The canonical (base) channel to inherit from.
- * @returns A new Channel with inheritance applied.
+ * Applies variant inheritance: the variant contributes provider-specific fields (url, channelSelector, profile, etc.) while identity fields always come from the
+ * canonical base. Identity fields describe what the channel IS — name, station ID, tags, channel number — and are independent of which provider serves it. The
+ * spread brings in all variant fields, then identity fields are unconditionally overwritten from the canonical. This ensures user overrides on the canonical
+ * (e.g., renaming a channel or adding tags) propagate to all provider variants, rather than being masked by stale flattener-copied values on the variant.
+ * The field list comes from CHANNEL_IDENTITY_FIELDS — the single source of truth for the identity/provider-specific separation.
+ * @param variant - The variant channel definition (provider-specific fields).
+ * @param base - The canonical (base) channel with user overrides applied (identity fields).
+ * @returns A new Channel with identity fields from the canonical and provider-specific fields from the variant.
  */
 function applyVariantInheritance(variant: Channel, base: Channel): Channel {
 
-  return {
+  const result: Channel = { ...variant };
 
-    ...variant,
-    channelNumber: variant.channelNumber ?? base.channelNumber,
-    hdhrEnabled: variant.hdhrEnabled ?? base.hdhrEnabled,
-    name: variant.name ?? base.name,
-    stationId: variant.stationId ?? base.stationId,
-    tvgShift: variant.tvgShift ?? base.tvgShift
-  };
+  for(const field of CHANNEL_IDENTITY_FIELDS) {
+
+    copyField(result, base, field);
+  }
+
+  return result;
+}
+
+// Type-safe field copy using a generic to preserve the field-value relationship. TypeScript can't prove that result[field] and base[field] have compatible types
+// when field is a union of literal keys (each key maps to a different type). The generic K narrows to a single key per call, making the assignment type-safe.
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- K is necessary to correlate the key type between target and source assignments.
+function copyField<K extends keyof Channel>(target: Channel, source: Channel, key: K): void {
+
+  target[key] = source[key];
 }
 
 /**
