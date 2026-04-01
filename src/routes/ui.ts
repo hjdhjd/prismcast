@@ -9,7 +9,7 @@ import { generateThemeStyles } from "./theme.js";
  */
 
 // Re-export components for convenience.
-export { generateAlert, generateBadge, generateButton, generateCodeBlock, generatePanelHeader, generateSection, generateSelect, generateSimpleAlert,
+export { generateAlert, generateBadge, generateButton, generatePanelHeader, generateSection, generateSelect, generateSimpleAlert,
   generateStatusIndicator, generateTextInput } from "./components.js";
 export type { AlertType, BadgeVariant, ButtonOptions, ButtonSize, ButtonVariant, SelectOption, SelectOptions, TextInputOptions } from "./components.js";
 

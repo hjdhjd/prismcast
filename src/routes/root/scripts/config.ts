@@ -1519,29 +1519,11 @@ export function generateConfigSubtabScript(): string {
     "    if (!e.target.closest('.dropdown') && !e.target.closest('.dropdown-menu')) closeDropdowns();",
     "  });",
 
-    // Copy a stream URL to the clipboard and show a toast notification. The type parameter selects HLS or MPEG-TS format. Uses the modern Clipboard API when
-    // available (secure contexts), falling back to execCommand for plain HTTP access via IP address.
-    "  window.copyStreamUrl = async function(type, key) {",
+    // Copy a stream URL to the clipboard. The type parameter selects HLS or MPEG-TS format. Delegates to the shared copyToClipboard utility.
+    "  window.copyStreamUrl = function(type, key) {",
     "    closeDropdowns();",
     "    var url = (type === 'hls') ? (location.origin + '/hls/' + key + '/stream.m3u8') : (location.origin + '/stream/' + key);",
-    "    if (navigator.clipboard && navigator.clipboard.writeText) {",
-    "      try {",
-    "        await navigator.clipboard.writeText(url);",
-    "        showToast('Stream URL copied to clipboard.', 'success');",
-    "      } catch(err) {",
-    "        showToast('Failed to copy URL.', 'error');",
-    "      }",
-    "    } else {",
-    "      var ta = document.createElement('textarea');",
-    "      ta.value = url;",
-    "      ta.style.position = 'fixed';",
-    "      ta.style.opacity = '0';",
-    "      document.body.appendChild(ta);",
-    "      ta.select();",
-    "      try { document.execCommand('copy'); showToast('Stream URL copied to clipboard.', 'success'); }",
-    "      catch(e) { showToast('Failed to copy URL.', 'error'); }",
-    "      document.body.removeChild(ta);",
-    "    }",
+    "    copyToClipboard(url, 'Stream URL copied to clipboard.');",
     "  };",
 
     // Toggle visibility of disabled predefined channels and persist preference.

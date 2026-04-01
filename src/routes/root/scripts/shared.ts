@@ -63,6 +63,25 @@ export function generateSharedUtilitiesScript(): string {
 
     "  window.closeDropdowns = closeDropdowns;",
 
+    // Copy text to the clipboard and show a toast. Uses the modern Clipboard API when available (secure contexts), falling back to execCommand for plain HTTP
+    // access via IP address.
+    "  window.copyToClipboard = async function(text, successMessage) {",
+    "    if(navigator.clipboard && navigator.clipboard.writeText) {",
+    "      try { await navigator.clipboard.writeText(text); showToast(successMessage, 'success'); }",
+    "      catch(e) { showToast('Failed to copy to clipboard.', 'error'); }",
+    "    } else {",
+    "      var ta = document.createElement('textarea');",
+    "      ta.value = text;",
+    "      ta.style.position = 'fixed';",
+    "      ta.style.opacity = '0';",
+    "      document.body.appendChild(ta);",
+    "      ta.select();",
+    "      try { document.execCommand('copy'); showToast(successMessage, 'success'); }",
+    "      catch(e) { showToast('Failed to copy to clipboard.', 'error'); }",
+    "      document.body.removeChild(ta);",
+    "    }",
+    "  };",
+
     // Toggle a dropdown menu open or closed. On first call for a given button, the menu is detached from its .dropdown parent and portaled to <body> with
     // position: fixed. This allows the menu to escape overflow: auto containers like the channel table wrapper. On every open, the menu is positioned relative
     // to the button's bounding rect, with edge-of-viewport clamping and above-button flip when it would extend below the viewport.

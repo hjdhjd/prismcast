@@ -587,7 +587,6 @@ export function generateLandingPageStyles(): string {
     ".btn-copy-inline { background: var(--surface-elevated); border: 1px solid var(--border-default); padding: 2px 8px; font-size: 12px; ",
     "border-radius: var(--radius-sm); cursor: pointer; color: var(--text-secondary); margin-left: 6px; vertical-align: middle; }",
     ".btn-copy-inline:hover { background: var(--surface-hover); color: var(--text-primary); }",
-    ".copy-feedback-inline { color: var(--stream-healthy); font-size: 12px; margin-left: 8px; display: none; }",
 
     // Version display styles.
     ".version-container { display: inline-flex; align-items: center; gap: 6px; }",
