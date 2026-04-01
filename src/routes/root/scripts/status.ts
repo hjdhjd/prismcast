@@ -434,17 +434,11 @@ export function generateStatusScript(): string {
     "  }",
     "});",
 
-    // Copy playlist URL function for Overview tab Quick Start section.
-    "window.copyOverviewPlaylistUrl = async function() {",
+    // Copy playlist URL function for Overview tab Quick Start section. Delegates to the shared copyToClipboard utility for consistent clipboard handling
+    // across all contexts (HTTPS Clipboard API with execCommand fallback for plain HTTP).
+    "window.copyOverviewPlaylistUrl = function() {",
     "  var urlEl = document.getElementById('overview-playlist-url');",
-    "  if(urlEl) {",
-    "    await navigator.clipboard.writeText(urlEl.textContent);",
-    "    var feedback = document.getElementById('overview-copy-feedback');",
-    "    if(feedback) {",
-    "      feedback.style.display = 'inline';",
-    "      setTimeout(function() { feedback.style.display = 'none'; }, 2000);",
-    "    }",
-    "  }",
+    "  if(urlEl) { copyToClipboard(urlEl.textContent, 'Playlist URL copied to clipboard.'); }",
     "};",
 
     // JS-based tooltips for devices where the primary input can't hover (iPadOS). Safari on iPadOS doesn't show native title tooltips, so we use

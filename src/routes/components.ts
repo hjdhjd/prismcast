@@ -354,28 +354,6 @@ export function generateSelect(label: string, config: SelectOptions): string {
   return lines.join("\n");
 }
 
-/**
- * Generates a code block with optional copy button.
- * @param content - The code content.
- * @param showCopyButton - Whether to show a copy button.
- * @param copyButtonId - ID for the copy button (required if showCopyButton is true).
- * @returns HTML string for the code block.
- */
-export function generateCodeBlock(content: string, showCopyButton = false, copyButtonId?: string): string {
-
-  if(showCopyButton && copyButtonId) {
-
-    return [
-      "<div class=\"code-block-wrapper\">",
-      "<pre>" + escapeHtml(content) + "</pre>",
-      "<button type=\"button\" class=\"btn btn-secondary btn-sm code-copy-btn\" id=\"" + escapeHtml(copyButtonId) +
-        "\" onclick=\"navigator.clipboard.writeText(this.previousElementSibling.textContent)\">Copy</button>",
-      "</div>"
-    ].join("\n");
-  }
-
-  return "<pre>" + escapeHtml(content) + "</pre>";
-}
 
 /**
  * Generates a section container with optional heading.
