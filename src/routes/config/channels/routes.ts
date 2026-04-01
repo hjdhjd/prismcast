@@ -5,17 +5,17 @@
 import type { Channel, ChannelDelta, ChannelSortField, Nullable, StoredChannel } from "../../../types/index.js";
 import type { Express, Request, Response } from "express";
 import { LOG, formatError, generateChannelKey, parseM3U, sanitizeString, stringifySorted } from "../../../utils/index.js";
-import { VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState } from "./table.js";
+import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../../../channels/index.js";
+import { VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState, generateTagFilterContent, generateTagManagerBody } from "./table.js";
 import { VALID_SORT_FIELDS, compareChannelSort, getAllProviderTags, getCanonicalKey, getChannelProviderLabel, getEnabledProviders, getProviderGroup,
   getProviderSelection, getProviderTagForChannel, getResolvedChannel, resolvePredefinedVariant, resolveProviderKey, setEnabledProviders,
   setProviderSelection } from "../../../config/providers.js";
 import { filterDefaults, loadUserConfig, saveUserConfig } from "../../../config/userConfig.js";
-import { getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel, getPredefinedChannels,
-  getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel,
-  saveProviderSelections, saveUserChannels, validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl,
-  validateImportedChannels } from "../../../config/userChannels.js";
+import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel,
+  getPredefinedChannels, getTagRegistry, getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel,
+  saveProviderSelections, saveTagRegistry, saveUserChannels, setTagRegistry, transformChannelTags, validateChannelKey, validateChannelName,
+  validateChannelNumber, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../../../config/userChannels.js";
 import { CONFIG } from "../../../config/index.js";
-import { PREDEFINED_CHANNELS } from "../../../channels/index.js";
 import type { UserChannel } from "../../../config/userChannels.js";
 import { getProfiles } from "../../../config/profiles.js";
 import { updateChannelLogo } from "../../../streaming/showInfo.js";
@@ -365,18 +365,20 @@ export function setupChannelRoutes(app: Express): void {
       let channelsChanged = false;
       let selectionsChanged = false;
 
-      // Build a UserChannel object from an entry's fields. Shared by the switch/enable and add paths to avoid duplicating channel construction logic.
+      // Build a UserChannel object from an entry's fields. Shared by the switch/enable and add paths to avoid duplicating channel construction logic. When
+      // canonicalKey is provided, the channel is a provider variant — identity fields (name, stationId) are omitted because they're resolved from the canonical
+      // at runtime via applyVariantInheritance. Standalone channels (no canonicalKey) include all fields.
       function buildUserChannel(entry: { channelSelector?: string; name?: string; stationId?: string; url?: string },
-        channelName: string, channelUrl: string, selector: string): UserChannel {
+        channelName: string, channelUrl: string, selector: string, canonicalKey?: string): UserChannel {
 
         const channel: UserChannel = {
 
+          ...(canonicalKey ? { canonicalKey } : { name: channelName }),
           channelSelector: selector || undefined,
-          name: channelName,
           url: channelUrl
         };
 
-        if(entry.stationId) {
+        if(!canonicalKey && entry.stationId) {
 
           channel.stationId = sanitizeString(entry.stationId);
         }
@@ -413,11 +415,12 @@ export function setupChannelRoutes(app: Express): void {
 
           const variantKey = canonicalKey + "-" + providerSlug;
 
-          // If no variant exists for this provider, create one as a user channel.
+          // If no variant exists for this provider, create one as a user channel. The canonicalKey parameter tells buildUserChannel to produce a variant
+          // (provider-specific fields only, no identity fields).
           if(!allKeys.has(variantKey)) {
 
             existingChannels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
-              sanitizeString(entry.channelSelector?.trim() ?? ""));
+              sanitizeString(entry.channelSelector?.trim() ?? ""), canonicalKey);
             allKeys.add(variantKey);
             channelsChanged = true;
           }
@@ -517,14 +520,9 @@ export function setupChannelRoutes(app: Express): void {
           continue;
         }
 
-        const newChannel = buildUserChannel(entry, name, url, channelSelector);
-
-        // When this is a provider variant (key differs from baseKey), store the canonical relationship explicitly so that buildProviderGroups can
-        // associate the user channel with its canonical via the canonicalKey field.
-        if(key !== baseKey) {
-
-          newChannel.canonicalKey = baseKey;
-        }
+        // When the key differs from baseKey, this is a provider variant — pass baseKey as canonicalKey so buildUserChannel produces a variant with only
+        // provider-specific fields. Standalone channels (key === baseKey) get the full channel object with identity fields.
+        const newChannel = buildUserChannel(entry, name, url, channelSelector, (key !== baseKey) ? baseKey : undefined);
 
         existingChannels[key] = newChannel;
         allKeys.add(key);
@@ -851,13 +849,12 @@ export function setupChannelRoutes(app: Express): void {
 
       if(clearMode) {
 
-        // Clear channel numbers from all visible channels. For predefined channels, use null to signal removal in the delta. For user channels, use undefined.
+        // Clear channel numbers from all visible channels. Null signals "clear this field" — the normalizer in saveUserChannels() handles the storage conventions.
         for(const entry of listing) {
 
           const existing = result.channels[entry.key] ?? {};
-          const clearValue = isPredefinedChannel(entry.key) ? null : undefined;
 
-          existing.channelNumber = clearValue;
+          existing.channelNumber = null;
           result.channels[entry.key] = existing;
           affectedKeys.push(entry.key);
         }
@@ -937,9 +934,8 @@ export function setupChannelRoutes(app: Express): void {
         }
 
         const existing = result.channels[entry.key] ?? {};
-        const clearValue = isPredefinedChannel(entry.key) ? null : undefined;
 
-        existing.hdhrEnabled = enable ? clearValue : false;
+        existing.hdhrEnabled = enable ? null : false;
         result.channels[entry.key] = existing;
         affectedKeys.push(entry.key);
       }
@@ -965,6 +961,83 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.error("Failed to bulk-toggle HDHR: %s.", formatError(error));
       res.status(500).json({ error: "Failed to toggle HDHR settings: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/channels/bulk-tags - Add or remove a tag on all enabled, provider-available channels. Operates on the same channel set as other bulk actions.
+  // transformChannelTags handles loading, delta normalization, and persistence. Returns a channel table patch for all affected rows and an updated tag manager
+  // modal body.
+  app.post("/config/channels/bulk-tags", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { action?: string; tag?: string };
+      const action = body.action;
+      const tag = typeof body.tag === "string" ? body.tag.trim().toLowerCase() : "";
+
+      if((action !== "add") && (action !== "remove")) {
+
+        res.status(400).json({ error: "Action must be 'add' or 'remove'.", success: false });
+
+        return;
+      }
+
+      if(!tag) {
+
+        res.status(400).json({ error: "Tag is required.", success: false });
+
+        return;
+      }
+
+      // Validate the tag is in the active vocabulary.
+      const vocabulary = new Set(getActiveTagVocabulary());
+
+      if(!vocabulary.has(tag)) {
+
+        res.status(400).json({ error: "Unknown tag: " + tag + ".", success: false });
+
+        return;
+      }
+
+      const { affectedKeys, error } = await transformChannelTags(
+        (entry) => entry.enabled && entry.availableByProvider,
+        (tags) => (action === "add") ? (tags.includes(tag) ? tags : [ ...tags, tag ]) : tags.filter((t) => t !== tag)
+      );
+
+      if(error) {
+
+        res.status(400).json({ error, success: false });
+
+        return;
+      }
+
+      if(affectedKeys.length === 0) {
+
+        res.json({ affected: 0, message: "No changes needed.", success: true });
+
+        return;
+      }
+
+      const verb = (action === "add") ? "added to" : "removed from";
+
+      LOG.info("Bulk tag %s: %s on %d channels.", action, tag, affectedKeys.length);
+
+      const profiles = getProfiles();
+      const message = "Tag '" + tag + "' " + verb + " " + String(affectedKeys.length) + " channel(s).";
+
+      res.json({
+
+        affected: affectedKeys.length,
+        filterContent: generateTagFilterContent(),
+        message,
+        modalBody: generateTagManagerBody(),
+        patch: buildChannelTablePatch(affectedKeys, profiles),
+        success: true
+      });
+    } catch(error) {
+
+      LOG.error("Failed to bulk-update tags: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to update tags: " + formatError(error), success: false });
     }
   });
 
@@ -1333,7 +1406,7 @@ export function setupChannelRoutes(app: Express): void {
         const field = body.field;
         const value = sanitizeString(body.value ?? "");
 
-        if((field !== "channelNumber") && (field !== "hdhrEnabled") && (field !== "stationId")) {
+        if((field !== "channelNumber") && (field !== "hdhrEnabled") && (field !== "stationId") && (field !== "tags")) {
 
           res.status(400).json({ message: "Invalid inline-edit field.", success: false });
 
@@ -1363,28 +1436,36 @@ export function setupChannelRoutes(app: Express): void {
           return;
         }
 
-        // Use a StoredChannelMap-compatible update. The ?? {} creates an empty ChannelDelta for predefined channels that don't have a user override yet.
+        // Use a StoredChannelMap-compatible update. The ?? {} creates an empty ChannelDelta for predefined channels that don't have a user override yet. Null signals
+        // "clear this field" for all channel types — the normalizer in saveUserChannels() handles delta comparison for predefined channels and null-stripping for
+        // user channels.
         const stored = result.channels[key] ?? {};
-        const clearValue = isPredefinedChannel(key) ? null : undefined;
 
         if(field === "channelNumber") {
 
-          stored.channelNumber = value ? parseInt(value, 10) : clearValue;
+          stored.channelNumber = value ? parseInt(value, 10) : null;
         } else if(field === "hdhrEnabled") {
 
-          // hdhrEnabled: "true" means enabled (clear the override), "false" means disabled. For predefined channels, null clears the delta. For user channels,
-          // delete the field entirely to revert to the default (included).
-          stored.hdhrEnabled = (value === "false") ? false : clearValue;
+          stored.hdhrEnabled = (value === "false") ? false : null;
+        } else if(field === "tags") {
+
+          const tags = value ? [...new Set(value.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))].sort() : [];
+
+          (stored as Record<string, unknown>).tags = (tags.length > 0) ? tags : null;
         } else {
 
-          stored.stationId = value || clearValue;
+          stored.stationId = value || null;
         }
 
         result.channels[key] = stored;
 
         await saveUserChannels(result.channels);
 
-        const fieldLabels: Record<string, string> = { channelNumber: "Channel number", hdhrEnabled: "HDHR lineup", stationId: "Station ID" };
+        const fieldLabels: Record<string, string> = {
+
+          channelNumber: "Channel number", hdhrEnabled: "HDHR lineup", stationId: "Station ID", tags: "Tags"
+        };
+
         const fieldLabel = fieldLabels[field] ?? field;
         const displayValue = (field === "hdhrEnabled") ? ((value === "false") ? "excluded" : "included") : (value || "(cleared)");
 
@@ -1465,6 +1546,10 @@ export function setupChannelRoutes(app: Express): void {
       const channelSelector = sanitizeString(body.channelSelector ?? "");
       const channelNumberStr = sanitizeString(body.channelNumber ?? "");
       const hdhrEnabled = body.hdhrEnabled !== "false";
+
+      // Parse tags from comma-separated input. Trim, lowercase, filter empty, sort, deduplicate.
+      const tagsRaw = sanitizeString(body.tags ?? "");
+      const tags = tagsRaw ? [...new Set(tagsRaw.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))].sort() : [];
 
       // Validate channel number if provided.
       const channelNumberError = validateChannelNumber(channelNumberStr, key);
@@ -1571,10 +1656,15 @@ export function setupChannelRoutes(app: Express): void {
         // First check: did the user change anything from what the form showed? The edit form is pre-populated with the selected provider's resolved channel, which
         // may differ from the canonical predefined base when a variant is selected (e.g., the Hulu variant has a different URL and channelSelector). If the submitted
         // values match the displayChannel exactly, the user saved without modification — no override should be created, and any existing override is preserved.
+        // Tags are compared separately (array comparison) after the scalar fields.
         const resolvedKey = resolveProviderKey(key);
         const displayChannel = getResolvedChannel(resolvedKey) ?? predefinedBase;
 
-        if(Object.keys(formValues).every((field) => formValues[field] === channelValue(displayChannel, field))) {
+        const displayTags = getChannelEffectiveTags(displayChannel);
+        const scalarUnchanged = Object.keys(formValues).every((field) => formValues[field] === channelValue(displayChannel, field));
+        const tagsUnchanged = JSON.stringify(tags) === JSON.stringify(displayTags);
+
+        if(scalarUnchanged && tagsUnchanged) {
 
           res.json({ key, message: "No changes to save.", success: true });
 
@@ -1582,7 +1672,8 @@ export function setupChannelRoutes(app: Express): void {
         }
 
         // Second check: compute a delta against the canonical predefined base. This determines whether the user's changes create a custom override or effectively
-        // revert the channel to predefined defaults. Changed fields store their new value; empty/undefined fields store null (explicit clear).
+        // revert the channel to predefined defaults. Changed fields store their new value; empty/undefined fields store null (explicit clear). Tags are handled
+        // separately from the scalar loop since they require array comparison.
         const delta: ChannelDelta = {};
         let hasChanges = false;
 
@@ -1597,8 +1688,20 @@ export function setupChannelRoutes(app: Express): void {
           }
         }
 
-        // Helper to check if form values match a given channel's properties.
-        const formMatchesChannel = (ch: Channel): boolean => Object.keys(formValues).every((field) => formValues[field] === channelValue(ch, field));
+        // Tags delta: compare the submitted tags against the predefined base's vocabulary-filtered tags. Using effective tags (not raw) ensures that editing an
+        // unrelated field while a predefined tag is deleted from the vocabulary doesn't spuriously bake the deletion into the channel's stored delta.
+        const predefinedEffectiveTags = getChannelEffectiveTags(predefinedBase);
+
+        if(JSON.stringify(tags) !== JSON.stringify(predefinedEffectiveTags)) {
+
+          delta.tags = (tags.length > 0) ? tags : null;
+          hasChanges = true;
+        }
+
+        // Helper to check if form values (scalars + tags) match a given channel's properties. Tags use vocabulary-filtered comparison so variant matching works
+        // correctly when predefined tags are deleted from the vocabulary.
+        const formMatchesChannel = (ch: Channel): boolean => Object.keys(formValues).every((field) => formValues[field] === channelValue(ch, field)) &&
+          (JSON.stringify(tags) === JSON.stringify(getChannelEffectiveTags(ch)));
 
         if(!hasChanges) {
 
@@ -1710,6 +1813,11 @@ export function setupChannelRoutes(app: Express): void {
           channel.channelNumber = parseInt(channelNumberStr, 10);
         }
 
+        if(tags.length > 0) {
+
+          channel.tags = tags;
+        }
+
         // Only store hdhrEnabled when explicitly disabled. Absent = true (included in HDHR lineup by default).
         if(!hdhrEnabled) {
 
@@ -1753,6 +1861,355 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.error("Failed to save channel: %s.", formatError(error));
       res.status(500).json({ message: "Failed to save channel: " + formatError(error), success: false });
+    }
+  });
+
+  // Tag Management Endpoints.
+
+  // GET /config/tags - Returns the tag vocabulary and registry state. The active vocabulary is the computed merge of predefined tags (minus deleted) plus user
+  // tags. The registry contains the raw user state for the tag management UI.
+  app.get("/config/tags", (_req: Request, res: Response): void => {
+
+    res.json({
+
+      active: getActiveTagVocabulary(),
+      predefined: [...PREDEFINED_TAGS],
+      registry: getTagRegistry(),
+      success: true
+    });
+  });
+
+  // POST /config/tags - Create a new user tag. Validates the tag name (lowercase alphanumeric + hyphens, max 30 chars) and checks for duplicates against the
+  // active vocabulary and deleted predefined tags (which should be restored, not re-created).
+  app.post("/config/tags", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { tag?: string };
+      const tag = typeof body.tag === "string" ? body.tag.trim().toLowerCase() : "";
+
+      if(tag.length === 0) {
+
+        res.status(400).json({ error: "Tag name is required.", success: false });
+
+        return;
+      }
+
+      if(tag.length > 30) {
+
+        res.status(400).json({ error: "Tag name must be 30 characters or less.", success: false });
+
+        return;
+      }
+
+      if(!(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/).test(tag)) {
+
+        res.status(400).json({ error: "Tag name must start and end with a letter or number, and contain only lowercase letters, numbers, and hyphens.", success: false });
+
+        return;
+      }
+
+      // Check if the tag already exists in the active vocabulary.
+      const vocabulary = new Set(getActiveTagVocabulary());
+
+      if(vocabulary.has(tag)) {
+
+        res.status(409).json({ error: "Tag '" + tag + "' already exists.", success: false });
+
+        return;
+      }
+
+      // Check if the tag is a deleted predefined tag — the user should restore it instead of creating a duplicate.
+      const registry = getTagRegistry();
+
+      if(registry.deletedTags.includes(tag)) {
+
+        res.status(409).json({ error: "Tag '" + tag + "' is a deleted predefined tag. Use restore instead of creating a new one.", success: false });
+
+        return;
+      }
+
+      // Add the tag to the user registry and persist. No channels are affected (new tag has no assignments yet).
+      registry.tags.push(tag);
+      setTagRegistry(registry);
+
+      await saveTagRegistry();
+
+      LOG.info("Created tag: %s.", tag);
+
+      res.json({
+
+        active: getActiveTagVocabulary(), filterContent: generateTagFilterContent(), modalBody: generateTagManagerBody(),
+        registry: getTagRegistry(), success: true
+      });
+    } catch(error) {
+
+      LOG.error("Failed to create tag: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to create tag: " + formatError(error), success: false });
+    }
+  });
+
+  // DELETE /config/tags/:tag - Delete a tag from the vocabulary and cascade to all channel assignments. For predefined tags, the tag is added to deletedTags. For
+  // user-created tags, the tag is removed from the user registry. In both cases, the tag is stripped from every channel that has it — predefined channels via delta
+  // override, user channels via direct modification. This ensures re-creating a tag with the same name starts fresh with no ghost assignments.
+  app.delete("/config/tags/:tag", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const tag = (req.params as { tag?: string }).tag?.toLowerCase() ?? "";
+
+      if(tag.length === 0) {
+
+        res.status(400).json({ error: "Tag name is required.", success: false });
+
+        return;
+      }
+
+      const registry = getTagRegistry();
+      const isPredefined = PREDEFINED_TAGS.includes(tag);
+      const isUserTag = registry.tags.includes(tag);
+
+      if(!isPredefined && !isUserTag) {
+
+        res.status(404).json({ error: "Tag '" + tag + "' not found.", success: false });
+
+        return;
+      }
+
+      if(isPredefined) {
+
+        // Already deleted — no-op, return current state without unnecessary I/O.
+        if(registry.deletedTags.includes(tag)) {
+
+          res.json({
+
+            active: getActiveTagVocabulary(), filterContent: generateTagFilterContent(), modalBody: generateTagManagerBody(),
+            registry: getTagRegistry(), success: true
+          });
+
+          return;
+        }
+
+        registry.deletedTags.push(tag);
+      } else {
+
+        // Remove from user tags.
+        registry.tags = registry.tags.filter((t) => t !== tag);
+      }
+
+      setTagRegistry(registry);
+
+      // Cascade: strip the deleted tag from all channel assignments. transformChannelTags handles loading, delta normalization, and persistence.
+      const { affectedKeys, error } = await transformChannelTags(
+        (entry) => entry.channel.tags?.includes(tag) === true,
+        (tags) => tags.filter((t) => t !== tag)
+      );
+
+      if(error) {
+
+        res.status(400).json({ error, success: false });
+
+        return;
+      }
+
+      LOG.info("Deleted tag '%s' from vocabulary and %d channel assignments.", tag, affectedKeys.length);
+
+      const profiles = getProfiles();
+
+      res.json({
+
+        active: getActiveTagVocabulary(),
+        filterContent: generateTagFilterContent(), modalBody: generateTagManagerBody(),
+        patch: (affectedKeys.length > 0) ? buildChannelTablePatch(affectedKeys, profiles) : undefined,
+        registry: getTagRegistry(),
+        success: true
+      });
+    } catch(error) {
+
+      LOG.error("Failed to delete tag: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to delete tag: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/tags/restore - Restore a previously deleted predefined tag. Removes it from deletedTags so it reappears in the active vocabulary, then
+  // cascade-restores the tag on predefined channels whose definition includes it. This reverses the cascade delete — predefined channels go back to their default
+  // tag assignments. User channels are not affected (their tag assignments were permanently removed during cascade delete with no source of truth to restore from).
+  app.post("/config/tags/restore", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { tag?: string };
+      const tag = typeof body.tag === "string" ? body.tag.trim().toLowerCase() : "";
+
+      if(tag.length === 0) {
+
+        res.status(400).json({ error: "Tag name is required.", success: false });
+
+        return;
+      }
+
+      const registry = getTagRegistry();
+
+      if(!registry.deletedTags.includes(tag)) {
+
+        res.status(404).json({ error: "Tag '" + tag + "' is not a deleted predefined tag.", success: false });
+
+        return;
+      }
+
+      registry.deletedTags = registry.deletedTags.filter((t) => t !== tag);
+      setTagRegistry(registry);
+
+      // Cascade-restore: add the tag back to predefined channels whose definition includes it but whose current resolved tags don't (stripped during cascade
+      // delete). transformChannelTags handles loading, delta normalization, and persistence. The normalizer strips the tags delta when the result matches the
+      // predefined definition, cleanly reverting the channel to its default state.
+      const { affectedKeys, error } = await transformChannelTags(
+        (entry) => {
+
+          const predefined = getPredefinedChannel(entry.key);
+
+          return (predefined?.tags?.includes(tag) === true) && (entry.channel.tags?.includes(tag) !== true);
+        },
+        (tags) => [ ...tags, tag ]
+      );
+
+      if(error) {
+
+        res.status(400).json({ error, success: false });
+
+        return;
+      }
+
+      LOG.info("Restored predefined tag '%s' on %d channels.", tag, affectedKeys.length);
+
+      const profiles = getProfiles();
+
+      res.json({
+
+        active: getActiveTagVocabulary(),
+        filterContent: generateTagFilterContent(), modalBody: generateTagManagerBody(),
+        patch: (affectedKeys.length > 0) ? buildChannelTablePatch(affectedKeys, profiles) : undefined,
+        registry: getTagRegistry(),
+        success: true
+      });
+    } catch(error) {
+
+      LOG.error("Failed to restore tag: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to restore tag: " + formatError(error), success: false });
+    }
+  });
+
+  // POST /config/tags/rename - Rename a tag atomically across the vocabulary and all channel assignments. For predefined tags, the old name is added to
+  // deletedTags and the new name is added to user tags. For user tags, the old name is replaced with the new name. All channels with the old tag get the
+  // new tag substituted in their stored data (predefined channels via delta, user channels via direct modification).
+  app.post("/config/tags/rename", async (req: Request, res: Response): Promise<void> => {
+
+    try {
+
+      const body = req.body as { newTag?: string; oldTag?: string };
+      const oldTag = typeof body.oldTag === "string" ? body.oldTag.trim().toLowerCase() : "";
+      const newTag = typeof body.newTag === "string" ? body.newTag.trim().toLowerCase() : "";
+
+      if(!oldTag || !newTag) {
+
+        res.status(400).json({ error: "Both old and new tag names are required.", success: false });
+
+        return;
+      }
+
+      if(oldTag === newTag) {
+
+        res.status(400).json({ error: "New tag name must differ from the old name.", success: false });
+
+        return;
+      }
+
+      if(!(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/).test(newTag)) {
+
+        res.status(400).json({
+
+          error: "Tag name must start and end with a letter or number, and contain only lowercase letters, numbers, and hyphens.", success: false
+        });
+
+        return;
+      }
+
+      if(newTag.length > 30) {
+
+        res.status(400).json({ error: "Tag name must be 30 characters or less.", success: false });
+
+        return;
+      }
+
+      // Validate old tag exists in the active vocabulary.
+      const vocabulary = new Set(getActiveTagVocabulary());
+
+      if(!vocabulary.has(oldTag)) {
+
+        res.status(404).json({ error: "Tag '" + oldTag + "' not found.", success: false });
+
+        return;
+      }
+
+      // Validate new tag doesn't already exist.
+      if(vocabulary.has(newTag)) {
+
+        res.status(409).json({ error: "Tag '" + newTag + "' already exists.", success: false });
+
+        return;
+      }
+
+      // Update the tag registry: replace old with new in the appropriate list.
+      const registry = getTagRegistry();
+      const oldIsPredefined = PREDEFINED_TAGS.includes(oldTag);
+
+      if(oldIsPredefined) {
+
+        // Predefined tag: "delete" the old (add to deletedTags) and create the new as a user tag.
+        if(!registry.deletedTags.includes(oldTag)) {
+
+          registry.deletedTags.push(oldTag);
+        }
+
+        registry.tags.push(newTag);
+      } else {
+
+        // User tag: replace in the user tags list.
+        registry.tags = registry.tags.map((t) => (t === oldTag) ? newTag : t);
+      }
+
+      setTagRegistry(registry);
+
+      // Cascade: substitute the old tag with the new tag across all channel assignments. transformChannelTags handles loading, delta normalization, and persistence.
+      const { affectedKeys, error } = await transformChannelTags(
+        (entry) => entry.channel.tags?.includes(oldTag) === true,
+        (tags) => tags.map((t) => (t === oldTag) ? newTag : t)
+      );
+
+      if(error) {
+
+        res.status(400).json({ error, success: false });
+
+        return;
+      }
+
+      LOG.info("Renamed tag '%s' to '%s' across %d channels.", oldTag, newTag, affectedKeys.length);
+
+      const profiles = getProfiles();
+
+      res.json({
+
+        active: getActiveTagVocabulary(),
+        filterContent: generateTagFilterContent(),
+        modalBody: generateTagManagerBody(),
+        patch: (affectedKeys.length > 0) ? buildChannelTablePatch(affectedKeys, profiles) : undefined,
+        registry: getTagRegistry(),
+        success: true
+      });
+    } catch(error) {
+
+      LOG.error("Failed to rename tag: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to rename tag: " + formatError(error), success: false });
     }
   });
 }

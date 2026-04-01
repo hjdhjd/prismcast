@@ -406,6 +406,20 @@ export function generateSharedUtilitiesScript(): string {
     "      if(hcount) hcount.textContent = hc.enabled + ' of ' + hc.total;",
     "    }",
 
+    // Apply tag bulk toggle counts from server-computed values. Each tag's checkbox and count label are updated to reflect the current state.
+    "    if(patch.tagCounts) {",
+    "      for(var tagName in patch.tagCounts) {",
+    "        var tc = patch.tagCounts[tagName];",
+    "        var ttoggle = document.querySelector('.tag-bulk-toggle[data-tag=\"' + tagName + '\"]');",
+    "        var tcount = document.querySelector('[data-tag-count=\"' + tagName + '\"]');",
+    "        if(ttoggle) {",
+    "          ttoggle.checked = (tc.count === tc.total) && (tc.total > 0);",
+    "          ttoggle.indeterminate = (tc.count > 0) && (tc.count < tc.total);",
+    "        }",
+    "        if(tcount) tcount.textContent = tc.count + ' of ' + tc.total;",
+    "      }",
+    "    }",
+
     // Apply channel logos from a logo map (key → URL). Sets data-logo attributes on matching rows so processChannelLogos can render the images.
     "    if(patch.logos) {",
     "      for(var key in patch.logos) {",

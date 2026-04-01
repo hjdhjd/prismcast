@@ -10,7 +10,7 @@
 export type Nullable<T> = T | null;
 
 // Sortable column field names for the channels table.
-export type ChannelSortField = "channelNumber" | "channelSelector" | "hdhrEnabled" | "key" | "name" | "profile" | "provider" | "stationId";
+export type ChannelSortField = "channelNumber" | "channelSelector" | "hdhrEnabled" | "key" | "name" | "profile" | "provider" | "stationId" | "tags";
 
 // Sort direction for the channels table.
 export type SortDirection = "asc" | "desc";
