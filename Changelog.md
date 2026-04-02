@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.8.0 (2026-04-02)
+  * New feature: channel tags — organize channels into groups like "sports", "news", "hbo", or "starz" for filtered playlists and channel management. Tags can be created, renamed, and deleted from the Manage Tags modal, assigned to channels via Quick Actions or inline editing, and used to filter the playlist with `?tag=` query parameters. Predefined channels ship with tags pre-assigned, including premium brand tags (HBO, Showtime, Starz) for subscription-based filtering. When the tag column filter is active, a playlist hint icon appears with the corresponding Channels DVR playlist URL ready to copy.
+  * New feature: capture codec selection — control which codecs are eligible for browser capture. HEVC is used by default when GPU hardware encoding is available; H.264 is always enabled as the universal baseline. Users who experience issues with HEVC can disable it from the streaming settings.
+  * Improvement: expanded predefined channel coverage.
+  * Fix: Fox local affiliate channels defaulting to Cox instead of fox.com as the canonical provider.
+  * Housekeeping.
+
 ## 1.7.0 (2026-03-27)
   * New feature: hardware-accelerated HEVC capture — when PrismCast detects that Chrome is using GPU-accelerated rendering, it automatically captures in HEVC/H.265 instead of H.264, delivering higher quality at lower bitrates with significantly reduced CPU usage. No configuration needed — detection and switching are fully automatic and seamless.
   * New feature: Cox Contour TV provider support with channel discovery. Thanks to @babsonnexus for the collaboration.
