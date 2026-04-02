@@ -2,6 +2,8 @@
  *
  * table.ts: Channel table rendering for the PrismCast configuration interface.
  */
+import { ICON_BOLT, ICON_COPY, ICON_DELETE, ICON_DISABLE, ICON_EDIT, ICON_ENABLE, ICON_FILTER, ICON_HEALTH, ICON_LINK, ICON_LOGIN, ICON_MANAGE,
+  ICON_REVERT, ICON_TRANSFER } from "../../icons.js";
 import { compareChannelSort, getAllProviderTags, getAuthDomainForChannel, getChannelProviderLabel, getChannelProviderTags, getChannelSortKey,
   getEnabledProviders, getProviderGroup, hasMultipleProviders, isChannelAvailableByProvider, isProviderTagEnabled, resolvePredefinedVariant,
   resolveProviderKey } from "../../../config/providers.js";
@@ -37,32 +39,6 @@ function providerDisplaySpan(name: string, domain?: string, iconUrl?: string, sm
   return "<span class=\"provider-display\"" + domainAttr + iconAttr + sizeAttr + ">" + escapeHtml(name) + "</span>";
 }
 
-// SVG icon constants for channel action buttons. Each icon is 14x14px with a 16x16 viewBox, stroke-based with currentColor, and uses round line caps/joins.
-
-export const ICON_EDIT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
-  "stroke-linejoin=\"round\"><path d=\"M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z\"/></svg>";
-
-const ICON_LOGIN = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
-  "stroke-linejoin=\"round\"><path d=\"M6.5 2H3.5a1 1 0 00-1 1v10a1 1 0 001 1h3\"/><path d=\"M10.5 11l3-3-3-3\"/><path d=\"M13.5 8H6.5\"/></svg>";
-
-export const ICON_DELETE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
-  "stroke-linejoin=\"round\"><path d=\"M2 4h12\"/><path d=\"M5 4V2.5a.5.5 0 01.5-.5h5a.5.5 0 01.5.5V4\"/><path d=\"M12.5 4l-.5 9.5a1 1 0 01-1 .5H5a1 1 0 " +
-  "01-1-.5L3.5 4\"/></svg>";
-
-const ICON_ENABLE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
-  "stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M5.5 8l2 2 3.5-4\"/></svg>";
-
-const ICON_DISABLE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
-  "stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M5.5 5.5l5 5\"/></svg>";
-
-const ICON_HEALTH = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
-  "stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"1,9 4,9 6,4 8,12 10,7 12,9 15,9\"/></svg>";
-
-const ICON_REVERT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
-  "stroke-linejoin=\"round\"><path d=\"M3 8a5 5 0 1 1 1.5 3.5\"/><path d=\"M3 4v4h4\"/></svg>";
-
-const ICON_COPY = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
-  "stroke-linejoin=\"round\"><rect x=\"5\" y=\"5\" width=\"9\" height=\"9\" rx=\"1\"/><path d=\"M5 11H3a1 1 0 01-1-1V3a1 1 0 011-1h7a1 1 0 011 1v2\"/></svg>";
 
 // Optional column definitions for the channels table. These columns can be shown or hidden by the user via the column picker. The order here determines the
 // column order in the table, slotted between Provider and Actions.
@@ -1318,15 +1294,14 @@ export function generateProviderFilterToolbar(): string {
 
   lines.push("<div class=\"provider-toolbar\">");
 
-  // Provider filter dropdown and chips.
+  // Provider filter dropdown and chips. The button follows the toolbar dropdown pattern: icon + label + caret in a single button.
   lines.push("<div class=\"toolbar-group\">");
-  lines.push("<span class=\"toolbar-label\">Providers:</span>");
   lines.push("<div class=\"dropdown provider-dropdown\">");
 
   const buttonText = hasFilter ? "Filtered" : "All Providers";
 
-  lines.push("<button type=\"button\" class=\"btn btn-sm\" id=\"provider-filter-btn\" title=\"Filter channels by streaming provider\" " +
-    "onclick=\"toggleDropdown(this)\">" + buttonText + " &#9662;</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-sm toolbar-dropdown-btn\" id=\"provider-filter-btn\" " +
+    "title=\"Filter channels by streaming provider\" onclick=\"toggleDropdown(this)\">" + ICON_FILTER + " " + buttonText + " &#9662;</button>");
   lines.push("<div class=\"dropdown-menu provider-dropdown-menu\">");
 
   for(const tagInfo of allTags) {
@@ -1411,17 +1386,6 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // inline SVG icon + label + chevron for visual discoverability. Grouped menus reduce visual clutter and separate channel management from data I/O and bulk
   // operations.
 
-  // Toolbar-level SVG icons (14x14, stroke-based, currentColor). Defined here since they're toolbar-specific and not reused elsewhere.
-  const ICON_MANAGE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
-    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"1.5\" y=\"5\" width=\"13\" height=\"9.5\" rx=\"1.5\"/>" +
-    "<path d=\"M7 4.5L3.5 1\"/><path d=\"M9 4.5L12.5 1\"/></svg>";
-
-  const ICON_TRANSFER = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
-    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 5h10M10 2l3 3-3 3\"/><path d=\"M13 11H3M6 8l-3 3 3 3\"/></svg>";
-
-  const ICON_BOLT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
-    "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M9 1.5L4 9h4l-1 5.5L12 7H8l1-5.5z\"/></svg>";
-
   lines.push("<div class=\"channel-toolbar\">");
   lines.push("<div class=\"toolbar-group\">");
 
@@ -1430,29 +1394,30 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm toolbar-dropdown-btn\" title=\"Add, browse, or set up channels\" " +
     "onclick=\"toggleDropdown(this)\">" + ICON_MANAGE + " Manage Channels &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
-  // Dropdown item icons (14x14, stroke-based, tinted for visual context). Each icon uses a distinct color to differentiate menu items at a glance.
-  const ICON_ADD = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#22a563\" stroke-width=\"1.5\" " +
+  // Dropdown item icons: tinted variants of the shared icons for visual differentiation in menu items. Each uses a distinct color so items are scannable at
+  // a glance. These are local to this function because the tint colors are context-specific to this dropdown.
+  const TINTED_ADD = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#22a563\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 3v10M3 8h10\"/></svg>";
 
-  const ICON_BROWSE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#5b8def\" stroke-width=\"1.5\" " +
+  const TINTED_BROWSE = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#5b8def\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"2\" y=\"2\" width=\"5\" height=\"5\" rx=\"1\"/><rect x=\"9\" y=\"2\" width=\"5\" " +
     "height=\"5\" rx=\"1\"/><rect x=\"2\" y=\"9\" width=\"5\" height=\"5\" rx=\"1\"/><rect x=\"9\" y=\"9\" width=\"5\" height=\"5\" rx=\"1\"/></svg>";
 
-  const ICON_SETUP = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#9b8cd8\" stroke-width=\"1.5\" " +
+  const TINTED_SETUP = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#9b8cd8\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"8\" cy=\"8\" r=\"2.5\"/><path d=\"M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 " +
     "3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4\"/></svg>";
 
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); " +
-    "document.getElementById('add-channel-form').style.display='block';\">" + ICON_ADD + " Add Channel</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openBrowseModal()\">" + ICON_BROWSE +
-    " Browse Provider Channels</div>");
-  const ICON_TAG = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#9b59b6\" stroke-width=\"1.5\" " +
+  const TINTED_TAG = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#9b59b6\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1.5 8.7V2.5a1 1 0 011-1h6.2a1 1 0 01.7.3l5.1 5.1a1 1 0 010 1.4l-5.5 5.5a1 " +
     "1 0 01-1.4 0L1.8 9.4a1 1 0 01-.3-.7z\"/><circle cx=\"5\" cy=\"5\" r=\"1\"/></svg>";
 
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openTagManager()\">" + ICON_TAG +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); " +
+    "document.getElementById('add-channel-form').style.display='block';\">" + TINTED_ADD + " Add Channel</div>");
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openBrowseModal()\">" + TINTED_BROWSE +
+    " Browse Provider Channels</div>");
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openTagManager()\">" + TINTED_TAG +
     " Manage Tags</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openSetupWizard()\">" + ICON_SETUP +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openSetupWizard()\">" + TINTED_SETUP +
     " Provider Setup</div>");
   lines.push("</div>");
   lines.push("</div>");
@@ -1462,20 +1427,20 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-dropdown-btn\" title=\"Import or export channel data\" " +
     "onclick=\"toggleDropdown(this)\">" + ICON_TRANSFER + " Import / Export &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
-  const ICON_IMPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#5b8def\" stroke-width=\"1.5\" " +
+  const TINTED_IMPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#5b8def\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 2v8M5 7l3 3 3-3\"/><path d=\"M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2\"/></svg>";
 
-  const ICON_EXPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#22a563\" stroke-width=\"1.5\" " +
+  const TINTED_EXPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#22a563\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 10V2M5 5l3-3 3 3\"/><path d=\"M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2\"/></svg>";
 
   lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); document.getElementById('import-channels-file').click()\">" +
-    ICON_IMPORT + " Import Channels (JSON)</div>");
+    TINTED_IMPORT + " Import Channels (JSON)</div>");
   lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); document.getElementById('import-m3u-file').click()\">" +
-    ICON_IMPORT + " Import M3U Playlist</div>");
+    TINTED_IMPORT + " Import M3U Playlist</div>");
   lines.push("<label class=\"dropdown-option\"><input type=\"checkbox\" id=\"m3u-replace-duplicates\"> Replace duplicates on M3U import</label>");
   lines.push("<div class=\"dropdown-divider\"></div>");
   lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); exportChannels()\">" +
-    ICON_EXPORT + " Export Channels (JSON)</div>");
+    TINTED_EXPORT + " Export Channels (JSON)</div>");
   lines.push("</div>");
   lines.push("</div>");
   lines.push("<input type=\"file\" id=\"import-m3u-file\" accept=\".m3u,.m3u8\" style=\"display: none;\" onchange=\"importM3U(this)\">");
@@ -1820,26 +1785,18 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     // shared with the tag CRUD incremental update path.
     if(hdr.field === "tags") {
 
-      const tagFilterIcon = "<svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
-        "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 2h14l-5 6v5l-4 2V8z\"/></svg>";
-
       lines.push("<div class=\"dropdown tag-filter-dropdown\" style=\"display: inline;\">");
       lines.push("<button type=\"button\" class=\"btn-icon btn-tag-filter\" title=\"Filter by tag\" " +
-        "onclick=\"event.stopPropagation(); toggleDropdown(this)\">" + tagFilterIcon + "</button>");
+        "onclick=\"event.stopPropagation(); toggleDropdown(this)\">" + ICON_FILTER + "</button>");
       lines.push("<div class=\"dropdown-menu\" id=\"tag-filter-menu\">" + generateTagFilterContent() + "</div>");
       lines.push("</div>");
 
       // Playlist hint icon. Hidden by default, shown by applyTagColumnFilter() when the filter is active. Clicking opens a popover with the playlist URL
       // that corresponds to the current tag filter, so users can copy it for Channels DVR configuration.
-      const playlistHintIcon = "<svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
-        "stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
-        "<path d=\"M6 10a3.5 3.5 0 0 1 0-5l2-2a3.5 3.5 0 0 1 5 5l-1 1\"/>" +
-        "<path d=\"M10 6a3.5 3.5 0 0 1 0 5l-2 2a3.5 3.5 0 0 1-5-5l1-1\"/></svg>";
-
       lines.push("<div class=\"dropdown\" style=\"display: inline;\">");
       lines.push("<button type=\"button\" class=\"btn-icon btn-playlist-hint\" id=\"playlist-hint-btn\" " +
         "title=\"Playlist URL for this filter\" style=\"display: none;\" " +
-        "onclick=\"event.stopPropagation(); showPlaylistHint(this)\">" + playlistHintIcon + "</button>");
+        "onclick=\"event.stopPropagation(); showPlaylistHint(this)\">" + ICON_LINK + "</button>");
       lines.push("<div class=\"dropdown-menu playlist-hint-menu\"></div>");
       lines.push("</div>");
     }

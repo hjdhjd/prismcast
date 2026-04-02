@@ -1160,22 +1160,13 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Inline tag edit portal — a single shared dropdown portaled to <body> on first use. Follows the toggleDropdown pattern in shared.ts: portal to body, position
-    // fixed, .show class, viewport edge clamping. Dismissal is handled by the existing document click handler (recognizes .dropdown on the td and .dropdown-menu on
-    // the portal) and closeDropdowns() (removes .show). The batch-save lifecycle layers on top: on open, capture the original state. On close (detected by the next
-    // open or by observing .show removal), compare and save if changed.
+    // Inline tag edit portal — uses toggleDropdown with lifecycle hooks for batch-save behavior. The before-close hook saves pending changes whenever the
+    // dropdown closes (click-outside, scroll, resize, or next toggle). The onOpen hook populates checkbox state from the cell's data-tags attribute.
     "  var activeTagDropdown = null;",
     "  var tagPortal = null;",
 
     "  function getTagPortal() {",
-    "    if(!tagPortal) {",
-    "      tagPortal = document.getElementById('inline-tag-portal');",
-    "      if(tagPortal) {",
-    "        document.body.appendChild(tagPortal);",
-    "        tagPortal.style.position = 'fixed';",
-    "        tagPortal.style.marginTop = '0';",
-    "      }",
-    "    }",
+    "    if(!tagPortal) { tagPortal = document.getElementById('inline-tag-portal'); }",
     "    return tagPortal;",
     "  }",
 
@@ -1205,14 +1196,8 @@ export function generateConfigSubtabScript(): string {
     "    });",
     "  }",
 
-    // Wrap window.closeDropdowns to save pending tag changes before closing all dropdowns. This ensures click-outside, scroll, and resize dismissal all trigger
-    // the batch save. The wrap is on window.closeDropdowns (the global reference) so it applies to all callers — the document click handler, toggleDropdown,
-    // and any inline onclick that calls closeDropdowns().
-    "  var origCloseDropdowns = window.closeDropdowns;",
-    "  window.closeDropdowns = function() {",
-    "    saveTagDropdownIfChanged();",
-    "    origCloseDropdowns();",
-    "  };",
+    // Register the batch-save hook so all close paths (click-outside, scroll, resize, next toggle) trigger save.
+    "  closeDropdowns.addHook(saveTagDropdownIfChanged);",
 
     "  window.toggleInlineTagDropdown = function(td) {",
     "    var portal = getTagPortal();",
@@ -1220,7 +1205,7 @@ export function generateConfigSubtabScript(): string {
     "    var isOpen = activeTagDropdown && (activeTagDropdown.td === td);",
     "    closeDropdowns();",
     "    if(isOpen) return;",
-    // Populate checkbox state from the cell's data-tags attribute.
+    // Populate checkbox state from the cell's data-tags attribute, then toggle the dropdown with the shared portal positioning.
     "    var currentTags = (td.getAttribute('data-tags') || '').split(',').filter(function(t) { return t.length > 0; });",
     "    var tagSet = {};",
     "    for(var i = 0; i < currentTags.length; i++) tagSet[currentTags[i]] = true;",
@@ -1228,19 +1213,8 @@ export function generateConfigSubtabScript(): string {
     "    for(var j = 0; j < checkboxes.length; j++) {",
     "      checkboxes[j].checked = !!tagSet[checkboxes[j].getAttribute('data-tag')];",
     "    }",
-    // Position below the cell with viewport edge clamping and above-cell flip — same logic as toggleDropdown in shared.ts.
-    "    portal.classList.add('show');",
-    "    var rect = td.getBoundingClientRect();",
-    "    var top = rect.bottom + 2;",
-    "    var left = rect.left;",
-    "    if(left + portal.offsetWidth > window.innerWidth - 4) left = rect.right - portal.offsetWidth;",
-    "    if(left < 4) left = 4;",
-    "    if(top + portal.offsetHeight > window.innerHeight - 4) top = rect.top - portal.offsetHeight - 2;",
-    "    portal.style.top = top + 'px';",
-    "    portal.style.left = left + 'px';",
+    "    toggleDropdown(td, { menu: portal });",
     "    activeTagDropdown = { key: td.getAttribute('data-key'), original: currentTags.sort().join(','), td: td };",
-    "    window.addEventListener('scroll', window.closeDropdowns, true);",
-    "    window.addEventListener('resize', window.closeDropdowns);",
     "  };",
 
     // Collect checked tag checkboxes into the hidden tags input for form submission. Called when any tag checkbox changes in the channel edit form.
@@ -1333,11 +1307,14 @@ export function generateConfigSubtabScript(): string {
     "    saveProviderFilter(enabledTags);",
     "  };",
 
-    // Update the provider filter button text.
+    // Update the provider filter button text. The filter icon SVG is inlined here because this runs client-side where the server's icon module is not available.
+    "  var filterIcon = '<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
+      "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 2h14l-5 6v5l-4 2V8z\"/></svg>';",
     "  function updateProviderFilterButton(enabledTags) {",
     "    var btn = document.getElementById('provider-filter-btn');",
-    "    if (!btn) return;",
-    "    btn.innerHTML = (enabledTags.length > 0) ? 'Filtered &#9662;' : 'All Providers &#9662;';",
+    "    if(!btn) return;",
+    "    var label = (enabledTags.length > 0) ? 'Filtered' : 'All Providers';",
+    "    btn.innerHTML = filterIcon + ' ' + label + ' &#9662;';",
     "  };",
 
     // Rebuild the provider chips from the enabled tags.
