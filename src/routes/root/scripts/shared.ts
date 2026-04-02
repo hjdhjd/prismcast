@@ -53,13 +53,17 @@ export function generateSharedUtilitiesScript(): string {
     "    toast.addEventListener('animationend', function() { if (toast.parentNode) toast.parentNode.removeChild(toast); });",
     "  }",
 
-    // Close all open dropdown menus and remove the scroll and resize listeners.
+    // Close all open dropdown menus, fire registered before-close hooks, and remove scroll/resize listeners. Hooks are registered via
+    // closeDropdowns.addHook(fn) for patterns that need to intercept close (e.g., batch-save on the inline tag editor).
+    "  var closeHooks = [];",
     "  function closeDropdowns() {",
+    "    for(var h = 0; h < closeHooks.length; h++) closeHooks[h]();",
     "    var menus = document.querySelectorAll('.dropdown-menu.show');",
-    "    for (var i = 0; i < menus.length; i++) menus[i].classList.remove('show');",
+    "    for(var i = 0; i < menus.length; i++) menus[i].classList.remove('show');",
     "    window.removeEventListener('scroll', closeDropdowns, true);",
     "    window.removeEventListener('resize', closeDropdowns);",
-    "  };",
+    "  }",
+    "  closeDropdowns.addHook = function(fn) { closeHooks.push(fn); };",
 
     "  window.closeDropdowns = closeDropdowns;",
 
@@ -82,31 +86,44 @@ export function generateSharedUtilitiesScript(): string {
     "    }",
     "  };",
 
-    // Toggle a dropdown menu open or closed. On first call for a given button, the menu is detached from its .dropdown parent and portaled to <body> with
-    // position: fixed. This allows the menu to escape overflow: auto containers like the channel table wrapper. On every open, the menu is positioned relative
-    // to the button's bounding rect, with edge-of-viewport clamping and above-button flip when it would extend below the viewport.
-    "  window.toggleDropdown = function(btn) {",
-    "    var menu = btn._portalMenu;",
-    "    var isOpen = menu && menu.classList.contains('show');",
-    "    closeDropdowns();",
-    "    if (isOpen) return;",
-    "    if (!menu) {",
-    "      menu = btn.nextElementSibling;",
-    "      if (!menu) return;",
-    "      btn._portalMenu = menu;",
-    "      document.body.appendChild(menu);",
-    "      menu.style.position = 'fixed';",
-    "      menu.style.marginTop = '0';",
-    "    }",
-    "    menu.classList.add('show');",
-    "    var rect = btn.getBoundingClientRect();",
+    // Layer 1: Portal positioning. Positions a menu element below an anchor with viewport edge clamping and above-anchor flip. Uses position: absolute with
+    // scroll offsets for reliable behavior at all browser zoom levels. The menu must be visible (display: block) for offsetWidth/offsetHeight measurement.
+    // This is the single source of truth for all portal positioning math.
+    "  function positionPortal(menu, anchor) {",
+    "    var rect = anchor.getBoundingClientRect();",
     "    var top = rect.bottom + 2;",
     "    var left = rect.left;",
-    "    if (left + menu.offsetWidth > window.innerWidth - 4) left = rect.right - menu.offsetWidth;",
-    "    if (left < 4) left = 4;",
-    "    if (top + menu.offsetHeight > window.innerHeight - 4) top = rect.top - menu.offsetHeight - 2;",
-    "    menu.style.top = top + 'px';",
-    "    menu.style.left = left + 'px';",
+    "    if(left + menu.offsetWidth > window.innerWidth - 4) left = rect.right - menu.offsetWidth;",
+    "    if(left < 4) left = 4;",
+    "    if(top + menu.offsetHeight > window.innerHeight - 4) top = rect.top - menu.offsetHeight - 2;",
+    "    var sx = window.scrollX || 0;",
+    "    var sy = window.scrollY || 0;",
+    "    menu.style.top = (top + sy) + 'px';",
+    "    menu.style.left = (left + sx) + 'px';",
+    "  }",
+
+    "  window.positionPortal = positionPortal;",
+
+    // Layer 2: Dropdown toggle with lifecycle hooks. Manages portal append, toggle state, scroll/resize dismissal, and optional lifecycle callbacks. The
+    // zero-argument form (toggleDropdown(btn)) works unchanged for standard dropdowns. The options form adds: menu (explicit menu element), onOpen (called
+    // after show but before positioning so content can be set and measured correctly for viewport clamping).
+    "  window.toggleDropdown = function(btn, opts) {",
+    "    var o = opts || {};",
+    "    var menu = btn._portalMenu || o.menu || btn.nextElementSibling;",
+    "    if(!menu) return;",
+    "    var isOpen = menu.classList.contains('show');",
+    "    closeDropdowns();",
+    "    if(isOpen) return;",
+    "    btn._portalMenu = menu;",
+    "    if(!menu._portaled) {",
+    "      document.body.appendChild(menu);",
+    "      menu.style.position = 'absolute';",
+    "      menu.style.marginTop = '0';",
+    "      menu._portaled = true;",
+    "    }",
+    "    menu.classList.add('show');",
+    "    if(o.onOpen) o.onOpen(menu);",
+    "    positionPortal(menu, btn);",
     "    window.addEventListener('scroll', closeDropdowns, true);",
     "    window.addEventListener('resize', closeDropdowns);",
     "  };",

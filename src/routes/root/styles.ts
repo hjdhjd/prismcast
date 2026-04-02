@@ -341,10 +341,12 @@ export function generateLandingPageStyles(): string {
 
     // Tag filter dropdown button in the column header. Sized to sit inline with the column label.
     ".btn-tag-filter { padding: 0 3px; margin-left: 4px; vertical-align: middle; opacity: 0.6; }",
+    ".btn-tag-filter svg { width: 12px; height: 12px; }",
     ".btn-tag-filter:hover { opacity: 1; }",
 
     // Playlist hint icon. Appears next to the tag filter funnel when the filter is active, providing the corresponding playlist URL for Channels DVR.
     ".btn-playlist-hint { padding: 0 3px; margin-left: 2px; vertical-align: middle; opacity: 0.6; color: var(--accent); }",
+    ".btn-playlist-hint svg { width: 12px; height: 12px; }",
     ".btn-playlist-hint:hover { opacity: 1; }",
     ".playlist-hint-content { padding: 10px 14px; max-width: 420px; }",
     ".playlist-hint-content p { margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.4; }",
@@ -357,7 +359,6 @@ export function generateLandingPageStyles(): string {
 
     // Inline editable cells. Cursor and hover indicate clickability. The inline input replaces the cell content during editing.
     ".editable-cell { cursor: pointer; }",
-    ".editable-cell:hover { background: var(--surface-hover); }",
     ".editable-cell input.inline-edit { width: 100%; padding: 2px 4px; font-size: 13px; border: 1px solid var(--interactive-primary); " +
       "border-radius: 3px; outline: none; background: var(--form-input-bg); color: var(--text-primary); box-sizing: border-box; }",
     ".no-provider-label { color: var(--text-tertiary); font-size: 12px; }",
@@ -366,7 +367,6 @@ export function generateLandingPageStyles(): string {
     // Provider filter toolbar layout.
     ".provider-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }",
     ".provider-toolbar .toolbar-group { display: flex; align-items: center; gap: 6px; }",
-    ".provider-toolbar .toolbar-label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }",
 
     // Provider dropdown multi-select.
     ".provider-dropdown-menu { min-width: 200px; max-height: 70vh; overflow-y: auto; }",
@@ -425,7 +425,7 @@ export function generateLandingPageStyles(): string {
     // JS tooltip styling. The tooltip element is appended to <body> and positioned via getBoundingClientRect() so it's immune to overflow and stacking contexts.
     // Only activated when the primary input can't hover (hover: none), targeting iPadOS where Safari doesn't show native title tooltips. On pure-touch
     // devices without a trackpad, the JS loads but mouseenter never fires so the tooltip stays hidden. Desktop (hover: hover) skips initialization entirely.
-    ".btn-icon-tooltip { position: fixed; padding: 4px 8px; border-radius: var(--radius-sm); background: var(--surface-overlay); color: var(--text-primary); ",
+    ".btn-icon-tooltip { position: absolute; padding: 4px 8px; border-radius: var(--radius-sm); background: var(--surface-overlay); color: var(--text-primary); ",
     "font-size: 12px; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.5s; z-index: 10000; ",
     "box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15); }",
     ".btn-icon-tooltip.visible { opacity: 1; transition: opacity 0.1s; }",

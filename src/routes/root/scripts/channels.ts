@@ -1427,16 +1427,14 @@ export function generateChannelsSubtabScript(): string {
     "    var url = location.origin + '/playlist?tag=' + tagParam;",
     "    var label = useExclude ? 'all channels except those tagged <strong>' + unchecked.join(', ') + '</strong>'",
     "      : 'channels tagged <strong>' + checked.join(', ') + '</strong>';",
-    "    var menu = btn._portalMenu || btn.nextElementSibling;",
-    "    if(menu) {",
+    "    toggleDropdown(btn, { onOpen: function(menu) {",
     "      menu.innerHTML = '<div class=\"playlist-hint-content\">' +",
     "        '<p>Playlist URL for Channels DVR: ' + label + '.</p>' +",
     "        '<div class=\"playlist-hint-url\">' +",
     "        '<code>' + url + '</code>' +",
     "        '<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"copyPlaylistHintUrl()\">Copy</button>' +",
     "        '</div></div>';",
-    "    }",
-    "    toggleDropdown(btn);",
+    "    }});",
     "  };",
 
     // Copy the playlist hint URL to the clipboard. Thin wrapper that reads the URL from the popover's code element and delegates to the shared copyToClipboard utility.

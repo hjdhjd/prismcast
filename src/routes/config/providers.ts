@@ -4,7 +4,7 @@
  */
 import type { DomainConfig, SiteProfile } from "../../types/index.js";
 import type { Express, Request, Response } from "express";
-import { ICON_DELETE, ICON_EDIT } from "./channels/index.js";
+import { ICON_ADD, ICON_DELETE, ICON_EDIT, ICON_EXPORT, ICON_IMPORT } from "../icons.js";
 import { LOG, escapeHtml, formatError, sanitizeString, stringifySorted } from "../../utils/index.js";
 import { deleteUserProfile, getUserDomains, getUserProfiles, saveUserProfiles, validateDomain, validateProfile,
   validateProfileKey } from "../../config/userProfiles.js";
@@ -58,16 +58,16 @@ export function generateCustomProfilesPanel(): string {
   lines.push("specific behaviors like channel selection strategy or playback controls.</p>");
   lines.push("</div>");
 
-  // Toolbar with provider operations.
+  // Toolbar with provider operations. Icons imported from the shared icon module.
   lines.push("<div class=\"channel-toolbar\">");
   lines.push("<div class=\"toolbar-group\">");
-  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"openWizard()\">New Profile</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startProviderImport()\">Import</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"openWizard()\">" + ICON_ADD + " New Profile</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startProviderImport()\">" + ICON_IMPORT + " Import</button>");
 
   // Only show export when there are user profiles to export.
   if(Object.keys(userProfiles).length > 0) {
 
-    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startProviderExport()\">Export</button>");
+    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startProviderExport()\">" + ICON_EXPORT + " Export</button>");
   }
 
   lines.push("</div>");
