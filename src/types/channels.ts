@@ -4,74 +4,74 @@
  */
 import type { Nullable } from "./shared.js";
 
-/* Nested channel definitions separate channel identity from provider affiliation. A ChannelDefinition holds identity fields (name, stationId) and a providers
- * map keyed by provider slug. The "site" key represents the channel's own website. At module load, the flattener compiles nested definitions into the flat
+/* Nested channel definitions separate channel identity from service affiliation. A ChannelDefinition holds identity fields (name, stationId) and a services
+ * map keyed by service slug. The "site" key represents the channel's own website. At module load, the flattener compiles nested definitions into the flat
  * ChannelMap consumed by the rest of the codebase. See channels/index.ts for the flattener and canonical resolution rules.
  */
 
 /**
- * Nested channel definition separating identity from provider affiliation. The authoring format for predefined channels in channels/index.ts. The flattener
- * compiles these into flat Channel entries keyed as "{canonical}" (for the canonical provider) and "{canonical}-{slug}" (for each additional provider).
+ * Nested channel definition separating identity from service affiliation. The authoring format for predefined channels in channels/index.ts. The flattener
+ * compiles these into flat Channel entries keyed as "{canonical}" (for the canonical service) and "{canonical}-{slug}" (for each additional service).
  */
 export interface ChannelDefinition {
 
-  // Numeric channel number for guide matching. Inherited by all provider variants unless overridden on the variant.
+  // Numeric channel number for guide matching. Inherited by all service variants unless overridden on the variant.
   channelNumber?: number;
 
   // Human-readable channel name displayed in the M3U playlist and channel guide. Required for all channel definitions.
   name: string;
 
   // Gracenote station ID for the Pacific timezone feed. When present, the Pacific generator auto-creates a sibling ChannelDefinition with this station ID,
-  // inheriting the providers map (filtered for East/West-specific channelSelectors).
+  // inheriting the services map (filtered for East/West-specific channelSelectors).
   pacificStationId?: string;
 
-  // Provider variants keyed by provider slug. The "site" key represents the channel's own website and always wins as canonical when present. When "site" is
-  // absent, the provider whose key sorts first alphabetically becomes the canonical. Provider keys are sorted by computation, not source ordering.
-  providers: Record<string, ProviderVariant>;
+  // Service variants keyed by service slug. The "site" key represents the channel's own website and always wins as canonical when present. When "site" is
+  // absent, the service whose key sorts first alphabetically becomes the canonical. Service keys are sorted by computation, not source ordering.
+  services: Record<string, ServiceVariant>;
 
-  // Gracenote station ID for electronic program guide integration. Inherited by all provider variants.
+  // Gracenote station ID for electronic program guide integration. Inherited by all service variants.
   stationId?: string;
 
-  // Organizational tags for playlist filtering. Inherited by all provider variants. Tags are lowercase alphanumeric strings with hyphens, managed via the tag
+  // Organizational tags for playlist filtering. Inherited by all service variants. Tags are lowercase alphanumeric strings with hyphens, managed via the tag
   // registry. Channels can have multiple tags (e.g., ["sports", "local"]). Used by the ?tag= playlist query parameter for custom playlist generation.
   tags?: string[];
 
-  // EPG time shift in hours. Inherited by all provider variants.
+  // EPG time shift in hours. Inherited by all service variants.
   tvgShift?: number;
 }
 
 /**
- * A single provider's streaming configuration within a ChannelDefinition. Each provider variant specifies how to reach the channel on that provider's platform.
- * Optional fields override the parent ChannelDefinition's values when this variant is the active provider.
+ * A single service's streaming configuration within a ChannelDefinition. Each service variant specifies how to reach the channel on that service's platform.
+ * Optional fields override the parent ChannelDefinition's values when this variant is the active service.
  */
-export interface ProviderVariant {
+export interface ServiceVariant {
 
-  // Override for channel number on this specific provider.
+  // Override for channel number on this specific service.
   channelNumber?: number;
 
-  // Provider-specific channel identifier for multi-channel players. This is always provider-specific (e.g., Fox uses station codes "FOXD2C" while Sling uses
+  // Service-specific channel identifier for multi-channel players. This is always service-specific (e.g., Fox uses station codes "FOXD2C" while Sling uses
   // guide names "FOX") and is never inherited from the parent ChannelDefinition.
   channelSelector?: string;
 
-  // CSS selector for an intermittent modal or overlay to dismiss on this provider.
+  // CSS selector for an intermittent modal or overlay to dismiss on this service.
   dismissSelector?: string;
 
-  // Profile name override for this provider. Overrides URL-based auto-detection.
+  // Profile name override for this service. Overrides URL-based auto-detection.
   profile?: string;
 
-  // Display name override for the provider selection dropdown on this specific variant.
-  provider?: string;
+  // Display name override for the service selection dropdown on this specific variant.
+  service?: string;
 
-  // CSS selector to narrow the DOM search when scrollTarget is set. Provider-specific override.
+  // CSS selector to narrow the DOM search when scrollTarget is set. Service-specific override.
   scrollSelector?: string;
 
-  // Text content to match when scrolling a lazy-loaded section into view. Provider-specific override.
+  // Text content to match when scrolling a lazy-loaded section into view. Service-specific override.
   scrollTarget?: string;
 
-  // Whether to scroll to the bottom of the page before channel selection. Provider-specific override.
+  // Whether to scroll to the bottom of the page before channel selection. Service-specific override.
   scrollToBottom?: boolean;
 
-  // URL of the streaming page for this provider. Required for every provider variant.
+  // URL of the streaming page for this service. Required for every service variant.
   url: string;
 }
 
@@ -84,9 +84,9 @@ export interface ProviderVariant {
  */
 export interface Channel {
 
-  // The canonical channel key that this entry is a variant of. Present on provider variant entries (e.g., "espn-hulu" has canonicalKey "espn"). Set by the
+  // The canonical channel key that this entry is a variant of. Present on service variant entries (e.g., "espn-hulu" has canonicalKey "espn"). Set by the
   // flattener for predefined channels, by the browse modal for user channels, and by the one-time migration for pre-existing user channels. This is the single
-  // source of truth for variant relationships — buildProviderGroups groups channels by this field. Absent on canonical entries and standalone channels.
+  // source of truth for variant relationships — buildServiceGroups groups channels by this field. Absent on canonical entries and standalone channels.
   canonicalKey?: string;
 
   // Numeric channel number for guide matching. When set, this number is used as the channel-number in the M3U playlist for Channels DVR and as the GuideNumber in
@@ -111,16 +111,16 @@ export interface Channel {
   name?: string;
 
   // Gracenote station ID for the Pacific timezone feed. When present on a canonical entry, the Pacific generator auto-creates a sibling ChannelDefinition with
-  // this station ID, inheriting providers (filtered for East/West-specific channelSelectors). See generatePacificDefinitions() in channels/index.ts.
+  // this station ID, inheriting services (filtered for East/West-specific channelSelectors). See generatePacificDefinitions() in channels/index.ts.
   pacificStationId?: string;
 
   // Profile name to use for this channel, overriding URL-based profile detection. Use this when a site's behavior doesn't match what would be inferred from its
   // domain, or when a specific channel needs different handling than others on the same site.
   profile?: string;
 
-  // Display name override for the provider selection dropdown. Normally auto-derived from the URL domain via DOMAIN_CONFIG in config/profiles.ts (e.g., a
+  // Display name override for the service selection dropdown. Normally auto-derived from the URL domain via DOMAIN_CONFIG in config/profiles.ts (e.g., a
   // hulu.com URL automatically resolves to "Hulu"). Only needed when a channel's display name should differ from the domain-level default.
-  provider?: string;
+  service?: string;
 
   // CSS selector to narrow the DOM search when scrollTarget is set. Overrides the profile-level scrollSelector for this channel. See ChannelSelectionConfig for
   // full documentation.
@@ -157,8 +157,8 @@ export interface Channel {
  */
 export interface ChannelListingEntry {
 
-  // Whether the channel has at least one provider variant available given the current provider filter. When false, the channel is hidden from the playlist and guide.
-  availableByProvider: boolean;
+  // Whether the channel has at least one service variant available given the current service filter. When false, the channel is hidden from the playlist and guide.
+  availableByService: boolean;
 
   // The channel definition with all properties (name, url, profile, etc.).
   channel: Channel;
@@ -226,29 +226,29 @@ export type StoredChannelMap = Record<string, StoredChannel>;
  */
 export type ChannelMap = Record<string, Channel>;
 
-/* Provider groups allow multiple streaming providers to offer the same content (e.g., ESPN via ESPN.com or Disney+). All variant relationships are expressed via
- * the canonicalKey field on Channel. The flattener sets it on predefined variants, the browse modal sets it on user variants, and buildProviderGroups groups
- * channels by scanning canonicalKey uniformly. The canonical key identifies the channel content; each variant provides that content through a different provider.
+/* Service groups allow multiple streaming services to offer the same content (e.g., ESPN via ESPN.com or Disney+). All variant relationships are expressed via
+ * the canonicalKey field on Channel. The flattener sets it on predefined variants, the browse modal sets it on user variants, and buildServiceGroups groups
+ * channels by scanning canonicalKey uniformly. The canonical key identifies the channel content; each variant provides that content through a different service.
  */
 
 /**
- * Represents a group of provider variants for the same content. Used by the UI to display provider selection dropdowns for multi-provider channels.
+ * Represents a group of service variants for the same content. Used by the UI to display service selection dropdowns for multi-service channels.
  */
-export interface ProviderGroup {
+export interface ServiceGroup {
 
-  // The canonical channel key (without suffix), which is the default provider. Example: "espn" for the ESPN channel group.
+  // The canonical channel key (without suffix), which is the default service. Example: "espn" for the ESPN channel group.
   canonicalKey: string;
 
-  // List of all provider variants including the canonical entry. Each variant has a key, display label, and provider tag computed at group-building time.
+  // List of all service variants including the canonical entry. Each variant has a key, display label, and service tag computed at group-building time.
   variants: {
 
-    // Channel key for this provider variant. Example: "espn" or "espn-disneyplus".
+    // Channel key for this service variant. Example: "espn" or "espn-disneyplus".
     key: string;
 
-    // UI display label derived from channel.provider (if set) or auto-resolved from the URL domain via getProviderDisplayName(). Example: "ESPN.com" or "Disney+".
+    // UI display label derived from channel.service (if set) or auto-resolved from the URL domain via getServiceDisplayName(). Example: "ESPN.com" or "Disney+".
     label: string;
 
-    // Provider tag for this variant, computed at group-building time. Used by the provider filter to show/hide variants and by getChannelProviderTags to collect
+    // Service tag for this variant, computed at group-building time. Used by the service filter to show/hide variants and by getChannelServiceTags to collect
     // tags without re-deriving them from the channel key. For :predefined variants, this is derived from the predefined channel's URL (not the user override).
     tag: string;
   }[];

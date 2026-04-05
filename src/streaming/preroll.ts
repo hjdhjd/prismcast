@@ -30,7 +30,7 @@ import { spawn } from "node:child_process";
  */
 
 // Total duration of preroll content in seconds. FFmpeg generates this much continuous black+silence fMP4, which is then split into individual segments at keyframe
-// boundaries. The configured duration provides ample coverage for the slowest providers with the progressive playlist delivering content in real time for the full
+// boundaries. The configured duration provides ample coverage for the slowest services with the progressive playlist delivering content in real time for the full
 // tune duration.
 const PREROLL_TOTAL_DURATION = 30;
 

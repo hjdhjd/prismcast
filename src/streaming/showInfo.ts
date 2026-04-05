@@ -31,7 +31,7 @@ import { getAllStreams } from "./registry.js";
  * 1. Tier 1 (/devices): Logo URLs are extracted from the matched M3U device's channel list during getDeviceMappings(). This covers all channels in the M3U
  *    playlist with authoritative, current logo URLs from the DVR.
  *
- * 2. Tier 2 (/tms/stations/{name}): For channels with station IDs not covered by tier 1 (disabled channels, channels without an enabled provider), a TMS station
+ * 2. Tier 2 (/tms/stations/{name}): For channels with station IDs not covered by tier 1 (disabled channels, channels without an enabled service), a TMS station
  *    name search finds the best matching logo. Results are matched by station ID when possible, otherwise the first result with a valid logo is used.
  *
  * Logo population runs on DVR host discovery (startup or first stream connection) and refreshes every 24 hours. Individual channel add/edit operations trigger a
@@ -533,7 +533,7 @@ export async function getDeviceMappings(host: string): Promise<Map<string, Map<s
       device.DeviceID, device.Channels.length, Math.round(overlapRatio * 100));
 
     // Build guide number → channel ID map for this device and extract logo URLs. Logo URLs are cached by station ID (resolved from the channel key via
-    // getChannelStationId) so that Pacific channels and provider variants all share the same logo entry.
+    // getChannelStationId) so that Pacific channels and service variants all share the same logo entry.
     const guideToChannelId = new Map<string, string>();
     const logos = new Map<string, string>();
 
@@ -721,7 +721,7 @@ async function populateChannelLogos(): Promise<void> {
   // effect. The 5-minute mapping cache means we don't re-fetch if show name polling already called this recently.
   await getDeviceMappings(lastKnownDvrHost);
 
-  // Tier 2: search TMS by channel name for channels with station IDs not covered by tier 1. This covers disabled channels, channels without an enabled provider,
+  // Tier 2: search TMS by channel name for channels with station IDs not covered by tier 1. This covers disabled channels, channels without an enabled service,
   // and any channels the DVR device didn't include logos for.
   const listing = getChannelListing();
   let cachedCount = 0;

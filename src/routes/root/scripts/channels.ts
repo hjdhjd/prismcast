@@ -48,12 +48,12 @@ export function generateChannelsSubtabScript(): string {
     "  }",
 
     // Replace the Custom Profiles panel content with server-rendered HTML. Called after profile mutations to update the panel without a page reload.
-    // Re-runs processProviderDisplays() so dynamically swapped provider icon elements render correctly.
+    // Re-runs processServiceDisplays() so dynamically swapped service icon elements render correctly.
     "  function applyProfilePanel(html) {",
     "    var panel = document.querySelector('#channels-subtab-custom-profiles .section');",
     "    if(panel) {",
     "      panel.innerHTML = html;",
-    "      if(window.processProviderDisplays) { processProviderDisplays(); }",
+    "      if(window.processServiceDisplays) { processServiceDisplays(); }",
     "    }",
     "  }",
 
@@ -95,23 +95,23 @@ export function generateChannelsSubtabScript(): string {
     "      var wizFlags = window.__wizardFlags;",
     "      for(var i = 0; i < wizFlags.length; i++) { if(p[wizFlags[i].id]) flags[wizFlags[i].id] = true; }",
     "      var domains = (match.domains && match.domains.length > 0) ?",
-    "        match.domains.map(function(d) { return { domain: d.domain, provider: d.provider || '', providerTag: d.providerTag || '' }; }) :",
-    "        [{ domain: '', provider: '', providerTag: '' }];",
+    "        match.domains.map(function(d) { return { domain: d.domain, service: d.service || '', serviceTag: d.serviceTag || '' }; }) :",
+    "        [{ domain: '', service: '', serviceTag: '' }];",
     "      profileWizard.state = {",
     "        editKey: key, editMode: true, profileName: key,",
     "        baseProfile: p.extends || '', strategy: strat,",
     "        strategyFields: strategyFields, flags: flags,",
     "        hideSelector: p.hideSelector || '', domains: domains, description: p.description || ''",
     "      };",
-    "      profileWizard.open({ highestStep: 5, title: 'Edit Provider Profile' });",
+    "      profileWizard.open({ highestStep: 5, title: 'Edit Service Profile' });",
     "    } catch(e) { showToast('Failed to load profile data.', 'error'); }",
     "  };",
 
     // Pending import data stored while the import preview modal is open.
     "  var pendingImportData = null;",
 
-    // Import a provider pack via file picker — shows a preview modal before importing.
-    "  window.startProviderImport = function() {",
+    // Import a service pack via file picker — shows a preview modal before importing.
+    "  window.startServiceImport = function() {",
     "    var input = document.createElement('input');",
     "    input.type = 'file';",
     "    input.accept = '.json,application/json';",
@@ -139,7 +139,7 @@ export function generateChannelsSubtabScript(): string {
     "            html += '<div class=\"export-divider\"></div>';",
     "            html += '<label class=\"export-option-label\">';",
     "            html += '<input type=\"checkbox\" id=\"import-include-channels\" checked> Include ' + plural(channelCount, 'channel') + '</label>';",
-    "            html += '<div class=\"export-hint\">Import the channel definitions from this pack. Uncheck to import only the provider profiles and domains.</div>';",
+    "            html += '<div class=\"export-hint\">Import the channel definitions from this pack. Uncheck to import only the service profiles and domains.</div>';",
     "          }",
     "          document.getElementById('import-modal-body').innerHTML = html;",
     "          document.getElementById('import-modal').style.display = 'flex';",
@@ -183,12 +183,12 @@ export function generateChannelsSubtabScript(): string {
     "      } else {",
     "        showToast('Import failed: ' + (result.error || 'Unknown error.'), 'error');",
     "      }",
-    "    } catch(err) { console.error('Provider pack import error:', err); closeImportModal(); showToast('Import request failed.', 'error'); }",
+    "    } catch(err) { console.error('Service pack import error:', err); closeImportModal(); showToast('Import request failed.', 'error'); }",
     "  };",
 
-    // Export a provider pack. Opens a modal with profile checklist and options. Shows provider name prominently for each profile with domain and channel counts.
+    // Export a service pack. Opens a modal with profile checklist and options. Shows service name prominently for each profile with domain and channel counts.
     // The select-all row is hidden when there is only one profile since the single checkbox makes it redundant.
-    "  window.startProviderExport = async function() {",
+    "  window.startServiceExport = async function() {",
     "    try {",
     "      var res = await fetch('/config/profiles');",
     "      var data = await res.json();",
@@ -200,12 +200,12 @@ export function generateChannelsSubtabScript(): string {
     "        var p = profiles[i];",
     "        var domainCount = p.domains ? p.domains.length : 0;",
     "        var channelCount = p.channelCount || 0;",
-    "        var providerName = '';",
+    "        var serviceName = '';",
     "        for(var di = 0; di < (p.domains || []).length; di++) {",
-    "          if(p.domains[di].provider) { providerName = p.domains[di].provider; break; }",
+    "          if(p.domains[di].service) { serviceName = p.domains[di].service; break; }",
     "        }",
     "        var meta = [];",
-    "        if(providerName) meta.push(esc(providerName));",
+    "        if(serviceName) meta.push(esc(serviceName));",
     "        meta.push(plural(domainCount, 'domain'));",
     "        meta.push(plural(channelCount, 'channel'));",
     "        html += '<label class=\"export-profile-item\">';",
@@ -246,8 +246,8 @@ export function generateChannelsSubtabScript(): string {
     "    window.location.href = url;",
     "  };",
 
-    // Auto-generate a provider tag from a provider name: lowercase, strip non-alphanumeric.
-    "  function autoProviderTag(name) {",
+    // Auto-generate a service tag from a service name: lowercase, strip non-alphanumeric.
+    "  function autoServiceTag(name) {",
     "    return name.toLowerCase().replace(/[^a-z0-9]/g, '');",
     "  }",
 
@@ -295,7 +295,7 @@ export function generateChannelsSubtabScript(): string {
     "      html += '<label class=\"wizard-label\" for=\"wizard-profile-name\">Profile Name</label>';",
     "      var nameReadonly = s.editMode ? ' readonly style=\"opacity: 0.6; cursor: not-allowed;\"' : '';",
     "      html += '<input type=\"text\" id=\"wizard-profile-name\" value=\"' + s.profileName.replace(/\"/g, '&quot;') +",
-    "        '\" placeholder=\"e.g., myProvider\"' + nameReadonly + '>';",
+    "        '\" placeholder=\"e.g., myService\"' + nameReadonly + '>';",
     "      html += '<div class=\"field-hint\">' + (s.editMode ? 'Profile name cannot be changed.' :",
     "        'Unique identifier. Letters, numbers, and hyphens only.') + '</div>';",
     "      html += '</div>';",
@@ -408,14 +408,14 @@ export function generateChannelsSubtabScript(): string {
     "        html += '<input type=\"text\" class=\"domain-input\" value=\"' + d.domain.replace(/\"/g, '&quot;') + '\" placeholder=\"e.g., watch.sling.com\">';",
     "        html += '</div>';",
     "        html += '<div class=\"field-group\">';",
-    "        html += '<label class=\"wizard-label\">Provider Name</label>';",
-    "        html += '<input type=\"text\" class=\"provider-input\" value=\"' + d.provider.replace(/\"/g, '&quot;') + '\" placeholder=\"e.g., Sling TV\">';",
+    "        html += '<label class=\"wizard-label\">Service Name</label>';",
+    "        html += '<input type=\"text\" class=\"provider-input\" value=\"' + d.service.replace(/\"/g, '&quot;') + '\" placeholder=\"e.g., Sling TV\">';",
     "        html += '</div>';",
     "        html += '<div class=\"field-group\">';",
-    "        html += '<label class=\"wizard-label\">Provider Tag <span style=\"color: var(--text-muted);\">(auto-filled)</span></label>';",
-    "        html += '<input type=\"text\" class=\"provider-tag-input\" value=\"' + d.providerTag.replace(/\"/g, '&quot;') +",
+    "        html += '<label class=\"wizard-label\">Service Tag <span style=\"color: var(--text-muted);\">(auto-filled)</span></label>';",
+    "        html += '<input type=\"text\" class=\"provider-tag-input\" value=\"' + d.serviceTag.replace(/\"/g, '&quot;') +",
     "          '\" placeholder=\"auto-generated\">';",
-    "        html += '<div class=\"field-hint\">Identifier for the provider filter. Auto-generated from provider name.</div>';",
+    "        html += '<div class=\"field-hint\">Identifier for the service filter. Auto-generated from service name.</div>';",
     "        html += '</div>';",
     "        html += '</div>';",
     "      }",
@@ -431,8 +431,8 @@ export function generateChannelsSubtabScript(): string {
     "      html += '<tr><td>Strategy</td><td>' + esc(s.strategy) + '</td></tr>';",
     "      var domainList = s.domains.filter(function(d) { return d.domain; }).map(function(d) { return esc(d.domain); }).join(', ');",
     "      html += '<tr><td>Domain(s)</td><td>' + (domainList || 'none') + '</td></tr>';",
-    "      var providerList = s.domains.filter(function(d) { return d.provider; }).map(function(d) { return esc(d.provider); }).join(', ');",
-    "      html += '<tr><td>Provider</td><td>' + (providerList || 'none') + '</td></tr>';",
+    "      var serviceList = s.domains.filter(function(d) { return d.service; }).map(function(d) { return esc(d.service); }).join(', ');",
+    "      html += '<tr><td>Service</td><td>' + (serviceList || 'none') + '</td></tr>';",
     "      if(s.strategy !== 'none') {",
     "        var reviewStrat = window.__wizardStrategies.find(function(st) { return st.id === s.strategy; });",
     "        if(reviewStrat) {",
@@ -506,7 +506,7 @@ export function generateChannelsSubtabScript(): string {
     "    var hideInput = document.getElementById('wizard-hide-selector');",
     "    if(hideInput) hideInput.addEventListener('input', function() { s.hideSelector = this.value; });",
 
-    // Step 4: add-domain button and domain inputs with auto-fill for provider tag.
+    // Step 4: add-domain button and domain inputs with auto-fill for service tag.
     "    var addDomainBtn = document.getElementById('wizard-add-domain-btn');",
     "    if(addDomainBtn) addDomainBtn.addEventListener('click', addWizardDomain);",
     "    var domainRows = document.querySelectorAll('.wizard-domain-row');",
@@ -518,12 +518,12 @@ export function generateChannelsSubtabScript(): string {
     "        var tagInput = row.querySelector('.provider-tag-input');",
     "        if(domInput) domInput.addEventListener('input', function() { s.domains[idx].domain = this.value; });",
     "        if(provInput) provInput.addEventListener('input', function() {",
-    "          s.domains[idx].provider = this.value;",
-    "          var tag = autoProviderTag(this.value);",
-    "          s.domains[idx].providerTag = tag;",
+    "          s.domains[idx].service = this.value;",
+    "          var tag = autoServiceTag(this.value);",
+    "          s.domains[idx].serviceTag = tag;",
     "          if(tagInput) tagInput.value = tag;",
     "        });",
-    "        if(tagInput) tagInput.addEventListener('input', function() { s.domains[idx].providerTag = this.value; });",
+    "        if(tagInput) tagInput.addEventListener('input', function() { s.domains[idx].serviceTag = this.value; });",
     "      })(i);",
     "    }",
 
@@ -567,14 +567,14 @@ export function generateChannelsSubtabScript(): string {
     "    profileWizard.state = {",
     "      editKey: null, editMode: false, profileName: '', baseProfile: '', strategy: 'none',",
     "      strategyFields: {}, flags: {}, hideSelector: '',",
-    "      domains: [{ domain: '', provider: '', providerTag: '' }], description: ''",
+    "      domains: [{ domain: '', service: '', serviceTag: '' }], description: ''",
     "    };",
-    "    profileWizard.open({ title: 'New Provider Profile' });",
+    "    profileWizard.open({ title: 'New Service Profile' });",
     "  };",
 
     // Add another domain row to step 4 and re-render.
     "  function addWizardDomain() {",
-    "    profileWizard.state.domains.push({ domain: '', provider: '', providerTag: '' });",
+    "    profileWizard.state.domains.push({ domain: '', service: '', serviceTag: '' });",
     "    renderProfileStep(profileWizard.getStep());",
     "  }",
 
@@ -604,8 +604,8 @@ export function generateChannelsSubtabScript(): string {
     "      var d = s.domains[i];",
     "      if(d.domain.trim()) {",
     "        domains[d.domain.trim()] = { profile: s.profileName };",
-    "        if(d.provider.trim()) domains[d.domain.trim()].provider = d.provider.trim();",
-    "        if(d.providerTag.trim()) domains[d.domain.trim()].providerTag = d.providerTag.trim();",
+    "        if(d.service.trim()) domains[d.domain.trim()].service = d.service.trim();",
+    "        if(d.serviceTag.trim()) domains[d.domain.trim()].serviceTag = d.serviceTag.trim();",
     "      }",
     "    }",
     "    var body = { domains: domains, key: s.profileName, profile: profile };",
@@ -709,47 +709,47 @@ export function generateChannelsSubtabScript(): string {
     "    }",
     "  };",
 
-    // Read embedded JSON data for the browse modal. Provider list and guide URLs are embedded server-side. Channel state (lineup matching) is provided by
+    // Read embedded JSON data for the browse modal. Service list and guide URLs are embedded server-side. Channel state (lineup matching) is provided by
     // the annotated discovery response, not by embedded data.
-    "  var browseProviders = [];",
+    "  var browseServices = [];",
     "  var browseGuideUrls = {};",
     "  try {",
-    "    var pEl = document.getElementById('browse-providers-data');",
-    "    if(pEl) browseProviders = JSON.parse(pEl.textContent || '[]');",
+    "    var pEl = document.getElementById('browse-services-data');",
+    "    if(pEl) browseServices = JSON.parse(pEl.textContent || '[]');",
     "    var gEl = document.getElementById('browse-guide-urls-data');",
     "    if(gEl) browseGuideUrls = JSON.parse(gEl.textContent || '{}');",
     "  } catch(e) {}",
 
-    // Browse Channels wizard. Two steps: Provider (picker grid) and Channels (discovery + channel list). Uses the shared wizard controller for step navigation
-    // and indicator updates. The state object tracks the selected provider slug and label, and the filtered provider list for the current session.
+    // Browse Channels wizard. Two steps: Service (picker grid) and Channels (discovery + channel list). Uses the shared wizard controller for step navigation
+    // and indicator updates. The state object tracks the selected service slug and label, and the filtered service list for the current session.
     "  var browseWizard = createWizardController({",
     "    contentId: 'browse-content',",
     "    modalId: 'browse-modal',",
     "    onRender: renderBrowseStep,",
-    "    onValidate: function(step) { return (step === 1 && !browseWizard.state.slug) ? 'Select a provider.' : ''; },",
+    "    onValidate: function(step) { return (step === 1 && !browseWizard.state.slug) ? 'Select a service.' : ''; },",
     "    stepCount: 2,",
     "    titleId: 'browse-title'",
     "  });",
 
-    // Open the browse modal. If only one provider is available (or in the filter), skip step 1 and open directly on step 2 with the provider pre-selected.
+    // Open the browse modal. If only one service is available (or in the filter), skip step 1 and open directly on step 2 with the service pre-selected.
     "  window.openBrowseModal = function() {",
 
-    // Determine which providers to show. Filter to providers that are enabled in the provider filter if a filter is active.
+    // Determine which services to show. Filter to services that are enabled in the service filter if a filter is active.
     "    var enabledFilter = [];",
     "    var chips = document.querySelectorAll('.provider-chip');",
     "    for(var i = 0; i < chips.length; i++) {",
     "      var tag = chips[i].getAttribute('data-tag');",
     "      if(tag) enabledFilter.push(tag);",
     "    }",
-    "    var available = browseProviders;",
+    "    var available = browseServices;",
     "    if(enabledFilter.length > 0) {",
-    "      available = browseProviders.filter(function(p) { return enabledFilter.indexOf(p.slug) !== -1; });",
+    "      available = browseServices.filter(function(p) { return enabledFilter.indexOf(p.slug) !== -1; });",
     "    }",
 
-    // If no discoverable providers match the filter, show all providers.
-    "    if(available.length === 0) available = browseProviders;",
+    // If no discoverable services match the filter, show all services.
+    "    if(available.length === 0) available = browseServices;",
 
-    // If exactly one provider is available, skip the picker and go straight to channel discovery on step 2.
+    // If exactly one service is available, skip the picker and go straight to channel discovery on step 2.
     "    if(available.length === 1) {",
     "      browseWizard.state = { available: available, label: available[0].label, slug: available[0].slug };",
     "      browseWizard.open({ highestStep: 2, step: 2 });",
@@ -760,18 +760,18 @@ export function generateChannelsSubtabScript(): string {
     "    browseWizard.open();",
     "  };",
 
-    // Select a provider from the picker grid and advance to step 2.
-    "  function selectBrowseProvider(slug, label) {",
+    // Select a service from the picker grid and advance to step 2.
+    "  function selectBrowseService(slug, label) {",
     "    browseWizard.state.slug = slug;",
     "    browseWizard.state.label = label;",
     "    browseWizard.next();",
     "  }",
 
-    // Render the current browse step. Step 1: provider picker grid. Step 2: channel discovery and list.
+    // Render the current browse step. Step 1: service picker grid. Step 2: channel discovery and list.
     "  function renderBrowseStep(step) {",
     "    var content = document.getElementById('browse-content');",
 
-    // Show/hide navigation buttons. Back is only available on step 2 when there are multiple providers.
+    // Show/hide navigation buttons. Back is only available on step 2 when there are multiple services.
     "    if(step > 1 && browseWizard.state.available.length > 1) { browseWizard.show('browse-back'); }",
     "    else { browseWizard.hide('browse-back'); }",
 
@@ -779,28 +779,28 @@ export function generateChannelsSubtabScript(): string {
     "    browseWizard.setTitle('Browse Channels');",
     "    browseWizard.hide('browse-add-btn');",
 
-    // Step 1: Provider picker grid. Clear the provider selection so the user must pick again (prevents the step indicator from jumping to step 2 with a stale
-    // provider after navigating back).
+    // Step 1: Service picker grid. Clear the service selection so the user must pick again (prevents the step indicator from jumping to step 2 with a stale
+    // service after navigating back).
     "    if(step === 1) {",
     "      browseWizard.state.slug = null;",
     "      browseWizard.state.label = null;",
     "      var available = browseWizard.state.available;",
-    "      var html = '<p class=\"wizard-hint\">Select a provider to see its available channels.</p>';",
+    "      var html = '<p class=\"wizard-hint\">Select a service to see its available channels.</p>';",
     "      html += '<div class=\"wizard-provider-grid\">';",
     "      for(var j = 0; j < available.length; j++) {",
     "        var p = available[j];",
     "        html += '<div class=\"wizard-provider-card\" data-slug=\"' + esc(p.slug) + '\" data-label=\"' + esc(p.label) + '\">';",
-    "        html += providerIconHtml(p.domain, esc(p.label), 'provider-icon', 'provider-icon-text', 'both', p.iconUrl || '');",
+    "        html += serviceIconHtml(p.domain, esc(p.label), 'provider-icon', 'provider-icon-text', 'both', p.iconUrl || '');",
     "        html += '</div>';",
     "      }",
     "      html += '</div>';",
     "      content.innerHTML = html;",
 
-    // Attach click handlers to provider cards programmatically. The handler reads slug and label from data attributes, avoiding inline onclick and global scope.
+    // Attach click handlers to service cards programmatically. The handler reads slug and label from data attributes, avoiding inline onclick and global scope.
     "      var cards = content.querySelectorAll('.wizard-provider-card');",
     "      for(var ci = 0; ci < cards.length; ci++) {",
     "        cards[ci].addEventListener('click', function() {",
-    "          selectBrowseProvider(this.getAttribute('data-slug'), this.getAttribute('data-label'));",
+    "          selectBrowseService(this.getAttribute('data-slug'), this.getAttribute('data-label'));",
     "        });",
     "      }",
     "      return;",
@@ -813,10 +813,10 @@ export function generateChannelsSubtabScript(): string {
     // Show a spinner while fetching channels.
     "    content.innerHTML = '<div class=\"wizard-spinner\">Discovering channels from ' + esc(label) + '...</div>';",
 
-    // Fetch discovered channels from the provider endpoint.
+    // Fetch discovered channels from the service endpoint.
     "    (async function() {",
     "      try {",
-    "        var r = await fetch('/providers/' + encodeURIComponent(slug) + '/channels?lineup=true');",
+    "        var r = await fetch('/services/' + encodeURIComponent(slug) + '/channels?lineup=true');",
     "        if(!r.ok) { var d = await r.json(); throw new Error(d.error || 'Discovery failed.'); }",
     "        var channels = await r.json();",
     "        if(browseWizard.state.slug !== slug) return;",
@@ -830,7 +830,7 @@ export function generateChannelsSubtabScript(): string {
     "  }",
 
     // Render the channel list with three-state checkboxes. Each discovered channel carries an optional lineup field from the server's annotation layer.
-    // When lineup is present, the channel exists in the user's lineup. When lineup.currentTag matches the browsed provider slug, the channel is "current"
+    // When lineup is present, the channel exists in the user's lineup. When lineup.currentTag matches the browsed service slug, the channel is "current"
     // (checked). When lineup is present but the tag differs, the channel is "switch" (indeterminate). When lineup is absent, the channel is "new" (empty).
     "  function renderBrowseChannelList(channels, slug, label) {",
     "    if(!channels || channels.length === 0) {",
@@ -842,7 +842,7 @@ export function generateChannelsSubtabScript(): string {
 
     // Build the channel list HTML with hint, legend, search filter, and three-state checkboxes.
     "    var html = '';",
-    "    html += '<p class=\"wizard-hint\">Check to add or switch to this provider. Uncheck to remove. Changes take effect when you click Apply.</p>';",
+    "    html += '<p class=\"wizard-hint\">Check to add or switch to this service. Uncheck to remove. Changes take effect when you click Apply.</p>';",
     "    html += '<div class=\"browse-toolbar\">';",
     "    html += '<label class=\"browse-select-all\">';",
     "    html += '<input type=\"checkbox\" id=\"browse-select-all-cb\">';",
@@ -851,8 +851,8 @@ export function generateChannelsSubtabScript(): string {
     "    html += '</div>';",
     "    html += '<div class=\"browse-legend\">';",
     "    html += '<span class=\"browse-legend-item\"><input type=\"checkbox\" disabled> New channel</span>';",
-    "    html += '<span class=\"browse-legend-item\"><input type=\"checkbox\" class=\"browse-legend-indeterminate\" disabled> Available via another provider</span>';",
-    "    html += '<span class=\"browse-legend-item\"><input type=\"checkbox\" checked disabled> Active on this provider</span>';",
+    "    html += '<span class=\"browse-legend-item\"><input type=\"checkbox\" class=\"browse-legend-indeterminate\" disabled> Available via another service</span>';",
+    "    html += '<span class=\"browse-legend-item\"><input type=\"checkbox\" checked disabled> Active on this service</span>';",
     "    html += '</div>';",
     "    html += '<div class=\"browse-channel-list\" id=\"browse-channel-list\">';",
 
@@ -862,7 +862,7 @@ export function generateChannelsSubtabScript(): string {
     "      var lu = ch.lineup;",
 
     // Determine the channel's state from the server-provided lineup annotation. Four states: new (no lineup data), disabled (predefined but disabled),
-    // switch (exists via a different provider), current (already using this provider).
+    // switch (exists via a different service), current (already using this service).
     "      var state = 'new';",
     "      var stateLabel = '';",
     "      if(lu) {",
@@ -874,7 +874,7 @@ export function generateChannelsSubtabScript(): string {
     "          stateLabel = lu.source === 'predefined' ? 'Predefined' : 'User channel';",
     "        } else {",
     "          state = 'switch';",
-    "          stateLabel = 'via ' + lu.currentProvider;",
+    "          stateLabel = 'via ' + lu.currentService;",
     "        }",
     "      }",
 
@@ -913,7 +913,7 @@ export function generateChannelsSubtabScript(): string {
     "    document.getElementById('browse-content').innerHTML = html;",
     "    browseWizard.setTitle('Browse Channels <span class=\"browse-header-count\">(' + esc(label) + ' \\u2014 ' + channels.length + ' channels)</span>');",
 
-    // Set indeterminate state on checkboxes for channels that exist via a different provider. The indeterminate property cannot be set via HTML attributes —
+    // Set indeterminate state on checkboxes for channels that exist via a different service. The indeterminate property cannot be set via HTML attributes —
     // it must be set via JavaScript after the elements are in the DOM.
     "    var switchCbs = document.querySelectorAll('.browse-channel-cb[data-original=\"switch\"]');",
     "    for(var j = 0; j < switchCbs.length; j++) switchCbs[j].indeterminate = true;",
@@ -952,7 +952,7 @@ export function generateChannelsSubtabScript(): string {
     "  }",
 
     // Toggle all actionable checkboxes. Select-all checks all channels and clears indeterminate. Deselect-all unchecks new and disabled channels, and restores
-    // switch channels and current channels with alternatives to indeterminate (indicating the channel exists but is not selected for this provider).
+    // switch channels and current channels with alternatives to indeterminate (indicating the channel exists but is not selected for this service).
     "  function toggleBrowseSelectAll(checked) {",
     "    var cbs = document.querySelectorAll('.browse-channel-cb');",
     "    for(var i = 0; i < cbs.length; i++) {",
@@ -1042,7 +1042,7 @@ export function generateChannelsSubtabScript(): string {
     "        canonicalKey: cb.getAttribute('data-canonical') || '',",
     "        channelSelector: cb.getAttribute('data-selector'),",
     "        name: cb.getAttribute('data-name'),",
-    "        providerSlug: browseWizard.state.slug,",
+    "        serviceSlug: browseWizard.state.slug,",
     "        url: guideUrl",
     "      };",
     "      var sid = cb.getAttribute('data-station-id');",
@@ -1082,36 +1082,36 @@ export function generateChannelsSubtabScript(): string {
     "    })();",
     "  };",
 
-    // Read embedded provider data for the setup wizard. Each entry includes domain, iconUrl, displayName, tag, and enabled state from the server.
-    "  var setupProviders = [];",
+    // Read embedded service data for the setup wizard. Each entry includes domain, iconUrl, displayName, tag, and enabled state from the server.
+    "  var setupServices = [];",
     "  try {",
-    "    var spEl = document.getElementById('setup-providers-data');",
-    "    if(spEl) setupProviders = JSON.parse(spEl.textContent || '[]');",
+    "    var spEl = document.getElementById('setup-services-data');",
+    "    if(spEl) setupServices = JSON.parse(spEl.textContent || '[]');",
     "  } catch(e) {}",
 
-    // Validate the current setup step. Step 1 collects selected providers, validates at least one is selected, and saves the provider filter to the server
+    // Validate the current setup step. Step 1 collects selected services, validates at least one is selected, and saves the service filter to the server
     // asynchronously. Returns a Promise that resolves to an error string or empty string. Step 2+ always passes (no validation needed).
     "  async function validateSetupStep(step) {",
     "    if(step === 1) {",
     "      var selected = [];",
     "      var cbs = document.querySelectorAll('.setup-provider-cb:checked');",
     "      for(var i = 0; i < cbs.length; i++) selected.push(cbs[i].value);",
-    "      if(selected.length === 0) return 'Select at least one provider.';",
-    "      setupWizard.state.selectedProviders = selected;",
+    "      if(selected.length === 0) return 'Select at least one service.';",
+    "      setupWizard.state.selectedServices = selected;",
     "      setupWizard.state.authIndex = 0;",
     "      try {",
-    "        await fetch('/config/provider-filter', {",
+    "        await fetch('/config/service-filter', {",
     "          method: 'POST',",
     "          headers: { 'Content-Type': 'application/json' },",
-    "          body: JSON.stringify({ enabledProviders: selected })",
+    "          body: JSON.stringify({ enabledServices: selected })",
     "        });",
     "        return '';",
-    "      } catch(e) { return 'Failed to save provider selection.'; }",
+    "      } catch(e) { return 'Failed to save service selection.'; }",
     "    }",
     "    return '';",
     "  }",
 
-    // Provider Setup wizard. Uses the shared wizard controller for step navigation and indicator updates. The state object tracks selected providers and
+    // Service Setup wizard. Uses the shared wizard controller for step navigation and indicator updates. The state object tracks selected services and
     // the current auth index for the sequential sign-in flow.
     "  var setupWizard = createWizardController({",
     "    contentId: 'setup-content',",
@@ -1127,11 +1127,11 @@ export function generateChannelsSubtabScript(): string {
     "    titleId: 'setup-title'",
     "  });",
 
-    // Open the setup wizard and render the first step. Pre-populate selected providers from the embedded enabled state so re-running the wizard shows the
-    // current provider filter as pre-checked.
+    // Open the setup wizard and render the first step. Pre-populate selected services from the embedded enabled state so re-running the wizard shows the
+    // current service filter as pre-checked.
     "  window.openSetupWizard = function() {",
-    "    var preSelected = setupProviders.filter(function(p) { return p.enabled; }).map(function(p) { return p.tag; });",
-    "    setupWizard.state = { selectedProviders: preSelected, authIndex: 0 };",
+    "    var preSelected = setupServices.filter(function(p) { return p.enabled; }).map(function(p) { return p.tag; });",
+    "    setupWizard.state = { selectedServices: preSelected, authIndex: 0 };",
     "    setupWizard.open();",
     "  };",
 
@@ -1142,11 +1142,11 @@ export function generateChannelsSubtabScript(): string {
     "    setupWizard.close();",
     "  };",
 
-    // Authenticate the current provider in step 2. Opens the browser and shows a waiting prompt.
-    "  async function setupAuthProvider() {",
-    "    var slug = setupWizard.state.selectedProviders[setupWizard.state.authIndex];",
-    "    var provider = setupProviders.find(function(p) { return p.tag === slug; });",
-    "    var url = provider && provider.domain ? 'https://' + provider.domain + '/' : '';",
+    // Authenticate the current service in step 2. Opens the browser and shows a waiting prompt.
+    "  async function setupAuthService() {",
+    "    var slug = setupWizard.state.selectedServices[setupWizard.state.authIndex];",
+    "    var svc = setupServices.find(function(p) { return p.tag === slug; });",
+    "    var url = svc && svc.domain ? 'https://' + svc.domain + '/' : '';",
     "    if(!url) { setupAdvanceAuth(); return; }",
     "    try {",
     "      var res = await fetch('/auth/login', {",
@@ -1160,22 +1160,22 @@ export function generateChannelsSubtabScript(): string {
     "    } catch(e) { showToast('Failed to start login.', 'error'); }",
     "  }",
 
-    // Mark the current provider auth as done and advance to the next.
+    // Mark the current service auth as done and advance to the next.
     "  function setupAuthDone() {",
     "    fetch('/auth/done', { method: 'POST' }).catch(function() {});",
     "    setupAdvanceAuth();",
     "  }",
 
-    // Skip the current provider auth and advance.
+    // Skip the current service auth and advance.
     "  function setupAuthSkip() {",
     "    fetch('/auth/done', { method: 'POST' }).catch(function() {});",
     "    setupAdvanceAuth();",
     "  }",
 
-    // Advance to the next provider or to step 3 if all are done.
+    // Advance to the next service or to step 3 if all are done.
     "  function setupAdvanceAuth() {",
     "    setupWizard.state.authIndex++;",
-    "    if(setupWizard.state.authIndex >= setupWizard.state.selectedProviders.length) {",
+    "    if(setupWizard.state.authIndex >= setupWizard.state.selectedServices.length) {",
     "      setupWizard.next();",
     "    } else {",
     "      renderSetupStep(setupWizard.getStep());",
@@ -1194,9 +1194,9 @@ export function generateChannelsSubtabScript(): string {
 
     // Render the auth waiting state - shows a message while the user authenticates in Chrome.
     "  function renderSetupAuthWaiting() {",
-    "    var slug = setupWizard.state.selectedProviders[setupWizard.state.authIndex];",
-    "    var provider = setupProviders.find(function(p) { return p.tag === slug; });",
-    "    var label = provider ? provider.displayName : slug;",
+    "    var slug = setupWizard.state.selectedServices[setupWizard.state.authIndex];",
+    "    var svc = setupServices.find(function(p) { return p.tag === slug; });",
+    "    var label = svc ? svc.displayName : slug;",
     "    var content = document.getElementById('setup-content');",
     "    content.innerHTML = '<div class=\"wizard-spinner\">Complete authentication for ' + esc(label) +",
     "      ' in the Chrome browser window...</div>' +",
@@ -1227,17 +1227,17 @@ export function generateChannelsSubtabScript(): string {
 
     "    var html = '';",
 
-    // Step 1: Provider selection with multi-select cards.
+    // Step 1: Service selection with multi-select cards.
     "    if(step === 1) {",
     "      html += '<p class=\"wizard-hint\">Select the streaming services you subscribe to. " +
       "This determines which channels are available in your lineup.</p>';",
     "      html += '<div class=\"wizard-provider-grid\">';",
-    "      for(var j = 0; j < setupProviders.length; j++) {",
-    "        var p = setupProviders[j];",
-    "        var checked = (setupWizard.state.selectedProviders.indexOf(p.tag) !== -1) ? ' checked' : '';",
+    "      for(var j = 0; j < setupServices.length; j++) {",
+    "        var p = setupServices[j];",
+    "        var checked = (setupWizard.state.selectedServices.indexOf(p.tag) !== -1) ? ' checked' : '';",
     "        html += '<label class=\"wizard-provider-card\">';",
     "        html += '<input type=\"checkbox\" class=\"setup-provider-cb\" value=\"' + p.tag + '\"' + checked + '>';",
-    "        html += providerIconHtml(p.domain || '', esc(p.displayName), 'provider-icon', 'provider-icon-text', 'both', p.iconUrl || '');",
+    "        html += serviceIconHtml(p.domain || '', esc(p.displayName), 'provider-icon', 'provider-icon-text', 'both', p.iconUrl || '');",
     "        html += '</label>';",
     "      }",
     "      html += '</div>';",
@@ -1245,16 +1245,16 @@ export function generateChannelsSubtabScript(): string {
 
     // Step 2: Sequential authentication prompts.
     "    if(step === 2) {",
-    "      var slug = setupWizard.state.selectedProviders[setupWizard.state.authIndex];",
-    "      var provider = setupProviders.find(function(p) { return p.tag === slug; });",
-    "      var label = provider ? provider.displayName : slug;",
-    "      var total = setupWizard.state.selectedProviders.length;",
+    "      var slug = setupWizard.state.selectedServices[setupWizard.state.authIndex];",
+    "      var svc = setupServices.find(function(p) { return p.tag === slug; });",
+    "      var label = svc ? svc.displayName : slug;",
+    "      var total = setupWizard.state.selectedServices.length;",
     "      var current = setupWizard.state.authIndex + 1;",
-    "      html += '<p class=\"wizard-hint\">Sign in to each provider in the Chrome browser window. " +
+    "      html += '<p class=\"wizard-hint\">Sign in to each service in the Chrome browser window. " +
       "PrismCast uses your login session to access live streams.</p>';",
     "      html += '<div class=\"wizard-step-centered\">';",
     "      html += '<p class=\"wizard-step-provider-name\">' + esc(label) + '</p>';",
-    "      html += '<p class=\"wizard-step-provider-count\">Provider ' + current + ' of ' + total + '</p>';",
+    "      html += '<p class=\"wizard-step-provider-count\">Service ' + current + ' of ' + total + '</p>';",
     "      html += '<button type=\"button\" class=\"btn btn-primary\" data-action=\"auth-start\">Sign In</button> ';",
     "      html += '<button type=\"button\" class=\"btn btn-secondary\" data-action=\"auth-skip\">Skip</button>';",
     "      html += '</div>';",
@@ -1262,11 +1262,11 @@ export function generateChannelsSubtabScript(): string {
 
     // Step 3: Summary and finish.
     "    if(step === 3) {",
-    "      html += '<p class=\"wizard-hint\">Your providers are ready. Click Finish to complete setup. " +
+    "      html += '<p class=\"wizard-hint\">Your services are ready. Click Finish to complete setup. " +
       "You can browse and manage channels anytime using the Browse Channels button.</p>';",
     "      html += '<div class=\"wizard-step-centered\">';",
-    "      html += '<p class=\"wizard-step-summary\">Selected ' + setupWizard.state.selectedProviders.length + ' provider' +",
-    "        (setupWizard.state.selectedProviders.length === 1 ? '' : 's') + '.</p>';",
+    "      html += '<p class=\"wizard-step-summary\">Selected ' + setupWizard.state.selectedServices.length + ' service' +",
+    "        (setupWizard.state.selectedServices.length === 1 ? '' : 's') + '.</p>';",
     "      html += '</div>';",
     "    }",
 
@@ -1277,7 +1277,7 @@ export function generateChannelsSubtabScript(): string {
     "    for(var ai = 0; ai < actions.length; ai++) {",
     "      (function(btn) {",
     "        var action = btn.getAttribute('data-action');",
-    "        if(action === 'auth-start') { btn.onclick = function() { setupAuthProvider(); }; }",
+    "        if(action === 'auth-start') { btn.onclick = function() { setupAuthService(); }; }",
     "        else if(action === 'auth-skip') { btn.onclick = function() { setupAuthSkip(); }; }",
     "        else if(action === 'auth-done') { btn.onclick = function() { setupAuthDone(); }; }",
     "      })(actions[ai]);",
@@ -1490,10 +1490,10 @@ export function generateChannelsSubtabScript(): string {
     "    openSetupWizard();",
     "  }",
 
-    // Process channel logos and provider icons on page load. These shared functions are also called after DOM mutations (row insertion, chip rebuild) to ensure
+    // Process channel logos and service icons on page load. These shared functions are also called after DOM mutations (row insertion, chip rebuild) to ensure
     // dynamically added elements get the same icon rendering as the initial server-rendered content.
     "  processChannelLogos();",
-    "  processProviderDisplays();",
+    "  processServiceDisplays();",
 
     // Initialize channels subtab on load: hash > localStorage > default.
     "  var initialSubtab = window.initialChannelsHashSubtab;",

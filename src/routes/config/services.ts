@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * providers.ts: Provider profile UI and route handlers for the PrismCast configuration interface.
+ * services.ts: Service profile UI and route handlers for the PrismCast configuration interface.
  */
 import type { DomainConfig, SiteProfile } from "../../types/index.js";
 import type { Express, Request, Response } from "express";
@@ -9,7 +9,7 @@ import { LOG, escapeHtml, formatError, sanitizeString, stringifySorted } from ".
 import { deleteUserProfile, getUserDomains, getUserProfiles, saveUserProfiles, validateDomain, validateProfile,
   validateProfileKey } from "../../config/userProfiles.js";
 import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.js";
-import { exportProviderPack, importProviderPack, parseProviderPack } from "../../config/providerPacks.js";
+import { exportServicePack, importServicePack, parseServicePack } from "../../config/servicePacks.js";
 import { getChannelListing, validateChannelUrl } from "../../config/userChannels.js";
 import type { ProfileInfo } from "../../config/profiles.js";
 import { categorizeProfiles } from "./index.js";
@@ -52,22 +52,24 @@ export function generateCustomProfilesPanel(): string {
 
   // Panel description.
   lines.push("<div class=\"settings-panel-description\">");
-  lines.push("<p>Define custom site profiles and domain mappings to add support for streaming providers not built into PrismCast.</p>");
+  lines.push("<p>Define custom site profiles and domain mappings to add support for streaming services not built into PrismCast.</p>");
   lines.push("<p class=\"description-hint\">Tip: Use the <strong>Profile Builder</strong> wizard to create new profiles step by step, ");
-  lines.push("or <strong>Import</strong> a pre-made provider pack shared by others. User profiles extend built-in profiles and can override ");
+  lines.push("or <strong>Import</strong> a pre-made service pack shared by others. User profiles extend built-in profiles and can override ");
   lines.push("specific behaviors like channel selection strategy or playback controls.</p>");
   lines.push("</div>");
 
-  // Toolbar with provider operations. Icons imported from the shared icon module.
+  // Toolbar with service operations. Icons imported from the shared icon module.
   lines.push("<div class=\"channel-toolbar\">");
   lines.push("<div class=\"toolbar-group\">");
-  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"openWizard()\">" + ICON_ADD + " New Profile</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startProviderImport()\">" + ICON_IMPORT + " Import</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm toolbar-icon-btn\" onclick=\"openWizard()\">" + ICON_ADD + " New Profile</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" onclick=\"startServiceImport()\">" + ICON_IMPORT +
+    " Import</button>");
 
   // Only show export when there are user profiles to export.
   if(Object.keys(userProfiles).length > 0) {
 
-    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"startProviderExport()\">" + ICON_EXPORT + " Export</button>");
+    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" onclick=\"startServiceExport()\">" + ICON_EXPORT +
+      " Export</button>");
   }
 
   lines.push("</div>");
@@ -87,16 +89,16 @@ export function generateCustomProfilesPanel(): string {
     id: "import-modal",
     maxWidth: "480px",
     onClose: "closeImportModal()",
-    title: "Import Provider Pack"
+    title: "Import Service Pack"
   }));
 
-  // Empty state when no user providers are installed.
+  // Empty state when no user services are installed.
   if(profileKeys.length === 0) {
 
     lines.push("<div class=\"empty-state\">");
-    lines.push("<p class=\"empty-state-title\">No custom providers installed</p>");
-    lines.push("<p class=\"empty-state-text\">Custom providers let you add support for streaming sites not built into PrismCast. ");
-    lines.push("Click <strong>New Profile</strong> to create one using the step-by-step wizard, or <strong>Import</strong> a provider ");
+    lines.push("<p class=\"empty-state-title\">No custom services installed</p>");
+    lines.push("<p class=\"empty-state-text\">Custom services let you add support for streaming sites not built into PrismCast. ");
+    lines.push("Click <strong>New Profile</strong> to create one using the step-by-step wizard, or <strong>Import</strong> a service ");
     lines.push("pack shared by another user.</p>");
     lines.push("</div>");
 
@@ -104,7 +106,7 @@ export function generateCustomProfilesPanel(): string {
   }
 
   // Build a reverse lookup: profile key → list of domains mapped to it.
-  const profileDomains: Record<string, { domain: string; provider?: string; providerTag?: string }[]> = {};
+  const profileDomains: Record<string, { domain: string; service?: string; serviceTag?: string }[]> = {};
 
   for(const key of profileKeys) {
 
@@ -116,18 +118,18 @@ export function generateCustomProfilesPanel(): string {
     if(config.profile && (config.profile in userProfiles)) {
 
       profileDomains[config.profile] ??= [];
-      profileDomains[config.profile].push({ domain, provider: config.provider, providerTag: config.providerTag });
+      profileDomains[config.profile].push({ domain, service: config.service, serviceTag: config.serviceTag });
     }
   }
 
   // Compute channel counts per profile key.
   const channelCounts = countChannelsByProfile(new Set(profileKeys));
 
-  // Provider table.
+  // Service table.
   lines.push("<table class=\"channel-table\">");
   lines.push("<thead><tr>");
   lines.push("<th>Profile</th>");
-  lines.push("<th>Provider</th>");
+  lines.push("<th>Service</th>");
   lines.push("<th>Base</th>");
   lines.push("<th>Domains</th>");
   lines.push("<th>Strategy</th>");
@@ -143,9 +145,9 @@ export function generateCustomProfilesPanel(): string {
     const strategy = profile.channelSelection?.strategy ?? "inherited";
     const count = channelCounts[key] ?? 0;
 
-    // Provider name: use the first non-empty provider name from domain mappings, or a placeholder if none.
-    const providerName = domains.find((d) => d.provider)?.provider;
-    const providerHtml = providerName ? escapeHtml(providerName) : "<span class=\"text-muted\">\u2014</span>";
+    // Service name: use the first non-empty service name from domain mappings, or a placeholder if none.
+    const serviceName = domains.find((d) => d.service)?.service;
+    const serviceHtml = serviceName ? escapeHtml(serviceName) : "<span class=\"text-muted\">\u2014</span>";
 
     // Domain list: show each mapped domain, or a placeholder if none.
     const domainHtml = (domains.length > 0) ?
@@ -154,7 +156,7 @@ export function generateCustomProfilesPanel(): string {
 
     lines.push("<tr>");
     lines.push("<td><strong>" + escapeHtml(key) + "</strong></td>");
-    lines.push("<td>" + providerHtml + "</td>");
+    lines.push("<td>" + serviceHtml + "</td>");
     lines.push("<td>" + escapeHtml(profile.extends ?? "\u2014") + "</td>");
     lines.push("<td>" + domainHtml + "</td>");
     lines.push("<td>" + escapeHtml(strategy) + "</td>");
@@ -197,7 +199,7 @@ export function generateCustomProfilesPanel(): string {
     id: "export-modal",
     maxWidth: "480px",
     onClose: "closeExportModal()",
-    title: "Export Provider Profiles"
+    title: "Export Service Profiles"
   }));
 
   return lines.join("\n");
@@ -214,7 +216,7 @@ export function generateProfileWizardModal(): string {
   const profiles = getProfiles();
   const groups = categorizeProfiles(profiles);
 
-  // Only general built-in profiles are shown in the wizard. Provider profiles live in a separate table (PROVIDER_PROFILES) and are already excluded from
+  // Only general built-in profiles are shown in the wizard. Service profiles live in a separate table (PROVIDER_PROFILES) and are already excluded from
   // getProfiles(). User-defined profiles are also excluded because chained extensions (custom B extends custom A extends built-in X) are not supported.
   const include = (p: ProfileInfo): boolean => (p.source === "builtin");
 
@@ -228,7 +230,7 @@ export function generateProfileWizardModal(): string {
     special: groups.special.filter(include).map((p) => ({ description: p.description, name: p.name, summary: p.summary }))
   };
 
-  // Server-side registries for the wizard. Strategies define user-configurable channel selection approaches (provider-specific strategies like foxGrid, slingGrid,
+  // Server-side registries for the wizard. Strategies define user-configurable channel selection approaches (service-specific strategies like foxGrid, slingGrid,
   // etc. are built-in only and never appear in the wizard). Flags define boolean profile flags exposed in step 3. Both are serialized as JSON so the wizard client
   // code is fully data-driven - adding a new strategy field or flag only requires updating these arrays.
   const WIZARD_STRATEGIES = [
@@ -295,7 +297,7 @@ export function generateProfileWizardModal(): string {
     errorId: "wizard-error",
     id: "wizard-modal",
     steps: [ "Base", "Strategy", "Flags", "Domain", "Save" ],
-    title: "New Provider Profile",
+    title: "New Service Profile",
     titleId: "wizard-title"
   });
 }
@@ -324,8 +326,8 @@ export function setupProfileRoutes(app: Express): void {
         const profileDomains = Object.entries(domains).filter(([ , config ]) => (config.profile === key)).map(([ domain, config ]) => ({
 
           domain,
-          provider: config.provider ?? "",
-          providerTag: config.providerTag ?? ""
+          service: config.service ?? "",
+          serviceTag: config.serviceTag ?? ""
         }));
 
         return {
@@ -527,7 +529,7 @@ export function setupProfileRoutes(app: Express): void {
     }
   });
 
-  // POST /config/profiles/import - Import a provider pack. Accepts optional skipChannels flag in the request body.
+  // POST /config/profiles/import - Import a service pack. Accepts optional skipChannels flag in the request body.
   app.post("/config/profiles/import", async (req: Request, res: Response): Promise<void> => {
 
     try {
@@ -535,8 +537,8 @@ export function setupProfileRoutes(app: Express): void {
       const rawData = req.body as Record<string, unknown>;
       const skipChannels = rawData.skipChannels === true;
 
-      // Parse and validate the provider pack. The parseProviderPack function ignores unknown keys like skipChannels.
-      const parseResult = parseProviderPack(rawData);
+      // Parse and validate the service pack. The parseServicePack function ignores unknown keys like skipChannels.
+      const parseResult = parseServicePack(rawData);
 
       if(!parseResult.pack) {
 
@@ -546,7 +548,7 @@ export function setupProfileRoutes(app: Express): void {
       }
 
       // Import the validated pack. Profile/domain save failures are fatal; channel import failures are non-fatal warnings included in the response.
-      const importResult = await importProviderPack(parseResult.pack, { skipChannels });
+      const importResult = await importServicePack(parseResult.pack, { skipChannels });
 
       if(!importResult.success) {
 
@@ -589,12 +591,12 @@ export function setupProfileRoutes(app: Express): void {
         warnings: importResult.errors });
     } catch(error) {
 
-      LOG.error("Failed to import provider pack: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to import provider pack: " + formatError(error), success: false });
+      LOG.error("Failed to import service pack: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to import service pack: " + formatError(error), success: false });
     }
   });
 
-  // GET /config/profiles/export - Export one or more user profiles as a provider pack. Accepts comma-separated profile keys.
+  // GET /config/profiles/export - Export one or more user profiles as a service pack. Accepts comma-separated profile keys.
   app.get("/config/profiles/export", (req: Request, res: Response): void => {
 
     try {
@@ -621,7 +623,7 @@ export function setupProfileRoutes(app: Express): void {
         return;
       }
 
-      const pack = exportProviderPack(profileKeys, { includeChannels, includeDomains, name: name ?? profileKeys.join(", ") });
+      const pack = exportServicePack(profileKeys, { includeChannels, includeDomains, name: name ?? profileKeys.join(", ") });
 
       if(!pack) {
 
@@ -634,12 +636,12 @@ export function setupProfileRoutes(app: Express): void {
       const filename = (profileKeys.length === 1) ? profileKeys[0] : "prismcast";
 
       res.setHeader("Content-Type", "application/json");
-      res.setHeader("Content-Disposition", "attachment; filename=\"" + filename + "-provider-pack.json\"");
+      res.setHeader("Content-Disposition", "attachment; filename=\"" + filename + "-service-pack.json\"");
       res.send(stringifySorted(pack) + "\n");
     } catch(error) {
 
-      LOG.error("Failed to export provider pack: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to export provider pack: " + formatError(error), success: false });
+      LOG.error("Failed to export service pack: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to export service pack: " + formatError(error), success: false });
     }
   });
 

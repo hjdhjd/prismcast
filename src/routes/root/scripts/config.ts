@@ -754,10 +754,10 @@ export function generateConfigSubtabScript(): string {
     "    if (editRow) editRow.style.display = 'none';",
     "  };",
 
-    // Select a provider pill in the add form. Clicking an inactive pill highlights it, fills the URL field, sets profile to autodetect (disabled), and expands
-    // the advanced section (channel selector is essential for provider channels). Clicking the active pill deselects it, clears the URL, and re-enables the
+    // Select a service pill in the add form. Clicking an inactive pill highlights it, fills the URL field, sets profile to autodetect (disabled), and expands
+    // the advanced section (channel selector is essential for service channels). Clicking the active pill deselects it, clears the URL, and re-enables the
     // profile dropdown for manual entry mode.
-    "  window.selectProviderPill = function(btn) {",
+    "  window.selectServicePill = function(btn) {",
     "    var wasActive = btn.classList.contains('active');",
     "    var pills = btn.parentElement.querySelectorAll('.provider-pill');",
     "    for(var i = 0; i < pills.length; i++) pills[i].classList.remove('active');",
@@ -782,7 +782,7 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Hide the add form and reset all fields and provider pill selection.
+    // Hide the add form and reset all fields and service pill selection.
     "  window.hideAddForm = function() {",
     "    var addForm = document.getElementById('add-channel-form');",
     "    if (addForm) addForm.style.display = 'none';",
@@ -1018,9 +1018,9 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Update a channel row's provider selection in-place. Syncs the HTML selected attribute so filterChannelRows() restore logic works correctly. We iterate
+    // Update a channel row's service selection in-place. Syncs the HTML selected attribute so filterChannelRows() restore logic works correctly. We iterate
     // _allOptions (if present) rather than querySelectorAll because filtered-out options are removed from the DOM but still tracked in the array.
-    "  function updateChannelProviderUI(channelKey, variant) {",
+    "  function updateChannelServiceUI(channelKey, variant) {",
     "    var row = document.getElementById('display-row-' + channelKey);",
     "    if (!row) return;",
     "    var sel = row.querySelector('.provider-select');",
@@ -1033,26 +1033,26 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  }",
 
-    // Update provider selection for a multi-provider channel.
-    "  window.updateProviderSelection = async function(selectElement) {",
+    // Update service selection for a multi-service channel.
+    "  window.updateServiceSelection = async function(selectElement) {",
     "    var channelKey = selectElement.getAttribute('data-channel');",
-    "    var providerKey = selectElement.value;",
+    "    var serviceKey = selectElement.value;",
     "    try {",
-    "      var res = await fetch('/config/provider', {",
+    "      var res = await fetch('/config/service', {",
     "        method: 'POST',",
     "        headers: { 'Content-Type': 'application/json' },",
-    "        body: JSON.stringify({ channel: channelKey, provider: providerKey })",
+    "        body: JSON.stringify({ channel: channelKey, service: serviceKey })",
     "      });",
     "      var result = await res.json();",
     "      if (result.success) {",
-    "        showToast('Provider updated. New streams will use the selected provider.', 'success');",
+    "        showToast('Service updated. New streams will use the selected service.', 'success');",
     "        if (result.patch) { applyChannelPatch(result.patch); }",
     "      } else {",
-    "        showToast(result.error || 'Failed to update provider.', 'error');",
+    "        showToast(result.error || 'Failed to update service.', 'error');",
     "      }",
     "    } catch(err) {",
-    "      console.error('Provider update error:', err);",
-    "      showToast('Failed to update provider: ' + err.message, 'error');",
+    "      console.error('Service update error:', err);",
+    "      showToast('Failed to update service: ' + err.message, 'error');",
     "    }",
     "  };",
 
@@ -1247,31 +1247,31 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Save the provider filter to the server and update the UI on success.
-    "  async function saveProviderFilter(enabledTags) {",
+    // Save the service filter to the server and update the UI on success.
+    "  async function saveServiceFilter(enabledTags) {",
     "    try {",
-    "      var r = await fetch('/config/provider-filter', {",
+    "      var r = await fetch('/config/service-filter', {",
     "        method: 'POST',",
     "        headers: { 'Content-Type': 'application/json' },",
-    "        body: JSON.stringify({ enabledProviders: enabledTags })",
+    "        body: JSON.stringify({ enabledServices: enabledTags })",
     "      });",
     "      var result = await r.json();",
     "      if (result.success) {",
-    "        updateProviderChips(enabledTags);",
+    "        updateServiceChips(enabledTags);",
     "        filterChannelRows(enabledTags);",
     "        updateBulkAssignOptions(enabledTags);",
-    "        updateProviderFilterButton(enabledTags);",
+    "        updateServiceFilterButton(enabledTags);",
     "        if(result.patch) { applyChannelPatch(result.patch); }",
-    "        showToast('Provider filter updated.' + PLAYLIST_HINT, 'success');",
+    "        showToast('Service filter updated.' + PLAYLIST_HINT, 'success');",
     "      }",
     "    } catch(err) {",
-    "      console.error('Provider filter error:', err);",
+    "      console.error('Service filter error:', err);",
     "      showToast('Failed to update filter: ' + err.message, 'error');",
     "    }",
     "  };",
 
-    // Provider filter: toggle a provider tag on/off.
-    "  window.toggleProviderTag = function(checkbox) {",
+    // Service filter: toggle a service tag on/off.
+    "  window.toggleServiceTag = function(checkbox) {",
     "    var menu = checkbox.closest('.provider-dropdown-menu');",
     "    if (!menu) return;",
     "    var checkboxes = menu.querySelectorAll('input[type=\"checkbox\"]:not(:disabled)');",
@@ -1287,38 +1287,38 @@ export function generateConfigSubtabScript(): string {
     "      if (!allCheckboxes[j].checked && !allCheckboxes[j].disabled) { allChecked = false; break; }",
     "    }",
     "    if (allChecked) enabledTags = [];",
-    "    saveProviderFilter(enabledTags);",
+    "    saveServiceFilter(enabledTags);",
     "  };",
 
-    // Remove a provider chip (uncheck the tag and update). Orphaned tags (no checkbox in the dropdown) are removed by rebuilding the list from the remaining chips.
-    "  window.removeProviderChip = function(tag) {",
+    // Remove a service chip (uncheck the tag and update). Orphaned tags (no checkbox in the dropdown) are removed by rebuilding the list from the remaining chips.
+    "  window.removeServiceChip = function(tag) {",
     "    var menu = document.querySelector('.provider-dropdown-menu');",
     "    if (!menu) return;",
     "    var cb = menu.querySelector('input[data-tag=\"' + tag + '\"]');",
-    "    if (cb) { cb.checked = false; toggleProviderTag(cb); return; }",
+    "    if (cb) { cb.checked = false; toggleServiceTag(cb); return; }",
 
-    // No checkbox exists for this tag — it is an orphaned entry with no corresponding provider. Build the enabled list from the remaining chips and POST directly.
+    // No checkbox exists for this tag — it is an orphaned entry with no corresponding service. Build the enabled list from the remaining chips and POST directly.
     "    var chips = document.querySelectorAll('#provider-chips .provider-chip[data-tag]');",
     "    var enabledTags = [];",
     "    for (var i = 0; i < chips.length; i++) {",
     "      var ct = chips[i].getAttribute('data-tag');",
     "      if (ct && ct !== tag) enabledTags.push(ct);",
     "    }",
-    "    saveProviderFilter(enabledTags);",
+    "    saveServiceFilter(enabledTags);",
     "  };",
 
-    // Update the provider filter button text. The filter icon SVG is inlined here because this runs client-side where the server's icon module is not available.
+    // Update the service filter button text. The filter icon SVG is inlined here because this runs client-side where the server's icon module is not available.
     "  var filterIcon = '<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
       "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 2h14l-5 6v5l-4 2V8z\"/></svg>';",
-    "  function updateProviderFilterButton(enabledTags) {",
+    "  function updateServiceFilterButton(enabledTags) {",
     "    var btn = document.getElementById('provider-filter-btn');",
     "    if(!btn) return;",
-    "    var label = (enabledTags.length > 0) ? 'Filtered' : 'All Providers';",
+    "    var label = (enabledTags.length > 0) ? 'Filtered' : 'All Services';",
     "    btn.innerHTML = filterIcon + ' ' + label + ' &#9662;';",
     "  };",
 
-    // Rebuild the provider chips from the enabled tags.
-    "  function updateProviderChips(enabledTags) {",
+    // Rebuild the service chips from the enabled tags.
+    "  function updateServiceChips(enabledTags) {",
     "    var container = document.getElementById('provider-chips');",
     "    if (!container) return;",
     "    container.innerHTML = '';",
@@ -1348,16 +1348,16 @@ export function generateConfigSubtabScript(): string {
     "      var iconAttr = chipIconUrl ? ' data-icon-url=\"' + chipIconUrl + '\"' : '';",
     "      chip.innerHTML = '<span class=\"provider-display\"' + domainAttr + iconAttr + ' data-sm>' + label + '</span>' +",
     "        '<button type=\"button\" class=\"chip-close\" aria-label=\"Remove ' + label +",
-    "        '\" onclick=\"removeProviderChip(\\'' + tag + '\\')\">\\u00d7</button>';",
+    "        '\" onclick=\"removeServiceChip(\\'' + tag + '\\')\">\\u00d7</button>';",
     "      container.appendChild(chip);",
     "    }",
-    "    processProviderDisplays();",
+    "    processServiceDisplays();",
     "  };",
 
-    // Filter channel rows based on enabled provider tags. Toggles the channel-unavailable class on each row and updates Source column content. Filtered-out options
+    // Filter channel rows based on enabled service tags. Toggles the channel-unavailable class on each row and updates Source column content. Filtered-out options
     // are removed from the DOM entirely rather than hidden — Safari ignores both the hidden attribute and display:none on option elements because they are rendered by
     // the OS native widget. All options (visible and removed) are stored in a _allOptions array on each select for reinsertion when the filter changes. Selection
-    // restore priority: (1) the saved choice (HTML selected attribute, kept in sync by updateProviderSelection), (2) the previous visual selection, (3) first option.
+    // restore priority: (1) the saved choice (HTML selected attribute, kept in sync by updateServiceSelection), (2) the previous visual selection, (3) first option.
     "  function filterChannelRows(enabledTags) {",
     "    var rows = document.querySelectorAll('tr[data-provider-tags]');",
     "    for (var i = 0; i < rows.length; i++) {",
@@ -1372,7 +1372,7 @@ export function generateConfigSubtabScript(): string {
     "      if (available) { rows[i].classList.remove('channel-unavailable'); }",
     "      else { rows[i].classList.add('channel-unavailable'); }",
 
-    // Update Source column elements: toggle between the no-provider label and the provider content (select or static name).
+    // Update Source column elements: toggle between the no-service label and the service content (select or static name).
     "      var label = rows[i].querySelector('.no-provider-label');",
     "      var sel = rows[i].querySelector('.provider-select');",
     "      var name = rows[i].querySelector('.provider-name');",
@@ -1404,7 +1404,7 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Re-run the provider filter on all channel rows using the current checkbox state. Called after insertChannelRow replaces a row (which loses the filter state).
+    // Re-run the service filter on all channel rows using the current checkbox state. Called after insertChannelRow replaces a row (which loses the filter state).
     "  function refilterChannelRows() {",
     "    var menu = document.querySelector('.provider-dropdown-menu');",
     "    if (!menu) return;",
@@ -1419,7 +1419,7 @@ export function generateConfigSubtabScript(): string {
     "    if (enabledTags.length > 0) { filterChannelRows(enabledTags); }",
     "  }",
 
-    // Update bulk assign options in the Quick Actions select to only show enabled providers. Toggles the hidden attribute on option elements based on the filter.
+    // Update bulk assign options in the Quick Actions select to only show enabled services. Toggles the hidden attribute on option elements based on the filter.
     "  function updateBulkAssignOptions(enabledTags) {",
     "    var select = document.getElementById('bulk-assign-select');",
     "    if(!select) return;",
@@ -1432,14 +1432,14 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Bulk assign all channels to a specific provider. Updates all dropdowns and profile cells in-place.
-    "  window.bulkAssignProvider = async function(providerTag) {",
-    "    if (!providerTag) return;",
+    // Bulk assign all channels to a specific service. Updates all dropdowns and profile cells in-place.
+    "  window.bulkAssignService = async function(serviceTag) {",
+    "    if (!serviceTag) return;",
     "    try {",
-    "      var r = await fetch('/config/provider-bulk-assign', {",
+    "      var r = await fetch('/config/service-bulk-assign', {",
     "        method: 'POST',",
     "        headers: { 'Content-Type': 'application/json' },",
-    "        body: JSON.stringify({ provider: providerTag })",
+    "        body: JSON.stringify({ service: serviceTag })",
     "      });",
     "      var result = await r.json();",
     "      if (result.success) {",
@@ -1447,13 +1447,13 @@ export function generateConfigSubtabScript(): string {
     "        var undoAction = null;",
     "        if (result.affected > 0 && result.previousSelections) {",
     "          var prevSelections = result.previousSelections;",
-    "          undoAction = { label: 'Undo', onclick: function() { restoreBulkProviders(prevSelections); } };",
+    "          undoAction = { label: 'Undo', onclick: function() { restoreBulkServices(prevSelections); } };",
     "        }",
     "        showToast(msg, 'success', undoAction ? 10000 : undefined, undoAction);",
     "        if (result.selections) {",
     "          for (var key in result.selections) {",
     "            var sel = result.selections[key];",
-    "            updateChannelProviderUI(key, sel.variant);",
+    "            updateChannelServiceUI(key, sel.variant);",
     "          }",
     "        }",
     "      } else {",
@@ -1464,10 +1464,10 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Restore previous provider selections (undo bulk assign). Sends the previousSelections map to the server and updates the UI with the restored selections.
-    "  async function restoreBulkProviders(prevSelections) {",
+    // Restore previous service selections (undo bulk assign). Sends the previousSelections map to the server and updates the UI with the restored selections.
+    "  async function restoreBulkServices(prevSelections) {",
     "    try {",
-    "      var r = await fetch('/config/provider-bulk-restore', {",
+    "      var r = await fetch('/config/service-bulk-restore', {",
     "        method: 'POST',",
     "        headers: { 'Content-Type': 'application/json' },",
     "        body: JSON.stringify({ selections: prevSelections })",
@@ -1478,7 +1478,7 @@ export function generateConfigSubtabScript(): string {
     "        if (result.selections) {",
     "          for (var key in result.selections) {",
     "            var sel = result.selections[key];",
-    "            updateChannelProviderUI(key, sel.variant);",
+    "            updateChannelServiceUI(key, sel.variant);",
     "          }",
     "        }",
     "      } else {",
@@ -1648,16 +1648,16 @@ export function generateConfigSubtabScript(): string {
     // Resolve the provider hostname. Try exact match first, then www-variant, then base domain match (e.g., sling.com matches watch.sling.com).
     "    var exactMatch = (typeof channelSelectorsByDomain !== 'undefined') && channelSelectorsByDomain[hostname];",
     "    var resolvedHostname = null;",
-    "    if ((typeof providerByDomain !== 'undefined') && providerByDomain[hostname]) { resolvedHostname = hostname; }",
-    "    else if ((typeof providerByDomain !== 'undefined') && providerByDomain[alt]) { resolvedHostname = alt; }",
-    "    else if (typeof providerByDomain !== 'undefined') {",
+    "    if ((typeof serviceByDomain !== 'undefined') && serviceByDomain[hostname]) { resolvedHostname = hostname; }",
+    "    else if ((typeof serviceByDomain !== 'undefined') && serviceByDomain[alt]) { resolvedHostname = alt; }",
+    "    else if (typeof serviceByDomain !== 'undefined') {",
     "      var suffix = '.' + hostname;",
-    "      var domainKeys = Object.keys(providerByDomain);",
+    "      var domainKeys = Object.keys(serviceByDomain);",
     "      for (var d = 0; d < domainKeys.length; d++) {",
     "        if (domainKeys[d].endsWith(suffix)) { resolvedHostname = domainKeys[d]; break; }",
     "      }",
     "    }",
-    "    var slug = resolvedHostname ? providerByDomain[resolvedHostname] : null;",
+    "    var slug = resolvedHostname ? serviceByDomain[resolvedHostname] : null;",
     "    var entries = exactMatch || ((typeof channelSelectorsByDomain !== 'undefined')",
     "      ? (channelSelectorsByDomain[alt] || (resolvedHostname ? channelSelectorsByDomain[resolvedHostname] : null)) : null);",
     "    if (entries) {",
@@ -1670,8 +1670,8 @@ export function generateConfigSubtabScript(): string {
     "    }",
 
     // Show a URL hint when the hostname didn't match exactly and we found a provider via fallback.
-    "    if (!exactMatch && slug && (typeof providerGuideUrl !== 'undefined') && providerGuideUrl[slug]) {",
-    "      var suggestedUrl = providerGuideUrl[slug];",
+    "    if (!exactMatch && slug && (typeof serviceGuideUrl !== 'undefined') && serviceGuideUrl[slug]) {",
+    "      var suggestedUrl = serviceGuideUrl[slug];",
     "      var link = document.createElement('a');",
     "      link.href = '#';",
     "      link.textContent = suggestedUrl;",
@@ -1692,7 +1692,7 @@ export function generateConfigSubtabScript(): string {
     "    var snapshotUrl = urlInput.value;",
     "    (async function() {",
     "      try {",
-    "        var r = await fetch('/providers/' + slug + '/channels');",
+    "        var r = await fetch('/services/' + slug + '/channels');",
     "        var channels = r.ok ? await r.json() : null;",
     "        if (!channels || urlInput.value !== snapshotUrl) return;",
     "        var existing = {};",
@@ -1710,7 +1710,7 @@ export function generateConfigSubtabScript(): string {
     "    })();",
     "  };",
 
-    // Initialize disabled channel toggle, provider filter, URL input listeners, and pending toast on page load.
+    // Initialize disabled channel toggle, service filter, URL input listeners, and pending toast on page load.
     "  (function() {",
 
     // Show any toast queued by showToastAfterReload() before the last page reload.
@@ -1747,7 +1747,7 @@ export function generateConfigSubtabScript(): string {
     "    var tagToggles = document.querySelectorAll('.tag-bulk-toggle[data-indeterminate=\"true\"]');",
     "    for(var ti = 0; ti < tagToggles.length; ti++) tagToggles[ti].indeterminate = true;",
 
-    // Run filterChannelRows on page load when a provider filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on
+    // Run filterChannelRows on page load when a service filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on
     // option elements. This initial pass removes those options from the DOM to enforce the filter.
     "    var menu = document.querySelector('.provider-dropdown-menu');",
     "    if (menu) {",
@@ -1765,7 +1765,7 @@ export function generateConfigSubtabScript(): string {
     "      addUrlInput.addEventListener('input', function() {",
     "        updateSelectorSuggestions('add-url', 'add-selectorList');",
 
-    // Deselect the active provider pill if the user manually edits the URL. Check whether the current URL still matches the active pill's URL — if not, the
+    // Deselect the active service pill if the user manually edits the URL. Check whether the current URL still matches the active pill's URL — if not, the
     // user has overridden the auto-fill and the pill should unhighlight. Also re-enable the profile dropdown since manual URL entry may need a custom profile.
     "        var activePill = document.querySelector('.provider-pill.active');",
     "        if(activePill && activePill.getAttribute('data-url') !== addUrlInput.value) {",

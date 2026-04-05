@@ -4,7 +4,7 @@
  */
 import type { ChannelSortField, SortDirection } from "../types/index.js";
 import type { Express, Request, Response } from "express";
-import { VALID_SORT_FIELDS, compareChannelSort, getAllProviderTags, getProviderTagForChannel, resolveProviderKey } from "../config/providers.js";
+import { VALID_SORT_FIELDS, compareChannelSort, getAllServiceTags, getServiceTagForChannel, resolveServiceKey } from "../config/services.js";
 import { getActiveTagVocabulary, getAllChannels } from "../config/userChannels.js";
 import { CONFIG } from "../config/index.js";
 import { resolveProfile } from "../config/profiles.js";
@@ -16,7 +16,7 @@ import { resolveProfile } from "../config/profiles.js";
 // Include/Exclude Filter.
 
 /* A parsed include/exclude filter specifies which items to include or exclude based on a set of string tags. In include mode, only items matching at least one of
- * the specified tags are included. In exclude mode, items matching any of the specified tags are excluded. Used by both provider filtering (?provider=) and tag
+ * the specified tags are included. In exclude mode, items matching any of the specified tags are excluded. Used by both service filtering (?service=) and tag
  * filtering (?tag=) with different validation sources.
  */
 interface IncludeExcludeFilter {
@@ -29,7 +29,7 @@ interface IncludeExcludeFilter {
  * Parses and validates an include/exclude filter query parameter. The parameter is a comma-separated list of values with optional `-` prefix for exclusion mode.
  * All values must be either include (no prefix) or exclude (`-` prefix) — mixing is not allowed. Values are case-insensitive and validated against a known set.
  * @param param - The raw query parameter string (e.g., "sports,news" or "-kids").
- * @param entityName - Human-readable name for error messages (e.g., "provider tag", "tag").
+ * @param entityName - Human-readable name for error messages (e.g., "service tag", "tag").
  * @param knownValues - Array of valid values to validate against.
  * @returns An object with `filter` on success, or `error` with a descriptive message and `validTags` list on failure.
  */
@@ -80,13 +80,13 @@ function parseIncludeExcludeFilter(param: string, entityName: string,
 }
 
 /**
- * Parses a provider filter by validating against known provider tags.
+ * Parses a service filter by validating against known service tags.
  * @param param - The raw query parameter string (e.g., "yttv,sling" or "-hulu,-sling").
  * @returns An object with `filter` on success, or `error` with a descriptive message and `validTags` list on failure.
  */
-function parseProviderFilter(param: string): { error: string; validTags: string[] } | { filter: IncludeExcludeFilter } {
+function parseServiceFilter(param: string): { error: string; validTags: string[] } | { filter: IncludeExcludeFilter } {
 
-  return parseIncludeExcludeFilter(param, "provider tag", getAllProviderTags().map((p) => p.tag));
+  return parseIncludeExcludeFilter(param, "service tag", getAllServiceTags().map((p) => p.tag));
 }
 
 /**
@@ -131,16 +131,16 @@ export function resolveBaseUrl(req: Request): string {
  * Generates the M3U playlist content for display on the landing page or the playlist endpoint. The playlist includes all configured video channels with their
  * stream URLs dynamically constructed from the provided base URL.
  * @param baseUrl - The base URL to use for stream URLs (e.g., "http://localhost:5589").
- * @param providerFilter - Optional provider filter based on the currently selected provider for each channel. In include mode, only channels whose selected
- * provider matches a filter tag are included. In exclude mode, channels whose selected provider matches any filter tag are excluded.
+ * @param serviceFilter - Optional service filter based on the currently selected service for each channel. In include mode, only channels whose selected
+ * service matches a filter tag are included. In exclude mode, channels whose selected service matches any filter tag are excluded.
  * @param tagFilter - Optional tag filter based on the channel's effective organizational tags. In include mode, only channels with at least one matching tag are
- * included. In exclude mode, channels with any matching tag are excluded. Tag and provider filters compose via intersection.
+ * included. In exclude mode, channels with any matching tag are excluded. Tag and service filters compose via intersection.
  * @param sort - Optional sort field override. When provided, channels are sorted by this field instead of the user's saved preference. Validated against
  * VALID_SORT_FIELDS before calling.
  * @param direction - Optional sort direction override ("asc" or "desc"). When provided, overrides the user's saved sort direction.
  * @returns The M3U playlist content.
  */
-export function generatePlaylistContent(baseUrl: string, providerFilter?: IncludeExcludeFilter, tagFilter?: IncludeExcludeFilter,
+export function generatePlaylistContent(baseUrl: string, serviceFilter?: IncludeExcludeFilter, tagFilter?: IncludeExcludeFilter,
   sort?: ChannelSortField, direction?: SortDirection): string {
 
   const channels = getAllChannels();
@@ -158,15 +158,15 @@ export function generatePlaylistContent(baseUrl: string, providerFilter?: Includ
 
     const channel = channels[name];
 
-    // Apply the provider filter if specified.
-    if(providerFilter) {
+    // Apply the service filter if specified.
+    if(serviceFilter) {
 
-      const selectedKey = resolveProviderKey(name);
-      const selectedTag = getProviderTagForChannel(selectedKey);
-      const hasMatch = providerFilter.tags.includes(selectedTag);
+      const selectedKey = resolveServiceKey(name);
+      const selectedTag = getServiceTagForChannel(selectedKey);
+      const hasMatch = serviceFilter.tags.includes(selectedTag);
 
-      // In include mode, skip channels whose selected provider doesn't match any filter tag. In exclude mode, skip channels whose selected provider matches.
-      if(providerFilter.exclude ? hasMatch : !hasMatch) {
+      // In include mode, skip channels whose selected service doesn't match any filter tag. In exclude mode, skip channels whose selected service matches.
+      if(serviceFilter.exclude ? hasMatch : !hasMatch) {
 
         continue;
       }
@@ -224,22 +224,22 @@ const VALID_SORT_DIRECTIONS = new Set<SortDirection>([ "asc", "desc" ]);
  */
 export function setupPlaylistEndpoint(app: Express): void {
 
-  // GET /playlist - Returns the M3U playlist file. Supports optional query parameters: ?provider= for filtering by streaming provider, ?tag= for filtering by
+  // GET /playlist - Returns the M3U playlist file. Supports optional query parameters: ?service= for filtering by streaming service, ?tag= for filtering by
   // organizational tags, ?sort= for sort field override, and ?direction= for sort direction override.
   app.get("/playlist", (req: Request, res: Response): void => {
 
     const baseUrl = resolveBaseUrl(req);
-    const providerParam = typeof req.query.provider === "string" ? req.query.provider.trim() : undefined;
+    const serviceParam = typeof req.query.service === "string" ? req.query.service.trim() : undefined;
     const tagParam = typeof req.query.tag === "string" ? req.query.tag.trim() : undefined;
     const sortParam = typeof req.query.sort === "string" ? req.query.sort.trim() || undefined : undefined;
     const directionParam = typeof req.query.direction === "string" ? req.query.direction.trim().toLowerCase() || undefined : undefined;
-    let providerFilter: IncludeExcludeFilter | undefined;
+    let serviceFilter: IncludeExcludeFilter | undefined;
     let tagFilter: IncludeExcludeFilter | undefined;
 
-    // Parse and validate the provider filter if specified.
-    if(providerParam) {
+    // Parse and validate the service filter if specified.
+    if(serviceParam) {
 
-      const result = parseProviderFilter(providerParam);
+      const result = parseServiceFilter(serviceParam);
 
       if("error" in result) {
 
@@ -248,7 +248,7 @@ export function setupPlaylistEndpoint(app: Express): void {
         return;
       }
 
-      providerFilter = result.filter;
+      serviceFilter = result.filter;
     }
 
     // Parse and validate the tag filter if specified.
@@ -284,7 +284,7 @@ export function setupPlaylistEndpoint(app: Express): void {
 
     const sort = sortParam as ChannelSortField | undefined;
     const direction = directionParam as SortDirection | undefined;
-    const playlist = generatePlaylistContent(baseUrl, providerFilter, tagFilter, sort, direction);
+    const playlist = generatePlaylistContent(baseUrl, serviceFilter, tagFilter, sort, direction);
 
     res.set("Content-Type", "audio/x-mpegurl");
     res.send(playlist);

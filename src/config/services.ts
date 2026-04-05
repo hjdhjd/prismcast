@@ -1,26 +1,26 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * providers.ts: Provider group management for multi-provider channels.
+ * services.ts: Service group management for multi-service channels.
  */
 import { CHANNEL_IDENTITY_FIELDS, PREDEFINED_CHANNELS } from "../channels/index.js";
-import type { Channel, ChannelMap, ChannelSortField, ProviderGroup, SortDirection } from "../types/index.js";
+import type { Channel, ChannelMap, ChannelSortField, ServiceGroup, SortDirection } from "../types/index.js";
 import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
 import { getChannelEffectiveTags } from "./userChannels.js";
 import { getProfileForChannel } from "./profiles.js";
 import { getUserDomains } from "./userProfiles.js";
 
-/* Provider groups allow multiple streaming providers to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
+/* Service groups allow multiple streaming services to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
  * All variant relationships — predefined and user-defined — are expressed via the canonicalKey field on Channel. The flattener sets canonicalKey on predefined
- * variant entries, the browse modal sets it on user variant entries, and the one-time migration stamps it on pre-existing user entries. buildProviderGroups
+ * variant entries, the browse modal sets it on user variant entries, and the one-time migration stamps it on pre-existing user entries. buildServiceGroups
  * scans all channels once and groups by canonicalKey. One field, one mechanism, one code path.
  *
- * User overrides: When a user defines a channel with the same key as a predefined channel, both versions appear in the provider dropdown. The user's custom version
+ * User overrides: When a user defines a channel with the same key as a predefined channel, both versions appear in the service dropdown. The user's custom version
  * is shown first (labeled "Custom") and is the default. The original predefined version uses a special key suffix (PREDEFINED_SUFFIX) to distinguish it from the
  * user's version. This allows users to switch between their custom definition and the original at any time.
  *
- * User selections are stored in channels.json (in the data directory) under the `providerSelections` key and persist across restarts.
+ * User selections are stored in channels.json (in the data directory) under the `serviceSelections` key and persist across restarts.
  */
 
 // Suffix appended to channel keys to reference the original predefined channel when a user has overridden it. For example, "espn:predefined" references the original
@@ -29,7 +29,7 @@ const PREDEFINED_SUFFIX = ":predefined";
 
 /**
  * Strips the :predefined suffix from a channel key if present, returning the base key. Synthetic keys like "pbs:predefined" are created when a user overrides a
- * predefined channel — the original predefined entry gets this suffix to coexist with the user's custom version in the provider dropdown. Functions that look up
+ * predefined channel — the original predefined entry gets this suffix to coexist with the user's custom version in the service dropdown. Functions that look up
  * channel data by key must strip the suffix to find the actual channel entry.
  * @param key - The channel key, possibly with :predefined suffix.
  * @returns The base key without the suffix.
@@ -39,56 +39,56 @@ function stripPredefinedSuffix(key: string): string {
   return key.endsWith(PREDEFINED_SUFFIX) ? key.slice(0, -PREDEFINED_SUFFIX.length) : key;
 }
 
-// Module-level storage for provider groups, keyed by canonical channel key.
-const providerGroups = new Map<string, ProviderGroup>();
+// Module-level storage for service groups, keyed by canonical channel key.
+const serviceGroups = new Map<string, ServiceGroup>();
 
 // Reference to the channels map for inheritance resolution.
 let channelsRef: ChannelMap = {};
 
-// User's provider selections, keyed by canonical channel key. Values are the selected provider key (e.g., "espn-disneyplus").
-let providerSelections = new Map<string, string>();
+// User's service selections, keyed by canonical channel key. Values are the selected service key (e.g., "espn-disneyplus").
+let serviceSelections = new Map<string, string>();
 
-// Provider Tag System.
+// Service Tag System.
 
-// Module-level state for the provider filter. Empty array means "no filter" (all providers shown). Non-empty means only these tags are active.
-let enabledProviders: string[] = [];
+// Module-level state for the service filter. Empty array means "no filter" (all services shown). Non-empty means only these tags are active.
+let enabledServices: string[] = [];
 
 /**
- * Derives the provider tag for a channel from its URL domain, falling back to "direct" if no provider tag is configured. Checks the channel's explicit profile
- * first (for user-defined profiles with custom providerTag), then the URL domain via getDomainConfig().
+ * Derives the service tag for a channel from its URL domain, falling back to "direct" if no service tag is configured. Checks the channel's explicit profile
+ * first (for user-defined profiles with custom serviceTag), then the URL domain via getDomainConfig().
  * @param channel - The channel to derive a tag for.
- * @returns The provider tag string.
+ * @returns The service tag string.
  */
-function resolveProviderTag(channel: Channel): string {
+function resolveServiceTag(channel: Channel): string {
 
-  // If the channel specifies a user-defined profile, use that profile's providerTag rather than deriving from the URL. This ensures channels with explicit profile
-  // assignments are grouped under the correct provider filter even when their URL domain has a different built-in providerTag.
+  // If the channel specifies a user-defined profile, use that profile's serviceTag rather than deriving from the URL. This ensures channels with explicit profile
+  // assignments are grouped under the correct service filter even when their URL domain has a different built-in serviceTag.
   if(channel.profile) {
 
-    const profileProvider = resolveUserProfileProvider(channel.profile);
+    const profileService = resolveUserProfileService(channel.profile);
 
-    if(profileProvider?.providerTag) {
+    if(profileService?.serviceTag) {
 
-      return profileProvider.providerTag;
+      return profileService.serviceTag;
     }
   }
 
   const config = getDomainConfig(channel.url);
 
-  return config?.providerTag ?? "direct";
+  return config?.serviceTag ?? "direct";
 }
 
 /**
- * Gets the provider tag for a channel key. For channels in a provider group, reads the pre-computed tag from the group variant entry (computed at group-building
- * time by buildProviderGroups). For standalone channels not in any group, derives the tag from the channel's URL domain. This function should not be called with
- * :predefined synthetic keys — those only exist inside provider groups and their tags are available via the group's variant entries.
+ * Gets the service tag for a channel key. For channels in a service group, reads the pre-computed tag from the group variant entry (computed at group-building
+ * time by buildServiceGroups). For standalone channels not in any group, derives the tag from the channel's URL domain. This function should not be called with
+ * :predefined synthetic keys — those only exist inside service groups and their tags are available via the group's variant entries.
  * @param key - The channel key.
- * @returns The provider tag string.
+ * @returns The service tag string.
  */
-export function getProviderTagForChannel(key: string): string {
+export function getServiceTagForChannel(key: string): string {
 
   const effectiveKey = stripPredefinedSuffix(key);
-  const group = providerGroups.get(effectiveKey);
+  const group = serviceGroups.get(effectiveKey);
 
   // For channels in a group, read the pre-computed tag from the variant entry.
   if(group) {
@@ -110,11 +110,11 @@ export function getProviderTagForChannel(key: string): string {
     return "direct";
   }
 
-  return resolveProviderTag(channel);
+  return resolveServiceTag(channel);
 }
 
 /**
- * Returns the auth domain for a channel key. Domain is the natural auth boundary — browser cookies and sessions scope to it. Multi-channel providers work correctly
+ * Returns the auth domain for a channel key. Domain is the natural auth boundary — browser cookies and sessions scope to it. Multi-channel services work correctly
  * because all their channels share one domain, and canonical channels work correctly because each has its own domain.
  * @param key - The channel key.
  * @returns The extracted domain from the channel's URL, or empty string if the channel or URL cannot be resolved.
@@ -134,13 +134,13 @@ export function getAuthDomainForChannel(key: string): string {
 }
 
 /**
- * Returns all provider tags for a channel (canonical tag + all variant suffix tags). Used to determine which providers offer this channel.
+ * Returns all service tags for a channel (canonical tag + all variant suffix tags). Used to determine which services offer this channel.
  * @param canonicalKey - The canonical channel key.
- * @returns Array of provider tag strings.
+ * @returns Array of service tag strings.
  */
-export function getChannelProviderTags(canonicalKey: string): string[] {
+export function getChannelServiceTags(canonicalKey: string): string[] {
 
-  const group = providerGroups.get(canonicalKey);
+  const group = serviceGroups.get(canonicalKey);
 
   // For grouped channels, collect tags directly from the pre-computed variant entries.
   if(group) {
@@ -162,32 +162,32 @@ export function getChannelProviderTags(canonicalKey: string): string[] {
   }
 
   // Standalone channel — derive tag from the channel directly.
-  return [getProviderTagForChannel(canonicalKey)];
+  return [getServiceTagForChannel(canonicalKey)];
 }
 
 /**
- * Scans all provider groups and collects unique provider tags with display names. Display names are derived from the provider field in DOMAIN_CONFIG entries that
- * have a providerTag.
+ * Scans all service groups and collects unique service tags with display names. Display names are derived from the service field in DOMAIN_CONFIG entries that
+ * have a serviceTag.
  * @returns Array of { displayName, domain, iconUrl, tag } objects sorted alphabetically by display name, with "direct" always first.
  */
-export function getAllProviderTags(): { displayName: string; domain?: string; iconUrl?: string; tag: string }[] {
+export function getAllServiceTags(): { displayName: string; domain?: string; iconUrl?: string; tag: string }[] {
 
   const tags = new Set<string>();
 
-  // Scan all channels (not just grouped ones) to find all provider tags.
+  // Scan all channels (not just grouped ones) to find all service tags.
   const allKeys = new Set([ ...Object.keys(channelsRef), ...Object.keys(PREDEFINED_CHANNELS) ]);
 
   for(const key of allKeys) {
 
-    // Skip variant keys — they are covered by getChannelProviderTags() on the canonical.
-    const group = providerGroups.get(key);
+    // Skip variant keys — they are covered by getChannelServiceTags() on the canonical.
+    const group = serviceGroups.get(key);
 
     if(group && (group.canonicalKey !== key)) {
 
       continue;
     }
 
-    const channelTags = getChannelProviderTags(key);
+    const channelTags = getChannelServiceTags(key);
 
     for(const tag of channelTags) {
 
@@ -195,36 +195,36 @@ export function getAllProviderTags(): { displayName: string; domain?: string; ic
     }
   }
 
-  // Scan user domain mappings for provider tags that may not appear in any channel yet (e.g., newly created profiles with no channels assigned).
+  // Scan user domain mappings for service tags that may not appear in any channel yet (e.g., newly created profiles with no channels assigned).
   const userDomains = getUserDomains();
 
   for(const config of Object.values(userDomains)) {
 
-    if(config.providerTag) {
+    if(config.serviceTag) {
 
-      tags.add(config.providerTag);
+      tags.add(config.serviceTag);
     }
   }
 
-  // Build tag metadata maps from DOMAIN_CONFIG entries. Collects display name, domain, and icon URL for each provider tag. First match wins for each tag.
+  // Build tag metadata maps from DOMAIN_CONFIG entries. Collects display name, domain, and icon URL for each service tag. First match wins for each tag.
   const tagMeta = new Map<string, { displayName: string; domain?: string; iconUrl?: string }>();
 
   tagMeta.set("direct", { displayName: "Channel Website" });
 
   for(const [ domain, config ] of Object.entries(DOMAIN_CONFIG)) {
 
-    if(config.providerTag && config.provider && !tagMeta.has(config.providerTag)) {
+    if(config.serviceTag && config.service && !tagMeta.has(config.serviceTag)) {
 
-      tagMeta.set(config.providerTag, { displayName: config.provider, domain, iconUrl: config.iconUrl });
+      tagMeta.set(config.serviceTag, { displayName: config.service, domain, iconUrl: config.iconUrl });
     }
   }
 
   // Scan user domain mappings for metadata not covered by built-in DOMAIN_CONFIG.
   for(const [ domain, config ] of Object.entries(userDomains)) {
 
-    if(config.providerTag && config.provider && !tagMeta.has(config.providerTag)) {
+    if(config.serviceTag && config.service && !tagMeta.has(config.serviceTag)) {
 
-      tagMeta.set(config.providerTag, { displayName: config.provider, domain, iconUrl: config.iconUrl });
+      tagMeta.set(config.serviceTag, { displayName: config.service, domain, iconUrl: config.iconUrl });
     }
   }
 
@@ -258,32 +258,32 @@ export function getAllProviderTags(): { displayName: string; domain?: string; ic
 }
 
 /**
- * Gets the current enabled provider tags.
- * @returns Copy of the enabled providers array. Empty means no filter (all shown).
+ * Gets the current enabled service tags.
+ * @returns Copy of the enabled services array. Empty means no filter (all shown).
  */
-export function getEnabledProviders(): string[] {
+export function getEnabledServices(): string[] {
 
-  return [...enabledProviders];
+  return [...enabledServices];
 }
 
 /**
- * Sets the enabled provider tags. Empty array means "no filter" (all providers shown).
- * @param tags - The provider tags to enable.
+ * Sets the enabled service tags. Empty array means "no filter" (all services shown).
+ * @param tags - The service tags to enable.
  */
-export function setEnabledProviders(tags: string[]): void {
+export function setEnabledServices(tags: string[]): void {
 
-  enabledProviders = [...tags];
+  enabledServices = [...tags];
 }
 
 /**
- * Checks if a provider tag is currently enabled. Returns true if the tag is enabled, if no filter is active (empty set), or if the tag is "direct".
- * @param tag - The provider tag to check.
- * @returns True if the provider is available.
+ * Checks if a service tag is currently enabled. Returns true if the tag is enabled, if no filter is active (empty set), or if the tag is "direct".
+ * @param tag - The service tag to check.
+ * @returns True if the service is available.
  */
-export function isProviderTagEnabled(tag: string): boolean {
+export function isServiceTagEnabled(tag: string): boolean {
 
-  // No filter active — all providers are enabled.
-  if(enabledProviders.length === 0) {
+  // No filter active — all services are enabled.
+  if(enabledServices.length === 0) {
 
     return true;
   }
@@ -294,25 +294,25 @@ export function isProviderTagEnabled(tag: string): boolean {
     return true;
   }
 
-  return enabledProviders.includes(tag);
+  return enabledServices.includes(tag);
 }
 
 /**
- * Centralized availability check for the provider filter. Returns true if the channel has at least one variant whose provider tag is enabled.
+ * Centralized availability check for the service filter. Returns true if the channel has at least one variant whose service tag is enabled.
  * @param canonicalKey - The canonical channel key.
- * @returns True if the channel passes the provider filter.
+ * @returns True if the channel passes the service filter.
  */
-export function isChannelAvailableByProvider(canonicalKey: string): boolean {
+export function isChannelAvailableByService(canonicalKey: string): boolean {
 
   // No filter active — all channels are available.
-  if(enabledProviders.length === 0) {
+  if(enabledServices.length === 0) {
 
     return true;
   }
 
-  const tags = getChannelProviderTags(canonicalKey);
+  const tags = getChannelServiceTags(canonicalKey);
 
-  return tags.some((tag) => isProviderTagEnabled(tag));
+  return tags.some((tag) => isServiceTagEnabled(tag));
 }
 
 /**
@@ -331,18 +331,18 @@ function isUserOverride(key: string, channels: ChannelMap): boolean {
 }
 
 /**
- * Builds provider groups by scanning all channels and grouping by canonicalKey. Variant entries declare their canonical via the canonicalKey field (set by the
+ * Builds service groups by scanning all channels and grouping by canonicalKey. Variant entries declare their canonical via the canonicalKey field (set by the
  * flattener for predefined channels, by the browse modal for user channels, and by the one-time migration for pre-existing user entries). This is a single
  * pass over the merged channel map — one field, one mechanism for both predefined and user-defined variant relationships.
  *
  * User overrides of predefined channels (same key, different object reference) produce a two-entry group with "Custom" and the original predefined version,
- * even for single-provider channels that don't have canonicalKey-based variants.
+ * even for single-service channels that don't have canonicalKey-based variants.
  * @param channels - The merged channel map (predefined + user channels).
  */
-export function buildProviderGroups(channels: ChannelMap): void {
+export function buildServiceGroups(channels: ChannelMap): void {
 
   channelsRef = channels;
-  providerGroups.clear();
+  serviceGroups.clear();
 
   // Pass 1: Collect variant keys grouped by their canonical key. Entries without canonicalKey are canonicals or standalone channels.
   const variantsByCanonical = new Map<string, string[]>();
@@ -376,20 +376,20 @@ export function buildProviderGroups(channels: ChannelMap): void {
       continue;
     }
 
-    const variants: ProviderGroup["variants"] = [];
+    const variants: ServiceGroup["variants"] = [];
 
-    // Handle user override of the canonical entry. The :predefined variant's tag is derived from the predefined channel (not the user override) so that provider
-    // filtering correctly reflects the predefined channel's provider, not the user's custom URL.
+    // Handle user override of the canonical entry. The :predefined variant's tag is derived from the predefined channel (not the user override) so that service
+    // filtering correctly reflects the predefined channel's service, not the user's custom URL.
     if(isUserOverride(canonicalKey, channels)) {
 
       const predefined = PREDEFINED_CHANNELS[canonicalKey];
 
-      variants.push({ key: canonicalKey, label: "Custom (" + extractDomain(canonical.url) + ")", tag: resolveProviderTag(canonical) });
-      variants.push({ key: canonicalKey + PREDEFINED_SUFFIX, label: predefined.provider ?? getProviderDisplayName(predefined.url),
-        tag: resolveProviderTag(predefined) });
+      variants.push({ key: canonicalKey, label: "Custom (" + extractDomain(canonical.url) + ")", tag: resolveServiceTag(canonical) });
+      variants.push({ key: canonicalKey + PREDEFINED_SUFFIX, label: predefined.service ?? getServiceDisplayName(predefined.url),
+        tag: resolveServiceTag(predefined) });
     } else {
 
-      variants.push({ key: canonicalKey, label: getChannelProviderLabel(canonical), tag: resolveProviderTag(canonical) });
+      variants.push({ key: canonicalKey, label: getChannelServiceLabel(canonical), tag: resolveServiceTag(canonical) });
     }
 
     variantKeys.sort();
@@ -398,27 +398,27 @@ export function buildProviderGroups(channels: ChannelMap): void {
 
       const variant = channels[variantKey];
 
-      variants.push({ key: variantKey, label: getChannelProviderLabel(variant), tag: resolveProviderTag(variant) });
+      variants.push({ key: variantKey, label: getChannelServiceLabel(variant), tag: resolveServiceTag(variant) });
     }
 
-    const group: ProviderGroup = { canonicalKey, variants };
+    const group: ServiceGroup = { canonicalKey, variants };
 
     // Map canonical and all variant keys to this group for easy lookup.
-    providerGroups.set(canonicalKey, group);
+    serviceGroups.set(canonicalKey, group);
 
     for(const variantKey of variantKeys) {
 
-      providerGroups.set(variantKey, group);
+      serviceGroups.set(variantKey, group);
     }
 
-    LOG.debug("config:general", "Provider group '%s': variants=%s.", canonicalKey, variants.map((v) => v.key).join(", "));
+    LOG.debug("config:general", "Service group '%s': variants=%s.", canonicalKey, variants.map((v) => v.key).join(", "));
   }
 
-  // Pass 3: Create groups for user overrides of single-provider predefined channels. These don't have canonicalKey-based variants but the user's custom version
+  // Pass 3: Create groups for user overrides of single-service predefined channels. These don't have canonicalKey-based variants but the user's custom version
   // should be toggleable against the predefined original.
   for(const key of Object.keys(channels)) {
 
-    if(providerGroups.has(key)) {
+    if(serviceGroups.has(key)) {
 
       continue;
     }
@@ -430,28 +430,28 @@ export function buildProviderGroups(channels: ChannelMap): void {
 
     const userChannel = channels[key];
     const predefined = PREDEFINED_CHANNELS[key];
-    const variants: ProviderGroup["variants"] = [
-      { key, label: "Custom (" + extractDomain(userChannel.url) + ")", tag: resolveProviderTag(userChannel) },
-      { key: key + PREDEFINED_SUFFIX, label: predefined.provider ?? getProviderDisplayName(predefined.url), tag: resolveProviderTag(predefined) }
+    const variants: ServiceGroup["variants"] = [
+      { key, label: "Custom (" + extractDomain(userChannel.url) + ")", tag: resolveServiceTag(userChannel) },
+      { key: key + PREDEFINED_SUFFIX, label: predefined.service ?? getServiceDisplayName(predefined.url), tag: resolveServiceTag(predefined) }
     ];
 
-    const group: ProviderGroup = { canonicalKey: key, variants };
+    const group: ServiceGroup = { canonicalKey: key, variants };
 
-    providerGroups.set(key, group);
-    LOG.debug("config:general", "Provider group '%s' (override): variants=%s.", key, variants.map((v) => v.key).join(", "));
+    serviceGroups.set(key, group);
+    LOG.debug("config:general", "Service group '%s' (override): variants=%s.", key, variants.map((v) => v.key).join(", "));
   }
 }
 
 /**
- * Resolves a URL to a friendly provider display name. Checks built-in DOMAIN_CONFIG first for a stable, well-known provider name, then falls back to
+ * Resolves a URL to a friendly service display name. Checks built-in DOMAIN_CONFIG first for a stable, well-known service name, then falls back to
  * getDomainConfig() which includes user domain mappings. This ordering prevents user domain overrides from corrupting display labels for predefined channel
- * variants — a user mapping a built-in domain to a custom profile should not rename every provider dropdown entry that uses that domain.
- * @param url - The URL to resolve a provider display name for.
- * @returns The provider display name, or the concise domain if no provider name is configured.
+ * variants — a user mapping a built-in domain to a custom profile should not rename every service dropdown entry that uses that domain.
+ * @param url - The URL to resolve a service display name for.
+ * @returns The service display name, or the concise domain if no service name is configured.
  */
-export function getProviderDisplayName(url: string): string {
+export function getServiceDisplayName(url: string): string {
 
-  // Prefer built-in DOMAIN_CONFIG provider names for stable display. Check by full hostname first (for subdomain-specific entries like tv.youtube.com), then by
+  // Prefer built-in DOMAIN_CONFIG service names for stable display. Check by full hostname first (for subdomain-specific entries like tv.youtube.com), then by
   // concise domain (e.g., disneyplus.com).
   try {
 
@@ -459,18 +459,18 @@ export function getProviderDisplayName(url: string): string {
     const builtinFull = DOMAIN_CONFIG[hostname];
 
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if(builtinFull?.provider) {
+    if(builtinFull?.service) {
 
-      return builtinFull.provider;
+      return builtinFull.service;
     }
 
     const concise = extractDomain(url);
     const builtinConcise = DOMAIN_CONFIG[concise];
 
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if(builtinConcise?.provider) {
+    if(builtinConcise?.service) {
 
-      return builtinConcise.provider;
+      return builtinConcise.service;
     }
   } catch {
 
@@ -480,17 +480,17 @@ export function getProviderDisplayName(url: string): string {
   // For domains not in DOMAIN_CONFIG, fall back to getDomainConfig() which includes user domain mappings.
   const config = getDomainConfig(url);
 
-  return config?.provider ?? extractDomain(url);
+  return config?.service ?? extractDomain(url);
 }
 
 /**
- * Resolves provider identity (tag and display name) for a user-defined profile by scanning its domain mappings. Returns the first matching domain config's
- * providerTag and provider name. This is the single source of truth for "profile key → provider identity" resolution, used by both tag and label lookups to avoid
+ * Resolves service identity (tag and display name) for a user-defined profile by scanning its domain mappings. Returns the first matching domain config's
+ * serviceTag and service name. This is the single source of truth for "profile key → service identity" resolution, used by both tag and label lookups to avoid
  * duplicating the domain scan logic.
  * @param profileKey - The user profile key to resolve.
- * @returns The provider identity from the profile's domain mappings, or undefined if no matching domain mapping exists.
+ * @returns The service identity from the profile's domain mappings, or undefined if no matching domain mapping exists.
  */
-function resolveUserProfileProvider(profileKey: string): { provider?: string; providerTag?: string } | undefined {
+function resolveUserProfileService(profileKey: string): { service?: string; serviceTag?: string } | undefined {
 
   const userDomains = getUserDomains();
 
@@ -498,7 +498,7 @@ function resolveUserProfileProvider(profileKey: string): { provider?: string; pr
 
     if(config.profile === profileKey) {
 
-      return { provider: config.provider, providerTag: config.providerTag };
+      return { service: config.service, serviceTag: config.serviceTag };
     }
   }
 
@@ -506,54 +506,54 @@ function resolveUserProfileProvider(profileKey: string): { provider?: string; pr
 }
 
 /**
- * Resolves the provider display label for a channel. Checks in order: explicit `provider` field on the channel, the channel's explicit profile resolved via
- * user domain mappings, then URL-based built-in display name. This ensures channels assigned to user-defined profiles show the profile's provider name rather
+ * Resolves the service display label for a channel. Checks in order: explicit `service` field on the channel, the channel's explicit profile resolved via
+ * user domain mappings, then URL-based built-in display name. This ensures channels assigned to user-defined profiles show the profile's service name rather
  * than the built-in name for the URL domain.
  * @param channel - The channel to resolve a label for.
- * @returns The provider display label.
+ * @returns The service display label.
  */
-export function getChannelProviderLabel(channel: Channel): string {
+export function getChannelServiceLabel(channel: Channel): string {
 
-  if(channel.provider) {
+  if(channel.service) {
 
-    return channel.provider;
+    return channel.service;
   }
 
-  // If the channel specifies a user-defined profile, use that profile's provider name from domain mappings.
+  // If the channel specifies a user-defined profile, use that profile's service name from domain mappings.
   if(channel.profile) {
 
-    const profileProvider = resolveUserProfileProvider(channel.profile);
+    const profileService = resolveUserProfileService(channel.profile);
 
-    if(profileProvider?.provider) {
+    if(profileService?.service) {
 
-      return profileProvider.provider;
+      return profileService.service;
     }
   }
 
-  return getProviderDisplayName(channel.url);
+  return getServiceDisplayName(channel.url);
 }
 
 // Valid sort field values for the channels table. Exported as the single source of truth for sort field validation, shared by the config POST handler and the
 // playlist endpoint's query parameter validation.
 export const VALID_SORT_FIELDS = new Set<ChannelSortField>(
-  [ "channelNumber", "channelSelector", "hdhrEnabled", "key", "name", "profile", "provider", "stationId", "tags" ]
+  [ "channelNumber", "channelSelector", "hdhrEnabled", "key", "name", "profile", "service", "stationId", "tags" ]
 );
 
 /**
  * Extracts a sortable string value from a channel for the specified sort field. Channel numbers are zero-padded to 6 digits for correct numeric ordering within a
- * string comparison. Provider values use the display label for human-meaningful sort order. This is the single source of truth for channel sort key extraction,
+ * string comparison. Service values use the display label for human-meaningful sort order. This is the single source of truth for channel sort key extraction,
  * shared by both the server-side table renderer and the M3U playlist generator.
- * @param channel - Fallback channel definition, used only when the selected provider variant cannot be resolved (e.g., key not in the merged channel map).
- * @param key - The canonical channel key. Used for key-based sorting and to resolve the selected provider variant internally.
+ * @param channel - Fallback channel definition, used only when the selected service variant cannot be resolved (e.g., key not in the merged channel map).
+ * @param key - The canonical channel key. Used for key-based sorting and to resolve the selected service variant internally.
  * @param field - The sort field to extract.
  * @returns A lowercase string suitable for comparison-based sorting.
  */
 export function getChannelSortKey(channel: Channel, key: string, field: ChannelSortField): string {
 
-  // Resolve the selected provider variant so all sort keys reflect the user's provider selection. For URL-dependent fields (profile, provider), this is essential —
+  // Resolve the selected service variant so all sort keys reflect the user's service selection. For URL-dependent fields (profile, service), this is essential —
   // a canonical's URL may differ from the selected variant's (e.g., bbcnews canonical uses cox but the user selected the directv variant). For identity fields
   // (name, stationId, channelNumber), the flattener eagerly sets these on all entries, so the resolved channel has identical values regardless of variant.
-  const effective = getResolvedChannel(resolveProviderKey(key)) ?? channel;
+  const effective = getResolvedChannel(resolveServiceKey(key)) ?? channel;
 
   switch(field) {
 
@@ -593,7 +593,7 @@ export function getChannelSortKey(channel: Channel, key: string, field: ChannelS
         return effective.profile.toLowerCase();
       }
 
-      // Auto-detected: check whether the profile resolves to a real provider or falls back to default. Only apply the ! prefix for non-default auto profiles so
+      // Auto-detected: check whether the profile resolves to a real service or falls back to default. Only apply the ! prefix for non-default auto profiles so
       // they sort between explicit profiles and empty profiles.
       const resolved = getProfileForChannel(effective);
 
@@ -602,14 +602,14 @@ export function getChannelSortKey(channel: Channel, key: string, field: ChannelS
         return "";
       }
 
-      const label = getChannelProviderLabel(effective);
+      const label = getChannelServiceLabel(effective);
 
       return label ? ("!" + label.toLowerCase()) : "";
     }
 
-    case "provider": {
+    case "service": {
 
-      return getChannelProviderLabel(effective).toLowerCase();
+      return getChannelServiceLabel(effective).toLowerCase();
     }
 
     case "stationId": {
@@ -666,35 +666,35 @@ export function compareChannelSort(
 }
 
 /**
- * Gets the provider group for a channel key. Works with both canonical and variant keys.
+ * Gets the service group for a channel key. Works with both canonical and variant keys.
  * @param key - Any channel key in the group.
- * @returns The provider group if the channel is part of a multi-provider group, undefined otherwise.
+ * @returns The service group if the channel is part of a multi-service group, undefined otherwise.
  */
-export function getProviderGroup(key: string): ProviderGroup | undefined {
+export function getServiceGroup(key: string): ServiceGroup | undefined {
 
-  return providerGroups.get(key);
+  return serviceGroups.get(key);
 }
 
 /**
- * Checks if a channel key is a non-canonical provider variant. Used to filter variants from channel listings.
+ * Checks if a channel key is a non-canonical service variant. Used to filter variants from channel listings.
  * @param key - The channel key to check.
- * @returns True if the key is a variant (not canonical) in a provider group.
+ * @returns True if the key is a variant (not canonical) in a service group.
  */
-export function isProviderVariant(key: string): boolean {
+export function isServiceVariant(key: string): boolean {
 
-  const group = providerGroups.get(key);
+  const group = serviceGroups.get(key);
 
   return (group !== undefined) && (group.canonicalKey !== key);
 }
 
 /**
- * Checks if a channel has multiple provider options. Used to determine whether to show a provider dropdown in the UI.
+ * Checks if a channel has multiple service options. Used to determine whether to show a service dropdown in the UI.
  * @param key - The channel key to check.
- * @returns True if the channel has more than one provider variant.
+ * @returns True if the channel has more than one service variant.
  */
-export function hasMultipleProviders(key: string): boolean {
+export function hasMultipleServices(key: string): boolean {
 
-  const group = providerGroups.get(key);
+  const group = serviceGroups.get(key);
 
   return (group !== undefined) && (group.variants.length > 1);
 }
@@ -703,78 +703,78 @@ export function hasMultipleProviders(key: string): boolean {
  * Gets the canonical key for any channel key. For variant keys, returns the canonical key. For non-grouped or canonical keys, returns the input unchanged.
  * Handles the PREDEFINED_SUFFIX used when a user has overridden a predefined channel.
  * @param key - Any channel key.
- * @returns The canonical key for the channel's provider group, or the input key if not part of a group.
+ * @returns The canonical key for the channel's service group, or the input key if not part of a group.
  */
 export function getCanonicalKey(key: string): string {
 
   // Strip predefined suffix if present before looking up the group.
   const baseKey = key.endsWith(PREDEFINED_SUFFIX) ? key.slice(0, -PREDEFINED_SUFFIX.length) : key;
-  const group = providerGroups.get(baseKey);
+  const group = serviceGroups.get(baseKey);
 
   return group?.canonicalKey ?? baseKey;
 }
 
 /**
- * Sets the user's provider selections. Called when loading from channels.json.
- * @param selections - Provider selections keyed by canonical channel key.
+ * Sets the user's service selections. Called when loading from channels.json.
+ * @param selections - Service selections keyed by canonical channel key.
  */
-export function setProviderSelections(selections: Record<string, string>): void {
+export function setServiceSelections(selections: Record<string, string>): void {
 
-  providerSelections = new Map(Object.entries(selections));
+  serviceSelections = new Map(Object.entries(selections));
 }
 
 /**
- * Gets all provider selections.
- * @returns Copy of the provider selections object.
+ * Gets all service selections.
+ * @returns Copy of the service selections object.
  */
-export function getProviderSelections(): Record<string, string> {
+export function getServiceSelections(): Record<string, string> {
 
-  return Object.fromEntries(providerSelections);
+  return Object.fromEntries(serviceSelections);
 }
 
 /**
- * Gets the provider selection for a specific channel.
+ * Gets the service selection for a specific channel.
  * @param canonicalKey - The canonical channel key.
- * @returns The selected provider key, or undefined if using the default.
+ * @returns The selected service key, or undefined if using the default.
  */
-export function getProviderSelection(canonicalKey: string): string | undefined {
+export function getServiceSelection(canonicalKey: string): string | undefined {
 
-  return providerSelections.get(canonicalKey);
+  return serviceSelections.get(canonicalKey);
 }
 
 /**
- * Sets the provider selection for a channel.
+ * Sets the service selection for a channel.
  * @param canonicalKey - The canonical channel key.
- * @param providerKey - The selected provider key.
+ * @param serviceKey - The selected service key.
  */
-export function setProviderSelection(canonicalKey: string, providerKey: string): void {
+export function setServiceSelection(canonicalKey: string, serviceKey: string): void {
 
   // If selecting the canonical (default), remove the selection instead of storing it.
-  if(providerKey === canonicalKey) {
+  if(serviceKey === canonicalKey) {
 
-    providerSelections.delete(canonicalKey);
+    serviceSelections.delete(canonicalKey);
   } else {
 
-    providerSelections.set(canonicalKey, providerKey);
+    serviceSelections.set(canonicalKey, serviceKey);
   }
 }
 
 /**
- * Resolves a canonical channel key to the actual channel key based on user selection. If the user has selected a specific provider for this channel, returns that
- * provider's key. Otherwise returns the canonical key (default provider). When the provider filter is active, falls back to the first enabled variant if the stored
- * selection's provider is filtered out.
+ * Resolves a canonical channel key to the actual channel key based on user selection. If the user has selected a specific service for this channel, returns that
+ * service's key. Otherwise returns the canonical key (default service). When the service filter is active, falls back to the first enabled variant if the stored
+ * selection's service is filtered out.
  * @param canonicalKey - The canonical channel key.
- * @returns The resolved provider key to use for streaming.
+ * @returns The resolved service key to use for streaming.
  */
-export function resolveProviderKey(canonicalKey: string): string {
+export function resolveServiceKey(canonicalKey: string): string {
 
-  const selection = providerSelections.get(canonicalKey);
+  const selection = serviceSelections.get(canonicalKey);
 
-  // No selection stored — use the canonical key (default provider).
+  // No selection stored — use the canonical key (default service).
   if(!selection) {
 
-    // If the canonical's provider tag is filtered out, find the first enabled variant.
-    if((enabledProviders.length > 0) && !isProviderTagEnabled(getProviderTagForChannel(canonicalKey))) {
+    // If the canonical's service tag is filtered out, find the first enabled variant.
+    if((enabledServices.length > 0) && !isServiceTagEnabled(getServiceTagForChannel(canonicalKey))) {
 
       return findFirstEnabledVariant(canonicalKey) ?? canonicalKey;
     }
@@ -800,8 +800,8 @@ export function resolveProviderKey(canonicalKey: string): string {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   } else if(channelsRef[selection]) {
 
-    // Normal selection — validate it exists in the merged channels. If its provider tag is filtered out, find the first enabled variant instead.
-    if((enabledProviders.length > 0) && !isProviderTagEnabled(getProviderTagForChannel(selection))) {
+    // Normal selection — validate it exists in the merged channels. If its service tag is filtered out, find the first enabled variant instead.
+    if((enabledServices.length > 0) && !isServiceTagEnabled(getServiceTagForChannel(selection))) {
 
       return findFirstEnabledVariant(canonicalKey) ?? selection;
     }
@@ -809,23 +809,23 @@ export function resolveProviderKey(canonicalKey: string): string {
     return selection;
   }
 
-  // Selection is invalid (provider removed). Clear it and log a warning.
-  LOG.warn("Provider selection '%s' for channel '%s' no longer exists. Using default.", selection, canonicalKey);
+  // Selection is invalid (service removed). Clear it and log a warning.
+  LOG.warn("Service selection '%s' for channel '%s' no longer exists. Using default.", selection, canonicalKey);
 
-  providerSelections.delete(canonicalKey);
+  serviceSelections.delete(canonicalKey);
 
   return canonicalKey;
 }
 
 /**
- * Finds the first enabled variant for a channel when the current selection's provider is filtered out. Iterates the group's variants and returns the first whose
- * provider tag is enabled.
+ * Finds the first enabled variant for a channel when the current selection's service is filtered out. Iterates the group's variants and returns the first whose
+ * service tag is enabled.
  * @param canonicalKey - The canonical channel key.
  * @returns The first enabled variant key, or undefined if none are enabled.
  */
 function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 
-  const group = providerGroups.get(canonicalKey);
+  const group = serviceGroups.get(canonicalKey);
 
   if(!group) {
 
@@ -839,7 +839,7 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
       continue;
     }
 
-    if(isProviderTagEnabled(variant.tag)) {
+    if(isServiceTagEnabled(variant.tag)) {
 
       return variant.key;
     }
@@ -849,14 +849,14 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 }
 
 /**
- * Applies variant inheritance: the variant contributes provider-specific fields (url, channelSelector, profile, etc.) while identity fields always come from the
- * canonical base. Identity fields describe what the channel IS — name, station ID, tags, channel number — and are independent of which provider serves it. The
+ * Applies variant inheritance: the variant contributes service-specific fields (url, channelSelector, profile, etc.) while identity fields always come from the
+ * canonical base. Identity fields describe what the channel IS — name, station ID, tags, channel number — and are independent of which service serves it. The
  * spread brings in all variant fields, then identity fields are unconditionally overwritten from the canonical. This ensures user overrides on the canonical
- * (e.g., renaming a channel or adding tags) propagate to all provider variants, rather than being masked by stale flattener-copied values on the variant.
- * The field list comes from CHANNEL_IDENTITY_FIELDS — the single source of truth for the identity/provider-specific separation.
- * @param variant - The variant channel definition (provider-specific fields).
+ * (e.g., renaming a channel or adding tags) propagate to all service variants, rather than being masked by stale flattener-copied values on the variant.
+ * The field list comes from CHANNEL_IDENTITY_FIELDS — the single source of truth for the identity/service-specific separation.
+ * @param variant - The variant channel definition (service-specific fields).
  * @param base - The canonical (base) channel with user overrides applied (identity fields).
- * @returns A new Channel with identity fields from the canonical and provider-specific fields from the variant.
+ * @returns A new Channel with identity fields from the canonical and service-specific fields from the variant.
  */
 function applyVariantInheritance(variant: Channel, base: Channel): Channel {
 
@@ -879,14 +879,14 @@ function copyField<K extends keyof Channel>(target: Channel, source: Channel, ke
 }
 
 /**
- * Gets a channel with inheritance applied. For provider variants, this merges the variant's properties with inherited properties from the canonical entry
+ * Gets a channel with inheritance applied. For service variants, this merges the variant's properties with inherited properties from the canonical entry
  * using the live channel data (which includes user overrides). Use `resolvePredefinedVariant()` when you need resolution against pure predefined data.
  * @param key - The channel key (canonical or variant).
  * @returns The complete channel with inheritance applied, or undefined if the channel doesn't exist.
  */
 export function getResolvedChannel(key: string): Channel | undefined {
 
-  // Handle predefined suffix — return the original predefined channel when user has overridden the canonical but selects the predefined provider.
+  // Handle predefined suffix — return the original predefined channel when user has overridden the canonical but selects the predefined service.
   if(key.endsWith(PREDEFINED_SUFFIX)) {
 
     const baseKey = key.slice(0, -PREDEFINED_SUFFIX.length);
@@ -903,7 +903,7 @@ export function getResolvedChannel(key: string): Channel | undefined {
     return undefined;
   }
 
-  const group = providerGroups.get(key);
+  const group = serviceGroups.get(key);
 
   // If not part of a group or is the canonical entry, return as-is.
   if(!group || (group.canonicalKey === key)) {
@@ -927,7 +927,7 @@ export function getResolvedChannel(key: string): Channel | undefined {
 
 /**
  * Resolves a variant channel key against pure predefined data (ignoring user overrides). This is used for revert detection — when the user's edits match a
- * variant's predefined definition, the custom override can be removed and the provider selection switched to that variant. For canonical keys, returns the raw
+ * variant's predefined definition, the custom override can be removed and the service selection switched to that variant. For canonical keys, returns the raw
  * predefined channel. For variant keys, applies the same inheritance rules as `getResolvedChannel()` but against `PREDEFINED_CHANNELS` instead of `channelsRef`.
  * @param key - The channel key (canonical or variant).
  * @returns The channel with inheritance applied against predefined data, or undefined if the key has no predefined definition.
@@ -943,7 +943,7 @@ export function resolvePredefinedVariant(key: string): Channel | undefined {
     return undefined;
   }
 
-  const group = providerGroups.get(key);
+  const group = serviceGroups.get(key);
 
   // If not part of a group or is the canonical entry, return the predefined channel as-is.
   if(!group || (group.canonicalKey === key)) {

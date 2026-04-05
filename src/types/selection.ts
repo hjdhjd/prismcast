@@ -71,7 +71,7 @@ export interface ChannelStrategyEntry {
 
 /**
  * Standardized output shape for a channel discovered from a provider's guide. Produced by each provider's discoverChannels implementation and returned as
- * a JSON array from the GET /providers/:slug/channels endpoint. Mirrors the shape of channel definitions in channels/index.ts so discovery output can be
+ * a JSON array from the GET /services/:slug/channels endpoint. Mirrors the shape of channel definitions in channels/index.ts so discovery output can be
  * used directly to populate new entries.
  */
 export interface DiscoveredChannel {
@@ -137,8 +137,8 @@ export interface ProviderModule {
   // for this provider's domain. Required when profile is defined.
   profileName?: string;
 
-  // Provider identifier used for API endpoints and provider filter matching (e.g., "yttv", "hulu", "foxone"). Matches the providerTag values in DOMAIN_CONFIG so that
-  // slug-based lookups and provider filter comparisons use the same identifier space.
+  // Service identifier used for API endpoints and service filter matching (e.g., "yttv", "hulu", "foxone"). Matches the serviceTag values in DOMAIN_CONFIG so that
+  // slug-based lookups and service filter comparisons use the same identifier space.
   slug: string;
 
   // The existing tuning strategy contract, unchanged from the flat registry pattern.

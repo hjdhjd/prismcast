@@ -100,7 +100,7 @@ export function generateOverviewContent(baseUrl: string): string {
     "<h3>What Is PrismCast?</h3>",
     "<p>PrismCast captures live video from web-based TV players by driving a real Chrome browser. It navigates to streaming sites, captures the ",
     "screen and audio output, and serves the result as HLS streams over HTTP. For TV Everywhere sites that deliver non-DRMed streams, PrismCast can also ",
-    "bypass screen capture entirely and consume the stream directly at full provider quality with significantly lower CPU usage. Think of it as a ",
+    "bypass screen capture entirely and consume the stream directly at full service quality with significantly lower CPU usage. Think of it as a ",
     "<strong>virtual TV tuner for web-based content</strong> &mdash; it lets Channels DVR (and other applications) record and watch content from ",
     "streaming sites that do not offer direct video URLs.</p>",
     "<p>PrismCast is built around three priorities, in order:</p>",
@@ -121,7 +121,7 @@ export function generateOverviewContent(baseUrl: string): string {
     "Quality presets can be changed in the <a href=\"#config/settings\">Configuration</a> tab.</p>",
     "<p>For screen-captured channels, this is <em>not</em> a replacement for native 4K, HDR, Dolby Vision, or surround sound &mdash; PrismCast ",
     "captures directly from Chrome's media pipeline with <strong>no video transcoding</strong>, which is why tuning is fast and CPU usage stays low. ",
-    "For channels using <strong>native HLS streaming</strong> (TV Everywhere sites with non-DRMed streams), PrismCast delivers the provider's original ",
+    "For channels using <strong>native HLS streaming</strong> (TV Everywhere sites with non-DRMed streams), PrismCast delivers the service's original ",
     "stream quality without screen capture limitations. The result is good quality video that works well for everyday viewing and DVR recording. ",
     "PrismCast is designed for content you <strong>cannot get any other way</strong> in Channels DVR: network streaming sites, free ad-supported TV, ",
     "and live channels that only exist on the web.</p>",
@@ -137,7 +137,7 @@ export function generateOverviewContent(baseUrl: string): string {
     "<li>Enter the playlist URL: <code id=\"overview-playlist-url\">" + baseUrl + "/playlist</code> ",
     "<button class=\"btn-copy-inline\" onclick=\"copyOverviewPlaylistUrl()\" title=\"Copy URL\">Copy</button></li>",
     "<li>Set <strong>Stream Format</strong> to <strong>HLS</strong>.</li>",
-    "<li>Optionally, go to the <a href=\"#channels\">Channels tab</a> and set the <strong>provider filter</strong> to only include streaming services you ",
+    "<li>Optionally, go to the <a href=\"#channels\">Channels tab</a> and set the <strong>service filter</strong> to only include streaming services you ",
     "subscribe to. This controls which channels Channels DVR sees in the playlist.</li>",
     "<li>Your configured channels will be imported automatically.</li>",
     "</ol>",
@@ -167,7 +167,7 @@ export function generateOverviewContent(baseUrl: string): string {
     "<p>Sites where PrismCast navigates directly to a player page and video starts automatically. ",
     "Examples: NBC, ABC, Paramount+, USA Network.</p>",
 
-    "<h4>Guide-Based Providers &mdash; First Tune (~5&ndash;10 seconds)</h4>",
+    "<h4>Guide-Based Services &mdash; First Tune (~5&ndash;10 seconds)</h4>",
     "<p>Sites where PrismCast navigates a live TV guide to find and select the channel. The first tune for a given channel is slower because the ",
     "guide grid must be searched. Examples: " + providerInfo.map((p) => escapeHtml(p.label)).sort().join(", ") + ".</p>",
     ...(slowProviderLabels.length > 0 ? [
@@ -175,7 +175,7 @@ export function generateOverviewContent(baseUrl: string): string {
       " players are slow to initialize &mdash; expect 15&ndash;30 seconds for channel changes. " +
       "This is a limitation of the web player, not PrismCast.</p>"] : []),
 
-    "<h4>Guide-Based Providers &mdash; Subsequent Tunes (~3&ndash;5 seconds)</h4>",
+    "<h4>Guide-Based Services &mdash; Subsequent Tunes (~3&ndash;5 seconds)</h4>",
     "<p>After the first tune, PrismCast caches channel data for <strong>" +
     providerInfo.filter((p) => !p.noDirectTuneOptimization).map((p) => escapeHtml(p.label)).sort().join(", ") +
     "</strong>. Subsequent tunes skip guide navigation entirely and are comparable to direct URL channels. " +
@@ -202,8 +202,8 @@ export function generateOverviewContent(baseUrl: string): string {
     "</ol>",
     "<p>Your login credentials are saved in the browser profile and persist across restarts. You only need to authenticate once per TV provider. ",
     "The <a href=\"#channels\">Channels tab</a> shows <strong>green and red indicators</strong> next to each channel reflecting the last tune result, ",
-    "and <strong>provider authentication badges</strong> that confirm which providers have active sessions. Some TV providers periodically expire ",
-    "sessions on their end, requiring re-authentication. This is a provider limitation, not a PrismCast issue &mdash; simply click Login again to ",
+    "and <strong>authentication badges</strong> that confirm which services have active sessions. Some TV providers periodically expire ",
+    "sessions on their end, requiring re-authentication. This is a service limitation, not a PrismCast issue &mdash; simply click Login again to ",
     "re-authenticate.</p>",
     "<p class=\"description-hint\">If PrismCast is running headless or on a remote server, use a VNC client to access the browser for authentication.</p>",
     "</div>",
@@ -213,41 +213,41 @@ export function generateOverviewContent(baseUrl: string): string {
     "<h3>Working with Channels</h3>",
 
     "<h4>Predefined Channels</h4>",
-    "<p>PrismCast ships with channels across multiple streaming providers, maintained and updated with each release. You can disable any channels ",
+    "<p>PrismCast ships with channels across multiple streaming services, maintained and updated with each release. You can disable any channels ",
     "you do not need from the <a href=\"#channels\">Channels tab</a>. The predefined set covers common networks and is a good starting point &mdash; ",
     "enable what you watch and disable the rest. You can also override any predefined channel with your own custom definition ",
     "(see <em>Overriding Predefined Channels</em> below).</p>",
 
-    "<h4>Provider Variants</h4>",
-    "<p>Some channels (Comedy Central, Fox, NBC, etc.) are available from multiple streaming providers. The <strong>provider dropdown</strong> on each ",
-    "channel lets you choose which service to use for that channel. Different providers may offer different tuning performance.</p>",
+    "<h4>Service Variants</h4>",
+    "<p>Some channels (Comedy Central, Fox, NBC, etc.) are available from multiple streaming services. The <strong>service dropdown</strong> on each ",
+    "channel lets you choose which service to use for that channel. Different services may offer different tuning performance.</p>",
 
-    "<h4>Provider Filter</h4>",
-    "<p>If you only subscribe to certain streaming services, use the <strong>provider filter</strong> on the ",
+    "<h4>Service Filter</h4>",
+    "<p>If you only subscribe to certain streaming services, use the <strong>service filter</strong> on the ",
     "<a href=\"#channels\">Channels tab</a> toolbar to show only relevant channels. This filter also controls which channels appear in the playlist ",
     "that Channels DVR imports &mdash; set it before adding the playlist source in the <a href=\"#overview\">Quick Start</a>. You can also filter ",
-    "programmatically using the <code>?provider=</code> query parameter on the playlist URL.</p>",
+    "programmatically using the <code>?service=</code> query parameter on the playlist URL.</p>",
 
     "<h4>Bulk Operations</h4>",
-    "<p>The <strong>Set all channels to</strong> dropdown on the <a href=\"#channels\">Channels tab</a> toolbar switches every multi-provider channel ",
-    "to a single provider at once. This is useful when you want all channels routed through one streaming service. The operation can be undone by ",
-    "switching individual channels back or selecting a different provider from the same dropdown.</p>",
+    "<p>The <strong>Set all channels to</strong> dropdown on the <a href=\"#channels\">Channels tab</a> toolbar switches every multi-service channel ",
+    "to a single service at once. This is useful when you want all channels routed through one streaming service. The operation can be undone by ",
+    "switching individual channels back or selecting a different service from the same dropdown.</p>",
 
     "<h4>User-Defined Channels</h4>",
     "<p>You can add custom channels for any streaming site. Provide a URL, select a site profile, and PrismCast will capture it. For sites with ",
-    "multiple live channels (like a live TV provider), the <strong>Channel Selector</strong> field tells PrismCast which channel to tune to &mdash; ",
-    "the expected value depends on the provider. When adding or editing a channel, select a profile to see the <strong>Profile Reference</strong> ",
-    "section with site-specific guidance, including expected channel selector formats for known providers.</p>",
+    "multiple live channels (like a live TV service), the <strong>Channel Selector</strong> field tells PrismCast which channel to tune to &mdash; ",
+    "the expected value depends on the service. When adding or editing a channel, select a profile to see the <strong>Profile Reference</strong> ",
+    "section with site-specific guidance, including expected channel selector formats for known services.</p>",
 
-    "<h4>User-Defined Provider Profiles</h4>",
+    "<h4>User-Defined Service Profiles</h4>",
     "<p>You can add support for streaming sites that PrismCast does not have builtin support for. The <a href=\"#channels/custom-profiles\">Custom Profiles tab</a> ",
     "includes a step-by-step wizard that guides you through creating a custom site profile &mdash; defining how to enter fullscreen, handle iframes, ",
-    "and interact with the player. You can also export your profiles as <strong>provider packs</strong> to share with other PrismCast users, and ",
+    "and interact with the player. You can also export your profiles as <strong>service packs</strong> to share with other PrismCast users, and ",
     "import packs that others have created.</p>",
 
     "<h4>Overriding Predefined Channels</h4>",
-    "<p>To override a predefined channel, create a user-defined channel with the same channel key. Both versions will appear in the provider ",
-    "dropdown &mdash; yours labeled <em>Custom</em> and the original with its provider name. You can switch between them at any time.</p>",
+    "<p>To override a predefined channel, create a user-defined channel with the same channel key. Both versions will appear in the service ",
+    "dropdown &mdash; yours labeled <em>Custom</em> and the original with its service name. You can switch between them at any time.</p>",
     "<p class=\"description-hint\">For automation and integration with other workflows, see the <a href=\"#api\">API Reference</a> tab for the full HTTP API.</p>",
     "</div>",
 
@@ -303,7 +303,7 @@ export function generateHelpContent(): string {
     "<p>Copy the data directory (<code>~/.prismcast</code>) or just the three JSON files listed above. To restore, place them in the data ",
     "directory on the new machine and restart PrismCast. Docker users should ensure their container's data directory volume is backed up.</p>",
     "<h4>What Is Not Included</h4>",
-    "<p><strong>Provider login sessions</strong> are stored in Chrome's profile data, not in the configuration files. After migrating to a new ",
+    "<p><strong>Service login sessions</strong> are stored in Chrome's profile data, not in the configuration files. After migrating to a new ",
     "machine, you will need to re-authenticate with each TV provider through the browser. The <code>health.json</code> file (channel health ",
     "and authentication state indicators) is also not exported &mdash; it rebuilds automatically as channels are tuned.</p>",
     "</div>",
@@ -372,14 +372,14 @@ export function generateHelpContent(): string {
     "</tr>",
     "<tr>",
     "<td>Slow first tune (~5&ndash;10 seconds)</td>",
-    "<td>Guide-based providers need to search their channel grid on the first tune.</td>",
+    "<td>Guide-based services need to search their channel grid on the first tune.</td>",
     "<td>This is normal. Subsequent tunes of the same channel are faster due to caching. Enable channel precaching in ",
     "<a href=\"#config/settings\">Configuration</a> for faster first tunes.</td>",
     "</tr>",
     "<tr>",
     "<td>\"Channel not found\" or wrong channel plays</td>",
-    "<td>The Channel Selector value does not match the provider's guide entry.</td>",
-    "<td>Check the log for available channel names. The expected format varies by provider &mdash; some use display names, ",
+    "<td>The Channel Selector value does not match the service's guide entry.</td>",
+    "<td>Check the log for available channel names. The expected format varies by service &mdash; some use display names, ",
     "others use internal codes.</td>",
     "</tr>",
     "<tr>",
@@ -405,7 +405,7 @@ export function generateHelpContent(): string {
     "frame rate setting.</li>",
     "<li><strong>No closed captions.</strong> Chrome's capture API does not include caption data. Subtitles are not available in PrismCast streams.</li>",
     "<li><strong>No 4K, HDR, or surround sound for screen-captured channels.</strong> Screen-captured channels deliver H.264 video with AAC stereo audio. ",
-    "Channels using native HLS streaming deliver the provider's original stream quality. Neither mode supports Dolby Vision or Dolby Atmos.</li>",
+    "Channels using native HLS streaming deliver the service's original stream quality. Neither mode supports Dolby Vision or Dolby Atmos.</li>",
     "<li><strong>Capture resolution is limited by display size.</strong> This applies to screen-captured channels only. See the Display and Resolution ",
     "section above for details. Native HLS channels are not affected by display size.</li>",
     "<li><strong>Chrome may drop frames after extended use.</strong> The Chrome encoder can degrade after many hours of continuous operation. PrismCast ",
@@ -449,16 +449,16 @@ export function generateApiReferenceContent(): string {
     "</div>",
 
     "<div class=\"api-index-group\">",
-    "<a href=\"#api-providers\" class=\"api-index-heading\">Providers</a>",
-    "<span class=\"api-index-desc\">Channel discovery, provider selection, and playlist filtering.</span>",
-    "<a href=\"#api-providers\"><code>GET /providers/:slug/channels</code></a>",
-    "<a href=\"#api-providers\"><code>POST /config/provider</code></a>",
-    "<a href=\"#api-providers\"><code>POST /config/provider-filter</code></a>",
+    "<a href=\"#api-services\" class=\"api-index-heading\">Services</a>",
+    "<span class=\"api-index-desc\">Channel discovery, service selection, and playlist filtering.</span>",
+    "<a href=\"#api-services\"><code>GET /services/:slug/channels</code></a>",
+    "<a href=\"#api-services\"><code>POST /config/service</code></a>",
+    "<a href=\"#api-services\"><code>POST /config/service-filter</code></a>",
     "</div>",
 
     "<div class=\"api-index-group\">",
     "<a href=\"#api-profiles\" class=\"api-index-heading\">Profiles</a>",
-    "<span class=\"api-index-desc\">Custom site profiles and provider packs.</span>",
+    "<span class=\"api-index-desc\">Custom site profiles and service packs.</span>",
     "<a href=\"#api-profiles\"><code>GET /config/profiles</code></a>",
     "<a href=\"#api-profiles\"><code>POST /config/profiles</code></a>",
     "<a href=\"#api-profiles\"><code>POST /config/profiles/import</code></a>",
@@ -539,13 +539,13 @@ export function generateApiReferenceContent(): string {
     "<td class=\"endpoint\"><a href=\"/playlist\"><code>GET /playlist</code></a></td>",
     "<td>M3U playlist of all channels in Channels DVR format. Use this URL when adding PrismCast as a custom channel source. " +
     "Optional query parameters: " +
-    "<code>?provider=</code> filters by streaming provider (<code>?provider=yttv</code>, <code>?provider=yttv,sling</code>, " +
-    "<code>?provider=-hulu</code>). " +
-    "<code>?sort=</code> overrides sort field (<code>name</code>, <code>key</code>, <code>channelNumber</code>, <code>provider</code>, " +
+    "<code>?service=</code> filters by streaming service (<code>?service=yttv</code>, <code>?service=yttv,sling</code>, " +
+    "<code>?service=-hulu</code>). " +
+    "<code>?sort=</code> overrides sort field (<code>name</code>, <code>key</code>, <code>channelNumber</code>, <code>service</code>," +
     "<code>profile</code>, <code>stationId</code>, <code>channelSelector</code>). " +
     "<code>?direction=</code> overrides sort direction (<code>asc</code> or <code>desc</code>). " +
     "All parameters are optional and can be combined. " +
-    "<strong>Provider filter only controls which channels appear in the playlist, not which provider is used for tuning.</strong></td>",
+    "<strong>Service filter only controls which channels appear in the playlist, not which service is used for tuning.</strong></td>",
     "</tr>",
     "</table>",
     "</div>",
@@ -592,38 +592,38 @@ export function generateApiReferenceContent(): string {
     "</table>",
     "</div>",
 
-    // Provider endpoints.
+    // Service endpoints.
     "<div class=\"section\">",
-    "<h3 id=\"api-providers\">Providers</h3>",
-    "<p>Channel discovery, provider selection, and filtering for multi-provider channels.</p>",
+    "<h3 id=\"api-services\">Services</h3>",
+    "<p>Channel discovery, service selection, and filtering for multi-service channels.</p>",
     "<table>",
     "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
     "<tr>",
-    "<td class=\"endpoint\"><code>GET /providers/:slug/channels</code></td>",
-    "<td>Discover all available channels for a provider. Returns a JSON array of channel objects with <code>name</code>, <code>channelSelector</code>, " +
-    "and optional <code>affiliate</code> and <code>tier</code> fields. Provider slugs: " +
+    "<td class=\"endpoint\"><code>GET /services/:slug/channels</code></td>",
+    "<td>Discover all available channels for a service. Returns a JSON array of channel objects with <code>name</code>, <code>channelSelector</code>, " +
+    "and optional <code>affiliate</code> and <code>tier</code> fields. Service slugs: " +
     getProviderModuleInfo().map((p) => "<code>" + escapeHtml(p.slug) + "</code>").sort().join(", ") +
     ". Returns cached results instantly when a prior tune or discovery call has already " +
     "enumerated the lineup. " +
     "Add <code>?refresh=true</code> to clear caches and force a fresh discovery walk.</td>",
     "</tr>",
     "<tr>",
-    "<td class=\"endpoint\"><code>POST /config/provider</code></td>",
-    "<td>Update provider selection for a multi-provider channel. Body: <code>{ \"channel\": \"nbc\", \"provider\": \"nbc-hulu\" }</code></td>",
+    "<td class=\"endpoint\"><code>POST /config/service</code></td>",
+    "<td>Update service selection for a multi-service channel. Body: <code>{ \"channel\": \"nbc\", \"service\": \"nbc-hulu\" }</code></td>",
     "</tr>",
     "<tr>",
-    "<td class=\"endpoint\"><code>POST /config/provider-filter</code></td>",
-    "<td>Set enabled provider tags. Body: <code>{ \"enabledProviders\": [\"hulu\", \"yttv\"] }</code>. Empty array disables filter.</td>",
+    "<td class=\"endpoint\"><code>POST /config/service-filter</code></td>",
+    "<td>Set enabled service tags. Body: <code>{ \"enabledServices\": [\"hulu\", \"yttv\"] }</code>. Empty array disables filter.</td>",
     "</tr>",
     "<tr>",
-    "<td class=\"endpoint\"><code>POST /config/provider-bulk-assign</code></td>",
-    "<td>Assign a provider to all multi-provider channels. Body: <code>{ \"provider\": \"hulu\" }</code>. " +
+    "<td class=\"endpoint\"><code>POST /config/service-bulk-assign</code></td>",
+    "<td>Assign a service to all multi-service channels. Body: <code>{ \"service\": \"hulu\" }</code>. " +
     "Returns <code>{ affected, previousSelections, selections }</code></td>",
     "</tr>",
     "<tr>",
-    "<td class=\"endpoint\"><code>POST /config/provider-bulk-restore</code></td>",
-    "<td>Restore previous provider selections (undo bulk assign). Body: <code>{ \"selections\": { \"nbc\": \"nbc-hulu\", \"fox\": null } }</code>. " +
-    "A <code>null</code> value restores the channel to its default provider.</td>",
+    "<td class=\"endpoint\"><code>POST /config/service-bulk-restore</code></td>",
+    "<td>Restore previous service selections (undo bulk assign). Body: <code>{ \"selections\": { \"nbc\": \"nbc-hulu\", \"fox\": null } }</code>. " +
+    "A <code>null</code> value restores the channel to its default service.</td>",
     "</tr>",
     "</table>",
     "</div>",
@@ -631,8 +631,8 @@ export function generateApiReferenceContent(): string {
     // Profile endpoints.
     "<div class=\"section\">",
     "<h3 id=\"api-profiles\">Profiles</h3>",
-    "<p>Custom site profiles and provider pack distribution. Profiles define how PrismCast interacts with a streaming site. " +
-    "Provider packs bundle profiles, domain mappings, and optional channels for sharing across instances.</p>",
+    "<p>Custom site profiles and service pack distribution. Profiles define how PrismCast interacts with a streaming site. " +
+    "Service packs bundle profiles, domain mappings, and optional channels for sharing across instances.</p>",
     "<table>",
     "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
     "<tr>",
@@ -650,12 +650,12 @@ export function generateApiReferenceContent(): string {
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/profiles/import</code></td>",
-    "<td>Import a provider pack JSON file. Validates profiles, domains, and optional channels. " +
+    "<td>Import a service pack JSON file. Validates profiles, domains, and optional channels. " +
     "Body: <code>{ \"data\": { ... }, \"skipChannels\": false }</code></td>",
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>GET /config/profiles/export</code></td>",
-    "<td>Export user profile(s) as a provider pack JSON file download. Query params: <code>?profile=key1,key2</code> (required), " +
+    "<td>Export user profile(s) as a service pack JSON file download. Query params: <code>?profile=key1,key2</code> (required), " +
     "<code>&amp;channels=1</code> (include channels), <code>&amp;domains=0</code> (exclude domains), <code>&amp;name=</code> (pack display name).</td>",
     "</tr>",
     "</table>",

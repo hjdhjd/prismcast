@@ -28,10 +28,10 @@ const VALID_PROFILE_FLAGS = new Set([
   "needsIframeHandling", "noVideo", "selectReadyVideo", "useRequestFullscreen", "waitForNetworkIdle"
 ]);
 
-// Generic strategies available for user profiles. Provider-specific strategies are built-in implementations and cannot be used by user profiles.
+// Generic strategies available for user profiles. Service-specific strategies are built-in implementations and cannot be used by user profiles.
 const GENERIC_STRATEGIES = new Set([ "none", "thumbnailRow", "tileClick" ]);
 
-// All recognized strategy names (generic + provider-specific). Used for validation error messages.
+// All recognized strategy names (generic + service-specific). Used for validation error messages.
 const ALL_STRATEGIES = new Set([ "foxGrid", "guideGrid", "hboGrid", "none", "slingGrid", "thumbnailRow", "tileClick", "youtubeGrid" ]);
 
 // Strategies that require a matchSelector to identify channel elements.
@@ -343,14 +343,14 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
     return errors;
   }
 
-  // extends must reference a built-in general profile (not another user profile or a provider profile). Provider profiles are tightly coupled to a streaming
-  // service's DOM structure and cannot be meaningfully extended by user profiles.
+  // extends must reference a built-in general profile (not another user profile or a service-specific profile). Service-specific profiles are tightly coupled to
+  // a streaming service's DOM structure and cannot be meaningfully extended by user profiles.
   if(!getBuiltinProfile(profile.extends)) {
 
     errors.push("Profile '" + key + "': extends references non-existent built-in profile '" + profile.extends + "'.");
   } else if(isProviderProfile(profile.extends)) {
 
-    errors.push("Profile '" + key + "': '" + profile.extends + "' is a provider-specific profile and cannot be extended. " +
+    errors.push("Profile '" + key + "': '" + profile.extends + "' is a service-specific profile and cannot be extended. " +
       "Use the predefined channels for this service instead.");
   }
 
@@ -364,7 +364,7 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
       errors.push("Profile '" + key + "': unrecognized channel selection strategy '" + strategy + "'.");
     } else if(!GENERIC_STRATEGIES.has(strategy)) {
 
-      errors.push("Profile '" + key + "': strategy '" + strategy + "' is a built-in provider strategy and cannot be used by user profiles. " +
+      errors.push("Profile '" + key + "': strategy '" + strategy + "' is a built-in service strategy and cannot be used by user profiles. " +
         "Use 'tileClick', 'thumbnailRow', or 'none'.");
     }
 
@@ -391,7 +391,7 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
 }
 
 /**
- * Validates a domain mapping. Checks hostname format, profile references, provider/providerTag strings, loginUrl format, and maxContinuousPlayback type and range.
+ * Validates a domain mapping. Checks hostname format, profile references, service/serviceTag strings, loginUrl format, and maxContinuousPlayback type and range.
  * @param domain - The domain hostname.
  * @param config - The domain configuration.
  * @param availableProfiles - Set of available profile names (built-in + user, including profiles in the same import batch).
@@ -415,16 +415,16 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
     errors.push("Domain '" + domain + "': invalid hostname format.");
   }
 
-  // Reject domains that collide with built-in domain mappings. User domains that shadow built-in domains cause the built-in provider to disappear from the system,
+  // Reject domains that collide with built-in domain mappings. User domains that shadow built-in domains cause the built-in service to disappear from the system,
   // affecting all channels on that domain. Users should set the profile field on individual channels to use a custom profile on a built-in domain instead.
   const conciseDomain = extractDomain("https://" + domain);
   const collidesWithBuiltin = (DOMAIN_CONFIG[domain] as DomainConfig | undefined) ?? (DOMAIN_CONFIG[conciseDomain] as DomainConfig | undefined);
 
   if(collidesWithBuiltin) {
 
-    const builtinProvider = collidesWithBuiltin.provider ?? conciseDomain;
+    const builtinService = collidesWithBuiltin.service ?? conciseDomain;
 
-    errors.push("Domain '" + domain + "' is already mapped to built-in provider '" + builtinProvider +
+    errors.push("Domain '" + domain + "' is already mapped to built-in service '" + builtinService +
       "'. Set the profile field on individual channels to use your custom profile instead.");
   }
 
@@ -440,16 +440,16 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
     errors.push("Domain '" + domain + "': references non-existent profile '" + config.profile + "'.");
   }
 
-  // provider must be non-empty if specified.
-  if((config.provider !== undefined) && ((typeof config.provider !== "string") || (config.provider.trim() === ""))) {
+  // service must be non-empty if specified.
+  if((config.service !== undefined) && ((typeof config.service !== "string") || (config.service.trim() === ""))) {
 
-    errors.push("Domain '" + domain + "': provider must be a non-empty string.");
+    errors.push("Domain '" + domain + "': service must be a non-empty string.");
   }
 
-  // providerTag must be non-empty if specified.
-  if((config.providerTag !== undefined) && ((typeof config.providerTag !== "string") || (config.providerTag.trim() === ""))) {
+  // serviceTag must be non-empty if specified.
+  if((config.serviceTag !== undefined) && ((typeof config.serviceTag !== "string") || (config.serviceTag.trim() === ""))) {
 
-    errors.push("Domain '" + domain + "': providerTag must be a non-empty string.");
+    errors.push("Domain '" + domain + "': serviceTag must be a non-empty string.");
   }
 
   // loginUrl must be a valid http/https URL if specified.
@@ -499,7 +499,7 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
 }
 
 /**
- * Validates an entire import batch of profiles and domains. Returns the validated entries and any errors found. Used by both file import and provider pack import.
+ * Validates an entire import batch of profiles and domains. Returns the validated entries and any errors found. Used by both file import and service pack import.
  * @param data - The raw data to validate (profiles and/or domains).
  * @returns Validation result with validated entries and errors.
  */

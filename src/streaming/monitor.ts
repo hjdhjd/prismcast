@@ -106,10 +106,10 @@ export interface MonitorStreamInfo {
 
   channelName: Nullable<string>;
   numericStreamId: number;
-  providerName: string;
+  serviceName: string;
 
-  // Provider filter tag from the domain config (e.g., "xfinity", "hulu"). Used to look up the ProviderModule for provider-specific monitoring flags.
-  providerTag?: string;
+  // Service filter tag from the domain config (e.g., "xfinity", "hulu"). Used to look up the ProviderModule for service-specific monitoring flags.
+  serviceTag?: string;
 
   startTime: Date;
 }
@@ -251,10 +251,10 @@ export function monitorPlaybackHealth(
   const TINY_SEGMENT_THRESHOLD = 512000; // 500KB - segments below this indicate dead or degraded capture.
   const TINY_SEGMENT_COUNT_TRIGGER = 10;  // Default trigger count: 10 consecutive tiny segments (~20 seconds with 2-second segments).
 
-  // Resolve the provider-specific tiny segment count threshold once at monitor startup. Providers with extended static content (e.g., Xfinity commercial
+  // Resolve the service-specific tiny segment count threshold once at monitor startup. Services with extended static content (e.g., Xfinity commercial
   // placeholders) set a higher value to tolerate longer periods of small segments without false positive tab replacements. Dead capture pipelines (segments with
   // no video trafs) always use TINY_SEGMENT_COUNT_TRIGGER regardless of this setting.
-  const providerModule = streamInfo.providerTag ? getProviderBySlug(streamInfo.providerTag) : undefined;
+  const providerModule = streamInfo.serviceTag ? getProviderBySlug(streamInfo.serviceTag) : undefined;
   const providerTinySegmentThreshold = providerModule?.tinySegmentThreshold ?? TINY_SEGMENT_COUNT_TRIGGER;
 
   // Segment staleness timeout. When no new segments have been produced for this duration, the capture pipeline is considered dead even though the video element may
@@ -262,7 +262,7 @@ export function monitorPlaybackHealth(
   // data events fire. The 20-second threshold is 4x the maximum expected moof delivery interval (5 seconds) to avoid false positives during normal bursty delivery.
   const SEGMENT_STALENESS_TIMEOUT = 20000;  // 20 seconds.
 
-  // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the configured viewport, the provider's ABR is delivering
+  // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the configured viewport, the service's ABR is delivering
   // low-quality content. The threshold is expressed as a ratio — if either dimension is below this fraction of the viewport, the resolution is considered degraded.
   // 50% catches clear ABR degradation (768×432 on 1080p = 40%) while allowing legitimate 720p content on 1080p (67% > 50%).
   const RESOLUTION_RATIO_THRESHOLD = 0.5;
@@ -316,7 +316,7 @@ export function monitorPlaybackHealth(
     wasInTinyState: false
   };
 
-  // Native stream health state. Only used when the stream is in native mode. Tracks segment delivery health to detect stalled streams where the provider's manifest
+  // Native stream health state. Only used when the stream is in native mode. Tracks segment delivery health to detect stalled streams where the service's manifest
   // stops advancing or segments stop arriving. Native recovery uses recoveryState.inProgress rather than a separate flag, since the interval callback already checks
   // that flag before dispatching to either the native or capture-mode health check path.
   const nativeHealthState: NativeHealthState = {
@@ -512,9 +512,9 @@ export function monitorPlaybackHealth(
       nativeResolution: entry.nativeResolution,
       networkState: 0,
       pageReloadsInWindow: 0,
-      providerName: streamInfo.providerName,
       readyState: 0,
       recoveryAttempts: nativeHealthState.recoveryAttempts,
+      serviceName: streamInfo.serviceName,
       showName: getShowName(streamInfo.numericStreamId),
       startTime: streamInfo.startTime.toISOString(),
       streamingMode: entry.streamingMode,
@@ -723,9 +723,9 @@ export function monitorPlaybackHealth(
       nativeResolution: entry?.nativeResolution ?? null,
       networkState: lastVideoState?.networkState ?? 0,
       pageReloadsInWindow: pageReloadTimestamps.length,
-      providerName: streamInfo.providerName,
       readyState: lastVideoState?.readyState ?? 0,
       recoveryAttempts: recoveryState.totalAttempts,
+      serviceName: streamInfo.serviceName,
       showName: getShowName(streamInfo.numericStreamId),
       startTime: streamInfo.startTime.toISOString(),
       streamingMode: entry?.streamingMode ?? "capture",
@@ -1278,7 +1278,7 @@ export function monitorPlaybackHealth(
         segmentState.wasInTinyState = true;
 
         // Check track composition to determine the effective threshold. Dead capture pipelines produce audio-only segments (hasVideo=false) and always use the
-        // default count for fast detection. Segments with video trafs present use the provider-specific threshold, which may be higher for providers with extended
+        // default count for fast detection. Segments with video trafs present use the service-specific threshold, which may be higher for services with extended
         // static content (e.g., Xfinity commercial placeholders lasting several minutes).
         const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
         const effectiveThreshold = (hasVideo === false) ? TINY_SEGMENT_COUNT_TRIGGER : providerTinySegmentThreshold;
@@ -1383,7 +1383,7 @@ export function monitorPlaybackHealth(
       resolutionState.consecutiveDegradedReadings = 0;
     }
 
-    // Escalation step 1: page reload. Forces the provider's ABR to restart quality negotiation. Only triggers after sustained degradation
+    // Escalation step 1: page reload. Forces the service's ABR to restart quality negotiation. Only triggers after sustained degradation
     // (RESOLUTION_DEGRADED_COUNT_THRESHOLD consecutive readings) to let transient ABR dips self-heal.
     if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 0)) {
 

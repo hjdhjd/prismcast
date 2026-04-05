@@ -4,5 +4,5 @@
  */
 export type { ChannelRowHtml, ChannelTableCounts, ChannelTablePatch } from "./table.js";
 export { OPTIONAL_COLUMNS, VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState, generateChannelRowHtml, generateChannelsPanel,
-  generateProviderFilterToolbar, generateTagFilterContent, generateTagManagerBody } from "./table.js";
+  generateServiceFilterToolbar, generateTagFilterContent, generateTagManagerBody } from "./table.js";
 export { setupChannelRoutes } from "./routes.js";

@@ -513,7 +513,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // Load user channels from channels.json in the data directory if it exists.
   await initializeUserChannels();
 
-  // Load persisted health state (channel health + provider auth) from health.json.
+  // Load persisted health state (channel health + domain auth) from health.json.
   await loadHealthState();
 
   // Load HLS resume state from the previous shutdown. This seeds sequence numbers so streams resume forward instead of resetting to 0.

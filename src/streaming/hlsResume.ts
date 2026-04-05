@@ -6,7 +6,7 @@ import { LOG, formatDuration, formatError, stringifySorted } from "../utils/inde
 import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
 import fs from "node:fs";
-import { getResolvedChannel } from "../config/providers.js";
+import { getResolvedChannel } from "../config/services.js";
 import { getResumeFilePath } from "../config/paths.js";
 
 /* When PrismCast restarts mid-recording, HLS media sequences reset to 0. Channels DVR detects "Playlist reset to a lower sequence" and produces unpredictable

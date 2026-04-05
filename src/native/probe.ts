@@ -55,7 +55,7 @@ export interface ProbeResult {
 // The DRM skip optimization in setup.ts uses this cache to avoid installing the CDP interceptor for channels known to use DRM.
 const probeCache = new Map<string, { encryption: EncryptionType; timestamp: number }>();
 
-// Cache entries older than this are considered stale and re-probed. 24 hours covers the case where a provider changes a channel's encryption profile (e.g., free →
+// Cache entries older than this are considered stale and re-probed. 24 hours covers the case where a service changes a channel's encryption profile (e.g., free →
 // premium DRM). The DRM short-circuit in probeManifest() still applies within the TTL, so frequently-tuned DRM channels avoid repeated probe overhead.
 const PROBE_CACHE_TTL = 24 * 60 * 60 * 1000;
 
@@ -106,7 +106,7 @@ export function clearProbeCache(channelName: string): void {
  */
 export async function probeManifest(masterUrl: string, channelName: string): Promise<Nullable<ProbeResult>> {
 
-  // Short-circuit for DRM channels only. The cached DRM classification is stable within the TTL window (providers rarely change DRM type), and the caller returns
+  // Short-circuit for DRM channels only. The cached DRM classification is stable within the TTL window (services rarely change DRM type), and the caller returns
   // null immediately on DRM without using any URLs. For clear/aes128 channels, we must re-probe to get fresh variant and key URLs with current auth tokens.
   const cached = getCachedEncryption(channelName);
 

@@ -43,7 +43,7 @@ export interface StreamStatus {
   nativeResolution: Nullable<string>;
   networkState: number;
   pageReloadsInWindow: number;
-  providerName: string;
+  serviceName: string;
   readyState: number;
   recoveryAttempts: number;
   showName: string;
@@ -132,7 +132,7 @@ export function createInitialStreamStatus(options: {
   channelName: Nullable<string>;
   hardwareAccelerated?: boolean;
   numericStreamId: number;
-  providerName: string;
+  serviceName: string;
   startTime: Date;
   streamingMode?: StreamingMode;
   url: string;
@@ -160,9 +160,9 @@ export function createInitialStreamStatus(options: {
     nativeResolution: null,
     networkState: 0,
     pageReloadsInWindow: 0,
-    providerName: options.providerName,
     readyState: 0,
     recoveryAttempts: 0,
+    serviceName: options.serviceName,
     showName: "",
     startTime: options.startTime.toISOString(),
     streamingMode: options.streamingMode ?? "capture",

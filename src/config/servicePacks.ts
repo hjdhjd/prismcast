@@ -1,21 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * providerPacks.ts: Provider pack import/export logic for PrismCast.
+ * servicePacks.ts: Service pack import/export logic for PrismCast.
  */
-import type { ChannelMap, DomainConfig, ProfilesValidationResult, ProviderPack, SiteProfile } from "../types/index.js";
+import type { ChannelMap, DomainConfig, ProfilesValidationResult, ServicePack, SiteProfile } from "../types/index.js";
 import { getChannelListing, loadUserChannels, saveUserChannels } from "./userChannels.js";
 import { getUserDomains, getUserProfiles, saveUserProfiles, validateImportedProfiles } from "./userProfiles.js";
 import { sanitizeString } from "../utils/index.js";
 
-/* Provider packs bundle a profile, domain mapping(s), and optionally channels into a single JSON file for distribution. On import, the contents are validated
+/* Service packs bundle a profile, domain mapping(s), and optionally channels into a single JSON file for distribution. On import, the contents are validated
  * and split into profiles.json and channels.json. On export, a user profile and its associated domain mappings and channels are packaged for sharing.
  */
 
-// Current provider pack format version.
+// Current service pack format version.
 const CURRENT_VERSION = 1;
 
 /**
- * Result of parsing a provider pack.
+ * Result of parsing a service pack.
  */
 export interface ParseResult {
 
@@ -23,11 +23,11 @@ export interface ParseResult {
   errors: string[];
 
   // The validated pack contents if parsing succeeded.
-  pack?: ProviderPack;
+  pack?: ServicePack;
 }
 
 /**
- * Summary of what was imported from a provider pack. The primary import (profiles and domains) is tracked separately from the secondary channel import so that
+ * Summary of what was imported from a service pack. The primary import (profiles and domains) is tracked separately from the secondary channel import so that
  * callers can report partial success accurately — profiles may save while channels fail.
  */
 export interface ImportSummary {
@@ -49,11 +49,11 @@ export interface ImportSummary {
 }
 
 /**
- * Parses and validates a raw provider pack import. Checks the version field, validates profiles and domains via the userProfiles validation functions.
+ * Parses and validates a raw service pack import. Checks the version field, validates profiles and domains via the userProfiles validation functions.
  * @param data - The raw JSON data to parse.
  * @returns Parse result with validated pack or errors.
  */
-export function parseProviderPack(data: unknown): ParseResult {
+export function parseServicePack(data: unknown): ParseResult {
 
   const errors: string[] = [];
 
@@ -114,7 +114,7 @@ export function parseProviderPack(data: unknown): ParseResult {
       errors.push("Invalid 'channels' field: expected an object.");
     } else {
 
-      // Basic channel structure validation — detailed validation happens during importProviderPack.
+      // Basic channel structure validation — detailed validation happens during importServicePack.
       for(const [ key, value ] of Object.entries(raw.channels as Record<string, unknown>)) {
 
         if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
@@ -157,7 +157,7 @@ export function parseProviderPack(data: unknown): ParseResult {
     return { errors };
   }
 
-  const pack: ProviderPack = {
+  const pack: ServicePack = {
 
     name: raw.name as string,
     profiles: validationResult.profiles,
@@ -178,12 +178,12 @@ export function parseProviderPack(data: unknown): ParseResult {
 }
 
 /**
- * Imports a validated provider pack by writing its contents to profiles.json and optionally channels.json. Returns a summary of what was added.
- * @param pack - The validated provider pack to import.
+ * Imports a validated service pack by writing its contents to profiles.json and optionally channels.json. Returns a summary of what was added.
+ * @param pack - The validated service pack to import.
  * @param options - Import options. Set skipChannels to true to skip importing channels even if the pack contains them.
  * @returns Summary of what was imported.
  */
-export async function importProviderPack(pack: ProviderPack, options: { skipChannels?: boolean } = {}): Promise<ImportSummary> {
+export async function importServicePack(pack: ServicePack, options: { skipChannels?: boolean } = {}): Promise<ImportSummary> {
 
   const errors: string[] = [];
 
@@ -243,16 +243,16 @@ export async function importProviderPack(pack: ProviderPack, options: { skipChan
 }
 
 /**
- * Exports one or more user profiles and their associated domain mappings as a provider pack JSON object. Optionally includes channels that reference the
+ * Exports one or more user profiles and their associated domain mappings as a service pack JSON object. Optionally includes channels that reference the
  * selected profiles.
  * @param profileKeys - Array of user profile keys to export.
  * @param options - Export options controlling what to include.
- * @returns The provider pack object, or null if none of the requested profiles exist.
+ * @returns The service pack object, or null if none of the requested profiles exist.
  */
-export function exportProviderPack(
+export function exportServicePack(
   profileKeys: string[],
   options: { includeChannels?: boolean; includeDomains?: boolean; name?: string } = {}
-): ProviderPack | null {
+): ServicePack | null {
 
   const userProfiles = getUserProfiles();
   const matchedProfiles: Record<string, SiteProfile> = {};
@@ -275,7 +275,7 @@ export function exportProviderPack(
 
   const keySet = new Set(Object.keys(matchedProfiles));
 
-  const pack: ProviderPack = {
+  const pack: ServicePack = {
 
     name: options.name ?? profileKeys.join(", "),
     profiles: matchedProfiles,
@@ -312,7 +312,7 @@ export function exportProviderPack(
 
       if(entry.channel.profile && keySet.has(entry.channel.profile)) {
 
-        // Strip hdhrEnabled from exported channels — it's a local deployment preference, not a provider configuration property.
+        // Strip hdhrEnabled from exported channels — it's a local deployment preference, not a service configuration property.
         const exportChannel = { ...entry.channel };
 
         Reflect.deleteProperty(exportChannel, "hdhrEnabled");

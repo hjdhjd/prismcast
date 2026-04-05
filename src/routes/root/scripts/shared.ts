@@ -160,9 +160,9 @@ export function generateSharedUtilitiesScript(): string {
     "    }",
     "  };",
 
-    // Provider icon renderer with three modes, mirroring channelDisplayHtml. The icon source chain is: iconUrl (if specified) → Apple touch icon → favicon.
+    // Service icon renderer with three modes, mirroring channelDisplayHtml. The icon source chain is: iconUrl (if specified) → Apple touch icon → favicon.
     // Fallback URLs are stored in a data-fallbacks attribute and processed by the shared imgFallback handler.
-    "  window.providerIconHtml = function(domain, name, iconClass, textClass, mode, iconUrl) {",
+    "  window.serviceIconHtml = function(domain, name, iconClass, textClass, mode, iconUrl) {",
     "    var m = mode || 'logo';",
     "    if(m === 'text' || !domain) {",
     "      return '<span class=\"' + textClass + '\">' + name + '</span>';",
@@ -197,9 +197,9 @@ export function generateSharedUtilitiesScript(): string {
     "    }",
     "  };",
 
-    // Process provider display spans. Finds all .provider-display elements and renders them via providerIconHtml in 'both' mode. Called on page load and after
-    // any DOM mutation that introduces new provider display elements (chip rebuild, filter updates).
-    "  window.processProviderDisplays = function() {",
+    // Process service display spans. Finds all .provider-display elements and renders them via serviceIconHtml in 'both' mode. Called on page load and after
+    // any DOM mutation that introduces new service display elements (chip rebuild, filter updates).
+    "  window.processServiceDisplays = function() {",
     "    var els = document.querySelectorAll('.provider-display');",
     "    for(var i = 0; i < els.length; i++) {",
     "      var el = els[i];",
@@ -208,7 +208,7 @@ export function generateSharedUtilitiesScript(): string {
     "      var iconUrl = el.getAttribute('data-icon-url') || '';",
     "      var name = el.textContent || '';",
     "      var sm = el.hasAttribute('data-sm');",
-    "      el.innerHTML = providerIconHtml(domain, name, sm ? 'provider-icon-sm' : 'provider-icon',",
+    "      el.innerHTML = serviceIconHtml(domain, name, sm ? 'provider-icon-sm' : 'provider-icon',",
     "        sm ? 'provider-chip-text' : 'provider-icon-text', 'both', iconUrl);",
     "      el.setAttribute('data-processed', '1');",
     "    }",
@@ -467,7 +467,7 @@ export function generateSharedUtilitiesScript(): string {
     "      }",
     "    }",
 
-    // Post-update: refilter rows for provider filter and render any new logos.
+    // Post-update: refilter rows for service filter and render any new logos.
     "    if(patch.rows && patch.rows.length > 0) {",
     "      if(window.refilterChannelRows) window.refilterChannelRows();",
     "    }",

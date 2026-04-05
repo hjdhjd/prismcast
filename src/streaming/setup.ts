@@ -21,7 +21,7 @@ import { getCachedEncryption } from "../native/probe.js";
 import { getCaptureMimeType } from "./codec.js";
 import { getDomainConfig } from "../config/sites.js";
 import { getEffectiveViewport } from "../config/presets.js";
-import { getProviderDisplayName } from "../config/providers.js";
+import { getServiceDisplayName } from "../config/services.js";
 import { installManifestInterceptor } from "../native/intercept.js";
 import { isChannelSelectionProfile } from "../types/index.js";
 import { monitorPlaybackHealth } from "./monitor.js";
@@ -161,8 +161,8 @@ export interface StreamSetupResult {
   // The name of the resolved profile (e.g., "keyboardDynamic", "fullscreenApi", "default").
   profileName: string;
 
-  // Friendly provider display name derived from the URL domain via DOMAIN_CONFIG (e.g., "Hulu" for hulu.com). Used for SSE status display.
-  providerName: string;
+  // Friendly service display name derived from the URL domain via DOMAIN_CONFIG (e.g., "Hulu" for hulu.com). Used for SSE status display.
+  serviceName: string;
 
   // The raw capture stream from puppeteer-stream. Must be destroyed before closing the page.
   rawCaptureStream: Readable;
@@ -384,7 +384,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   await injectVideoSelector(page);
 
   // Install CDP manifest interceptor before navigation. This listener captures .m3u8 URLs from the browser's network requests, enabling native HLS streaming for
-  // providers that use clear or AES-128 encrypted streams. Skipped for tab replacements (native proxy is independent of capture) and for channels already known to
+  // services that use clear or AES-128 encrypted streams. Skipped for tab replacements (native proxy is independent of capture) and for channels already known to
   // use DRM (avoids 15 seconds of wasted CDP overhead per tune). The await ensures the CDP session and Network domain are ready before navigation begins.
   const manifestInterception = (!options.tabReplacement && !options.skipManifestInterception) ? await installManifestInterceptor(page) : null;
 
@@ -857,8 +857,8 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     // Compute the metadata comment for FFmpeg. Prefer the friendly channel name, fall back to the channel key, or extract the domain from the URL.
     const metadataComment = channel?.name ?? channelName ?? extractDomain(url);
 
-    // Compute the friendly provider display name once for use in both the monitor and the setup result.
-    const providerName = getProviderDisplayName(url);
+    // Compute the friendly service display name once for use in both the monitor and the setup result.
+    const serviceName = getServiceDisplayName(url);
 
     // Create the tab replacement handler if a factory was provided. This is done after profile resolution so the handler has access to the final profile.
     const onTabReplacement = onTabReplacementFactory ? onTabReplacementFactory(numericStreamId, streamId, profile, metadataComment) : undefined;
@@ -928,13 +928,13 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
     const { captureStream, context, directTune, ffmpegProcess, manifestInterception, page, rawCaptureStream } = captureResult;
 
-    // Monitor stream info for status updates. The providerTag enables provider-specific monitoring flags (e.g., tinySegmentThreshold).
+    // Monitor stream info for status updates. The serviceTag enables service-specific monitoring flags (e.g., tinySegmentThreshold).
     const monitorStreamInfo: MonitorStreamInfo = {
 
       channelName: channel?.name ?? null,
       numericStreamId,
-      providerName,
-      providerTag: getDomainConfig(url)?.providerTag,
+      serviceName,
+      serviceTag: getDomainConfig(url)?.serviceTag,
       startTime
     };
 
@@ -998,8 +998,8 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       page,
       profile,
       profileName,
-      providerName,
       rawCaptureStream,
+      serviceName,
       startTime,
       stopMonitor,
       streamId,

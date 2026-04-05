@@ -15,8 +15,8 @@ import { setupMpegTsRoutes } from "./mpegts.js";
 import { setupPlayEndpoint } from "./play.js";
 import { setupPlaylistEndpoint } from "./playlist.js";
 import { setupPrerollRoutes } from "../streaming/preroll.js";
-import { setupProvidersEndpoint } from "./providers.js";
 import { setupRootEndpoint } from "./root/index.js";
+import { setupServicesEndpoint } from "./services.js";
 import { setupStreamsEndpoint } from "./streams.js";
 import { setupUpgradeEndpoint } from "./upgrade.js";
 
@@ -41,7 +41,7 @@ export function setupRoutes(app: Express): void {
   setupPlayEndpoint(app);
   setupPlaylistEndpoint(app);
   setupPrerollRoutes(app);
-  setupProvidersEndpoint(app);
+  setupServicesEndpoint(app);
   setupRootEndpoint(app);
   setupStreamsEndpoint(app);
   setupUpgradeEndpoint(app);

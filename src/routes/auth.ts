@@ -4,7 +4,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { endLoginMode, getLoginStatus, startLoginMode } from "../browser/index.js";
-import { getResolvedChannel, resolveProviderKey } from "../config/providers.js";
+import { getResolvedChannel, resolveServiceKey } from "../config/services.js";
 import { getDomainConfig } from "../config/sites.js";
 
 /* These routes manage the login workflow for TV provider authentication. Many streaming channels require users to authenticate with their TV provider (cable,
@@ -72,8 +72,8 @@ export function setupAuthEndpoint(app: Express): void {
 
     if(body.channel) {
 
-      // Resolve provider selection and get the channel. This respects both user-defined channel overrides and provider selections (e.g., Disney+ vs ESPN.com).
-      const resolvedKey = resolveProviderKey(body.channel);
+      // Resolve service selection and get the channel. This respects both user-defined channel overrides and service selections (e.g., Disney+ vs ESPN.com).
+      const resolvedKey = resolveServiceKey(body.channel);
       const channel = getResolvedChannel(resolvedKey);
 
       if(!channel) {

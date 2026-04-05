@@ -1065,7 +1065,7 @@ async function launchBrowser(): Promise<Browser> {
     LOG.debug("timing:browser", "Display detection complete. (+%sms)", browserElapsed());
 
     // Log the Chrome version for diagnostic reference. This helps correlate browser behavior changes (tab unresponsiveness, memory pressure, capture issues)
-    // with specific Chrome releases. We also capture the User-Agent string so that server-side fetch() calls to provider CDNs can match Chrome's identity.
+    // with specific Chrome releases. We also capture the User-Agent string so that server-side fetch() calls to service CDNs can match Chrome's identity.
     const chromeVersion = await currentBrowser.version();
     const userAgent = await currentBrowser.userAgent();
 
@@ -1083,7 +1083,7 @@ async function launchBrowser(): Promise<Browser> {
     // Emit system status update for SSE subscribers.
     await emitCurrentSystemStatus();
 
-    // Start background precaching of selected provider channel lineups. Fire-and-forget — the setTimeout inside startPrecaching() ensures the actual work is fully
+    // Start background precaching of selected service channel lineups. Fire-and-forget — the setTimeout inside startPrecaching() ensures the actual work is fully
     // async and non-blocking.
     startPrecaching();
   } catch(error) {

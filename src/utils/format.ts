@@ -70,7 +70,7 @@ export function formatTimeAgo(timestamp: number): string {
 
 /**
  * Extracts a concise domain from a URL by keeping only the last two portions of the hostname (e.g., "watch.foodnetwork.com" becomes "foodnetwork.com",
- * "www.hulu.com" becomes "hulu.com"). Used as a standard domain key for DOMAIN_CONFIG lookups and as a display fallback when no provider name is configured.
+ * "www.hulu.com" becomes "hulu.com"). Used as a standard domain key for DOMAIN_CONFIG lookups and as a display fallback when no service name is configured.
  * @param url - The URL to extract the domain from.
  * @returns The concise domain, or the original URL if parsing fails.
  */

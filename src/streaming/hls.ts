@@ -15,7 +15,7 @@ import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } fro
 import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.js";
 import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
 import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.js";
-import { getAuthDomainForChannel, getProviderTagForChannel, getResolvedChannel, resolveProviderKey } from "../config/providers.js";
+import { getAuthDomainForChannel, getResolvedChannel, getServiceTagForChannel, resolveServiceKey } from "../config/services.js";
 import { getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.js";
 import { markChannelFailure, markChannelSuccess } from "../config/health.js";
 import { CONFIG } from "../config/index.js";
@@ -44,7 +44,7 @@ import { triggerShowNameUpdate } from "./showInfo.js";
  *   stream, page, profile, and monitor. The pending registry entry is filled in with these references.
  *
  * Phase 3 — Streaming pipeline (async, after browser setup):
- *   If the provider's manifest is interceptable, native HLS streaming is attempted via startNativeProxy(). If native is viable, the capture pipeline is stopped and
+ *   If the service's manifest is interceptable, native HLS streaming is attempted via startNativeProxy(). If native is viable, the capture pipeline is stopped and
  *   the proxy takes over. Otherwise, createCaptureSegmenter() creates the fMP4 segmenter and pipes the capture stream. When the first real playlist arrives
  *   (from either the segmenter or native proxy), the preroll timer is cancelled and the client receives live content on the next poll.
  *
@@ -54,14 +54,14 @@ import { triggerShowNameUpdate } from "./showInfo.js";
  */
 
 // Delay before seeding the preroll playlist in milliseconds. If stream setup completes before this timer fires, the preroll is skipped and the client receives real
-// content directly. This ensures fast-tuning providers (native HLS at 2-3s, most capture providers at 4-7s) never see preroll, while slow providers (Xfinity/Cox at
+// content directly. This ensures fast-tuning services (native HLS at 2-3s, most capture services at 4-7s) never see preroll, while slow services (Xfinity/Cox at
 // 13-15s) get preroll content after the delay to prevent HTTP timeouts.
 const PREROLL_DELAY_MS = 9_000;
 
 // Channel Validation.
 
 /**
- * Result of channel validation. On success, contains the resolved channel and provider key. On failure, contains the HTTP error details. The body field carries
+ * Result of channel validation. On success, contains the resolved channel and service key. On failure, contains the HTTP error details. The body field carries
  * either a plain string (for text error responses) or an object (for JSON error responses), so callers can use typeof to pick res.send() vs res.json().
  */
 export type ValidateChannelResult =
@@ -72,7 +72,7 @@ export type ValidateChannelResult =
 const LOGIN_MODE_BODY: Record<string, string> = { error: "Login in progress", message: "Please complete authentication before starting new streams." };
 
 /**
- * Validates a channel name for streaming. Performs all fast, synchronous checks: disabled status, provider resolution, channel lookup, and login mode. Returns a
+ * Validates a channel name for streaming. Performs all fast, synchronous checks: disabled status, service resolution, channel lookup, and login mode. Returns a
  * discriminated union so callers can handle success and failure without coupling to Express response objects.
  *
  * This is extracted from ensureChannelStream() so it can be called by both HLS and MPEG-TS code paths without duplicating the validation logic.
@@ -87,21 +87,21 @@ export function validateChannel(channelName: string): ValidateChannelResult {
     return { body: "Channel is disabled.", statusCode: 404, valid: false };
   }
 
-  // Resolve provider selection. For multi-provider channels, this returns the user's selected provider key (e.g., "espn-disneyplus"). For single-provider channels
+  // Resolve service selection. For multi-service channels, this returns the user's selected service key (e.g., "espn-disneyplus"). For single-service channels
   // or if no selection exists, it returns the canonical key unchanged.
-  const resolvedKey = resolveProviderKey(channelName);
+  const resolvedKey = resolveServiceKey(channelName);
 
-  // Get the resolved channel with inheritance applied. For provider variants, this merges the variant's properties with inherited properties from the canonical
+  // Get the resolved channel with inheritance applied. For service variants, this merges the variant's properties with inherited properties from the canonical
   // entry (name, stationId).
   const channel = getResolvedChannel(resolvedKey);
 
   // Fall back to getAllChannels if the resolved channel doesn't exist (e.g., for ad-hoc streams or non-grouped channels).
   const effectiveChannel = channel ?? getAllChannels()[channelName];
 
-  // Log a warning if a provider selection resolved to a missing variant (e.g., variant was removed from channels after selection was saved).
+  // Log a warning if a service selection resolved to a missing variant (e.g., variant was removed from channels after selection was saved).
   if(!channel && (resolvedKey !== channelName)) {
 
-    LOG.warn("Provider '%s' not found for channel '%s'. Using default provider.", resolvedKey, channelName);
+    LOG.warn("Service '%s' not found for channel '%s'. Using default service.", resolvedKey, channelName);
   }
 
   // Runtime check needed even though TypeScript thinks channel is always defined (Record indexing quirk).
@@ -145,8 +145,8 @@ export function sendValidationError(validation: { body: Record<string, string> |
  * The existing-stream check runs first so that ad-hoc streams (registered under synthetic keys like "play-a1b2c3d4") can be served without failing the
  * "Channel not found" check.
  *
- * For channels with multiple providers (e.g., ESPN via ESPN.com or Disney+), the user's provider selection is resolved before looking up the channel definition.
- * The stream is registered under the canonical key (channelName) for deduplication, but uses the resolved provider's URL and settings.
+ * For channels with multiple services (e.g., ESPN via ESPN.com or Disney+), the user's service selection is resolved before looking up the channel definition.
+ * The stream is registered under the canonical key (channelName) for deduplication, but uses the resolved service's URL and settings.
  *
  * @param channelName - The channel key (or synthetic ad-hoc key) to stream.
  * @param req - Express request object (for profile override and client IP).
@@ -888,7 +888,7 @@ interface PendingStreamResult {
 /**
  * Registers a pending stream entry in the registry with deferred preroll. This is the synchronous Phase 1 of the two-phase stream initialization used by the HLS
  * playlist handler. The pending entry has a real stream ID but no playlist yet — the response is held until either the preroll timer fires (after PREROLL_DELAY_MS)
- * or real content arrives from the segmenter/native proxy. This ensures that fast-tuning streams (native, most capture providers) skip preroll entirely, while slow
+ * or real content arrives from the segmenter/native proxy. This ensures that fast-tuning streams (native, most capture services) skip preroll entirely, while slow
  * streams (Xfinity/Cox at 13-15s) get preroll content after the delay.
  * @param channelName - The channel key for registration and deduplication.
  * @param channel - The resolved channel definition.
@@ -1039,7 +1039,7 @@ function handleSetupFailure(numericStreamId: number, channelName: string, channe
   // Mark channel health as failed. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity.
   if(channel) {
 
-    const failVariantKey = resolveProviderKey(channelName);
+    const failVariantKey = resolveServiceKey(channelName);
     const failAuthDomain = getAuthDomainForChannel(failVariantKey);
 
     markChannelFailure(channelName, failAuthDomain);
@@ -1424,17 +1424,17 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
 
       const tuneTime = ((Date.now() - setup.startTime.getTime()) / 1000).toFixed(1);
 
-      LOG.info("Streaming %s: %s, %s, %s. Tuned in %ss%s.", displayName, setup.providerName, setup.profileName, captureMode,
+      LOG.info("Streaming %s: %s, %s, %s. Tuned in %ss%s.", displayName, setup.serviceName, setup.profileName, captureMode,
         tuneTime, setup.directTune ? " (direct)" : "");
 
-      // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity. Domain auth
-      // is conditionally skipped when the provider defines validateTune and the tuned channel does not prove paid access (e.g., Sling Freestream channels).
+      // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity. Domain
+      // auth is conditionally skipped when the provider module defines validateTune and the tuned channel does not prove paid access (e.g., Sling Freestream).
       if(channel) {
 
-        const successVariantKey = resolveProviderKey(channelName);
+        const successVariantKey = resolveServiceKey(channelName);
         const successAuthDomain = getAuthDomainForChannel(successVariantKey);
-        const successProviderTag = getProviderTagForChannel(successVariantKey);
-        const provider = getProviderBySlug(successProviderTag);
+        const successServiceTag = getServiceTagForChannel(successVariantKey);
+        const provider = getProviderBySlug(successServiceTag);
         const markAuth = !provider?.validateTune || provider.validateTune(channel.channelSelector ?? channelName);
 
         markChannelSuccess(channelName, successAuthDomain, markAuth);
@@ -1458,7 +1458,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         channelName: channel?.name ?? null,
         hardwareAccelerated: hwAccelerated,
         numericStreamId,
-        providerName: setup.providerName,
+        serviceName: setup.serviceName,
         startTime: setup.startTime,
         streamingMode,
         url: setup.url
@@ -1480,10 +1480,10 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
  * initializeStream() for the actual setup. Error responses are sent directly to the client, including HDHomeRun-specific headers for capacity errors.
  *
  * @param channelName - The channel key (canonical key for stream registration and deduplication).
- * @param url - The URL to stream (from the resolved provider).
+ * @param url - The URL to stream (from the resolved service).
  * @param req - Express request object (for profile override and client IP).
  * @param res - Express response object (for error responses).
- * @param channel - The resolved channel definition (with inheritance applied for provider variants).
+ * @param channel - The resolved channel definition (with inheritance applied for service variants).
  * @returns The stream ID if successful, null if an error occurred (error response already sent).
  */
 async function startHLSStream(channelName: string, url: string, req: Request, res: Response, channel?: Channel): Promise<Nullable<number>> {

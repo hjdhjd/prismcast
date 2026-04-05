@@ -121,7 +121,7 @@ export function generateStatusScript(): string {
     "  for(var i = 0; i < ids.length; i++) {",
     "    var s = streamData[ids[i]];",
     "    var color = healthColorVars[s.health] || 'var(--text-muted)';",
-    "    var name = s.channel || s.providerName || getDomain(s.url);",
+    "    var name = s.channel || s.serviceName || getDomain(s.url);",
     "    var dur = Math.floor((now - new Date(s.startTime).getTime()) / 1000);",
     "    var hwBadge = s.hardwareAccelerated ? ' <span title=\"Hardware accelerated\">\\u26A1</span>' : '';",
     "    var showSuffix = s.showName ? ' <span class=\"stream-popover-show\">' + s.showName + '</span>' : '';",
@@ -208,7 +208,7 @@ export function generateStatusScript(): string {
     "    var isExpanded = expandedStreams[id];",
     "    var chevron = isExpanded ? '&#9660;' : '&#9654;';",
     "    var rowTint = getRowTint(s.health);",
-    "    var channelText = s.channel || s.providerName || getDomain(s.url);",
+    "    var channelText = s.channel || s.serviceName || getDomain(s.url);",
     "    var channelDisplay = channelDisplayHtml(s.logoUrl, channelText, 'channel-logo', 'channel-text');",
     "    html += '<tr class=\"stream-row\" data-id=\"' + id + '\" onclick=\"toggleStreamDetails(' + id + ')\" style=\"background-color: ' + rowTint + ';\">';",
     "    html += '<td class=\"chevron\">' + chevron + '</td>';",
@@ -307,7 +307,7 @@ export function generateStatusScript(): string {
     "  if(!row) { return; }",
 
     // If a domain was supplied (snapshot and real-time events both include it), verify it matches the currently selected domain for this channel. The login button
-    // carries a data-auth-domain attribute with the selected domain. If they differ the health entry is from a previous provider and should be ignored.
+    // carries a data-auth-domain attribute with the selected domain. If they differ the health entry is from a previous service and should be ignored.
     "  if(domain) {",
     "    var loginBtn = row.querySelector('.btn-icon-login');",
     "    if(loginBtn && loginBtn.getAttribute('data-auth-domain') !== domain) { return; }",

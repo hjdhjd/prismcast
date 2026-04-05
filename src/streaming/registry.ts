@@ -153,7 +153,7 @@ export interface StreamInfo {
  */
 export interface StreamRegistryEntry {
 
-  // Video codec label for this stream (e.g., "H264", "HEVC"). For capture mode, determined by GPU capabilities. For native mode, extracted from the provider's
+  // Video codec label for this stream (e.g., "H264", "HEVC"). For capture mode, determined by GPU capabilities. For native mode, extracted from the service's
   // HLS manifest. Null before stream setup completes.
   captureCodec: Nullable<string>;
 
@@ -180,13 +180,13 @@ export interface StreamRegistryEntry {
   // keep the stream alive while MPEG-TS clients are connected.
   mpegTsClientCount: number;
 
-  // Declared bandwidth from the provider's HLS manifest in bits per second. Zero for capture-mode streams and when the BANDWIDTH attribute is absent.
+  // Declared bandwidth from the service's HLS manifest in bits per second. Zero for capture-mode streams and when the BANDWIDTH attribute is absent.
   nativeBandwidth: number;
 
   // The native HLS proxy for streams that bypass screen capture. Null for capture-mode streams.
   nativeProxy: Nullable<NativeProxy>;
 
-  // Video resolution from the provider's HLS manifest (e.g., "1920x1080"). Null for capture-mode streams and when absent from the manifest.
+  // Video resolution from the service's HLS manifest (e.g., "1920x1080"). Null for capture-mode streams and when absent from the manifest.
   nativeResolution: Nullable<string>;
 
   // Stream-specific info for idle detection.

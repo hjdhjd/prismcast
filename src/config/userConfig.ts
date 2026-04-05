@@ -116,13 +116,13 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
   channels: [
     {
 
-      description: "Speed up your first channel tune by loading provider lineups when PrismCast starts. Normally, each provider's lineup is loaded on your " +
-        "first tune, which may add a few extra seconds. Enabling precaching fetches lineups at startup so even your very first tune is fast. Providers not " +
-        "enabled in the Channels tab provider filter are skipped at startup. Ensure you've logged into each provider before enabling.",
+      description: "Speed up your first channel tune by loading service lineups when PrismCast starts. Normally, each service's lineup is loaded on your " +
+        "first tune, which may add a few extra seconds. Enabling precaching fetches lineups at startup so even your very first tune is fast. Services not " +
+        "enabled in the Channels tab service filter are skipped at startup. Ensure you've logged into each service before enabling.",
       envVar: null,
       label: "Channel Lineup Precaching",
       listItemsKey: "providerModules",
-      path: "channels.precacheProviders",
+      path: "channels.precacheServices",
       type: "checkboxList"
     }
   ],
@@ -701,13 +701,13 @@ export interface UserChannelsConfig {
   // List of predefined channel keys that are disabled.
   disabledPredefined?: string[];
 
-  // Provider tags that are enabled for filtering. Empty means no filter.
-  enabledProviders?: string[];
+  // Service tags that are enabled for filtering. Empty means no filter.
+  enabledServices?: string[];
 
-  // Provider slugs selected for precaching at startup. Empty means no precaching.
-  precacheProviders?: string[];
+  // Service slugs selected for precaching at startup. Empty means no precaching.
+  precacheServices?: string[];
 
-  // Whether the Provider Setup flow has been completed or skipped.
+  // Whether the Service Setup flow has been completed or skipped.
   setupCompleted?: boolean;
 
   // Optional column field names currently visible in the channels table.
@@ -880,8 +880,8 @@ export const DEFAULTS: Config = {
     channelSortDirection: "asc",
     channelSortField: "name",
     disabledPredefined: [],
-    enabledProviders: [],
-    precacheProviders: [],
+    enabledServices: [],
+    precacheServices: [],
     setupCompleted: false,
     visibleColumns: []
   },
@@ -1097,7 +1097,7 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
 
   /* Array and auto-generated string fields require explicit handling here because the standard CONFIG_METADATA loop above assigns by reference. These blocks
    * apply defensive spread copies to prevent shared references between the user config and runtime config. Fields not in CONFIG_METADATA (disabledPredefined,
-   * enabledProviders) also need their own POST /config carry-forward logic since they are managed by separate endpoints. The precacheProviders field is in
+   * enabledServices) also need their own POST /config carry-forward logic since they are managed by separate endpoints. The precacheServices field is in
    * CONFIG_METADATA (as a checkboxList) so the standard loop handles it, but the spread copy here still provides the defensive guarantee.
    *
    * When adding a new field here, also add corresponding preservation logic in filterDefaults() below.
@@ -1107,14 +1107,23 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
     config.channels.disabledPredefined = [...userConfig.channels.disabledPredefined];
   }
 
-  if(Array.isArray(userConfig.channels?.enabledProviders)) {
+  // Accept both new field names and legacy field names for backward compatibility with existing config.json files.
+  const channelsRaw = userConfig.channels as Record<string, unknown> | undefined;
 
-    config.channels.enabledProviders = [...userConfig.channels.enabledProviders];
+  if(Array.isArray(userConfig.channels?.enabledServices)) {
+
+    config.channels.enabledServices = [...userConfig.channels.enabledServices];
+  } else if(Array.isArray(channelsRaw?.enabledProviders)) {
+
+    config.channels.enabledServices = [...channelsRaw.enabledProviders as string[]];
   }
 
-  if(Array.isArray(userConfig.channels?.precacheProviders)) {
+  if(Array.isArray(userConfig.channels?.precacheServices)) {
 
-    config.channels.precacheProviders = [...userConfig.channels.precacheProviders];
+    config.channels.precacheServices = [...userConfig.channels.precacheServices];
+  } else if(Array.isArray(channelsRaw?.precacheProviders)) {
+
+    config.channels.precacheServices = [...channelsRaw.precacheProviders as string[]];
   }
 
   if(Array.isArray(userConfig.channels?.visibleColumns)) {
@@ -1261,7 +1270,7 @@ const SETTINGS_TAB_SECTIONS: { displayName: string; id: string; paths: string[] 
 
     displayName: "Startup",
     id: "startup",
-    paths: ["channels.precacheProviders"]
+    paths: ["channels.precacheServices"]
   },
   {
 
@@ -1514,18 +1523,18 @@ export function filterDefaults(config: UserConfig): UserConfig {
     setNestedValue(filtered, "channels.disabledPredefined", configChannelsDisabled);
   }
 
-  const configEnabledProviders = getNestedValue(config, "channels.enabledProviders") as string[] | undefined;
+  const configEnabledServices = getNestedValue(config, "channels.enabledServices") as string[] | undefined;
 
-  if(Array.isArray(configEnabledProviders) && (configEnabledProviders.length > 0)) {
+  if(Array.isArray(configEnabledServices) && (configEnabledServices.length > 0)) {
 
-    setNestedValue(filtered, "channels.enabledProviders", configEnabledProviders);
+    setNestedValue(filtered, "channels.enabledServices", configEnabledServices);
   }
 
-  const configPrecacheProviders = getNestedValue(config, "channels.precacheProviders") as string[] | undefined;
+  const configPrecacheServices = getNestedValue(config, "channels.precacheServices") as string[] | undefined;
 
-  if(Array.isArray(configPrecacheProviders) && (configPrecacheProviders.length > 0)) {
+  if(Array.isArray(configPrecacheServices) && (configPrecacheServices.length > 0)) {
 
-    setNestedValue(filtered, "channels.precacheProviders", configPrecacheProviders);
+    setNestedValue(filtered, "channels.precacheServices", configPrecacheServices);
   }
 
   const configVisibleColumns = getNestedValue(config, "channels.visibleColumns") as string[] | undefined;

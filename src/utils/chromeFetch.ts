@@ -4,7 +4,7 @@
  */
 import type { Nullable } from "../types/index.js";
 
-/* When PrismCast fetches manifests, segments, decryption keys, and other resources from provider CDNs, the requests should appear to originate from the same Chrome
+/* When PrismCast fetches manifests, segments, decryption keys, and other resources from service CDNs, the requests should appear to originate from the same Chrome
  * browser that is rendering the page. This module stores the Chrome User-Agent string (captured at browser launch) and provides a drop-in fetch() wrapper that
  * injects it into outgoing requests. The setter/getter pattern avoids a circular dependency between utils/ and browser/ — browser/index.ts calls the setter at
  * launch and cleanup, while consumer modules import chromeFetch() without importing from browser/.

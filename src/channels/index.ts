@@ -2,12 +2,12 @@
  *
  * index.ts: Channel definitions for PrismCast.
  */
-import type { Channel, ChannelDefinition, ChannelMap, ProviderVariant } from "../types/index.js";
+import type { Channel, ChannelDefinition, ChannelMap, ServiceVariant } from "../types/index.js";
 
-// Channel identity fields — metadata that describes the channel itself, independent of which provider serves it. This is the single source of truth for the
-// identity/provider-specific field separation used by: (1) applyVariantInheritance in providers.ts (identity fields always come from the canonical),
+// Channel identity fields — metadata that describes the channel itself, independent of which service serves it. This is the single source of truth for the
+// identity/service-specific field separation used by: (1) applyVariantInheritance in services.ts (identity fields always come from the canonical),
 // (2) startup migration in userChannels.ts (strips legacy identity fields from variant entries), and (3) DELTA_ALLOWED_FIELDS derivation (identity +
-// provider-specific editable fields). Adding a new identity field here automatically propagates to all three consumers.
+// service-specific editable fields). Adding a new identity field here automatically propagates to all three consumers.
 export const CHANNEL_IDENTITY_FIELDS = new Set([ "channelNumber", "hdhrEnabled", "name", "stationId", "tags", "tvgShift" ] as const);
 
 // Predefined tag vocabulary. These tags ship with PrismCast and are assigned to predefined channel definitions below. Users can delete predefined tags from
@@ -15,29 +15,29 @@ export const CHANNEL_IDENTITY_FIELDS = new Set([ "channelNumber", "hdhrEnabled",
 export const PREDEFINED_TAGS: readonly string[] =
   [ "documentary", "entertainment", "hbo", "kids", "lifestyle", "local", "movies", "news", "showtime", "sports", "starz" ];
 
-// Site provider key. When a channel has its own streaming website, this key is used in the providers map. The site provider always wins as canonical.
+// Site service key. When a channel has its own streaming website, this key is used in the services map. The site service always wins as canonical.
 const SITE_KEY = "site";
 
-/* Nested channel definitions. Each entry maps a channel key to a ChannelDefinition with identity fields (name, stationId) and a providers map keyed by provider
- * slug. The "site" key represents the channel's own streaming website. All other keys are multi-provider platform slugs (cox, directv, hulu, sling, spectrum,
+/* Nested channel definitions. Each entry maps a channel key to a ChannelDefinition with identity fields (name, stationId) and a services map keyed by service
+ * slug. The "site" key represents the channel's own streaming website. All other keys are multi-service platform slugs (cox, directv, hulu, sling, spectrum,
  * xfinity, yttv, foxone, paramountplus).
  *
  * At module load, the flattener compiles these nested definitions into the flat ChannelMap consumed by the rest of the codebase. Each variant entry gets
- * canonicalKey set to its parent definition's key, which buildProviderGroups in providers.ts uses to assemble provider groups.
+ * canonicalKey set to its parent definition's key, which buildServiceGroups in services.ts uses to assemble service groups.
  *
  * Canonical resolution rules:
- * 1. If "site" exists in providers, the canonical always gets the site URL.
- * 2. Otherwise, the provider whose key sorts first alphabetically (computed, not source-order) becomes canonical.
+ * 1. If "site" exists in services, the canonical always gets the site URL.
+ * 2. Otherwise, the service whose key sorts first alphabetically (computed, not source-order) becomes canonical.
  *
- * Adding a new provider never changes canonicals unless a "site" entry is introduced.
+ * Adding a new service never changes canonicals unless a "site" entry is introduced.
  *
  * Pacific timezone support:
  * - pacificStationId on an East ChannelDefinition triggers auto-generation of a Pacific sibling.
  * - Manual Pacific definitions (keys ending in "p") can pre-declare overrides (e.g., West-specific channelSelectors).
- * - Pacific generation merges inherited providers from the East definition into the Pacific definition, skipping providers whose channelSelector contains
- *   "East" or "West" and never overwriting existing Pacific providers. See generatePacificDefinitions() for full rules.
+ * - Pacific generation merges inherited services from the East definition into the Pacific definition, skipping services whose channelSelector contains
+ *   "East" or "West" and never overwriting existing Pacific services. See generatePacificDefinitions() for full rules.
  *
- * FAST channels: This list contains only traditional linear TV networks and public broadcasters — no FAST (Free Ad-Supported Streaming Television) channels.
+ * FAST channels: This list contains only traditional linear TV networks and public broadcasters - no FAST (Free Ad-Supported Streaming Television) channels.
  * FAST channels from platforms like Pluto TV or Tubi should not be added here. Users who want FAST content can add them as user-defined channels through the
  * web UI or user channels file, or preferably use dedicated high-quality integrations such as Plex Channels, Pluto for Channels, or Tubi for Channels.
  */
@@ -47,7 +47,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
   abc: {
     name: "ABC",
     tags: ["local"],
-    providers: {
+    services: {
       cox: { channelSelector: "ABC", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "ABC", url: "https://stream.directv.com" },
       hulu: { channelSelector: "ABC", url: "https://www.hulu.com/live" },
@@ -63,7 +63,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "ABC News Live",
     tags: ["news"],
     stationId: "113380",
-    providers: {
+    services: {
       cox: { channelSelector: "ABCNL", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "ABC News Live", url: "https://stream.directv.com" },
       hulu: { channelSelector: "ABC News Live", url: "https://www.hulu.com/live" },
@@ -78,7 +78,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: [ "documentary", "entertainment" ],
     pacificStationId: "57439",
     stationId: "51529",
-    providers: {
+    services: {
       cox: { channelSelector: "A&E", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "A&E", url: "https://stream.directv.com" },
       hulu: { channelSelector: "A&E", url: "https://www.hulu.com/live" },
@@ -94,7 +94,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "American Heroes",
     tags: ["documentary"],
     stationId: "78808",
-    providers: {
+    services: {
       cox: { channelSelector: "American Heroes", url: "https://watchtv.cox.com/listings" },
       site: { url: "https://watch.foodnetwork.com/channel/ahc" },
       spectrum: { channelSelector: "American Heroes Channel", url: "https://watch.spectrum.net/guide" },
@@ -107,7 +107,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: [ "entertainment", "movies" ],
     pacificStationId: "78836",
     stationId: "59337",
-    providers: {
+    services: {
       cox: { channelSelector: "AMC", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "AMC", url: "https://stream.directv.com" },
       sling: { channelSelector: "AMC", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
@@ -121,7 +121,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "AMC Thrillers",
     tags: [ "entertainment", "movies" ],
     stationId: "115678",
-    providers: {
+    services: {
       sling: { channelSelector: "AMC Thrillers", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
       yttv: { channelSelector: "AMC Thrillers", url: "https://tv.youtube.com/live" },
     },
@@ -132,7 +132,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["documentary"],
     pacificStationId: "68785",
     stationId: "57394",
-    providers: {
+    services: {
       cox: { channelSelector: "Animal Planet", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Animal Planet", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Animal Planet", url: "https://www.hulu.com/live" },
@@ -147,7 +147,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "AXS TV",
     tags: [ "entertainment", "sports" ],
     stationId: "28506",
-    providers: {
+    services: {
       cox: { channelSelector: "AXS TV", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "AXS TV", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "AXS TV", url: "https://watch.spectrum.net/guide" },
@@ -160,7 +160,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "76739",
     stationId: "64492",
-    providers: {
+    services: {
       cox: { channelSelector: "BBC America", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "BBC America", url: "https://stream.directv.com" },
       sling: { channelSelector: "BBC America", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
@@ -174,7 +174,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "BBC News (North America)",
     tags: ["news"],
     stationId: "101449",
-    providers: {
+    services: {
       cox: { channelSelector: "BBC News", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "BBC News", url: "https://stream.directv.com" },
       sling: { channelSelector: "BBC News", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
@@ -189,7 +189,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "64673",
     stationId: "63236",
-    providers: {
+    services: {
       cox: { channelSelector: "BET", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "BET", url: "https://stream.directv.com" },
       hulu: { channelSelector: "BET", url: "https://www.hulu.com/live" },
@@ -206,7 +206,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "97360",
     stationId: "63220",
-    providers: {
+    services: {
       cox: { channelSelector: "BET Her", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "BET Her", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "BET Her", url: "https://watch.spectrum.net/guide" },
@@ -219,7 +219,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Big 10",
     tags: ["sports"],
     stationId: "58321",
-    providers: {
+    services: {
       cox: { channelSelector: "Big Ten Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Big Ten", url: "https://stream.directv.com" },
       foxone: { channelSelector: "BTN", url: "https://www.fox.com/live/channels" },
@@ -235,7 +235,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Bloomberg Television",
     tags: ["news"],
     stationId: "71799",
-    providers: {
+    services: {
       cox: { channelSelector: "Bloomberg", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Bloomberg TV", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Bloomberg Television", url: "https://www.hulu.com/live" },
@@ -250,7 +250,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Bloomberg Originals",
     tags: ["news"],
     stationId: "175656",
-    providers: {
+    services: {
       yttv: { channelSelector: "Bloomberg Originals", url: "https://tv.youtube.com/live" },
     },
   },
@@ -259,7 +259,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Bravo",
     tags: ["entertainment"],
     stationId: "58625",
-    providers: {
+    services: {
       cox: { channelSelector: "Bravo", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Bravo", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Bravo", url: "https://www.hulu.com/live" },
@@ -275,7 +275,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Bravo (Pacific)",
     tags: ["entertainment"],
     stationId: "73994",
-    providers: {
+    services: {
       site: { url: "https://www.nbc.com/live?brand=bravo&callsign=bravo_west" },
     },
   },
@@ -285,7 +285,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["kids"],
     pacificStationId: "67703",
     stationId: "60048",
-    providers: {
+    services: {
       cox: { channelSelector: "Cartoon Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Cartoon Network", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Cartoon Network (East)", url: "https://www.hulu.com/live" },
@@ -299,7 +299,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Cartoon Network (Pacific)",
     tags: ["kids"],
     stationId: "67703",
-    providers: {
+    services: {
       hulu: { channelSelector: "Cartoon Network (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -307,7 +307,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
   cbs: {
     name: "CBS",
     tags: ["local"],
-    providers: {
+    services: {
       cox: { channelSelector: "CBS", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "CBS", url: "https://stream.directv.com" },
       hulu: { channelSelector: "CBS", url: "https://www.hulu.com/live" },
@@ -323,7 +323,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "CBS News 24/7",
     tags: ["news"],
     stationId: "104846",
-    providers: {
+    services: {
       hulu: { channelSelector: "CBS News 24/7", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "CBS News 24/7", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -333,7 +333,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "CBS Sports Network",
     tags: ["sports"],
     stationId: "59250",
-    providers: {
+    services: {
       cox: { channelSelector: "CBS Sports Network", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "CBS Sports Network", url: "https://www.hulu.com/live" },
       spectrum: { channelSelector: "CBS Sports Network", url: "https://watch.spectrum.net/guide" },
@@ -347,7 +347,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "64610",
     stationId: "59440",
-    providers: {
+    services: {
       cox: { channelSelector: "CMT", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "CMT", url: "https://stream.directv.com" },
       hulu: { channelSelector: "CMT", url: "https://www.hulu.com/live" },
@@ -361,7 +361,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "CNBC",
     tags: ["news"],
     stationId: "58780",
-    providers: {
+    services: {
       cox: { channelSelector: "CNBC", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "CNBC", url: "https://stream.directv.com" },
       hulu: { channelSelector: "CNBC", url: "https://www.hulu.com/live" },
@@ -377,7 +377,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "CNBC World",
     tags: ["news"],
     stationId: "26849",
-    providers: {
+    services: {
       directv: { channelSelector: "CNBC World", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "CNBC World", url: "https://watch.spectrum.net/guide" },
     },
@@ -387,7 +387,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "CNN",
     tags: ["news"],
     stationId: "58646",
-    providers: {
+    services: {
       cox: { channelSelector: "CNN", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "CNN", url: "https://stream.directv.com" },
       hulu: { channelSelector: "CNN", url: "https://www.hulu.com/live" },
@@ -403,7 +403,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "CNN International",
     tags: ["news"],
     stationId: "83110",
-    providers: {
+    services: {
       directv: { channelSelector: "CNNi HD East", url: "https://stream.directv.com" },
       hulu: { channelSelector: "CNN International", url: "https://www.hulu.com/live" },
       site: { url: "https://www.cnn.com/videos/cnn-i" },
@@ -416,7 +416,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "64599",
     stationId: "62420",
-    providers: {
+    services: {
       cox: { channelSelector: "Comedy Central", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Comedy Central", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Comedy Central", url: "https://www.hulu.com/live" },
@@ -431,7 +431,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Cooking",
     tags: ["lifestyle"],
     stationId: "68065",
-    providers: {
+    services: {
       cox: { channelSelector: "Cooking Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Cooking Channel", url: "https://stream.directv.com" },
       site: { url: "https://watch.foodnetwork.com/channel/cooking-channel" },
@@ -444,7 +444,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "C-SPAN",
     tags: ["news"],
     stationId: "68344",
-    providers: {
+    services: {
       cox: { channelSelector: "C-SPAN", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "C-SPAN", url: "https://stream.directv.com" },
       hulu: { channelSelector: "C-SPAN", url: "https://www.hulu.com/live" },
@@ -459,7 +459,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "C-SPAN 2",
     tags: ["news"],
     stationId: "68334",
-    providers: {
+    services: {
       cox: { channelSelector: "CPN2D", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "C-SPAN2", url: "https://stream.directv.com" },
       hulu: { channelSelector: "C-SPAN2", url: "https://www.hulu.com/live" },
@@ -474,7 +474,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "C-SPAN 3",
     tags: ["news"],
     stationId: "68332",
-    providers: {
+    services: {
       cox: { channelSelector: "CPN3H", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "C-SPAN3", url: "https://www.hulu.com/live" },
       site: { url: "https://www.c-span.org/networks/?autoplay=true&channel=c-span-3" },
@@ -487,7 +487,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
   cw: {
     name: "CW",
     tags: ["local"],
-    providers: {
+    services: {
       cox: { channelSelector: "CW TV", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "CW", url: "https://stream.directv.com" },
       hulu: { channelSelector: "CW", url: "https://www.hulu.com/live" },
@@ -501,7 +501,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Destination America",
     tags: ["documentary"],
     stationId: "60468",
-    providers: {
+    services: {
       cox: { channelSelector: "Destination America", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Destination America HD", url: "https://stream.directv.com" },
       site: { url: "https://watch.foodnetwork.com/channel/destination-america" },
@@ -515,7 +515,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["documentary"],
     pacificStationId: "80399",
     stationId: "56905",
-    providers: {
+    services: {
       cox: { channelSelector: "Discovery Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Discovery", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Discovery", url: "https://www.hulu.com/live" },
@@ -531,7 +531,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Discovery Life",
     tags: ["documentary"],
     stationId: "92204",
-    providers: {
+    services: {
       cox: { channelSelector: "Discovery Life", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Discovery Life", url: "https://stream.directv.com" },
       site: { url: "https://watch.foodnetwork.com/channel/discovery-life" },
@@ -544,7 +544,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Discovery Turbo",
     tags: ["documentary"],
     stationId: "31046",
-    providers: {
+    services: {
       cox: { channelSelector: "Discovery Turbo", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Discovery Turbo", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Discovery Turbo", url: "https://www.hulu.com/live" },
@@ -561,7 +561,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["kids"],
     pacificStationId: "63320",
     stationId: "59684",
-    providers: {
+    services: {
       cox: { channelSelector: "Disney Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Disney Channel", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Disney Channel", url: "https://www.hulu.com/live" },
@@ -578,7 +578,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["kids"],
     pacificStationId: "75004",
     stationId: "74885",
-    providers: {
+    services: {
       cox: { channelSelector: "Disney Jr.", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Disney Junior", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Disney Junior", url: "https://www.hulu.com/live" },
@@ -594,7 +594,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["kids"],
     pacificStationId: "63322",
     stationId: "60006",
-    providers: {
+    services: {
       cox: { channelSelector: "Disney XD", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "Disney XD", url: "https://www.hulu.com/live" },
       site: { url: "https://disneynow.com/watch-live?brand=009" },
@@ -608,7 +608,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "E!",
     tags: ["entertainment"],
     stationId: "61812",
-    providers: {
+    services: {
       cox: { channelSelector: "E!", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "E!", url: "https://stream.directv.com" },
       hulu: { channelSelector: "E!", url: "https://www.hulu.com/live" },
@@ -624,7 +624,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "E! (Pacific)",
     tags: ["entertainment"],
     stationId: "91579",
-    providers: {
+    services: {
       site: { channelSelector: "E-_West", url: "https://www.usanetwork.com/live" },
     },
   },
@@ -633,7 +633,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "ESPN",
     tags: ["sports"],
     stationId: "32645",
-    providers: {
+    services: {
       cox: { channelSelector: "ESPN", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "ESPN", url: "https://stream.directv.com" },
       disneyplus: { channelSelector: "poster_linear_espn_none", url: "https://www.disneyplus.com/browse/live" },
@@ -650,7 +650,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "ESPN2",
     tags: ["sports"],
     stationId: "45507",
-    providers: {
+    services: {
       cox: { channelSelector: "ES2HD", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "ESPN2", url: "https://stream.directv.com" },
       disneyplus: { channelSelector: "poster_linear_espn2_none", url: "https://www.disneyplus.com/browse/live" },
@@ -667,7 +667,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "ACC Network",
     tags: ["sports"],
     stationId: "111871",
-    providers: {
+    services: {
       cox: { channelSelector: "ACC Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "ACC Network", url: "https://stream.directv.com" },
       disneyplus: { channelSelector: "poster_linear_acc-network_none", url: "https://www.disneyplus.com/browse/live" },
@@ -683,7 +683,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "ESPN Deportes",
     tags: ["sports"],
     stationId: "71914",
-    providers: {
+    services: {
       cox: { channelSelector: "ESPN Deportes", url: "https://watchtv.cox.com/listings" },
       disneyplus: { channelSelector: "poster_linear_espn-deportes_none", url: "https://www.disneyplus.com/browse/live" },
       site: { url: "https://www.espn.com/watch/player?network=espndeportes" },
@@ -697,7 +697,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "ESPNews",
     tags: ["sports"],
     stationId: "59976",
-    providers: {
+    services: {
       cox: { channelSelector: "ESWHD", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "ESPNews", url: "https://stream.directv.com" },
       disneyplus: { channelSelector: "poster_linear_espnews_none", url: "https://www.disneyplus.com/browse/live" },
@@ -713,7 +713,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "SEC Network",
     tags: ["sports"],
     stationId: "89714",
-    providers: {
+    services: {
       cox: { channelSelector: "SEC", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "SEC Network", url: "https://stream.directv.com" },
       disneyplus: { channelSelector: "poster_linear_sec-network_none", url: "https://www.disneyplus.com/browse/live" },
@@ -729,7 +729,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "ESPNU",
     tags: ["sports"],
     stationId: "60696",
-    providers: {
+    services: {
       cox: { channelSelector: "ESPNU", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "ESPNU", url: "https://stream.directv.com" },
       disneyplus: { channelSelector: "poster_linear_espnu_none", url: "https://www.disneyplus.com/browse/live" },
@@ -745,7 +745,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Fox Business",
     tags: ["news"],
     stationId: "58718",
-    providers: {
+    services: {
       cox: { channelSelector: "Fox Business", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Fox Business Network", url: "https://stream.directv.com" },
       foxone: { channelSelector: "FBN", url: "https://www.fox.com/live/channels" },
@@ -761,7 +761,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Fox News",
     tags: ["news"],
     stationId: "60179",
-    providers: {
+    services: {
       cox: { channelSelector: "Fox News", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Fox News Channel", url: "https://stream.directv.com" },
       foxone: { channelSelector: "FNC", url: "https://www.fox.com/live/channels" },
@@ -779,7 +779,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["lifestyle"],
     pacificStationId: "82119",
     stationId: "50747",
-    providers: {
+    services: {
       cox: { channelSelector: "Food Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Food Network", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Food Network", url: "https://www.hulu.com/live" },
@@ -794,7 +794,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
   fox: {
     name: "Fox",
     tags: ["local"],
-    providers: {
+    services: {
       cox: { channelSelector: "Fox", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "FOX", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Fox", url: "https://www.hulu.com/live" },
@@ -810,7 +810,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Fox Deportes",
     tags: ["sports"],
     stationId: "72189",
-    providers: {
+    services: {
       cox: { channelSelector: "Fox Deportes", url: "https://watchtv.cox.com/listings" },
       foxone: { channelSelector: "FOXD", url: "https://www.fox.com/live/channels" },
       site: { url: "https://www.foxsports.com/live/foxdep" },
@@ -824,7 +824,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Fox Soccer Plus",
     tags: ["sports"],
     stationId: "66879",
-    providers: {
+    services: {
       site: { url: "https://www.foxsports.com/live/fsp" },
       yttv: { channelSelector: "FOX Soccer Plus", url: "https://tv.youtube.com/live" },
     },
@@ -834,7 +834,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "France 24",
     tags: ["news"],
     stationId: "60961",
-    providers: {
+    services: {
       site: { url: "https://www.france24.com/en/live" },
       sling: { channelSelector: "France 24 (English)", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -844,7 +844,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "France 24 (French)",
     tags: ["news"],
     stationId: "58685",
-    providers: {
+    services: {
       site: { url: "https://www.france24.com/fr/direct" },
       sling: { channelSelector: "France 24", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -854,7 +854,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Freeform",
     tags: ["entertainment"],
     stationId: "59615",
-    providers: {
+    services: {
       cox: { channelSelector: "Freeform", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Freeform HD", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Freeform", url: "https://www.hulu.com/live" },
@@ -869,7 +869,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Freeform (Pacific)",
     tags: ["entertainment"],
     stationId: "63324",
-    providers: {
+    services: {
       site: { url: "https://www.freeform.com/watch-live/3507c750-e86a-4c0f-8ff4-dd23c4859009" },
     },
   },
@@ -878,7 +878,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "FS1",
     tags: ["sports"],
     stationId: "82547",
-    providers: {
+    services: {
       cox: { channelSelector: "FOX Sports 1", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "FOX Sports 1", url: "https://stream.directv.com" },
       foxone: { channelSelector: "FS1", url: "https://www.fox.com/live/channels" },
@@ -895,7 +895,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "FS2",
     tags: ["sports"],
     stationId: "59305",
-    providers: {
+    services: {
       cox: { channelSelector: "FOX Sports 2", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "FOX Sports 2", url: "https://stream.directv.com" },
       foxone: { channelSelector: "FS2", url: "https://www.fox.com/live/channels" },
@@ -911,7 +911,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "FX",
     tags: ["entertainment"],
     stationId: "58574",
-    providers: {
+    services: {
       cox: { channelSelector: "FX", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "FX", url: "https://stream.directv.com" },
       hulu: { channelSelector: "FX", url: "https://www.hulu.com/live" },
@@ -928,7 +928,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["movies"],
     pacificStationId: "98488",
     stationId: "70253",
-    providers: {
+    services: {
       cox: { channelSelector: "FXM", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "FX Movie Channel", url: "https://stream.directv.com" },
       hulu: { channelSelector: "FXM", url: "https://www.hulu.com/live" },
@@ -943,7 +943,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "FX (Pacific)",
     tags: ["entertainment"],
     stationId: "59814",
-    providers: {
+    services: {
       site: { url: "https://abc.com/watch-live/2cee3401-f63b-42d0-b32e-962fef610b9e" },
     },
   },
@@ -952,7 +952,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "FXX",
     tags: ["entertainment"],
     stationId: "66379",
-    providers: {
+    services: {
       cox: { channelSelector: "FXX", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "FXX", url: "https://stream.directv.com" },
       hulu: { channelSelector: "FXX", url: "https://www.hulu.com/live" },
@@ -967,7 +967,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "FXX (Pacific)",
     tags: ["entertainment"],
     stationId: "82571",
-    providers: {
+    services: {
       site: { url: "https://abc.com/watch-live/e4c83395-62ed-4a49-829a-c55ab3c33e7d" },
     },
   },
@@ -977,7 +977,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "92372",
     stationId: "58988",
-    providers: {
+    services: {
       cox: { channelSelector: "FYI", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "FYI", url: "https://stream.directv.com" },
       hulu: { channelSelector: "FYI", url: "https://www.hulu.com/live" },
@@ -992,7 +992,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "90210",
     stationId: "68827",
-    providers: {
+    services: {
       cox: { channelSelector: "Game Show Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "GSN HD", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Game Show Network", url: "https://www.hulu.com/live" },
@@ -1006,7 +1006,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Golf",
     tags: ["sports"],
     stationId: "61854",
-    providers: {
+    services: {
       cox: { channelSelector: "Golf Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Golf Channel", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Golf Channel", url: "https://www.hulu.com/live" },
@@ -1023,7 +1023,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "66415",
     stationId: "66268",
-    providers: {
+    services: {
       cox: { channelSelector: "Hallmark Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Hallmark Channel", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Hallmark Channel", url: "https://www.hulu.com/live" },
@@ -1037,7 +1037,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Hallmark Family",
     tags: ["entertainment"],
     stationId: "105723",
-    providers: {
+    services: {
       cox: { channelSelector: "HFM", url: "https://watchtv.cox.com/listings" },
       spectrum: { channelSelector: "Hallmark Family", url: "https://watch.spectrum.net/guide" },
       xfinity: { channelSelector: "HFM", url: "https://www.xfinity.com/stream/listings" },
@@ -1050,7 +1050,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "66412",
     stationId: "46710",
-    providers: {
+    services: {
       cox: { channelSelector: "HMYS", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "Hallmark Mystery", url: "https://www.hulu.com/live" },
       spectrum: { channelSelector: "Hallmark Mystery", url: "https://watch.spectrum.net/guide" },
@@ -1063,7 +1063,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "HBO",
     tags: [ "hbo", "movies" ],
     stationId: "19548",
-    providers: {
+    services: {
       cox: { channelSelector: "HBO", url: "https://watchtv.cox.com/listings" },
       site: { channelSelector: "HBO", url: "https://play.hbomax.com" },
       xfinity: { channelSelector: "HBO", url: "https://www.xfinity.com/stream/listings" },
@@ -1075,7 +1075,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "HBO Comedy",
     tags: [ "hbo", "movies" ],
     stationId: "59839",
-    providers: {
+    services: {
       cox: { channelSelector: "HBOCH", url: "https://watchtv.cox.com/listings" },
       site: { channelSelector: "HBO Comedy", url: "https://play.hbomax.com" },
       xfinity: { channelSelector: "HBOCH", url: "https://www.xfinity.com/stream/listings" },
@@ -1087,7 +1087,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "HBO Drama",
     tags: [ "hbo", "movies" ],
     stationId: "59363",
-    providers: {
+    services: {
       cox: { channelSelector: "HBOSH", url: "https://watchtv.cox.com/listings" },
       site: { channelSelector: "HBO Drama", url: "https://play.hbomax.com" },
       xfinity: { channelSelector: "HBOSH", url: "https://www.xfinity.com/stream/listings" },
@@ -1099,7 +1099,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "HBO Hits",
     tags: [ "hbo", "movies" ],
     stationId: "59368",
-    providers: {
+    services: {
       cox: { channelSelector: "HBO2H", url: "https://watchtv.cox.com/listings" },
       site: { channelSelector: "HBO Hits", url: "https://play.hbomax.com" },
       xfinity: { channelSelector: "HBO2H", url: "https://www.xfinity.com/stream/listings" },
@@ -1111,7 +1111,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "HBO Movies",
     tags: [ "hbo", "movies" ],
     stationId: "59845",
-    providers: {
+    services: {
       cox: { channelSelector: "HBOZH", url: "https://watchtv.cox.com/listings" },
       site: { channelSelector: "HBO Movies", url: "https://play.hbomax.com" },
       xfinity: { channelSelector: "HBOZH", url: "https://www.xfinity.com/stream/listings" },
@@ -1124,7 +1124,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["lifestyle"],
     pacificStationId: "87317",
     stationId: "49788",
-    providers: {
+    services: {
       cox: { channelSelector: "HGTV", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "HGTV", url: "https://stream.directv.com" },
       hulu: { channelSelector: "HGTV", url: "https://www.hulu.com/live" },
@@ -1141,7 +1141,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["documentary"],
     pacificStationId: "88545",
     stationId: "57708",
-    providers: {
+    services: {
       cox: { channelSelector: "History", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "HISTORY", url: "https://stream.directv.com" },
       hulu: { channelSelector: "The HISTORY Channel", url: "https://www.hulu.com/live" },
@@ -1156,7 +1156,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "HLN",
     tags: ["news"],
     stationId: "64549",
-    providers: {
+    services: {
       cox: { channelSelector: "HLN", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "HLN", url: "https://stream.directv.com" },
       hulu: { channelSelector: "HLN", url: "https://www.hulu.com/live" },
@@ -1173,7 +1173,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["documentary"],
     pacificStationId: "80309",
     stationId: "65342",
-    providers: {
+    services: {
       cox: { channelSelector: "Investigation Discovery", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Investigation Discovery", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Investigation Discovery", url: "https://www.hulu.com/live" },
@@ -1190,7 +1190,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: [ "entertainment", "movies" ],
     pacificStationId: "109735",
     stationId: "59444",
-    providers: {
+    services: {
       cox: { channelSelector: "IFC", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "IFC", url: "https://stream.directv.com" },
       sling: { channelSelector: "IFC", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
@@ -1204,7 +1204,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "IndiePlex",
     tags: [ "movies", "starz" ],
     stationId: "65795",
-    providers: {
+    services: {
       hulu: { channelSelector: "IndiePlex (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "IndiePlex", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
       spectrum: { channelSelector: "IndiePlex", url: "https://watch.spectrum.net/guide" },
@@ -1215,7 +1215,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "IndiePlex (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "65796",
-    providers: {
+    services: {
       hulu: { channelSelector: "IndiePlex (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1225,7 +1225,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "60250",
     stationId: "60150",
-    providers: {
+    services: {
       cox: { channelSelector: "Lifetime", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Lifetime", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Lifetime", url: "https://www.hulu.com/live" },
@@ -1241,7 +1241,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: [ "entertainment", "movies" ],
     pacificStationId: "92373",
     stationId: "55887",
-    providers: {
+    services: {
       cox: { channelSelector: "Lifetime Movies", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Lifetime Movie Network", url: "https://stream.directv.com" },
       hulu: { channelSelector: "LMN", url: "https://www.hulu.com/live" },
@@ -1255,7 +1255,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["lifestyle"],
     pacificStationId: "122081",
     stationId: "67375",
-    providers: {
+    services: {
       cox: { channelSelector: "Magnolia Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Magnolia Network", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Magnolia Network", url: "https://www.hulu.com/live" },
@@ -1271,7 +1271,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["movies"],
     pacificStationId: "95927",
     stationId: "65687",
-    providers: {
+    services: {
       cox: { channelSelector: "MGM+", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "MGM+", url: "https://stream.directv.com" },
       xfinity: { channelSelector: "MGM+", url: "https://www.xfinity.com/stream/listings" },
@@ -1282,7 +1282,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "MLB Network",
     tags: ["sports"],
     stationId: "62081",
-    providers: {
+    services: {
       cox: { channelSelector: "MLB Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "MLB Network", url: "https://stream.directv.com" },
       hulu: { channelSelector: "MLB Network", url: "https://www.hulu.com/live" },
@@ -1295,7 +1295,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "MoviePlex",
     tags: [ "movies", "starz" ],
     stationId: "83075",
-    providers: {
+    services: {
       hulu: { channelSelector: "MoviePlex (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "MoviePlex", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
       spectrum: { channelSelector: "Movieplex", url: "https://watch.spectrum.net/guide" },
@@ -1306,7 +1306,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "MoviePlex (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "105963",
-    providers: {
+    services: {
       hulu: { channelSelector: "MoviePlex (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1315,7 +1315,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "MSG",
     tags: ["sports"],
     stationId: "35402",
-    providers: {
+    services: {
       directv: { channelSelector: "MSG", url: "https://stream.directv.com" },
     },
   },
@@ -1324,7 +1324,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "MSG Sportsnet",
     tags: ["sports"],
     stationId: "35383",
-    providers: {
+    services: {
       directv: { channelSelector: "MSG Sportsnet HD 635", url: "https://stream.directv.com" },
     },
   },
@@ -1333,7 +1333,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "MS NOW",
     tags: ["news"],
     stationId: "64241",
-    providers: {
+    services: {
       cox: { channelSelector: "MS NOW", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "MS Now", url: "https://stream.directv.com" },
       hulu: { channelSelector: "MS NOW", url: "https://www.hulu.com/live" },
@@ -1351,7 +1351,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "64630",
     stationId: "60964",
-    providers: {
+    services: {
       cox: { channelSelector: "MTV", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "MTV", url: "https://stream.directv.com" },
       hulu: { channelSelector: "MTV", url: "https://www.hulu.com/live" },
@@ -1366,7 +1366,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "75506",
     stationId: "75077",
-    providers: {
+    services: {
       cox: { channelSelector: "MTV2", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "MTV2", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "MTV2", url: "https://watch.spectrum.net/guide" },
@@ -1378,7 +1378,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "MTV Classic",
     tags: ["entertainment"],
     stationId: "92240",
-    providers: {
+    services: {
       cox: { channelSelector: "MTV Classic", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "MTV Classic", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "MTV Classic", url: "https://watch.spectrum.net/guide" },
@@ -1390,7 +1390,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "National Geographic",
     tags: ["documentary"],
     stationId: "49438",
-    providers: {
+    services: {
       cox: { channelSelector: "Nat Geo", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "National Geographic Channel", url: "https://stream.directv.com" },
       hulu: { channelSelector: "National Geographic", url: "https://www.hulu.com/live" },
@@ -1406,7 +1406,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "National Geographic (Pacific)",
     tags: ["documentary"],
     stationId: "71601",
-    providers: {
+    services: {
       site: { url: "https://www.nationalgeographic.com/tv/watch-live/91456580-f32f-417c-8e1a-9f82640832a7" },
     },
   },
@@ -1415,7 +1415,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Nat Geo Wild",
     tags: ["documentary"],
     stationId: "67331",
-    providers: {
+    services: {
       cox: { channelSelector: "National Geographic WILD", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Nat Geo WILD", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Nat Geo WILD", url: "https://www.hulu.com/live" },
@@ -1430,7 +1430,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NBA TV",
     tags: ["sports"],
     stationId: "45526",
-    providers: {
+    services: {
       cox: { channelSelector: "NBA TV", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "NBA TV", url: "https://stream.directv.com" },
       site: { url: "https://www.nba.com/watch/nba-tv" },
@@ -1443,7 +1443,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
   nbc: {
     name: "NBC",
     tags: ["local"],
-    providers: {
+    services: {
       cox: { channelSelector: "NBC", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "NBC", url: "https://stream.directv.com" },
       hulu: { channelSelector: "NBC", url: "https://www.hulu.com/live" },
@@ -1459,7 +1459,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NBC News Now",
     tags: ["news"],
     stationId: "114174",
-    providers: {
+    services: {
       cox: { channelSelector: "NBC News NOW", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "NBC News Now", url: "https://stream.directv.com" },
       hulu: { channelSelector: "NBC News NOW", url: "https://www.hulu.com/live" },
@@ -1474,7 +1474,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NBC Sports Bay Area",
     tags: ["sports"],
     stationId: "63138",
-    providers: {
+    services: {
       site: { url: "https://www.nbc.com/live?brand=rsn-bay-area&callsign=nbcsbayarea" },
     },
   },
@@ -1483,7 +1483,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NBC Sports Boston",
     tags: ["sports"],
     stationId: "49198",
-    providers: {
+    services: {
       site: { url: "https://www.nbc.com/live?brand=rsn-boston&callsign=nbcsboston" },
     },
   },
@@ -1492,7 +1492,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NBC Sports California",
     tags: ["sports"],
     stationId: "45540",
-    providers: {
+    services: {
       site: { url: "https://www.nbc.com/live?brand=rsn-california&callsign=nbcscalifornia" },
     },
   },
@@ -1501,7 +1501,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NBC Sports Network",
     tags: ["sports"],
     stationId: "194412",
-    providers: {
+    services: {
       yttv: { channelSelector: "NBC Sports Network", url: "https://tv.youtube.com/live" },
     },
   },
@@ -1510,7 +1510,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NBC Sports Philadelphia",
     tags: ["sports"],
     stationId: "32571",
-    providers: {
+    services: {
       site: { url: "https://www.nbc.com/live?brand=rsn-philadelphia&callsign=nbcsphiladelphia" },
     },
   },
@@ -1519,7 +1519,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NECN",
     tags: ["news"],
     stationId: "66278",
-    providers: {
+    services: {
       site: { url: "https://www.nbc.com/live?brand=necn&callsign=necn" },
     },
   },
@@ -1528,7 +1528,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NFL Network",
     tags: ["sports"],
     stationId: "45399",
-    providers: {
+    services: {
       cox: { channelSelector: "NFL Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "NFL Network", url: "https://stream.directv.com" },
       hulu: { channelSelector: "NFL Network", url: "https://www.hulu.com/live" },
@@ -1543,7 +1543,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "NHL Network",
     tags: ["sports"],
     stationId: "58690",
-    providers: {
+    services: {
       cox: { channelSelector: "NHL Network", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "NHL Network HD", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "NHL Network", url: "https://watch.spectrum.net/guide" },
@@ -1555,7 +1555,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "OWN",
     tags: ["lifestyle"],
     stationId: "70388",
-    providers: {
+    services: {
       cox: { channelSelector: "OWN", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "OWN", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Oprah Winfrey Network", url: "https://www.hulu.com/live" },
@@ -1570,7 +1570,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Oxygen",
     tags: ["entertainment"],
     stationId: "70522",
-    providers: {
+    services: {
       cox: { channelSelector: "Oxygen True Crime", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Oxygen True Crime", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Oxygen True Crime", url: "https://www.hulu.com/live" },
@@ -1585,7 +1585,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Oxygen (Pacific)",
     tags: ["entertainment"],
     stationId: "74032",
-    providers: {
+    services: {
       site: { channelSelector: "Oxygen_West", url: "https://www.usanetwork.com/live" },
     },
   },
@@ -1594,7 +1594,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Paramount Network",
     tags: ["entertainment"],
     stationId: "59186",
-    providers: {
+    services: {
       cox: { channelSelector: "Paramount Network", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "Paramount Network", url: "https://www.hulu.com/live" },
       spectrum: { channelSelector: "Paramount Network", url: "https://watch.spectrum.net/guide" },
@@ -1607,7 +1607,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Paramount (Pacific)",
     tags: ["entertainment"],
     stationId: "64593",
-    providers: {
+    services: {
       yttv: { channelSelector: "Paramount Network", url: "https://tv.youtube.com/live" },
     },
   },
@@ -1615,7 +1615,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
   pbs: {
     name: "PBS",
     tags: ["local"],
-    providers: {
+    services: {
       cox: { channelSelector: "PBS", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "PBS", url: "https://stream.directv.com" },
       hulu: { channelSelector: "PBS", url: "https://www.hulu.com/live" },
@@ -1629,7 +1629,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "PBS Chicago (WTTW)",
     tags: ["local"],
     stationId: "30415",
-    providers: {
+    services: {
       hulu: { channelSelector: "PBS", url: "https://www.hulu.com/live" },
       site: { url: "https://www.wttw.com/wttw-live-stream" },
     },
@@ -1639,7 +1639,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "PBS Lakeshore (WYIN)",
     tags: ["local"],
     stationId: "49237",
-    providers: {
+    services: {
       hulu: { channelSelector: "Lakeshore PBS", url: "https://www.hulu.com/live" },
       site: { url: "https://video.lakeshorepbs.org/livestream" },
     },
@@ -1649,7 +1649,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "RetroPlex",
     tags: [ "movies", "starz" ],
     stationId: "65791",
-    providers: {
+    services: {
       hulu: { channelSelector: "RetroPlex (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "RetroPlex", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
       spectrum: { channelSelector: "RetroPlex", url: "https://watch.spectrum.net/guide" },
@@ -1660,7 +1660,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "RetroPlex (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "65793",
-    providers: {
+    services: {
       hulu: { channelSelector: "RetroPlex (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1669,7 +1669,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Science",
     tags: ["documentary"],
     stationId: "57390",
-    providers: {
+    services: {
       cox: { channelSelector: "Science Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Science", url: "https://stream.directv.com" },
       site: { url: "https://watch.foodnetwork.com/channel/science" },
@@ -1682,7 +1682,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Showtime",
     tags: [ "movies", "showtime" ],
     stationId: "91620",
-    providers: {
+    services: {
       cox: { channelSelector: "PSHOh", url: "https://watchtv.cox.com/listings" },
       paramountplus: { url: "https://www.paramountplus.com/live-tv/stream/showtime-east" },
       xfinity: { channelSelector: "PSHOh", url: "https://www.xfinity.com/stream/listings" },
@@ -1694,7 +1694,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Showtime (Pacific)",
     tags: [ "movies", "showtime" ],
     stationId: "91621",
-    providers: {
+    services: {
       paramountplus: { url: "https://www.paramountplus.com/live-tv/stream/showtime-west" },
     },
   },
@@ -1704,7 +1704,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["documentary"],
     pacificStationId: "82695",
     stationId: "58532",
-    providers: {
+    services: {
       cox: { channelSelector: "Smithsonian", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Smithsonian Channel HD", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Smithsonian Channel", url: "https://www.hulu.com/live" },
@@ -1718,7 +1718,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "SportsNet New York",
     tags: ["sports"],
     stationId: "50038",
-    providers: {
+    services: {
       directv: { channelSelector: "SportsNet New York HD 639", url: "https://stream.directv.com" },
     },
   },
@@ -1727,7 +1727,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz",
     tags: [ "movies", "starz" ],
     stationId: "34941",
-    providers: {
+    services: {
       cox: { channelSelector: "STARZ", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "STARZ (East)", url: "https://www.hulu.com/live" },
       site: { url: "https://www.starz.com/us/en/play/2" },
@@ -1740,7 +1740,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Cinema",
     tags: [ "movies", "starz" ],
     stationId: "67236",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Cinema (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Cinema", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1750,7 +1750,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Cinema (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "67365",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Cinema (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1759,7 +1759,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Comedy",
     tags: [ "movies", "starz" ],
     stationId: "57569",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Comedy (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Comedy", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1769,7 +1769,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Comedy (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "57575",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Comedy (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1778,7 +1778,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Edge",
     tags: [ "movies", "starz" ],
     stationId: "57573",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Edge (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Edge", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1788,7 +1788,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Edge (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "57578",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Edge (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1797,7 +1797,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore",
     tags: [ "movies", "starz" ],
     stationId: "36225",
-    providers: {
+    services: {
       cox: { channelSelector: "STZEH", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "STARZ Encore (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
@@ -1809,7 +1809,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Action",
     tags: [ "movies", "starz" ],
     stationId: "72015",
-    providers: {
+    services: {
       cox: { channelSelector: "STZAH", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "STARZ Encore Action (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore Action", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
@@ -1821,7 +1821,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Action (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "103833",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Action (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1830,7 +1830,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Black",
     tags: [ "movies", "starz" ],
     stationId: "72014",
-    providers: {
+    services: {
       cox: { channelSelector: "STZBH", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "STARZ Encore Black (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore Black", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
@@ -1842,7 +1842,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Black (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "103834",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Black (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1851,7 +1851,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Classic",
     tags: [ "movies", "starz" ],
     stationId: "83404",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Classic (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore Classic", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1861,7 +1861,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Classic (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "97233",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Classic (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1870,7 +1870,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Español",
     tags: [ "movies", "starz" ],
     stationId: "72016",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Español (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore Español", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1880,7 +1880,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Español (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "104730",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Español (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1889,7 +1889,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Family",
     tags: [ "kids", "movies", "starz" ],
     stationId: "14886",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Family (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore Family", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1899,7 +1899,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Family (Pacific)",
     tags: [ "kids", "movies", "starz" ],
     stationId: "103829",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Family (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1908,7 +1908,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "67237",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore (West)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore West", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1918,7 +1918,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Suspense",
     tags: [ "movies", "starz" ],
     stationId: "83076",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Suspense (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore Suspense", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1928,7 +1928,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Suspense (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "103836",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Suspense (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1937,7 +1937,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Westerns",
     tags: [ "movies", "starz" ],
     stationId: "14765",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Westerns (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Encore Westerns", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1947,7 +1947,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Encore Westerns (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "103856",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Encore Westerns (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1956,7 +1956,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz in Black",
     tags: [ "movies", "starz" ],
     stationId: "67235",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ in Black (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz in Black", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1966,7 +1966,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz in Black (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "67367",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ in Black (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1975,7 +1975,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Kids",
     tags: [ "kids", "starz" ],
     stationId: "57581",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Kids (East)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz Kids", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -1985,7 +1985,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz Kids (Pacific)",
     tags: [ "kids", "starz" ],
     stationId: "57583",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ Kids (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -1994,7 +1994,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Starz (Pacific)",
     tags: [ "movies", "starz" ],
     stationId: "34949",
-    providers: {
+    services: {
       hulu: { channelSelector: "STARZ (West)", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "Starz West", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
     },
@@ -2005,7 +2005,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["movies"],
     pacificStationId: "78806",
     stationId: "71280",
-    providers: {
+    services: {
       cox: { channelSelector: "SundanceTV", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Sundance TV", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "SundanceTV", url: "https://watch.spectrum.net/guide" },
@@ -2018,7 +2018,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Syfy",
     tags: ["entertainment"],
     stationId: "58623",
-    providers: {
+    services: {
       cox: { channelSelector: "SYFY", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Syfy", url: "https://stream.directv.com" },
       hulu: { channelSelector: "SYFY", url: "https://www.hulu.com/live" },
@@ -2034,7 +2034,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Syfy (Pacific)",
     tags: ["entertainment"],
     stationId: "65626",
-    providers: {
+    services: {
       site: { channelSelector: "Syfy_West", url: "https://www.usanetwork.com/live" },
     },
   },
@@ -2043,7 +2043,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "TBS",
     tags: ["entertainment"],
     stationId: "58515",
-    providers: {
+    services: {
       cox: { channelSelector: "TBS", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "TBS", url: "https://stream.directv.com" },
       hulu: { channelSelector: "TBS (East)", url: "https://www.hulu.com/live" },
@@ -2059,7 +2059,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "TBS (Pacific)",
     tags: ["entertainment"],
     stationId: "67890",
-    providers: {
+    services: {
       hulu: { channelSelector: "TBS (West)", url: "https://www.hulu.com/live" },
       site: { url: "https://www.tbs.com/watchtbs/west" },
     },
@@ -2069,7 +2069,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "TCM",
     tags: ["movies"],
     stationId: "64312",
-    providers: {
+    services: {
       cox: { channelSelector: "TCM", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "TCM", url: "https://stream.directv.com" },
       hulu: { channelSelector: "TCM (East)", url: "https://www.hulu.com/live" },
@@ -2084,7 +2084,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["movies"],
     stationId: "64312",
     tvgShift: 3,
-    providers: {
+    services: {
       hulu: { channelSelector: "TCM (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -2093,7 +2093,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Tennis Channel",
     tags: ["sports"],
     stationId: "60316",
-    providers: {
+    services: {
       cox: { channelSelector: "Tennis Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Tennis Channel HD", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "Tennis Channel", url: "https://watch.spectrum.net/guide" },
@@ -2106,7 +2106,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "Tennis Channel 2",
     tags: ["sports"],
     stationId: "137752",
-    providers: {
+    services: {
       cox: { channelSelector: "T2", url: "https://watchtv.cox.com/listings" },
       hulu: { channelSelector: "Tennis Channel 2", url: "https://www.hulu.com/live" },
       sling: { channelSelector: "T2", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
@@ -2120,7 +2120,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["lifestyle"],
     pacificStationId: "79911",
     stationId: "57391",
-    providers: {
+    services: {
       cox: { channelSelector: "TLC", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "TLC", url: "https://stream.directv.com" },
       hulu: { channelSelector: "TLC", url: "https://www.hulu.com/live" },
@@ -2136,7 +2136,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "TNT",
     tags: ["entertainment"],
     stationId: "42642",
-    providers: {
+    services: {
       cox: { channelSelector: "TNT", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "TNT", url: "https://stream.directv.com" },
       hulu: { channelSelector: "TNT (East)", url: "https://www.hulu.com/live" },
@@ -2152,7 +2152,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "TNT (Pacific)",
     tags: ["entertainment"],
     stationId: "61340",
-    providers: {
+    services: {
       hulu: { channelSelector: "TNT (West)", url: "https://www.hulu.com/live" },
       site: { url: "https://www.tntdrama.com/watchtnt/west" },
     },
@@ -2163,7 +2163,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["lifestyle"],
     pacificStationId: "64525",
     stationId: "59303",
-    providers: {
+    services: {
       cox: { channelSelector: "Travel Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "Travel Channel", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Travel Channel", url: "https://www.hulu.com/live" },
@@ -2180,7 +2180,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "65717",
     stationId: "64490",
-    providers: {
+    services: {
       cox: { channelSelector: "truTV", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "truTV", url: "https://stream.directv.com" },
       hulu: { channelSelector: "truTV (East)", url: "https://www.hulu.com/live" },
@@ -2196,7 +2196,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "truTV (Pacific)",
     tags: ["entertainment"],
     stationId: "65717",
-    providers: {
+    services: {
       hulu: { channelSelector: "truTV (West)", url: "https://www.hulu.com/live" },
     },
   },
@@ -2206,7 +2206,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "74134",
     stationId: "73541",
-    providers: {
+    services: {
       cox: { channelSelector: "TV Land", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "TV Land", url: "https://stream.directv.com" },
       hulu: { channelSelector: "TV Land", url: "https://www.hulu.com/live" },
@@ -2220,7 +2220,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "USA Network",
     tags: ["entertainment"],
     stationId: "58452",
-    providers: {
+    services: {
       cox: { channelSelector: "USA", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "USA Network", url: "https://stream.directv.com" },
       hulu: { channelSelector: "USA", url: "https://www.hulu.com/live" },
@@ -2236,7 +2236,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "USA Network (Pacific)",
     tags: ["entertainment"],
     stationId: "74030",
-    providers: {
+    services: {
       site: { channelSelector: "USA_West", url: "https://www.usanetwork.com/live" },
     },
   },
@@ -2246,7 +2246,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "64634",
     stationId: "60046",
-    providers: {
+    services: {
       cox: { channelSelector: "VH1", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "VH1", url: "https://stream.directv.com" },
       hulu: { channelSelector: "VH1", url: "https://www.hulu.com/live" },
@@ -2262,7 +2262,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "92375",
     stationId: "65732",
-    providers: {
+    services: {
       cox: { channelSelector: "VICE", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "VICE", url: "https://stream.directv.com" },
       hulu: { channelSelector: "Vice", url: "https://www.hulu.com/live" },
@@ -2276,7 +2276,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "The Weather Channel",
     tags: ["news"],
     stationId: "58812",
-    providers: {
+    services: {
       cox: { channelSelector: "Weather Channel", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "The Weather Channel HD", url: "https://stream.directv.com" },
       hulu: { channelSelector: "The Weather Channel", url: "https://www.hulu.com/live" },
@@ -2291,7 +2291,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     tags: ["entertainment"],
     pacificStationId: "108192",
     stationId: "59296",
-    providers: {
+    services: {
       cox: { channelSelector: "WE tv", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "WE TV", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "WE tv", url: "https://watch.spectrum.net/guide" },
@@ -2304,7 +2304,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     name: "YES Network",
     tags: ["sports"],
     stationId: "63558",
-    providers: {
+    services: {
       directv: { channelSelector: "Yes Network HD", url: "https://stream.directv.com" },
       spectrum: { channelSelector: "YES Network", url: "https://watch.spectrum.net/guide" },
     },
@@ -2315,36 +2315,36 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
 // Pacific channel auto-generation.
 
 /* PrismCast automatically generates Pacific timezone channel definitions to reduce manual maintenance. Generation runs at module load, producing definitions
- * that are functionally identical to hand-written ones. Generated definitions never override manually-defined ones — if a key already exists in
+ * that are functionally identical to hand-written ones. Generated definitions never override manually-defined ones - if a key already exists in
  * BASE_CHANNEL_DEFINITIONS, the manual definition takes precedence.
  *
- * Step 1 — Generate Pacific ChannelDefinitions from East entries with pacificStationId:
+ * Step 1 - Generate Pacific ChannelDefinitions from East entries with pacificStationId:
  *
  *   When an East definition has a pacificStationId field and no "{key}p" entry exists in BASE_CHANNEL_DEFINITIONS, a new Pacific ChannelDefinition is created
- *   with the Pacific station ID, " (Pacific)" appended to the name, and an empty providers map (to be filled by Step 2).
+ *   with the Pacific station ID, " (Pacific)" appended to the name, and an empty services map (to be filled by Step 2).
  *
- *   Example — adding pacificStationId to the East definition:
- *     animal: { name: "Animal Planet", pacificStationId: "68785", stationId: "57394", providers: { ... } }
+ *   Example - adding pacificStationId to the East definition:
+ *     animal: { name: "Animal Planet", pacificStationId: "68785", stationId: "57394", services: { ... } }
  *   Auto-generates:
- *     animalp: { name: "Animal Planet (Pacific)", stationId: "68785", providers: {} }
+ *     animalp: { name: "Animal Planet (Pacific)", stationId: "68785", services: {} }
  *
- * Step 2 — Merge East providers into Pacific definitions:
+ * Step 2 - Merge East services into Pacific definitions:
  *
- *   For every Pacific definition "{key}p" (manual or generated), if a corresponding East definition "{key}" exists, its providers are merged into the Pacific
- *   definition. Providers are skipped if: (a) they already exist in the Pacific definition, or (b) their channelSelector contains "East" or "West" (these have
+ *   For every Pacific definition "{key}p" (manual or generated), if a corresponding East definition "{key}" exists, its services are merged into the Pacific
+ *   definition. Services are skipped if: (a) they already exist in the Pacific definition, or (b) their channelSelector contains "East" or "West" (these have
  *   timezone-specific entries and need manual Pacific definitions with the correct West selector).
  *
- *   Example — East providers merged into auto-generated Pacific:
- *     animal's cox provider: { channelSelector: "Animal Planet", url: "https://watchtv.cox.com/listings" }
+ *   Example - East services merged into auto-generated Pacific:
+ *     animal's cox service: { channelSelector: "Animal Planet", url: "https://watchtv.cox.com/listings" }
  *   Merges into animalp as:
- *     animalp's cox provider: { channelSelector: "Animal Planet", url: "https://watchtv.cox.com/listings" }
+ *     animalp's cox service: { channelSelector: "Animal Planet", url: "https://watchtv.cox.com/listings" }
  *
  * Adding a new channel with Pacific support:
  *
  *   1. Look up both East and Pacific HD station IDs in Gracenote (http://localhost:8089/tms/stations/<search>).
- *   2. Add the East definition with both IDs: mychannel: { name: "...", pacificStationId: "PACIFIC_ID", stationId: "EAST_ID", providers: { ... } }
- *   3. The system auto-generates mychannelp (Pacific definition) and merges all compatible providers.
- *   4. If the Pacific version needs a different URL or channelSelector for specific providers, define mychannelp manually with those overrides.
+ *   2. Add the East definition with both IDs: mychannel: { name: "...", pacificStationId: "PACIFIC_ID", stationId: "EAST_ID", services: { ... } }
+ *   3. The system auto-generates mychannelp (Pacific definition) and merges all compatible services.
+ *   4. If the Pacific version needs a different URL or channelSelector for specific services, define mychannelp manually with those overrides.
  */
 function generatePacificDefinitions(definitions: Record<string, ChannelDefinition>): Record<string, ChannelDefinition> {
 
@@ -2370,7 +2370,7 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
     generated[pacificKey] = {
 
       name: def.name + " (Pacific)",
-      providers: {},
+      services: {},
       stationId: def.pacificStationId,
       ...(def.tags ? { tags: def.tags } : {})
     };
@@ -2379,8 +2379,8 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
   // Merge base and generated for Pacific lookup in Step 2.
   const allDefinitions: Record<string, ChannelDefinition> = { ...definitions, ...generated };
 
-  // Step 2: Merge East providers into Pacific definitions (both manual and generated). For manually-defined Pacific entries, we create a copy with a fresh
-  // providers map to avoid mutating the input definitions.
+  // Step 2: Merge East services into Pacific definitions (both manual and generated). For manually-defined Pacific entries, we create a copy with a fresh
+  // services map to avoid mutating the input definitions.
   for(const [ pacKey, originalPacDef ] of Object.entries(allDefinitions)) {
 
     // Only process Pacific keys (ending in "p" with a corresponding East key).
@@ -2398,26 +2398,26 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
       continue;
     }
 
-    // Create a copy with a fresh providers map so we never mutate the input definitions (which are the module-level BASE_CHANNEL_DEFINITIONS).
-    const pacDef: ChannelDefinition = { ...originalPacDef, providers: { ...originalPacDef.providers } };
+    // Create a copy with a fresh services map so we never mutate the input definitions (which are the module-level BASE_CHANNEL_DEFINITIONS).
+    const pacDef: ChannelDefinition = { ...originalPacDef, services: { ...originalPacDef.services } };
 
-    // Merge each East provider into the Pacific definition, skipping existing and East/West-specific selectors.
-    for(const [ slug, variant ] of Object.entries(eastDef.providers)) {
+    // Merge each East service into the Pacific definition, skipping existing and East/West-specific selectors.
+    for(const [ slug, variant ] of Object.entries(eastDef.services)) {
 
-      // Don't overwrite existing Pacific providers (manual overrides take precedence).
-      if(slug in pacDef.providers) {
+      // Don't overwrite existing Pacific services (manual overrides take precedence).
+      if(slug in pacDef.services) {
 
         continue;
       }
 
-      // Skip providers with timezone-specific channelSelectors — these need manual Pacific entries.
+      // Skip services with timezone-specific channelSelectors - these need manual Pacific entries.
       if(variant.channelSelector && eastWestPattern.test(variant.channelSelector)) {
 
         continue;
       }
 
-      // Copy the provider variant. We spread to create a new object so the East and Pacific definitions don't share references.
-      pacDef.providers[slug] = { ...variant };
+      // Copy the service variant. We spread to create a new object so the East and Pacific definitions don't share references.
+      pacDef.services[slug] = { ...variant };
     }
 
     generated[pacKey] = pacDef;
@@ -2429,15 +2429,15 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
 // Channel definition flattener.
 
 /* The flattener compiles nested ChannelDefinition entries into the flat ChannelMap consumed by the rest of the codebase. For each definition, it produces a
- * canonical flat entry (keyed by the definition key) and variant flat entries (keyed as "{definitionKey}-{providerSlug}").
+ * canonical flat entry (keyed by the definition key) and variant flat entries (keyed as "{definitionKey}-{serviceSlug}").
  *
  * Canonical resolution:
- * 1. If "site" exists in providers, the site provider populates the canonical entry. No "{key}-site" variant is emitted.
- * 2. Otherwise, providers are sorted alphabetically by key. The first provider populates the canonical entry. No variant key is emitted for it.
- * 3. All remaining providers produce variant entries keyed as "{key}-{slug}".
+ * 1. If "site" exists in services, the site service populates the canonical entry. No "{key}-site" variant is emitted.
+ * 2. Otherwise, services are sorted alphabetically by key. The first service populates the canonical entry. No variant key is emitted for it.
+ * 3. All remaining services produce variant entries keyed as "{key}-{slug}".
  *
- * Identity fields (name, stationId, channelNumber, tvgShift) are set on the canonical entry and inherited by all variants. Provider-specific fields
- * (channelSelector, url, profile, etc.) come from each ProviderVariant. ProviderVariant fields override ChannelDefinition fields when both are set.
+ * Identity fields (name, stationId, channelNumber, tvgShift) are set on the canonical entry and inherited by all variants. Service-specific fields
+ * (channelSelector, url, profile, etc.) come from each ServiceVariant. ServiceVariant fields override ChannelDefinition fields when both are set.
  */
 function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition>): ChannelMap {
 
@@ -2445,19 +2445,19 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
 
   for(const [ key, def ] of Object.entries(definitions)) {
 
-    const slugs = Object.keys(def.providers).sort();
+    const slugs = Object.keys(def.services).sort();
 
     if(slugs.length === 0) {
 
       continue;
     }
 
-    // Determine the canonical provider: "site" wins, otherwise first alphabetically.
+    // Determine the canonical service: "site" wins, otherwise first alphabetically.
     const canonicalSlug = slugs.includes(SITE_KEY) ? SITE_KEY : slugs[0];
-    const canonicalVariant = def.providers[canonicalSlug];
+    const canonicalVariant = def.services[canonicalSlug];
 
-    // Build the canonical flat entry with identity fields + canonical provider's fields. pacificStationId is set only on the canonical entry — it drives Pacific
-    // auto-generation and is not meaningful on provider variants.
+    // Build the canonical flat entry with identity fields + canonical service's fields. pacificStationId is set only on the canonical entry - it drives Pacific
+    // auto-generation and is not meaningful on service variants.
     const canonicalEntry = buildFlatEntry(def, canonicalVariant);
 
     if(def.pacificStationId) {
@@ -2467,8 +2467,8 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
 
     channels[key] = canonicalEntry;
 
-    // Build variant entries for all non-canonical providers. Each variant gets canonicalKey set to the definition key so that buildProviderGroups can group
-    // channels by a single mechanism — scanning canonicalKey — regardless of whether the channel is predefined or user-defined.
+    // Build variant entries for all non-canonical services. Each variant gets canonicalKey set to the definition key so that buildServiceGroups can group
+    // channels by a single mechanism - scanning canonicalKey - regardless of whether the channel is predefined or user-defined.
     for(const slug of slugs) {
 
       if(slug === canonicalSlug) {
@@ -2477,7 +2477,7 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
       }
 
       const variantKey = key + "-" + slug;
-      const variant = def.providers[slug];
+      const variant = def.services[slug];
       const variantEntry = buildFlatEntry(def, variant);
 
       variantEntry.canonicalKey = key;
@@ -2489,13 +2489,13 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
 }
 
 /**
- * Builds a flat Channel entry by merging a ChannelDefinition's identity fields with a ProviderVariant's provider-specific fields. ProviderVariant fields
+ * Builds a flat Channel entry by merging a ChannelDefinition's identity fields with a ServiceVariant's service-specific fields. ServiceVariant fields
  * override ChannelDefinition fields when both are set.
  * @param def - The parent ChannelDefinition with identity fields.
- * @param variant - The ProviderVariant with provider-specific fields.
+ * @param variant - The ServiceVariant with service-specific fields.
  * @returns A flat Channel entry.
  */
-function buildFlatEntry(def: ChannelDefinition, variant: ProviderVariant): Channel {
+function buildFlatEntry(def: ChannelDefinition, variant: ServiceVariant): Channel {
 
   const entry: Channel = {
 
@@ -2529,8 +2529,8 @@ function buildFlatEntry(def: ChannelDefinition, variant: ProviderVariant): Chann
     entry.tvgShift = def.tvgShift;
   }
 
-  // Provider-specific fields from ProviderVariant.
-  const variantKeys = [ "channelSelector", "dismissSelector", "profile", "provider", "scrollSelector", "scrollTarget", "scrollToBottom" ] as const;
+  // Service-specific fields from ServiceVariant.
+  const variantKeys = [ "channelSelector", "dismissSelector", "profile", "scrollSelector", "scrollTarget", "scrollToBottom", "service" ] as const;
 
   for(const key of variantKeys) {
 
@@ -2545,7 +2545,7 @@ function buildFlatEntry(def: ChannelDefinition, variant: ProviderVariant): Chann
 
 // Compile the nested definitions into flat output.
 // Pacific-generated entries take precedence over base entries because Step 2 of Pacific generation produces enhanced copies of manual Pacific definitions
-// (e.g., cartoonp with merged East providers). Base entries for non-Pacific keys are unaffected since they don't appear in the generated map.
+// (e.g., cartoonp with merged East services). Base entries for non-Pacific keys are unaffected since they don't appear in the generated map.
 const allDefinitions = { ...BASE_CHANNEL_DEFINITIONS, ...generatePacificDefinitions(BASE_CHANNEL_DEFINITIONS) };
 const CHANNELS = flattenChannelDefinitions(allDefinitions);
 

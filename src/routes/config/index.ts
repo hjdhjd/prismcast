@@ -9,7 +9,7 @@ import type { ProfileInfo } from "../../config/profiles.js";
 import { closeBrowser } from "../../browser/index.js";
 import { getStreamCount } from "../../streaming/registry.js";
 import { setupChannelRoutes } from "./channels/index.js";
-import { setupProfileRoutes } from "./providers.js";
+import { setupProfileRoutes } from "./services.js";
 import { setupSettingsRoutes } from "./settings.js";
 
 /**
@@ -121,7 +121,7 @@ export function setupConfigEndpoint(app: Express): void {
 // Barrel re-exports for external consumers.
 
 export type { ChannelRowHtml } from "./channels/index.js";
-export { OPTIONAL_COLUMNS, generateChannelRowHtml, generateChannelsPanel, generateProviderFilterToolbar } from "./channels/index.js";
+export { OPTIONAL_COLUMNS, generateChannelRowHtml, generateChannelsPanel, generateServiceFilterToolbar } from "./channels/index.js";
 export { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent,
   hasEnvOverrides } from "./settings.js";
-export { generateCustomProfilesPanel, generateProfileWizardModal } from "./providers.js";
+export { generateCustomProfilesPanel, generateProfileWizardModal } from "./services.js";

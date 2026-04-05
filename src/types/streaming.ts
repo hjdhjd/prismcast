@@ -84,7 +84,7 @@ export interface UrlValidationResult {
 }
 
 /**
- * Streaming mode for an active stream. "capture" uses Chrome screen capture via puppeteer-stream. "native" intercepts the provider's HLS stream and consumes it
+ * Streaming mode for an active stream. "capture" uses Chrome screen capture via puppeteer-stream. "native" intercepts the service's HLS stream and consumes it
  * directly in Node, bypassing screen capture entirely.
  */
 export type StreamingMode = "capture" | "native";

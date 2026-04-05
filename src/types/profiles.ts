@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * profiles.ts: Site profile, channel selection config, and provider pack type definitions for PrismCast.
+ * profiles.ts: Site profile, channel selection config, and service pack type definitions for PrismCast.
  */
 import type { ChannelMap } from "./channels.js";
 import type { Nullable } from "./shared.js";
@@ -89,7 +89,7 @@ export interface ChannelSelectionConfig {
 /**
  * UI category for profile grouping in dropdowns and reference documentation. Profiles are grouped by their fullscreen mechanism and special characteristics.
  * - "api": Profiles using the JavaScript fullscreen API (including embedded iframe and click-to-play variants).
- * - "custom": User-defined profiles created via the profile builder wizard or imported from provider packs.
+ * - "custom": User-defined profiles created via the profile builder wizard or imported from service packs.
  * - "keyboard": Profiles using keyboard shortcuts (typically the 'f' key) for fullscreen.
  * - "multiChannel": Multi-channel profiles requiring a channel selector for tile or thumbnail-based channel selection.
  * - "special": Special-purpose profiles like static page capture.
@@ -249,13 +249,13 @@ export interface ProfileResolutionResult {
   profileName: string;
 }
 
-/* Provider packs allow users to define custom site profiles and domain mappings without modifying source code. These types support the profiles.json storage format,
- * the provider pack distribution format for sharing configurations, and the validation pipeline for imports.
+/* Service packs allow users to define custom site profiles and domain mappings without modifying source code. These types support the profiles.json storage format,
+ * the service pack distribution format for sharing configurations, and the validation pipeline for imports.
  */
 
 /**
- * Domain-level configuration associating domain patterns with site profiles and provider display names. Each entry can specify a site profile for behavior
- * configuration and/or a provider display name for friendly UI labels. Used by both built-in domain mappings in sites.ts and user-defined mappings in profiles.json.
+ * Domain-level configuration associating domain patterns with site profiles and service display names. Each entry can specify a site profile for behavior
+ * configuration and/or a service display name for friendly UI labels. Used by both built-in domain mappings in sites.ts and user-defined mappings in profiles.json.
  */
 export interface DomainConfig {
 
@@ -264,8 +264,8 @@ export interface DomainConfig {
   // poll during early video wait as a safety net. Omit for sites without intermittent modals.
   dismissSelector?: string;
 
-  // Optional URL to a provider logo or icon. When specified, tried first before the domain-derived Apple touch icon and favicon fallbacks in the provider filter
-  // dropdown, chips, and browse modal. Use for providers whose favicon or touch icon is missing, low quality, or doesn't represent the brand well.
+  // Optional URL to a service logo or icon. When specified, tried first before the domain-derived Apple touch icon and favicon fallbacks in the service filter
+  // dropdown, chips, and browse modal. Use for services whose favicon or touch icon is missing, low quality, or doesn't represent the brand well.
   iconUrl?: string;
 
   // URL to navigate to for authentication. Some sites show different login options on their homepage vs their player page. When set, the auth route navigates to
@@ -280,14 +280,14 @@ export interface DomainConfig {
   // (fullscreen method, iframe handling, etc.). Omit for domains that only need a display name.
   profile?: string;
 
-  // Friendly provider name shown in the UI source column, provider dropdowns, and labels. When set, this name is used instead of the raw domain string (e.g.,
+  // Friendly service name shown in the UI source column, service dropdowns, and labels. When set, this name is used instead of the raw domain string (e.g.,
   // "Hulu" instead of "hulu.com"). Omit to fall back to the concise domain extracted from the URL.
-  provider?: string;
+  service?: string;
 
-  // Provider filter tag for subscription services. Channels whose canonical URL matches a domain with this field are identified as belonging to this subscription
-  // service for filtering purposes. Domains that share a tag (e.g., "watch.sling.com" and a hypothetical "sling.com" variant) are treated as the same provider.
+  // Service filter tag for streaming services. Channels whose canonical URL matches a domain with this field are identified as belonging to this streaming
+  // service for filtering purposes. Domains that share a tag (e.g., "watch.sling.com" and a hypothetical "sling.com" variant) are treated as the same service.
   // Omit for network-owned sites (abc.com, nbc.com, espn.com, etc.) — they are implicitly tagged "direct".
-  providerTag?: string;
+  serviceTag?: string;
 
   // Maximum time in milliseconds to wait for the video element to reach a playable state. When set, overrides the global videoTimeout setting for all channels on
   // this domain. Useful for sites with preroll ads or slow player initialization that need more time than the default. Omit to use the global default.
@@ -299,7 +299,7 @@ export interface DomainConfig {
  */
 export interface UserProfilesFile {
 
-  // User-defined domain-to-profile mappings. Each key is a hostname (e.g., "watch.sling.com") and the value configures which profile and provider name to use.
+  // User-defined domain-to-profile mappings. Each key is a hostname (e.g., "watch.sling.com") and the value configures which profile and service name to use.
   domains?: Record<string, DomainConfig>;
 
   // User-defined site profiles. Each key is a profile name (e.g., "huluLive") and the value is a SiteProfile definition with an extends property referencing
@@ -326,10 +326,10 @@ export interface UserProfilesLoadResult {
 }
 
 /**
- * Provider pack distribution format. Bundles a profile, domain mapping(s), and optionally channels for a streaming provider into a single JSON file. On import,
+ * Service pack distribution format. Bundles a profile, domain mapping(s), and optionally channels for a streaming service into a single JSON file. On import,
  * its contents are split and written to profiles.json and channels.json.
  */
-export interface ProviderPack {
+export interface ServicePack {
 
   // Channel definitions to add alongside the profile. Optional — users may want to configure their own channel list.
   channels?: ChannelMap;
@@ -337,7 +337,7 @@ export interface ProviderPack {
   // Domain-to-profile mappings. Optional — users may want to import just a profile to reference from their own domain mappings.
   domains?: Record<string, DomainConfig>;
 
-  // Human-readable provider name for display during import.
+  // Human-readable service name for display during import.
   name: string;
 
   // One or more profile definitions. At least one is required.

@@ -13,14 +13,14 @@ import { getUserDomains } from "./userProfiles.js";
  * The profile system has four components:
  *
  * 1. SITE_PROFILES: General-purpose behavior configurations that users can select for custom channels. These describe common player implementation patterns and
- *    are shown in UI dropdowns and the provider wizard. Profiles can inherit from other profiles using the "extends" property.
+ *    are shown in UI dropdowns and the service wizard. Profiles can inherit from other profiles using the "extends" property.
  *
  * 1b. PROVIDER_PROFILES: Internal profiles tied to specific provider modules (Hulu, YouTube TV, Sling, etc.). These have channel selection strategies and
  *     selectors tightly coupled to a streaming service's DOM structure. They are never shown in user-facing profile lists — users targeting these services should
  *     use the predefined channels directly. Provider profiles can extend general profiles (e.g., fullscreenApi) and profile resolution checks both tables.
  *
- * 2. DOMAIN_CONFIG: A mapping from domain patterns to site profiles and provider display names. When streaming a URL, we check if it matches any known domain and
- *    use the corresponding profile. Provider display names give friendly labels (e.g., "Hulu" instead of "hulu.com") for the UI source column and provider
+ * 2. DOMAIN_CONFIG: A mapping from domain patterns to site profiles and service display names. When streaming a URL, we check if it matches any known domain and
+ *    use the corresponding profile. Service display names give friendly labels (e.g., "Hulu" instead of "hulu.com") for the UI source column and service
  *    dropdowns. This is the primary mechanism for automatically selecting the right behavior and generating friendly display names.
  *
  * 3. Channel-level profile hints: Individual channel definitions can specify an explicit profile name, overriding URL-based detection. This is useful when a
@@ -231,7 +231,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
 /* Provider profiles are internal profiles tied to specific provider modules. They have channel selection strategies, selectors, and flags tightly coupled to a
  * specific streaming service's DOM structure and are not user-selectable. They live in a separate table from SITE_PROFILES so that UI-facing code (profile
- * dropdowns, provider wizard, profile validation) can show only general-purpose profiles without maintaining an exclusion list. The extends mechanism works across
+ * dropdowns, service wizard, profile validation) can show only general-purpose profiles without maintaining an exclusion list. The extends mechanism works across
  * both tables — a provider profile can extend a general profile (e.g., fullscreenApi) and profile resolution checks both tables transparently.
  */
 export const PROVIDER_PROFILES: Record<string, SiteProfile> = {
@@ -269,69 +269,69 @@ export const PROVIDER_PROFILES: Record<string, SiteProfile> = {
 };
 
 
-/* This mapping associates domain keys with site profiles, provider display names, and provider filter tags. Most keys are concise second-level domains
+/* This mapping associates domain keys with site profiles, service display names, and service filter tags. Most keys are concise second-level domains
  * (e.g., "nbc.com", "foodnetwork.com") matching the output of extractDomain(). Keys can also be full hostnames (e.g., "tv.youtube.com") for subdomain-specific
  * overrides — getDomainConfig() tries the full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com"
  * when the URL matches.
  *
- * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains without a provider entry will display the
- * concise domain string (e.g., "hulu.com") in the UI. Entries with a providerTag participate in the provider filter system — channels whose canonical URL maps to
+ * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains without a service entry will display the
+ * concise domain string (e.g., "hulu.com") in the UI. Entries with a serviceTag participate in the service filter system — channels whose canonical URL maps to
  * a tagged domain are identified as belonging to that subscription service rather than being tagged as "direct" (free network sites).
  */
 export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
 
-  "abc.com": { profile: "keyboardMultiVideo", provider: "ABC.com" },
-  "aetv.com": { profile: "fullscreenApi", provider: "A&E" },
-  "bet.com": { profile: "fullscreenApi", provider: "BET.com" },
-  "c-span.org": { dismissSelector: ".videoAdUiSkipButtonExperimentalText", profile: "brightcove", provider: "C-SPAN.org" },
-  "cbs.com": { dismissSelector: "#mvpd__getstarted", profile: "keyboardIframe", provider: "CBS.com" },
-  "cnbc.com": { profile: "fullscreenApi", provider: "CNBC.com" },
-  "cnn.com": { profile: "fullscreenApi", provider: "CNN.com" },
-  "disneynow.com": { profile: "disneyNow", provider: "DisneyNOW" },
+  "abc.com": { profile: "keyboardMultiVideo", service: "ABC.com" },
+  "aetv.com": { profile: "fullscreenApi", service: "A&E" },
+  "bet.com": { profile: "fullscreenApi", service: "BET.com" },
+  "c-span.org": { dismissSelector: ".videoAdUiSkipButtonExperimentalText", profile: "brightcove", service: "C-SPAN.org" },
+  "cbs.com": { dismissSelector: "#mvpd__getstarted", profile: "keyboardIframe", service: "CBS.com" },
+  "cnbc.com": { profile: "fullscreenApi", service: "CNBC.com" },
+  "cnn.com": { profile: "fullscreenApi", service: "CNN.com" },
+  "disneynow.com": { profile: "disneyNow", service: "DisneyNOW" },
   "disneyplus.com": { iconUrl: "https://static-assets.bamgrid.com/product/disneyplus/favicons/apple-touch-icon-aurora.d3af81fe0571b495a3c80ff8c3d0c8e7.png",
-    profile: "disneyPlus", provider: "Disney+", providerTag: "disneyplus" },
-  "espn.com": { profile: "keyboardMultiVideo", provider: "ESPN.com" },
-  "foodnetwork.com": { profile: "fullscreenApi", provider: "Food Network" },
-  "fox.com": { loginUrl: "https://www.fox.com", profile: "foxLive", provider: "Fox One", providerTag: "foxone" },
-  "foxbusiness.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox Business" },
-  "foxnews.com": { profile: "embeddedDynamicMultiVideo", provider: "Fox News" },
-  "foxsports.com": { profile: "fullscreenApi", provider: "Fox Sports" },
-  "france24.com": { profile: "embeddedVolumeLock", provider: "France 24" },
-  "freeform.com": { profile: "fullscreenApi", provider: "Freeform" },
-  "fyi.tv": { profile: "fullscreenApi", provider: "FYI" },
-  "golfchannel.com": { profile: "fullscreenApi", provider: "Golf Channel" },
-  "hbomax.com": { profile: "hboMax", provider: "HBO Max", providerTag: "hbomax" },
-  "history.com": { profile: "fullscreenApi", provider: "History.com" },
-  "hulu.com": { iconUrl: "https://www.hulu.com/static/icons/apple-touch-icon.png", profile: "huluLive", provider: "Hulu", providerTag: "hulu" },
-  "lakeshorepbs.org": { profile: "embeddedPlayer", provider: "Lakeshore PBS" },
-  "ms.now": { profile: "keyboardDynamic", provider: "MS NOW" },
-  "mylifetime.com": { profile: "fullscreenApi", provider: "Lifetime" },
-  "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", provider: "Nat Geo" },
-  "nba.com": { profile: "fullscreenApi", provider: "NBA.com" },
-  "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", provider: "NBC.com" },
+    profile: "disneyPlus", service: "Disney+", serviceTag: "disneyplus" },
+  "espn.com": { profile: "keyboardMultiVideo", service: "ESPN.com" },
+  "foodnetwork.com": { profile: "fullscreenApi", service: "Food Network" },
+  "fox.com": { loginUrl: "https://www.fox.com", profile: "foxLive", service: "Fox One", serviceTag: "foxone" },
+  "foxbusiness.com": { profile: "embeddedDynamicMultiVideo", service: "Fox Business" },
+  "foxnews.com": { profile: "embeddedDynamicMultiVideo", service: "Fox News" },
+  "foxsports.com": { profile: "fullscreenApi", service: "Fox Sports" },
+  "france24.com": { profile: "embeddedVolumeLock", service: "France 24" },
+  "freeform.com": { profile: "fullscreenApi", service: "Freeform" },
+  "fyi.tv": { profile: "fullscreenApi", service: "FYI" },
+  "golfchannel.com": { profile: "fullscreenApi", service: "Golf Channel" },
+  "hbomax.com": { profile: "hboMax", service: "HBO Max", serviceTag: "hbomax" },
+  "history.com": { profile: "fullscreenApi", service: "History.com" },
+  "hulu.com": { iconUrl: "https://www.hulu.com/static/icons/apple-touch-icon.png", profile: "huluLive", service: "Hulu", serviceTag: "hulu" },
+  "lakeshorepbs.org": { profile: "embeddedPlayer", service: "Lakeshore PBS" },
+  "ms.now": { profile: "keyboardDynamic", service: "MS NOW" },
+  "mylifetime.com": { profile: "fullscreenApi", service: "Lifetime" },
+  "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", service: "Nat Geo" },
+  "nba.com": { profile: "fullscreenApi", service: "NBA.com" },
+  "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", service: "NBC.com" },
   "paramountplus.com": { dismissSelector: ".ppp-watch", iconUrl: "https://www.paramountplus.com/assets/images/pplus_App_Icon-Blue-144x144.png",
-    profile: "fullscreenApi", provider: "Paramount+", providerTag: "paramountplus" },
-  "sling.com": { profile: "embeddedVolumeLock", provider: "Sling TV" },
-  "starz.com": { profile: "fullscreenApi", provider: "Starz" },
-  "stream.directv.com": { loginUrl: "https://stream.directv.com", profile: "directvStream", provider: "DirecTV Stream", providerTag: "directv" },
-  "tbs.com": { profile: "fullscreenApi", provider: "TBS.com" },
-  "tntdrama.com": { profile: "fullscreenApi", provider: "TNT" },
-  "trutv.com": { profile: "fullscreenApi", provider: "truTV" },
-  "tv.youtube.com": { iconUrl: "https://www.youtube.com/yts/img/favicon_144-vfliLAfaB.png", profile: "youtubeTV", provider: "YouTube TV", providerTag: "yttv" },
+    profile: "fullscreenApi", service: "Paramount+", serviceTag: "paramountplus" },
+  "sling.com": { profile: "embeddedVolumeLock", service: "Sling TV" },
+  "starz.com": { profile: "fullscreenApi", service: "Starz" },
+  "stream.directv.com": { loginUrl: "https://stream.directv.com", profile: "directvStream", service: "DirecTV Stream", serviceTag: "directv" },
+  "tbs.com": { profile: "fullscreenApi", service: "TBS.com" },
+  "tntdrama.com": { profile: "fullscreenApi", service: "TNT" },
+  "trutv.com": { profile: "fullscreenApi", service: "truTV" },
+  "tv.youtube.com": { iconUrl: "https://www.youtube.com/yts/img/favicon_144-vfliLAfaB.png", profile: "youtubeTV", service: "YouTube TV", serviceTag: "yttv" },
   "usanetwork.com": { iconUrl: "https://usanetwork.asset.viewlift.com/images/brand/2025/09/30/usa_favicon-1759230411162.ico",
-    profile: "keyboardDynamicMultiVideo", provider: "USA Network", providerTag: "usa" },
-  "vh1.com": { profile: "fullscreenApi", provider: "VH1.com" },
-  "watch.sling.com": { profile: "slingLive", provider: "Sling TV", providerTag: "sling" },
-  "watch.spectrum.net": { iconUrl: "https://watch.spectrum.net/assets/17.28.0/images/apple-touch-icon.png", profile: "spectrum", provider: "Spectrum TV",
-    providerTag: "spectrum" },
-  "watchhallmarktv.com": { profile: "fullscreenApi", provider: "Hallmark" },
-  "watchtv.cox.com": { iconUrl: "https://watchtv.cox.com/partners/cox/images/favicon-128x128.png", profile: "coxStream", provider: "Cox Contour TV",
-    providerTag: "cox" },
-  "weatherscan.net": { profile: "staticPage", provider: "Weatherscan" },
-  "windy.com": { profile: "staticPage", provider: "Windy" },
-  "wttw.com": { profile: "fullscreenApi", provider: "WTTW" },
-  "xfinity.com": { profile: "xfinityStream", provider: "Xfinity Stream", providerTag: "xfinity" },
-  "youtube.com": { profile: "keyboardDynamic", provider: "YouTube" }
+    profile: "keyboardDynamicMultiVideo", service: "USA Network", serviceTag: "usa" },
+  "vh1.com": { profile: "fullscreenApi", service: "VH1.com" },
+  "watch.sling.com": { profile: "slingLive", service: "Sling TV", serviceTag: "sling" },
+  "watch.spectrum.net": { iconUrl: "https://watch.spectrum.net/assets/17.28.0/images/apple-touch-icon.png", profile: "spectrum", service: "Spectrum TV",
+    serviceTag: "spectrum" },
+  "watchhallmarktv.com": { profile: "fullscreenApi", service: "Hallmark" },
+  "watchtv.cox.com": { iconUrl: "https://watchtv.cox.com/partners/cox/images/favicon-128x128.png", profile: "coxStream", service: "Cox Contour TV",
+    serviceTag: "cox" },
+  "weatherscan.net": { profile: "staticPage", service: "Weatherscan" },
+  "windy.com": { profile: "staticPage", service: "Windy" },
+  "wttw.com": { profile: "fullscreenApi", service: "WTTW" },
+  "xfinity.com": { profile: "xfinityStream", service: "Xfinity Stream", serviceTag: "xfinity" },
+  "youtube.com": { profile: "keyboardDynamic", service: "YouTube" }
 };
 
 /**

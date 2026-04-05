@@ -16,12 +16,12 @@ import { getStream } from "../streaming/registry.js";
 import { removeManifestInterceptor } from "./intercept.js";
 import { resolveUrl } from "./probe.js";
 
-/* This module implements the native HLS proxy that replaces Chrome screen capture for viable streams. It polls the provider's variant manifest at regular intervals,
+/* This module implements the native HLS proxy that replaces Chrome screen capture for viable streams. It polls the service's variant manifest at regular intervals,
  * detects new segments by tracking #EXT-X-MEDIA-SEQUENCE, fetches each segment (optionally decrypting AES-128), stores them in the existing HLS segment system, and
  * generates an HLS playlist that faithfully propagates upstream metadata — discontinuity markers, program timestamps, and SCTE-35 ad signaling (cue-out, cue-in,
  * cue-out-cont).
  *
- * The proxy generates its own playlist rather than rewriting the provider's playlist, which avoids dealing with CDN-relative URLs and provider-specific quirks. However,
+ * The proxy generates its own playlist rather than rewriting the service's playlist, which avoids dealing with CDN-relative URLs and service-specific quirks. However,
  * it preserves all playback-critical tags from the upstream manifest so that downstream consumers (Channels DVR) can correctly handle PTS resets at ad boundaries,
  * synchronize wall-clock time, and detect commercial breaks.
  *
@@ -111,7 +111,7 @@ export interface NativeProxy {
   // Returns streaming statistics for the termination summary.
   getStats: () => NativeProxyStats;
 
-  // Returns the target segment duration in seconds from the provider's manifest. Used by the monitor for staleness detection (2× threshold).
+  // Returns the target segment duration in seconds from the service's manifest. Used by the monitor for staleness detection (2× threshold).
   getTargetDuration: () => number;
 
   // Starts the manifest polling loop.
@@ -1190,7 +1190,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     video.lastTargetDuration = targetDuration;
 
-    // Prune old entries from the fetchedSequences Set and segment metadata on each poll cycle. The provider's media sequence window slides forward, so entries below
+    // Prune old entries from the fetchedSequences Set and segment metadata on each poll cycle. The service's media sequence window slides forward, so entries below
     // the current base sequence will never be checked again. Without pruning, these structures grow unboundedly over hours of streaming.
     for(const seq of video.fetchedSequences) {
 
@@ -1430,7 +1430,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
    * served during the standalone preroll phase, ensuring smooth MEDIA-SEQUENCE progression. For streams with separate audio, generates a master playlist referencing
    * video.m3u8 and audio.m3u8, plus individual variant playlists for each (no preroll — preroll is muxed and can't be split into separate renditions).
    *
-   * @param targetDuration - The #EXT-X-TARGETDURATION value from the provider's manifest.
+   * @param targetDuration - The #EXT-X-TARGETDURATION value from the service's manifest.
    */
   function generatePlaylist(targetDuration: number): void {
 

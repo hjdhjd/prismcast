@@ -248,7 +248,7 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
         resolveNow();
       } else {
 
-        // Either no manifest captured yet (some providers fetch the manifest after the video element appears) or a guide-based tune where the channel switch
+        // Either no manifest captured yet (some services fetch the manifest after the video element appears) or a guide-based tune where the channel switch
         // may produce a newer manifest. Wait briefly for in-flight responses.
         setTimeout(resolveNow, FINALIZE_SETTLE_DELAY);
       }

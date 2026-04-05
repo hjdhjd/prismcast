@@ -433,8 +433,8 @@ export function generateLandingPageStyles(): string {
     // Channel toolbar with dropdown menus. Each dropdown button has an inline SVG icon + label + chevron.
     ".channel-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; margin-bottom: 10px; }",
     ".channel-toolbar .toolbar-group { display: flex; align-items: center; gap: 6px; }",
-    ".toolbar-dropdown-btn { display: inline-flex; align-items: center; gap: 5px; }",
-    ".toolbar-dropdown-btn svg { flex-shrink: 0; vertical-align: middle; }",
+    ".toolbar-icon-btn { display: inline-flex; align-items: center; gap: 5px; }",
+    ".toolbar-icon-btn svg { flex-shrink: 0; vertical-align: middle; }",
     ".channel-summary { text-align: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }",
 
     // Dropdown menu used by the Import button in the channel toolbar.

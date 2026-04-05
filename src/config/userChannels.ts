@@ -5,8 +5,8 @@
 import { CHANNEL_IDENTITY_FIELDS, PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.js";
 import type { Channel, ChannelListingEntry, ChannelMap, StoredChannel, StoredChannelMap } from "../types/index.js";
 import { LOG, containsNonPrintable, sanitizeString, stringifySorted } from "../utils/index.js";
-import { buildProviderGroups, getAllProviderTags, getProviderSelections, getResolvedChannel, isChannelAvailableByProvider, isProviderVariant,
-  resolveProviderKey, setEnabledProviders, setProviderSelections } from "./providers.js";
+import { buildServiceGroups, getAllServiceTags, getResolvedChannel, getServiceSelections, isChannelAvailableByService, isServiceVariant,
+  resolveServiceKey, setEnabledServices, setServiceSelections } from "./services.js";
 import { getChannelsFilePath, getDataDir } from "./paths.js";
 import { loadUserConfig, saveUserConfig } from "./userConfig.js";
 import { CONFIG } from "./index.js";
@@ -67,8 +67,8 @@ export interface UserChannelsLoadResult {
   // Error message if parseError is true.
   parseErrorMessage?: string;
 
-  // Provider selections loaded from the file (canonical key → provider key).
-  providerSelections: Record<string, string>;
+  // Service selections loaded from the file (canonical key → service variant key).
+  serviceSelections: Record<string, string>;
 
   // Tag registry state (user-created tags and deleted predefined tags).
   tagRegistry: TagRegistry;
@@ -118,8 +118,8 @@ export function getChannelsParseErrorMessage(): string | undefined {
 
 /**
  * Loads user channels from the channels file. Returns an empty map if the file doesn't exist, and sets parseError if the file exists but contains invalid JSON.
- * The file can contain metadata keys (`providerSelections`, `tagRegistry`) which are extracted separately from channel data.
- * @returns The loaded channels with parse status, provider selections, and tag registry.
+ * The file can contain metadata keys (`serviceSelections`, `tagRegistry`) which are extracted separately from channel data.
+ * @returns The loaded channels with parse status, service selections, and tag registry.
  */
 export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
@@ -131,23 +131,23 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
       const parsed = JSON.parse(content) as Record<string, unknown>;
 
-      // Extract metadata keys (providerSelections, tagRegistry) — these are not channels, they're organizational state stored alongside channel data.
-      const providerSelections: Record<string, string> = {};
+      // Extract metadata keys (serviceSelections, tagRegistry) — these are not channels, they're organizational state stored alongside channel data.
+      const serviceSelections: Record<string, string> = {};
       const tagRegistry: TagRegistry = { deletedTags: [], tags: [] };
       const channels: StoredChannelMap = {};
 
       for(const [ key, value ] of Object.entries(parsed)) {
 
-        if(key === "providerSelections") {
+        if((key === "serviceSelections") || (key === "providerSelections")) {
 
-          // Copy provider selections if it's an object.
+          // Copy service selections if it's an object. Accepts the legacy "providerSelections" key for backward compatibility.
           if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
 
             for(const [ selKey, selValue ] of Object.entries(value)) {
 
               if(typeof selValue === "string") {
 
-                providerSelections[selKey] = selValue;
+                serviceSelections[selKey] = selValue;
               }
             }
           }
@@ -175,33 +175,47 @@ export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
         }
       }
 
-      return { channels, parseError: false, providerSelections, tagRegistry };
+      // Silent migration: rename legacy "provider" field to "service" on channel entries. The old field was used as a display name override for the service
+      // selection dropdown. New installs always write "service". This migration ensures existing channels.json files are upgraded transparently.
+      for(const channel of Object.values(channels)) {
+
+        const legacy = channel as Record<string, unknown>;
+
+        if(("provider" in legacy) && !("service" in legacy)) {
+
+          legacy.service = legacy.provider;
+        }
+
+        Reflect.deleteProperty(legacy, "provider");
+      }
+
+      return { channels, parseError: false, serviceSelections, tagRegistry };
     } catch(parseError) {
 
       const message = (parseError instanceof Error) ? parseError.message : String(parseError);
 
       LOG.warn("Invalid JSON in channels file %s: %s. Using predefined channels only.", getChannelsFilePath(), message);
 
-      return { channels: {}, parseError: true, parseErrorMessage: message, providerSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
+      return { channels: {}, parseError: true, parseErrorMessage: message, serviceSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
     }
   } catch(error) {
 
     // File doesn't exist - this is normal, use predefined channels only.
     if((error as NodeJS.ErrnoException).code === "ENOENT") {
 
-      return { channels: {}, parseError: false, providerSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
+      return { channels: {}, parseError: false, serviceSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
     }
 
     // Other read errors - log and use predefined channels.
     LOG.warn("Failed to read channels file %s: %s. Using predefined channels only.", getChannelsFilePath(), (error instanceof Error) ? error.message : String(error));
 
-    return { channels: {}, parseError: false, providerSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
+    return { channels: {}, parseError: false, serviceSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
   }
 }
 
 /**
  * Saves user channels to the channels file and updates the in-memory cache. Changes take effect immediately for new stream requests without requiring a server
- * restart. Creates the data directory if it doesn't exist. Metadata keys (provider selections, tag registry) are also saved if they have content. No-op deltas
+ * restart. Creates the data directory if it doesn't exist. Metadata keys (service selections, tag registry) are also saved if they have content. No-op deltas
  * for predefined channel keys are normalized before saving: fields that match the predefined value or null-clear a field the predefined doesn't have are
  * stripped. If the delta becomes empty after normalization, the entry is removed entirely. This ensures that any code path that writes deltas (inline edit,
  * auto-number, browse modal, full edit) produces clean channels.json output without each handler needing to optimize its own delta.
@@ -284,13 +298,13 @@ export async function saveUserChannels(channels: StoredChannelMap): Promise<void
     }
   }
 
-  // Include metadata keys (provider selections, tag registry) if they have content.
-  const selections = getProviderSelections();
+  // Include metadata keys (service selections, tag registry) if they have content.
+  const selections = getServiceSelections();
   const output: Record<string, unknown> = { ...filtered };
 
   if(Object.keys(selections).length > 0) {
 
-    output.providerSelections = selections;
+    output.serviceSelections = selections;
   }
 
   if((loadedTagRegistry.tags.length > 0) || (loadedTagRegistry.deletedTags.length > 0)) {
@@ -306,8 +320,8 @@ export async function saveUserChannels(channels: StoredChannelMap): Promise<void
   // Update in-memory cache so changes take effect immediately for new stream requests.
   loadedUserChannels = { ...filtered };
 
-  // Refresh provider groups so channelsRef reflects the new channel data. This ensures getResolvedChannel() returns correct data after modifications.
-  buildProviderGroups(getMergedChannelMap());
+  // Refresh service groups so channelsRef reflects the new channel data. This ensures getResolvedChannel() returns correct data after modifications.
+  buildServiceGroups(getMergedChannelMap());
 
   // Clear any previous parse error since we're writing valid data.
   userChannelsParseError = false;
@@ -367,21 +381,21 @@ export async function resetUserChannels(): Promise<void> {
  */
 
 /**
- * Initializes user channels by loading them from the file. This should be called once at server startup. Also builds provider groups and loads provider selections.
+ * Initializes user channels by loading them from the file. This should be called once at server startup. Also builds service groups and loads service selections.
  */
 export async function initializeUserChannels(): Promise<void> {
 
   const result = await loadUserChannels();
 
-  // Silent migration: rename "foxcom" provider references to "foxone." Migrates provider selections (channels.json) and user channel variant keys. The
-  // provider filter (config.json) is handled separately below since it's already loaded into CONFIG at this point.
+  // Silent migration: rename "foxcom" service references to "foxone." Migrates service selections (channels.json) and user channel variant keys. The
+  // service filter (config.json) is handled separately below since it's already loaded into CONFIG at this point.
   let channelsMigrated = false;
 
-  for(const [ canonicalKey, selectedVariant ] of Object.entries(result.providerSelections)) {
+  for(const [ canonicalKey, selectedVariant ] of Object.entries(result.serviceSelections)) {
 
     if(selectedVariant.endsWith("-foxcom")) {
 
-      result.providerSelections[canonicalKey] = selectedVariant.slice(0, -6) + "foxone";
+      result.serviceSelections[canonicalKey] = selectedVariant.slice(0, -6) + "foxone";
       channelsMigrated = true;
     }
   }
@@ -396,14 +410,14 @@ export async function initializeUserChannels(): Promise<void> {
     }
   }
 
-  // Load provider selections before saving so that saveUserChannels (which persists both channels and selections) captures the migrated values.
-  setProviderSelections(result.providerSelections);
+  // Load service selections before saving so that saveUserChannels (which persists both channels and selections) captures the migrated values.
+  setServiceSelections(result.serviceSelections);
 
   if(channelsMigrated) {
 
     await saveUserChannels(result.channels);
 
-    LOG.info("Migrated Fox provider references from foxcom to foxone.");
+    LOG.info("Migrated Fox service references from foxcom to foxone.");
   }
 
   loadedUserChannels = result.channels;
@@ -411,36 +425,36 @@ export async function initializeUserChannels(): Promise<void> {
   userChannelsParseError = result.parseError;
   userChannelsParseErrorMessage = result.parseErrorMessage;
 
-  // Load enabled providers from the configuration, validating that each tag is recognized. Invalid tags (e.g., from hand-edited config.json typos) are stripped
-  // silently after logging a warning. Validation must happen after buildProviderGroups() because getAllProviderTags() depends on the groups being built.
-  let configuredProviders = CONFIG.channels.enabledProviders;
+  // Load enabled services from the configuration, validating that each tag is recognized. Invalid tags (e.g., from hand-edited config.json typos) are stripped
+  // silently after logging a warning. Validation must happen after buildServiceGroups() because getAllServiceTags() depends on the groups being built.
+  let configuredServices = CONFIG.channels.enabledServices;
 
-  // Silent migration: rename "foxcom" to "foxone" in the provider filter if present. Persisted to config.json immediately so the stale value doesn't remain.
-  if(configuredProviders.includes("foxcom")) {
+  // Silent migration: rename "foxcom" to "foxone" in the service filter if present. Persisted to config.json immediately so the stale value doesn't remain.
+  if(configuredServices.includes("foxcom")) {
 
-    configuredProviders = configuredProviders.map((tag) => (tag === "foxcom") ? "foxone" : tag);
-    CONFIG.channels.enabledProviders = configuredProviders;
+    configuredServices = configuredServices.map((tag) => (tag === "foxcom") ? "foxone" : tag);
+    CONFIG.channels.enabledServices = configuredServices;
 
     const configResult = await loadUserConfig();
 
-    if(configResult.config.channels?.enabledProviders) {
+    if(configResult.config.channels?.enabledServices) {
 
-      configResult.config.channels.enabledProviders = configuredProviders;
+      configResult.config.channels.enabledServices = configuredServices;
 
       await saveUserConfig(configResult.config);
     }
 
-    LOG.info("Migrated provider filter from foxcom to foxone.");
+    LOG.info("Migrated service filter from foxcom to foxone.");
   }
 
-  // Upgrade inference for setupCompleted: existing users who already have providers or channels configured should not see the first-run setup wizard. If the
+  // Upgrade inference for setupCompleted: existing users who already have services or channels configured should not see the first-run setup wizard. If the
   // flag is not set in the config file and evidence of prior configuration exists, infer true and persist.
   if(!CONFIG.channels.setupCompleted) {
 
-    const hasProviders = configuredProviders.length > 0;
+    const hasServices = configuredServices.length > 0;
     const hasUserChannels = Object.keys(loadedUserChannels).length > 0;
 
-    if(hasProviders || hasUserChannels) {
+    if(hasServices || hasUserChannels) {
 
       CONFIG.channels.setupCompleted = true;
 
@@ -475,7 +489,7 @@ export async function initializeUserChannels(): Promise<void> {
 
     const prefix = key.substring(0, hyphenIndex);
 
-    // Only stamp canonicalKey if the prefix exists as a predefined channel. This matches the old buildProviderGroups heuristic exactly.
+    // Only stamp canonicalKey if the prefix exists as a predefined channel. This matches the old buildServiceGroups heuristic exactly.
     if(prefix in PREDEFINED_CHANNELS) {
 
       (channel as Channel).canonicalKey = prefix;
@@ -492,7 +506,7 @@ export async function initializeUserChannels(): Promise<void> {
 
   // One-time migration: strip identity fields from user channel variant entries. Identity fields (name, stationId, tags, etc.) are resolved from the canonical
   // at runtime via applyVariantInheritance, so storing them on variants is redundant. Older versions wrote these fields on variant creation. This migration
-  // cleans them up so channels.json only contains provider-specific fields on variant entries.
+  // cleans them up so channels.json only contains service-specific fields on variant entries.
   let variantFieldsMigrated = false;
 
   for(const channel of Object.values(result.channels)) {
@@ -519,28 +533,28 @@ export async function initializeUserChannels(): Promise<void> {
     LOG.info("Stripped redundant identity fields from user channel variant entries.");
   }
 
-  // Build the merged channels map and then build provider groups.
+  // Build the merged channels map and then build service groups.
   const mergedChannels = getMergedChannelMap();
 
-  buildProviderGroups(mergedChannels);
+  buildServiceGroups(mergedChannels);
 
-  // Now that provider groups are built, validate the configured provider tags. Strip any unrecognized tags and warn.
-  if(configuredProviders.length > 0) {
+  // Now that service groups are built, validate the configured service tags. Strip any unrecognized tags and warn.
+  if(configuredServices.length > 0) {
 
-    const knownTags = new Set(getAllProviderTags().map((t) => t.tag));
-    const validTags = configuredProviders.filter((tag) => knownTags.has(tag));
-    const invalidTags = configuredProviders.filter((tag) => !knownTags.has(tag));
+    const knownTags = new Set(getAllServiceTags().map((t) => t.tag));
+    const validTags = configuredServices.filter((tag) => knownTags.has(tag));
+    const invalidTags = configuredServices.filter((tag) => !knownTags.has(tag));
 
     if(invalidTags.length > 0) {
 
-      LOG.warn("Ignoring unrecognized provider tags in configuration: %s.", invalidTags.join(", "));
+      LOG.warn("Ignoring unrecognized service tags in configuration: %s.", invalidTags.join(", "));
     }
 
-    setEnabledProviders(validTags);
-    CONFIG.channels.enabledProviders = validTags;
+    setEnabledServices(validTags);
+    CONFIG.channels.enabledServices = validTags;
   } else {
 
-    setEnabledProviders(configuredProviders);
+    setEnabledServices(configuredServices);
   }
 
   // Check for non-printable characters in loaded channel string values. These warnings are informational — loaded data is not modified.
@@ -568,13 +582,11 @@ export async function initializeUserChannels(): Promise<void> {
   }
 }
 
-// Fields that users are allowed to override via delta. This allowlist prevents hand-edited channels.json from overriding fields like provider that are
-// intentionally not user-editable. Matches the fields in the ChannelDelta interface.
 // User-editable fields for predefined channel delta overrides. Derived from CHANNEL_IDENTITY_FIELDS (identity fields like name, stationId, tags) plus the
-// provider-specific fields exposed in the edit form (channelSelector, profile, url). This derivation ensures that adding a new identity field to
+// service-specific fields exposed in the edit form (channelSelector, profile, url). This derivation ensures that adding a new identity field to
 // CHANNEL_IDENTITY_FIELDS automatically includes it in the delta allowlist.
-const PROVIDER_SPECIFIC_EDITABLE_FIELDS = [ "channelSelector", "profile", "url" ] as const;
-const DELTA_ALLOWED_FIELDS = new Set<string>([ ...CHANNEL_IDENTITY_FIELDS, ...PROVIDER_SPECIFIC_EDITABLE_FIELDS ]);
+const SERVICE_SPECIFIC_EDITABLE_FIELDS = [ "channelSelector", "profile", "url" ] as const;
+const DELTA_ALLOWED_FIELDS = new Set<string>([ ...CHANNEL_IDENTITY_FIELDS, ...SERVICE_SPECIFIC_EDITABLE_FIELDS ]);
 
 /**
  * Resolves a stored channel entry (full definition or delta) into a fully resolved Channel. For user-defined channels with no predefined equivalent, the stored
@@ -627,7 +639,7 @@ export function resolveStoredChannel(key: string, stored: StoredChannel): Channe
 }
 
 /**
- * Returns the merged channel map (predefined + user) without filtering by enabled status or provider variants. Used internally for building provider groups.
+ * Returns the merged channel map (predefined + user) without filtering by enabled status or service variants. Used internally for building service groups.
  * Resolves any delta overrides into full Channel objects so the result contains only complete definitions.
  * @returns The complete merged channel map.
  */
@@ -659,12 +671,12 @@ function getMergedChannelMap(): ChannelMap {
  * The enabled field reflects whether the channel is available for streaming. Predefined-only channels can be disabled via configuration; user and override
  * channels are always enabled.
  *
- * Provider variants (non-canonical keys in provider groups) are filtered out from this listing — they are accessed via the provider selection mechanism instead.
+ * Service variants (non-canonical keys in service groups) are filtered out from this listing — they are accessed via the service selection mechanism instead.
  *
- * Override entries produce a new resolved Channel object (via resolveStoredChannel()), which is a different reference from PREDEFINED_CHANNELS[key]. The provider
- * system (providers.ts) relies on this reference difference to detect user overrides via isUserOverride(). Predefined-only entries preserve the original reference.
+ * Override entries produce a new resolved Channel object (via resolveStoredChannel()), which is a different reference from PREDEFINED_CHANNELS[key]. The service
+ * system (services.ts) relies on this reference difference to detect user overrides via isUserOverride(). Predefined-only entries preserve the original reference.
  *
- * The returned channel field is provider-resolved: when a non-default provider is selected for a channel, the entry's channel reflects the selected variant's URL,
+ * The returned channel field is service-resolved: when a non-default service is selected for a channel, the entry's channel reflects the selected variant's URL,
  * channelSelector, stationId, and channelNumber. The entry's key always remains the canonical key.
  * @returns Sorted array of channel listing entries.
  */
@@ -675,8 +687,8 @@ export function getChannelListing(): ChannelListingEntry[] {
 
   for(const key of allKeys) {
 
-    // Skip provider variants — they're accessed via provider selection, not as separate channels.
-    if(isProviderVariant(key)) {
+    // Skip service variants — they're accessed via service selection, not as separate channels.
+    if(isServiceVariant(key)) {
 
       continue;
     }
@@ -699,17 +711,17 @@ export function getChannelListing(): ChannelListingEntry[] {
     }
 
     // For user entries (including overrides), resolve the stored delta/definition into a full Channel. The resolved object is a new reference, which preserves
-    // the isUserOverride() contract in providers.ts (reference comparison against PREDEFINED_CHANNELS[key]). Predefined-only entries keep the original reference.
+    // the isUserOverride() contract in services.ts (reference comparison against PREDEFINED_CHANNELS[key]). Predefined-only entries keep the original reference.
     const channel: Channel = isUser ? resolveStoredChannel(key, loadedUserChannels[key]) : PREDEFINED_CHANNELS[key];
 
-    // When a non-default provider is selected, resolve the variant so consumers see the correct URL, channelSelector, stationId, and channelNumber. We skip
+    // When a non-default service is selected, resolve the variant so consumers see the correct URL, channelSelector, stationId, and channelNumber. We skip
     // resolution when the resolved key matches the canonical key — the channel object is already correct and preserving its reference avoids a redundant lookup.
-    const resolvedKey = resolveProviderKey(key);
+    const resolvedKey = resolveServiceKey(key);
     const resolvedChannel = (resolvedKey !== key) ? getResolvedChannel(resolvedKey) : undefined;
 
     listing.push({
 
-      availableByProvider: isChannelAvailableByProvider(key),
+      availableByService: isChannelAvailableByService(key),
       channel: resolvedChannel ?? channel,
       enabled: !isPredefinedChannelDisabled(key),
       key,
@@ -734,7 +746,7 @@ export function getAllChannels(): ChannelMap {
 
   for(const entry of getChannelListing()) {
 
-    if(entry.enabled && entry.availableByProvider) {
+    if(entry.enabled && entry.availableByService) {
 
       result[entry.key] = entry.channel;
     }
@@ -1019,8 +1031,8 @@ export function getDisabledPredefinedChannels(): string[] {
 }
 
 /**
- * Returns all predefined channels regardless of disabled state, excluding provider variants. Used by the UI to show all predefined channels including disabled ones.
- * Provider variants are internal implementation details of channel delivery and are not channels themselves.
+ * Returns all predefined channels regardless of disabled state, excluding service variants. Used by the UI to show all predefined channels including disabled ones.
+ * Service variants are internal implementation details of channel delivery and are not channels themselves.
  * @returns The predefined channel map with canonical entries only.
  */
 export function getPredefinedChannels(): ChannelMap {
@@ -1029,7 +1041,7 @@ export function getPredefinedChannels(): ChannelMap {
 
   for(const [ key, channel ] of Object.entries(PREDEFINED_CHANNELS)) {
 
-    if(isProviderVariant(key)) {
+    if(isServiceVariant(key)) {
 
       continue;
     }
@@ -1047,7 +1059,7 @@ export function getPredefinedChannels(): ChannelMap {
 /**
  * Filters predefined channel keys by their relationship to the Pacific timezone naming convention. For "pacific" mode, returns keys that end in "p" and
  * whose East counterpart (key minus trailing "p") exists. For "east" mode, returns keys that do NOT end in "p" and whose Pacific counterpart (key plus "p")
- * exists. Provider variants are excluded — only canonical keys are returned.
+ * exists. Service variants are excluded — only canonical keys are returned.
  * @param side - Which side of the East/Pacific pair to select.
  * @returns Sorted array of matching canonical predefined channel keys.
  */
@@ -1057,8 +1069,8 @@ function filterPredefinedKeysByTimezone(side: "east" | "pacific"): string[] {
 
   for(const key of Object.keys(PREDEFINED_CHANNELS)) {
 
-    // Skip provider variants — they are internal implementation details, not channels.
-    if(isProviderVariant(key)) {
+    // Skip service variants — they are internal implementation details, not channels.
+    if(isServiceVariant(key)) {
 
       continue;
     }
@@ -1105,16 +1117,16 @@ export function getEastWithPacificPredefinedKeys(): string[] {
 
 /**
  * Computes enabled/total counts for all three predefined channel scopes (all, east, pacific) against the current disabled set. Both the enabled count and
- * the total are filtered by provider availability so that the displayed counts match the visible channel table. When no provider filter is active,
+ * the total are filtered by service availability so that the displayed counts match the visible channel table. When no service filter is active,
  * all channels pass and the counts are unaffected. Used by the server-side HTML renderer and both toggle endpoints to provide consistent counts to the client.
  * @returns An object with `all`, `east`, and `pacific` keys, each containing `{ enabled, total }`.
  */
 export function getPredefinedScopeCounts(): { all: { enabled: number; total: number }; east: { enabled: number; total: number };
   pacific: { enabled: number; total: number }; } {
 
-  const allKeys = Object.keys(getPredefinedChannels()).filter((k) => isChannelAvailableByProvider(k));
-  const eastKeys = getEastWithPacificPredefinedKeys().filter((k) => isChannelAvailableByProvider(k));
-  const pacificKeys = getPacificPredefinedKeys().filter((k) => isChannelAvailableByProvider(k));
+  const allKeys = Object.keys(getPredefinedChannels()).filter((k) => isChannelAvailableByService(k));
+  const eastKeys = getEastWithPacificPredefinedKeys().filter((k) => isChannelAvailableByService(k));
+  const pacificKeys = getPacificPredefinedKeys().filter((k) => isChannelAvailableByService(k));
   const disabled = new Set(CONFIG.channels.disabledPredefined);
 
   return {
@@ -1467,17 +1479,17 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
   return { channels, errors, valid: errors.length === 0 };
 }
 
-/* Provider selections are stored in the channels.json file alongside user channels. When a selection changes, we save the entire file (channels + selections)
+/* Service selections are stored in the channels.json file alongside user channels. When a selection changes, we save the entire file (channels + selections)
  * to persist the change.
  */
 
 /**
- * Saves the current provider selections to the channels file. This triggers a full file save including all user channels.
+ * Saves the current service selections to the channels file. This triggers a full file save including all user channels.
  * @throws If the file cannot be written.
  */
-export async function saveProviderSelections(): Promise<void> {
+export async function saveServiceSelections(): Promise<void> {
 
-  // Simply save the user channels — the saveUserChannels function includes provider selections automatically.
+  // Simply save the user channels — the saveUserChannels function includes service selections automatically.
   await saveUserChannels(loadedUserChannels);
 }
 

@@ -7,13 +7,13 @@ import type { Express, Request, Response } from "express";
 import { LOG, formatError, generateChannelKey, parseM3U, sanitizeString, stringifySorted } from "../../../utils/index.js";
 import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../../../channels/index.js";
 import { VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState, generateTagFilterContent, generateTagManagerBody } from "./table.js";
-import { VALID_SORT_FIELDS, compareChannelSort, getAllProviderTags, getCanonicalKey, getChannelProviderLabel, getEnabledProviders, getProviderGroup,
-  getProviderSelection, getProviderTagForChannel, getResolvedChannel, resolvePredefinedVariant, resolveProviderKey, setEnabledProviders,
-  setProviderSelection } from "../../../config/providers.js";
+import { VALID_SORT_FIELDS, compareChannelSort, getAllServiceTags, getCanonicalKey, getChannelServiceLabel, getEnabledServices, getResolvedChannel,
+  getServiceGroup, getServiceSelection, getServiceTagForChannel, resolvePredefinedVariant, resolveServiceKey, setEnabledServices,
+  setServiceSelection } from "../../../config/services.js";
 import { filterDefaults, loadUserConfig, saveUserConfig } from "../../../config/userConfig.js";
 import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel,
   getPredefinedChannels, getTagRegistry, getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel,
-  saveProviderSelections, saveTagRegistry, saveUserChannels, setTagRegistry, transformChannelTags, validateChannelKey, validateChannelName,
+  saveServiceSelections, saveTagRegistry, saveUserChannels, setTagRegistry, transformChannelTags, validateChannelKey, validateChannelName,
   validateChannelNumber, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../../../config/userChannels.js";
 import { CONFIG } from "../../../config/index.js";
 import type { UserChannel } from "../../../config/userChannels.js";
@@ -326,8 +326,8 @@ export function setupChannelRoutes(app: Express): void {
   });
 
   // POST /config/channels/modify - Apply channel modifications from the browse modal. Handles four action types: 'add' creates new user channels, 'enable'
-  // re-enables a disabled predefined channel and sets its provider, 'switch' changes the provider selection for an existing channel, and 'remove' reverts a
-  // channel to its canonical provider (disabling it if no alternative provider is available). Channel writes and provider selection changes are batched into
+  // re-enables a disabled predefined channel and sets its service, 'switch' changes the service selection for an existing channel, and 'remove' reverts a
+  // channel to its canonical service (disabling it if no alternative service is available). Channel writes and service selection changes are batched into
   // single saves to avoid redundant file I/O.
   app.post("/config/channels/modify", async (req: Request, res: Response): Promise<void> => {
 
@@ -335,7 +335,7 @@ export function setupChannelRoutes(app: Express): void {
 
       const body = req.body as {
         channels?: {
-          action?: string; canonicalKey?: string; channelSelector?: string; name?: string; providerSlug?: string; stationId?: string; url?: string;
+          action?: string; canonicalKey?: string; channelSelector?: string; name?: string; serviceSlug?: string; stationId?: string; url?: string;
         }[];
       };
 
@@ -366,7 +366,7 @@ export function setupChannelRoutes(app: Express): void {
       let selectionsChanged = false;
 
       // Build a UserChannel object from an entry's fields. Shared by the switch/enable and add paths to avoid duplicating channel construction logic. When
-      // canonicalKey is provided, the channel is a provider variant — identity fields (name, stationId) are omitted because they're resolved from the canonical
+      // canonicalKey is provided, the channel is a service variant — identity fields (name, stationId) are omitted because they're resolved from the canonical
       // at runtime via applyVariantInheritance. Standalone channels (no canonicalKey) include all fields.
       function buildUserChannel(entry: { channelSelector?: string; name?: string; stationId?: string; url?: string },
         channelName: string, channelUrl: string, selector: string, canonicalKey?: string): UserChannel {
@@ -390,10 +390,10 @@ export function setupChannelRoutes(app: Express): void {
 
         const action = entry.action ?? "add";
         const name = sanitizeString(entry.name?.trim() ?? "");
-        const providerSlug = entry.providerSlug?.trim() ?? "";
+        const serviceSlug = entry.serviceSlug?.trim() ?? "";
 
-        // Handle enable and switch. Enable re-enables a disabled predefined channel, then falls through to the switch logic to set the provider selection.
-        // Switch changes the provider selection for an existing channel to point to the browsed provider's variant, creating the variant if needed.
+        // Handle enable and switch. Enable re-enables a disabled predefined channel, then falls through to the switch logic to set the service selection.
+        // Switch changes the service selection for an existing channel to point to the browsed service's variant, creating the variant if needed.
         if((action === "switch") || (action === "enable")) {
 
           const canonicalKey = entry.canonicalKey?.trim() ?? "";
@@ -405,18 +405,18 @@ export function setupChannelRoutes(app: Express): void {
             continue;
           }
 
-          // Re-enable the channel if it was disabled. Must complete before setting the provider selection since the config write makes the channel
+          // Re-enable the channel if it was disabled. Must complete before setting the service selection since the config write makes the channel
           // visible in the lineup.
           if(action === "enable") {
 
-            // eslint-disable-next-line no-await-in-loop -- Sequential: config state must be updated before setting provider selection.
+            // eslint-disable-next-line no-await-in-loop -- Sequential: config state must be updated before setting service selection.
             await enablePredefinedChannels([canonicalKey]);
           }
 
-          const variantKey = canonicalKey + "-" + providerSlug;
+          const variantKey = canonicalKey + "-" + serviceSlug;
 
-          // If no variant exists for this provider, create one as a user channel. The canonicalKey parameter tells buildUserChannel to produce a variant
-          // (provider-specific fields only, no identity fields).
+          // If no variant exists for this service, create one as a user channel. The canonicalKey parameter tells buildUserChannel to produce a variant
+          // (service-specific fields only, no identity fields).
           if(!allKeys.has(variantKey)) {
 
             existingChannels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
@@ -425,7 +425,7 @@ export function setupChannelRoutes(app: Express): void {
             channelsChanged = true;
           }
 
-          setProviderSelection(canonicalKey, variantKey);
+          setServiceSelection(canonicalKey, variantKey);
           selectionsChanged = true;
           switched++;
           affectedKeys.add(canonicalKey);
@@ -433,8 +433,8 @@ export function setupChannelRoutes(app: Express): void {
           continue;
         }
 
-        // Handle provider removal. Reverts the channel away from this provider using a three-tier fallback: (1) clear the selection and let
-        // resolveProviderKey find the next enabled variant or canonical, (2) if the resolved provider is still this provider (no alternative exists),
+        // Handle service removal. Reverts the channel away from this service using a three-tier fallback: (1) clear the selection and let
+        // resolveServiceKey find the next enabled variant or canonical, (2) if the resolved service is still this service (no alternative exists),
         // disable the predefined channel or delete the user channel.
         if(action === "remove") {
 
@@ -447,17 +447,17 @@ export function setupChannelRoutes(app: Express): void {
             continue;
           }
 
-          // Clear the provider selection. resolveProviderKey will now return the canonical or the first enabled alternative variant.
-          setProviderSelection(canonicalKey, canonicalKey);
+          // Clear the service selection. resolveServiceKey will now return the canonical or the first enabled alternative variant.
+          setServiceSelection(canonicalKey, canonicalKey);
           selectionsChanged = true;
 
-          // Check if the resolved provider is still this provider. If so, there is no alternative — disable or delete the channel.
-          const resolvedKey = resolveProviderKey(canonicalKey);
-          const resolvedTag = getProviderTagForChannel(resolvedKey);
+          // Check if the resolved service is still this service. If so, there is no alternative — disable or delete the channel.
+          const resolvedKey = resolveServiceKey(canonicalKey);
+          const resolvedTag = getServiceTagForChannel(resolvedKey);
 
-          if(resolvedTag === providerSlug) {
+          if(resolvedTag === serviceSlug) {
 
-            // No alternative provider exists. Disable predefined channels or delete user channels.
+            // No alternative service exists. Disable predefined channels or delete user channels.
             if(isPredefinedChannel(canonicalKey)) {
 
               disablePredefined.add(canonicalKey);
@@ -475,7 +475,7 @@ export function setupChannelRoutes(app: Express): void {
         }
 
         // Handle add. Creates a new user channel for channels not yet in the lineup. The browse modal sends 'add' only for genuinely new channels (no
-        // existing canonical). Channels that match existing canonicals appear as 'switch' state in the modal instead.
+        // existing canonical). Channels that match existing canonicals appear as 'switch' state in the modal.
         const url = sanitizeString(entry.url?.trim() ?? "");
         const channelSelector = sanitizeString(entry.channelSelector?.trim() ?? "");
 
@@ -512,7 +512,7 @@ export function setupChannelRoutes(app: Express): void {
         }
 
         const canonicalExists = allKeys.has(baseKey);
-        const key = (canonicalExists && providerSlug) ? baseKey + "-" + providerSlug : baseKey;
+        const key = (canonicalExists && serviceSlug) ? baseKey + "-" + serviceSlug : baseKey;
 
         // Skip channels that already exist in the lineup.
         if(allKeys.has(key)) {
@@ -520,8 +520,8 @@ export function setupChannelRoutes(app: Express): void {
           continue;
         }
 
-        // When the key differs from baseKey, this is a provider variant — pass baseKey as canonicalKey so buildUserChannel produces a variant with only
-        // provider-specific fields. Standalone channels (key === baseKey) get the full channel object with identity fields.
+        // When the key differs from baseKey, this is a service variant — pass baseKey as canonicalKey so buildUserChannel produces a variant with only
+        // service-specific fields. Standalone channels (key === baseKey) get the full channel object with identity fields.
         const newChannel = buildUserChannel(entry, name, url, channelSelector, (key !== baseKey) ? baseKey : undefined);
 
         existingChannels[key] = newChannel;
@@ -531,17 +531,17 @@ export function setupChannelRoutes(app: Express): void {
         affectedKeys.add(canonicalExists ? baseKey : key);
       }
 
-      // Save changes. saveUserChannels() persists both channel data and provider selections in a single file write, so we only need saveProviderSelections()
+      // Save changes. saveUserChannels() persists both channel data and service selections in a single file write, so we only need saveServiceSelections()
       // (which writes the same file using the module-level cache) when selections changed but no new channels were added.
       if(channelsChanged) {
 
         await saveUserChannels(existingChannels);
       } else if(selectionsChanged) {
 
-        await saveProviderSelections();
+        await saveServiceSelections();
       }
 
-      // Disable predefined channels that had no alternative provider after removal.
+      // Disable predefined channels that had no alternative service after removal.
       await disablePredefinedChannels([...disablePredefined]);
 
       for(const disabledKey of disablePredefined) {
@@ -631,14 +631,14 @@ export function setupChannelRoutes(app: Express): void {
     }
   });
 
-  // POST /config/provider - Update provider selection for a multi-provider channel.
-  app.post("/config/provider", async (req: Request, res: Response): Promise<void> => {
+  // POST /config/service - Update service selection for a multi-service channel.
+  app.post("/config/service", async (req: Request, res: Response): Promise<void> => {
 
     try {
 
-      const body = req.body as { channel?: string; provider?: string };
+      const body = req.body as { channel?: string; service?: string };
       const channelKey = body.channel?.trim();
-      const providerKey = body.provider?.trim();
+      const serviceKey = body.service?.trim();
 
       // Validate channel key is provided.
       if(!channelKey) {
@@ -648,10 +648,10 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Validate provider key is provided.
-      if(!providerKey) {
+      // Validate service key is provided.
+      if(!serviceKey) {
 
-        res.status(400).json({ error: "Provider key is required.", success: false });
+        res.status(400).json({ error: "Service key is required.", success: false });
 
         return;
       }
@@ -659,48 +659,48 @@ export function setupChannelRoutes(app: Express): void {
       // Canonicalize the channel key to ensure selections are stored under the canonical key, not variant keys.
       const canonicalKey = getCanonicalKey(channelKey);
 
-      // Validate the channel has provider options.
-      const providerGroup = getProviderGroup(canonicalKey);
+      // Validate the channel has service options.
+      const serviceGroup = getServiceGroup(canonicalKey);
 
-      if(!providerGroup) {
+      if(!serviceGroup) {
 
-        res.status(400).json({ error: "Channel '" + canonicalKey + "' does not have multiple providers.", success: false });
-
-        return;
-      }
-
-      // Validate the provider key is valid for this channel.
-      const validProviderKeys = providerGroup.variants.map((v) => v.key);
-
-      if(!validProviderKeys.includes(providerKey)) {
-
-        res.status(400).json({ error: "Invalid provider '" + providerKey + "' for channel '" + canonicalKey + "'.", success: false });
+        res.status(400).json({ error: "Channel '" + canonicalKey + "' does not have multiple services.", success: false });
 
         return;
       }
 
-      // Update the provider selection.
-      setProviderSelection(canonicalKey, providerKey);
+      // Validate the service key is valid for this channel.
+      const validServiceKeys = serviceGroup.variants.map((v) => v.key);
+
+      if(!validServiceKeys.includes(serviceKey)) {
+
+        res.status(400).json({ error: "Invalid service '" + serviceKey + "' for channel '" + canonicalKey + "'.", success: false });
+
+        return;
+      }
+
+      // Update the service selection.
+      setServiceSelection(canonicalKey, serviceKey);
 
       // Save to disk.
-      await saveProviderSelections();
+      await saveServiceSelections();
 
       // Resolve display names for logging before generating the row HTML.
       const canonicalChannel = getResolvedChannel(canonicalKey);
-      const variantChannel = getResolvedChannel(providerKey);
+      const variantChannel = getResolvedChannel(serviceKey);
       const channelName = canonicalChannel?.name ?? canonicalKey;
-      const providerLabel = variantChannel ? getChannelProviderLabel(variantChannel) : providerKey;
+      const serviceLabel = variantChannel ? getChannelServiceLabel(variantChannel) : serviceKey;
 
-      LOG.info("Provider for %s changed to %s.", channelName, providerLabel);
+      LOG.info("Service for %s changed to %s.", channelName, serviceLabel);
 
       // Return a channel table patch so the client can update the row and summary counts in place.
       const profiles = getProfiles();
 
-      res.json({ channel: canonicalKey, patch: buildChannelTablePatch([canonicalKey], profiles), provider: providerKey, success: true });
+      res.json({ channel: canonicalKey, patch: buildChannelTablePatch([canonicalKey], profiles), service: serviceKey, success: true });
     } catch(error) {
 
-      LOG.error("Failed to update provider selection: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to update provider: " + formatError(error), success: false });
+      LOG.error("Failed to update service selection: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to update service: " + formatError(error), success: false });
     }
   });
 
@@ -805,7 +805,7 @@ export function setupChannelRoutes(app: Express): void {
   });
 
   // POST /config/channels/auto-number - Assign sequential channel numbers to visible channels in the current sort order, or clear all channel numbers when
-  // start is 0. Overwrites existing channel numbers for affected channels. Only channels that are enabled and available by provider filter are affected.
+  // start is 0. Overwrites existing channel numbers for affected channels. Only channels that are enabled and available by service filter are affected.
   app.post("/config/channels/auto-number", async (req: Request, res: Response): Promise<void> => {
 
     try {
@@ -830,8 +830,8 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Get visible channels (enabled + available by provider filter) sorted by the user's current sort order.
-      const listing = getChannelListing().filter((entry) => entry.enabled && entry.availableByProvider);
+      // Get visible channels (enabled + available by service filter) sorted by the user's current sort order.
+      const listing = getChannelListing().filter((entry) => entry.enabled && entry.availableByService);
 
       listing.sort((a, b) => compareChannelSort(a.channel, a.key, b.channel, b.key, sortField, sortDir));
 
@@ -908,8 +908,8 @@ export function setupChannelRoutes(app: Express): void {
       const body = req.body as { enable?: boolean };
       const enable = body.enable === true;
 
-      // Get visible channels (enabled + available by provider filter).
-      const listing = getChannelListing().filter((entry) => entry.enabled && entry.availableByProvider);
+      // Get visible channels (enabled + available by service filter).
+      const listing = getChannelListing().filter((entry) => entry.enabled && entry.availableByService);
 
       // Load user channels for modification.
       const result = await loadUserChannels();
@@ -964,7 +964,7 @@ export function setupChannelRoutes(app: Express): void {
     }
   });
 
-  // POST /config/channels/bulk-tags - Add or remove a tag on all enabled, provider-available channels. Operates on the same channel set as other bulk actions.
+  // POST /config/channels/bulk-tags - Add or remove a tag on all enabled, service-available channels. Operates on the same channel set as other bulk actions.
   // transformChannelTags handles loading, delta normalization, and persistence. Returns a channel table patch for all affected rows and an updated tag manager
   // modal body.
   app.post("/config/channels/bulk-tags", async (req: Request, res: Response): Promise<void> => {
@@ -1000,7 +1000,7 @@ export function setupChannelRoutes(app: Express): void {
       }
 
       const { affectedKeys, error } = await transformChannelTags(
-        (entry) => entry.enabled && entry.availableByProvider,
+        (entry) => entry.enabled && entry.availableByService,
         (tags) => (action === "add") ? (tags.includes(tag) ? tags : [ ...tags, tag ]) : tags.filter((t) => t !== tag)
       );
 
@@ -1041,66 +1041,66 @@ export function setupChannelRoutes(app: Express): void {
     }
   });
 
-  // POST /config/provider-filter - Update the provider filter (enabled provider tags).
-  app.post("/config/provider-filter", async (req: Request, res: Response): Promise<void> => {
+  // POST /config/service-filter - Update the service filter (enabled service tags).
+  app.post("/config/service-filter", async (req: Request, res: Response): Promise<void> => {
 
     try {
 
-      const body = req.body as { enabledProviders?: string[] };
-      const tags = body.enabledProviders;
+      const body = req.body as { enabledServices?: string[] };
+      const tags = body.enabledServices;
 
       // Validate tags is an array.
       if(!Array.isArray(tags)) {
 
-        res.status(400).json({ error: "enabledProviders must be an array.", success: false });
+        res.status(400).json({ error: "enabledServices must be an array.", success: false });
 
         return;
       }
 
-      // Validate all tags are known. Tags already in enabledProviders are accepted even if no current channel or profile produces them — this allows stale tags to be
+      // Validate all tags are known. Tags already in enabledServices are accepted even if no current channel or profile produces them — this allows stale tags to be
       // removed via the UI without blocking the request.
-      const knownTags = new Set(getAllProviderTags().map((t) => t.tag));
-      const currentTags = new Set(getEnabledProviders());
+      const knownTags = new Set(getAllServiceTags().map((t) => t.tag));
+      const currentTags = new Set(getEnabledServices());
 
       for(const tag of tags) {
 
         if(!knownTags.has(tag) && !currentTags.has(tag)) {
 
-          res.status(400).json({ error: "Unknown provider tag: " + tag, success: false });
+          res.status(400).json({ error: "Unknown service tag: " + tag, success: false });
 
           return;
         }
       }
 
       // Update module-level state.
-      setEnabledProviders(tags);
+      setEnabledServices(tags);
 
       // Update runtime CONFIG.
-      CONFIG.channels.enabledProviders = [...tags];
+      CONFIG.channels.enabledServices = [...tags];
 
       // Save to config file.
       const configResult = await loadUserConfig();
       const userConfig = configResult.config;
 
       userConfig.channels ??= {};
-      userConfig.channels.enabledProviders = tags;
+      userConfig.channels.enabledServices = tags;
 
       await saveUserConfig(filterDefaults(userConfig));
 
-      LOG.info("Provider filter updated: %s.", tags.length > 0 ? tags.join(", ") : "all providers");
+      LOG.info("Service filter updated: %s.", tags.length > 0 ? tags.join(", ") : "all services");
 
       // Return counts patch so the client can update summary counts after filter change. No rows — the client applies CSS visibility changes itself.
       const { counts, scopeCounts } = buildChannelTableState();
 
-      res.json({ enabledProviders: tags, patch: { counts, rows: [], scopeCounts }, success: true });
+      res.json({ enabledServices: tags, patch: { counts, rows: [], scopeCounts }, success: true });
     } catch(error) {
 
-      LOG.error("Failed to update provider filter: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to update provider filter: " + formatError(error), success: false });
+      LOG.error("Failed to update service filter: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to update service filter: " + formatError(error), success: false });
     }
   });
 
-  // POST /config/channels/setup-completed - Mark the Provider Setup flow as completed. Called when the wizard finishes or the user explicitly skips.
+  // POST /config/channels/setup-completed - Mark the Service Setup flow as completed. Called when the wizard finishes or the user explicitly skips.
   app.post("/config/channels/setup-completed", async (_req: Request, res: Response): Promise<void> => {
 
     try {
@@ -1115,7 +1115,7 @@ export function setupChannelRoutes(app: Express): void {
       await saveUserConfig(configResult.config);
 
       // Return a full patch so the client can refresh the channel table after the setup wizard completes. The wizard's browse step may have added channels
-      // via the modify endpoint, and the provider filter may have changed — the patch ensures the table reflects the current state.
+      // via the modify endpoint, and the service filter may have changed — the patch ensures the table reflects the current state.
       const { counts, scopeCounts } = buildChannelTableState();
 
       res.json({ patch: { counts, rows: [], scopeCounts }, success: true });
@@ -1201,18 +1201,18 @@ export function setupChannelRoutes(app: Express): void {
     }
   });
 
-  // POST /config/provider-bulk-assign - Set all channels to a specific provider.
-  app.post("/config/provider-bulk-assign", async (req: Request, res: Response): Promise<void> => {
+  // POST /config/service-bulk-assign - Set all channels to a specific service.
+  app.post("/config/service-bulk-assign", async (req: Request, res: Response): Promise<void> => {
 
     try {
 
-      const body = req.body as { provider?: string };
-      const providerTag = body.provider?.trim();
+      const body = req.body as { service?: string };
+      const serviceTag = body.service?.trim();
 
-      // Validate provider tag.
-      if(!providerTag) {
+      // Validate service tag.
+      if(!serviceTag) {
 
-        res.status(400).json({ error: "Provider tag is required.", success: false });
+        res.status(400).json({ error: "Service tag is required.", success: false });
 
         return;
       }
@@ -1226,24 +1226,24 @@ export function setupChannelRoutes(app: Express): void {
 
       for(const entry of listing) {
 
-        const group = getProviderGroup(entry.key);
+        const group = getServiceGroup(entry.key);
 
         if(!group || (group.variants.length <= 1)) {
 
           continue;
         }
 
-        // Find a variant matching the requested provider tag.
-        const matchingVariant = group.variants.find((v) => (getProviderTagForChannel(v.key) === providerTag));
+        // Find a variant matching the requested service tag.
+        const matchingVariant = group.variants.find((v) => (getServiceTagForChannel(v.key) === serviceTag));
 
         if(matchingVariant) {
 
           // Snapshot the current selection before overwriting so the client can offer undo.
-          const currentVariant = getProviderSelection(entry.key);
+          const currentVariant = getServiceSelection(entry.key);
 
           previousSelections[entry.key] = currentVariant ?? null;
 
-          setProviderSelection(entry.key, matchingVariant.key);
+          setServiceSelection(entry.key, matchingVariant.key);
           affected++;
 
           // Collect the resolved profile name for client-side UI update.
@@ -1254,20 +1254,20 @@ export function setupChannelRoutes(app: Express): void {
       }
 
       // Save to disk.
-      await saveProviderSelections();
+      await saveServiceSelections();
 
-      LOG.info("Bulk assign to '%s': %d of %d channels affected.", providerTag, affected, listing.length);
+      LOG.info("Bulk assign to '%s': %d of %d channels affected.", serviceTag, affected, listing.length);
 
       res.json({ affected, previousSelections, selections, success: true, total: listing.length });
     } catch(error) {
 
-      LOG.error("Failed to bulk assign provider: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to bulk assign provider: " + formatError(error), success: false });
+      LOG.error("Failed to bulk assign service: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to bulk assign service: " + formatError(error), success: false });
     }
   });
 
-  // POST /config/provider-bulk-restore - Restore previous provider selections (undo bulk assign).
-  app.post("/config/provider-bulk-restore", async (req: Request, res: Response): Promise<void> => {
+  // POST /config/service-bulk-restore - Restore previous service selections (undo bulk assign).
+  app.post("/config/service-bulk-restore", async (req: Request, res: Response): Promise<void> => {
 
     try {
 
@@ -1286,7 +1286,7 @@ export function setupChannelRoutes(app: Express): void {
 
       for(const [ key, variantKey ] of Object.entries(previousSelections)) {
 
-        const group = getProviderGroup(key);
+        const group = getServiceGroup(key);
 
         if(!group) {
 
@@ -1296,11 +1296,11 @@ export function setupChannelRoutes(app: Express): void {
         // A null value means the channel was using the default (canonical) selection. Restoring by setting the selection to the canonical key clears the override.
         if(variantKey === null) {
 
-          setProviderSelection(key, key);
+          setServiceSelection(key, key);
 
         } else {
 
-          // Validate the variant belongs to this channel's provider group before restoring.
+          // Validate the variant belongs to this channel's service group before restoring.
           const isValid = group.variants.some((v) => (v.key === variantKey));
 
           if(!isValid) {
@@ -1308,7 +1308,7 @@ export function setupChannelRoutes(app: Express): void {
             continue;
           }
 
-          setProviderSelection(key, variantKey);
+          setServiceSelection(key, variantKey);
         }
 
         restored++;
@@ -1321,15 +1321,15 @@ export function setupChannelRoutes(app: Express): void {
       }
 
       // Save to disk.
-      await saveProviderSelections();
+      await saveServiceSelections();
 
       LOG.info("Bulk restore: %d channel(s) reverted.", restored);
 
       res.json({ restored, selections, success: true });
     } catch(error) {
 
-      LOG.error("Failed to bulk restore providers: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to bulk restore providers: " + formatError(error), success: false });
+      LOG.error("Failed to bulk restore services: %s.", formatError(error));
+      res.status(500).json({ error: "Failed to bulk restore services: " + formatError(error), success: false });
     }
   });
 
@@ -1653,11 +1653,11 @@ export function setupChannelRoutes(app: Express): void {
           return (field === "channelNumber") ? val as number | undefined : (val as string | undefined) ?? "";
         };
 
-        // First check: did the user change anything from what the form showed? The edit form is pre-populated with the selected provider's resolved channel, which
+        // First check: did the user change anything from what the form showed? The edit form is pre-populated with the selected service's resolved channel, which
         // may differ from the canonical predefined base when a variant is selected (e.g., the Hulu variant has a different URL and channelSelector). If the submitted
         // values match the displayChannel exactly, the user saved without modification — no override should be created, and any existing override is preserved.
         // Tags are compared separately (array comparison) after the scalar fields.
-        const resolvedKey = resolveProviderKey(key);
+        const resolvedKey = resolveServiceKey(key);
         const displayChannel = getResolvedChannel(resolvedKey) ?? predefinedBase;
 
         const displayTags = getChannelEffectiveTags(displayChannel);
@@ -1728,17 +1728,17 @@ export function setupChannelRoutes(app: Express): void {
           return;
         }
 
-        // The delta has changes vs the canonical predefined. Before storing a custom override, check if the form values match any provider variant's predefined
+        // The delta has changes vs the canonical predefined. Before storing a custom override, check if the form values match any service variant's predefined
         // definition. This handles the case where a user edits from a variant (e.g., Hulu), makes a change, saves (creating a custom override), then edits again
         // and reverts the change. The URL and channelSelector still differ from the canonical predefined but match the variant — that's a revert to the variant,
         // not a new customization. We resolve each variant against pure PREDEFINED data (not the user-overridden channelsRef) to avoid contamination from the
         // current override.
-        const providerGroup = getProviderGroup(key);
+        const serviceGroup = getServiceGroup(key);
         let matchedVariantKey: string | undefined;
 
-        if(providerGroup && isUserChannel(key)) {
+        if(serviceGroup && isUserChannel(key)) {
 
-          for(const variant of providerGroup.variants) {
+          for(const variant of serviceGroup.variants) {
 
             // Skip the canonical entry (already handled by the !hasChanges check above) and :predefined entries (synthetic entries for override UI).
             if((variant.key === key) || variant.key.includes(":")) {
@@ -1764,7 +1764,7 @@ export function setupChannelRoutes(app: Express): void {
           const variantRevertHint = playlistHintForStored(result.channels[key]);
 
           Reflect.deleteProperty(result.channels, key);
-          setProviderSelection(key, matchedVariantKey);
+          setServiceSelection(key, matchedVariantKey);
 
           await saveUserChannels(result.channels);
 
@@ -1776,9 +1776,9 @@ export function setupChannelRoutes(app: Express): void {
           return;
         }
 
-        // No variant match — store the delta and switch the provider selection to the canonical key (the custom override). This ensures the provider dropdown shows
+        // No variant match — store the delta and switch the service selection to the canonical key (the custom override). This ensures the service dropdown shows
         // "Custom" after saving, which is the expected behavior when a user customizes a predefined channel.
-        setProviderSelection(key, key);
+        setServiceSelection(key, key);
         result.channels[key] = delta;
 
         playlistChanged = M3U_FIELDS.some((f) => f in delta);

@@ -1,21 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * providers.ts: Provider channel discovery route for PrismCast.
+ * services.ts: Service channel discovery route for PrismCast.
  */
 import type { DiscoveredChannel, ProviderModule } from "../types/index.js";
 import type { Express, Request, Response } from "express";
 import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.js";
-import { getChannelProviderLabel, getProviderGroup, getProviderTagForChannel, getResolvedChannel, isProviderTagEnabled,
-  resolveProviderKey } from "../config/providers.js";
+import { getChannelServiceLabel, getResolvedChannel, getServiceGroup, getServiceTagForChannel, isServiceTagEnabled,
+  resolveServiceKey } from "../config/services.js";
 import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getProviderBySlug, normalizeChannelName } from "../browser/channelSelection.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
 import type { Page } from "puppeteer-core";
 
-/* The providers endpoint exposes channel discovery for each registered provider. A GET request to /providers/:slug/channels creates a temporary browser page,
- * navigates to the provider's guide, runs the provider's discoverChannels implementation, and returns a sorted JSON array of discovered channels. The temporary
- * page is always closed in a finally block to prevent resource leaks. Concurrent requests for the same provider are coalesced — only one discovery walk runs at a
+/* The services endpoint exposes channel discovery for each registered service. A GET request to /services/:slug/channels creates a temporary browser page,
+ * navigates to the service's guide, runs the service's discoverChannels implementation, and returns a sorted JSON array of discovered channels. The temporary
+ * page is always closed in a finally block to prevent resource leaks. Concurrent requests for the same service are coalesced — only one discovery walk runs at a
  * time, and subsequent requests piggyback on the in-flight result. A refresh=true request aborts any in-flight discovery and starts fresh.
  */
 
@@ -30,7 +30,7 @@ class DiscoveryAbortError extends Error {
   }
 }
 
-// In-flight discovery state. Tracks the running discovery promise and its associated abort controller for each provider slug. When a discovery is in flight,
+// In-flight discovery state. Tracks the running discovery promise and its associated abort controller for each service slug. When a discovery is in flight,
 // subsequent requests await the existing promise instead of spawning redundant browser pages. The abort controller's signal is used to close the page when a
 // refresh=true request needs to cancel an in-flight non-refresh discovery.
 interface InflightEntry {
@@ -44,7 +44,7 @@ const inflight = new Map<string, InflightEntry>();
 /**
  * Logs a discovery failure and sends a 500 error response.
  * @param res - The Express response object.
- * @param label - The provider's display label for log messages.
+ * @param label - The service's display label for log messages.
  * @param error - The error that caused the failure.
  */
 function sendDiscoveryError(res: Response, label: string, error: unknown): void {
@@ -56,7 +56,7 @@ function sendDiscoveryError(res: Response, label: string, error: unknown): void 
 }
 
 /**
- * Runs provider channel discovery in a temporary browser page. Opens a new page, navigates to the provider's guide URL, runs the discovery function, and returns
+ * Runs service channel discovery in a temporary browser page. Opens a new page, navigates to the service's guide URL, runs the discovery function, and returns
  * the sorted results. The page is always closed in a finally block. If the abort signal fires (from a refresh=true request), the page is closed mid-discovery,
  * causing Puppeteer operations to throw and the promise to reject with a DiscoveryAbortError.
  * @param provider - The provider module to discover channels for.
@@ -97,8 +97,8 @@ async function runDiscovery(provider: ProviderModule, signal: AbortSignal): Prom
       throw new DiscoveryAbortError();
     }
 
-    // Navigate to the provider's guide URL unless the provider handles its own navigation (e.g., Hulu and Sling set up response interception before navigating).
-    // We use networkidle2 rather than load because SPA-based providers (e.g., Hulu) have heavy async initialization that can prevent the load event from firing
+    // Navigate to the service's guide URL unless the provider handles its own navigation (e.g., Hulu and Sling set up response interception before navigating).
+    // We use networkidle2 rather than load because SPA-based services (e.g., Hulu) have heavy async initialization that can prevent the load event from firing
     // reliably. Network idle ensures all initial API data has arrived before the discovery function reads the DOM.
     if(!provider.handlesOwnNavigation) {
 
@@ -149,13 +149,13 @@ async function runDiscovery(provider: ProviderModule, signal: AbortSignal): Prom
  */
 interface LineupState {
 
-  // The canonical channel key (e.g., "animal" for Animal Planet). Used by the client to send back to the server for provider switch/remove operations.
+  // The canonical channel key (e.g., "animal" for Animal Planet). Used by the client to send back to the server for service switch/remove operations.
   canonicalKey: string;
 
-  // Human-readable label for the currently active provider (e.g., "Hulu", "Spectrum"). Displayed in the browse modal's state label.
-  currentProvider: string;
+  // Human-readable label for the currently active service (e.g., "Hulu", "Spectrum"). Displayed in the browse modal's state label.
+  currentService: string;
 
-  // Provider tag for the currently active provider (e.g., "hulu", "spectrum"). Compared against the browsed provider's slug to determine checked vs
+  // Service tag for the currently active service (e.g., "hulu", "spectrum"). Compared against the browsed service's slug to determine checked vs
   // indeterminate state.
   currentTag: string;
 
@@ -166,7 +166,7 @@ interface LineupState {
   // Whether the channel is currently enabled in the lineup.
   enabled: boolean;
 
-  // Whether the channel has at least one other enabled provider variant besides the browsed provider. Used by the client to determine the visual state
+  // Whether the channel has at least one other enabled service variant besides the browsed service. Used by the client to determine the visual state
   // when unchecking a "current" channel: indeterminate if alternatives exist (channel persists), empty if not (channel will be disabled).
   hasAlternatives: boolean;
 
@@ -174,7 +174,7 @@ interface LineupState {
   logoUrl?: string;
 
   // The stationId (Gracenote ID) for this canonical channel. Used to disambiguate when two canonicals (East and Pacific) share the same channelSelector
-  // for a provider — the discovery entry's stationId is matched against this value to assign the correct canonical.
+  // for a service — the discovery entry's stationId is matched against this value to assign the correct canonical.
   stationId?: string;
 
   // Whether the channel is predefined or user-defined.
@@ -183,7 +183,7 @@ interface LineupState {
 
 /**
  * Annotated discovery result that extends DiscoveredChannel with optional lineup state. When a discovered channel matches an existing channel in the user's
- * lineup (by canonical key), the lineup field provides the current provider state. When absent, the channel is new (not in the lineup).
+ * lineup (by canonical key), the lineup field provides the current service state. When absent, the channel is new (not in the lineup).
  */
 interface AnnotatedChannel extends DiscoveredChannel {
 
@@ -191,30 +191,30 @@ interface AnnotatedChannel extends DiscoveredChannel {
 }
 
 /**
- * Annotates discovered channels with lineup state by matching each channel's channelSelector against the provider variants for the browsed provider. This
- * uses the existing provider group system to find which canonical channel each discovered channel corresponds to, avoiding fragile name-to-key normalization
+ * Annotates discovered channels with lineup state by matching each channel's channelSelector against the service variants for the browsed service. This
+ * uses the existing service group system to find which canonical channel each discovered channel corresponds to, avoiding fragile name-to-key normalization
  * (predefined keys are hand-crafted and may not match generateChannelKey output).
  *
- * For each canonical in the listing, we check for a variant matching the browsed provider (via getProviderGroup) and extract its channelSelector via
+ * For each canonical in the listing, we check for a variant matching the browsed service (via getServiceGroup) and extract its channelSelector via
  * getResolvedChannel. This builds a channelSelector → lineup state map that the discovered channels are matched against.
  *
- * @param channels - The raw discovered channels from the provider.
- * @param providerSlug - The slug of the provider being browsed (e.g., "spectrum", "hulu").
+ * @param channels - The raw discovered channels from the service.
+ * @param serviceSlug - The slug of the service being browsed (e.g., "spectrum", "hulu").
  * @returns Annotated channels with lineup state where applicable.
  */
-function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: string): AnnotatedChannel[] {
+function annotateWithLineupState(channels: DiscoveredChannel[], serviceSlug: string): AnnotatedChannel[] {
 
-  // Build a channelSelector → lineup state mapping for the browsed provider. For each canonical entry in the listing, we find the variant that corresponds
-  // to this provider (if one exists) and index by that variant's channelSelector. This ensures matching works even when predefined keys don't match the
+  // Build a channelSelector → lineup state mapping for the browsed service. For each canonical entry in the listing, we find the variant that corresponds
+  // to this service (if one exists) and index by that variant's channelSelector. This ensures matching works even when predefined keys don't match the
   // normalized channel name (e.g., "axstv" vs generateChannelKey("AXS TV") → "axs-tv").
   //
-  // When two canonicals share the same channelSelector for a provider (East/Pacific pairs like "Disney Channel"), the map stores an array of states. The
+  // When two canonicals share the same channelSelector for a service (East/Pacific pairs like "Disney Channel"), the map stores an array of states. The
   // annotation step then uses the discovery entry's stationId to disambiguate which canonical to assign.
   const listing = getChannelListing();
   const bySelector = new Map<string, LineupState[]>();
 
   // Appends a lineup state to the map under the normalized key. Normalization (lowercase, collapsed whitespace) ensures matching is resilient to casing
-  // differences between predefined channelSelectors and provider discovery output (e.g., "Cartoon Network (East)" vs "cartoon network (east)").
+  // differences between predefined channelSelectors and service discovery output (e.g., "Cartoon Network (East)" vs "cartoon network (east)").
   function indexState(key: string, state: LineupState): void {
 
     const normalized = normalizeChannelName(key);
@@ -232,27 +232,27 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
   for(const entry of listing) {
 
     const canonicalKey = entry.key;
-    const resolvedKey = resolveProviderKey(canonicalKey);
-    const currentTag = getProviderTagForChannel(resolvedKey);
-    const currentProvider = getChannelProviderLabel(entry.channel);
+    const resolvedKey = resolveServiceKey(canonicalKey);
+    const currentTag = getServiceTagForChannel(resolvedKey);
+    const currentService = getChannelServiceLabel(entry.channel);
     const displayName = entry.channel.name ?? canonicalKey;
     const source = isPredefinedChannel(canonicalKey) ? "predefined" : "user";
 
-    // Check the provider group for variants. Used both for channelSelector matching and for computing hasAlternatives.
-    const group = getProviderGroup(canonicalKey);
+    // Check the service group for variants. Used both for channelSelector matching and for computing hasAlternatives.
+    const group = getServiceGroup(canonicalKey);
 
-    // Determine whether the channel has at least one enabled provider besides the browsed provider. Check the canonical's own tag first, then iterate
-    // the group's variants. This uses the existing provider tag and filter infrastructure.
-    const canonicalTag = getProviderTagForChannel(canonicalKey);
-    let hasAlternatives = (canonicalTag !== providerSlug) && isProviderTagEnabled(canonicalTag);
+    // Determine whether the channel has at least one enabled service besides the browsed service. Check the canonical's own tag first, then iterate
+    // the group's variants. This uses the existing service tag and filter infrastructure.
+    const canonicalTag = getServiceTagForChannel(canonicalKey);
+    let hasAlternatives = (canonicalTag !== serviceSlug) && isServiceTagEnabled(canonicalTag);
 
     if(!hasAlternatives && group) {
 
       for(const variant of group.variants) {
 
-        const variantTag = getProviderTagForChannel(variant.key);
+        const variantTag = getServiceTagForChannel(variant.key);
 
-        if((variantTag !== providerSlug) && isProviderTagEnabled(variantTag)) {
+        if((variantTag !== serviceSlug) && isServiceTagEnabled(variantTag)) {
 
           hasAlternatives = true;
 
@@ -263,17 +263,17 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
 
     const state: LineupState = {
 
-      canonicalKey, currentProvider, currentTag, displayName, enabled: entry.enabled, hasAlternatives,
+      canonicalKey, currentService, currentTag, displayName, enabled: entry.enabled, hasAlternatives,
       logoUrl: getChannelLogo(canonicalKey),
       source, stationId: entry.channel.stationId
     };
 
-    // Find the variant matching the browsed provider and store by its channelSelector.
+    // Find the variant matching the browsed service and store by its channelSelector.
     if(group) {
 
       for(const variant of group.variants) {
 
-        if(getProviderTagForChannel(variant.key) === providerSlug) {
+        if(getServiceTagForChannel(variant.key) === serviceSlug) {
 
           const variantChannel = getResolvedChannel(variant.key);
 
@@ -287,8 +287,8 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
       }
     }
 
-    // Also match the canonical itself if its provider tag matches (single-provider channels or canonicals that point directly to this provider).
-    if((currentTag === providerSlug) && entry.channel.channelSelector) {
+    // Also match the canonical itself if its service tag matches (single-service channels or canonicals that point directly to this service).
+    if((currentTag === serviceSlug) && entry.channel.channelSelector) {
 
       indexState(entry.channel.channelSelector, state);
     }
@@ -302,7 +302,7 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
     }
   }
 
-  // Annotate each discovered channel by matching its channelSelector against the provider-specific lookup. When the channelSelector doesn't match (e.g.,
+  // Annotate each discovered channel by matching its channelSelector against the service-specific lookup. When the channelSelector doesn't match (e.g.,
   // Xfinity uses callSigns like "ESPND" while predefined variants use display names like "ESPN"), the display name is tried as a fallback. When multiple
   // canonicals share the same key (East/Pacific pairs), the discovery entry's stationId disambiguates which canonical to assign.
   return channels.map((ch) => {
@@ -328,24 +328,24 @@ function annotateWithLineupState(channels: DiscoveredChannel[], providerSlug: st
 }
 
 /**
- * Creates the provider channel discovery endpoint.
+ * Creates the service channel discovery endpoint.
  * @param app - The Express application.
  */
-export function setupProvidersEndpoint(app: Express): void {
+export function setupServicesEndpoint(app: Express): void {
 
-  app.get("/providers/:slug/channels", async (req: Request, res: Response): Promise<void> => {
+  app.get("/services/:slug/channels", async (req: Request, res: Response): Promise<void> => {
 
     const slug = req.params.slug as string;
     const provider = getProviderBySlug(slug);
 
     if(!provider) {
 
-      res.status(404).json({ error: "Unknown provider: " + slug + "." });
+      res.status(404).json({ error: "Unknown service: " + slug + "." });
 
       return;
     }
 
-    // When refresh=true is requested, clear the provider's caches (unified channel cache, row caches, fully-enumerated flags, etc.) so the discovery walk runs
+    // When refresh=true is requested, clear the service's caches (unified channel cache, row caches, fully-enumerated flags, etc.) so the discovery walk runs
     // against fresh data. This also resets warm tuning state (watch URLs, GUIDs), but the discovery walk repopulates the unified cache before returning — any
     // subsequent tune resolves from the freshly populated cache as normal. If a discovery is already in flight, abort it first — clearing the cache while a
     // discovery is progressively populating it would corrupt its state.
@@ -365,7 +365,7 @@ export function setupProvidersEndpoint(app: Express): void {
       provider.strategy.clearCache?.();
     }
 
-    // Check for cached discovery results before creating a browser page. When a prior tune or discovery call has already enumerated the provider's lineup, the
+    // Check for cached discovery results before creating a browser page. When a prior tune or discovery call has already enumerated the service's lineup, the
     // cache is warm and we can return immediately without any browser interaction. Skipped when refresh=true since we just cleared the caches above.
     if(!refresh) {
 
@@ -379,7 +379,7 @@ export function setupProvidersEndpoint(app: Express): void {
       }
     }
 
-    // Coalesce concurrent requests. If a discovery is already in flight for this provider, piggyback on the existing promise instead of spawning a redundant
+    // Coalesce concurrent requests. If a discovery is already in flight for this service, piggyback on the existing promise instead of spawning a redundant
     // browser page. If the in-flight discovery was aborted (by a refresh=true request that arrived after we checked above), the promise rejects with a
     // DiscoveryAbortError and we retry against whatever new entry replaced it in the map.
     let entry = inflight.get(slug);

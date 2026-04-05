@@ -1033,7 +1033,7 @@ export function setupSettingsRoutes(app: Express): void {
       }
 
       // Merge form values into the existing config rather than building from scratch. The settings form only manages CONFIG_METADATA fields, but config.json also
-      // stores fields managed by separate endpoints (disabledPredefined, enabledProviders, visibleColumns, setupCompleted, channelSortField, channelSortDirection,
+      // stores fields managed by separate endpoints (disabledPredefined, enabledServices, visibleColumns, setupCompleted, channelSortField, channelSortDirection,
       // dvrHost, hdhr.deviceId, etc.). Loading the existing config and merging form values into it preserves all non-form fields automatically — no carry-forward
       // list to maintain. New fields stored in config.json by other endpoints are preserved without any changes here.
       const existingResult = await loadUserConfig();

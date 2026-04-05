@@ -214,7 +214,7 @@ function flushHealthState(): void {
  * flush. The markAuth parameter allows callers to skip domain auth marking when a successful tune does not prove paid access (e.g., Sling Freestream channels succeed
  * without a subscription).
  * @param channelKey - The channel key (canonical key, e.g., "nbc").
- * @param domain - The auth domain for the currently selected provider variant.
+ * @param domain - The auth domain for the currently selected service variant.
  * @param markAuth - Whether to also mark the domain as authenticated (default: true).
  */
 export function markChannelSuccess(channelKey: string, domain: string, markAuth = true): void {
@@ -251,7 +251,7 @@ export function markDomainAuth(domain: string): void {
  * Records a failed tune for a channel. Sets the channel's health to "failed". Does not affect domain auth — a single channel failure doesn't prove the domain is
  * unauthenticated. Triggers a debounced flush.
  * @param channelKey - The channel key (canonical key, e.g., "nbc").
- * @param domain - The auth domain for the currently selected provider variant.
+ * @param domain - The auth domain for the currently selected service variant.
  */
 export function markChannelFailure(channelKey: string, domain: string): void {
 
@@ -267,7 +267,7 @@ export function markChannelFailure(channelKey: string, domain: string): void {
  * Returns the health status and timestamp for a channel. Returns null if no entry exists, the entry is stale (older than 7 days), or the stored domain doesn't match
  * the current one (domain changed).
  * @param channelKey - The channel key (canonical key, e.g., "nbc").
- * @param domain - The auth domain for the currently selected provider variant.
+ * @param domain - The auth domain for the currently selected service variant.
  * @returns Object with status and timestamp, or null if unknown.
  */
 export function getChannelHealth(channelKey: string, domain: string): Nullable<{ status: HealthStatus; timestamp: number }> {
