@@ -23,18 +23,18 @@ The name PrismCast reflects what the project does: like a prism transforming lig
 ## Features
 
 ### Channels and Streaming
-- **8 builtin providers** - Hulu, YouTube TV, Sling TV, Fox, HBO Max, DirecTV Stream, Spectrum TV, and Xfinity Stream with hundreds of preconfigured channels ready to stream. Just authenticate with your TV provider and you're ready to go.
-- **Native HLS streaming** - For TV Everywhere sites that deliver non-DRMed streams, PrismCast automatically bypasses screen capture and consumes the stream directly — delivering full provider quality with significantly lower CPU usage. This is especially valuable for Hulu + Live TV subscribers who can use their TVE credentials to stream channels like A&E, Food Network, HGTV, History, Discovery, and many more at native quality through those networks' own sites. Also works with Fox One, Fox Sports, BET, C-SPAN, VH1, and others. DRM-protected providers automatically fall back to screen capture.
-- **User-defined provider profiles** - Add support for any streaming site without waiting for a builtin update. A step-by-step builder wizard guides you through profile creation, and shareable provider packs let you export and import complete provider setups.
+- **8 builtin services** - Hulu, YouTube TV, Sling TV, Fox, HBO Max, DirecTV Stream, Spectrum TV, and Xfinity Stream with hundreds of preconfigured channels ready to stream. Just authenticate with your TV provider and you're ready to go.
+- **Native HLS streaming** - For TV Everywhere sites that deliver non-DRMed streams, PrismCast automatically bypasses screen capture and consumes the stream directly — delivering full service quality with significantly lower CPU usage. This is especially valuable for Hulu + Live TV subscribers who can use their TVE credentials to stream channels like A&E, Food Network, HGTV, History, Discovery, and many more at native quality through those networks' own sites. Also works with Fox One, Fox Sports, BET, C-SPAN, VH1, and others. DRM-protected services automatically fall back to screen capture.
+- **User-defined service profiles** - Add support for any streaming site without waiting for a builtin update. A step-by-step builder wizard guides you through profile creation, and shareable service packs let you export and import complete service setups.
 - **Custom channel support** - Easily add your own streaming sources through the web interface, from YouTube live streams to niche international channels. If a site plays video in Chrome, there's a good chance PrismCast can capture it.
 - **Plex integration** - Builtin HDHomeRun emulation lets Plex discover PrismCast as a network tuner. Add it as a DVR source in Plex for live TV and recording.
 - **Multiple concurrent streams** - Stream up to 10 channels simultaneously (configurable), perfect for recording multiple shows at once.
 - **Session persistence** - Log in to your TV provider once and Chrome remembers your session across restarts.
-- **Quality presets** - Choose from 480p to 1080p presets that set the Chrome viewport dimensions. These presets influence the resolution that providers deliver, though Chrome and the provider ultimately determine the actual stream quality.
+- **Quality presets** - Choose from 480p to 1080p presets that set the Chrome viewport dimensions. These presets influence the resolution that services deliver, though Chrome and the service ultimately determine the actual stream quality.
 
 ### Web Interface
 - **Real-time dashboard** - Monitor all active streams with live health status, duration, memory usage, and (when recording via Channels DVR) the name of the show being recorded.
-- **Channel health indicators** - Green/red status dots and provider authentication badges show at-a-glance which channels are working and which providers are logged in.
+- **Channel health indicators** - Green/red status dots and authentication badges show at-a-glance which channels are working and which services are logged in.
 - **Channel management** - Add, edit, and delete custom channels directly in the browser. No config files to edit.
 - **Live log viewer** - Stream server logs in real-time with level filtering, perfect for troubleshooting.
 - **Configuration UI** - Adjust all settings through an intuitive web interface with instant validation.
@@ -175,7 +175,7 @@ PrismCast includes builtin HDHomeRun emulation, allowing Plex to discover it as 
 PrismCast includes a web-based configuration interface at `http://localhost:5589`. From there you can:
 
 - **Manage channels** - View all available channels, add your own custom channels, or override the defaults
-- **Filter providers** - Choose which streaming services are active in your environment and filter channels accordingly
+- **Filter services** - Choose which streaming services are active in your environment and filter channels accordingly
 - **Adjust quality settings** - Choose from presets like 720p or 1080p
 - **Configure HLS parameters** - Segment duration, buffer size, idle timeout
 - **Configure HDHomeRun** - Enable or disable Plex integration, set the HDHR port and device name
