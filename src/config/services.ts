@@ -440,6 +440,72 @@ export function buildServiceGroups(channels: ChannelMap): void {
     serviceGroups.set(key, group);
     LOG.debug("config:general", "Service group '%s' (override): variants=%s.", key, variants.map((v) => v.key).join(", "));
   }
+
+  // Build the domain-to-predefined-channel reverse index. This enables the manual add form to show an inline hint when the entered URL matches a predefined
+  // channel. Scans only canonical entries in PREDEFINED_CHANNELS (variants share the canonical's URL domain and would produce duplicate results).
+  predefinedByDomain.clear();
+
+  for(const [ key, channel ] of Object.entries(PREDEFINED_CHANNELS)) {
+
+    if(channel.canonicalKey) {
+
+      continue;
+    }
+
+    const domain = extractDomain(channel.url);
+    const group = serviceGroups.get(key);
+    const entry = { canonicalKey: key, name: channel.name ?? key, serviceCount: group?.variants.length ?? 1 };
+    const existing = predefinedByDomain.get(domain);
+
+    if(existing) {
+
+      existing.push(entry);
+    } else {
+
+      predefinedByDomain.set(domain, [entry]);
+    }
+  }
+}
+
+// Summary of a predefined channel for the domain-to-channel reverse index. Used by the inline hint in the manual add form and by the embedded client-side data.
+interface PredefinedChannelSummary {
+
+  canonicalKey: string;
+  name: string;
+  serviceCount: number;
+}
+
+// Reverse index mapping concise domains to predefined channel summaries. Built by buildServiceGroups() and queried by findPredefinedByDomain() and
+// getPredefinedDomainMap().
+const predefinedByDomain = new Map<string, PredefinedChannelSummary[]>();
+
+/**
+ * Returns predefined channels whose canonical URL domain matches the given URL's domain. Used by the manual add form to show an inline hint when the user
+ * enters a URL that has predefined channels available. Returns an empty array when no predefined channels match.
+ * @param url - The URL to match against predefined channel domains.
+ * @returns Array of matching predefined channel summaries with canonical key, display name, and available service count.
+ */
+export function findPredefinedByDomain(url: string): PredefinedChannelSummary[] {
+
+  try {
+
+    const domain = extractDomain(url);
+
+    return predefinedByDomain.get(domain) ?? [];
+  } catch {
+
+    return [];
+  }
+}
+
+/**
+ * Returns the full domain-to-predefined-channel index for client-side embedding. Used by the channels panel to embed predefined match data so the manual add
+ * form can show inline hints without a server round-trip. The returned object is keyed by concise domain with arrays of channel summaries as values.
+ * @returns Record mapping domains to predefined channel summaries.
+ */
+export function getPredefinedDomainMap(): Record<string, PredefinedChannelSummary[]> {
+
+  return Object.fromEntries(predefinedByDomain);
 }
 
 /**

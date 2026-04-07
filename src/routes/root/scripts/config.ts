@@ -958,6 +958,7 @@ export function generateConfigSubtabScript(): string {
     "        if (d.patch) { applyChannelPatch(d.patch); }",
     "        if (action === 'add') {",
     "          hideAddForm();",
+    "          if(d.serviceWarning) { showServiceFilterWarning(d.serviceWarning); }",
     "        } else {",
     "          hideEditForm(d.key);",
     "        }",
@@ -1269,6 +1270,21 @@ export function generateConfigSubtabScript(): string {
     "      showToast('Failed to update filter: ' + err.message, 'error');",
     "    }",
     "  };",
+
+    // Show a toast warning when a newly added channel's service isn't in the active filter. Offers a one-click action to enable the service tag.
+    "  function showServiceFilterWarning(warning) {",
+    "    showToast(warning.serviceLabel + ' is not in your active service filter. Channels won\\'t appear in the playlist until enabled.', 'warning', 10000,",
+    "      { label: 'Enable ' + warning.serviceLabel, onclick: function() { enableServiceInFilter(warning.serviceTag); } });",
+    "  }",
+
+    // Enable a service tag in the filter by adding it to the current set and saving. Called by the service filter warning toast action button.
+    "  async function enableServiceInFilter(tag) {",
+    "    var chips = document.querySelectorAll('#provider-chips .provider-chip[data-tag]');",
+    "    var enabledTags = [];",
+    "    for(var i = 0; i < chips.length; i++) { enabledTags.push(chips[i].getAttribute('data-tag')); }",
+    "    if(enabledTags.indexOf(tag) === -1) { enabledTags.push(tag); }",
+    "    await saveServiceFilter(enabledTags);",
+    "  }",
 
     // Service filter: toggle a service tag on/off.
     "  window.toggleServiceTag = function(checkbox) {",
@@ -1772,6 +1788,29 @@ export function generateConfigSubtabScript(): string {
     "          activePill.classList.remove('active');",
     "          var profileSelect = document.getElementById('add-profile');",
     "          if(profileSelect) profileSelect.disabled = false;",
+    "        }",
+
+    // Check the entered URL against predefined channel domains. If the domain matches, show an inline hint suggesting the predefined channel. This extends the
+    // form's existing URL-based intelligence (channelSelector suggestions, stationId auto-fill) with predefined channel awareness.
+    "        var predefinedHint = document.getElementById('add-predefined-hint');",
+    "        if(predefinedHint && typeof predefinedByDomain !== 'undefined') {",
+    "          try {",
+    "            var urlHostname = new URL(addUrlInput.value).hostname;",
+    "            var parts = urlHostname.split('.');",
+    "            var conciseDomain = (parts.length > 2) ? parts.slice(-2).join('.') : urlHostname;",
+    "            var matches = predefinedByDomain[conciseDomain];",
+    "            if(matches && matches.length > 0) {",
+    "              var names = matches.map(function(m) { return '<strong>' + esc(m.name) + '</strong> (' + m.serviceCount + ' service' +",
+    "                (m.serviceCount === 1 ? '' : 's') + ')'; });",
+    "              predefinedHint.innerHTML = names.join(', ') + ' available as predefined ' + (matches.length === 1 ? 'channel' : 'channels') +",
+    "                ' with multi-service support. <a href=\"#\" onclick=\"event.preventDefault(); openBrowseModal();\">Browse predefined channels</a>';",
+    "              predefinedHint.style.display = '';",
+    "            } else {",
+    "              predefinedHint.style.display = 'none';",
+    "            }",
+    "          } catch(e) {",
+    "            predefinedHint.style.display = 'none';",
+    "          }",
     "        }",
     "      });",
     "      updateSelectorSuggestions('add-url', 'add-selectorList');",

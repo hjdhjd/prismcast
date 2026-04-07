@@ -8,8 +8,8 @@ import { LOG, formatError, generateChannelKey, parseM3U, sanitizeString, stringi
 import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../../../channels/index.js";
 import { VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState, generateTagFilterContent, generateTagManagerBody } from "./table.js";
 import { VALID_SORT_FIELDS, compareChannelSort, getAllServiceTags, getCanonicalKey, getChannelServiceLabel, getEnabledServices, getResolvedChannel,
-  getServiceGroup, getServiceSelection, getServiceTagForChannel, resolvePredefinedVariant, resolveServiceKey, setEnabledServices,
-  setServiceSelection } from "../../../config/services.js";
+  getServiceDisplayName, getServiceGroup, getServiceSelection, getServiceTagForChannel, isServiceTagEnabled, resolvePredefinedVariant,
+  resolveServiceKey, setEnabledServices, setServiceSelection } from "../../../config/services.js";
 import { filterDefaults, loadUserConfig, saveUserConfig } from "../../../config/userConfig.js";
 import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel,
   getPredefinedChannels, getTagRegistry, getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel,
@@ -17,6 +17,7 @@ import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, get
   validateChannelNumber, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../../../config/userChannels.js";
 import { CONFIG } from "../../../config/index.js";
 import type { UserChannel } from "../../../config/userChannels.js";
+import { getDomainConfig } from "../../../config/sites.js";
 import { getProfiles } from "../../../config/profiles.js";
 import { updateChannelLogo } from "../../../streaming/showInfo.js";
 
@@ -24,6 +25,29 @@ import { updateChannelLogo } from "../../../streaming/showInfo.js";
 const M3U_FIELDS = [ "channelNumber", "name", "stationId", "tvgShift" ];
 
 const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this change.";
+
+/**
+ * Builds a service filter warning when a URL's service tag is not in the active filter. Returns undefined when no filter is active, the tag is "direct", or the
+ * tag is already enabled. The client shows the returned warning as a toast with a one-click enable action.
+ * @param url - The channel URL to derive the service tag from.
+ * @returns The warning with service tag and display label, or undefined if no warning is needed.
+ */
+function buildServiceFilterWarning(url: string): { serviceLabel: string; serviceTag: string } | undefined {
+
+  if(getEnabledServices().length === 0) {
+
+    return undefined;
+  }
+
+  const tag = getDomainConfig(url)?.serviceTag;
+
+  if(tag && (tag !== "direct") && !isServiceTagEnabled(tag)) {
+
+    return { serviceLabel: getServiceDisplayName(url), serviceTag: tag };
+  }
+
+  return undefined;
+}
 
 /**
  * Checks whether a stored channel entry contains any fields that affect the M3U playlist. Used to decide whether to append the playlist reload hint when reverting
@@ -571,7 +595,12 @@ export function setupChannelRoutes(app: Express): void {
 
       LOG.info("Browse channels completed: %d added, %d switched, %d removed.", added, switched, removed);
 
-      res.json({ added, errors, message, patch: buildChannelTablePatch([...affectedKeys], getProfiles()), removed, success: true, switched });
+      // Check if the browsed service isn't in the active filter. All channels in a browse batch share the same service — derive the tag from the first add entry.
+      const firstAddUrl = (added > 0) ? channels.find((e) => (e.action === "add"))?.url : undefined;
+      const serviceWarning = firstAddUrl ? buildServiceFilterWarning(firstAddUrl) : undefined;
+
+      res.json({ added, errors, message, patch: buildChannelTablePatch([...affectedKeys], getProfiles()), removed, serviceWarning, success: true,
+        switched });
     } catch(error) {
 
       LOG.error("Failed to apply browse changes: %s.", formatError(error));
@@ -1848,6 +1877,9 @@ export function setupChannelRoutes(app: Express): void {
       // Append a playlist reload hint when the change affects M3U content that Channels DVR consumes.
       const playlistHint = playlistChanged ? PLAYLIST_HINT : "";
 
+      // Check if the new channel's service isn't in the active filter.
+      const serviceWarning = (action === "add") ? buildServiceFilterWarning(url) : undefined;
+
       // Return success response with patch for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
       res.json({
 
@@ -1855,6 +1887,7 @@ export function setupChannelRoutes(app: Express): void {
         key,
         message: "Channel '" + key + "' " + actionLabel + " successfully." + playlistHint,
         patch: buildChannelTablePatch([key], profiles),
+        serviceWarning,
         success: true
       });
     } catch(error) {

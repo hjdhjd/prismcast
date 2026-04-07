@@ -5,8 +5,8 @@
 import { ICON_BOLT, ICON_COPY, ICON_DELETE, ICON_DISABLE, ICON_EDIT, ICON_ENABLE, ICON_FILTER, ICON_HEALTH, ICON_LINK, ICON_LOGIN, ICON_MANAGE,
   ICON_REVERT, ICON_TRANSFER } from "../../icons.js";
 import { compareChannelSort, getAllServiceTags, getAuthDomainForChannel, getChannelServiceLabel, getChannelServiceTags, getChannelSortKey,
-  getEnabledServices, getServiceGroup, hasMultipleServices, isChannelAvailableByService, isServiceTagEnabled, resolvePredefinedVariant,
-  resolveServiceKey } from "../../../config/services.js";
+  getEnabledServices, getPredefinedDomainMap, getServiceGroup, hasMultipleServices, isChannelAvailableByService, isServiceTagEnabled,
+  resolvePredefinedVariant, resolveServiceKey } from "../../../config/services.js";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getChannelLogo, getChannelsParseErrorMessage,
   getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled,
@@ -575,7 +575,8 @@ function generateChannelSelectorData(): string {
 
   return "var channelSelectorsByDomain = " + JSON.stringify(byDomain) + ";\n" +
     "var serviceByDomain = " + JSON.stringify(serviceByDomain) + ";\n" +
-    "var serviceGuideUrl = " + JSON.stringify(serviceGuideUrl) + ";";
+    "var serviceGuideUrl = " + JSON.stringify(serviceGuideUrl) + ";\n" +
+    "var predefinedByDomain = " + JSON.stringify(getPredefinedDomainMap()) + ";";
 }
 
 /**
@@ -1700,6 +1701,10 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     required: true,
     type: "url"
   }));
+
+  // Inline hint for predefined channel matches. Hidden by default, shown by the URL field change listener in config.ts when the entered URL's domain matches a
+  // predefined channel. This extends the form's existing URL-based intelligence (channelSelector suggestions, stationId auto-fill, profile auto-detection).
+  lines.push("<div id=\"add-predefined-hint\" class=\"hint predefined-hint\" style=\"display: none;\"></div>");
 
   // Profile dropdown.
   lines.push(...generateProfileDropdown("add-profile", formValues?.get("profile") ?? "", profiles));

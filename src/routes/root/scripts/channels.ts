@@ -1068,6 +1068,7 @@ export function generateChannelsSubtabScript(): string {
     "          browseWizard.close();",
     "          showToast(data.message || 'Channels added.', 'success');",
     "          if(data.patch) { applyChannelPatch(data.patch); }",
+    "          if(data.serviceWarning && typeof showServiceFilterWarning === 'function') { showServiceFilterWarning(data.serviceWarning); }",
     "        } else {",
     "          btn.disabled = false;",
     "          updateBrowseCount();",
