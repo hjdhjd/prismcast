@@ -282,7 +282,7 @@ export function removeStreamStatus(streamId: number): void {
 
 /**
  * Emits a channel table update event. The payload is a partial patch — any combination of rows, counts, scopeCounts, and logos. SSE clients that have the
- * channels tab open apply the patch via applyChannelPatch. Used for server-initiated updates like logo population that have no associated client request.
+ * channels tab open apply the patch via channelTable.applyPatch. Used for server-initiated updates like logo population that have no associated client request.
  * @param patch - The partial channel table patch to emit.
  */
 export function emitChannelUpdate(patch: Record<string, unknown>): void {

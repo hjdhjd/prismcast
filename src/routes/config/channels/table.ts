@@ -827,7 +827,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
     "><span class=\"channel-name-cell\">" + escapeHtml(channel.name ?? key) + "</span></td>");
 
   // Service column: dropdown for multi-service channels, static service name for single-service. Both states always render a hidden "No available services"
-  // label alongside the service content so that client-side filterChannelRows() can toggle between them without a page reload.
+  // label alongside the service content so that client-side channelTable.filter() can toggle between them without a page reload.
   displayLines.push("<td data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "service")) + "\">");
 
   const labelHidden = isAvailableByService ? " style=\"display:none\"" : "";
@@ -838,7 +838,7 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   if(hasMultipleServices(key) && serviceGroup) {
 
     // Multi-service: render ALL variants with data-provider-tag attributes so client-side JS can filter options when the service selection changes. Filtered-out
-    // options get the hidden attribute for immediate filtering in Chrome. Safari ignores hidden on option elements, so the page-load JS init calls filterChannelRows()
+    // options get the hidden attribute for immediate filtering in Chrome. Safari ignores hidden on option elements, so the page-load JS init calls channelTable.filter()
     // to remove them from the DOM.
     const currentSelection = resolveServiceKey(key);
 
@@ -1088,7 +1088,7 @@ export interface ChannelTableCounts {
 
 /**
  * Patch response structure for channel table mutations. Contains everything the client needs to update the UI without a page reload. Mutation endpoints return
- * this alongside their existing success/message fields. The client's applyChannelPatch function applies whichever fields are present.
+ * this alongside their existing success/message fields. The client's channelTable.applyPatch function applies whichever fields are present.
  */
 export interface ChannelTablePatch {
 
@@ -1782,7 +1782,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     const activeIndicator = isActive ? ((sortDir === "asc") ? " &#9650;" : " &#9660;") : "";
 
     lines.push("<th class=\"" + hdr.cssClass + " sortable\" data-sort-field=\"" + hdr.field +
-      "\" onclick=\"sortChannelTable('" + hdr.field + "')\">");
+      "\" onclick=\"channelTable.sort('" + hdr.field + "')\">");
     lines.push("<span class=\"sort-label\">" + hdr.label + activeIndicator + "</span>");
 
     // Tags header: additional filter dropdown alongside the sort label. The dropdown is a client-side-only view filter (transient, not persisted) that

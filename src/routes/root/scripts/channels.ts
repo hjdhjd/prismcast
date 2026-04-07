@@ -1067,7 +1067,7 @@ export function generateChannelsSubtabScript(): string {
     "        if(data.success) {",
     "          browseWizard.close();",
     "          showToast(data.message || 'Channels added.', 'success');",
-    "          if(data.patch) { applyChannelPatch(data.patch); }",
+    "          if(data.patch) { channelTable.applyPatch(data.patch); }",
     "          if(data.serviceWarning && typeof showServiceFilterWarning === 'function') { showServiceFilterWarning(data.serviceWarning); }",
     "        } else {",
     "          btn.disabled = false;",
@@ -1189,7 +1189,7 @@ export function generateChannelsSubtabScript(): string {
     "      var res = await fetch('/config/channels/setup-completed', { method: 'POST', headers: { 'Content-Type': 'application/json' } });",
     "      var data = await res.json();",
     "      setupWizard.close();",
-    "      if(data.patch) { applyChannelPatch(data.patch); }",
+    "      if(data.patch) { channelTable.applyPatch(data.patch); }",
     "    } catch(err) { console.error('Setup finish error:', err); setupWizard.close(); }",
     "  };",
 
@@ -1294,7 +1294,7 @@ export function generateChannelsSubtabScript(): string {
     "    if(contentDiv && data.modalBody) { contentDiv.innerHTML = data.modalBody; }",
     "    var filterMenu = document.getElementById('tag-filter-menu');",
     "    if(filterMenu && data.filterContent) { filterMenu.innerHTML = data.filterContent; applyTagColumnFilter(); }",
-    "    if(data.patch && window.applyChannelPatch) { window.applyChannelPatch(data.patch); }",
+    "    if(data.patch && window.channelTable) { channelTable.applyPatch(data.patch); }",
     "    if(toastMessage && window.showToast) { window.showToast(toastMessage); }",
     "  };",
 
@@ -1493,7 +1493,7 @@ export function generateChannelsSubtabScript(): string {
 
     // Process channel logos and service icons on page load. These shared functions are also called after DOM mutations (row insertion, chip rebuild) to ensure
     // dynamically added elements get the same icon rendering as the initial server-rendered content.
-    "  processChannelLogos();",
+    "  channelTable.processLogos();",
     "  processServiceDisplays();",
 
     // Initialize channels subtab on load: hash > localStorage > default.
