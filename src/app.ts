@@ -21,7 +21,7 @@ import type { ResumeStreamData } from "./streaming/hlsResume.js";
 import type { Server } from "http";
 import { cleanupIdleStreams } from "./streaming/hls.js";
 import compression from "compression";
-import consoleStamp from "console-stamp";
+import df from "dateformat";
 import express from "express";
 import { generatePreroll } from "./streaming/preroll.js";
 import { getAllStreams } from "./streaming/registry.js";
@@ -418,10 +418,25 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   usingConsoleLogging = parsedArgs.consoleLogging;
   setConsoleLogging(parsedArgs.consoleLogging);
 
-  // Apply console-stamp for timestamps only when using console logging.
+  // Apply timestamps to console output only when using console logging. Wraps the four standard console methods so each call prepends a timestamp matching the
+  // file logger's format, ensuring console output and prismcast.log share identical timestamps. The wrappers are installed once at startup and affect every log
+  // call from anywhere in the process — ours, Node's internal warnings, third-party library output — without distributing the responsibility across hundreds of
+  // call sites. The no-console suppressions are intentional: the entire purpose of this block is to replace console's standard methods with timestamped wrappers.
   if(parsedArgs.consoleLogging) {
 
-    consoleStamp(console, { format: ":date(yyyy/mm/dd HH:MM:ss.l)" });
+    const methods = [ "log", "info", "warn", "error" ] as const;
+
+    for(const method of methods) {
+
+      // eslint-disable-next-line no-console
+      const original = console[method].bind(console);
+
+      // eslint-disable-next-line no-console
+      console[method] = (...args: unknown[]): void => {
+
+        original("[" + df(new Date(), "yyyy/mm/dd HH:MM:ss.l") + "]", ...args);
+      };
+    }
   }
 
   // Build CLI overrides from parsed arguments. These have the highest priority in the merge order (CLI > env > config.json > defaults).

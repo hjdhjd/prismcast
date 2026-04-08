@@ -19,7 +19,8 @@ const { promises: fsPromises } = fs;
  * 1. Asynchronous buffered writes - Logs are collected in a buffer and flushed periodically to avoid blocking the event loop during high-frequency logging.
  * 2. Periodic size checking - File size is checked every N writes rather than on each write to minimize syscall overhead.
  * 3. Atomic trim operations - Trimming writes to a temp file then renames, preventing data loss if the process crashes during trim.
- * 4. Timestamps - Uses the same format as console-stamp for consistency: yyyy/mm/dd HH:MM:ss.l
+ * 4. Timestamps - Uses the format yyyy/mm/dd HH:MM:ss.l. The same format is used by the console method wrappers in app.ts so file and console logs share
+ *    identical timestamps.
  */
 
 /* The file logger maintains state for the log file path, write buffer, and size tracking. State is initialized when initializeFileLogger() is called during server
