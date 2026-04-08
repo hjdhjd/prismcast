@@ -1294,7 +1294,7 @@ export function generateChannelsSubtabScript(): string {
     "    if(contentDiv && data.modalBody) { contentDiv.innerHTML = data.modalBody; }",
     "    var filterMenu = document.getElementById('tag-filter-menu');",
     "    if(filterMenu && data.filterContent) { filterMenu.innerHTML = data.filterContent; applyTagColumnFilter(); }",
-    "    if(data.patch && window.channelTable) { channelTable.applyPatch(data.patch); }",
+    "    if(data.patch) { channelTable.applyPatch(data.patch); }",
     "    if(toastMessage && window.showToast) { window.showToast(toastMessage); }",
     "  };",
 

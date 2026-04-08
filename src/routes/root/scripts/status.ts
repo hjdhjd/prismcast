@@ -401,7 +401,7 @@ export function generateStatusScript(): string {
 
     // Channel table updates from the server (e.g., logo population after startup). Applies the patch via the shared channelTable namespace.
     "  on('channelUpdate', function(e) {",
-    "    if(window.channelTable) { channelTable.applyPatch(JSON.parse(e.data)); }",
+    "    channelTable.applyPatch(JSON.parse(e.data));",
     "  });",
     "  statusEventSource.onerror = function() {",
     "    document.getElementById('system-health').innerHTML = '<span class=\"status-dot\" style=\"color: var(--stream-stalled);\">&#9679;</span> Updates paused';",

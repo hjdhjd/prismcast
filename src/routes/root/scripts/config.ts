@@ -1239,24 +1239,9 @@ export function generateConfigSubtabScript(): string {
     "    await saveServiceFilter(enabledTags);",
     "  }",
 
-    // Service filter: toggle a service tag on/off.
+    // Service filter: toggle a service tag on/off. The checkbox change has already been applied to the DOM, so getEnabledFilterTags() reads the new state directly.
     "  window.toggleServiceTag = function(checkbox) {",
-    "    var menu = checkbox.closest('.provider-dropdown-menu');",
-    "    if (!menu) return;",
-    "    var checkboxes = menu.querySelectorAll('input[type=\"checkbox\"]:not(:disabled)');",
-    "    var enabledTags = [];",
-    "    for (var i = 0; i < checkboxes.length; i++) {",
-    "      if (checkboxes[i].checked) enabledTags.push(checkboxes[i].getAttribute('data-tag'));",
-    "    }",
-
-    // If all checkboxes are checked, clear the filter (empty array = no filter).
-    "    var allCheckboxes = menu.querySelectorAll('input[type=\"checkbox\"]');",
-    "    var allChecked = true;",
-    "    for (var j = 0; j < allCheckboxes.length; j++) {",
-    "      if (!allCheckboxes[j].checked && !allCheckboxes[j].disabled) { allChecked = false; break; }",
-    "    }",
-    "    if (allChecked) enabledTags = [];",
-    "    saveServiceFilter(enabledTags);",
+    "    saveServiceFilter(channelTable.getEnabledFilterTags());",
     "  };",
 
     // Remove a service chip (uncheck the tag and update). Orphaned tags (no checkbox in the dropdown) are removed by rebuilding the list from the remaining chips.
@@ -1587,17 +1572,8 @@ export function generateConfigSubtabScript(): string {
 
     // Run channelTable.filter() on page load when a service filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on
     // option elements. This initial pass removes those options from the DOM to enforce the filter.
-    "    var menu = document.querySelector('.provider-dropdown-menu');",
-    "    if (menu) {",
-    "      var cbs = menu.querySelectorAll('input[type=\"checkbox\"]:not(:disabled)');",
-    "      var tags = [];",
-    "      var allChecked = true;",
-    "      for (var ci = 0; ci < cbs.length; ci++) {",
-    "        if (cbs[ci].checked) { tags.push(cbs[ci].getAttribute('data-tag')); }",
-    "        else { allChecked = false; }",
-    "      }",
-    "      if (!allChecked) { channelTable.filter(tags); updateBulkAssignOptions(tags); }",
-    "    }",
+    "    var initFilterTags = channelTable.getEnabledFilterTags();",
+    "    if (initFilterTags.length > 0) { channelTable.filter(initFilterTags); updateBulkAssignOptions(initFilterTags); }",
     "    var addUrlInput = document.getElementById('add-url');",
     "    if (addUrlInput) {",
     "      addUrlInput.addEventListener('input', function() {",

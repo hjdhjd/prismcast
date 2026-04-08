@@ -369,9 +369,8 @@ export function generateSharedUtilitiesScript(): string {
     "  };",
 
     /* Channel table DOM manipulation namespace. All functions that insert, remove, filter, sort, or update channel table rows live here as methods of a single
-     * namespace object. Internal collaborators invoke each other via this.* which cannot accidentally escape the namespace — a structural guarantee that prevents
-     * the cross-IIFE scoping bugs that plagued the prior scattered design. External callers across all client scripts use channelTable.* (e.g.,
-     * channelTable.applyPatch, channelTable.filter).
+     * namespace object. Internal collaborators invoke each other via this.* which keeps the call graph contained inside the namespace. External callers across
+     * all client scripts use channelTable.* (e.g., channelTable.applyPatch, channelTable.filter).
      */
     "  window.channelTable = {",
 
@@ -571,11 +570,12 @@ export function generateSharedUtilitiesScript(): string {
     "      }",
     "    },",
 
-    // Re-apply the service filter using the current checkbox state from the filter dropdown menu. Called after row insertions because fresh server HTML contains
-    // all options with hidden attributes (which Safari ignores), so the filter must be re-established.
-    "    refilter: function() {",
+    // Returns the currently enabled service filter tags by walking the filter dropdown checkboxes. Returns an empty array when the menu is missing, when all
+    // checkboxes are checked (treated as no filter), or when no checkboxes are checked. The empty-when-all-checked semantics match the server-side filter model:
+    // an empty enabledServices array means "show all services" rather than "show none."
+    "    getEnabledFilterTags: function() {",
     "      var menu = document.querySelector('.provider-dropdown-menu');",
-    "      if(!menu) return;",
+    "      if(!menu) return [];",
     "      var cbs = menu.querySelectorAll('input[type=\"checkbox\"]:not(:disabled)');",
     "      var enabledTags = [];",
     "      var allChecked = true;",
@@ -583,8 +583,14 @@ export function generateSharedUtilitiesScript(): string {
     "        if(cbs[i].checked) enabledTags.push(cbs[i].getAttribute('data-tag'));",
     "        else allChecked = false;",
     "      }",
-    "      if(allChecked) enabledTags = [];",
-    "      if(enabledTags.length > 0) this.filter(enabledTags);",
+    "      return allChecked ? [] : enabledTags;",
+    "    },",
+
+    // Re-apply the service filter using the current checkbox state from the filter dropdown menu. Called after row insertions because fresh server HTML contains
+    // all options with hidden attributes (which Safari ignores), so the filter must be re-established.
+    "    refilter: function() {",
+    "      var tags = this.getEnabledFilterTags();",
+    "      if(tags.length > 0) this.filter(tags);",
     "    },",
 
     // Sort the channel table by the specified field. Toggles direction if the same field is clicked again. Persists the sort preference to the server.
