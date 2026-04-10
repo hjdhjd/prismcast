@@ -69,6 +69,11 @@ export const VALID_OPTIONAL_COLUMNS = new Set(OPTIONAL_COLUMNS.map((c) => c.fiel
  */
 interface TextFieldOptions {
 
+  // Predefined default value for modification tracking. When provided and different from the current value, the field renders with the settings form's
+  // "modified from defaults" treatment: left-border accent, blue dot, data-default attribute, and a per-field reset button. Omit for fields that do not
+  // have a predefined baseline (e.g., user-created channels, add forms).
+  defaultValue?: string;
+
   // Hint text displayed below the input (optional).
   hint?: string;
 
@@ -106,10 +111,18 @@ function generateTextField(id: string, name: string, label: string, value: strin
   const pattern = options.pattern ? " pattern=\"" + options.pattern + "\"" : "";
   const placeholder = options.placeholder ? " placeholder=\"" + escapeHtml(options.placeholder) + "\"" : "";
 
-  lines.push("<div class=\"form-row\">");
-  lines.push("<label for=\"" + id + "\">" + label + "</label>");
+  // Modification tracking: compare against the predefined default and render the settings form's "modified" visual treatment when they differ.
+  const isModified = (options.defaultValue !== undefined) && (options.defaultValue !== value);
+  const modifiedClass = isModified ? " modified" : "";
+  const modifiedDot = isModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
+  const defaultAttr = (options.defaultValue !== undefined) ? " data-default=\"" + escapeHtml(options.defaultValue) + "\"" : "";
+  const resetBtn = isModified ? "<button type=\"button\" class=\"btn-reset\" title=\"Reset to predefined default\" aria-label=\"Reset to predefined default\" " +
+    "onclick=\"resetChannelField('" + id + "')\">&#8635;</button>" : "";
+
+  lines.push("<div class=\"form-row" + modifiedClass + "\">");
+  lines.push(modifiedDot + "<label for=\"" + id + "\">" + label + "</label>");
   lines.push("<input class=\"form-input\" type=\"" + inputType + "\" id=\"" + id + "\" name=\"" + name + "\"" + required + listAttr + pattern +
-    placeholder + " value=\"" + escapeHtml(value) + "\">");
+    placeholder + defaultAttr + " value=\"" + escapeHtml(value) + "\">" + resetBtn);
   lines.push("</div>");
 
   // When a datalist ID is specified, append an empty <datalist> element outside the form-row flex container. The client-side JavaScript populates it dynamically
@@ -135,10 +148,19 @@ function generateTextField(id: string, name: string, label: string, value: strin
  * @param showHint - Whether to show the hint text with profile reference link.
  * @returns Array of HTML strings for the form row.
  */
-function generateProfileDropdown(id: string, selectedProfile: string, profiles: ProfileInfo[], showHint = true): string[] {
+function generateProfileDropdown(id: string, selectedProfile: string, profiles: ProfileInfo[], showHint = true, defaultProfile?: string): string[] {
 
   const lines: string[] = [];
   const groups = categorizeProfiles(profiles);
+
+  // Modification tracking for the profile dropdown. Same visual treatment as text fields — border accent, dot, and reset button when the current selection
+  // differs from the predefined default.
+  const isModified = (defaultProfile !== undefined) && (defaultProfile !== selectedProfile);
+  const modifiedClass = isModified ? " modified" : "";
+  const modifiedDot = isModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
+  const defaultAttr = (defaultProfile !== undefined) ? " data-default=\"" + escapeHtml(defaultProfile) + "\"" : "";
+  const resetBtn = isModified ? "<button type=\"button\" class=\"btn-reset\" title=\"Reset to predefined default\" aria-label=\"Reset to predefined default\" " +
+    "onclick=\"resetChannelField('" + id + "')\">&#8635;</button>" : "";
 
   // Helper to generate option elements for a profile.
   const renderOption = (profile: ProfileInfo): string => {
@@ -150,9 +172,9 @@ function generateProfileDropdown(id: string, selectedProfile: string, profiles: 
     return "<option value=\"" + escapeHtml(profile.name) + "\"" + title + selected + ">" + escapeHtml(displayText) + "</option>";
   };
 
-  lines.push("<div class=\"form-row\">");
-  lines.push("<label for=\"" + id + "\">Profile</label>");
-  lines.push("<select class=\"form-select field-wide\" id=\"" + id + "\" name=\"profile\">");
+  lines.push("<div class=\"form-row" + modifiedClass + "\">");
+  lines.push(modifiedDot + "<label for=\"" + id + "\">Profile</label>");
+  lines.push("<select class=\"form-select field-wide\" id=\"" + id + "\" name=\"profile\"" + defaultAttr + ">");
   lines.push("<option value=\"\">Autodetect (Recommended)</option>");
 
   // Fullscreen API profiles (most common).
@@ -220,7 +242,7 @@ function generateProfileDropdown(id: string, selectedProfile: string, profiles: 
     lines.push("</optgroup>");
   }
 
-  lines.push("</select>");
+  lines.push("</select>" + resetBtn);
   lines.push("</div>");
 
   if(showHint) {
@@ -402,6 +424,17 @@ interface AdvancedFieldOptions {
   // Current channel selector value (empty string for none).
   channelSelectorValue?: string;
 
+  // Predefined defaults for modification tracking. When provided, each field compares its current value against the corresponding default and renders
+  // the settings form's "modified" visual treatment if they differ. Omit entirely for fields without a predefined baseline (add forms, user-created channels).
+  defaults?: {
+
+    channelNumber?: string;
+    channelSelector?: string;
+    hdhrEnabled?: boolean;
+    stationId?: string;
+    tags?: string;
+  };
+
   // Whether the channel is included in the HDHomeRun/Plex lineup. Defaults to true.
   hdhrEnabled?: boolean;
 
@@ -430,9 +463,10 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 
   // Station ID.
   const stationIdHint = showHints ? "Optional Gracenote station ID for guide data (tvc-guide-stationid)." : undefined;
+  const defs = options.defaults;
 
   lines.push(...generateTextField(idPrefix + "-stationId", "stationId", "Station ID", stationIdValue,
-    { hint: stationIdHint, placeholder: showHints ? "e.g., 12345" : undefined }));
+    { defaultValue: defs?.stationId, hint: stationIdHint, placeholder: showHints ? "e.g., 12345" : undefined }));
 
   // Channel selector. The guide-based service list is derived from the provider module registry so it stays current as services are added.
   const guideProviderNames = getProviderModuleInfo().map((p) => p.label).sort().join(", ");
@@ -444,7 +478,7 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
     undefined;
 
   lines.push(...generateTextField(idPrefix + "-channelSelector", "channelSelector", "Channel Selector", channelSelectorValue,
-    { hint: channelSelectorHint, list: idPrefix + "-selectorList", placeholder: showHints ? "e.g., ESPN" : undefined }));
+    { defaultValue: defs?.channelSelector, hint: channelSelectorHint, list: idPrefix + "-selectorList", placeholder: showHints ? "e.g., ESPN" : undefined }));
 
   // Channel number for Channels DVR and Plex integration.
   const channelNumberHint = showHints ?
@@ -452,7 +486,7 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
     undefined;
 
   lines.push(...generateTextField(idPrefix + "-channelNumber", "channelNumber", "Channel Number", channelNumberValue,
-    { hint: channelNumberHint, placeholder: showHints ? "e.g., 501" : undefined }));
+    { defaultValue: defs?.channelNumber, hint: channelNumberHint, placeholder: showHints ? "e.g., 501" : undefined }));
 
   // Tags field: checkbox grid of the active tag vocabulary. Checked tags are collected into a hidden input as a comma-separated value on form submission.
   // This prevents users from entering tag names that don't exist in the managed vocabulary.
@@ -461,9 +495,14 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 
   if(vocabulary.length > 0) {
 
-    lines.push("<div class=\"form-row\">");
-    lines.push("<label>Tags</label>");
-    lines.push("<input type=\"hidden\" name=\"tags\" id=\"" + idPrefix + "-tags-hidden\" value=\"" + escapeHtml(tagsValue) + "\">");
+    const tagsModified = (defs?.tags !== undefined) && (defs.tags !== tagsValue);
+    const tagsModifiedClass = tagsModified ? " modified" : "";
+    const tagsModifiedDot = tagsModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
+    const tagsDefaultAttr = (defs?.tags !== undefined) ? " data-default=\"" + escapeHtml(defs.tags) + "\"" : "";
+
+    lines.push("<div class=\"form-row" + tagsModifiedClass + "\">");
+    lines.push(tagsModifiedDot + "<label>Tags</label>");
+    lines.push("<input type=\"hidden\" name=\"tags\" id=\"" + idPrefix + "-tags-hidden\" value=\"" + escapeHtml(tagsValue) + "\"" + tagsDefaultAttr + ">");
     lines.push("<div class=\"tag-checkbox-grid\">");
 
     for(const tag of vocabulary) {
@@ -489,12 +528,17 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
   // HDHomeRun lineup inclusion. A hidden input provides the "false" value when the checkbox is unchecked (unchecked checkboxes are not submitted in FormData).
   // When checked, the checkbox value "true" overwrites the hidden input's "false" since it appears later in DOM order.
   const hdhrChecked = hdhrEnabled ? " checked" : "";
+  const hdhrDefaultEnabled = defs?.hdhrEnabled ?? true;
+  const hdhrModified = (defs?.hdhrEnabled !== undefined) && (hdhrEnabled !== hdhrDefaultEnabled);
+  const hdhrModifiedClass = hdhrModified ? " modified" : "";
+  const hdhrModifiedDot = hdhrModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
+  const hdhrDefaultAttr = (defs?.hdhrEnabled !== undefined) ? " data-default=\"" + String(hdhrDefaultEnabled) + "\"" : "";
   const hdhrHint = showHints ? "When unchecked, this channel is hidden from the HDHomeRun lineup and not available in Plex." : undefined;
 
-  lines.push("<div class=\"form-row form-row-checkbox\">");
-  lines.push("<label for=\"" + idPrefix + "-hdhrEnabled\">Include in HDHomeRun/Plex Lineup</label>");
+  lines.push("<div class=\"form-row form-row-checkbox" + hdhrModifiedClass + "\">");
+  lines.push(hdhrModifiedDot + "<label for=\"" + idPrefix + "-hdhrEnabled\">Include in HDHomeRun/Plex Lineup</label>");
   lines.push("<input type=\"hidden\" name=\"hdhrEnabled\" value=\"false\">");
-  lines.push("<input type=\"checkbox\" id=\"" + idPrefix + "-hdhrEnabled\" name=\"hdhrEnabled\" value=\"true\"" + hdhrChecked + ">");
+  lines.push("<input type=\"checkbox\" id=\"" + idPrefix + "-hdhrEnabled\" name=\"hdhrEnabled\" value=\"true\"" + hdhrChecked + hdhrDefaultAttr + ">");
   lines.push("</div>");
 
   if(hdhrHint) {
@@ -792,11 +836,16 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   // Build the service tags data attribute for client-side filtering.
   const serviceTags = getChannelServiceTags(key).join(",");
 
-  // Generate display row. User channels get one CSS class, disabled predefined get another, service-filtered get a third.
+  // Generate display row. User-created channels and predefined overrides get distinct CSS classes — user-created channels have a subtle background tint
+  // ("user-channel"), while predefined overrides get a left-border accent and blue dot indicator via CSS ::before ("channel-override") matching the settings
+  // form's visual language for "modified from defaults." Disabled and service-filtered rows get additional classes for opacity and visibility control.
   const displayLines: string[] = [];
   const rowClasses: string[] = [];
 
-  if(isUser) {
+  if(isOverride) {
+
+    rowClasses.push("channel-override");
+  } else if(isUser) {
 
     rowClasses.push("user-channel");
   }
@@ -812,12 +861,13 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   }
 
   const rowClassAttr = (rowClasses.length > 0) ? " class=\"" + rowClasses.join(" ") + "\"" : "";
+  const rowTitleAttr = isOverride ? " title=\"Customized from predefined defaults\"" : "";
 
   // Compute effective tags early — used for both the row data attribute (tag column filter) and the Tags column cell rendering below.
   const effectiveTags = getChannelEffectiveTags(channel);
   const channelTagsAttr = (effectiveTags.length > 0) ? " data-channel-tags=\"" + escapeHtml(effectiveTags.join(",")) + "\"" : "";
 
-  displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + " data-provider-tags=\"" + escapeHtml(serviceTags) +
+  displayLines.push("<tr id=\"display-row-" + escapeHtml(key) + "\"" + rowClassAttr + rowTitleAttr + " data-provider-tags=\"" + escapeHtml(serviceTags) +
     "\"" + channelTagsAttr + ">");
   displayLines.push("<td class=\"ch-key\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "key")) + "\">" + escapeHtml(key) + "</td>");
   const channelLogoUrl = getChannelLogo(key) ?? "";
@@ -1011,9 +1061,16 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   editLines.push("<input type=\"hidden\" name=\"action\" value=\"edit\">");
   editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapedKey + "\">");
 
+  // For override channels, look up the predefined defaults so each field can show the "modified from defaults" indicator when its value differs. This applies
+  // the same visual treatment used by the settings form — border accent, blue dot, and per-field reset button — so users can immediately see which fields they
+  // customized and reset individual fields without reverting the entire channel.
+  const predefined = isOverride ? PREDEFINED_CHANNELS[key] : undefined;
+  const predefinedTags = predefined ? getChannelEffectiveTags(predefined).join(", ") : undefined;
+
   // Channel name.
   editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", channel.name ?? key, {
 
+    defaultValue: predefined ? (predefined.name ?? key) : undefined,
     hint: "Friendly name shown in the playlist and UI.",
     required: true
   }));
@@ -1021,19 +1078,29 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
   // Channel URL.
   editLines.push(...generateTextField("edit-url-" + key, "url", "Stream URL", channel.url, {
 
+    defaultValue: predefined?.url,
     hint: "The URL of the streaming page to capture.",
     required: true,
     type: "url"
   }));
 
   // Profile dropdown.
-  editLines.push(...generateProfileDropdown("edit-profile-" + key, channel.profile ?? "", profiles));
+  editLines.push(...generateProfileDropdown("edit-profile-" + key, channel.profile ?? "", profiles, true,
+    isOverride ? (predefined?.profile ?? "") : undefined));
 
   // Advanced fields.
   editLines.push(...generateAdvancedFields("edit-" + key, {
 
     channelNumberValue: channel.channelNumber ? String(channel.channelNumber) : "",
     channelSelectorValue: channel.channelSelector ?? "",
+    defaults: predefined ? {
+
+      channelNumber: predefined.channelNumber ? String(predefined.channelNumber) : "",
+      channelSelector: predefined.channelSelector ?? "",
+      hdhrEnabled: predefined.hdhrEnabled !== false,
+      stationId: predefined.stationId ?? "",
+      tags: predefinedTags
+    } : undefined,
     hdhrEnabled: channel.hdhrEnabled !== false,
     stationIdValue: channel.stationId ?? "",
     tagsValue: effectiveTags.join(", ")
@@ -1412,13 +1479,13 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1.5 8.7V2.5a1 1 0 011-1h6.2a1 1 0 01.7.3l5.1 5.1a1 1 0 010 1.4l-5.5 5.5a1 " +
     "1 0 01-1.4 0L1.8 9.4a1 1 0 01-.3-.7z\"/><circle cx=\"5\" cy=\"5\" r=\"1\"/></svg>";
 
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); " +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); " +
     "document.getElementById('add-channel-form').style.display='block';\">" + TINTED_ADD + " Add Channel</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openBrowseModal()\">" + TINTED_BROWSE +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); openBrowseModal()\">" + TINTED_BROWSE +
     " Browse Service Channels</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openTagManager()\">" + TINTED_TAG +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); openTagManager()\">" + TINTED_TAG +
     " Manage Tags</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); openSetupWizard()\">" + TINTED_SETUP +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); openSetupWizard()\">" + TINTED_SETUP +
     " Service Setup</div>");
   lines.push("</div>");
   lines.push("</div>");
@@ -1434,13 +1501,13 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   const TINTED_EXPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#22a563\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 10V2M5 5l3-3 3 3\"/><path d=\"M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2\"/></svg>";
 
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); document.getElementById('import-channels-file').click()\">" +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); document.getElementById('import-channels-file').click()\">" +
     TINTED_IMPORT + " Import Channels (JSON)</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); document.getElementById('import-m3u-file').click()\">" +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); document.getElementById('import-m3u-file').click()\">" +
     TINTED_IMPORT + " Import M3U Playlist</div>");
   lines.push("<label class=\"dropdown-option\"><input type=\"checkbox\" id=\"m3u-replace-duplicates\"> Replace duplicates on M3U import</label>");
   lines.push("<div class=\"dropdown-divider\"></div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"closeDropdowns(); exportChannels()\">" +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); exportChannels()\">" +
     TINTED_EXPORT + " Export Channels (JSON)</div>");
   lines.push("</div>");
   lines.push("</div>");
@@ -1486,7 +1553,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<div class=\"bulk-assign-row\">");
   lines.push("<span>Set all channels to:</span>");
   lines.push("<select id=\"bulk-assign-select\" class=\"bulk-assign-select\" title=\"Switch all multi-service channels to this service\" " +
-    "onchange=\"if(this.value) { closeDropdowns(); bulkAssignService(this.value); this.value = ''; }\">");
+    "onchange=\"if(this.value) { dropdowns.close(); bulkAssignService(this.value); this.value = ''; }\">");
   lines.push("<option value=\"\">Select service</option>");
 
   for(const tagInfo of allTags) {
@@ -1513,7 +1580,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<span>Auto-number from:</span>");
   lines.push("<input type=\"number\" id=\"auto-number-start\" class=\"auto-number-input\" value=\"1\" min=\"0\" max=\"99999\" " +
     "placeholder=\"Clear\" onclick=\"event.stopPropagation()\">");
-  lines.push("<button type=\"button\" class=\"btn btn-sm btn-secondary\" onclick=\"closeDropdowns(); autoNumberChannels()\">Apply</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-sm btn-secondary\" onclick=\"dropdowns.close(); autoNumberChannels()\">Apply</button>");
   lines.push("</div>");
   lines.push("</div>");
 

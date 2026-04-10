@@ -3,7 +3,7 @@
  * morganStream.ts: Morgan logging stream adapter for PrismCast.
  */
 import type { StreamOptions } from "morgan";
-import df from "dateformat";
+import { formatTimestamp } from "./format.js";
 import { isConsoleLogging } from "./logger.js";
 import { writeLogEntry } from "./fileLogger.js";
 
@@ -31,7 +31,7 @@ export function createMorganStream(): StreamOptions {
       if(isConsoleLogging()) {
 
         // Console logging mode - add timestamp prefix and write to stdout.
-        const timestamp = df(new Date(), "yyyy/mm/dd HH:MM:ss.l");
+        const timestamp = formatTimestamp();
 
         // eslint-disable-next-line no-console
         console.log([ "[", timestamp, "] ", trimmedMessage ].join(""));

@@ -378,15 +378,33 @@ export function buildServiceGroups(channels: ChannelMap): void {
 
     const variants: ServiceGroup["variants"] = [];
 
-    // Handle user override of the canonical entry. The :predefined variant's tag is derived from the predefined channel (not the user override) so that service
-    // filtering correctly reflects the predefined channel's service, not the user's custom URL.
+    // Handle user override of the canonical entry. Two scenarios: (A) the user customized properties (station ID, tags, etc.) but the URL still matches a known
+    // service domain — no "Custom" variant needed, just the normal service label with a visual override indicator in the table; (B) the user set a genuinely
+    // non-standard URL — "Custom (domain)" is a real service variant and the :predefined entry gives access to the original service URL.
     if(isUserOverride(canonicalKey, channels)) {
 
       const predefined = PREDEFINED_CHANNELS[canonicalKey];
+      const userDomain = extractDomain(canonical.url);
+      const knownDomains = new Set([extractDomain(predefined.url)]);
 
-      variants.push({ key: canonicalKey, label: "Custom (" + extractDomain(canonical.url) + ")", tag: resolveServiceTag(canonical) });
-      variants.push({ key: canonicalKey + PREDEFINED_SUFFIX, label: predefined.service ?? getServiceDisplayName(predefined.url),
-        tag: resolveServiceTag(predefined) });
+      for(const variantKey of variantKeys) {
+
+        knownDomains.add(extractDomain(channels[variantKey].url));
+      }
+
+      if(knownDomains.has(userDomain)) {
+
+        // Scenario A: property override on a known service. The canonical gets the same label as if it weren't overridden. The modified-dot indicator in the
+        // table renderer handles the visual distinction.
+        variants.push({ key: canonicalKey, label: getChannelServiceLabel(canonical), tag: resolveServiceTag(canonical) });
+      } else {
+
+        // Scenario B: genuinely custom URL. "Custom (domain)" is a real service variant. The :predefined entry gives the user a path back to the original
+        // predefined service URL without permanently reverting their other customizations.
+        variants.push({ key: canonicalKey, label: "Custom (" + extractDomain(canonical.url) + ")", tag: resolveServiceTag(canonical) });
+        variants.push({ key: canonicalKey + PREDEFINED_SUFFIX, label: predefined.service ?? getServiceDisplayName(predefined.url),
+          tag: resolveServiceTag(predefined) });
+      }
     } else {
 
       variants.push({ key: canonicalKey, label: getChannelServiceLabel(canonical), tag: resolveServiceTag(canonical) });
@@ -414,8 +432,9 @@ export function buildServiceGroups(channels: ChannelMap): void {
     LOG.debug("config:general", "Service group '%s': variants=%s.", canonicalKey, variants.map((v) => v.key).join(", "));
   }
 
-  // Pass 3: Create groups for user overrides of single-service predefined channels. These don't have canonicalKey-based variants but the user's custom version
-  // should be toggleable against the predefined original.
+  // Pass 3: Create groups for user overrides of single-service predefined channels. Only Scenario B (genuinely custom URL) gets a service group — the user needs
+  // a dropdown to switch between their custom URL and the predefined service. Scenario A (property override on the same domain) skips group creation entirely
+  // because there is only one service and no dropdown is needed; the modified-dot indicator in the table renderer signals the override.
   for(const key of Object.keys(channels)) {
 
     if(serviceGroups.has(key)) {
@@ -430,6 +449,14 @@ export function buildServiceGroups(channels: ChannelMap): void {
 
     const userChannel = channels[key];
     const predefined = PREDEFINED_CHANNELS[key];
+
+    // Scenario A: URL domain matches the predefined service. No service group needed — renders as a single-service channel with a modified-dot indicator.
+    if(extractDomain(userChannel.url) === extractDomain(predefined.url)) {
+
+      continue;
+    }
+
+    // Scenario B: genuinely custom URL. Create a 2-entry group so the user can switch between their custom URL and the predefined service.
     const variants: ServiceGroup["variants"] = [
       { key, label: "Custom (" + extractDomain(userChannel.url) + ")", tag: resolveServiceTag(userChannel) },
       { key: key + PREDEFINED_SUFFIX, label: predefined.service ?? getServiceDisplayName(predefined.url), tag: resolveServiceTag(predefined) }
@@ -829,6 +856,10 @@ export function setServiceSelection(canonicalKey: string, serviceKey: string): v
  * Resolves a canonical channel key to the actual channel key based on user selection. If the user has selected a specific service for this channel, returns that
  * service's key. Otherwise returns the canonical key (default service). When the service filter is active, falls back to the first enabled variant if the stored
  * selection's service is filtered out.
+ *
+ * Selection validation uses the service group's variants array as the single source of truth. Any stored selection that doesn't match a current variant is treated
+ * as stale and cleared — whether it's a :predefined key from a group that no longer uses that variant, a variant key for a service that was removed, or a key for
+ * a channel that lost its group entirely. This eliminates the need for separate validation paths against PREDEFINED_CHANNELS and channelsRef.
  * @param canonicalKey - The canonical channel key.
  * @returns The resolved service key to use for streaming.
  */
@@ -836,10 +867,9 @@ export function resolveServiceKey(canonicalKey: string): string {
 
   const selection = serviceSelections.get(canonicalKey);
 
-  // No selection stored — use the canonical key (default service).
+  // No selection stored — use the canonical key (default service). If the canonical's service tag is filtered out, fall back to the first enabled variant.
   if(!selection) {
 
-    // If the canonical's service tag is filtered out, find the first enabled variant.
     if((enabledServices.length > 0) && !isServiceTagEnabled(getServiceTagForChannel(canonicalKey))) {
 
       return findFirstEnabledVariant(canonicalKey) ?? canonicalKey;
@@ -848,39 +878,25 @@ export function resolveServiceKey(canonicalKey: string): string {
     return canonicalKey;
   }
 
-  // Handle :predefined suffix — validate that the base key exists in PREDEFINED_CHANNELS.
-  if(selection.endsWith(PREDEFINED_SUFFIX)) {
+  // Validate the selection against the service group's variants array. A selection is invalid if the variant was removed, the group was restructured, or the
+  // channel is no longer in a group. Invalid selections are cleared so the canonical default takes over.
+  const group = serviceGroups.get(canonicalKey);
 
-    const baseKey = selection.slice(0, -PREDEFINED_SUFFIX.length);
+  if(!group?.variants.some((v) => v.key === selection)) {
 
-    // Runtime check needed — TypeScript thinks Record indexing always returns a value, but the key may not exist.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if(PREDEFINED_CHANNELS[baseKey]) {
+    LOG.warn("Service selection '%s' for channel '%s' is no longer valid. Using default.", selection, canonicalKey);
+    serviceSelections.delete(canonicalKey);
 
-      return selection;
-    }
-
-    // Predefined channel was removed. Fall through to the invalid selection warning.
-
-    // Runtime check needed — TypeScript thinks Record indexing always returns a value, but the key may not exist.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  } else if(channelsRef[selection]) {
-
-    // Normal selection — validate it exists in the merged channels. If its service tag is filtered out, find the first enabled variant instead.
-    if((enabledServices.length > 0) && !isServiceTagEnabled(getServiceTagForChannel(selection))) {
-
-      return findFirstEnabledVariant(canonicalKey) ?? selection;
-    }
-
-    return selection;
+    return canonicalKey;
   }
 
-  // Selection is invalid (service removed). Clear it and log a warning.
-  LOG.warn("Service selection '%s' for channel '%s' no longer exists. Using default.", selection, canonicalKey);
+  // Valid selection — if its service tag is filtered out, fall back to the first enabled variant.
+  if((enabledServices.length > 0) && !isServiceTagEnabled(getServiceTagForChannel(selection))) {
 
-  serviceSelections.delete(canonicalKey);
+    return findFirstEnabledVariant(canonicalKey) ?? selection;
+  }
 
-  return canonicalKey;
+  return selection;
 }
 
 /**

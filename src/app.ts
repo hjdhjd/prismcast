@@ -4,8 +4,8 @@
  */
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.js";
 import type { Express, NextFunction, Request, Response } from "express";
-import { LOG, clearPidFile, createMorganStream, formatError, getCurrentPattern, getPackageVersion, isDebugLogging, isProcessRunning, readPidFile,
-  resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking, writePidFile } from "./utils/index.js";
+import { LOG, clearPidFile, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, isProcessRunning,
+  readPidFile, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking, writePidFile } from "./utils/index.js";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.js";
 import { getLogFilePath, getServerPidFilePath } from "./config/paths.js";
@@ -21,7 +21,6 @@ import type { ResumeStreamData } from "./streaming/hlsResume.js";
 import type { Server } from "http";
 import { cleanupIdleStreams } from "./streaming/hls.js";
 import compression from "compression";
-import df from "dateformat";
 import express from "express";
 import { generatePreroll } from "./streaming/preroll.js";
 import { getAllStreams } from "./streaming/registry.js";
@@ -434,7 +433,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
       // eslint-disable-next-line no-console
       console[method] = (...args: unknown[]): void => {
 
-        original("[" + df(new Date(), "yyyy/mm/dd HH:MM:ss.l") + "]", ...args);
+        original("[" + formatTimestamp() + "]", ...args);
       };
     }
   }

@@ -290,9 +290,18 @@ export function generateLandingPageStyles(): string {
     "@media (max-width: 768px) { .channel-table .col-key, .channel-table td:nth-child(1), .channel-table th:nth-child(1) { display: none; } " +
       OPTIONAL_COLUMNS.map((col) => ".channel-table ." + col.cssClass).join(", ") + " { display: none; } }",
 
-    // User channel row tinting to distinguish custom/override channels from predefined.
+    // User-created channel row tinting. Applies only to pure user-created channels (no predefined baseline). Overrides of predefined channels use the
+    // .channel-override treatment below instead, matching the settings form's "modified from defaults" visual language.
     ".channel-table tr.user-channel { background: var(--user-channel-tint); }",
     ".channel-table tr.user-channel:hover { background: var(--user-channel-tint-hover); }",
+
+    // Predefined channel override indicator. Left-border accent + blue dot on the first cell matches the settings form's .form-group.modified treatment
+    // (border + dot = "modified from defaults"). The border targets td:first-child because border-collapse: separate prevents borders on <tr> elements. The
+    // dot is a ::before pseudo-element on the same cell so it's always the first visual element in the row, right next to the border. No background tint — the
+    // border and dot are the sole differentiators, exactly like modified settings.
+    ".channel-table tr.channel-override td:first-child { border-left: 3px solid var(--interactive-primary); }",
+    ".channel-table tr.channel-override td:first-child::before { content: ''; display: inline-block; width: 8px; height: 8px; " +
+      "background: var(--interactive-primary); border-radius: 50%; margin-right: 6px; vertical-align: middle; }",
 
     // Disabled predefined channel row styling and hide-disabled toggle.
     ".channel-table tr.channel-disabled { opacity: 0.5; }",
@@ -499,7 +508,7 @@ export function generateLandingPageStyles(): string {
     ".endpoint code { font-size: 13px; }",
 
     // Modified value indicator styling.
-    ".form-group.modified { border-left: 3px solid var(--interactive-primary); padding-left: 12px; }",
+    ".form-group.modified, .form-row.modified { border-left: 3px solid var(--interactive-primary); padding-left: 12px; }",
     ".modified-dot { display: inline-block; width: 8px; height: 8px; background: var(--interactive-primary); border-radius: 50%; margin-right: 6px; ",
     "vertical-align: middle; }",
 

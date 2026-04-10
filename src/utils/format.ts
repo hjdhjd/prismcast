@@ -4,6 +4,31 @@
  */
 
 /**
+ * Formats the current date and time as a log timestamp string: `yyyy/mm/dd hh:mm:ss.mmm AM/PM`. Uses 12-hour time with decimalized seconds and AM/PM.
+ * Single source of truth for all log timestamp formatting — used by the console wrapper in app.ts, the file logger, and the Morgan HTTP request logger.
+ * @returns Formatted timestamp string.
+ */
+export function formatTimestamp(): string {
+
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  let hours = now.getHours();
+  const ampm = (hours >= 12) ? "PM" : "AM";
+
+  hours = hours % 12;
+  hours ||= 12;
+
+  const hh = String(hours).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+
+  return yyyy + "/" + mm + "/" + dd + " " + hh + ":" + min + ":" + ss + "." + ms + " " + ampm;
+}
+
+/**
  * Formats a duration as a human-readable string. The format varies based on duration length:
  * - Less than 60 seconds: "17s"
  * - Less than 1 hour: "6m 39s"

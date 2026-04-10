@@ -3,7 +3,7 @@
  * fileLogger.ts: File-based logging with automatic size-based rotation for PrismCast.
  */
 import type { Nullable } from "../types/index.js";
-import df from "dateformat";
+import { formatTimestamp } from "./format.js";
 import fs from "node:fs";
 import { isAnyDebugEnabled } from "./debugFilter.js";
 import path from "node:path";
@@ -151,7 +151,7 @@ export function writeLogEntry(level: string, message: string, color?: string, ca
   }
 
   // Format the log entry with timestamp and level. Apply ANSI color if provided.
-  const timestamp = df(new Date(), "yyyy/mm/dd HH:MM:ss.l");
+  const timestamp = formatTimestamp();
   const levelTag = categoryTag ? [ level.toUpperCase(), ":", categoryTag ].join("") : level.toUpperCase();
   const levelPrefix = (level === "info") ? "" : [ "[", levelTag, "] " ].join("");
   const colorStart = color ?? "";
