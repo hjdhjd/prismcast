@@ -2,11 +2,12 @@
  *
  * logger.ts: Logging utilities with color-coded output for PrismCast.
  */
+import { getStreamId, resolveContextShowName } from "./streamContext.js";
 import { initDebugFilter, isAnyDebugEnabled, isCategoryEnabled } from "./debugFilter.js";
 import type { LogEntry } from "./logEmitter.js";
 import { emitLogEntry } from "./logEmitter.js";
 import { format } from "util";
-import { getStreamId } from "./streamContext.js";
+import { formatTimestamp } from "./format.js";
 import { writeLogEntry } from "./fileLogger.js";
 
 /* Terminal color codes for log output formatting. Warnings appear in yellow and errors in red, making it easy to spot issues when scanning log output. The reset
@@ -78,24 +79,6 @@ export function isDebugLogging(): boolean {
  */
 
 /**
- * Formats the current time as a timestamp string matching the log file format.
- * @returns A timestamp string in the format "YYYY/MM/DD HH:MM:ss.lll".
- */
-function formatTimestamp(): string {
-
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  const hours = String(now.getHours()).padStart(2, "0");
-  const minutes = String(now.getMinutes()).padStart(2, "0");
-  const seconds = String(now.getSeconds()).padStart(2, "0");
-  const ms = String(now.getMilliseconds()).padStart(3, "0");
-
-  return [ year, "/", month, "/", day, " ", hours, ":", minutes, ":", seconds, ".", ms ].join("");
-}
-
-/**
  * Emits a log entry to SSE subscribers for real-time streaming.
  * @param level - The log level.
  * @param message - The formatted message.
@@ -131,7 +114,21 @@ function logWithLevel(level: LogEntry["level"], color: string, message: string, 
 
   const streamId = explicitStreamId ?? getStreamId();
   const formatted = args.length > 0 ? format(message, ...args) : message;
-  const logMessage = streamId ? [ "[", streamId, "] ", formatted ].join("") : formatted;
+
+  // Build the log prefix. Stream ID is always included when available. The show name (resolved lazily from the stream context) is appended when present,
+  // giving log readers immediate context for correlating issues with DVR recordings without cross-referencing timestamps against the guide.
+  let logMessage: string;
+
+  if(streamId) {
+
+    const showName = explicitStreamId ? "" : resolveContextShowName();
+    const showPrefix = showName ? " [" + showName + "]" : "";
+
+    logMessage = "[" + streamId + "]" + showPrefix + " " + formatted;
+  } else {
+
+    logMessage = formatted;
+  }
 
   // Emit to SSE subscribers for real-time streaming.
   emitToSubscribers(level, logMessage, categoryTag);
@@ -166,18 +163,12 @@ function logWithLevel(level: LogEntry["level"], color: string, message: string, 
     }
     /* eslint-enable no-console */
 
-    if(streamId && color) {
+    if(color) {
 
-      consoleMethod("%s[%s] %s%s", color, streamId, formatted, ANSI_COLORS.reset);
-    } else if(streamId) {
-
-      consoleMethod("[%s] %s", streamId, formatted);
-    } else if(color) {
-
-      consoleMethod("%s%s%s", color, formatted, ANSI_COLORS.reset);
+      consoleMethod("%s%s%s", color, logMessage, ANSI_COLORS.reset);
     } else {
 
-      consoleMethod(formatted);
+      consoleMethod(logMessage);
     }
   } else {
 

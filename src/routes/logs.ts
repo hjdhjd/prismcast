@@ -39,9 +39,9 @@ interface LogsResponse {
 // eslint-disable-next-line no-control-regex
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 
-// Pattern to match log entries: [timestamp] optional [LEVEL] or [LEVEL:category] message. The category suffix handles the new DEBUG:category format while
-// remaining backward-compatible with plain [DEBUG] entries from older log files.
-const LOG_LINE_PATTERN = /^\[(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] (?:\[(WARN|ERROR|DEBUG(?::[^\]]+)?)\] )?(.*)$/;
+// Pattern to match log entries: [timestamp] optional [LEVEL] or [LEVEL:category] message. The timestamp includes an optional AM/PM suffix to match the 12-hour
+// format produced by the file logger. The category suffix handles the DEBUG:category format while remaining backward-compatible with plain [DEBUG] entries.
+const LOG_LINE_PATTERN = /^\[(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}\.\d{3}(?: [AP]M)?)\] (?:\[(WARN|ERROR|DEBUG(?::[^\]]+)?)\] )?(.*)$/;
 
 /**
  * Strips ANSI escape codes from a string. Used to clean log file lines that may contain terminal color codes.

@@ -23,6 +23,10 @@ export interface StreamContext {
   // Friendly channel name (e.g., "NBC", "CNN"). Optional because ad-hoc URL streams may not have a channel name.
   channelName?: string;
 
+  // Lazy resolver for the current show name. Returns the show name from the live cache at call time, so the value always reflects the current program even as
+  // shows change during a long-running stream. Optional because ad-hoc URL streams and non-monitor contexts have no show name lookup.
+  showNameResolver?: () => string;
+
   // Unique stream identifier used for log correlation.
   streamId: string;
 
@@ -62,4 +66,16 @@ export function getStreamContext(): StreamContext | undefined {
 export function getStreamId(): string | undefined {
 
   return streamContextStorage.getStore()?.streamId;
+}
+
+/**
+ * Resolves the current show name from the stream context's lazy resolver. Returns an empty string if no resolver is set or no show name is available. Named
+ * distinctly from the stream-ID-based show name lookup in the streaming module to avoid ambiguity via the barrel export in utils/index.ts.
+ * @returns The current show name, or an empty string.
+ */
+export function resolveContextShowName(): string {
+
+  const resolver = streamContextStorage.getStore()?.showNameResolver;
+
+  return resolver ? resolver() : "";
 }

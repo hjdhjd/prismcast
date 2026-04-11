@@ -286,8 +286,15 @@ export function monitorPlaybackHealth(
   // Pre-compute the selector type string for video element selection. This is passed to evaluate() calls.
   const selectorType = buildVideoSelectorType(profile);
 
-  // Capture stream context for re-establishing on each interval tick. AsyncLocalStorage context is lost when entering setInterval callbacks.
-  const streamContext = { channelName: streamInfo.channelName ?? undefined, streamId, url };
+  // Capture stream context for re-establishing on each interval tick. AsyncLocalStorage context is lost when entering setInterval callbacks. The show name
+  // resolver is lazy — it reads from the live show name cache at log time, so messages always reflect the current program even as shows change mid-stream.
+  const streamContext = {
+
+    channelName: streamInfo.channelName ?? undefined,
+    showNameResolver: (): string => getShowName(streamInfo.numericStreamId),
+    streamId,
+    url
+  };
 
   // Recovery state. Tracks escalation level, failure counters, and recovery lifecycle flags that control the decision to trigger recovery and which method to use.
   const recoveryState: RecoveryState = {
