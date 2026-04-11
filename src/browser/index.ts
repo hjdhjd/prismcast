@@ -1168,7 +1168,7 @@ export async function minimizeBrowserWindow(): Promise<void> {
 
     // Delegate to resizeAndMinimizeWindow for the actual CDP operations. This ensures consistent resize+minimize behavior and maintains a single source of
     // truth for the viewport sizing logic.
-    await resizeAndMinimizeWindow(targetPage, true);
+    await resizeAndMinimizeWindow(targetPage);
 
     // Clean up the temporary page if we created one.
     if(usingTempPage && tempPage) {

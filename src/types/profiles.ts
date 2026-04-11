@@ -161,14 +161,14 @@ export interface SiteProfile {
   // main document. An iframe initialization delay is applied before searching to allow the iframe content to load.
   needsIframeHandling?: boolean;
 
-  // Whether this is a static page without video content. When true, the stream handler skips video element detection and playback monitoring. This is used for
-  // pages like electronic program guides or information displays that should be captured as-is without expecting video playback.
-  noVideo?: boolean;
-
   // Whether to select the video element by readyState rather than DOM position. Some pages have multiple video elements (ads, previews, the main content). When
   // true, we find the video with readyState >= 3 (HAVE_FUTURE_DATA) rather than just taking the first video in the DOM. This typically selects the actively
   // playing main content rather than preloaded ad content.
   selectReadyVideo?: boolean;
+
+  // Whether this is a static page captured as visual content rather than a video player. When true, the stream handler navigates to the page directly and skips
+  // video element detection, playback initialization, and health monitoring. Used for weather displays, information dashboards, and similar non-player pages.
+  staticCapture?: boolean;
 
   // Whether to use the JavaScript Fullscreen API instead of keyboard shortcuts. When true, we call video.requestFullscreen() or use the webkit-prefixed variant.
   // This is more reliable than keyboard shortcuts on some sites but may trigger browser permission prompts or be blocked by site CSP policies.
@@ -220,11 +220,11 @@ export interface ResolvedSiteProfile {
   // Whether to search iframes for the video element.
   needsIframeHandling: boolean;
 
-  // Whether this is a static page without video.
-  noVideo: boolean;
-
   // Whether to select video by readyState rather than DOM position.
   selectReadyVideo: boolean;
+
+  // Whether this is a static page captured as visual content rather than a video player.
+  staticCapture: boolean;
 
   // Whether to use the JavaScript Fullscreen API.
   useRequestFullscreen: boolean;

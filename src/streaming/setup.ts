@@ -103,9 +103,6 @@ export interface StreamSetupOptions {
   // Whether to click an element to start playback. Only used for ad-hoc streams. For predefined channels, this comes from the profile definition.
   clickToPlay?: boolean;
 
-  // Whether to treat this as a static page without video.
-  noVideo?: boolean;
-
   // Pre-allocated numeric stream ID from a pending registry entry. When provided, setupStream uses this instead of allocating a new ID. This ensures the abort
   // controller, health monitor, and other internal state reference the same ID as the pending entry in the stream registry.
   numericStreamId?: number;
@@ -116,6 +113,9 @@ export interface StreamSetupOptions {
 
   // Override the autodetected profile with a specific profile name.
   profileOverride?: string;
+
+  // Whether to treat this as a static page capture (no video element detection or playback monitoring).
+  staticCapture?: boolean;
 
   // Pre-allocated string stream ID from a pending registry entry. When provided, setupStream uses this instead of generating a new one. Must be provided together
   // with numericStreamId to maintain ID consistency.
@@ -615,14 +615,14 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     throw error;
   }
 
-  // Navigate and set up playback. For noVideo profiles, just navigate without video setup.
+  // Navigate and set up playback. For static capture profiles, just navigate without video setup.
   let context: Frame | Page;
   let strategyDirectTune = false;
   let usedDirectUrl = false;
 
   try {
 
-    if(!profile.noVideo) {
+    if(!profile.staticCapture) {
 
       // Check for a direct watch URL. If available, navigate directly to it and skip channel selection, avoiding guide page navigation entirely. On failure,
       // the cache entry is invalidated in the catch block so the outer retry loop (in streaming/hls.ts) re-invokes with the guide URL.
@@ -709,13 +709,13 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   // During tab replacement, allow Chrome's compositor to fully stabilize the fullscreen video surface before minimizing. Without this delay, the compositor may
   // snapshot an incorrect scaling state during the minimize transition, causing the captured content to appear zoomed into the top-left corner.
-  if(options.tabReplacement && !profile.noVideo) {
+  if(options.tabReplacement && !profile.staticCapture) {
 
     await new Promise<void>((resolve) => setTimeout(resolve, 500));
   }
 
   // Resize and minimize window.
-  await resizeAndMinimizeWindow(page, !profile.noVideo);
+  await resizeAndMinimizeWindow(page);
 
   LOG.debug("timing:startup", "Page with capture ready. Total: %sms.", captureElapsed());
 
@@ -772,7 +772,7 @@ async function resolveRedirectUrl(url: string): Promise<Nullable<string>> {
  */
 export async function setupStream(options: StreamSetupOptions, onCircuitBreak: () => void): Promise<StreamSetupResult> {
 
-  const { channel, channelName, channelSelector, clickSelector, clickToPlay, noVideo, onTabReplacementFactory, profileOverride, url } = options;
+  const { channel, channelName, channelSelector, clickSelector, clickToPlay, onTabReplacementFactory, profileOverride, staticCapture, url } = options;
 
   // Use pre-allocated IDs from a pending registry entry when available, or generate new ones. Pre-allocated IDs ensure the abort controller, health monitor, and
   // tab replacement handler all reference the same stream identity as the pending entry in the registry.
@@ -834,10 +834,10 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       }
     }
 
-    // Apply noVideo override if specified.
-    if(noVideo) {
+    // Apply static capture override if specified.
+    if(staticCapture) {
 
-      profile = { ...profile, noVideo: true };
+      profile = { ...profile, staticCapture: true };
     }
 
     // Merge the ad-hoc channel selector into the profile if provided. This must happen after the profile override block above, which replaces the profile object

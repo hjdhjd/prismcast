@@ -22,10 +22,14 @@ const { promises: fsPromises } = fs;
  * User profiles cannot extend other user profiles — only built-in profiles. This prevents cascading breakage when a referenced user profile is deleted.
  */
 
+// Legacy profile flag names that have been renamed. Keys are the old names, values are the current names. Used by loadUserProfiles() and service pack import to
+// silently normalize persisted and imported profiles at the boundary where external data enters the system.
+const LEGACY_PROFILE_FLAGS: Record<string, string> = { noVideo: "staticCapture" };
+
 // Valid SiteProfile behavior flag names that users can set. Metadata fields (category, description, extends, summary) are handled separately.
 const VALID_PROFILE_FLAGS = new Set([
   "channelSelector", "clickSelector", "clickToPlay", "dismissSelector", "fullscreenKey", "fullscreenSelector", "hideSelector", "lockVolumeProperties",
-  "needsIframeHandling", "noVideo", "selectReadyVideo", "useRequestFullscreen", "waitForNetworkIdle"
+  "needsIframeHandling", "selectReadyVideo", "staticCapture", "useRequestFullscreen", "waitForNetworkIdle"
 ]);
 
 // Generic strategies available for user profiles. Service-specific strategies are built-in implementations and cannot be used by user profiles.
@@ -60,6 +64,37 @@ function extractObjectMap<T>(raw: unknown): Record<string, T> {
   }
 
   return result;
+}
+
+/**
+ * Normalizes legacy field names in a set of profiles. Renames any fields listed in LEGACY_PROFILE_FLAGS to their current names in-place. When a profile already
+ * contains the current field name, the current value is preserved and the legacy field is deleted without overwriting.
+ * @param profiles - The profile records to normalize.
+ * @returns True if any field was renamed or removed.
+ */
+export function normalizeLegacyProfileFlags(profiles: Record<string, SiteProfile>): boolean {
+
+  let changed = false;
+
+  for(const profile of Object.values(profiles)) {
+
+    for(const [ oldName, newName ] of Object.entries(LEGACY_PROFILE_FLAGS)) {
+
+      if(oldName in profile) {
+
+        // Only copy the legacy value if the current field name is not already present. If both exist (e.g., hand-edited JSON), the current name takes precedence.
+        if(!(newName in profile)) {
+
+          (profile as Record<string, unknown>)[newName] = (profile as Record<string, unknown>)[oldName];
+        }
+
+        Reflect.deleteProperty(profile, oldName);
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
 }
 
 // Module-level storage for loaded user profiles and domains. Populated at startup and updated on save.
@@ -122,6 +157,23 @@ export async function loadUserProfiles(): Promise<UserProfilesLoadResult> {
 
       const profiles = extractObjectMap<SiteProfile>(parsed.profiles);
       const domains = extractObjectMap<DomainConfig>(parsed.domains);
+
+      // Normalize legacy profile field names at the persistence boundary. If any fields were renamed, persist the updated file so the migration only runs once.
+      // The save is wrapped in its own try/catch so a write failure (disk full, permission error) is logged as a migration warning rather than misrouted to the
+      // JSON parse error handler below. The normalized in-memory profiles are returned regardless...the migration is best-effort persistence.
+      if(normalizeLegacyProfileFlags(profiles)) {
+
+        try {
+
+          await saveUserProfiles(profiles, domains);
+
+          LOG.info("Migrated legacy profile flags in user profiles file.");
+        } catch(saveError) {
+
+          LOG.warn("Failed to persist migrated profile flags: %s. Migration will retry on next startup.",
+            (saveError instanceof Error) ? saveError.message : String(saveError));
+        }
+      }
 
       return { domains, parseError: false, profiles };
     } catch(parseError) {

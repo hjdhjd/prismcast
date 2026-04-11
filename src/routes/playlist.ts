@@ -7,10 +7,9 @@ import type { Express, Request, Response } from "express";
 import { VALID_SORT_FIELDS, compareChannelSort, getAllServiceTags, getServiceTagForChannel, resolveServiceKey } from "../config/services.js";
 import { getActiveTagVocabulary, getAllChannels } from "../config/userChannels.js";
 import { CONFIG } from "../config/index.js";
-import { resolveProfile } from "../config/profiles.js";
 
-/* The playlist endpoint generates an M3U playlist in Channels DVR format. The playlist includes all configured video channels with their stream URLs dynamically
- * constructed from the request host header so the playlist works regardless of how the server is accessed.
+/* The playlist endpoint generates an M3U playlist in Channels DVR format. The playlist includes all available channels (both video player and static capture) with
+ * their stream URLs dynamically constructed from the request host header so the playlist works regardless of how the server is accessed.
  */
 
 // Include/Exclude Filter.
@@ -183,14 +182,6 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
 
         continue;
       }
-    }
-
-    // Skip channels that are marked as static pages since they are not video streams.
-    const profile = resolveProfile(channel.profile);
-
-    if(profile.noVideo) {
-
-      continue;
     }
 
     // We use the channel key as the channel-id and the friendly name for display. HLS URLs are used for Channels DVR compatibility.

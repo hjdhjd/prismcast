@@ -4,7 +4,7 @@
  */
 import type { ChannelMap, DomainConfig, ProfilesValidationResult, ServicePack, SiteProfile } from "../types/index.js";
 import { getChannelListing, loadUserChannels, saveUserChannels } from "./userChannels.js";
-import { getUserDomains, getUserProfiles, saveUserProfiles, validateImportedProfiles } from "./userProfiles.js";
+import { getUserDomains, getUserProfiles, normalizeLegacyProfileFlags, saveUserProfiles, validateImportedProfiles } from "./userProfiles.js";
 import { sanitizeString } from "../utils/index.js";
 
 /* Service packs bundle a profile, domain mapping(s), and optionally channels into a single JSON file for distribution. On import, the contents are validated
@@ -92,11 +92,16 @@ export function parseServicePack(data: unknown): ParseResult {
     return { errors };
   }
 
+  // Normalize legacy profile field names before validation so that old service packs with renamed fields (e.g., noVideo → staticCapture) pass validation cleanly.
+  const rawProfiles = raw.profiles as Record<string, SiteProfile>;
+
+  normalizeLegacyProfileFlags(rawProfiles);
+
   // Validate the profiles and domains using the shared validation pipeline.
   const validationResult: ProfilesValidationResult = validateImportedProfiles({
 
     domains: raw.domains,
-    profiles: raw.profiles
+    profiles: rawProfiles
   });
 
   if(!validationResult.valid) {

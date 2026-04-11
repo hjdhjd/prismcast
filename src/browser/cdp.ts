@@ -84,8 +84,8 @@ export async function withCDPSession<T>(
 }
 
 /**
- * Resizes the browser window to match our target viewport dimensions and optionally minimizes it. This function solves the problem of ensuring the video content
- * area exactly matches our configured viewport size.
+ * Resizes the browser window to match our target viewport dimensions and minimizes it. This function solves the problem of ensuring the video content area
+ * exactly matches our configured viewport size.
  *
  * The complication is that browser windows have "chrome" - the title bar, toolbar, borders, and other UI elements that take up space. If we set the window size
  * to 1280x720, the actual content area will be smaller (perhaps 1280x670 after accounting for the toolbar). To get a 1280x720 content area, we need to add the
@@ -95,12 +95,10 @@ export async function withCDPSession<T>(
  * 1. Measures the current chrome dimensions by comparing window.outerWidth/Height to window.innerWidth/Height
  * 2. Sets the window size to viewport + chrome dimensions, giving us the exact viewport size we want
  * 3. Verifies the resize took effect by reading back the window bounds, retrying if dimensions don't match
- * 4. Optionally minimizes the window to reduce GPU usage while still allowing capture
+ * 4. Minimizes the window to reduce GPU usage while still allowing capture
  * @param page - The Puppeteer page object.
- * @param shouldMinimize - Whether to minimize the window after resizing. Set to true for stream pages (to reduce GPU usage) and false for debug pages (where
- *   visibility is desired).
  */
-export async function resizeAndMinimizeWindow(page: Page, shouldMinimize: boolean): Promise<void> {
+export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
 
   // Early exit if the page is already closed.
   if(page.isClosed()) {
@@ -190,20 +188,18 @@ export async function resizeAndMinimizeWindow(page: Page, shouldMinimize: boolea
       }
     }
 
-    // Optionally minimize the window to reduce GPU usage. This must be a separate CDP call because window state cannot be combined with dimensions. Minimizing
-    // doesn't stop video capture — the puppeteer-stream extension captures from the compositor rather than the visible display.
-    if(shouldMinimize) {
+    // Minimize the window to reduce GPU usage. This must be a separate CDP call because window state cannot be combined with dimensions. Minimizing doesn't stop
+    // video capture — the puppeteer-stream extension captures from the compositor rather than the visible display.
 
-      // Brief delay to allow Chrome's window manager to finish processing the resize before minimizing. Without this delay, the minimize can be ignored when
-      // the window is being significantly resized (e.g., during preset degradation from 1080p to 720p).
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    // Brief delay to allow Chrome's window manager to finish processing the resize before minimizing. Without this delay, the minimize can be ignored when
+    // the window is being significantly resized (e.g., during preset degradation from 1080p to 720p).
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
 
-      await session.send("Browser.setWindowBounds", {
+    await session.send("Browser.setWindowBounds", {
 
-        bounds: { windowState: "minimized" },
-        windowId
-      });
-    }
+      bounds: { windowState: "minimized" },
+      windowId
+    });
   });
 }
 

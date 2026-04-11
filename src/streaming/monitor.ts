@@ -1787,8 +1787,8 @@ export function monitorPlaybackHealth(
       return;
     }
 
-    // For noVideo profiles (e.g., staticPage), there is no video element to monitor. Skip all video health checks and just emit a status update.
-    if(profile.noVideo) {
+    // For static capture profiles (e.g., staticPage), there is no video element to monitor. Skip all video health checks and just emit a status update.
+    if(profile.staticCapture) {
 
       emitStatusUpdate();
 
@@ -1948,7 +1948,7 @@ export function monitorPlaybackHealth(
 
           pendingReMinimize = false;
 
-          await resizeAndMinimizeWindow(currentPage, true);
+          await resizeAndMinimizeWindow(currentPage);
         }
 
         /* Fullscreen reinforcement. Some streaming sites (notably Hulu) revert the video to a mini-player or PiP layout in response to browser state changes such as

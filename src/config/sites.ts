@@ -218,13 +218,13 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Multi-video sites ('f' key fullscreen)"
   },
 
-  // Profile for non-video pages that should be captured as static visual content. Examples include weather displays (weatherscan.net), maps (windy.com), and
-  // diagnostic pages. The noVideo flag tells the streaming code not to wait for a video element or set up playback monitoring - just capture whatever is displayed.
+  // Profile for non-video pages captured as static visual content. Examples include weather displays (weatherscan.net), maps (windy.com), and diagnostic pages.
+  // The staticCapture flag tells the streaming code to navigate directly and skip video element detection, playback initialization, and health monitoring.
   staticPage: {
 
     category: "special",
     description: "Base profile for non-video pages captured as static visual content.",
-    noVideo: true,
+    staticCapture: true,
     summary: "Static pages (no video)"
   }
 };
@@ -486,11 +486,11 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
   // Don't search iframes - assume video is in main page DOM.
   needsIframeHandling: false,
 
-  // Expect video content - wait for video element.
-  noVideo: false,
-
   // Use first video element - assume only one video exists.
   selectReadyVideo: false,
+
+  // Not a static page capture - wait for video element and monitor playback.
+  staticCapture: false,
 
   // Don't use requestFullscreen() API.
   useRequestFullscreen: false,
