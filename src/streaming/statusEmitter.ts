@@ -131,6 +131,7 @@ export function createInitialStreamStatus(options: {
   captureCodec?: Nullable<string>;
   channelName: Nullable<string>;
   hardwareAccelerated?: boolean;
+  logoUrl?: string;
   numericStreamId: number;
   serviceName: string;
   startTime: Date;
@@ -154,7 +155,7 @@ export function createInitialStreamStatus(options: {
     lastIssueTime: null,
     lastIssueType: null,
     lastRecoveryTime: null,
-    logoUrl: "",
+    logoUrl: options.logoUrl ?? "",
     memoryBytes: 0,
     nativeBandwidth: 0,
     nativeResolution: null,

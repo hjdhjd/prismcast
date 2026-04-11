@@ -13,7 +13,7 @@ import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.js";
 import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.js";
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
 import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.js";
-import { getAllChannels, isPredefinedChannelDisabled } from "../config/userChannels.js";
+import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../config/userChannels.js";
 import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.js";
 import { getAuthDomainForChannel, getResolvedChannel, getServiceTagForChannel, resolveServiceKey } from "../config/services.js";
 import { getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.js";
@@ -1457,6 +1457,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         captureCodec: streamCodec,
         channelName: channel?.name ?? null,
         hardwareAccelerated: hwAccelerated,
+        logoUrl: getChannelLogo(channelName) ?? "",
         numericStreamId,
         serviceName: setup.serviceName,
         startTime: setup.startTime,

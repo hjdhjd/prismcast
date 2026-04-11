@@ -187,6 +187,25 @@ export function generateStatusScript(): string {
     "  return parts.join(', ');",
     "}",
 
+    // Render scheduling. All DOM-writing functions funnel through requestAnimationFrame gates so multiple SSE events arriving within the same frame (e.g., two
+    // streamHealthChanged events 150ms apart) produce a single DOM write instead of redundant back-to-back rebuilds that destroy and recreate image elements.
+    "let tableRenderPending = false;",
+    "let popoverRenderPending = false;",
+
+    "function scheduleTableRender() {",
+    "  if(!tableRenderPending) {",
+    "    tableRenderPending = true;",
+    "    requestAnimationFrame(() => { tableRenderPending = false; renderStreamsTable(); });",
+    "  }",
+    "}",
+
+    "function schedulePopoverRender() {",
+    "  if(!popoverRenderPending) {",
+    "    popoverRenderPending = true;",
+    "    requestAnimationFrame(() => { popoverRenderPending = false; updateStreamPopover(); });",
+    "  }",
+    "}",
+
     // Render the streams table.
     "function renderStreamsTable() {",
     "  const tbody = document.getElementById('streams-tbody');",
@@ -258,6 +277,68 @@ export function generateStatusScript(): string {
     "  tbody.innerHTML = html;",
     "}",
 
+    // Targeted update for a single stream row. Updates only the cells that change between health ticks (health badge, show name, client count, row tint, and
+    // detail panel metrics if expanded). Leaves the logo, channel name, badge, and structural elements untouched so image elements are never destroyed and
+    // recreated. Falls back to a full table render if the row doesn't exist yet (e.g., race between streamAdded and streamHealthChanged).
+    "function updateStreamRow(s) {",
+    "  const row = document.querySelector('.stream-row[data-id=\"' + s.id + '\"]');",
+    "  if(!row) { scheduleTableRender(); return; }",
+
+    // Row tint.
+    "  row.style.backgroundColor = rowTints[s.health] ?? 'transparent';",
+
+    // Health badge cell.
+    "  const healthCell = row.querySelector('.stream-health');",
+    "  if(healthCell) {",
+    "    let clientIndicator = '';",
+    "    if(s.clientCount > 0) {",
+    "      const title = s.clientCount + (s.clientCount !== 1 ? ' clients' : ' client');",
+    "      clientIndicator = '<span class=\"client-count\" title=\"' + title + '\">&#9673; ' + s.clientCount + '</span> ';",
+    "    }",
+    "    healthCell.innerHTML = clientIndicator + getHealthBadge(s.health, s.escalationLevel);",
+    "  }",
+
+    // Show name cell.
+    "  const showCell = row.querySelector('.stream-show');",
+    "  if(showCell) { showCell.textContent = s.showName || ''; }",
+
+    // Detail panel (if expanded). The detail row is a sibling <tr> with the same data-id.
+    "  if(expandedStreams[s.id]) {",
+    "    const detailRow = document.querySelector('.stream-details[data-id=\"' + s.id + '\"]');",
+    "    if(detailRow) {",
+    "      const issueEl = detailRow.querySelector('.details-issue');",
+    "      if(issueEl) { issueEl.innerHTML = '<strong>Last issue:</strong> ' + formatLastIssue(s); }",
+    "      const recoveryEl = detailRow.querySelector('.details-recovery');",
+    "      if(recoveryEl) { recoveryEl.innerHTML = '<strong>Recovery:</strong> ' + formatAutoRecovery(s); }",
+    "      const memoryEl = detailRow.querySelector('.details-memory');",
+    "      if(memoryEl) { memoryEl.innerHTML = '<strong>Memory:</strong> ' + formatBytes(s.memoryBytes); }",
+
+    // Native quality suffix can change (adaptive bitrate switching).
+    "      if(s.streamingMode === 'native') {",
+    "        const codecEl = detailRow.querySelector('.details-codec');",
+    "        if(codecEl) {",
+    "          const codecLabel = s.captureCodec ? s.captureCodec : 'Native HLS';",
+    "          const qParts = [];",
+    "          if(s.nativeBandwidth > 0) { qParts.push((s.nativeBandwidth / 1000000).toFixed(1) + 'Mbps'); }",
+    "          if(s.nativeResolution) {",
+    "            const h = s.nativeResolution.split('x')[1];",
+    "            qParts.push(nativeResolutionLabels[h] ?? s.nativeResolution);",
+    "          }",
+    "          const qualitySuffix = qParts.length > 0 ? ' - ' + qParts.join(' ') : '';",
+    "          codecEl.innerHTML = '<strong>Codec:</strong> ' + codecLabel + ' (Native HLS)' + qualitySuffix;",
+    "        }",
+    "      }",
+
+    // Client count in the detail header.
+    "      const startedEl = detailRow.querySelector('.details-started');",
+    "      if(startedEl) {",
+    "        const clientSuffix = s.clientCount > 0 ? ' &middot; ' + formatClients(s) : '';",
+    "        startedEl.innerHTML = '<strong>Started:</strong> ' + formatTime(s.startTime) + clientSuffix;",
+    "      }",
+    "    }",
+    "  }",
+    "}",
+
     // Toggle stream details.
     "function toggleStreamDetails(id) {",
     "  expandedStreams[id] = !expandedStreams[id];",
@@ -273,7 +354,7 @@ export function generateStatusScript(): string {
     "    const el = document.getElementById('duration-' + id);",
     "    if(el) el.textContent = '\\u00b7 ' + formatDuration(durationSec);",
     "  }",
-    "  updateStreamPopover();",
+    "  schedulePopoverRender();",
     "}",
 
     // Track the last time any SSE event was received from the status stream. Used by the staleness checker to detect silently dead connections.
@@ -370,10 +451,17 @@ export function generateStatusScript(): string {
     "  });",
     "  on('streamHealthChanged', (e) => {",
     "    const s = JSON.parse(e.data);",
-    "    if(streamData[s.id]) {",
+    "    const prev = streamData[s.id];",
+    "    if(prev) {",
+    "      const structuralChange = (prev.logoUrl !== s.logoUrl) || (prev.streamingMode !== s.streamingMode) ||",
+    "        (prev.hardwareAccelerated !== s.hardwareAccelerated) || (prev.captureCodec !== s.captureCodec);",
     "      streamData[s.id] = s;",
-    "      renderStreamsTable();",
-    "      updateStreamPopover();",
+    "      if(structuralChange) {",
+    "        scheduleTableRender();",
+    "      } else {",
+    "        updateStreamRow(s);",
+    "      }",
+    "      schedulePopoverRender();",
     "    }",
     "  });",
     "  on('systemStatusChanged', (e) => {",
