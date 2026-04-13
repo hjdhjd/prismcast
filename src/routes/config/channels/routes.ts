@@ -85,7 +85,7 @@ async function disablePredefinedChannels(keys: string[]): Promise<void> {
     disabledSet.add(key);
   }
 
-  userConfig.channels.disabledPredefined = [...disabledSet].sort();
+  userConfig.channels.disabledPredefined = [...disabledSet].toSorted();
 
   await saveUserConfig(userConfig);
 
@@ -117,7 +117,7 @@ async function enablePredefinedChannels(keys: string[]): Promise<void> {
     disabledSet.delete(key);
   }
 
-  userConfig.channels.disabledPredefined = [...disabledSet].sort();
+  userConfig.channels.disabledPredefined = [...disabledSet].toSorted();
 
   await saveUserConfig(userConfig);
 
@@ -812,7 +812,7 @@ export function setupChannelRoutes(app: Express): void {
           existing.add(k);
         }
 
-        userConfig.channels.disabledPredefined = [...existing].sort();
+        userConfig.channels.disabledPredefined = [...existing].toSorted();
       }
 
       await saveUserConfig(userConfig);
@@ -1478,7 +1478,7 @@ export function setupChannelRoutes(app: Express): void {
           stored.hdhrEnabled = (value === "false") ? false : null;
         } else if(field === "tags") {
 
-          const tags = value ? [...new Set(value.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))].sort() : [];
+          const tags = value ? [...new Set(value.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))].toSorted() : [];
 
           (stored as Record<string, unknown>).tags = (tags.length > 0) ? tags : null;
         } else {
@@ -1578,7 +1578,7 @@ export function setupChannelRoutes(app: Express): void {
 
       // Parse tags from comma-separated input. Trim, lowercase, filter empty, sort, deduplicate.
       const tagsRaw = sanitizeString(body.tags ?? "");
-      const tags = tagsRaw ? [...new Set(tagsRaw.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))].sort() : [];
+      const tags = tagsRaw ? [...new Set(tagsRaw.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))].toSorted() : [];
 
       // Validate channel number if provided.
       const channelNumberError = validateChannelNumber(channelNumberStr, key);

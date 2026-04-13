@@ -18,7 +18,7 @@ import type { CliOverrides } from "./config/index.js";
 import type { Nullable } from "./types/index.js";
 import type { ParsedArgs } from "./index.js";
 import type { ResumeStreamData } from "./streaming/hlsResume.js";
-import type { Server } from "http";
+import type { Server } from "node:http";
 import { cleanupIdleStreams } from "./streaming/hls.js";
 import compression from "compression";
 import express from "express";

@@ -260,7 +260,7 @@ export function setupPlaylistEndpoint(app: Express): void {
     // Validate the sort field if specified.
     if(sortParam && !VALID_SORT_FIELDS.has(sortParam as ChannelSortField)) {
 
-      res.status(400).json({ error: "Invalid sort field: " + sortParam + ".", validFields: [...VALID_SORT_FIELDS].sort() });
+      res.status(400).json({ error: "Invalid sort field: " + sortParam + ".", validFields: [...VALID_SORT_FIELDS].toSorted() });
 
       return;
     }

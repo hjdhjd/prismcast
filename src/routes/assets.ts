@@ -3,10 +3,10 @@
  * assets.ts: Static asset routes for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { dirname, join } from "path";
+import { dirname, join } from "node:path";
 import type { Nullable } from "../types/index.js";
-import { fileURLToPath } from "url";
-import { readFile } from "fs/promises";
+import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 
 /* This module serves static assets like the logo and favicon. The assets are read from the project root directory at startup and cached in memory for efficient
  * serving.

@@ -1066,7 +1066,7 @@ export function setNestedValue(obj: Record<string, unknown>, settingPath: string
     current = current[part] as Record<string, unknown>;
   }
 
-  current[parts[parts.length - 1]] = value;
+  current[parts.at(-1) ?? ""] = value;
 }
 
 /**
@@ -1548,7 +1548,7 @@ export function filterDefaults(config: UserConfig): UserConfig {
   const configCaptureCodecs = getNestedValue(config, "streaming.captureCodecs") as string[] | undefined;
   const defaultCaptureCodecs = getNestedValue(DEFAULTS, "streaming.captureCodecs") as string[];
 
-  if(Array.isArray(configCaptureCodecs) && (JSON.stringify(configCaptureCodecs.slice().sort()) !== JSON.stringify(defaultCaptureCodecs.slice().sort()))) {
+  if(Array.isArray(configCaptureCodecs) && (JSON.stringify(configCaptureCodecs.toSorted()) !== JSON.stringify(defaultCaptureCodecs.toSorted()))) {
 
     setNestedValue(filtered, "streaming.captureCodecs", configCaptureCodecs);
   }

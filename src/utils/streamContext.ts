@@ -2,7 +2,7 @@
  *
  * streamContext.ts: AsyncLocalStorage-based stream context for automatic log correlation.
  */
-import { AsyncLocalStorage } from "async_hooks";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 /* This module provides an AsyncLocalStorage-based context that automatically propagates through async/await chains. When a stream request is handled, we establish a
  * context containing the stream ID and other metadata. All code executed within that async context can retrieve this information without explicit parameter passing.

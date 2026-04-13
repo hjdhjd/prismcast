@@ -1903,7 +1903,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<tbody>");
 
   // Sort the listing by the user's preferred field and direction before rendering rows. The canonical getChannelListing() order is preserved for other callers.
-  const sortedListing = [...listing].sort((a, b) => compareChannelSort(a.channel, a.key, b.channel, b.key, sortField, sortDir));
+  const sortedListing = listing.toSorted((a, b) => compareChannelSort(a.channel, a.key, b.channel, b.key, sortField, sortDir));
 
   // Generate rows for all channels using the shared row generator.
   for(const entry of sortedListing) {

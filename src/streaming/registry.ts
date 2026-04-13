@@ -312,18 +312,11 @@ export function updateLastAccess(id: number): void {
  */
 export function createHLSState(): HLSState {
 
-  let signalInitSegmentReady: () => void = () => { /* No-op until promise assigns the real resolver. */ };
-  let signalPlaylistReady: () => void = () => { /* No-op until promise assigns the real resolver. */ };
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+  const { promise: initSegmentReady, resolve: signalInitSegmentReady } = Promise.withResolvers<void>();
 
-  const initSegmentReady = new Promise<void>((resolve) => {
-
-    signalInitSegmentReady = resolve;
-  });
-
-  const playlistReady = new Promise<void>((resolve) => {
-
-    signalPlaylistReady = resolve;
-  });
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+  const { promise: playlistReady, resolve: signalPlaylistReady } = Promise.withResolvers<void>();
 
   const segmentEmitter = new EventEmitter() as SegmentEmitter;
 

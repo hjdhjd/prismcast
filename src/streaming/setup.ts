@@ -399,10 +399,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   let rawCaptureStream: Nullable<Readable> = null;
   let ffmpegProcess: Nullable<FFmpegProcess> = null;
 
-  // Capture queue release function, hoisted here so both the try and catch blocks can access it. Initialized in the try block when the queue entry is created.
-  // The once-guard prevents double-releasing from multiple code paths (success handler, catch block, timeout).
+  // Capture queue release function, hoisted here so both the try and catch blocks can access it. The promise and resolver are created together via
+  // withResolvers when the queue entry is registered below. The once-guard prevents double-releasing from multiple code paths (success, catch, timeout).
   let captureQueueReleased = false;
-  let releaseCaptureQueue: () => void = () => { /* No-op until queue entry assigns the real release function. */ };
+  let releaseCaptureQueue: () => void;
 
   const releaseCaptureOnce = (): void => {
 
@@ -450,10 +450,11 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       LOG.warn("Capture queue depth is %d. Multiple stream requests are competing for Chrome's capture initialization.", captureQueueDepth);
     }
 
-    captureQueue = new Promise<void>((resolve) => {
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const queued = Promise.withResolvers<void>();
 
-      releaseCaptureQueue = resolve;
-    });
+    captureQueue = queued.promise;
+    releaseCaptureQueue = queued.resolve;
 
     // Guard against a permanently hung predecessor. If the previous capture doesn't complete within the navigation timeout, release our queue position and let the
     // caller's error handling deal with it. This prevents a single stuck getStream() from blocking all future captures indefinitely.

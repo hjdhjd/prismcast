@@ -746,14 +746,9 @@ async function resolveDirectvDirectUrl(channelSelector: string, page: Page): Pro
   // Set up console listeners for all tunes. Must be registered before navigation so we capture signals emitted during page load.
   setupConsoleListeners(page);
 
-  // Create a per-page tune state. The console listener resolves this page's entry when [DIRECTV-TUNE-OK] or [DIRECTV-TUNE-FAIL] is emitted. We build the
-  // TuneState object first so the resolve function is captured before any await yields control.
-  const tuneState = {} as TuneState;
-
-  tuneState.promise = new Promise<boolean>((resolve) => {
-
-    tuneState.resolve = resolve;
-  });
+  // Create a per-page tune state. The console listener resolves this page's entry when [DIRECTV-TUNE-OK] or [DIRECTV-TUNE-FAIL] is emitted.
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const tuneState: TuneState = { promise, resolve };
 
   pendingTunes.set(page, tuneState);
 
@@ -924,7 +919,7 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
 
       const logos = document.querySelectorAll("[aria-label^=\"view \"]");
 
-      return Array.from(logos).map((el) => (el.getAttribute("aria-label") ?? "").slice("view ".length)).filter((name) => name.length > 0).sort();
+      return Array.from(logos).map((el) => (el.getAttribute("aria-label") ?? "").slice("view ".length)).filter((name) => name.length > 0).toSorted();
     });
 
     logAvailableChannels({

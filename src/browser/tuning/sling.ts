@@ -761,7 +761,7 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
     // Determine binary search direction by comparing against the first and last rendered channel names.
     const first = channels[0].name;
-    const last = channels[channels.length - 1].name;
+    const last = channels.at(-1)?.name ?? "";
 
     if(normalizedName.localeCompare(first) < 0) {
 
@@ -787,7 +787,7 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
     // Log available channels from the row cache to help users identify the correct channelSelector value. The cache contains channels seen during binary search
     // iterations and any prior tune attempts in this session — a partial but often actionable subset of Sling's ~636 channel catalog.
-    const availableChannels = Array.from(slingRowCache.keys()).sort();
+    const availableChannels = Array.from(slingRowCache.keys()).toSorted();
 
     if(availableChannels.length > 0) {
 

@@ -111,149 +111,145 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
   let resolved = false;
   let manifestCount = 0;
 
-  // Finalize function, assigned inside the promise constructor and exposed on the returned handle.
-  let finalize: (directTune: boolean) => void = () => { /* No-op until promise constructor assigns the real function. */ };
+  const { promise, resolve } = Promise.withResolvers<Nullable<ManifestInterceptionResult>>();
 
-  const promise = new Promise<Nullable<ManifestInterceptionResult>>((resolve) => {
+  // Listen for completed responses. We use Network.responseReceived to capture .m3u8 URLs, then fetch the manifest body directly from Node.js to verify it is
+  // a master manifest. This avoids CDP's Network.getResponseBody which is unreliable — Chrome's network cache can evict response bodies before we read them.
+  const onResponseReceived = async (params: { response: { url: string } }): Promise<void> => {
 
-    // Timeout guard. If finalize() is never called (defensive), resolve with whatever we have after the timeout.
-    const timer = setTimeout(() => {
+    if(resolved) {
 
-      if(!resolved) {
+      return;
+    }
 
-        resolved = true;
+    const url = params.response.url;
 
-        cdpSession.off("Network.responseReceived", wrappedHandler);
+    // Filter for .m3u8 URLs. Strip query parameters before checking the extension.
+    const urlPath = url.split("?")[0];
 
-        if(latestManifestUrl) {
+    if(!urlPath.endsWith(".m3u8")) {
 
-          LOG.debug("native:intercept", "Manifest interception timed out after %sms. Resolving with latest URL (%s captured).", elapsed(), manifestCount);
+      return;
+    }
 
-          resolve({ cdpSession, masterManifestUrl: latestManifestUrl });
-        } else {
+    LOG.debug("native:intercept", "Observed .m3u8 response: %s.", url.slice(0, 120));
 
-          LOG.debug("native:intercept", "Manifest interception timed out after %sms. No master manifest captured.", elapsed());
-          removeManifestInterceptor(cdpSession);
-          resolve(null);
-        }
-      }
-    }, timeout);
+    // Fetch the manifest body directly to inspect whether this is a master manifest. The URL contains embedded CDN auth tokens, so no cookies or special
+    // headers are needed beyond the Chrome User-Agent injected by chromeFetch().
+    try {
 
-    // Listen for completed responses. We use Network.responseReceived to capture .m3u8 URLs, then fetch the manifest body directly from Node.js to verify it is
-    // a master manifest. This avoids CDP's Network.getResponseBody which is unreliable — Chrome's network cache can evict response bodies before we read them.
-    const onResponseReceived = async (params: { response: { url: string } }): Promise<void> => {
+      const response = await chromeFetch(url, { signal: AbortSignal.timeout(5000) });
 
-      if(resolved) {
+      if(!response.ok) {
 
-        return;
-      }
-
-      const url = params.response.url;
-
-      // Filter for .m3u8 URLs. Strip query parameters before checking the extension.
-      const urlPath = url.split("?")[0];
-
-      if(!urlPath.endsWith(".m3u8")) {
+        LOG.debug("native:intercept", "Manifest fetch returned HTTP %s for %s.", response.status, url.slice(0, 120));
 
         return;
       }
 
-      LOG.debug("native:intercept", "Observed .m3u8 response: %s.", url.slice(0, 120));
+      const body = await response.text();
 
-      // Fetch the manifest body directly to inspect whether this is a master manifest. The URL contains embedded CDN auth tokens, so no cookies or special
-      // headers are needed beyond the Chrome User-Agent injected by chromeFetch().
-      try {
+      // Master manifests contain #EXT-X-STREAM-INF directives that reference variant playlists. Media/variant playlists contain #EXTINF or #EXT-X-TARGETDURATION
+      // but not #EXT-X-STREAM-INF.
+      if(body.includes("#EXT-X-STREAM-INF")) {
 
-        const response = await chromeFetch(url, { signal: AbortSignal.timeout(5000) });
+        manifestCount++;
+        firstManifestUrl ??= url;
+        latestManifestUrl = url;
 
-        if(!response.ok) {
-
-          LOG.debug("native:intercept", "Manifest fetch returned HTTP %s for %s.", response.status, url.slice(0, 120));
-
-          return;
-        }
-
-        const body = await response.text();
-
-        // Master manifests contain #EXT-X-STREAM-INF directives that reference variant playlists. Media/variant playlists contain #EXTINF or #EXT-X-TARGETDURATION
-        // but not #EXT-X-STREAM-INF.
-        if(body.includes("#EXT-X-STREAM-INF")) {
-
-          manifestCount++;
-          firstManifestUrl ??= url;
-          latestManifestUrl = url;
-
-          LOG.debug("native:intercept", "Master manifest captured (#%s) in %sms: %s.", manifestCount, elapsed(), url.slice(0, 120));
-        } else {
-
-          LOG.debug("native:intercept", "Skipping non-master .m3u8 (no #EXT-X-STREAM-INF).");
-        }
-      } catch(error) {
-
-        LOG.debug("native:intercept", "Could not fetch .m3u8 body: %s.", String(error));
-      }
-    };
-
-    // Wrap the async handler to avoid no-misused-promises — EventEmitter.on() does not handle returned promises.
-    const wrappedHandler = (...args: [{ response: { url: string } }]): void => { void onResponseReceived(...args); };
-
-    cdpSession.on("Network.responseReceived", wrappedHandler);
-
-    // Assign the finalize function. Called by the stream setup code after channel selection is complete. The resolution strategy depends on two factors: whether a
-    // manifest has already been captured, and whether the tune is direct or guide-based.
-    //
-    // - Manifest captured + direct tune: resolve immediately (A&E, most TVE sites — manifest arrived during page load).
-    // - Manifest captured + guide tune: wait FINALIZE_SETTLE_DELAY (Fox guide, Hulu — a newer manifest from the channel switch may still arrive).
-    // - No manifest captured + either: wait FINALIZE_SETTLE_DELAY (Fox Sports — manifest fetch starts after video element appears, hasn't arrived yet).
-    finalize = (directTune: boolean): void => {
-
-      if(resolved) {
-
-        return;
-      }
-
-      // Helper that resolves the promise with the current state. For direct tunes, the first manifest is the correct one (loaded for the navigated URL — background
-      // prefetches for other channels may have overwritten latestManifestUrl). For guide tunes, the last manifest is correct (from the channel switch click).
-      const resolveNow = (): void => {
-
-        if(resolved) {
-
-          return;
-        }
-
-        resolved = true;
-        clearTimeout(timer);
-
-        cdpSession.off("Network.responseReceived", wrappedHandler);
-
-        const selectedUrl = directTune ? firstManifestUrl : latestManifestUrl;
-
-        if(selectedUrl) {
-
-          LOG.debug("native:intercept", "Interception finalized in %sms with %s manifest(s). Using %s: %s.", elapsed(), manifestCount,
-            directTune ? "first" : "latest", selectedUrl.slice(0, 120));
-
-          resolve({ cdpSession, masterManifestUrl: selectedUrl });
-        } else {
-
-          LOG.debug("native:intercept", "Interception finalized in %sms but no master manifest was captured.", elapsed());
-          removeManifestInterceptor(cdpSession);
-          resolve(null);
-        }
-      };
-
-      if(directTune && firstManifestUrl) {
-
-        // Direct tune with manifest already captured: resolve immediately with zero delay. The first manifest arrived during page load and is the correct one.
-        resolveNow();
+        LOG.debug("native:intercept", "Master manifest captured (#%s) in %sms: %s.", manifestCount, elapsed(), url.slice(0, 120));
       } else {
 
-        // Either no manifest captured yet (some services fetch the manifest after the video element appears) or a guide-based tune where the channel switch
-        // may produce a newer manifest. Wait briefly for in-flight responses.
-        setTimeout(resolveNow, FINALIZE_SETTLE_DELAY);
+        LOG.debug("native:intercept", "Skipping non-master .m3u8 (no #EXT-X-STREAM-INF).");
+      }
+    } catch(error) {
+
+      LOG.debug("native:intercept", "Could not fetch .m3u8 body: %s.", String(error));
+    }
+  };
+
+  // Wrap the async handler to avoid no-misused-promises — EventEmitter.on() does not handle returned promises.
+  const wrappedHandler = (...args: [{ response: { url: string } }]): void => { void onResponseReceived(...args); };
+
+  cdpSession.on("Network.responseReceived", wrappedHandler);
+
+  // Timeout guard. If finalize() is never called (defensive), resolve with whatever we have after the timeout.
+  const timer = setTimeout(() => {
+
+    if(!resolved) {
+
+      resolved = true;
+
+      cdpSession.off("Network.responseReceived", wrappedHandler);
+
+      if(latestManifestUrl) {
+
+        LOG.debug("native:intercept", "Manifest interception timed out after %sms. Resolving with latest URL (%s captured).", elapsed(), manifestCount);
+
+        resolve({ cdpSession, masterManifestUrl: latestManifestUrl });
+      } else {
+
+        LOG.debug("native:intercept", "Manifest interception timed out after %sms. No master manifest captured.", elapsed());
+        removeManifestInterceptor(cdpSession);
+        resolve(null);
+      }
+    }
+  }, timeout);
+
+  // Finalize function exposed on the returned handle. Called by the stream setup code after channel selection is complete. The resolution strategy depends on
+  // two factors: whether a manifest has already been captured, and whether the tune is direct or guide-based.
+  //
+  // - Manifest captured + direct tune: resolve immediately (A&E, most TVE sites — manifest arrived during page load).
+  // - Manifest captured + guide tune: wait FINALIZE_SETTLE_DELAY (Fox guide, Hulu — a newer manifest from the channel switch may still arrive).
+  // - No manifest captured + either: wait FINALIZE_SETTLE_DELAY (Fox Sports — manifest fetch starts after video element appears, hasn't arrived yet).
+  const finalize = (directTune: boolean): void => {
+
+    if(resolved) {
+
+      return;
+    }
+
+    // Helper that resolves the promise with the current state. For direct tunes, the first manifest is the correct one (loaded for the navigated URL — background
+    // prefetches for other channels may have overwritten latestManifestUrl). For guide tunes, the last manifest is correct (from the channel switch click).
+    const resolveNow = (): void => {
+
+      if(resolved) {
+
+        return;
+      }
+
+      resolved = true;
+      clearTimeout(timer);
+
+      cdpSession.off("Network.responseReceived", wrappedHandler);
+
+      const selectedUrl = directTune ? firstManifestUrl : latestManifestUrl;
+
+      if(selectedUrl) {
+
+        LOG.debug("native:intercept", "Interception finalized in %sms with %s manifest(s). Using %s: %s.", elapsed(), manifestCount,
+          directTune ? "first" : "latest", selectedUrl.slice(0, 120));
+
+        resolve({ cdpSession, masterManifestUrl: selectedUrl });
+      } else {
+
+        LOG.debug("native:intercept", "Interception finalized in %sms but no master manifest was captured.", elapsed());
+        removeManifestInterceptor(cdpSession);
+        resolve(null);
       }
     };
-  });
+
+    if(directTune && firstManifestUrl) {
+
+      // Direct tune with manifest already captured: resolve immediately with zero delay. The first manifest arrived during page load and is the correct one.
+      resolveNow();
+    } else {
+
+      // Either no manifest captured yet (some services fetch the manifest after the video element appears) or a guide-based tune where the channel switch
+      // may produce a newer manifest. Wait briefly for in-flight responses.
+      setTimeout(resolveNow, FINALIZE_SETTLE_DELAY);
+    }
+  };
 
   return { finalize, promise };
 }

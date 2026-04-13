@@ -109,7 +109,7 @@ async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
           }
         }
 
-        return Array.from(codes).sort();
+        return Array.from(codes).toSorted();
       }, []);
 
       if(availableChannels.length > 0) {

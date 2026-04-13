@@ -6,7 +6,7 @@ import { getStreamId, resolveContextShowName } from "./streamContext.js";
 import { initDebugFilter, isAnyDebugEnabled, isCategoryEnabled } from "./debugFilter.js";
 import type { LogEntry } from "./logEmitter.js";
 import { emitLogEntry } from "./logEmitter.js";
-import { format } from "util";
+import { format } from "node:util";
 import { formatTimestamp } from "./format.js";
 import { writeLogEntry } from "./fileLogger.js";
 

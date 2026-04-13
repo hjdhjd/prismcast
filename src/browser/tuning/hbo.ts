@@ -75,7 +75,7 @@ function clearHboCache(): void {
  */
 function buildHboDiscoveredChannels(): DiscoveredChannel[] {
 
-  return Array.from(hboChannelCache.values()).map((entry) => entry.discovered).sort((a, b) => a.name.localeCompare(b.name));
+  return Array.from(hboChannelCache.values()).map((entry) => entry.discovered).toSorted((a, b) => a.name.localeCompare(b.name));
 }
 
 /**

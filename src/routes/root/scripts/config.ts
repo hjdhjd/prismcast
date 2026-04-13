@@ -290,7 +290,7 @@ export function generateConfigSubtabScript(): string {
     // Display field-level errors from server response.
     "  function displayFieldErrors(errors) {",
     "    for(const [ path, message ] of Object.entries(errors)) {",
-    "      const inputId = path.replace(/\\./g, '-');",
+    "      const inputId = path.replaceAll('.', '-');",
     "      const input = document.getElementById(inputId);",
     "      if(input) {",
     "        input.classList.add('error');",
@@ -389,7 +389,7 @@ export function generateConfigSubtabScript(): string {
     // Reset a single setting to its default value (client-side only). Dispatches both input and change events to match browser behavior: input for validation and
     // modified indicator updates, change for cascade handlers (e.g., preset dropdown updating bitrate and frame rate fields).
     "  window.resetSetting = (path) => {",
-    "    const inputId = path.replace(/\\./g, '-');",
+    "    const inputId = path.replaceAll('.', '-');",
     "    const input = document.getElementById(inputId);",
     "    if(!input) return;",
     "    const defaultVal = input.getAttribute('data-default');",

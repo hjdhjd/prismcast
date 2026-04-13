@@ -798,7 +798,7 @@ export function getActiveTagVocabulary(): string[] {
   // Merge user tags, deduplicate (in case a user tag matches a non-deleted predefined tag), and sort.
   const combined = new Set([ ...active, ...loadedTagRegistry.tags ]);
 
-  return [...combined].sort();
+  return [...combined].toSorted();
 }
 
 /**
@@ -854,7 +854,7 @@ export async function transformChannelTags(
     const newTags = transform(currentTags).sort();
 
     // Skip channels where the transform produced no change.
-    if(JSON.stringify(newTags) === JSON.stringify(currentTags.slice().sort())) {
+    if(JSON.stringify(newTags) === JSON.stringify(currentTags.toSorted())) {
 
       continue;
     }

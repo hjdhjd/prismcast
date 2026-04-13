@@ -6,7 +6,7 @@ import type { Express, Request, Response } from "express";
 import { isConsoleLogging, subscribeToLogs } from "../utils/index.js";
 import { CONFIG } from "../config/index.js";
 import type { Nullable } from "../types/index.js";
-import fs from "fs";
+import fs from "node:fs";
 import { getLogFilePath } from "../config/paths.js";
 
 const { promises: fsPromises } = fs;

@@ -541,7 +541,7 @@ function inferLocalAffiliate(rendered: RenderedChannel[], targetName: string): N
   } else if(insertBeforeIndex === -1) {
 
     // Target sorts after all anchors. Look for call signs after the last anchor.
-    lowerDomIndex = anchors[anchors.length - 1].domIndex;
+    lowerDomIndex = anchors.at(-1)?.domIndex ?? (rendered.length - 1);
     upperDomIndex = rendered.length;
   } else {
 
@@ -1057,7 +1057,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     }
 
     const first = nonCallSigns[0].name;
-    const last = nonCallSigns[nonCallSigns.length - 1].name;
+    const last = nonCallSigns.at(-1)?.name ?? "";
 
     if(normalizedName.localeCompare(first) < 0) {
 
@@ -1145,7 +1145,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
     // Log available channels from the unified cache to help users identify the correct channelSelector value. The cache accumulates all channel names
     // encountered during binary search and linear scan, so it contains most or all channels even though the virtualized grid only renders ~13 at a time.
-    const availableChannels = Array.from(huluChannelCache.keys()).sort();
+    const availableChannels = Array.from(huluChannelCache.keys()).toSorted();
 
     if(availableChannels.length > 0) {
 

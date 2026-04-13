@@ -7,7 +7,7 @@ import { loadUserConfig, saveUserConfig } from "../config/userConfig.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
 import type { Nullable } from "../types/index.js";
-import type { Server } from "http";
+import type { Server } from "node:http";
 import express from "express";
 import { formatError } from "../utils/errors.js";
 import { setupHdhrEndpoints } from "./discover.js";

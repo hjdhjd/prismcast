@@ -304,7 +304,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   validationError?: string): string {
 
   const isDisabled = (envOverride !== undefined) || (setting.disabledReason !== undefined);
-  const inputId = setting.path.replace(/\./g, "-");
+  const inputId = setting.path.replaceAll(".", "-");
   const hasError = validationError !== undefined;
   const isModified = !isDisabled && !isEqualToDefault(currentValue, defaultValue);
 
@@ -320,7 +320,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
   // Check if this setting depends on a boolean toggle that is currently disabled. The depends-disabled class applies a visual grey-out without actually
   // disabling the inputs, so values are still submitted during save.
-  const dependsOnId = setting.dependsOn ? setting.dependsOn.replace(/\./g, "-") : undefined;
+  const dependsOnId = setting.dependsOn ? setting.dependsOn.replaceAll(".", "-") : undefined;
   const isDependencyDisabled = setting.dependsOn ? !getNestedValue(CONFIG, setting.dependsOn) : false;
 
   // Build CSS classes for the form group.

@@ -4,10 +4,10 @@
  */
 import { LOG } from "./logger.js";
 import type { Nullable } from "../types/index.js";
-import { fileURLToPath } from "url";
+import { fileURLToPath } from "node:url";
 import { formatError } from "./errors.js";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // Package name for npm registry lookups.
 const NPM_PACKAGE_NAME = "prismcast";
@@ -155,7 +155,7 @@ function extractVersionChangelog(changelog: string, version: string): Nullable<s
 
   // Match the version header and capture everything until the next version header or end of file. The changelog format is: ## 1.0.8 (date)
   // Note: We use (?![^]) instead of $ for end-of-string because the m flag makes $ match end-of-line, which would stop the non-greedy *? at the first line.
-  const pattern = new RegExp("^## " + version.replace(/\./g, "\\.") + "\\s+\\([^)]+\\)\\s*\\n([\\s\\S]*?)(?=^## \\d|(?![^]))", "m");
+  const pattern = new RegExp("^## " + version.replaceAll(".", "\\.") + "\\s+\\([^)]+\\)\\s*\\n([\\s\\S]*?)(?=^## \\d|(?![^]))", "m");
   const match = changelog.match(pattern);
 
   if(!match) {

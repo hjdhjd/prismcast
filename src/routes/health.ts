@@ -83,7 +83,7 @@ export function setupHealthEndpoint(app: Express): void {
       chrome: getChromeVersion(),
       clients: {
 
-        byType: Array.from(allClientTypes.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([ type, count ]) => ({ count, type })),
+        byType: Array.from(allClientTypes.entries()).toSorted(([a], [b]) => a.localeCompare(b)).map(([ type, count ]) => ({ count, type })),
         total: totalClients
       },
       ffmpegAvailable: ffmpegAvailable,
