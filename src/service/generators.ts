@@ -5,9 +5,10 @@
 import type { Platform, ServiceManager } from "../utils/platform.js";
 import { SERVICE_ID, SERVICE_NAME, getLogsDirectory, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getPrismCastWorkingDirectory, getServiceFileDirectory,
   getServiceFilePath } from "../utils/platform.js";
+import { execFileSync, execSync } from "node:child_process";
 import type { Nullable } from "../types/index.js";
-import { execSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 
 const { promises: fsPromises } = fs;
 
@@ -259,10 +260,7 @@ function createLaunchdGenerator(): ServiceGenerator {
       }
 
       // Remove the plist file.
-      if(fs.existsSync(installPath)) {
-
-        await fsPromises.unlink(installPath);
-      }
+      await fsPromises.rm(installPath, { force: true });
     }
   };
 }
@@ -403,10 +401,7 @@ function createSystemdGenerator(): ServiceGenerator {
       }
 
       // Remove the unit file.
-      if(fs.existsSync(installPath)) {
-
-        await fsPromises.unlink(installPath);
-      }
+      await fsPromises.rm(installPath, { force: true });
 
       // Reload systemd.
       try {
@@ -420,9 +415,22 @@ function createSystemdGenerator(): ServiceGenerator {
   };
 }
 
-/* Uses Windows Task Scheduler via schtasks.exe to create a task that runs at user logon. Unlike launchd and systemd, Task Scheduler doesn't have built-in process
- * supervision, so we configure the task to restart on failure. A marker file is used to track installation state.
+/* Uses Windows Task Scheduler to run PrismCast at user logon. Three files in the data directory define the service: a batch startup script (.cmd) with environment
+ * setup and the node invocation, a VBScript wrapper (.vbs) that launches it with a hidden console window, and a Task Scheduler XML definition (.xml) imported via
+ * schtasks /Create /XML. The XML format avoids the shell quoting issues inherent in schtasks /TR and enables advanced task settings (restart on failure, unlimited
+ * execution time, battery policy) that command-line flags cannot express. All schtasks calls use execFileSync to bypass cmd.exe shell interpretation entirely.
  */
+
+/**
+ * Escapes a string for use in a Windows batch (.cmd) file. Literal percent characters must be doubled because batch interprets % as variable expansion even inside
+ * quoted strings.
+ * @param value - The string to escape.
+ * @returns The escaped string safe for batch files.
+ */
+function escapeBatchValue(value: string): string {
+
+  return value.replaceAll("%", "%%");
+}
 
 /**
  * Creates a Windows Task Scheduler generator.
@@ -432,6 +440,72 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
 
   const taskName = SERVICE_NAME;
 
+  /**
+   * Returns the path to the VBScript wrapper file that launches PrismCast with a hidden console window.
+   * @returns The absolute path to the .vbs file in the data directory.
+   */
+  function getVbsPath(): string {
+
+    return path.join(getServiceFileDirectory(), "prismcast-service.vbs");
+  }
+
+  /**
+   * Returns the path to the Task Scheduler XML definition file.
+   * @returns The absolute path to the .xml file in the data directory.
+   */
+  function getXmlPath(): string {
+
+    return path.join(getServiceFileDirectory(), "prismcast-task.xml");
+  }
+
+  /**
+   * Generates the Task Scheduler XML definition. The XML format provides structured task configuration without shell quoting and supports advanced settings
+   * (restart on failure, no execution time limit, battery policy) that schtasks command-line flags cannot express. Element ordering follows the Task Scheduler
+   * XML schema.
+   * @param vbsFilePath - The absolute path to the VBScript wrapper that launches PrismCast.
+   * @returns The XML content for the task definition.
+   */
+  function generateTaskXml(vbsFilePath: string): string {
+
+    return [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">",
+      "  <RegistrationInfo>",
+      "    <Description>" + escapeXml(SERVICE_NAME + " Streaming Server") + "</Description>",
+      "  </RegistrationInfo>",
+      "  <Triggers>",
+      "    <LogonTrigger>",
+      "      <Enabled>true</Enabled>",
+      "    </LogonTrigger>",
+      "  </Triggers>",
+      "  <Principals>",
+      "    <Principal id=\"Author\">",
+      "      <LogonType>InteractiveToken</LogonType>",
+      "      <RunLevel>HighestAvailable</RunLevel>",
+      "    </Principal>",
+      "  </Principals>",
+      "  <Settings>",
+      "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+      "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+      "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+      "    <Enabled>true</Enabled>",
+      "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+      "    <RestartOnFailure>",
+      "      <Interval>PT5S</Interval>",
+      "      <Count>3</Count>",
+      "    </RestartOnFailure>",
+      "  </Settings>",
+      "  <Actions Context=\"Author\">",
+      "    <Exec>",
+      "      <Command>wscript.exe</Command>",
+      "      <Arguments>" + escapeXml("\"" + vbsFilePath + "\"") + "</Arguments>",
+      "    </Exec>",
+      "  </Actions>",
+      "</Task>",
+      ""
+    ].join("\n");
+  }
+
   return {
 
     generate(options: ServiceOptions): string {
@@ -440,14 +514,25 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
       const entryPoint = getPrismCastEntryPoint();
       const workingDir = getPrismCastWorkingDirectory();
 
-      // Build environment variables for the command. We'll set them in the task action using cmd /c set.
+      // Build environment variables. Always include PRISMCAST_SERVICE=1 for service detection.
       const envVars: Record<string, string> = { PRISMCAST_SERVICE: "1", ...options.envVars };
 
-      // Generate environment variable SET commands.
-      const envSets = Object.entries(envVars).sort(([a], [b]) => a.localeCompare(b)).map(([ key, value ]) => "set \"" + key + "=" + value + "\"").join(" && ");
+      // Generate set commands for environment variables, sorted alphabetically. Values are escaped for batch interpretation where literal % must be doubled.
+      const envLines = Object.entries(envVars)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([ key, value ]) => "set \"" + key + "=" + escapeBatchValue(value) + "\"");
 
-      // Return the command to run (used by install).
-      return "cmd /c \"cd /d \"" + workingDir + "\" && " + envSets + " && \"" + nodePath + "\" \"" + entryPoint + "\"\"";
+      // Generate the batch file content. Each line uses exactly one level of quoting because the batch file is a standalone script, not an inline argument embedded
+      // in another command. The rem lines provide machine-readable path metadata for stale path detection, parsed by getServicePaths(). CRLF line endings follow
+      // Windows batch file convention.
+      return [
+        "@echo off",
+        "rem node:" + nodePath,
+        "rem entry:" + entryPoint,
+        "cd /d \"" + escapeBatchValue(workingDir) + "\"",
+        ...envLines,
+        "\"" + escapeBatchValue(nodePath) + "\" \"" + escapeBatchValue(entryPoint) + "\""
+      ].join("\r\n") + "\r\n";
     },
 
     getInstallPath(): string {
@@ -457,7 +542,9 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
 
     async install(content: string): Promise<void> {
 
-      const installPath = this.getInstallPath();
+      const cmdPath = getServiceFilePath();
+      const vbsPath = getVbsPath();
+      const xmlPath = getXmlPath();
       const installDir = getServiceFileDirectory();
       const logsDir = getLogsDirectory();
 
@@ -468,28 +555,37 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
       // Delete existing task if it exists.
       try {
 
-        execSync("schtasks /Delete /TN \"" + taskName + "\" /F", { stdio: "pipe" });
+        execFileSync("schtasks", [ "/Delete", "/TN", taskName, "/F" ], { stdio: "pipe" });
       } catch {
 
         // Ignore if task doesn't exist.
       }
 
-      // Create the scheduled task. The /SC ONLOGON runs at user logon. /RL HIGHEST gives elevated privileges if needed.
-      const createCmd = "schtasks /Create /TN \"" + taskName + "\" /TR \"" + content + "\" /SC ONLOGON /RL HIGHEST /F";
+      // Write the batch startup script.
+      await fsPromises.writeFile(cmdPath, content, "utf8");
 
-      execSync(createCmd, { stdio: "pipe" });
+      // Write the VBScript wrapper that launches the batch file with a hidden console window. The WshShell.Run second parameter (0) specifies the vbHide window
+      // style, and the third parameter (False) means don't wait for the script to finish.
+      const vbsContent = "Set WshShell = CreateObject(\"WScript.Shell\")\r\nWshShell.Run \"\"\"" + cmdPath + "\"\"\", 0, False\r\n";
 
-      // Write marker file to indicate installation. We include the node binary and entry point paths so that getServicePaths() can extract them for stale path
-      // detection. The task command itself is stored in the Windows Task Scheduler registry, which isn't easily inspectable.
-      const nodePath = getNodeExecutablePath();
-      const entryPoint = getPrismCastEntryPoint();
+      await fsPromises.writeFile(vbsPath, vbsContent, "utf8");
 
-      await fsPromises.writeFile(installPath, "node:" + nodePath + "\nentry:" + entryPoint + "\n", "utf8");
+      // Write the Task Scheduler XML definition and import it. Using XML import instead of schtasks /TR avoids all shell quoting issues and enables advanced task
+      // settings that command-line flags cannot express.
+      const xmlContent = generateTaskXml(vbsPath);
+
+      await fsPromises.writeFile(xmlPath, xmlContent, "utf8");
+
+      // Import the task definition. execFileSync passes arguments directly to the Windows API, bypassing cmd.exe shell interpretation entirely.
+      execFileSync("schtasks", [ "/Create", "/XML", xmlPath, "/TN", taskName, "/F" ], { stdio: "pipe" });
+
+      // Clean up legacy marker file from previous versions that used a separate metadata file for path tracking.
+      await fsPromises.rm(path.join(installDir, "service-installed.marker"), { force: true });
 
       // Start the task immediately.
       try {
 
-        execSync("schtasks /Run /TN \"" + taskName + "\"", { stdio: "pipe" });
+        execFileSync("schtasks", [ "/Run", "/TN", taskName ], { stdio: "pipe" });
       } catch {
 
         // Ignore if start fails.
@@ -501,7 +597,7 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
 
       try {
 
-        execSync("schtasks /Query /TN \"" + taskName + "\"", { stdio: "pipe" });
+        execFileSync("schtasks", [ "/Query", "/TN", taskName ], { stdio: "pipe" });
 
         return true;
       } catch {
@@ -515,7 +611,7 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
 
       try {
 
-        const result = execSync("schtasks /Query /TN \"" + taskName + "\" /FO CSV /NH", { encoding: "utf8", stdio: "pipe" });
+        const result = execFileSync("schtasks", [ "/Query", "/TN", taskName, "/FO", "CSV", "/NH" ], { encoding: "utf8", stdio: "pipe" });
 
         return result.includes("Running");
       } catch {
@@ -531,33 +627,52 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
     // eslint-disable-next-line @typescript-eslint/require-await
     async start(): Promise<void> {
 
-      execSync("schtasks /Run /TN \"" + taskName + "\"", { stdio: "pipe" });
+      // Re-enable the task (it may have been disabled by stop() to prevent RestartOnFailure from restarting the process) and run it.
+      try {
+
+        execFileSync("schtasks", [ "/Change", "/TN", taskName, "/Enable" ], { stdio: "pipe" });
+      } catch {
+
+        // Ignore if already enabled or task doesn't exist.
+      }
+
+      execFileSync("schtasks", [ "/Run", "/TN", taskName ], { stdio: "pipe" });
     },
 
     // eslint-disable-next-line @typescript-eslint/require-await
     async stop(): Promise<void> {
 
-      execSync("schtasks /End /TN \"" + taskName + "\"", { stdio: "pipe" });
-    },
-
-    async uninstall(): Promise<void> {
-
-      const installPath = this.getInstallPath();
-
-      // Delete the scheduled task.
+      // Disable the task first to prevent RestartOnFailure from automatically restarting the process after we terminate it.
       try {
 
-        execSync("schtasks /Delete /TN \"" + taskName + "\" /F", { stdio: "pipe" });
+        execFileSync("schtasks", [ "/Change", "/TN", taskName, "/Disable" ], { stdio: "pipe" });
       } catch {
 
         // Ignore if task doesn't exist.
       }
 
-      // Remove marker file.
-      if(fs.existsSync(installPath)) {
+      execFileSync("schtasks", [ "/End", "/TN", taskName ], { stdio: "pipe" });
+    },
 
-        await fsPromises.unlink(installPath);
+    async uninstall(): Promise<void> {
+
+      const cmdPath = getServiceFilePath();
+      const vbsPath = getVbsPath();
+      const xmlPath = getXmlPath();
+
+      // Delete the scheduled task.
+      try {
+
+        execFileSync("schtasks", [ "/Delete", "/TN", taskName, "/F" ], { stdio: "pipe" });
+      } catch {
+
+        // Ignore if task doesn't exist.
       }
+
+      // Remove all service files and legacy marker file from previous versions.
+      await Promise.all(
+        [ cmdPath, vbsPath, xmlPath, path.join(getServiceFileDirectory(), "service-installed.marker") ].map(async (filePath) => fsPromises.rm(filePath, { force: true }))
+      );
     }
   };
 }
@@ -591,7 +706,7 @@ export interface StalePathResult {
 
 /**
  * Reads the existing service file and extracts the node binary and PrismCast entry point paths. Each platform has its own format: launchd plist XML, systemd unit
- * ExecStart line, or Windows marker file with explicit path entries.
+ * ExecStart line, or Windows batch startup script with rem-prefixed path comments.
  * @returns The extracted paths, or null if the file doesn't exist or can't be parsed.
  */
 export function getServicePaths(): Nullable<ServicePaths> {
@@ -671,18 +786,19 @@ export function getServicePaths(): Nullable<ServicePaths> {
       return { entryPoint: parts[1], nodePath: parts[0] };
     }
 
-    // Windows: paths are stored in the marker file as "node:<path>" and "entry:<path>" lines.
+    // Windows: paths are stored as "rem node:<path>" and "rem entry:<path>" comments in the batch startup script (.cmd file). The .trim() handles CRLF line
+    // endings in batch files where \r would otherwise be captured by the regex.
     case "windows": {
 
-      const nodeMatch = /^node:(.+)$/m.exec(content);
-      const entryMatch = /^entry:(.+)$/m.exec(content);
+      const nodeMatch = /^rem node:(.+)$/m.exec(content);
+      const entryMatch = /^rem entry:(.+)$/m.exec(content);
 
       if(!nodeMatch || !entryMatch) {
 
         return null;
       }
 
-      return { entryPoint: entryMatch[1], nodePath: nodeMatch[1] };
+      return { entryPoint: entryMatch[1].trim(), nodePath: nodeMatch[1].trim() };
     }
 
     default: {

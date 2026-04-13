@@ -141,8 +141,9 @@ export function getServiceFilePath(): string {
 
     case "windows": {
 
-      // Windows Task Scheduler doesn't use a file path in the same way. We return a marker path inside the data directory for consistency.
-      return path.join(getDataDir(), "service-installed.marker");
+      // The batch startup script is the primary service file on Windows. It contains the runtime configuration (working directory, environment variables, node and
+      // entry point paths) and serves as the single source of truth for stale path detection.
+      return path.join(getDataDir(), "prismcast-service.cmd");
     }
 
     default: {

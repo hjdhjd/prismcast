@@ -71,12 +71,7 @@ async function fetchActiveStreams(port: number): Promise<Nullable<StreamsRespons
 
   try {
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => { controller.abort(); }, 3000);
-
-    const response = await fetch("http://127.0.0.1:" + String(port) + "/streams", { signal: controller.signal });
-
-    clearTimeout(timeoutId);
+    const response = await fetch("http://127.0.0.1:" + String(port) + "/streams", { signal: AbortSignal.timeout(3000) });
 
     if(!response.ok) {
 
@@ -288,8 +283,8 @@ export async function handleUninstall(): Promise<number> {
  */
 async function restartService(generator: ServiceGenerator, action: string): Promise<number> {
 
-  // Compare the paths in the existing service file against the current runtime paths to determine whether regeneration is needed. All supported platforms (launchd,
-  // systemd, Windows) store paths in their service files, so getServicePaths() only returns null for corrupt or legacy marker files.
+  // Compare the paths in the existing service file against the current runtime paths to determine whether regeneration is needed. All supported platforms (launchd
+  // plist, systemd unit, Windows batch script) store paths in their service files, so getServicePaths() only returns null for corrupt or unparseable files.
   const existingPaths = getServicePaths();
   const currentNodePath = getNodeExecutablePath();
   const currentEntryPoint = getPrismCastEntryPoint();
