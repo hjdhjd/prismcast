@@ -3,13 +3,13 @@
  * index.ts: HDHomeRun emulation server for PrismCast.
  */
 import { generateDeviceId, validateDeviceId } from "./deviceId.js";
-import { loadUserConfig, saveUserConfig } from "../config/userConfig.js";
 import { CONFIG } from "../config/index.js";
 import { LOG } from "../utils/index.js";
 import type { Nullable } from "../types/index.js";
 import type { Server } from "node:http";
 import express from "express";
 import { formatError } from "../utils/errors.js";
+import { mutateConfig } from "../config/userConfig.js";
 import { setupHdhrEndpoints } from "./discover.js";
 
 /* When HDHomeRun emulation is enabled, PrismCast runs a separate Express server that responds to HDHomeRun API requests from Plex. This server is intentionally
@@ -47,19 +47,14 @@ export async function startHdhrServer(): Promise<void> {
 
     LOG.info("Generated HDHomeRun DeviceID: %s.", CONFIG.hdhr.deviceId.toUpperCase());
 
-    // Save the generated ID to the user config so it persists across restarts. We load the current config, set the deviceId, and save to avoid overwriting other
-    // settings.
+    // Save the generated ID to the user config so it persists across restarts.
     try {
 
-      const result = await loadUserConfig();
+      await mutateConfig((config) => {
 
-      if(!result.parseError) {
-
-        result.config.hdhr ??= {};
-        result.config.hdhr.deviceId = CONFIG.hdhr.deviceId;
-
-        await saveUserConfig(result.config);
-      }
+        config.hdhr ??= {};
+        config.hdhr.deviceId = CONFIG.hdhr.deviceId;
+      });
     } catch(error) {
 
       LOG.warn("Failed to persist HDHomeRun DeviceID: %s. A new ID will be generated on next restart.", formatError(error));

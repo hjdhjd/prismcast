@@ -4,9 +4,9 @@
  */
 import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, initDebugFilter, isCategoryEnabled } from "../utils/index.js";
 import type { Express, Request, Response } from "express";
-import { filterDefaults, loadUserConfig, saveUserConfig } from "../config/userConfig.js";
 import { generateBaseStyles, generatePageWrapper } from "./ui.js";
 import { CONFIG } from "../config/index.js";
+import { mutateConfig } from "../config/userConfig.js";
 
 /* This module provides a hidden (undocumented) web page at /debug for runtime control of debug logging categories. The page renders all known categories as
  * hierarchical checkboxes grouped by namespace prefix. Toggling a parent group enables or disables all children. Changes are applied immediately via POST without
@@ -396,15 +396,11 @@ export function setupDebugEndpoint(app: Express): void {
     // Persist to config.json so the filter survives restarts. Wrap in try/catch so persistence failure doesn't break the runtime update.
     try {
 
-      const result = await loadUserConfig();
-      const existingConfig = result.config;
+      await mutateConfig((config) => {
 
-      existingConfig.logging ??= {};
-      existingConfig.logging.debugFilter = normalizedPattern;
-
-      const filteredConfig = filterDefaults(existingConfig);
-
-      await saveUserConfig(filteredConfig);
+        config.logging ??= {};
+        config.logging.debugFilter = normalizedPattern;
+      });
     } catch(error) {
 
       LOG.warn("Failed to persist debug filter to config.json: %s.", formatError(error));

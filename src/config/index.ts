@@ -3,7 +3,7 @@
  * index.ts: Configuration management for PrismCast.
  */
 import type { Config, Nullable } from "../types/index.js";
-import { DEFAULTS, loadUserConfig, mergeConfiguration } from "./userConfig.js";
+import { DEFAULTS, mergeConfiguration, readConfig } from "./userConfig.js";
 import { LOG, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.js";
 import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.js";
 import { getChromeDataDir, getConfigFilePath } from "./paths.js";
@@ -60,7 +60,7 @@ export let configParseErrorMessage: string | undefined;
 export async function initializeConfiguration(cliOverrides?: CliOverrides): Promise<void> {
 
   // Load user configuration from file.
-  const result = await loadUserConfig();
+  const result = await readConfig();
 
   configParseError = result.parseError;
   configParseErrorMessage = result.parseErrorMessage;

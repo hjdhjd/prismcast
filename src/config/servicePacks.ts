@@ -3,8 +3,8 @@
  * servicePacks.ts: Service pack import/export logic for PrismCast.
  */
 import type { ChannelMap, DomainConfig, ProfilesValidationResult, ServicePack, SiteProfile } from "../types/index.js";
-import { getChannelListing, loadUserChannels, saveUserChannels } from "./userChannels.js";
-import { getUserDomains, getUserProfiles, normalizeLegacyProfileFlags, saveUserProfiles, validateImportedProfiles } from "./userProfiles.js";
+import { getChannelListing, mutateChannels } from "./userChannels.js";
+import { getUserDomains, getUserProfiles, mutateProfiles, normalizeLegacyProfileFlags, validateImportedProfiles } from "./userProfiles.js";
 import { sanitizeString } from "../utils/index.js";
 
 /* Service packs bundle a profile, domain mapping(s), and optionally channels into a single JSON file for distribution. On import, the contents are validated
@@ -192,18 +192,16 @@ export async function importServicePack(pack: ServicePack, options: { skipChanne
 
   const errors: string[] = [];
 
-  // Merge profiles: add pack profiles to existing user profiles.
-  const existingProfiles = getUserProfiles();
-  const existingDomains = getUserDomains();
-  const mergedProfiles = { ...existingProfiles, ...pack.profiles };
-  const mergedDomains = { ...existingDomains, ...(pack.domains ?? {}) };
-
   const profilesAdded = Object.keys(pack.profiles).length;
   const domainsAdded = Object.keys(pack.domains ?? {}).length;
 
   try {
 
-    await saveUserProfiles(mergedProfiles, mergedDomains);
+    await mutateProfiles((data) => {
+
+      Object.assign(data.profiles, pack.profiles);
+      Object.assign(data.domains, pack.domains ?? {});
+    });
   } catch(error) {
 
     errors.push("Failed to save profiles: " + ((error instanceof Error) ? error.message : String(error)));
@@ -217,20 +215,16 @@ export async function importServicePack(pack: ServicePack, options: { skipChanne
 
   if(!options.skipChannels && pack.channels && (Object.keys(pack.channels).length > 0)) {
 
+    const packChannels = pack.channels;
+
     try {
 
-      const result = await loadUserChannels();
+      await mutateChannels((channels) => {
 
-      if(result.parseError) {
+        Object.assign(channels, packChannels);
+      });
 
-        errors.push("Cannot import channels: channels file contains invalid JSON.");
-      } else {
-
-        const mergedChannels = { ...result.channels, ...pack.channels };
-
-        await saveUserChannels(mergedChannels);
-        channelsAdded = Object.keys(pack.channels).length;
-      }
+      channelsAdded = Object.keys(packChannels).length;
     } catch(error) {
 
       errors.push("Failed to save channels: " + ((error instanceof Error) ? error.message : String(error)));

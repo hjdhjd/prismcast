@@ -4,8 +4,8 @@
  */
 import type { AdvancedSection, SettingMetadata, UserConfig } from "../../config/userConfig.js";
 import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from "../../config/index.js";
-import { CONFIG_METADATA, filterDefaults, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault,
-  loadUserConfig, saveUserConfig, setNestedValue } from "../../config/userConfig.js";
+import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault, mutateConfig, readConfig,
+  setNestedValue } from "../../config/userConfig.js";
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, formatError, isRunningAsService, stringifySorted } from "../../utils/index.js";
 import type { Nullable } from "../../types/index.js";
@@ -972,6 +972,31 @@ export function hasEnvOverrides(): boolean {
 }
 
 /**
+ * Shallow-merges a source config into a target config. Top-level object values are merged one level deep (preserving sibling keys within each category).
+ * Non-object values are assigned directly. This is the single merge strategy used by both the settings form save and config import endpoints.
+ * @param target - The existing config to merge into (modified in place).
+ * @param source - The new values to merge.
+ */
+function mergeConfigValues(target: UserConfig, source: UserConfig): void {
+
+  for(const [ path, value ] of Object.entries(source as Record<string, unknown>)) {
+
+    if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
+
+      (target as Record<string, unknown>)[path] ??= {};
+
+      for(const [ subPath, subValue ] of Object.entries(value as Record<string, unknown>)) {
+
+        ((target as Record<string, unknown>)[path] as Record<string, unknown>)[subPath] = subValue;
+      }
+    } else {
+
+      (target as Record<string, unknown>)[path] = value;
+    }
+  }
+}
+
+/**
  * Installs all settings-related route handlers on the Express application.
  * @param app - The Express application.
  */
@@ -1032,34 +1057,13 @@ export function setupSettingsRoutes(app: Express): void {
         return;
       }
 
-      // Merge form values into the existing config rather than building from scratch. The settings form only manages CONFIG_METADATA fields, but config.json also
-      // stores fields managed by separate endpoints (disabledPredefined, enabledServices, visibleColumns, setupCompleted, channelSortField, channelSortDirection,
-      // dvrHost, hdhr.deviceId, etc.). Loading the existing config and merging form values into it preserves all non-form fields automatically — no carry-forward
-      // list to maintain. New fields stored in config.json by other endpoints are preserved without any changes here.
-      const existingResult = await loadUserConfig();
-      const mergedConfig = existingResult.config;
+      // Merge form values into the existing config via mutateConfig. The settings form only manages CONFIG_METADATA fields, but config.json also stores fields
+      // managed by separate endpoints (disabledPredefined, enabledServices, visibleColumns, setupCompleted, channelSortField, channelSortDirection, dvrHost,
+      // hdhr.deviceId, etc.). Merging form values into the existing config preserves all non-form fields automatically - no carry-forward list to maintain.
+      await mutateConfig((existing) => {
 
-      for(const [ path, value ] of Object.entries(newConfig as Record<string, unknown>)) {
-
-        if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
-
-          (mergedConfig as Record<string, unknown>)[path] ??= {};
-
-          for(const [ subPath, subValue ] of Object.entries(value as Record<string, unknown>)) {
-
-            ((mergedConfig as Record<string, unknown>)[path] as Record<string, unknown>)[subPath] = subValue;
-          }
-        } else {
-
-          (mergedConfig as Record<string, unknown>)[path] = value;
-        }
-      }
-
-      // Filter out values that match defaults to keep the config file clean.
-      const filteredConfig = filterDefaults(mergedConfig);
-
-      // Save the configuration.
-      await saveUserConfig(filteredConfig);
+        mergeConfigValues(existing, newConfig);
+      });
 
       // Schedule restart after response is sent and return success response with restart info.
       const restartResult = scheduleServerRestart("to apply configuration changes");
@@ -1084,7 +1088,7 @@ export function setupSettingsRoutes(app: Express): void {
 
     try {
 
-      const result = await loadUserConfig();
+      const result = await readConfig();
 
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Content-Disposition", "attachment; filename=\"prismcast-config.json\"");
@@ -1172,11 +1176,30 @@ export function setupSettingsRoutes(app: Express): void {
         return;
       }
 
-      // Filter out values that match defaults to keep the config file clean.
-      const filteredConfig = filterDefaults(importedConfig);
+      // Import replaces the user settings layer and preserves the system state layer. CONFIG_METADATA is the SSOT for which fields are user settings
+      // (port, timeouts, quality preset, etc.) vs system state (dvrHost, deviceId, disabledPredefined, enabledServices, etc.). Clearing all
+      // CONFIG_METADATA-tracked paths before merging ensures that settings not present in the import file revert to defaults rather than surviving
+      // from the previous config. System state fields are untouched because they're not in CONFIG_METADATA.
+      await mutateConfig((existing) => {
 
-      // Save the imported configuration.
-      await saveUserConfig(filteredConfig);
+        // Clear all user settings from the existing config, leaving only system state.
+        for(const settings of Object.values(CONFIG_METADATA)) {
+
+          for(const setting of settings) {
+
+            const parts = setting.path.split(".");
+            const category = (existing as Record<string, unknown>)[parts[0]];
+
+            if((typeof category === "object") && (category !== null) && (parts.length === 2)) {
+
+              Reflect.deleteProperty(category as Record<string, unknown>, parts[1]);
+            }
+          }
+        }
+
+        // Apply imported settings on top of the preserved system state.
+        mergeConfigValues(existing, importedConfig);
+      });
 
       // Schedule restart after response is sent and return success response with restart info.
       const restartResult = scheduleServerRestart("after configuration import");

@@ -3,13 +3,10 @@
  * userConfig.ts: User configuration file management for PrismCast.
  */
 import type { Config, Nullable } from "../types/index.js";
-import { LOG, stringifySorted } from "../utils/index.js";
-import { getConfigFilePath, getDataDir } from "./paths.js";
 import type { CliOverrides } from "./index.js";
-import fs from "node:fs";
+import { createFileStore } from "./persistence.js";
+import { getConfigFilePath } from "./paths.js";
 import { getValidPresetIds } from "./presets.js";
-
-const { promises: fsPromises } = fs;
 
 /* PrismCast stores user configuration in config.json inside the data directory (default: ~/.prismcast). This file allows users to customize settings without using
  * environment variables or CLI flags. The configuration system uses a layered approach with the following priority (highest to lowest):
@@ -772,66 +769,43 @@ export interface UserConfigLoadResult {
 }
 
 /* The config file path is resolved via the centralized paths module (config/paths.ts). The data directory is initialized at startup before config loading.
+ * Configuration persistence uses a transactional file store that provides atomic writes, serialized mutations, corruption protection, and backup rotation.
+ * All config modifications go through mutateConfig(), which prevents the class of bugs where a corrupt file gets silently overwritten with nearly-empty data.
  */
 
-/* These functions handle reading and writing the config file. All operations are async and handle errors gracefully.
- */
+// Transactional store instance for config.json. The beforeWrite hook applies filterDefaults() universally so that every save produces a minimal config file
+// containing only non-default values. This was previously inconsistent...some callers applied filterDefaults and some didn't.
+const configStore = createFileStore<UserConfig>({
+
+  beforeWrite: (data: UserConfig): UserConfig => filterDefaults(data),
+  defaultValue: (): UserConfig => ({}),
+  label: "configuration",
+  parse: (raw: string): UserConfig => JSON.parse(raw) as UserConfig,
+  path: getConfigFilePath
+});
 
 /**
- * Loads user configuration from the config file. Returns an empty config if the file doesn't exist, and sets parseError if the file exists but contains invalid
- * JSON.
+ * Reads the current configuration from disk without acquiring the serialization lock. Returns the parsed config with parse status. Use this for read-only
+ * access (export endpoints, startup initialization). For modifications, use mutateConfig() instead.
  * @returns The loaded configuration with parse status.
  */
-export async function loadUserConfig(): Promise<UserConfigLoadResult> {
+export async function readConfig(): Promise<UserConfigLoadResult> {
 
-  try {
+  const result = await configStore.read();
 
-    const content = await fsPromises.readFile(getConfigFilePath(), "utf-8");
-
-    try {
-
-      const config = JSON.parse(content) as UserConfig;
-
-      return { config, parseError: false };
-    } catch(parseError) {
-
-      const message = (parseError instanceof Error) ? parseError.message : String(parseError);
-
-      LOG.warn("Invalid JSON in configuration file %s: %s. Using defaults.", getConfigFilePath(), message);
-
-      return { config: {}, parseError: true, parseErrorMessage: message };
-    }
-  } catch(error) {
-
-    // File doesn't exist - this is normal, use defaults.
-    if((error as NodeJS.ErrnoException).code === "ENOENT") {
-
-      return { config: {}, parseError: false };
-    }
-
-    // Other read errors - log and use defaults.
-    LOG.warn("Failed to read configuration file %s: %s. Using defaults.", getConfigFilePath(), (error instanceof Error) ? error.message : String(error));
-
-    return { config: {}, parseError: false };
-  }
+  return { config: result.data, parseError: result.parseError, parseErrorMessage: result.parseErrorMessage };
 }
 
 /**
- * Saves user configuration to the config file. Creates the data directory if it doesn't exist.
- * @param config - The configuration to save.
- * @throws If the file cannot be written.
+ * Serialized read-modify-write operation on config.json. The mutation function receives the current config and modifies it in place. The store handles
+ * atomicity (temp file + rename), serialization (promise chain), corruption guard (throws on parse error), backup (.bak rotation), and filterDefaults
+ * (beforeWrite hook).
+ * @param fn - Mutation function. Receives current config. Modify in place; return value is ignored.
+ * @throws FileStoreParseError if config.json contains invalid JSON.
  */
-export async function saveUserConfig(config: UserConfig): Promise<void> {
+export async function mutateConfig(fn: (current: UserConfig) => void): Promise<void> {
 
-  // Ensure data directory exists.
-  await fsPromises.mkdir(getDataDir(), { recursive: true });
-
-  // Write config with pretty formatting and sorted keys for consistent, diff-friendly output.
-  const content = stringifySorted(config);
-
-  await fsPromises.writeFile(getConfigFilePath(), content + "\n", "utf-8");
-
-  LOG.info("Configuration saved to %s.", getConfigFilePath());
+  await configStore.mutate(fn);
 }
 
 /* These functions detect which settings are overridden by environment variables, so the UI can disable those fields and show appropriate warnings.

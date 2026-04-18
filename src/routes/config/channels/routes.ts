@@ -10,19 +10,40 @@ import { VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState,
 import { VALID_SORT_FIELDS, compareChannelSort, getAllServiceTags, getCanonicalKey, getChannelServiceLabel, getEnabledServices, getResolvedChannel,
   getServiceDisplayName, getServiceGroup, getServiceSelection, getServiceTagForChannel, isServiceTagEnabled, resolvePredefinedVariant,
   resolveServiceKey, setEnabledServices, setServiceSelection } from "../../../config/services.js";
-import { filterDefaults, loadUserConfig, saveUserConfig } from "../../../config/userConfig.js";
 import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannel,
-  getPredefinedChannels, getTagRegistry, getUserChannels, isPredefinedChannel, isUserChannel, loadUserChannels, resolveStoredChannel,
-  saveServiceSelections, saveTagRegistry, saveUserChannels, setTagRegistry, transformChannelTags, validateChannelKey, validateChannelName,
+  getPredefinedChannels, getTagRegistry, getUserChannels, isPredefinedChannel, isUserChannel, mutateChannels, resolveStoredChannel,
+  saveServiceSelections, saveTagRegistry, setTagRegistry, tagsMatch, transformChannelTags, validateChannelKey, validateChannelName,
   validateChannelNumber, validateChannelProfile, validateChannelUrl, validateImportedChannels } from "../../../config/userChannels.js";
 import { CONFIG } from "../../../config/index.js";
+import { FileStoreParseError } from "../../../config/persistence.js";
 import type { UserChannel } from "../../../config/userChannels.js";
 import { getDomainConfig } from "../../../config/sites.js";
 import { getProfiles } from "../../../config/profiles.js";
+import { mutateConfig } from "../../../config/userConfig.js";
 import { updateChannelLogo } from "../../../streaming/showInfo.js";
 
+/**
+ * Sends an appropriate error response for a caught error. FileStoreParseError (corrupt JSON file) produces a 400 with the parse error details. All other errors
+ * produce a 500 with the formatted error message. This is the single error response path for all channel route handlers.
+ * @param res - The Express response object.
+ * @param error - The caught error.
+ * @param action - Human-readable description of the failed action for the log message (e.g., "import channels", "toggle channel").
+ */
+function sendErrorResponse(res: Response, error: unknown, action: string): void {
+
+  if(error instanceof FileStoreParseError) {
+
+    res.status(400).json({ error: error.message, success: false });
+
+    return;
+  }
+
+  LOG.error("Failed to %s: %s.", action, formatError(error));
+  res.status(500).json({ error: "Failed to " + action + ": " + formatError(error), success: false });
+}
+
 // Fields that appear in the generated M3U playlist and affect Channels DVR's view of the channel. Used to decide whether the playlist reload hint is shown.
-const M3U_FIELDS = [ "channelNumber", "name", "stationId", "tvgShift" ];
+const M3U_FIELDS = [ "channelNumber", "guideTitle", "logoUrl", "name", "stationId", "tvgShift" ];
 
 const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this change.";
 
@@ -72,24 +93,25 @@ async function disablePredefinedChannels(keys: string[]): Promise<void> {
     return;
   }
 
-  const configResult = await loadUserConfig();
-  const userConfig = configResult.config;
+  let updatedList: string[] = [];
 
-  userConfig.channels ??= {};
-  userConfig.channels.disabledPredefined ??= [];
+  await mutateConfig((config) => {
 
-  const disabledSet = new Set(userConfig.channels.disabledPredefined);
+    config.channels ??= {};
+    config.channels.disabledPredefined ??= [];
 
-  for(const key of keys) {
+    const disabledSet = new Set(config.channels.disabledPredefined);
 
-    disabledSet.add(key);
-  }
+    for(const key of keys) {
 
-  userConfig.channels.disabledPredefined = [...disabledSet].toSorted();
+      disabledSet.add(key);
+    }
 
-  await saveUserConfig(userConfig);
+    config.channels.disabledPredefined = [...disabledSet].toSorted();
+    updatedList = config.channels.disabledPredefined;
+  });
 
-  CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
+  CONFIG.channels.disabledPredefined = updatedList;
 }
 
 /**
@@ -104,24 +126,25 @@ async function enablePredefinedChannels(keys: string[]): Promise<void> {
     return;
   }
 
-  const configResult = await loadUserConfig();
-  const userConfig = configResult.config;
+  let updatedList: string[] = [];
 
-  userConfig.channels ??= {};
-  userConfig.channels.disabledPredefined ??= [];
+  await mutateConfig((config) => {
 
-  const disabledSet = new Set(userConfig.channels.disabledPredefined);
+    config.channels ??= {};
+    config.channels.disabledPredefined ??= [];
 
-  for(const key of keys) {
+    const disabledSet = new Set(config.channels.disabledPredefined);
 
-    disabledSet.delete(key);
-  }
+    for(const key of keys) {
 
-  userConfig.channels.disabledPredefined = [...disabledSet].toSorted();
+      disabledSet.delete(key);
+    }
 
-  await saveUserConfig(userConfig);
+    config.channels.disabledPredefined = [...disabledSet].toSorted();
+    updatedList = config.channels.disabledPredefined;
+  });
 
-  CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
+  CONFIG.channels.disabledPredefined = updatedList;
 }
 
 /**
@@ -149,8 +172,7 @@ export function setupChannelRoutes(app: Express): void {
       res.send(stringifySorted(resolved) + "\n");
     } catch(error) {
 
-      LOG.error("Failed to export channels: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to export channels: " + formatError(error) });
+      sendErrorResponse(res, error, "export channels");
     }
   });
 
@@ -172,8 +194,16 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Save the imported channels, replacing all existing user channels.
-      await saveUserChannels(validationResult.channels);
+      // Save the imported channels, replacing all existing user channels. Clear the current map and assign the imported entries.
+      await mutateChannels((channels) => {
+
+        for(const key of Object.keys(channels)) {
+
+          Reflect.deleteProperty(channels, key);
+        }
+
+        Object.assign(channels, validationResult.channels);
+      });
 
       const channelCount = Object.keys(validationResult.channels).length;
 
@@ -184,8 +214,7 @@ export function setupChannelRoutes(app: Express): void {
         patch: buildChannelTablePatch(allKeys, getProfiles()), success: true });
     } catch(error) {
 
-      LOG.error("Failed to import channels: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to import channels: " + formatError(error) });
+      sendErrorResponse(res, error, "import channels");
     }
   });
 
@@ -229,10 +258,6 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Load existing user channels.
-      const loadResult = await loadUserChannels();
-      const existingChannels = loadResult.parseError ? {} : loadResult.channels;
-
       // Track import statistics.
       const affectedKeys: string[] = [];
       const conflicts: string[] = [];
@@ -242,7 +267,9 @@ export function setupChannelRoutes(app: Express): void {
       let replaced = 0;
       let skipped = 0;
 
-      // Process each parsed channel. Sanitize string values before validation to strip non-printable characters.
+      // Pre-validate and sanitize each parsed channel before entering the mutation. This keeps pure validation outside the serialized write lock.
+      const validEntries: { channel: UserChannel; key: string }[] = [];
+
       for(const m3uChannel of parseResult.channels) {
 
         m3uChannel.name = sanitizeString(m3uChannel.name);
@@ -288,25 +315,6 @@ export function setupChannelRoutes(app: Express): void {
           continue;
         }
 
-        // Check for conflicts with existing channels.
-        if(key in existingChannels) {
-
-          conflicts.push(key);
-
-          if(conflictMode === "skip") {
-
-            skipped++;
-
-            continue;
-          }
-
-          // Replace mode - count as replaced instead of imported.
-          replaced++;
-        } else {
-
-          imported++;
-        }
-
         // Build the channel object.
         const channel: UserChannel = {
 
@@ -320,13 +328,38 @@ export function setupChannelRoutes(app: Express): void {
           channel.stationId = m3uChannel.stationId;
         }
 
-        // Add to channels collection.
-        existingChannels[key] = channel;
-        affectedKeys.push(key);
+        validEntries.push({ channel, key });
       }
 
-      // Save the updated channels.
-      await saveUserChannels(existingChannels);
+      // Apply the validated entries inside the transactional mutation. Conflict detection happens against the current stored channels.
+      await mutateChannels((channels) => {
+
+        for(const { channel, key } of validEntries) {
+
+          // Check for conflicts with existing channels.
+          if(key in channels) {
+
+            conflicts.push(key);
+
+            if(conflictMode === "skip") {
+
+              skipped++;
+
+              continue;
+            }
+
+            // Replace mode - count as replaced instead of imported.
+            replaced++;
+          } else {
+
+            imported++;
+          }
+
+          // Add to channels collection.
+          channels[key] = channel;
+          affectedKeys.push(key);
+        }
+      });
 
       // Log the import.
       LOG.info("M3U import completed: %d imported, %d replaced, %d skipped.", imported, replaced, skipped);
@@ -344,8 +377,7 @@ export function setupChannelRoutes(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to import M3U channels: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to import channels: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "import channels");
     }
   });
 
@@ -373,21 +405,15 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Load existing user channels.
-      const loadResult = await loadUserChannels();
-      const existingChannels = loadResult.parseError ? {} : loadResult.channels;
-
-      // Build a set of all existing channel keys (predefined + user) for deduplication.
-      const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(existingChannels) ]);
-
       const affectedKeys = new Set<string>();
       const disablePredefined = new Set<string>();
       const errors: string[] = [];
       let added = 0;
       let removed = 0;
       let switched = 0;
-      let channelsChanged = false;
-      let selectionsChanged = false;
+      // Mutable flags tracking whether channels or selections were modified. Declared as a state object rather than bare booleans so that TypeScript's
+      // control-flow narrowing does not produce false positives when reading the flags after the mutateChannels callback (which mutates them via closure).
+      const modified = { channels: false, selections: false };
 
       // Build a UserChannel object from an entry's fields. Shared by the switch/enable and add paths to avoid duplicating channel construction logic. When
       // canonicalKey is provided, the channel is a service variant — identity fields (name, stationId) are omitted because they're resolved from the canonical
@@ -410,157 +436,164 @@ export function setupChannelRoutes(app: Express): void {
         return channel;
       }
 
-      for(const entry of channels) {
+      // Process all entries inside a single transactional mutation to avoid TOCTOU races between load and save.
+      await mutateChannels((existingChannels) => {
 
-        const action = entry.action ?? "add";
-        const name = sanitizeString(entry.name?.trim() ?? "");
-        const serviceSlug = entry.serviceSlug?.trim() ?? "";
+        // Build a set of all existing channel keys (predefined + user) for deduplication.
+        const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(existingChannels) ]);
 
-        // Handle enable and switch. Enable re-enables a disabled predefined channel, then falls through to the switch logic to set the service selection.
-        // Switch changes the service selection for an existing channel to point to the browsed service's variant, creating the variant if needed.
-        if((action === "switch") || (action === "enable")) {
+        for(const entry of channels) {
 
-          const canonicalKey = entry.canonicalKey?.trim() ?? "";
+          const action = entry.action ?? "add";
+          const name = sanitizeString(entry.name?.trim() ?? "");
+          const serviceSlug = entry.serviceSlug?.trim() ?? "";
 
-          if(!canonicalKey) {
+          // Handle enable and switch. Enable re-enables a disabled predefined channel, then falls through to the switch logic to set the service selection.
+          // Switch changes the service selection for an existing channel to point to the browsed service's variant, creating the variant if needed.
+          if((action === "switch") || (action === "enable")) {
 
-            errors.push("Entry for '" + name + "' missing canonical key.");
+            const canonicalKey = entry.canonicalKey?.trim() ?? "";
 
-            continue;
-          }
+            if(!canonicalKey) {
 
-          // Re-enable the channel if it was disabled. Must complete before setting the service selection since the config write makes the channel
-          // visible in the lineup.
-          if(action === "enable") {
+              errors.push("Entry for '" + name + "' missing canonical key.");
 
-            // eslint-disable-next-line no-await-in-loop -- Sequential: config state must be updated before setting service selection.
-            await enablePredefinedChannels([canonicalKey]);
-          }
-
-          const variantKey = canonicalKey + "-" + serviceSlug;
-
-          // If no variant exists for this service, create one as a user channel. The canonicalKey parameter tells buildUserChannel to produce a variant
-          // (service-specific fields only, no identity fields).
-          if(!allKeys.has(variantKey)) {
-
-            existingChannels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
-              sanitizeString(entry.channelSelector?.trim() ?? ""), canonicalKey);
-            allKeys.add(variantKey);
-            channelsChanged = true;
-          }
-
-          setServiceSelection(canonicalKey, variantKey);
-          selectionsChanged = true;
-          switched++;
-          affectedKeys.add(canonicalKey);
-
-          continue;
-        }
-
-        // Handle service removal. Reverts the channel away from this service using a three-tier fallback: (1) clear the selection and let
-        // resolveServiceKey find the next enabled variant or canonical, (2) if the resolved service is still this service (no alternative exists),
-        // disable the predefined channel or delete the user channel.
-        if(action === "remove") {
-
-          const canonicalKey = entry.canonicalKey?.trim() ?? "";
-
-          if(!canonicalKey) {
-
-            errors.push("Remove entry for '" + name + "' missing canonical key.");
-
-            continue;
-          }
-
-          // Clear the service selection. resolveServiceKey will now return the canonical or the first enabled alternative variant.
-          setServiceSelection(canonicalKey, canonicalKey);
-          selectionsChanged = true;
-
-          // Check if the resolved service is still this service. If so, there is no alternative — disable or delete the channel.
-          const resolvedKey = resolveServiceKey(canonicalKey);
-          const resolvedTag = getServiceTagForChannel(resolvedKey);
-
-          if(resolvedTag === serviceSlug) {
-
-            // No alternative service exists. Disable predefined channels or delete user channels.
-            if(isPredefinedChannel(canonicalKey)) {
-
-              disablePredefined.add(canonicalKey);
-            } else {
-
-              Reflect.deleteProperty(existingChannels, canonicalKey);
-              channelsChanged = true;
+              continue;
             }
+
+            const variantKey = canonicalKey + "-" + serviceSlug;
+
+            // If no variant exists for this service, create one as a user channel. The canonicalKey parameter tells buildUserChannel to produce a variant
+            // (service-specific fields only, no identity fields).
+            if(!allKeys.has(variantKey)) {
+
+              existingChannels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
+                sanitizeString(entry.channelSelector?.trim() ?? ""), canonicalKey);
+              allKeys.add(variantKey);
+              modified.channels = true;
+            }
+
+            setServiceSelection(canonicalKey, variantKey);
+            modified.selections = true;
+            switched++;
+            affectedKeys.add(canonicalKey);
+
+            continue;
           }
 
-          removed++;
-          affectedKeys.add(canonicalKey);
+          // Handle service removal. Reverts the channel away from this service using a three-tier fallback: (1) clear the selection and let
+          // resolveServiceKey find the next enabled variant or canonical, (2) if the resolved service is still this service (no alternative exists),
+          // disable the predefined channel or delete the user channel.
+          if(action === "remove") {
 
-          continue;
+            const canonicalKey = entry.canonicalKey?.trim() ?? "";
+
+            if(!canonicalKey) {
+
+              errors.push("Remove entry for '" + name + "' missing canonical key.");
+
+              continue;
+            }
+
+            // Clear the service selection. resolveServiceKey will now return the canonical or the first enabled alternative variant.
+            setServiceSelection(canonicalKey, canonicalKey);
+            modified.selections = true;
+
+            // Check if the resolved service is still this service. If so, there is no alternative — disable or delete the channel.
+            const resolvedKey = resolveServiceKey(canonicalKey);
+            const resolvedTag = getServiceTagForChannel(resolvedKey);
+
+            if(resolvedTag === serviceSlug) {
+
+              // No alternative service exists. Disable predefined channels or delete user channels.
+              if(isPredefinedChannel(canonicalKey)) {
+
+                disablePredefined.add(canonicalKey);
+              } else {
+
+                Reflect.deleteProperty(existingChannels, canonicalKey);
+                modified.channels = true;
+              }
+            }
+
+            removed++;
+            affectedKeys.add(canonicalKey);
+
+            continue;
+          }
+
+          // Handle add. Creates a new user channel for channels not yet in the lineup. The browse modal sends 'add' only for genuinely new channels (no
+          // existing canonical). Channels that match existing canonicals appear as 'switch' state in the modal.
+          const url = sanitizeString(entry.url?.trim() ?? "");
+          const channelSelector = sanitizeString(entry.channelSelector?.trim() ?? "");
+
+          if(!name) {
+
+            errors.push("Channel entry missing name.");
+
+            continue;
+          }
+
+          if(!url) {
+
+            errors.push("Channel '" + name + "' missing URL.");
+
+            continue;
+          }
+
+          const urlError = validateChannelUrl(url);
+
+          if(urlError) {
+
+            errors.push("Channel '" + name + "': " + urlError);
+
+            continue;
+          }
+
+          const baseKey = generateChannelKey(name);
+
+          if(!baseKey) {
+
+            errors.push("Could not generate key for channel '" + name + "'.");
+
+            continue;
+          }
+
+          const canonicalExists = allKeys.has(baseKey);
+          const key = (canonicalExists && serviceSlug) ? baseKey + "-" + serviceSlug : baseKey;
+
+          // Skip channels that already exist in the lineup.
+          if(allKeys.has(key)) {
+
+            continue;
+          }
+
+          // When the key differs from baseKey, this is a service variant — pass baseKey as canonicalKey so buildUserChannel produces a variant with only
+          // service-specific fields. Standalone channels (key === baseKey) get the full channel object with identity fields.
+          const newChannel = buildUserChannel(entry, name, url, channelSelector, (key !== baseKey) ? baseKey : undefined);
+
+          existingChannels[key] = newChannel;
+          allKeys.add(key);
+          modified.channels = true;
+          added++;
+          affectedKeys.add(canonicalExists ? baseKey : key);
         }
+      });
 
-        // Handle add. Creates a new user channel for channels not yet in the lineup. The browse modal sends 'add' only for genuinely new channels (no
-        // existing canonical). Channels that match existing canonicals appear as 'switch' state in the modal.
-        const url = sanitizeString(entry.url?.trim() ?? "");
-        const channelSelector = sanitizeString(entry.channelSelector?.trim() ?? "");
+      // Enable predefined channels that had the "enable" action. This must happen after the mutation completes since the config write makes the channel
+      // visible in the lineup.
+      const enableKeys = channels
+        .filter((e): e is typeof e & { canonicalKey: string } => (e.action === "enable") && Boolean(e.canonicalKey?.trim()))
+        .map((e) => e.canonicalKey.trim());
 
-        if(!name) {
+      if(enableKeys.length > 0) {
 
-          errors.push("Channel entry missing name.");
-
-          continue;
-        }
-
-        if(!url) {
-
-          errors.push("Channel '" + name + "' missing URL.");
-
-          continue;
-        }
-
-        const urlError = validateChannelUrl(url);
-
-        if(urlError) {
-
-          errors.push("Channel '" + name + "': " + urlError);
-
-          continue;
-        }
-
-        const baseKey = generateChannelKey(name);
-
-        if(!baseKey) {
-
-          errors.push("Could not generate key for channel '" + name + "'.");
-
-          continue;
-        }
-
-        const canonicalExists = allKeys.has(baseKey);
-        const key = (canonicalExists && serviceSlug) ? baseKey + "-" + serviceSlug : baseKey;
-
-        // Skip channels that already exist in the lineup.
-        if(allKeys.has(key)) {
-
-          continue;
-        }
-
-        // When the key differs from baseKey, this is a service variant — pass baseKey as canonicalKey so buildUserChannel produces a variant with only
-        // service-specific fields. Standalone channels (key === baseKey) get the full channel object with identity fields.
-        const newChannel = buildUserChannel(entry, name, url, channelSelector, (key !== baseKey) ? baseKey : undefined);
-
-        existingChannels[key] = newChannel;
-        allKeys.add(key);
-        channelsChanged = true;
-        added++;
-        affectedKeys.add(canonicalExists ? baseKey : key);
+        await enablePredefinedChannels(enableKeys);
       }
 
-      // Save changes. saveUserChannels() persists both channel data and service selections in a single file write, so we only need saveServiceSelections()
-      // (which writes the same file using the module-level cache) when selections changed but no new channels were added.
-      if(channelsChanged) {
-
-        await saveUserChannels(existingChannels);
-      } else if(selectionsChanged) {
+      // Save service selections when selections changed but no channel data was written. When channels were modified, the mutation already persisted
+      // selections as part of the channel write.
+      if(!modified.channels && modified.selections) {
 
         await saveServiceSelections();
       }
@@ -603,8 +636,7 @@ export function setupChannelRoutes(app: Express): void {
         switched });
     } catch(error) {
 
-      LOG.error("Failed to apply browse changes: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to apply changes: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "apply changes");
     }
   });
 
@@ -655,8 +687,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ enabled, key, patch: buildChannelTablePatch([key], getProfiles()), success: true });
     } catch(error) {
 
-      LOG.error("Failed to toggle predefined channel: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to toggle channel: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "toggle channel");
     }
   });
 
@@ -728,8 +759,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ channel: canonicalKey, patch: buildChannelTablePatch([canonicalKey], profiles), service: serviceKey, success: true });
     } catch(error) {
 
-      LOG.error("Failed to update service selection: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to update service: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "update service");
     }
   });
 
@@ -785,40 +815,39 @@ export function setupChannelRoutes(app: Express): void {
         }
       }
 
-      // Load current config.
-      const configResult = await loadUserConfig();
-      const userConfig = configResult.config;
-
-      // Initialize channels.disabledPredefined if not present.
-      userConfig.channels ??= {};
-
+      let updatedList: string[] = [];
       const targetSet = new Set(targetKeys);
 
-      if(enabled && (scope === "all")) {
+      await mutateConfig((config) => {
 
-        // Enable all is a full reset — clear the entire disabled list.
-        userConfig.channels.disabledPredefined = [];
-      } else if(enabled) {
+        config.channels ??= {};
 
-        // Scoped enable: remove target keys from the disabled list (subtractive — preserves other disabled channels).
-        userConfig.channels.disabledPredefined = (userConfig.channels.disabledPredefined ?? []).filter((k) => !targetSet.has(k));
-      } else {
+        if(enabled && (scope === "all")) {
 
-        // Disable: add target keys to the disabled list (additive — preserves other disabled channels).
-        const existing = new Set(userConfig.channels.disabledPredefined ?? []);
+          // Enable all is a full reset - clear the entire disabled list.
+          config.channels.disabledPredefined = [];
+        } else if(enabled) {
 
-        for(const k of targetKeys) {
+          // Scoped enable: remove target keys from the disabled list (subtractive - preserves other disabled channels).
+          config.channels.disabledPredefined = (config.channels.disabledPredefined ?? []).filter((k: string) => !targetSet.has(k));
+        } else {
 
-          existing.add(k);
+          // Disable: add target keys to the disabled list (additive - preserves other disabled channels).
+          const existing = new Set(config.channels.disabledPredefined ?? []);
+
+          for(const k of targetKeys) {
+
+            existing.add(k);
+          }
+
+          config.channels.disabledPredefined = [...existing].toSorted();
         }
 
-        userConfig.channels.disabledPredefined = [...existing].toSorted();
-      }
-
-      await saveUserConfig(userConfig);
+        updatedList = config.channels.disabledPredefined;
+      });
 
       // Update the runtime CONFIG to reflect the change immediately.
-      CONFIG.channels.disabledPredefined = userConfig.channels.disabledPredefined;
+      CONFIG.channels.disabledPredefined = updatedList;
 
       const affected = targetKeys.length;
       const scopeLabel = (scope === "all") ? "All" : (scope === "pacific") ? "Pacific" : "East";
@@ -828,8 +857,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ affected, enabled, keys: targetKeys, patch: buildChannelTablePatch(targetKeys, getProfiles()), scope, success: true });
     } catch(error) {
 
-      LOG.error("Failed to toggle predefined channels: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to toggle channels: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "toggle channels");
     }
   });
 
@@ -864,51 +892,42 @@ export function setupChannelRoutes(app: Express): void {
 
       listing.sort((a, b) => compareChannelSort(a.channel, a.key, b.channel, b.key, sortField, sortDir));
 
-      // Load user channels for modification.
-      const result = await loadUserChannels();
-
-      if(result.parseError) {
-
-        res.status(400).json({ error: "Cannot auto-number: channels file contains invalid JSON.", success: false });
-
-        return;
-      }
-
       const affectedKeys: string[] = [];
 
-      if(clearMode) {
+      await mutateChannels((channels) => {
 
-        // Clear channel numbers from all visible channels. Null signals "clear this field" — the normalizer in saveUserChannels() handles the storage conventions.
-        for(const entry of listing) {
+        if(clearMode) {
 
-          const existing = result.channels[entry.key] ?? {};
+          // Clear channel numbers from all visible channels. Null signals "clear this field" - the normalizer handles the storage conventions.
+          for(const entry of listing) {
 
-          existing.channelNumber = null;
-          result.channels[entry.key] = existing;
-          affectedKeys.push(entry.key);
-        }
-      } else {
+            const existing = channels[entry.key] ?? {};
 
-        // Assign sequential numbers starting from the requested start value.
-        for(let i = 0; i < listing.length; i++) {
-
-          const entry = listing[i];
-          const num = start + i;
-
-          if(num > 99999) {
-
-            break;
+            existing.channelNumber = null;
+            channels[entry.key] = existing;
+            affectedKeys.push(entry.key);
           }
+        } else {
 
-          const existing = result.channels[entry.key] ?? {};
+          // Assign sequential numbers starting from the requested start value.
+          for(let i = 0; i < listing.length; i++) {
 
-          existing.channelNumber = num;
-          result.channels[entry.key] = existing;
-          affectedKeys.push(entry.key);
+            const entry = listing[i];
+            const num = start + i;
+
+            if(num > 99999) {
+
+              break;
+            }
+
+            const existing = channels[entry.key] ?? {};
+
+            existing.channelNumber = num;
+            channels[entry.key] = existing;
+            affectedKeys.push(entry.key);
+          }
         }
-      }
-
-      await saveUserChannels(result.channels);
+      });
 
       const action = clearMode ? "Cleared" : "Numbered";
 
@@ -923,8 +942,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ affected: affectedKeys.length, message, patch: buildChannelTablePatch(affectedKeys, profiles), success: true });
     } catch(error) {
 
-      LOG.error("Failed to auto-number channels: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to auto-number channels: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "auto-number channels");
     }
   });
 
@@ -940,18 +958,9 @@ export function setupChannelRoutes(app: Express): void {
       // Get visible channels (enabled + available by service filter).
       const listing = getChannelListing().filter((entry) => entry.enabled && entry.availableByService);
 
-      // Load user channels for modification.
-      const result = await loadUserChannels();
-
-      if(result.parseError) {
-
-        res.status(400).json({ error: "Cannot update HDHR settings: channels file contains invalid JSON.", success: false });
-
-        return;
-      }
-
       const affectedKeys: string[] = [];
 
+      // Pre-compute which channels need updating. The listing snapshot is consistent since no concurrent mutation can change it before we enter the lock.
       for(const entry of listing) {
 
         const current = entry.channel.hdhrEnabled !== false;
@@ -962,10 +971,6 @@ export function setupChannelRoutes(app: Express): void {
           continue;
         }
 
-        const existing = result.channels[entry.key] ?? {};
-
-        existing.hdhrEnabled = enable ? null : false;
-        result.channels[entry.key] = existing;
         affectedKeys.push(entry.key);
       }
 
@@ -976,7 +981,16 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      await saveUserChannels(result.channels);
+      await mutateChannels((channels) => {
+
+        for(const key of affectedKeys) {
+
+          const existing = channels[key] ?? {};
+
+          existing.hdhrEnabled = enable ? null : false;
+          channels[key] = existing;
+        }
+      });
 
       const action = enable ? "included in" : "excluded from";
 
@@ -988,8 +1002,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ affected: affectedKeys.length, message, patch: buildChannelTablePatch(affectedKeys, profiles), success: true });
     } catch(error) {
 
-      LOG.error("Failed to bulk-toggle HDHR: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to toggle HDHR settings: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "toggle HDHR settings");
     }
   });
 
@@ -1002,7 +1015,7 @@ export function setupChannelRoutes(app: Express): void {
 
       const body = req.body as { action?: string; tag?: string };
       const action = body.action;
-      const tag = typeof body.tag === "string" ? body.tag.trim().toLowerCase() : "";
+      const tag = typeof body.tag === "string" ? body.tag.trim() : "";
 
       if((action !== "add") && (action !== "remove")) {
 
@@ -1018,10 +1031,10 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Validate the tag is in the active vocabulary.
-      const vocabulary = new Set(getActiveTagVocabulary());
+      // Validate the tag is in the active vocabulary (case-insensitive).
+      const vocabularyLower = new Set(getActiveTagVocabulary().map((t) => t.toLowerCase()));
 
-      if(!vocabulary.has(tag)) {
+      if(!vocabularyLower.has(tag.toLowerCase())) {
 
         res.status(400).json({ error: "Unknown tag: " + tag + ".", success: false });
 
@@ -1065,8 +1078,7 @@ export function setupChannelRoutes(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to bulk-update tags: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to update tags: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "update tags");
     }
   });
 
@@ -1108,13 +1120,11 @@ export function setupChannelRoutes(app: Express): void {
       CONFIG.channels.enabledServices = [...tags];
 
       // Save to config file.
-      const configResult = await loadUserConfig();
-      const userConfig = configResult.config;
+      await mutateConfig((config) => {
 
-      userConfig.channels ??= {};
-      userConfig.channels.enabledServices = tags;
-
-      await saveUserConfig(filterDefaults(userConfig));
+        config.channels ??= {};
+        config.channels.enabledServices = tags;
+      });
 
       LOG.info("Service filter updated: %s.", tags.length > 0 ? tags.join(", ") : "all services");
 
@@ -1124,8 +1134,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ enabledServices: tags, patch: { counts, rows: [], scopeCounts }, success: true });
     } catch(error) {
 
-      LOG.error("Failed to update service filter: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to update service filter: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "update service filter");
     }
   });
 
@@ -1136,12 +1145,11 @@ export function setupChannelRoutes(app: Express): void {
 
       CONFIG.channels.setupCompleted = true;
 
-      const configResult = await loadUserConfig();
+      await mutateConfig((config) => {
 
-      configResult.config.channels ??= {};
-      configResult.config.channels.setupCompleted = true;
-
-      await saveUserConfig(configResult.config);
+        config.channels ??= {};
+        config.channels.setupCompleted = true;
+      });
 
       // Return a full patch so the client can refresh the channel table after the setup wizard completes. The wizard's browse step may have added channels
       // via the modify endpoint, and the service filter may have changed — the patch ensures the table reflects the current state.
@@ -1150,8 +1158,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ patch: { counts, rows: [], scopeCounts }, success: true });
     } catch(error) {
 
-      LOG.error("Failed to save setup completed state: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to save setup state: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "save setup state");
     }
   });
 
@@ -1212,21 +1219,18 @@ export function setupChannelRoutes(app: Express): void {
       }
 
       // Persist to config file.
-      const configResult = await loadUserConfig();
-      const userConfig = configResult.config;
+      await mutateConfig((config) => {
 
-      userConfig.channels ??= {};
-      userConfig.channels.channelSortDirection = CONFIG.channels.channelSortDirection;
-      userConfig.channels.channelSortField = CONFIG.channels.channelSortField;
-      userConfig.channels.visibleColumns = CONFIG.channels.visibleColumns;
-
-      await saveUserConfig(filterDefaults(userConfig));
+        config.channels ??= {};
+        config.channels.channelSortDirection = CONFIG.channels.channelSortDirection;
+        config.channels.channelSortField = CONFIG.channels.channelSortField;
+        config.channels.visibleColumns = CONFIG.channels.visibleColumns;
+      });
 
       res.json({ success: true });
     } catch(error) {
 
-      LOG.error("Failed to update display preferences: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to update display preferences: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "update display preferences");
     }
   });
 
@@ -1290,8 +1294,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ affected, previousSelections, selections, success: true, total: listing.length });
     } catch(error) {
 
-      LOG.error("Failed to bulk assign service: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to bulk assign service: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "bulk assign service");
     }
   });
 
@@ -1357,8 +1360,7 @@ export function setupChannelRoutes(app: Express): void {
       res.json({ restored, selections, success: true });
     } catch(error) {
 
-      LOG.error("Failed to bulk restore services: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to bulk restore services: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "bulk restore services");
     }
   });
 
@@ -1396,22 +1398,15 @@ export function setupChannelRoutes(app: Express): void {
           return;
         }
 
-        // Remove the override.
-        const result = await loadUserChannels();
+        // Remove the override. Check if it contains M3U-relevant fields before removing so the response can include the playlist reload hint.
+        let revertHint = "";
 
-        if(result.parseError) {
+        await mutateChannels((channels) => {
 
-          res.status(400).json({ message: "Cannot revert channel: channels file contains invalid JSON.", success: false });
+          revertHint = playlistHintForStored(channels[key]);
 
-          return;
-        }
-
-        // Check if the override contains M3U-relevant fields before removing it.
-        const revertHint = playlistHintForStored(result.channels[key]);
-
-        Reflect.deleteProperty(result.channels, key);
-
-        await saveUserChannels(result.channels);
+          Reflect.deleteProperty(channels, key);
+        });
 
         LOG.info("Channel '%s' reverted to predefined defaults.", key);
 
@@ -1455,40 +1450,33 @@ export function setupChannelRoutes(app: Express): void {
           }
         }
 
-        // Load and update the channel. For predefined channels, store a delta override with null to clear fields. For user channels, use undefined to delete.
-        const result = await loadUserChannels();
+        // Update the channel inside a transactional mutation. For predefined channels, store a delta override with null to clear fields. For user channels, use
+        // undefined to delete. The ?? {} creates an empty ChannelDelta for predefined channels that don't have a user override yet. Null signals "clear this field"
+        // for all channel types - the normalizer handles delta comparison for predefined channels and null-stripping for user channels.
+        await mutateChannels((channels) => {
 
-        if(result.parseError) {
+          const stored = channels[key] ?? {};
 
-          res.status(400).json({ message: "Cannot edit: channels file contains invalid JSON.", success: false });
+          if(field === "channelNumber") {
 
-          return;
-        }
+            stored.channelNumber = value ? parseInt(value, 10) : null;
+          } else if(field === "hdhrEnabled") {
 
-        // Use a StoredChannelMap-compatible update. The ?? {} creates an empty ChannelDelta for predefined channels that don't have a user override yet. Null signals
-        // "clear this field" for all channel types — the normalizer in saveUserChannels() handles delta comparison for predefined channels and null-stripping for
-        // user channels.
-        const stored = result.channels[key] ?? {};
+            stored.hdhrEnabled = (value === "false") ? false : null;
+          } else if(field === "tags") {
 
-        if(field === "channelNumber") {
+            const tags = value ?
+              [...new Set(value.split(",").map((t) => t.trim()).filter((t) => t.length > 0))].toSorted((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })) :
+              [];
 
-          stored.channelNumber = value ? parseInt(value, 10) : null;
-        } else if(field === "hdhrEnabled") {
+            (stored as Record<string, unknown>).tags = (tags.length > 0) ? tags : null;
+          } else {
 
-          stored.hdhrEnabled = (value === "false") ? false : null;
-        } else if(field === "tags") {
+            stored.stationId = value || null;
+          }
 
-          const tags = value ? [...new Set(value.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))].toSorted() : [];
-
-          (stored as Record<string, unknown>).tags = (tags.length > 0) ? tags : null;
-        } else {
-
-          stored.stationId = value || null;
-        }
-
-        result.channels[key] = stored;
-
-        await saveUserChannels(result.channels);
+          channels[key] = stored;
+        });
 
         const fieldLabels: Record<string, string> = {
 
@@ -1525,18 +1513,10 @@ export function setupChannelRoutes(app: Express): void {
         }
 
         // Delete the channel.
-        const result = await loadUserChannels();
+        await mutateChannels((channels) => {
 
-        if(result.parseError) {
-
-          res.status(400).json({ message: "Cannot delete channel: channels file contains invalid JSON.", success: false });
-
-          return;
-        }
-
-        Reflect.deleteProperty(result.channels, key);
-
-        await saveUserChannels(result.channels);
+          Reflect.deleteProperty(channels, key);
+        });
 
         LOG.info("User channel '%s' deleted.", key);
 
@@ -1571,14 +1551,18 @@ export function setupChannelRoutes(app: Express): void {
       const name = sanitizeString(body.name ?? "");
       const url = sanitizeString(body.url ?? "");
       const profile = sanitizeString(body.profile ?? "");
+      const guideTitle = sanitizeString(body.guideTitle ?? "");
+      const logoUrl = sanitizeString(body.logoUrl ?? "");
       const stationId = sanitizeString(body.stationId ?? "");
       const channelSelector = sanitizeString(body.channelSelector ?? "");
       const channelNumberStr = sanitizeString(body.channelNumber ?? "");
       const hdhrEnabled = body.hdhrEnabled !== "false";
 
-      // Parse tags from comma-separated input. Trim, lowercase, filter empty, sort, deduplicate.
+      // Parse tags from comma-separated input. Trim, filter empty, deduplicate, and sort case-insensitively.
       const tagsRaw = sanitizeString(body.tags ?? "");
-      const tags = tagsRaw ? [...new Set(tagsRaw.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))].toSorted() : [];
+      const tags = tagsRaw ?
+        [...new Set(tagsRaw.split(",").map((t) => t.trim()).filter((t) => t.length > 0))].toSorted((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })) :
+        [];
 
       // Validate channel number if provided.
       const channelNumberError = validateChannelNumber(channelNumberStr, key);
@@ -1631,23 +1615,6 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Load existing user channels.
-      const result = await loadUserChannels();
-
-      if(result.parseError) {
-
-        // If channels file is corrupt, start fresh on add (which will create a valid file).
-        if(action === "add") {
-
-          result.channels = {};
-        } else {
-
-          res.status(400).json({ message: "Cannot edit channel: channels file contains invalid JSON.", success: false });
-
-          return;
-        }
-      }
-
       let playlistChanged = false;
 
       // For predefined channels being edited, compute a delta of only the changed fields. For user-defined channels and adds, build a full channel object.
@@ -1661,7 +1628,9 @@ export function setupChannelRoutes(app: Express): void {
 
           channelNumber: channelNumberStr ? parseInt(channelNumberStr, 10) : undefined,
           channelSelector,
+          guideTitle,
           hdhrEnabled,
+          logoUrl,
           name,
           profile,
           stationId,
@@ -1684,7 +1653,7 @@ export function setupChannelRoutes(app: Express): void {
 
         // First check: did the user change anything from what the form showed? The edit form is pre-populated with the selected service's resolved channel, which
         // may differ from the canonical predefined base when a variant is selected (e.g., the Hulu variant has a different URL and channelSelector). If the submitted
-        // values match the displayChannel exactly, the user saved without modification — no override should be created, and any existing override is preserved.
+        // values match the displayChannel exactly, the user saved without modification - no override should be created, and any existing override is preserved.
         // Tags are compared separately (array comparison) after the scalar fields.
         const resolvedKey = resolveServiceKey(key);
         const displayChannel = getResolvedChannel(resolvedKey) ?? predefinedBase;
@@ -1734,15 +1703,18 @@ export function setupChannelRoutes(app: Express): void {
 
         if(!hasChanges) {
 
-          // The submitted values match the predefined base exactly. If an override exists, this means the user edited their customizations away — treat it as an
+          // The submitted values match the predefined base exactly. If an override exists, this means the user edited their customizations away - treat it as an
           // implicit revert by removing the override and returning the predefined row HTML.
           if(isUserChannel(key)) {
 
-            const implicitRevertHint = playlistHintForStored(result.channels[key]);
+            let implicitRevertHint = "";
 
-            Reflect.deleteProperty(result.channels, key);
+            await mutateChannels((channels) => {
 
-            await saveUserChannels(result.channels);
+              implicitRevertHint = playlistHintForStored(channels[key]);
+
+              Reflect.deleteProperty(channels, key);
+            });
 
             LOG.info("Channel '%s' reverted to predefined defaults (edit matched predefined values).", key);
 
@@ -1759,7 +1731,7 @@ export function setupChannelRoutes(app: Express): void {
 
         // The delta has changes vs the canonical predefined. Before storing a custom override, check if the form values match any service variant's predefined
         // definition. This handles the case where a user edits from a variant (e.g., Hulu), makes a change, saves (creating a custom override), then edits again
-        // and reverts the change. The URL and channelSelector still differ from the canonical predefined but match the variant — that's a revert to the variant,
+        // and reverts the change. The URL and channelSelector still differ from the canonical predefined but match the variant - that's a revert to the variant,
         // not a new customization. We resolve each variant against pure PREDEFINED data (not the user-overridden channelsRef) to avoid contamination from the
         // current override.
         const serviceGroup = getServiceGroup(key);
@@ -1789,13 +1761,17 @@ export function setupChannelRoutes(app: Express): void {
 
         if(matchedVariantKey) {
 
-          // Form values match a known variant — revert the override and switch back to that variant.
-          const variantRevertHint = playlistHintForStored(result.channels[key]);
+          // Form values match a known variant - revert the override and switch back to that variant.
+          let variantRevertHint = "";
 
-          Reflect.deleteProperty(result.channels, key);
+          await mutateChannels((channels) => {
+
+            variantRevertHint = playlistHintForStored(channels[key]);
+
+            Reflect.deleteProperty(channels, key);
+          });
+
           setServiceSelection(key, matchedVariantKey);
-
-          await saveUserChannels(result.channels);
 
           LOG.info("Channel '%s' reverted to variant '%s' (edit matched variant values).", key, matchedVariantKey);
 
@@ -1805,22 +1781,34 @@ export function setupChannelRoutes(app: Express): void {
           return;
         }
 
-        // No variant match — store the delta and switch the service selection to the canonical key (the custom override). This ensures the service dropdown shows
+        // No variant match - store the delta and switch the service selection to the canonical key (the custom override). This ensures the service dropdown shows
         // "Custom" after saving, which is the expected behavior when a user customizes a predefined channel.
         setServiceSelection(key, key);
-        result.channels[key] = delta;
+
+        await mutateChannels((channels) => {
+
+          channels[key] = delta;
+        });
 
         playlistChanged = M3U_FIELDS.some((f) => f in delta);
       } else {
 
-        // User-defined channel or add: build a full channel object. For edits, snapshot the old channel to detect M3U-relevant changes.
-        const oldChannel = ((action === "edit") && (key in result.channels)) ? result.channels[key] : undefined;
-
+        // User-defined channel or add: build a full channel object.
         const channel: UserChannel = {
 
           name,
           url
         };
+
+        if(guideTitle) {
+
+          channel.guideTitle = guideTitle;
+        }
+
+        if(logoUrl) {
+
+          channel.logoUrl = logoUrl;
+        }
 
         if(profile) {
 
@@ -1853,15 +1841,23 @@ export function setupChannelRoutes(app: Express): void {
           channel.hdhrEnabled = false;
         }
 
-        result.channels[key] = channel;
+        // For edits, snapshot the old channel inside the mutation to detect M3U-relevant changes. For adds the playlist always changes.
+        await mutateChannels((channels) => {
 
-        // For adds the playlist always changes. For edits, check whether any M3U-relevant field differs from the old stored values.
-        playlistChanged = (action === "add") ||
-          ((oldChannel !== undefined) &&
-            M3U_FIELDS.some((f) => (channel as unknown as Record<string, unknown>)[f] !== (oldChannel as unknown as Record<string, unknown>)[f]));
+          if(action === "edit") {
+
+            const oldChannel = (key in channels) ? channels[key] : undefined;
+
+            channels[key] = channel;
+            playlistChanged = (oldChannel !== undefined) &&
+              M3U_FIELDS.some((f) => (channel as unknown as Record<string, unknown>)[f] !== (oldChannel as unknown as Record<string, unknown>)[f]);
+          } else {
+
+            channels[key] = channel;
+            playlistChanged = true;
+          }
+        });
       }
-
-      await saveUserChannels(result.channels);
 
       // Trigger a logo lookup for the new or updated station ID. Fire-and-forget - the logo appears on the next page load.
       if(stationId) {
@@ -1880,7 +1876,7 @@ export function setupChannelRoutes(app: Express): void {
       // Check if the new channel's service isn't in the active filter.
       const serviceWarning = (action === "add") ? buildServiceFilterWarning(url) : undefined;
 
-      // Return success response with patch for client-side DOM update. Changes take effect immediately due to hot-reloading in saveUserChannels().
+      // Return success response with patch for client-side DOM update. Changes take effect immediately due to hot-reloading in mutateChannels().
       res.json({
 
         isNew: action === "add",
@@ -1892,8 +1888,7 @@ export function setupChannelRoutes(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to save channel: %s.", formatError(error));
-      res.status(500).json({ message: "Failed to save channel: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "save channel");
     }
   });
 
@@ -1919,7 +1914,7 @@ export function setupChannelRoutes(app: Express): void {
     try {
 
       const body = req.body as { tag?: string };
-      const tag = typeof body.tag === "string" ? body.tag.trim().toLowerCase() : "";
+      const tag = typeof body.tag === "string" ? body.tag.trim() : "";
 
       if(tag.length === 0) {
 
@@ -1935,17 +1930,17 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      if(!(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/).test(tag)) {
+      if(!(/^[a-zA-Z0-9]([a-zA-Z0-9 -]*[a-zA-Z0-9])?$/).test(tag)) {
 
-        res.status(400).json({ error: "Tag name must start and end with a letter or number, and contain only lowercase letters, numbers, and hyphens.", success: false });
+        res.status(400).json({ error: "Tag name must start and end with a letter or number, and contain only letters, numbers, spaces, and hyphens.", success: false });
 
         return;
       }
 
-      // Check if the tag already exists in the active vocabulary.
-      const vocabulary = new Set(getActiveTagVocabulary());
+      // Check if the tag already exists in the active vocabulary (case-insensitive).
+      const vocabularyLower = new Set(getActiveTagVocabulary().map((t) => t.toLowerCase()));
 
-      if(vocabulary.has(tag)) {
+      if(vocabularyLower.has(tag.toLowerCase())) {
 
         res.status(409).json({ error: "Tag '" + tag + "' already exists.", success: false });
 
@@ -1955,7 +1950,7 @@ export function setupChannelRoutes(app: Express): void {
       // Check if the tag is a deleted predefined tag — the user should restore it instead of creating a duplicate.
       const registry = getTagRegistry();
 
-      if(registry.deletedTags.includes(tag)) {
+      if(registry.deletedTags.some((t) => tagsMatch(t, tag))) {
 
         res.status(409).json({ error: "Tag '" + tag + "' is a deleted predefined tag. Use restore instead of creating a new one.", success: false });
 
@@ -1977,8 +1972,7 @@ export function setupChannelRoutes(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to create tag: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to create tag: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "create tag");
     }
   });
 
@@ -1989,7 +1983,7 @@ export function setupChannelRoutes(app: Express): void {
 
     try {
 
-      const tag = (req.params as { tag?: string }).tag?.toLowerCase() ?? "";
+      const tag = (req.params as { tag?: string }).tag?.trim() ?? "";
 
       if(tag.length === 0) {
 
@@ -1999,8 +1993,8 @@ export function setupChannelRoutes(app: Express): void {
       }
 
       const registry = getTagRegistry();
-      const isPredefined = PREDEFINED_TAGS.includes(tag);
-      const isUserTag = registry.tags.includes(tag);
+      const isPredefined = PREDEFINED_TAGS.some((t) => tagsMatch(t, tag));
+      const isUserTag = registry.tags.some((t) => tagsMatch(t, tag));
 
       if(!isPredefined && !isUserTag) {
 
@@ -2011,8 +2005,11 @@ export function setupChannelRoutes(app: Express): void {
 
       if(isPredefined) {
 
+        // Find the canonical predefined form for storage.
+        const canonicalTag = PREDEFINED_TAGS.find((t) => tagsMatch(t, tag)) ?? tag;
+
         // Already deleted — no-op, return current state without unnecessary I/O.
-        if(registry.deletedTags.includes(tag)) {
+        if(registry.deletedTags.some((t) => tagsMatch(t, tag))) {
 
           res.json({
 
@@ -2023,19 +2020,19 @@ export function setupChannelRoutes(app: Express): void {
           return;
         }
 
-        registry.deletedTags.push(tag);
+        registry.deletedTags.push(canonicalTag);
       } else {
 
         // Remove from user tags.
-        registry.tags = registry.tags.filter((t) => t !== tag);
+        registry.tags = registry.tags.filter((t) => !tagsMatch(t, tag));
       }
 
       setTagRegistry(registry);
 
       // Cascade: strip the deleted tag from all channel assignments. transformChannelTags handles loading, delta normalization, and persistence.
       const { affectedKeys, error } = await transformChannelTags(
-        (entry) => entry.channel.tags?.includes(tag) === true,
-        (tags) => tags.filter((t) => t !== tag)
+        (entry) => entry.channel.tags?.some((t) => tagsMatch(t, tag)) === true,
+        (tags) => tags.filter((t) => !tagsMatch(t, tag))
       );
 
       if(error) {
@@ -2059,8 +2056,7 @@ export function setupChannelRoutes(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to delete tag: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to delete tag: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "delete tag");
     }
   });
 
@@ -2072,7 +2068,7 @@ export function setupChannelRoutes(app: Express): void {
     try {
 
       const body = req.body as { tag?: string };
-      const tag = typeof body.tag === "string" ? body.tag.trim().toLowerCase() : "";
+      const tag = typeof body.tag === "string" ? body.tag.trim() : "";
 
       if(tag.length === 0) {
 
@@ -2083,27 +2079,32 @@ export function setupChannelRoutes(app: Express): void {
 
       const registry = getTagRegistry();
 
-      if(!registry.deletedTags.includes(tag)) {
+      if(!registry.deletedTags.some((t) => tagsMatch(t, tag))) {
 
         res.status(404).json({ error: "Tag '" + tag + "' is not a deleted predefined tag.", success: false });
 
         return;
       }
 
-      registry.deletedTags = registry.deletedTags.filter((t) => t !== tag);
+      registry.deletedTags = registry.deletedTags.filter((t) => !tagsMatch(t, tag));
       setTagRegistry(registry);
 
       // Cascade-restore: add the tag back to predefined channels whose definition includes it but whose current resolved tags don't (stripped during cascade
       // delete). transformChannelTags handles loading, delta normalization, and persistence. The normalizer strips the tags delta when the result matches the
       // predefined definition, cleanly reverting the channel to its default state.
+
+      // Resolve the canonical predefined tag name for the restored tag so channel data uses the predefined casing.
+      const canonicalTag = PREDEFINED_TAGS.find((t) => tagsMatch(t, tag)) ?? tag;
+
       const { affectedKeys, error } = await transformChannelTags(
         (entry) => {
 
           const predefined = getPredefinedChannel(entry.key);
 
-          return (predefined?.tags?.includes(tag) === true) && (entry.channel.tags?.includes(tag) !== true);
+          return (predefined?.tags?.some((t) => tagsMatch(t, tag)) === true) &&
+            (entry.channel.tags?.some((t) => tagsMatch(t, tag)) !== true);
         },
-        (tags) => [ ...tags, tag ]
+        (tags) => [ ...tags, canonicalTag ]
       );
 
       if(error) {
@@ -2127,8 +2128,7 @@ export function setupChannelRoutes(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to restore tag: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to restore tag: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "restore tag");
     }
   });
 
@@ -2140,8 +2140,8 @@ export function setupChannelRoutes(app: Express): void {
     try {
 
       const body = req.body as { newTag?: string; oldTag?: string };
-      const oldTag = typeof body.oldTag === "string" ? body.oldTag.trim().toLowerCase() : "";
-      const newTag = typeof body.newTag === "string" ? body.newTag.trim().toLowerCase() : "";
+      const oldTag = typeof body.oldTag === "string" ? body.oldTag.trim() : "";
+      const newTag = typeof body.newTag === "string" ? body.newTag.trim() : "";
 
       if(!oldTag || !newTag) {
 
@@ -2150,18 +2150,18 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      if(oldTag === newTag) {
+      if(tagsMatch(oldTag, newTag)) {
 
         res.status(400).json({ error: "New tag name must differ from the old name.", success: false });
 
         return;
       }
 
-      if(!(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/).test(newTag)) {
+      if(!(/^[a-zA-Z0-9]([a-zA-Z0-9 -]*[a-zA-Z0-9])?$/).test(newTag)) {
 
         res.status(400).json({
 
-          error: "Tag name must start and end with a letter or number, and contain only lowercase letters, numbers, and hyphens.", success: false
+          error: "Tag name must start and end with a letter or number, and contain only letters, numbers, spaces, and hyphens.", success: false
         });
 
         return;
@@ -2174,18 +2174,18 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Validate old tag exists in the active vocabulary.
-      const vocabulary = new Set(getActiveTagVocabulary());
+      // Validate old tag exists in the active vocabulary (case-insensitive).
+      const vocabularyLower = new Set(getActiveTagVocabulary().map((t) => t.toLowerCase()));
 
-      if(!vocabulary.has(oldTag)) {
+      if(!vocabularyLower.has(oldTag.toLowerCase())) {
 
         res.status(404).json({ error: "Tag '" + oldTag + "' not found.", success: false });
 
         return;
       }
 
-      // Validate new tag doesn't already exist.
-      if(vocabulary.has(newTag)) {
+      // Validate new tag doesn't already exist (case-insensitive).
+      if(vocabularyLower.has(newTag.toLowerCase())) {
 
         res.status(409).json({ error: "Tag '" + newTag + "' already exists.", success: false });
 
@@ -2194,29 +2194,31 @@ export function setupChannelRoutes(app: Express): void {
 
       // Update the tag registry: replace old with new in the appropriate list.
       const registry = getTagRegistry();
-      const oldIsPredefined = PREDEFINED_TAGS.includes(oldTag);
+      const oldIsPredefined = PREDEFINED_TAGS.some((t) => tagsMatch(t, oldTag));
 
       if(oldIsPredefined) {
 
-        // Predefined tag: "delete" the old (add to deletedTags) and create the new as a user tag.
-        if(!registry.deletedTags.includes(oldTag)) {
+        // Predefined tag: "delete" the old (add to deletedTags using the canonical predefined form) and create the new as a user tag.
+        const canonicalOld = PREDEFINED_TAGS.find((t) => tagsMatch(t, oldTag)) ?? oldTag;
 
-          registry.deletedTags.push(oldTag);
+        if(!registry.deletedTags.some((t) => tagsMatch(t, oldTag))) {
+
+          registry.deletedTags.push(canonicalOld);
         }
 
         registry.tags.push(newTag);
       } else {
 
         // User tag: replace in the user tags list.
-        registry.tags = registry.tags.map((t) => (t === oldTag) ? newTag : t);
+        registry.tags = registry.tags.map((t) => tagsMatch(t, oldTag) ? newTag : t);
       }
 
       setTagRegistry(registry);
 
       // Cascade: substitute the old tag with the new tag across all channel assignments. transformChannelTags handles loading, delta normalization, and persistence.
       const { affectedKeys, error } = await transformChannelTags(
-        (entry) => entry.channel.tags?.includes(oldTag) === true,
-        (tags) => tags.map((t) => (t === oldTag) ? newTag : t)
+        (entry) => entry.channel.tags?.some((t) => tagsMatch(t, oldTag)) === true,
+        (tags) => tags.map((t) => tagsMatch(t, oldTag) ? newTag : t)
       );
 
       if(error) {
@@ -2241,8 +2243,7 @@ export function setupChannelRoutes(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to rename tag: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to rename tag: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "rename tag");
     }
   });
 }

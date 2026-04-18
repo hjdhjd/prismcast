@@ -4,13 +4,14 @@
  */
 import { CHANNEL_IDENTITY_FIELDS, PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.js";
 import type { Channel, ChannelListingEntry, ChannelMap, StoredChannel, StoredChannelMap } from "../types/index.js";
-import { LOG, containsNonPrintable, sanitizeString, stringifySorted } from "../utils/index.js";
+import { FileStoreParseError, createFileStore } from "./persistence.js";
+import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.js";
 import { buildServiceGroups, getAllServiceTags, getResolvedChannel, getServiceSelections, isChannelAvailableByService, isServiceVariant,
   resolveServiceKey, setEnabledServices, setServiceSelections } from "./services.js";
-import { getChannelsFilePath, getDataDir } from "./paths.js";
-import { loadUserConfig, saveUserConfig } from "./userConfig.js";
 import { CONFIG } from "./index.js";
 import fs from "node:fs";
+import { getChannelsFilePath } from "./paths.js";
+import { mutateConfig } from "./userConfig.js";
 
 const { promises: fsPromises } = fs;
 
@@ -49,7 +50,8 @@ export interface TagRegistry {
   // unassignable, and excluded from ?tag= query validation. Restoring a deleted tag removes it from this list.
   deletedTags: string[];
 
-  // User-created tags added via the tag management editor. These extend the predefined vocabulary with custom organizational categories.
+  // User-created tags added via the tag management editor. These extend the predefined vocabulary with custom organizational categories. Tags are stored
+  // with their original casing as entered by the user. Comparisons throughout the system are case-insensitive.
   tags: string[];
 }
 
@@ -116,120 +118,99 @@ export function getChannelsParseErrorMessage(): string | undefined {
   return userChannelsParseErrorMessage;
 }
 
-/**
- * Loads user channels from the channels file. Returns an empty map if the file doesn't exist, and sets parseError if the file exists but contains invalid JSON.
- * The file can contain metadata keys (`serviceSelections`, `tagRegistry`) which are extracted separately from channel data.
- * @returns The loaded channels with parse status, service selections, and tag registry.
+/* Transactional store for channels.json. The store uses a compound type that carries channel data alongside metadata (serviceSelections, tagRegistry). The parse
+ * function extracts all three from the JSON file. The mutateChannels() wrapper normalizes predefined channel deltas before the write and adapts the compound
+ * type so callers work directly with StoredChannelMap. The beforeWrite hook injects metadata from module state.
  */
-export async function loadUserChannels(): Promise<UserChannelsLoadResult> {
 
-  try {
+/**
+ * Compound data type for the channels file store. Carries channel entries alongside the metadata keys that are stored in the same JSON file.
+ */
+interface ChannelsFileData {
 
-    const content = await fsPromises.readFile(getChannelsFilePath(), "utf-8");
-
-    try {
-
-      const parsed = JSON.parse(content) as Record<string, unknown>;
-
-      // Extract metadata keys (serviceSelections, tagRegistry) — these are not channels, they're organizational state stored alongside channel data.
-      const serviceSelections: Record<string, string> = {};
-      const tagRegistry: TagRegistry = { deletedTags: [], tags: [] };
-      const channels: StoredChannelMap = {};
-
-      for(const [ key, value ] of Object.entries(parsed)) {
-
-        if((key === "serviceSelections") || (key === "providerSelections")) {
-
-          // Copy service selections if it's an object. Accepts the legacy "providerSelections" key for backward compatibility.
-          if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
-
-            for(const [ selKey, selValue ] of Object.entries(value)) {
-
-              if(typeof selValue === "string") {
-
-                serviceSelections[selKey] = selValue;
-              }
-            }
-          }
-        } else if(key === "tagRegistry") {
-
-          // Extract tag registry with defensive validation. Each field must be a string array — non-string elements are silently dropped.
-          if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
-
-            const raw = value as Record<string, unknown>;
-
-            if(Array.isArray(raw.tags)) {
-
-              tagRegistry.tags = raw.tags.filter((t): t is string => typeof t === "string").sort();
-            }
-
-            if(Array.isArray(raw.deletedTags)) {
-
-              tagRegistry.deletedTags = raw.deletedTags.filter((t): t is string => typeof t === "string").sort();
-            }
-          }
-        } else if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
-
-          // It's a channel definition or delta override.
-          channels[key] = value as StoredChannel;
-        }
-      }
-
-      // Silent migration: rename legacy "provider" field to "service" on channel entries. The old field was used as a display name override for the service
-      // selection dropdown. New installs always write "service". This migration ensures existing channels.json files are upgraded transparently.
-      for(const channel of Object.values(channels)) {
-
-        const legacy = channel as Record<string, unknown>;
-
-        if(("provider" in legacy) && !("service" in legacy)) {
-
-          legacy.service = legacy.provider;
-        }
-
-        Reflect.deleteProperty(legacy, "provider");
-      }
-
-      return { channels, parseError: false, serviceSelections, tagRegistry };
-    } catch(parseError) {
-
-      const message = (parseError instanceof Error) ? parseError.message : String(parseError);
-
-      LOG.warn("Invalid JSON in channels file %s: %s. Using predefined channels only.", getChannelsFilePath(), message);
-
-      return { channels: {}, parseError: true, parseErrorMessage: message, serviceSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
-    }
-  } catch(error) {
-
-    // File doesn't exist - this is normal, use predefined channels only.
-    if((error as NodeJS.ErrnoException).code === "ENOENT") {
-
-      return { channels: {}, parseError: false, serviceSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
-    }
-
-    // Other read errors - log and use predefined channels.
-    LOG.warn("Failed to read channels file %s: %s. Using predefined channels only.", getChannelsFilePath(), (error instanceof Error) ? error.message : String(error));
-
-    return { channels: {}, parseError: false, serviceSelections: {}, tagRegistry: { deletedTags: [], tags: [] } };
-  }
+  channels: StoredChannelMap;
+  serviceSelections: Record<string, string>;
+  tagRegistry: TagRegistry;
 }
 
 /**
- * Saves user channels to the channels file and updates the in-memory cache. Changes take effect immediately for new stream requests without requiring a server
- * restart. Creates the data directory if it doesn't exist. Metadata keys (service selections, tag registry) are also saved if they have content. No-op deltas
- * for predefined channel keys are normalized before saving: fields that match the predefined value or null-clear a field the predefined doesn't have are
- * stripped. If the delta becomes empty after normalization, the entry is removed entirely. This ensures that any code path that writes deltas (inline edit,
- * auto-number, browse modal, full edit) produces clean channels.json output without each handler needing to optimize its own delta.
- * @param channels - The channels to save (full definitions or delta overrides).
- * @throws If the file cannot be written.
+ * Parses raw channels.json content into the compound data type. Extracts channel entries, service selections, and tag registry from the top-level JSON object.
+ * Also applies the legacy "provider" to "service" field migration.
+ * @param raw - The raw JSON string from the file.
+ * @returns The parsed compound data.
  */
-export async function saveUserChannels(channels: StoredChannelMap): Promise<void> {
+function parseChannelsFile(raw: string): ChannelsFileData {
 
-  // Ensure data directory exists.
-  await fsPromises.mkdir(getDataDir(), { recursive: true });
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  const channels: StoredChannelMap = {};
+  const serviceSelections: Record<string, string> = {};
+  const tagRegistry: TagRegistry = { deletedTags: [], tags: [] };
 
-  // Normalize predefined channel deltas by stripping no-op fields. A delta field is a no-op if: (1) its value is null and the predefined doesn't have the
-  // field (clearing a nonexistent field), (2) its value is undefined, or (3) its value matches the predefined's value exactly (redundant copy). After stripping,
-  // deltas with no remaining fields are removed entirely.
+  for(const [ key, value ] of Object.entries(parsed)) {
+
+    if((key === "serviceSelections") || (key === "providerSelections")) {
+
+      // Copy service selections if it's an object. Accepts the legacy "providerSelections" key for backward compatibility.
+      if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
+
+        for(const [ selKey, selValue ] of Object.entries(value)) {
+
+          if(typeof selValue === "string") {
+
+            serviceSelections[selKey] = selValue;
+          }
+        }
+      }
+    } else if(key === "tagRegistry") {
+
+      // Extract tag registry with defensive validation. String array fields (tags, deletedTags) drop non-string elements silently.
+      if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
+
+        const rawRegistry = value as Record<string, unknown>;
+
+        if(Array.isArray(rawRegistry.tags)) {
+
+          tagRegistry.tags = rawRegistry.tags.filter((t): t is string => typeof t === "string").sort();
+        }
+
+        if(Array.isArray(rawRegistry.deletedTags)) {
+
+          tagRegistry.deletedTags = rawRegistry.deletedTags.filter((t): t is string => typeof t === "string").sort();
+        }
+      }
+    } else if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
+
+      // It's a channel definition or delta override.
+      channels[key] = value as StoredChannel;
+    }
+  }
+
+  // Silent migration: rename legacy "provider" field to "service" on channel entries. The old field was used as a display name override for the service selection
+  // dropdown. New installs always write "service". This migration ensures existing channels.json files are upgraded transparently.
+  for(const channel of Object.values(channels)) {
+
+    const legacy = channel as Record<string, unknown>;
+
+    if(("provider" in legacy) && !("service" in legacy)) {
+
+      legacy.service = legacy.provider;
+    }
+
+    Reflect.deleteProperty(legacy, "provider");
+  }
+
+  return { channels, serviceSelections, tagRegistry };
+}
+
+/**
+ * Normalizes predefined channel deltas by stripping no-op fields and strips null fields from user channels. A delta field is a no-op if: (1) its value is null
+ * and the predefined doesn't have the field, (2) its value is undefined, or (3) its value matches the predefined's value exactly. After stripping, deltas with
+ * no remaining fields are removed entirely.
+ * @param channels - The raw channel entries to normalize.
+ * @returns The normalized channel map.
+ */
+function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
+
   const filtered: StoredChannelMap = {};
 
   for(const [ key, stored ] of Object.entries(channels)) {
@@ -248,19 +229,19 @@ export async function saveUserChannels(channels: StoredChannelMap): Promise<void
           continue;
         }
 
-        // Skip undefined values — they have no effect.
+        // Skip undefined values - they have no effect.
         if(value === undefined) {
 
           continue;
         }
 
-        // Skip null values when the predefined doesn't have the field — clearing a nonexistent field is a no-op.
+        // Skip null values when the predefined doesn't have the field - clearing a nonexistent field is a no-op.
         if((value === null) && !((field as keyof Channel) in predefined)) {
 
           continue;
         }
 
-        // Skip values that match the predefined exactly — redundant copies. Array fields (like tags) use JSON.stringify for comparison since reference equality
+        // Skip values that match the predefined exactly - redundant copies. Array fields (like tags) use JSON.stringify for comparison since reference equality
         // always fails for arrays. Tags arrays are always sorted and lowercase, making JSON.stringify deterministic.
         if(value !== null) {
 
@@ -292,15 +273,28 @@ export async function saveUserChannels(channels: StoredChannelMap): Promise<void
       }
     } else {
 
-      // User channels: strip null fields. Null is a delta convention for predefined channels ("clear this field") and has no meaning on full Channel definitions —
-      // the Channel type uses T | undefined, never T | null. This allows callers to uniformly use null for "empty/clear" without needing to know the storage convention.
+      // User channels: strip null fields. Null is a delta convention for predefined channels ("clear this field") and has no meaning on full Channel
+      // definitions...the Channel type uses T | undefined, never T | null. This allows callers to uniformly use null for "empty/clear" without needing to
+      // know the storage convention.
       filtered[key] = Object.fromEntries(Object.entries(stored).filter(([ , v ]) => v !== null)) as StoredChannel;
     }
   }
 
-  // Include metadata keys (service selections, tag registry) if they have content.
+  return filtered;
+}
+
+/**
+ * Prepares channels data for writing to disk. Injects metadata from module state (serviceSelections, tagRegistry) into the serializable output. The metadata
+ * is always pulled from module state rather than from the file data, because route handlers may have modified metadata in memory since the last file read.
+ * Delta normalization is handled by mutateChannels() before the data reaches this hook.
+ * @param data - The compound channels data with already-normalized channels.
+ * @returns The serializable output with channels and current metadata.
+ */
+function prepareChannelsForWrite(data: ChannelsFileData): unknown {
+
+  // Build the serializable output with metadata from module state.
+  const output: Record<string, unknown> = { ...data.channels };
   const selections = getServiceSelections();
-  const output: Record<string, unknown> = { ...filtered };
 
   if(Object.keys(selections).length > 0) {
 
@@ -312,18 +306,66 @@ export async function saveUserChannels(channels: StoredChannelMap): Promise<void
     output.tagRegistry = loadedTagRegistry;
   }
 
-  // Write channels with pretty formatting and sorted keys for consistent, diff-friendly output.
-  const content = stringifySorted(output);
+  return output;
+}
 
-  await fsPromises.writeFile(getChannelsFilePath(), content + "\n", "utf-8");
+// Transactional store instance for channels.json.
+const channelsStore = createFileStore<ChannelsFileData>({
 
-  // Update in-memory cache so changes take effect immediately for new stream requests.
-  loadedUserChannels = { ...filtered };
+  beforeWrite: prepareChannelsForWrite,
+  defaultValue: (): ChannelsFileData => ({ channels: {}, serviceSelections: {}, tagRegistry: { deletedTags: [], tags: [] } }),
+  label: "channels",
+  parse: parseChannelsFile,
+  path: getChannelsFilePath
+});
 
-  // Refresh service groups so channelsRef reflects the new channel data. This ensures getResolvedChannel() returns correct data after modifications.
+/**
+ * Reads the current channels from disk without acquiring the serialization lock. Returns the parsed channels with metadata and parse status. Use this for
+ * read-only access and startup initialization. For modifications, use mutateChannels() instead.
+ * @returns The loaded channels with parse status, service selections, and tag registry.
+ */
+export async function readChannels(): Promise<UserChannelsLoadResult> {
+
+  const result = await channelsStore.read();
+
+  return {
+
+    channels: result.data.channels,
+    parseError: result.parseError,
+    parseErrorMessage: result.parseErrorMessage,
+    serviceSelections: result.data.serviceSelections,
+    tagRegistry: result.data.tagRegistry
+  };
+}
+
+/**
+ * Serialized read-modify-write operation on channels.json. The mutation function receives the current StoredChannelMap and modifies it in place. The store
+ * handles atomicity, serialization, corruption guard, backup, and metadata injection. Delta normalization is applied after the caller's mutation and before the
+ * file write so that the normalized result is available for the post-write cache update.
+ * @param fn - Mutation function. Receives current channels. Modify in place; return value is ignored.
+ * @throws FileStoreParseError if channels.json contains invalid JSON.
+ */
+export async function mutateChannels(fn: (channels: StoredChannelMap) => void): Promise<void> {
+
+  // Normalized channels captured from inside the mutation callback for post-write cache update. Normalization runs inside the callback (under the
+  // serialization lock) so the same normalized data is written to disk and assigned to the cache.
+  let normalizedChannels: StoredChannelMap = {};
+
+  await channelsStore.mutate((data: ChannelsFileData) => {
+
+    fn(data.channels);
+
+    // Normalize deltas before the beforeWrite hook serializes the data. This ensures the in-memory cache and the on-disk representation are identical.
+    // The beforeWrite hook (prepareChannelsForWrite) handles metadata injection only.
+    data.channels = normalizeChannelDeltas(data.channels);
+    normalizedChannels = data.channels;
+  });
+
+  // Side effects after successful write. These only run if the store mutation (including atomic file write) completed without error.
+  loadedUserChannels = { ...normalizedChannels };
+
   buildServiceGroups(getMergedChannelMap());
 
-  // Clear any previous parse error since we're writing valid data.
   userChannelsParseError = false;
   userChannelsParseErrorMessage = undefined;
 }
@@ -331,23 +373,15 @@ export async function saveUserChannels(channels: StoredChannelMap): Promise<void
 /**
  * Deletes a user channel by key.
  * @param key - The channel key to delete.
- * @throws If the file cannot be read or written.
+ * @throws FileStoreParseError if the channels file contains invalid JSON.
+ * @throws If the file cannot be written.
  */
 export async function deleteUserChannel(key: string): Promise<void> {
 
-  const result = await loadUserChannels();
+  await mutateChannels((channels) => {
 
-  // If parse error, we can't modify - just log a warning.
-  if(result.parseError) {
-
-    throw new Error("Cannot delete channel: channels file contains invalid JSON.");
-  }
-
-  // Remove the channel.
-  Reflect.deleteProperty(result.channels, key);
-
-  // Save the modified channels.
-  await saveUserChannels(result.channels);
+    Reflect.deleteProperty(channels, key);
+  });
 
   LOG.info("User channel '%s' deleted.", key);
 }
@@ -385,7 +419,14 @@ export async function resetUserChannels(): Promise<void> {
  */
 export async function initializeUserChannels(): Promise<void> {
 
-  const result = await loadUserChannels();
+  const result = await readChannels();
+
+  // Populate module-level state from the loaded file. Migrations below may call mutateChannels(), which updates loadedUserChannels via its side effects
+  // with normalized data. Setting the initial state here ensures the cache is populated even when no migrations run.
+  loadedUserChannels = result.channels;
+  loadedTagRegistry = result.tagRegistry;
+  userChannelsParseError = result.parseError;
+  userChannelsParseErrorMessage = result.parseErrorMessage;
 
   // Silent migration: rename "foxcom" service references to "foxone." Migrates service selections (channels.json) and user channel variant keys. The
   // service filter (config.json) is handled separately below since it's already loaded into CONFIG at this point.
@@ -400,30 +441,27 @@ export async function initializeUserChannels(): Promise<void> {
     }
   }
 
-  for(const key of Object.keys(result.channels)) {
-
-    if(key.endsWith("-foxcom")) {
-
-      result.channels[key.slice(0, -6) + "foxone"] = result.channels[key];
-      Reflect.deleteProperty(result.channels, key);
-      channelsMigrated = true;
-    }
-  }
-
-  // Load service selections before saving so that saveUserChannels (which persists both channels and selections) captures the migrated values.
+  // Load service selections before saving so that mutateChannels (which persists both channels and selections via the beforeWrite hook) captures the
+  // migrated values from module state.
   setServiceSelections(result.serviceSelections);
 
   if(channelsMigrated) {
 
-    await saveUserChannels(result.channels);
+    await mutateChannels((channels) => {
+
+      // Apply the foxcom → foxone key migration. The mutation reads fresh from disk, so we replay the transform rather than passing the in-memory result.
+      for(const key of Object.keys(channels)) {
+
+        if(key.endsWith("-foxcom")) {
+
+          channels[key.slice(0, -6) + "foxone"] = channels[key];
+          Reflect.deleteProperty(channels, key);
+        }
+      }
+    });
 
     LOG.info("Migrated Fox service references from foxcom to foxone.");
   }
-
-  loadedUserChannels = result.channels;
-  loadedTagRegistry = result.tagRegistry;
-  userChannelsParseError = result.parseError;
-  userChannelsParseErrorMessage = result.parseErrorMessage;
 
   // Load enabled services from the configuration, validating that each tag is recognized. Invalid tags (e.g., from hand-edited config.json typos) are stripped
   // silently after logging a warning. Validation must happen after buildServiceGroups() because getAllServiceTags() depends on the groups being built.
@@ -435,14 +473,13 @@ export async function initializeUserChannels(): Promise<void> {
     configuredServices = configuredServices.map((tag) => (tag === "foxcom") ? "foxone" : tag);
     CONFIG.channels.enabledServices = configuredServices;
 
-    const configResult = await loadUserConfig();
+    await mutateConfig((config) => {
 
-    if(configResult.config.channels?.enabledServices) {
+      if(config.channels?.enabledServices) {
 
-      configResult.config.channels.enabledServices = configuredServices;
-
-      await saveUserConfig(configResult.config);
-    }
+        config.channels.enabledServices = configuredServices;
+      }
+    });
 
     LOG.info("Migrated service filter from foxcom to foxone.");
   }
@@ -458,12 +495,11 @@ export async function initializeUserChannels(): Promise<void> {
 
       CONFIG.channels.setupCompleted = true;
 
-      const configResult = await loadUserConfig();
+      await mutateConfig((config) => {
 
-      configResult.config.channels ??= {};
-      configResult.config.channels.setupCompleted = true;
-
-      await saveUserConfig(configResult.config);
+        config.channels ??= {};
+        config.channels.setupCompleted = true;
+      });
     }
   }
 
@@ -499,7 +535,30 @@ export async function initializeUserChannels(): Promise<void> {
 
   if(canonicalKeyMigrated) {
 
-    await saveUserChannels(result.channels);
+    await mutateChannels((channels) => {
+
+      for(const [ key, channel ] of Object.entries(channels)) {
+
+        if((channel as Channel).canonicalKey) {
+
+          continue;
+        }
+
+        const hyphenIndex = key.indexOf("-");
+
+        if(hyphenIndex === -1) {
+
+          continue;
+        }
+
+        const prefix = key.substring(0, hyphenIndex);
+
+        if(prefix in PREDEFINED_CHANNELS) {
+
+          (channel as Channel).canonicalKey = prefix;
+        }
+      }
+    });
 
     LOG.info("Migrated user channel variant entries with explicit canonical key declarations.");
   }
@@ -528,7 +587,24 @@ export async function initializeUserChannels(): Promise<void> {
 
   if(variantFieldsMigrated) {
 
-    await saveUserChannels(result.channels);
+    await mutateChannels((channels) => {
+
+      for(const channel of Object.values(channels)) {
+
+        if(!(channel as Channel).canonicalKey) {
+
+          continue;
+        }
+
+        for(const field of CHANNEL_IDENTITY_FIELDS) {
+
+          if(field in channel) {
+
+            Reflect.deleteProperty(channel, field);
+          }
+        }
+      }
+    });
 
     LOG.info("Stripped redundant identity fields from user channel variant entries.");
   }
@@ -776,7 +852,7 @@ export function getTagRegistry(): TagRegistry {
 }
 
 /**
- * Updates the tag registry state in memory. Call saveUserChannels() after to persist the change.
+ * Updates the tag registry state in memory. Call saveTagRegistry() after to persist the change.
  * @param registry - The new tag registry state.
  */
 export function setTagRegistry(registry: TagRegistry): void {
@@ -792,13 +868,23 @@ export function setTagRegistry(registry: TagRegistry): void {
  */
 export function getActiveTagVocabulary(): string[] {
 
-  const deleted = new Set(loadedTagRegistry.deletedTags);
-  const active = PREDEFINED_TAGS.filter((tag) => !deleted.has(tag));
+  const active = PREDEFINED_TAGS.filter((tag) => !loadedTagRegistry.deletedTags.some((d) => tagsMatch(d, tag)));
 
-  // Merge user tags, deduplicate (in case a user tag matches a non-deleted predefined tag), and sort.
-  const combined = new Set([ ...active, ...loadedTagRegistry.tags ]);
+  // Merge user tags, deduplicate case-insensitively (in case a user tag matches a non-deleted predefined tag), and sort. When a predefined and user tag
+  // collide case-insensitively, the predefined form wins since it appears first in the Map.
+  const seen = new Map<string, string>();
 
-  return [...combined].toSorted();
+  for(const tag of [ ...active, ...loadedTagRegistry.tags ]) {
+
+    const lower = tag.toLowerCase();
+
+    if(!seen.has(lower)) {
+
+      seen.set(lower, tag);
+    }
+  }
+
+  return [...seen.values()].toSorted((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 
 /**
@@ -814,15 +900,27 @@ export function getChannelEffectiveTags(channel: Channel): string[] {
     return [];
   }
 
-  const vocabulary = new Set(getActiveTagVocabulary());
+  const vocabulary = getActiveTagVocabulary();
 
-  return channel.tags.filter((tag) => vocabulary.has(tag));
+  return channel.tags.filter((tag) => vocabulary.some((v) => tagsMatch(v, tag)));
+}
+
+/**
+ * Case-insensitive tag comparison. Tags are freeform strings with preserved casing, but all matching throughout the system is case-insensitive. This function
+ * is the single source of truth for that policy — all tag identity checks should use it rather than inline toLowerCase() calls.
+ * @param a - The first tag.
+ * @param b - The second tag.
+ * @returns True if the tags match case-insensitively.
+ */
+export function tagsMatch(a: string, b: string): boolean {
+
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 /**
  * Applies a tag transformation across channels and persists the result. This is the single source of truth for batch tag mutations — delete, rename, and bulk
  * toggle all route through this function. The caller provides a filter (which channels to transform) and a transform (how to modify each channel's tags). This
- * function handles loading stored channel data, applying the transform, and saving. Delta normalization in saveUserChannels() handles predefined channel
+ * function handles loading stored channel data, applying the transform, and saving. Delta normalization in mutateChannels() handles predefined channel
  * delta computation automatically — callers do not need to reason about deltas vs. full definitions.
  * @param filter - Predicate selecting which listing entries to transform. Receives each ChannelListingEntry from getChannelListing().
  * @param transform - Pure function mapping a channel's current resolved tags to its new tags. Receives the channel's current tags array (may be empty, ordering
@@ -834,43 +932,45 @@ export async function transformChannelTags(
   transform: (tags: string[]) => string[]
 ): Promise<{ affectedKeys: string[]; error?: string }> {
 
-  const result = await loadUserChannels();
-
-  if(result.parseError) {
-
-    return { affectedKeys: [], error: "Cannot update tags: channels file contains invalid JSON." };
-  }
-
   const affectedKeys: string[] = [];
 
-  for(const entry of getChannelListing()) {
+  try {
 
-    if(!filter(entry)) {
+    await mutateChannels((channels) => {
 
-      continue;
+      for(const entry of getChannelListing()) {
+
+        if(!filter(entry)) {
+
+          continue;
+        }
+
+        const currentTags = entry.channel.tags ?? [];
+        const newTags = transform(currentTags).sort();
+
+        // Skip channels where the transform produced no change.
+        if(JSON.stringify(newTags) === JSON.stringify(currentTags.toSorted())) {
+
+          continue;
+        }
+
+        // Set the new tags on the stored entry. Callers use null uniformly for "clear/empty" - the normalizer in mutateChannels() handles the storage
+        // conventions: delta normalization for predefined channels (comparing against raw definitions), null-stripping for user channels.
+        const existing = channels[entry.key] ?? {};
+
+        (existing as Record<string, unknown>).tags = (newTags.length > 0) ? newTags : null;
+        channels[entry.key] = existing;
+        affectedKeys.push(entry.key);
+      }
+    });
+  } catch(error) {
+
+    if(error instanceof FileStoreParseError) {
+
+      return { affectedKeys: [], error: "Cannot update tags: channels file contains invalid JSON." };
     }
 
-    const currentTags = entry.channel.tags ?? [];
-    const newTags = transform(currentTags).sort();
-
-    // Skip channels where the transform produced no change.
-    if(JSON.stringify(newTags) === JSON.stringify(currentTags.toSorted())) {
-
-      continue;
-    }
-
-    // Set the new tags on the stored entry. Callers use null uniformly for "clear/empty" — saveUserChannels() handles the storage conventions: delta normalization
-    // for predefined channels (comparing against raw definitions), null-stripping for user channels (null has no meaning on full Channel definitions).
-    const existing = result.channels[entry.key] ?? {};
-
-    (existing as Record<string, unknown>).tags = (newTags.length > 0) ? newTags : null;
-    result.channels[entry.key] = existing;
-    affectedKeys.push(entry.key);
-  }
-
-  if(affectedKeys.length > 0) {
-
-    await saveUserChannels(result.channels);
+    throw error;
   }
 
   return { affectedKeys };
@@ -1484,21 +1584,23 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
  */
 
 /**
- * Saves the current service selections to the channels file. This triggers a full file save including all user channels.
+ * Saves the current service selections to the channels file. The no-op mutation triggers a write that picks up current serviceSelections from module state via the
+ * beforeWrite hook.
  * @throws If the file cannot be written.
  */
 export async function saveServiceSelections(): Promise<void> {
 
-  // Simply save the user channels — the saveUserChannels function includes service selections automatically.
-  await saveUserChannels(loadedUserChannels);
+  // No-op mutation: the beforeWrite hook injects current serviceSelections from module state.
+  await mutateChannels(() => { /* metadata-only write */ });
 }
 
 /**
- * Saves the current tag registry to the channels file. This triggers a full file save including all user channels.
+ * Saves the current tag registry to the channels file. The no-op mutation triggers a write that picks up the current tag registry from module state via the
+ * beforeWrite hook.
  * @throws If the file cannot be written.
  */
 export async function saveTagRegistry(): Promise<void> {
 
-  // Simply save the user channels — the saveUserChannels function includes the tag registry automatically.
-  await saveUserChannels(loadedUserChannels);
+  // No-op mutation: the beforeWrite hook injects the current tag registry from module state.
+  await mutateChannels(() => { /* metadata-only write */ });
 }

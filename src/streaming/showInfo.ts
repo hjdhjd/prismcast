@@ -5,7 +5,7 @@
 import { LOG, formatError } from "../utils/index.js";
 import { clearChannelLogos, getAllChannels, getChannelListing, getChannelLogo, getChannelStationId, setChannelLogo,
   setChannelLogos } from "../config/userChannels.js";
-import { loadUserConfig, saveUserConfig } from "../config/userConfig.js";
+import { mutateConfig, readConfig } from "../config/userConfig.js";
 import type { Nullable } from "../types/index.js";
 import { emitChannelUpdate } from "./statusEmitter.js";
 import { getAllStreams } from "./registry.js";
@@ -664,7 +664,7 @@ async function loadPersistedDvrHost(): Promise<void> {
 
   try {
 
-    const result = await loadUserConfig();
+    const result = await readConfig();
 
     if(!result.parseError && result.config.dvrHost) {
 
@@ -689,14 +689,10 @@ async function persistDvrHost(host: string): Promise<void> {
 
   try {
 
-    const result = await loadUserConfig();
+    await mutateConfig((config) => {
 
-    if(!result.parseError) {
-
-      result.config.dvrHost = host;
-
-      await saveUserConfig(result.config);
-    }
+      config.dvrHost = host;
+    });
   } catch(error) {
 
     LOG.debug("streaming:showinfo", "Failed to persist DVR host: %s.", formatError(error));

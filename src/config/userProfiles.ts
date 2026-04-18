@@ -4,12 +4,10 @@
  */
 import { DOMAIN_CONFIG, SITE_PROFILES, getBuiltinProfile, isProviderProfile } from "./sites.js";
 import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "../types/index.js";
-import { LOG, containsNonPrintable, stringifySorted } from "../utils/index.js";
-import { getDataDir, getProfilesFilePath } from "./paths.js";
+import { LOG, containsNonPrintable } from "../utils/index.js";
+import { createFileStore } from "./persistence.js";
 import { extractDomain } from "../utils/format.js";
-import fs from "node:fs";
-
-const { promises: fsPromises } = fs;
+import { getProfilesFilePath } from "./paths.js";
 
 /* PrismCast allows users to define custom site profiles and domain mappings in profiles.json inside the data directory. User profiles extend built-in profiles and
  * are merged at runtime, with user domain mappings taking precedence over built-in mappings for domain conflicts. This module handles persistence, validation, and
@@ -22,7 +20,7 @@ const { promises: fsPromises } = fs;
  * User profiles cannot extend other user profiles — only built-in profiles. This prevents cascading breakage when a referenced user profile is deleted.
  */
 
-// Legacy profile flag names that have been renamed. Keys are the old names, values are the current names. Used by loadUserProfiles() and service pack import to
+// Legacy profile flag names that have been renamed. Keys are the old names, values are the current names. Used by initializeUserProfiles() and service pack import to
 // silently normalize persisted and imported profiles at the boundary where external data enters the system.
 const LEGACY_PROFILE_FLAGS: Record<string, string> = { noVideo: "staticCapture" };
 
@@ -139,153 +137,148 @@ export function getUserDomains(): Record<string, DomainConfig> {
   return { ...loadedUserDomains };
 }
 
-/**
- * Loads user profiles and domain mappings from the profiles file. Returns empty objects if the file doesn't exist, and sets parseError if the file exists but
- * contains invalid JSON.
- * @returns The loaded profiles and domains with parse status.
+/* Transactional store for profiles.json. The store uses a compound type that carries both profiles and domain mappings. The parse function uses extractObjectMap()
+ * to validate sub-objects. The beforeWrite hook conditionally includes/excludes top-level keys based on emptiness.
  */
-export async function loadUserProfiles(): Promise<UserProfilesLoadResult> {
 
-  try {
+/**
+ * Compound data type for the profiles file store. Carries both profile definitions and domain mappings.
+ */
+interface ProfilesFileData {
 
-    const content = await fsPromises.readFile(getProfilesFilePath(), "utf-8");
-
-    try {
-
-      // Parse as an untyped record to manually validate structure before assigning to typed interfaces.
-      const parsed = JSON.parse(content) as Record<string, unknown>;
-
-      const profiles = extractObjectMap<SiteProfile>(parsed.profiles);
-      const domains = extractObjectMap<DomainConfig>(parsed.domains);
-
-      // Normalize legacy profile field names at the persistence boundary. If any fields were renamed, persist the updated file so the migration only runs once.
-      // The save is wrapped in its own try/catch so a write failure (disk full, permission error) is logged as a migration warning rather than misrouted to the
-      // JSON parse error handler below. The normalized in-memory profiles are returned regardless...the migration is best-effort persistence.
-      if(normalizeLegacyProfileFlags(profiles)) {
-
-        try {
-
-          await saveUserProfiles(profiles, domains);
-
-          LOG.info("Migrated legacy profile flags in user profiles file.");
-        } catch(saveError) {
-
-          LOG.warn("Failed to persist migrated profile flags: %s. Migration will retry on next startup.",
-            (saveError instanceof Error) ? saveError.message : String(saveError));
-        }
-      }
-
-      return { domains, parseError: false, profiles };
-    } catch(parseError) {
-
-      const message = (parseError instanceof Error) ? parseError.message : String(parseError);
-
-      LOG.warn("Invalid JSON in profiles file %s: %s. Skipping user profiles.", getProfilesFilePath(), message);
-
-      return { domains: {}, parseError: true, parseErrorMessage: message, profiles: {} };
-    }
-  } catch(error) {
-
-    // File doesn't exist — this is normal, no user profiles defined.
-    if((error as NodeJS.ErrnoException).code === "ENOENT") {
-
-      return { domains: {}, parseError: false, profiles: {} };
-    }
-
-    // Other read errors — log and skip user profiles.
-    LOG.warn("Failed to read profiles file %s: %s. Skipping user profiles.", getProfilesFilePath(), (error instanceof Error) ? error.message : String(error));
-
-    return { domains: {}, parseError: false, profiles: {} };
-  }
+  domains: Record<string, DomainConfig>;
+  profiles: Record<string, SiteProfile>;
 }
 
 /**
- * Saves user profiles and domain mappings to the profiles file and updates the in-memory cache. Creates the data directory if it doesn't exist. Keys are sorted
- * for consistent output.
- * @param profiles - The profiles to save.
- * @param domains - The domain mappings to save.
- * @throws If the file cannot be written.
+ * Parses raw profiles.json content into the compound data type.
+ * @param raw - The raw JSON string from the file.
+ * @returns The parsed compound data.
  */
-export async function saveUserProfiles(profiles: Record<string, SiteProfile>, domains: Record<string, DomainConfig>): Promise<void> {
+function parseProfilesFile(raw: string): ProfilesFileData {
 
-  // Ensure data directory exists.
-  await fsPromises.mkdir(getDataDir(), { recursive: true });
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
 
-  // Build the file contents. Only include sections that have entries.
+  return {
+
+    domains: extractObjectMap<DomainConfig>(parsed.domains),
+    profiles: extractObjectMap<SiteProfile>(parsed.profiles)
+  };
+}
+
+/**
+ * Prepares profiles data for writing to disk. Conditionally includes top-level keys only when they have entries.
+ * @param data - The compound profiles data.
+ * @returns The serializable output.
+ */
+function prepareProfilesForWrite(data: ProfilesFileData): unknown {
+
   const file: UserProfilesFile = {};
 
-  if(Object.keys(domains).length > 0) {
+  if(Object.keys(data.domains).length > 0) {
 
-    file.domains = domains;
+    file.domains = data.domains;
   }
 
-  if(Object.keys(profiles).length > 0) {
+  if(Object.keys(data.profiles).length > 0) {
 
-    file.profiles = profiles;
+    file.profiles = data.profiles;
   }
 
-  // Write with pretty formatting and sorted keys for consistent, diff-friendly output.
-  const content = stringifySorted(file);
+  return file;
+}
 
-  await fsPromises.writeFile(getProfilesFilePath(), content + "\n", "utf-8");
+// Transactional store instance for profiles.json.
+const profilesStore = createFileStore<ProfilesFileData>({
 
-  // Update in-memory cache.
-  loadedUserProfiles = { ...profiles };
-  loadedUserDomains = { ...domains };
+  beforeWrite: prepareProfilesForWrite,
+  defaultValue: (): ProfilesFileData => ({ domains: {}, profiles: {} }),
+  label: "profiles",
+  parse: parseProfilesFile,
+  path: getProfilesFilePath
+});
 
-  // Clear any previous parse error.
-  userProfilesParseError = false;
-  userProfilesParseErrorMessage = undefined;
+/**
+ * Reads the current profiles from disk without acquiring the serialization lock. Returns the parsed profiles and domains with parse status. Use this for
+ * read-only access and startup initialization. For modifications, use mutateProfiles() instead.
+ * @returns The loaded profiles and domains with parse status.
+ */
+export async function readProfiles(): Promise<UserProfilesLoadResult> {
+
+  const result = await profilesStore.read();
+
+  return {
+
+    domains: result.data.domains,
+    parseError: result.parseError,
+    parseErrorMessage: result.parseErrorMessage,
+    profiles: result.data.profiles
+  };
 }
 
 /**
- * Deletes a user profile by key and removes any domain mappings that reference it. Reloads the file from disk before modifying to avoid data loss.
+ * Serialized read-modify-write operation on profiles.json. The mutation function receives the current profiles and domains as a compound object and can modify
+ * them in place. The store handles atomicity, serialization, corruption guard, and backup. After a successful write, the in-memory cache is updated.
+ * @param fn - Mutation function. Receives current `{ profiles, domains }`. Modify in place (void return).
+ * @throws FileStoreParseError if profiles.json contains invalid JSON.
+ */
+export async function mutateProfiles(fn: (data: ProfilesFileData) => void): Promise<void> {
+
+  let finalData: ProfilesFileData | undefined;
+
+  await profilesStore.mutate((data: ProfilesFileData) => {
+
+    fn(data);
+    finalData = data;
+  });
+
+  // Side effects after successful write.
+  if(finalData) {
+
+    loadedUserProfiles = { ...finalData.profiles };
+    loadedUserDomains = { ...finalData.domains };
+    userProfilesParseError = false;
+    userProfilesParseErrorMessage = undefined;
+  }
+}
+
+/**
+ * Deletes a user profile by key and removes any domain mappings that reference it.
  * @param key - The profile key to delete.
- * @throws If the file cannot be read or written.
+ * @throws FileStoreParseError if the profiles file contains invalid JSON.
+ * @throws If the file cannot be written.
  */
 export async function deleteUserProfile(key: string): Promise<void> {
 
-  const result = await loadUserProfiles();
+  await mutateProfiles((data) => {
 
-  if(result.parseError) {
+    Reflect.deleteProperty(data.profiles, key);
 
-    throw new Error("Cannot delete profile: profiles file contains invalid JSON.");
-  }
+    // Remove any domain mappings that reference this profile.
+    for(const [ domain, config ] of Object.entries(data.domains)) {
 
-  // Remove the profile.
-  Reflect.deleteProperty(result.profiles, key);
+      if(config.profile === key) {
 
-  // Remove any domain mappings that reference this profile.
-  for(const [ domain, config ] of Object.entries(result.domains)) {
-
-    if(config.profile === key) {
-
-      Reflect.deleteProperty(result.domains, domain);
+        Reflect.deleteProperty(data.domains, domain);
+      }
     }
-  }
-
-  await saveUserProfiles(result.profiles, result.domains);
+  });
 
   LOG.info("User profile '%s' deleted.", key);
 }
 
 /**
- * Deletes a single user domain mapping. Reloads the file from disk before modifying to avoid data loss.
+ * Deletes a single user domain mapping.
  * @param domain - The domain hostname to remove.
- * @throws If the file cannot be read or written.
+ * @throws FileStoreParseError if the profiles file contains invalid JSON.
+ * @throws If the file cannot be written.
  */
 export async function deleteUserDomain(domain: string): Promise<void> {
 
-  const result = await loadUserProfiles();
+  await mutateProfiles((data) => {
 
-  if(result.parseError) {
-
-    throw new Error("Cannot delete domain: profiles file contains invalid JSON.");
-  }
-
-  Reflect.deleteProperty(result.domains, domain);
-
-  await saveUserProfiles(result.profiles, result.domains);
+    Reflect.deleteProperty(data.domains, domain);
+  });
 
   LOG.info("User domain mapping '%s' deleted.", domain);
 }
@@ -295,12 +288,32 @@ export async function deleteUserDomain(domain: string): Promise<void> {
  */
 export async function initializeUserProfiles(): Promise<void> {
 
-  const result = await loadUserProfiles();
+  const result = await readProfiles();
 
   loadedUserProfiles = result.profiles;
   loadedUserDomains = result.domains;
   userProfilesParseError = result.parseError;
   userProfilesParseErrorMessage = result.parseErrorMessage;
+
+  // Normalize legacy profile field names at the persistence boundary. If any fields were renamed, persist the updated file so the migration only runs once.
+  // The save is wrapped in its own try/catch so a write failure (disk full, permission error, parse error) is logged as a migration warning rather than
+  // propagated to startup. The normalized in-memory profiles are used regardless...the migration is best-effort persistence.
+  if(normalizeLegacyProfileFlags(loadedUserProfiles)) {
+
+    try {
+
+      await mutateProfiles((data) => {
+
+        normalizeLegacyProfileFlags(data.profiles);
+      });
+
+      LOG.info("Migrated legacy profile flags in user profiles file.");
+    } catch(saveError) {
+
+      LOG.warn("Failed to persist migrated profile flags: %s. Migration will retry on next startup.",
+        (saveError instanceof Error) ? saveError.message : String(saveError));
+    }
+  }
 
   // Check for non-printable characters in loaded profile and domain string values. These warnings are informational — loaded data is not modified.
   for(const [ profileKey, profile ] of Object.entries(loadedUserProfiles)) {

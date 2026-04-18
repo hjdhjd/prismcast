@@ -2,7 +2,7 @@
  *
  * commands.ts: Service command handlers for PrismCast CLI.
  */
-import { DEFAULTS, loadUserConfig } from "../config/userConfig.js";
+import { DEFAULTS, readConfig } from "../config/userConfig.js";
 import { SERVICE_NAME, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getServiceFilePath } from "../utils/platform.js";
 import { collectServiceEnvironment, detectStalePaths, getServiceGenerator, getServicePaths } from "./generators.js";
 import { print, printError } from "../utils/cliOutput.js";
@@ -91,7 +91,7 @@ async function fetchActiveStreams(port: number): Promise<Nullable<StreamsRespons
  */
 async function getServerPort(): Promise<number> {
 
-  const result = await loadUserConfig();
+  const result = await readConfig();
 
   return result.config.server?.port ?? DEFAULTS.server.port;
 }

@@ -6,7 +6,7 @@ import type { DomainConfig, SiteProfile } from "../../types/index.js";
 import type { Express, Request, Response } from "express";
 import { ICON_ADD, ICON_DELETE, ICON_EDIT, ICON_EXPORT, ICON_IMPORT } from "../icons.js";
 import { LOG, escapeHtml, formatError, sanitizeString, stringifySorted } from "../../utils/index.js";
-import { deleteUserProfile, getUserDomains, getUserProfiles, saveUserProfiles, validateDomain, validateProfile,
+import { deleteUserProfile, getUserDomains, getUserProfiles, mutateProfiles, validateDomain, validateProfile,
   validateProfileKey } from "../../config/userProfiles.js";
 import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.js";
 import { exportServicePack, importServicePack, parseServicePack } from "../../config/servicePacks.js";
@@ -480,7 +480,11 @@ export function setupProfileRoutes(app: Express): void {
 
       const mergedDomains = { ...cleanedDomains, ...(domainMappings ?? {}) };
 
-      await saveUserProfiles(mergedProfiles, mergedDomains);
+      await mutateProfiles((data) => {
+
+        data.profiles = mergedProfiles;
+        data.domains = mergedDomains;
+      });
 
       const actionLabel = isNew ? "created" : "updated";
 
