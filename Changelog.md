@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.9.0 (2026-04-19)
+  * New feature: M3U playlist tags and guide metadata — the playlist now includes `group-title` attributes from your channel tags, enabling automatic channel grouping in Channels DVR and other M3U consumers. Guide metadata (`tvg-id`, `tvg-name`, `tvg-logo`) is embedded for richer channel identification. Tags preserve the exact casing you entered.
+  * New feature: informed channel creation — adding a custom channel now shows matching predefined channels as suggestions and warns when your active service filter would prevent the new channel from appearing.
+  * Improvement: static page channels are now fully supported in the M3U playlist and HDHomeRun lineup.
+  * Improvement: configuration persistence now uses atomic writes with automatic backup and recovery, so your settings are always safely saved.
+  * Improvement: service selection indicators and channel override badges on the channels tab.
+  * Improvement: provider terminology unified as service throughout the interface for a cleaner, more consistent experience.
+  * Improvement: Windows service installation now uses a structured file-based task definition for more reliable installs and uninstalls.
+  * Housekeeping.
+
 ## 1.8.0 (2026-04-02)
   * New feature: channel tags — organize channels into groups like "sports", "news", "hbo", or "starz" for filtered playlists and channel management. Tags can be created, renamed, and deleted from the Manage Tags modal, assigned to channels via Quick Actions or inline editing, and used to filter the playlist with `?tag=` query parameters. Predefined channels ship with tags pre-assigned, including premium brand tags (HBO, Showtime, Starz) for subscription-based filtering. When the tag column filter is active, a playlist hint icon appears with the corresponding Channels DVR playlist URL ready to copy.
   * New feature: capture codec selection — control which codecs are eligible for browser capture. HEVC is used by default when GPU hardware encoding is available; H.264 is always enabled as the universal baseline. Users who experience issues with HEVC can disable it from the streaming settings.
