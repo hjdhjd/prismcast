@@ -5,8 +5,9 @@
 import type { ChannelSortField, SortDirection } from "../types/index.js";
 import type { Express, Request, Response } from "express";
 import { VALID_SORT_FIELDS, compareChannelSort, getAllServiceTags, getServiceTagForChannel, resolveServiceKey } from "../config/services.js";
-import { getActiveTagVocabulary, getAllChannels } from "../config/userChannels.js";
+import { getActiveTagVocabulary, getAllChannels, getChannelEffectiveTags, tagsMatch } from "../config/userChannels.js";
 import { CONFIG } from "../config/index.js";
+import { getProfileForChannel } from "../config/profiles.js";
 
 /* The playlist endpoint generates an M3U playlist in Channels DVR format. The playlist includes all available channels (both video player and static capture) with
  * their stream URLs dynamically constructed from the request host header so the playlist works regardless of how the server is accessed.
@@ -66,8 +67,8 @@ function parseIncludeExcludeFilter(param: string, entityName: string,
   const isExclude = excludeTokens.length > 0;
   const filterTags = isExclude ? excludeTokens : includeTokens;
 
-  // Validate all values against the known set.
-  const knownSet = new Set(knownValues);
+  // Validate all values against the known set. Tokens are already lowercased, so normalize known values for case-insensitive comparison.
+  const knownSet = new Set(knownValues.map((v) => v.toLowerCase()));
   const unknownTags = filterTags.filter((tag) => !knownSet.has(tag));
 
   if(unknownTags.length > 0) {
@@ -147,9 +148,6 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
   const sortField = sort ?? CONFIG.channels.channelSortField;
   const sortDir = direction ?? CONFIG.channels.channelSortDirection;
 
-  // Pre-compute the vocabulary Set once so the per-channel tag intersection below doesn't rebuild it on every iteration.
-  const vocabularySet = tagFilter ? new Set(getActiveTagVocabulary()) : undefined;
-
   // Sort channel keys using the specified (or saved) sort field and direction. Default is name ascending.
   const channelNames = Object.keys(channels).sort((a, b) => compareChannelSort(channels[a], a, channels[b], b, sortField, sortDir));
 
@@ -171,11 +169,14 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
       }
     }
 
-    // Apply the tag filter if specified. Tags are intersected with the active vocabulary so deleted tags are invisible.
-    if(tagFilter && vocabularySet) {
+    // Compute effective tags once per channel — used for both the tag filter check and M3U attribute generation. Tags are intersected with the active vocabulary
+    // so deleted tags are invisible.
+    const effectiveTags = getChannelEffectiveTags(channel);
 
-      const effectiveTags = channel.tags ? channel.tags.filter((tag) => vocabularySet.has(tag)) : [];
-      const hasMatch = tagFilter.tags.some((tag) => effectiveTags.includes(tag));
+    // Apply the tag filter if specified. Filter tags are lowercase (normalized by parseIncludeExcludeFilter), so compare case-insensitively.
+    if(tagFilter) {
+
+      const hasMatch = tagFilter.tags.some((filterTag) => effectiveTags.some((t) => tagsMatch(t, filterTag)));
 
       // In include mode, skip channels that don't have any matching tag. In exclude mode, skip channels that have a matching tag.
       if(tagFilter.exclude ? hasMatch : !hasMatch) {
@@ -184,16 +185,41 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
       }
     }
 
-    // We use the channel key as the channel-id and the friendly name for display. HLS URLs are used for Channels DVR compatibility.
-    const displayName = channel.name ?? name;
+    // We use the channel key as the channel-id and the guide title (falling back to channel name) for display. HLS URLs are used for Channels DVR compatibility.
+    const displayName = channel.guideTitle ?? channel.name ?? name;
     const streamUrl = baseUrl + "/hls/" + name + "/stream.m3u8";
 
     // Build the EXTINF line with required channel-id attribute and tvg-name for the friendly display name. Include channel-number when the user has specified one,
-    // tvc-guide-stationid for Gracenote guide data when a stationId is defined, and tvg-shift for EPG time offset.
+    // tvc-guide-stationid for Gracenote guide data when a stationId is defined, tvg-shift for EPG time offset, tvg-logo for custom channel logos, and group-title
+    // for organizational tags (semicolon-delimited for IPTV middleware compatibility).
     const channelNumberAttr = channel.channelNumber ? " channel-number=\"" + String(channel.channelNumber) + "\"" : "";
+    const groupTitleAttr = (effectiveTags.length > 0) ? " group-title=\"" + effectiveTags.join(";") + "\"" : "";
+    const logoAttr = channel.logoUrl ? " tvg-logo=\"" + channel.logoUrl + "\"" : "";
     const stationIdAttr = channel.stationId ? " tvc-guide-stationid=\"" + channel.stationId + "\"" : "";
     const tvgShiftAttr = (channel.tvgShift !== undefined) ? " tvg-shift=\"" + String(channel.tvgShift) + "\"" : "";
-    const attrs = "#EXTINF:-1 channel-id=\"" + name + "\"" + channelNumberAttr + " tvg-name=\"" + displayName + "\"" + stationIdAttr + tvgShiftAttr;
+
+    // For channels without EPG data, emit tvc-guide-tags so Channels DVR's Automatic Channels can filter on them. Static page channels also get
+    // tvc-guide-placeholders to provide a 24-hour guide block since they display persistent content without time-based programming.
+    let tvcTagsAttr = "";
+    let tvcPlaceholdersAttr = "";
+
+    if(!channel.stationId) {
+
+      if(effectiveTags.length > 0) {
+
+        tvcTagsAttr = " tvc-guide-tags=\"" + effectiveTags.join(", ") + "\"";
+      }
+
+      const { profile } = getProfileForChannel(channel);
+
+      if(profile.staticCapture) {
+
+        tvcPlaceholdersAttr = " tvc-guide-placeholders=\"86400\"";
+      }
+    }
+
+    const attrs = "#EXTINF:-1 channel-id=\"" + name + "\"" + channelNumberAttr + groupTitleAttr + logoAttr + " tvg-name=\"" + displayName + "\"" + stationIdAttr +
+      tvcPlaceholdersAttr + tvcTagsAttr + tvgShiftAttr;
     const extinfLine = attrs + "," + displayName;
 
     lines.push(extinfLine);

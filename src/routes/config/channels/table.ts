@@ -10,7 +10,7 @@ import { compareChannelSort, getAllServiceTags, getAuthDomainForChannel, getChan
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getChannelLogo, getChannelsParseErrorMessage,
   getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled,
-  isUserChannel } from "../../../config/userChannels.js";
+  isUserChannel, tagsMatch } from "../../../config/userChannels.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
@@ -430,13 +430,21 @@ interface AdvancedFieldOptions {
 
     channelNumber?: string;
     channelSelector?: string;
+    guideTitle?: string;
     hdhrEnabled?: boolean;
+    logoUrl?: string;
     stationId?: string;
     tags?: string;
   };
 
+  // Current guide title value (empty string for none).
+  guideTitleValue?: string;
+
   // Whether the channel is included in the HDHomeRun/Plex lineup. Defaults to true.
   hdhrEnabled?: boolean;
+
+  // Current logo URL value (empty string for none).
+  logoUrlValue?: string;
 
   // Whether to display hint text beneath each field. Defaults to true.
   showHints?: boolean;
@@ -450,7 +458,8 @@ interface AdvancedFieldOptions {
 
 function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions = {}): string[] {
 
-  const { channelNumberValue = "", channelSelectorValue = "", hdhrEnabled = true, showHints = true, stationIdValue = "", tagsValue = "" } = options;
+  const { channelNumberValue = "", channelSelectorValue = "", guideTitleValue = "", hdhrEnabled = true, logoUrlValue = "", showHints = true,
+    stationIdValue = "", tagsValue = "" } = options;
 
   const lines: string[] = [];
 
@@ -467,6 +476,18 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 
   lines.push(...generateTextField(idPrefix + "-stationId", "stationId", "Station ID", stationIdValue,
     { defaultValue: defs?.stationId, hint: stationIdHint, placeholder: showHints ? "e.g., 12345" : undefined }));
+
+  // Guide title override. When set, this value replaces the channel name in the M3U playlist's tvg-name attribute and guide placeholder airings.
+  const guideTitleHint = showHints ? "Optional title for guide display. When set, overrides the channel name in the M3U playlist (tvg-name)." : undefined;
+
+  lines.push(...generateTextField(idPrefix + "-guideTitle", "guideTitle", "Guide Title", guideTitleValue,
+    { defaultValue: defs?.guideTitle, hint: guideTitleHint, placeholder: showHints ? "e.g., Flighty Airport Delays" : undefined }));
+
+  // Custom logo URL. When set, this value is emitted as the tvg-logo attribute in the M3U playlist.
+  const logoUrlHint = showHints ? "Optional logo URL for the channel. Overrides any logo derived from Channels DVR." : undefined;
+
+  lines.push(...generateTextField(idPrefix + "-logoUrl", "logoUrl", "Logo URL", logoUrlValue,
+    { defaultValue: defs?.logoUrl, hint: logoUrlHint, placeholder: showHints ? "https://example.com/logo.png" : undefined, type: "url" }));
 
   // Channel selector. The guide-based service list is derived from the provider module registry so it stays current as services are added.
   const guideProviderNames = getProviderModuleInfo().map((p) => p.label).sort().join(", ");
@@ -491,7 +512,7 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
   // Tags field: checkbox grid of the active tag vocabulary. Checked tags are collected into a hidden input as a comma-separated value on form submission.
   // This prevents users from entering tag names that don't exist in the managed vocabulary.
   const vocabulary = getActiveTagVocabulary();
-  const currentTags = new Set(tagsValue ? tagsValue.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0) : []);
+  const currentTags = tagsValue ? tagsValue.split(",").map((t) => t.trim()).filter((t) => t.length > 0) : [];
 
   if(vocabulary.length > 0) {
 
@@ -507,7 +528,7 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 
     for(const tag of vocabulary) {
 
-      const checked = currentTags.has(tag) ? " checked" : "";
+      const checked = currentTags.some((t) => tagsMatch(t, tag)) ? " checked" : "";
 
       lines.push("<label class=\"tag-checkbox-label\">" +
         "<input type=\"checkbox\" class=\"tag-checkbox\" data-tag=\"" + escapeHtml(tag) + "\"" + checked +
@@ -688,7 +709,7 @@ export function generateTagManagerBody(): string {
     "for playlist filtering and organization.</p>" +
     "<div class=\"tag-manager-add\">" +
     "<input type=\"text\" id=\"tag-manager-input\" placeholder=\"New tag name\" maxlength=\"30\" " +
-    "pattern=\"[a-z0-9]([a-z0-9-]*[a-z0-9])?\" onkeydown=\"if(event.key==='Enter'){event.preventDefault();createTag();}\">" +
+    "pattern=\"[a-zA-Z0-9]([a-zA-Z0-9 -]*[a-zA-Z0-9])?\" onkeydown=\"if(event.key==='Enter'){event.preventDefault();createTag();}\">" +
     "<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"createTag()\">Add</button>" +
     "</div>" +
     "<div id=\"tag-manager-error\" class=\"wizard-error\" style=\"display: none;\"></div>" +
@@ -1097,11 +1118,15 @@ export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], ent
 
       channelNumber: predefined.channelNumber ? String(predefined.channelNumber) : "",
       channelSelector: predefined.channelSelector ?? "",
+      guideTitle: predefined.guideTitle ?? "",
       hdhrEnabled: predefined.hdhrEnabled !== false,
+      logoUrl: predefined.logoUrl ?? "",
       stationId: predefined.stationId ?? "",
       tags: predefinedTags
     } : undefined,
+    guideTitleValue: channel.guideTitle ?? "",
     hdhrEnabled: channel.hdhrEnabled !== false,
+    logoUrlValue: channel.logoUrl ?? "",
     stationIdValue: channel.stationId ?? "",
     tagsValue: effectiveTags.join(", ")
   }));
@@ -1776,7 +1801,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Profile dropdown.
   lines.push(...generateProfileDropdown("add-profile", formValues?.get("profile") ?? "", profiles));
 
-  // Advanced fields (station ID, channel selector, channel number, HDHR).
+  // Advanced fields (station ID, guide title, logo URL, channel selector, channel number, tags, HDHR).
   lines.push(...generateAdvancedFields("add", {
 
     channelNumberValue: formValues?.get("channelNumber") ?? "",

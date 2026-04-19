@@ -32,8 +32,9 @@ export interface ChannelDefinition {
   // Gracenote station ID for electronic program guide integration. Inherited by all service variants.
   stationId?: string;
 
-  // Organizational tags for playlist filtering. Inherited by all service variants. Tags are lowercase alphanumeric strings with hyphens, managed via the tag
-  // registry. Channels can have multiple tags (e.g., ["sports", "local"]). Used by the ?tag= playlist query parameter for custom playlist generation.
+  // Organizational tags for playlist filtering. Inherited by all service variants. Tags are freeform strings with preserved casing (e.g., "Sports", "HBO"),
+  // compared case-insensitively throughout the system via tagsMatch(). Managed via the tag registry. Used by the ?tag= playlist query parameter for custom
+  // playlist generation.
   tags?: string[];
 
   // EPG time shift in hours. Inherited by all service variants.
@@ -101,10 +102,19 @@ export interface Channel {
   // checks for this element after navigation and clicks it if present.
   dismissSelector?: string;
 
+  // Human-readable title for electronic program guide display. When set, this value is emitted as the tvg-name attribute in the M3U playlist instead of the
+  // channel name. Useful for channels without EPG data (e.g., static page channels) where the channel name alone doesn't describe the content. For example,
+  // a channel named "Flighty" might have guideTitle "Flighty Airport Delays" to provide context in the guide.
+  guideTitle?: string;
+
   // Whether this channel is included in the HDHomeRun lineup for Plex. When absent or true, the channel appears in the HDHR lineup and is available for Plex DVR
   // tuning. When false, the channel is excluded from the HDHR lineup but remains available in the M3U playlist for Channels DVR. Only stored in the user config
   // when explicitly set to false (sparse storage).
   hdhrEnabled?: boolean;
+
+  // Custom logo URL for this channel. When set, this value is emitted as the tvg-logo attribute in the M3U playlist, overriding any logo derived from Channels
+  // DVR. Useful for channels without EPG data or when the user prefers a specific logo.
+  logoUrl?: string;
 
   // Human-readable channel name displayed in the M3U playlist. This is what users see in their channel guide. Set eagerly by the flattener on all predefined
   // entries (canonical and variant alike) from the parent ChannelDefinition's name field. For user channels, set explicitly at creation time.
@@ -138,8 +148,8 @@ export interface Channel {
   // allowing Channels DVR to fetch program guide data for the channel.
   stationId?: string;
 
-  // Organizational tags for playlist filtering. Set by the flattener from the parent ChannelDefinition's tags field. Used by the ?tag= playlist query parameter
-  // to generate filtered playlists (e.g., /playlist?tag=sports). Tags are lowercase alphanumeric strings with hyphens.
+  // Organizational tags for playlist filtering. Set by the flattener from the parent ChannelDefinition's tags field. Tags are freeform strings with preserved
+  // casing, compared case-insensitively via tagsMatch(). Used by the ?tag= playlist query parameter to generate filtered playlists (e.g., /playlist?tag=sports).
   tags?: string[];
 
   // EPG time shift in hours. When set, this value is included in the M3U playlist as the tvg-shift attribute, telling Channels DVR to offset the guide data by
@@ -186,8 +196,14 @@ export interface ChannelDelta {
   // Override for channel selector, or null to clear the predefined value.
   channelSelector?: Nullable<string>;
 
+  // Override for guide title, or null to clear the value.
+  guideTitle?: Nullable<string>;
+
   // Override for HDHomeRun lineup inclusion, or null to clear (revert to default included). When false, the channel is excluded from the HDHR lineup.
   hdhrEnabled?: Nullable<boolean>;
+
+  // Override for custom logo URL, or null to clear the value.
+  logoUrl?: Nullable<string>;
 
   // Override for display name, or null to clear the predefined value.
   name?: Nullable<string>;

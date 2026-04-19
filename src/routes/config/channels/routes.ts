@@ -2150,7 +2150,8 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      if(tagsMatch(oldTag, newTag)) {
+      // Exact comparison — case-only renames (e.g., "sports" → "Sports") are valid since tags are freeform with preserved casing.
+      if(oldTag === newTag) {
 
         res.status(400).json({ error: "New tag name must differ from the old name.", success: false });
 
@@ -2184,8 +2185,9 @@ export function setupChannelRoutes(app: Express): void {
         return;
       }
 
-      // Validate new tag doesn't already exist (case-insensitive).
-      if(vocabularyLower.has(newTag.toLowerCase())) {
+      // Validate new tag doesn't collide with a different existing tag (case-insensitive). A case-only rename of the same tag (e.g., "sports" → "Sports") is
+      // allowed since it's changing the display form of the same identity.
+      if(vocabularyLower.has(newTag.toLowerCase()) && !tagsMatch(oldTag, newTag)) {
 
         res.status(409).json({ error: "Tag '" + newTag + "' already exists.", success: false });
 
