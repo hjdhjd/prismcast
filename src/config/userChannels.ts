@@ -428,15 +428,23 @@ export async function initializeUserChannels(): Promise<void> {
   userChannelsParseError = result.parseError;
   userChannelsParseErrorMessage = result.parseErrorMessage;
 
-  // Silent migration: rename "foxcom" service references to "foxone." Migrates service selections (channels.json) and user channel variant keys. The
-  // service filter (config.json) is handled separately below since it's already loaded into CONFIG at this point.
+  // Silent migrations: rename stale service keys to their current equivalents. Migrates service selections (channels.json) and user channel variant keys.
+  // The service filter (config.json) is handled separately below since it's already loaded into CONFIG at this point.
   let channelsMigrated = false;
 
   for(const [ canonicalKey, selectedVariant ] of Object.entries(result.serviceSelections)) {
 
+    // foxcom → foxone: original Fox service slug renamed.
     if(selectedVariant.endsWith("-foxcom")) {
 
       result.serviceSelections[canonicalKey] = selectedVariant.slice(0, -6) + "foxone";
+      channelsMigrated = true;
+    }
+
+    // fox-site → fox-foxone: the "fox" channel's FoxOne variant was briefly keyed as "site" in v1.8.0 instead of "foxone" like every other Fox channel.
+    if((canonicalKey === "fox") && (selectedVariant === "fox-site")) {
+
+      result.serviceSelections[canonicalKey] = "fox-foxone";
       channelsMigrated = true;
     }
   }
@@ -449,7 +457,8 @@ export async function initializeUserChannels(): Promise<void> {
 
     await mutateChannels((channels) => {
 
-      // Apply the foxcom → foxone key migration. The mutation reads fresh from disk, so we replay the transform rather than passing the in-memory result.
+      // Apply the foxcom → foxone channel key migration. The mutation reads fresh from disk, so we replay the transform rather than passing the in-memory
+      // result. The fox-site selection migration is selection-only (no channel keys to rename).
       for(const key of Object.keys(channels)) {
 
         if(key.endsWith("-foxcom")) {
@@ -460,7 +469,7 @@ export async function initializeUserChannels(): Promise<void> {
       }
     });
 
-    LOG.info("Migrated Fox service references from foxcom to foxone.");
+    LOG.info("Migrated stale Fox service references.");
   }
 
   // Load enabled services from the configuration, validating that each tag is recognized. Invalid tags (e.g., from hand-edited config.json typos) are stripped
@@ -612,7 +621,14 @@ export async function initializeUserChannels(): Promise<void> {
   // Build the merged channels map and then build service groups.
   const mergedChannels = getMergedChannelMap();
 
-  buildServiceGroups(mergedChannels);
+  // buildServiceGroups validates stored service selections against the rebuilt variant structure and reverts any that are stale. If any were cleaned, persist
+  // once so the cleanup survives restarts. At runtime (via mutateChannels), the in-memory cleanup is sufficient and persists naturally on the next write.
+  const staleSelections = buildServiceGroups(mergedChannels);
+
+  if(staleSelections.length > 0) {
+
+    await saveServiceSelections();
+  }
 
   // Now that service groups are built, validate the configured service tags. Strip any unrecognized tags and warn.
   if(configuredServices.length > 0) {

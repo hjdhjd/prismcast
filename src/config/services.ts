@@ -337,9 +337,14 @@ function isUserOverride(key: string, channels: ChannelMap): boolean {
  *
  * User overrides of predefined channels (same key, different object reference) produce a two-entry group with "Custom" and the original predefined version,
  * even for single-service channels that don't have canonicalKey-based variants.
+ *
+ * After building groups, validates stored service selections against the new variant structure and reverts any stale selections to the canonical default. This
+ * catches all staleness sources in one place: service key renames across versions, variant removal in code, user-deleted custom variants, and reverted
+ * predefined overrides.
  * @param channels - The merged channel map (predefined + user channels).
+ * @returns Canonical keys whose service selections were stale and reverted. Empty array if all selections are valid. The caller decides whether to persist.
  */
-export function buildServiceGroups(channels: ChannelMap): void {
+export function buildServiceGroups(channels: ChannelMap): string[] {
 
   channelsRef = channels;
   serviceGroups.clear();
@@ -492,6 +497,25 @@ export function buildServiceGroups(channels: ChannelMap): void {
       predefinedByDomain.set(domain, [entry]);
     }
   }
+
+  // Validate stored service selections against the rebuilt groups. Any selection whose variant key no longer exists in the group is stale and reverted to the
+  // canonical default. This handles all staleness sources: service key renames across versions, variant removal, user-deleted custom variants, and reverted
+  // predefined overrides. The caller decides whether to persist based on whether any keys were cleaned.
+  const staleKeys: string[] = [];
+
+  for(const [ canonicalKey, selection ] of serviceSelections) {
+
+    const group = serviceGroups.get(canonicalKey);
+
+    if(!group?.variants.some((v) => v.key === selection)) {
+
+      LOG.warn("Service selection '%s' for channel '%s' is no longer valid. Reverting to default.", selection, canonicalKey);
+      serviceSelections.delete(canonicalKey);
+      staleKeys.push(canonicalKey);
+    }
+  }
+
+  return staleKeys;
 }
 
 // Summary of a predefined channel for the domain-to-channel reverse index. Used by the inline hint in the manual add form and by the embedded client-side data.
@@ -857,9 +881,8 @@ export function setServiceSelection(canonicalKey: string, serviceKey: string): v
  * service's key. Otherwise returns the canonical key (default service). When the service filter is active, falls back to the first enabled variant if the stored
  * selection's service is filtered out.
  *
- * Selection validation uses the service group's variants array as the single source of truth. Any stored selection that doesn't match a current variant is treated
- * as stale and cleared — whether it's a :predefined key from a group that no longer uses that variant, a variant key for a service that was removed, or a key for
- * a channel that lost its group entirely. This eliminates the need for separate validation paths against PREDEFINED_CHANNELS and channelsRef.
+ * This function is a pure resolver with no side effects. Stale selection cleanup is handled by buildServiceGroups(), which validates all stored selections
+ * against the rebuilt variant structure every time groups are rebuilt - both at startup and after runtime channel mutations.
  * @param canonicalKey - The canonical channel key.
  * @returns The resolved service key to use for streaming.
  */
@@ -874,18 +897,6 @@ export function resolveServiceKey(canonicalKey: string): string {
 
       return findFirstEnabledVariant(canonicalKey) ?? canonicalKey;
     }
-
-    return canonicalKey;
-  }
-
-  // Validate the selection against the service group's variants array. A selection is invalid if the variant was removed, the group was restructured, or the
-  // channel is no longer in a group. Invalid selections are cleared so the canonical default takes over.
-  const group = serviceGroups.get(canonicalKey);
-
-  if(!group?.variants.some((v) => v.key === selection)) {
-
-    LOG.warn("Service selection '%s' for channel '%s' is no longer valid. Using default.", selection, canonicalKey);
-    serviceSelections.delete(canonicalKey);
 
     return canonicalKey;
   }
