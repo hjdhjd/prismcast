@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
   * Improvement: service selection indicators and channel override badges on the channels tab.
   * Improvement: provider terminology unified as service throughout the interface for a cleaner, more consistent experience.
   * Improvement: Windows service installation now uses a structured file-based task definition for more reliable installs and uninstalls.
+  * Fix: Fox local affiliate service selection not persisting across restarts.
   * Housekeeping.
 
 ## 1.8.0 (2026-04-02)
