@@ -10,7 +10,7 @@ import { compareChannelSort, getAllServiceTags, getAuthDomainForChannel, getChan
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
 import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getChannelLogo, getChannelsParseErrorMessage,
   getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled,
-  isUserChannel, tagsMatch } from "../../../config/userChannels.js";
+  isUserChannel, isVisibleChannel, tagsMatch } from "../../../config/userChannels.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
@@ -148,7 +148,7 @@ function generateTextField(id: string, name: string, label: string, value: strin
  * @param showHint - Whether to show the hint text with profile reference link.
  * @returns Array of HTML strings for the form row.
  */
-function generateProfileDropdown(id: string, selectedProfile: string, profiles: ProfileInfo[], showHint = true, defaultProfile?: string): string[] {
+function generateProfileDropdown(id: string, selectedProfile: string, profiles: readonly ProfileInfo[], showHint = true, defaultProfile?: string): string[] {
 
   const lines: string[] = [];
   const groups = categorizeProfiles(profiles);
@@ -832,7 +832,7 @@ export interface ChannelRowHtml {
  * @param entry - Optional pre-resolved listing entry. When omitted, looked up from getChannelListing().
  * @returns Object with displayRow and editRow HTML strings.
  */
-export function generateChannelRowHtml(key: string, profiles: ProfileInfo[], entry?: ChannelListingEntry): ChannelRowHtml {
+export function generateChannelRowHtml(key: string, profiles: readonly ProfileInfo[], entry?: ChannelListingEntry): ChannelRowHtml {
 
   // Resolve the effective channel. Use the provided entry if available, otherwise look it up from the listing.
   const listing = entry ?? getChannelListing().find((e) => e.key === key);
@@ -1347,7 +1347,7 @@ function getTagCounts(listing: ChannelListingEntry[]): Record<string, { count: n
  * @param profiles - Available profiles for the edit form dropdown.
  * @returns A complete ChannelTablePatch ready for client-side application.
  */
-export function buildChannelTablePatch(affectedKeys: string[], profiles: ProfileInfo[]): ChannelTablePatch {
+export function buildChannelTablePatch(affectedKeys: readonly string[], profiles: readonly ProfileInfo[]): ChannelTablePatch {
 
   const listing = getChannelListing();
   const listingByKey = new Map(listing.map((entry) => [ entry.key, entry ]));
@@ -1631,7 +1631,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   if(tagsVocabulary.length > 0) {
 
     // Count how many enabled, service-available channels have each tag.
-    const enabledListing = listing.filter((entry) => entry.enabled && entry.availableByService);
+    const enabledListing = listing.filter(isVisibleChannel);
     const totalEnabled = enabledListing.length;
     const tagCountMap = new Map<string, number>();
 

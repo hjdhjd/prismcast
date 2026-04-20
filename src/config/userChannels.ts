@@ -3,7 +3,7 @@
  * userChannels.ts: User channel file management for PrismCast.
  */
 import { CHANNEL_IDENTITY_FIELDS, PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.js";
-import type { Channel, ChannelListingEntry, ChannelMap, StoredChannel, StoredChannelMap } from "../types/index.js";
+import type { Channel, ChannelDelta, ChannelListingEntry, ChannelMap, ChannelSortField, SortDirection, StoredChannel, StoredChannelMap } from "../types/index.js";
 import { FileStoreParseError, createFileStore } from "./persistence.js";
 import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.js";
 import { buildServiceGroups, getAllServiceTags, getResolvedChannel, getServiceSelections, isChannelAvailableByService, isServiceVariant,
@@ -202,6 +202,13 @@ function parseChannelsFile(raw: string): ChannelsFileData {
   return { channels, serviceSelections, tagRegistry };
 }
 
+/* Array-valued ChannelDelta fields whose comparison requires canonical case-insensitive ordering before JSON.stringify. The `satisfies` constraint keeps this
+ * list in sync with ChannelDelta's actual keys at compile time - renaming or removing a field forces this tuple to be updated.
+ */
+const CANONICAL_SORTED_ARRAY_FIELDS = new Set<keyof ChannelDelta>(
+  ["tags"] as const satisfies readonly (keyof ChannelDelta)[]
+);
+
 /**
  * Normalizes predefined channel deltas by stripping no-op fields and strips null fields from user channels. A delta field is a no-op if: (1) its value is null
  * and the predefined doesn't have the field, (2) its value is undefined, or (3) its value matches the predefined's value exactly. After stripping, deltas with
@@ -241,13 +248,24 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
           continue;
         }
 
-        // Skip values that match the predefined exactly - redundant copies. Array fields (like tags) use JSON.stringify for comparison since reference equality
-        // always fails for arrays. Tags arrays are always sorted and lowercase, making JSON.stringify deterministic.
+        // Skip values that match the predefined exactly - redundant copies. Array fields use JSON.stringify for comparison since reference equality always fails
+        // for arrays. Fields listed in CANONICAL_SORTED_ARRAY_FIELDS are sortTagsed on both sides first so the equality check is order-independent regardless of
+        // authoring order on the predefined side or historical write order on the stored side.
         if(value !== null) {
 
           const predefinedValue = (predefined as unknown as Record<string, unknown>)[field];
 
-          if(Array.isArray(value) ? (JSON.stringify(value) === JSON.stringify(predefinedValue)) : (predefinedValue === value)) {
+          if(Array.isArray(value)) {
+
+            const canonical = CANONICAL_SORTED_ARRAY_FIELDS.has(field as keyof ChannelDelta);
+            const left = canonical ? sortTags(value as string[]) : value;
+            const right = canonical ? sortTags((predefinedValue ?? []) as string[]) : predefinedValue;
+
+            if(JSON.stringify(left) === JSON.stringify(right)) {
+
+              continue;
+            }
+          } else if(predefinedValue === value) {
 
             continue;
           }
@@ -643,7 +661,6 @@ export async function initializeUserChannels(): Promise<void> {
     }
 
     setEnabledServices(validTags);
-    CONFIG.channels.enabledServices = validTags;
   } else {
 
     setEnabledServices(configuredServices);
@@ -828,6 +845,28 @@ export function getChannelListing(): ChannelListingEntry[] {
 }
 
 /**
+ * Predicate for "visible" channels - entries that are both enabled and available under the current service filter. This is the single source of truth for what
+ * "visible" means across bulk operations, the playlist, and the merged channel map. Every site that filters the listing by visibility routes through this
+ * predicate so the definition lives in exactly one place.
+ * @param entry - The listing entry to test.
+ * @returns True when the channel is enabled and passes the service filter.
+ */
+export function isVisibleChannel(entry: ChannelListingEntry): boolean {
+
+  return entry.enabled && entry.availableByService;
+}
+
+/**
+ * Returns the subset of getChannelListing() that is enabled and available under the current service filter. Built on top of isVisibleChannel so the visibility
+ * predicate lives in one place.
+ * @returns Listing entries that pass the visibility predicate.
+ */
+export function getVisibleChannels(): ChannelListingEntry[] {
+
+  return getChannelListing().filter(isVisibleChannel);
+}
+
+/**
  * Returns all available channels (predefined + user), with user channels taking precedence on key conflicts. Disabled predefined channels are excluded. Built on
  * top of getChannelListing() to ensure a single merging code path.
  * @returns The merged channel map with disabled predefined channels filtered out.
@@ -836,12 +875,9 @@ export function getAllChannels(): ChannelMap {
 
   const result: ChannelMap = {};
 
-  for(const entry of getChannelListing()) {
+  for(const entry of getVisibleChannels()) {
 
-    if(entry.enabled && entry.availableByService) {
-
-      result[entry.key] = entry.channel;
-    }
+    result[entry.key] = entry.channel;
   }
 
   return result;
@@ -868,12 +904,13 @@ export function getTagRegistry(): TagRegistry {
 }
 
 /**
- * Updates the tag registry state in memory. Call saveTagRegistry() after to persist the change.
+ * Updates the tag registry state in memory. The caller's input is not mutated - both arrays are sorted non-destructively via sortTags and stored as fresh
+ * copies. Call saveTagRegistry() after to persist the change.
  * @param registry - The new tag registry state.
  */
 export function setTagRegistry(registry: TagRegistry): void {
 
-  loadedTagRegistry = { deletedTags: registry.deletedTags.sort(), tags: registry.tags.sort() };
+  loadedTagRegistry = { deletedTags: sortTags(registry.deletedTags), tags: sortTags(registry.tags) };
 }
 
 /**
@@ -905,9 +942,10 @@ export function getActiveTagVocabulary(): string[] {
 
 /**
  * Returns a channel's effective tags — the intersection of the channel's assigned tags with the active vocabulary. Tags that exist on the channel but are not in
- * the active vocabulary are filtered out, ensuring only assignable and queryable tags are visible in the UI and playlist responses.
+ * the active vocabulary are filtered out, ensuring only assignable and queryable tags are visible in the UI and playlist responses. Output preserves the source
+ * order of channel.tags; every write path (sortTags) keeps that source order canonical, so in practice the returned array is sorted.
  * @param channel - The channel to get effective tags for.
- * @returns Sorted array of effective tag strings, or empty array if the channel has no tags or none are in the active vocabulary.
+ * @returns Effective tag strings in source order, or empty array if the channel has no tags or none are in the active vocabulary.
  */
 export function getChannelEffectiveTags(channel: Channel): string[] {
 
@@ -931,6 +969,18 @@ export function getChannelEffectiveTags(channel: Channel): string[] {
 export function tagsMatch(a: string, b: string): boolean {
 
   return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Checks whether a tag is present in the active vocabulary under case-insensitive identity. This is the single source of truth for "does this tag exist?"
+ * questions - tag endpoints (create/rename collision, bulk-tags vocabulary check) route through this instead of ad-hoc Set+toLowerCase comparisons so the
+ * case-insensitive policy lives in exactly one place (tagsMatch), not in parallel implementations.
+ * @param tag - The tag to check.
+ * @returns True if the active vocabulary contains a tag matching case-insensitively.
+ */
+export function isInVocabulary(tag: string): boolean {
+
+  return getActiveTagVocabulary().some((v) => tagsMatch(v, tag));
 }
 
 /**
@@ -962,10 +1012,13 @@ export async function transformChannelTags(
         }
 
         const currentTags = entry.channel.tags ?? [];
-        const newTags = transform(currentTags).sort();
 
-        // Skip channels where the transform produced no change.
-        if(JSON.stringify(newTags) === JSON.stringify(currentTags.toSorted())) {
+        // Route both the transform result and the "no change" comparison through sortTags so tag storage shares one canonical ordering with the rest of the
+        // system. sortTags is non-mutating, which matters here because for predefined-only listing entries, entry.channel is the PREDEFINED_CHANNELS reference
+        // directly - a raw .sort() on entry.channel.tags would rearrange the predefined array in process memory.
+        const newTags = sortTags(transform(currentTags));
+
+        if(JSON.stringify(newTags) === JSON.stringify(sortTags(currentTags))) {
 
           continue;
         }
@@ -1144,6 +1197,118 @@ export function isPredefinedChannelDisabled(key: string): boolean {
 export function getDisabledPredefinedChannels(): string[] {
 
   return [...CONFIG.channels.disabledPredefined];
+}
+
+/**
+ * Applies a set operation (add or delete) to the disabledPredefined list in user config. Persists the change to config.json and syncs the runtime CONFIG object
+ * so subsequent reads see the updated state immediately. This is the internal implementation shared by disablePredefinedChannels and enablePredefinedChannels so
+ * the mutateConfig scaffolding, sort, and CONFIG sync live in exactly one place.
+ * @param op - "add" to insert keys into the disabled list, "delete" to remove them.
+ * @param keys - The predefined channel keys to apply the operation to.
+ */
+async function mutateDisabledPredefined(op: "add" | "delete", keys: readonly string[]): Promise<void> {
+
+  if(keys.length === 0) {
+
+    return;
+  }
+
+  let updatedList: string[] = [];
+
+  await mutateConfig((config) => {
+
+    config.channels ??= {};
+    config.channels.disabledPredefined ??= [];
+
+    const disabledSet = new Set(config.channels.disabledPredefined);
+
+    for(const key of keys) {
+
+      disabledSet[op](key);
+    }
+
+    config.channels.disabledPredefined = [...disabledSet].toSorted();
+    updatedList = config.channels.disabledPredefined;
+  });
+
+  CONFIG.channels.disabledPredefined = updatedList;
+}
+
+/**
+ * Disables one or more predefined channels by adding their keys to the disabledPredefined list in user config. Idempotent.
+ * @param keys - The predefined channel keys to disable. Duplicates within the input array and pre-existing disabled entries are handled idempotently.
+ */
+export async function disablePredefinedChannels(keys: readonly string[]): Promise<void> {
+
+  await mutateDisabledPredefined("add", keys);
+}
+
+/**
+ * Enables one or more predefined channels by removing their keys from the disabledPredefined list in user config. Idempotent.
+ * @param keys - The predefined channel keys to enable. Entries that aren't in the disabled list are ignored.
+ */
+export async function enablePredefinedChannels(keys: readonly string[]): Promise<void> {
+
+  await mutateDisabledPredefined("delete", keys);
+}
+
+/**
+ * Partial update of channel-table display preferences (sort field, sort direction, visible columns). Only fields present in `prefs` are written to runtime
+ * CONFIG; absent fields are left untouched. Does NOT persist to config.json - callers follow up with saveChannelDisplayPrefs() to write to disk, matching the
+ * codebase's "set then save" convention for mutable shared state (setEnabledServices / saveEnabledServices, setServiceSelection / saveServiceSelections,
+ * setTagRegistry / saveTagRegistry).
+ * @param prefs - Subset of display preferences to update.
+ */
+export function setChannelDisplayPrefs(prefs: {
+  channelSortDirection?: SortDirection;
+  channelSortField?: ChannelSortField;
+  visibleColumns?: readonly string[];
+}): void {
+
+  if(prefs.channelSortField !== undefined) {
+
+    CONFIG.channels.channelSortField = prefs.channelSortField;
+  }
+
+  if(prefs.channelSortDirection !== undefined) {
+
+    CONFIG.channels.channelSortDirection = prefs.channelSortDirection;
+  }
+
+  if(prefs.visibleColumns !== undefined) {
+
+    CONFIG.channels.visibleColumns = [...prefs.visibleColumns];
+  }
+}
+
+/**
+ * Persists the current display preferences (sort field, direction, visible columns) to config.json. Reads from runtime CONFIG (written by setChannelDisplayPrefs
+ * or by config file load) and writes through mutateConfig. Filters-defaults handling in userConfig's store strips unchanged values on write.
+ */
+export async function saveChannelDisplayPrefs(): Promise<void> {
+
+  await mutateConfig((config) => {
+
+    config.channels ??= {};
+    config.channels.channelSortDirection = CONFIG.channels.channelSortDirection;
+    config.channels.channelSortField = CONFIG.channels.channelSortField;
+    config.channels.visibleColumns = CONFIG.channels.visibleColumns;
+  });
+}
+
+/**
+ * Marks the first-run Service Setup wizard as completed. Writes the flag to runtime CONFIG and persists to config.json in one call - the operation is a single
+ * one-way transition (setupCompleted goes from false/absent to true once, never back), so splitting into set+save would be ceremony without benefit.
+ */
+export async function markSetupCompleted(): Promise<void> {
+
+  CONFIG.channels.setupCompleted = true;
+
+  await mutateConfig((config) => {
+
+    config.channels ??= {};
+    config.channels.setupCompleted = true;
+  });
 }
 
 /**
@@ -1619,4 +1784,33 @@ export async function saveTagRegistry(): Promise<void> {
 
   // No-op mutation: the beforeWrite hook injects the current tag registry from module state.
   await mutateChannels(() => { /* metadata-only write */ });
+}
+
+/**
+ * Sorts tags case-insensitively using locale-aware comparison. This is the single source of truth for tag ordering. Every write path (parseTagInput, PATCH
+ * handlers, computePredefinedDelta, transformChannelTags, setTagRegistry) routes through this so stored tag arrays share one canonical ordering. The channels
+ * normalizer is a READER of that invariant - it uses sortTags on both sides when comparing a delta's tags against a predefined's tags, making the JSON.stringify
+ * equality check canonical regardless of how either side was originally populated.
+ * @param tags - Any iterable of tag strings (array, Set, generator). Not mutated.
+ * @returns A new array with the same elements in canonical case-insensitive order.
+ */
+export function sortTags(tags: Iterable<string>): string[] {
+
+  return Array.from(tags).toSorted((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+/**
+ * Parses a comma-separated tag input string into a normalized tag array. Trims whitespace, drops empty entries, deduplicates case-sensitively via Set (so
+ * distinct casings survive as distinct tags), then sorts via sortTags so every caller produces identical normalized arrays.
+ * @param raw - The comma-separated tag input from a form field or inline editor. An empty or whitespace-only string returns an empty array.
+ * @returns Sorted, case-sensitively-deduplicated array of trimmed tag strings.
+ */
+export function parseTagInput(raw: string): string[] {
+
+  if(!raw) {
+
+    return [];
+  }
+
+  return sortTags(new Set(raw.split(",").map((t) => t.trim()).filter((t) => t.length > 0)));
 }

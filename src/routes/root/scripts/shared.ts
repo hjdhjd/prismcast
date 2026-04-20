@@ -46,6 +46,21 @@ export function generateSharedUtilitiesScript(): string {
 
     "  window.showToast = showToast;",
 
+    /* Single source of truth for extracting a user-facing error message from a server error response. The envelope emits two shapes: { error: string } for
+     * top-level failures (validation, not-found, conflict, server error) and { errors: Record<field, message> } for form submissions that surface multiple
+     * field errors at once. Callers pass a fallback string for the rare case where neither field is present. Every client that handles a !success response
+     * flows through this helper so error-reading logic lives in one place instead of drifting per call site.
+     */
+    "  window.extractErrorMessage = (response, fallback) => {",
+    "    if(response && response.errors) {",
+    "      const entries = Object.entries(response.errors);",
+    "      if(entries.length > 0) {",
+    "        return entries.map(([ field, message ]) => field + ': ' + message).join(', ');",
+    "      }",
+    "    }",
+    "    return (response && (response.error || response.message)) || fallback;",
+    "  };",
+
     // Dismiss a toast with slide-out animation.
     "  function dismissToast(toast) {",
     "    if(toast.classList.contains('toast-exit')) return;",

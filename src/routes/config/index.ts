@@ -94,7 +94,7 @@ export function scheduleServerRestart(reason: string): RestartResult {
  * @param profiles - List of available profiles with category, descriptions, and summaries.
  * @returns Object with profiles grouped by category.
  */
-export function categorizeProfiles(profiles: ProfileInfo[]): Record<ProfileCategory, ProfileInfo[]> {
+export function categorizeProfiles(profiles: readonly ProfileInfo[]): Record<ProfileCategory, ProfileInfo[]> {
 
   return {
 

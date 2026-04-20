@@ -6,9 +6,11 @@ import { CHANNEL_IDENTITY_FIELDS, PREDEFINED_CHANNELS } from "../channels/index.
 import type { Channel, ChannelMap, ChannelSortField, ServiceGroup, SortDirection } from "../types/index.js";
 import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
+import { CONFIG } from "./index.js";
 import { getChannelEffectiveTags } from "./userChannels.js";
 import { getProfileForChannel } from "./profiles.js";
 import { getUserDomains } from "./userProfiles.js";
+import { mutateConfig } from "./userConfig.js";
 
 /* Service groups allow multiple streaming services to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
@@ -24,8 +26,9 @@ import { getUserDomains } from "./userProfiles.js";
  */
 
 // Suffix appended to channel keys to reference the original predefined channel when a user has overridden it. For example, "espn:predefined" references the original
-// predefined ESPN channel when the user has created a custom "espn" entry.
-const PREDEFINED_SUFFIX = ":predefined";
+// predefined ESPN channel when the user has created a custom "espn" entry. Exported so other modules (e.g., channelForm) can detect synthetic entries via the
+// canonical constant instead of stringly-typed substring checks.
+export const PREDEFINED_SUFFIX = ":predefined";
 
 /**
  * Strips the :predefined suffix from a channel key if present, returning the base key. Synthetic keys like "pbs:predefined" are created when a user overrides a
@@ -267,12 +270,28 @@ export function getEnabledServices(): string[] {
 }
 
 /**
- * Sets the enabled service tags. Empty array means "no filter" (all services shown).
+ * Sets the enabled service tags in memory (module state + runtime CONFIG). Does NOT persist to config.json - callers that want to persist the change must
+ * follow up with saveEnabledServices(). This "set then save" split matches the codebase's convention for other mutable shared state (setServiceSelection /
+ * saveServiceSelections, setTagRegistry / saveTagRegistry). Empty array means "no filter" (all services shown).
  * @param tags - The service tags to enable.
  */
-export function setEnabledServices(tags: string[]): void {
+export function setEnabledServices(tags: readonly string[]): void {
 
   enabledServices = [...tags];
+  CONFIG.channels.enabledServices = [...tags];
+}
+
+/**
+ * Persists the current enabledServices state to config.json. Reads module state (written by setEnabledServices) and writes it into the config file. Separate
+ * from setEnabledServices so callers that load values from disk don't trigger a spurious write-back.
+ */
+export async function saveEnabledServices(): Promise<void> {
+
+  await mutateConfig((config) => {
+
+    config.channels ??= {};
+    config.channels.enabledServices = [...enabledServices];
+  });
 }
 
 /**
