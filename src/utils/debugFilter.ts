@@ -20,7 +20,7 @@
 // Whether any debug output is configured at all. Fast-path check avoids category string work when debug is off.
 let anyEnabled = false;
 
-// Whether wildcard (*) was specified — all categories pass unless explicitly excluded.
+// Whether wildcard (*) was specified - all categories pass unless explicitly excluded.
 let wildcardEnabled = false;
 
 // Categories to include (exact or prefix match).
@@ -171,7 +171,7 @@ export interface DebugCategory {
 
 /**
  * Static registry of all known debug categories with descriptions. Sorted alphabetically by category. The /debug endpoint uses this to render hierarchical checkboxes.
- * Parent groups (e.g., "streaming", "timing", "tuning") are derived by the UI from the colon-separated namespaces — only leaf categories are declared here.
+ * Parent groups (e.g., "streaming", "timing", "tuning") are derived by the UI from the colon-separated namespaces - only leaf categories are declared here.
  */
 export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
 
@@ -181,7 +181,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "native:coordinator", description: "Native streaming decisions: interception result, probe result, capture teardown, proxy start." },
   { category: "native:decrypt", description: "AES-128 decryption: key fetch, IV source (explicit vs. sequence), segment sizes." },
   { category: "native:intercept", description: "CDP manifest interception: listener installed, .m3u8 URLs observed, master identified, timeout." },
-  { category: "native:manifest", description: "Raw variant manifest body from service — verbose, use for diagnosing DAI/ad stitching issues." },
+  { category: "native:manifest", description: "Raw variant manifest body from service - verbose, use for diagnosing DAI/ad stitching issues." },
   { category: "native:monitor", description: "Native health: segment staleness, error counts, L2/L3 recovery actions, capture fallback." },
   { category: "native:probe", description: "DRM probe: variant count, bandwidths, encryption classification, key accessibility, cache hit/miss." },
   { category: "native:proxy", description: "Manifest polling, segment fetch/store, playlist generation, segment rotation, key rotation." },

@@ -134,7 +134,7 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
   }
 
   // Use CDP to set the window bounds with verification. We add the chrome dimensions to our target viewport to get the correct total window size. The resize is
-  // verified by reading back the window bounds after setting them — if the dimensions don't match (e.g., Chrome was still transitioning from maximized to normal
+  // verified by reading back the window bounds after setting them - if the dimensions don't match (e.g., Chrome was still transitioning from maximized to normal
   // state), we retry after a brief delay. CDP requires separate calls for dimensions and window state.
   await withCDPSession(page, async (session, windowId) => {
 
@@ -143,7 +143,7 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
     const targetWidth = viewport.width + uiSize.width;
 
     // Resize with verification. Each attempt restores the window to "normal" state (idempotent) and sets the target dimensions, then reads back the actual
-    // bounds to confirm. On macOS, NSWindow state transitions are asynchronous — Chrome may acknowledge the "normal" state CDP command before the OS window
+    // bounds to confirm. On macOS, NSWindow state transitions are asynchronous - Chrome may acknowledge the "normal" state CDP command before the OS window
     // manager finishes the transition, causing a subsequent dimension-setting call to be silently ignored. The readback detects this and retries.
     for(let attempt = 0; attempt < 3; attempt++) {
 
@@ -173,7 +173,7 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
         break;
       }
 
-      // Dimensions didn't match — the window manager may still be processing the state transition. Wait briefly before retrying.
+      // Dimensions didn't match - the window manager may still be processing the state transition. Wait briefly before retrying.
       if(attempt < 2) {
 
         LOG.debug("browser:lifecycle", "Window resize verification failed (attempt %s): expected %s\u00d7%s, got %s\u00d7%s. Retrying.",
@@ -189,7 +189,7 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
     }
 
     // Minimize the window to reduce GPU usage. This must be a separate CDP call because window state cannot be combined with dimensions. Minimizing doesn't stop
-    // video capture — the puppeteer-stream extension captures from the compositor rather than the visible display.
+    // video capture - the puppeteer-stream extension captures from the compositor rather than the visible display.
 
     // Brief delay to allow Chrome's window manager to finish processing the resize before minimizing. Without this delay, the minimize can be ignored when
     // the window is being significantly resized (e.g., during preset degradation from 1080p to 720p).

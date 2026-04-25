@@ -68,9 +68,8 @@ export function registerBulkRoutes(app: Express): void {
       }
 
       // Assign sequential numbers starting from the requested start value. Cap at 99999 to match the validation range.
-      for(let i = 0; i < listing.length; i++) {
+      for(const [ i, entry ] of listing.entries()) {
 
-        const entry = listing[i];
         const num = start + i;
 
         if(num > 99999) {

@@ -17,7 +17,7 @@ import { scheduleServerRestart } from "./index.js";
 
 /* The checkboxList setting type renders a grid of checkboxes backed by a hidden JSON array input. Each checkboxList field specifies a listItemsKey that identifies
  * which item provider to use. The registry maps keys to functions that return the list of items to render. Keeping the registry in the routes layer (not the config
- * layer) preserves the dependency direction — routes can import browser capabilities, config cannot.
+ * layer) preserves the dependency direction - routes can import browser capabilities, config cannot.
  */
 
 /**
@@ -114,7 +114,7 @@ function toDisplayValue(value: unknown, setting: SettingMetadata): Nullable<numb
 
     const displayValue = value / setting.displayDivisor;
 
-    // Determine precision: explicit displayPrecision, or 2 for floats, or 1 for integers with displayDivisor (to handle values like 1500ms → 1.5s).
+    // Determine precision: explicit displayPrecision, or 2 for floats, or 1 for integers with displayDivisor (to handle values like 1500ms -> 1.5s).
     const precision = setting.displayPrecision ?? ((setting.type === "float") ? 2 : 1);
 
     return Number(displayValue.toFixed(precision));
@@ -518,7 +518,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     const inputType = (setting.type === "float") ? "number" : (((setting.type === "integer") || (setting.type === "port")) ? "number" : "text");
 
     // Calculate step for arrow key increments. Auto-derived from min/displayDivisor: when the min in display units is between 0 and 1 (exclusive), use it as the
-    // step (e.g., 500ms → 0.5s step); otherwise step is 1 whole display unit. This gives meaningful arrow increments and constrains input to a sensible value grid
+    // step (e.g., 500ms -> 0.5s step); otherwise step is 1 whole display unit. This gives meaningful arrow increments and constrains input to a sensible value grid
     // (e.g., 0.5, 1.0, 1.5, ... for half-second steps) rather than the old 1/displayDivisor approach which produced unusably small increments.
     let step = "1";
 
@@ -1187,12 +1187,18 @@ export function setupSettingsRoutes(app: Express): void {
 
           for(const setting of settings) {
 
-            const parts = setting.path.split(".");
-            const category = (existing as Record<string, unknown>)[parts[0]];
+            const [ categoryKey, fieldKey ] = setting.path.split(".");
 
-            if((typeof category === "object") && (category !== null) && (parts.length === 2)) {
+            if(!categoryKey || !fieldKey) {
 
-              Reflect.deleteProperty(category as Record<string, unknown>, parts[1]);
+              continue;
+            }
+
+            const category = (existing as Record<string, unknown>)[categoryKey];
+
+            if((typeof category === "object") && (category !== null)) {
+
+              Reflect.deleteProperty(category as Record<string, unknown>, fieldKey);
             }
           }
         }

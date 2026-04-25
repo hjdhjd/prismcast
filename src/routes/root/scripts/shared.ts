@@ -68,11 +68,11 @@ export function generateSharedUtilitiesScript(): string {
     "    toast.addEventListener('animationend', () => { toast.remove(); });",
     "  }",
 
-    /* Client-side namespace SSOT for all dropdown operations — close, and before-close hook registration. Private state (the hook array and both functions)
+    /* Client-side namespace SSOT for all dropdown operations - close, and before-close hook registration. Private state (the hook array and both functions)
      * lives in module-scope closures so the scroll/resize listener references stay stable across open/close cycles. The namespace object exposes the two
      * operations as property references into those module-scope functions, which keeps both entries structurally symmetric and preserves identity for
      * addEventListener / removeEventListener. Consumers call dropdowns.close() to close all open menus and dropdowns.addHook(fn) to register a before-close
-     * callback — for example, the inline tag editor registers a batch-save callback so pending changes flush on any close path (click outside, scroll,
+     * callback - for example, the inline tag editor registers a batch-save callback so pending changes flush on any close path (click outside, scroll,
      * resize, next toggle). Registration is de-duplicated so accidental double-registration is a no-op.
      *
      * This is the "closure-backed" variant of the client-side namespace pattern. The channelTable namespace uses the this.*-backed
@@ -97,7 +97,7 @@ export function generateSharedUtilitiesScript(): string {
 
     /* Safe localStorage wrappers. localStorage access can throw in private browsing mode or when storage quota is exceeded. Centralizing the try/catch here
      * means every call site treats localStorage as best-effort persistence without repeating the same try/catch at every site. Failures are silently ignored
-     * because they are not actionable by the client — there is no way to recover quota or exit private browsing from JavaScript, and log noise from every
+     * because they are not actionable by the client - there is no way to recover quota or exit private browsing from JavaScript, and log noise from every
      * subtab switch or page load would dominate useful diagnostics. Callers that need to react to failure should use the raw localStorage API directly.
      */
     "  window.safeStorageGet = (key) => {",
@@ -114,7 +114,7 @@ export function generateSharedUtilitiesScript(): string {
     "  };",
 
     /* Persist channel table display preferences to the server. Single source of truth for POSTs to /config/channels/display-prefs so every call site (sort,
-     * column visibility, and any future preference) shares one fetch path and one error-handling decision. Fire-and-forget — the caller does not await the
+     * column visibility, and any future preference) shares one fetch path and one error-handling decision. Fire-and-forget - the caller does not await the
      * round-trip because the client state is already updated and the persist is a best-effort sync to the server.
      */
     "  window.persistDisplayPrefs = (body) => {",
@@ -260,7 +260,7 @@ export function generateSharedUtilitiesScript(): string {
     "    }",
     "  };",
 
-    // Service icon renderer with three modes, mirroring channelDisplayHtml. The icon source chain is: iconUrl (if specified) → Apple touch icon → favicon.
+    // Service icon renderer with three modes, mirroring channelDisplayHtml. The icon source chain is: iconUrl (if specified) -> Apple touch icon -> favicon.
     // Fallback URLs are stored in a data-fallbacks attribute and processed by the shared imgFallback handler.
     "  window.serviceIconHtml = (domain, name, iconClass, textClass, mode, iconUrl) => {",
     "    const m = mode || 'logo';",
@@ -475,7 +475,7 @@ export function generateSharedUtilitiesScript(): string {
 
     /* Cached column index map for _getSortValue. Built lazily on first access by scanning the table header row's data-sort-field attributes, then held for
      * the page lifetime with no invalidation path. This relies on a load-bearing invariant: the channel table header is rendered once by the server and
-     * never rebuilt client-side — only CSS visibility classes are toggled by toggleColumn, never DOM structure. Do not introduce dynamic thead mutation
+     * never rebuilt client-side - only CSS visibility classes are toggled by toggleColumn, never DOM structure. Do not introduce dynamic thead mutation
      * without also adding an explicit cache invalidation (e.g., set _colIndexCache = null after rewriting the header row).
      */
     "    _colIndexCache: null,",
@@ -561,7 +561,7 @@ export function generateSharedUtilitiesScript(): string {
     "        }",
     "      }",
 
-    // Apply channel logos from a logo map (key → URL). Sets data-logo attributes on matching rows so processLogos() can render the images.
+    // Apply channel logos from a logo map (key -> URL). Sets data-logo attributes on matching rows so processLogos() can render the images.
     "      if(patch.logos) {",
     "        for(const [ key, logoUrl ] of Object.entries(patch.logos)) {",
     "          const logoRow = document.getElementById('display-row-' + key);",
@@ -617,13 +617,13 @@ export function generateSharedUtilitiesScript(): string {
     "    },",
 
     /* Apply the service filter to all channel rows. Hides rows whose service tags aren't enabled and filters service dropdown options for multi-service channels.
-     * Uses a persistent _allOptions array on each select to remember all server-rendered options across filter applications — the server marks disabled options
+     * Uses a persistent _allOptions array on each select to remember all server-rendered options across filter applications - the server marks disabled options
      * with the hidden attribute, but Safari ignores hidden on option elements, so we rebuild the select with only enabled options each time. Selection restore
      * priority: (1) saved server choice (HTML selected attribute), (2) previous visual selection, (3) first option.
      *
      * Cache lifecycle: _allOptions is attached to the DOM select element itself, so its lifetime is tied to that element. Row replacement via insertRow() drops
      * the old row (and its select) and inserts fresh server-rendered HTML, which transparently resets the cache with whatever option set the server just sent.
-     * This invariant is load-bearing — do not refactor insertRow() into an in-place row update without also adding an explicit cache invalidation path here.
+     * This invariant is load-bearing - do not refactor insertRow() into an in-place row update without also adding an explicit cache invalidation path here.
      */
     "    filter(enabledTags) {",
     "      const rows = document.querySelectorAll('tr[data-provider-tags]');",

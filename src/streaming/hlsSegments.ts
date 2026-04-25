@@ -303,7 +303,7 @@ export function updatePlaylist(streamId: number, content: string): void {
 
     // Cancel the deferred preroll timer now that real content is available. The timer may still be running for native streams where browser setup completed quickly
     // but the proxy's first poll cycle took longer than the preroll delay (PREROLL_DELAY_MS). Without this, the timer would fire after real content is already
-    // flowing, uselessly seeding preroll state. For streams where the timer already fired (preroll is active), this is a no-op — the timer handle is already null.
+    // flowing, uselessly seeding preroll state. For streams where the timer already fired (preroll is active), this is a no-op - the timer handle is already null.
     if(stream.hls.prerollTimer) {
 
       clearTimeout(stream.hls.prerollTimer);

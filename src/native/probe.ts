@@ -9,9 +9,9 @@ import type { Nullable } from "../types/index.js";
  * determines whether PrismCast can consume the stream natively (clear or AES-128) or must fall back to screen capture (Widevine, FairPlay, or other DRM).
  *
  * Classification logic:
- * - No #EXT-X-KEY or METHOD=NONE → "clear" (no encryption, direct pass-through)
- * - METHOD=AES-128 with accessible key URL → "aes128" (Node can decrypt with crypto.createDecipheriv)
- * - METHOD=SAMPLE-AES, SAMPLE-AES-CTR, or any other method → "drm" (requires CDM, not viable)
+ * - No #EXT-X-KEY or METHOD=NONE -> "clear" (no encryption, direct pass-through)
+ * - METHOD=AES-128 with accessible key URL -> "aes128" (Node can decrypt with crypto.createDecipheriv)
+ * - METHOD=SAMPLE-AES, SAMPLE-AES-CTR, or any other method -> "drm" (requires CDM, not viable)
  */
 
 // Timeout for individual manifest/key fetches.
@@ -51,11 +51,11 @@ export interface ProbeResult {
 }
 
 // Cache of encryption types keyed by channel name. Stores the classification (clear/aes128/drm) with a timestamp for TTL expiration. Variant URLs and key URLs
-// contain session-bound auth tokens that expire between tunes, so they must never be cached — only the stable encryption type is safe to persist across sessions.
+// contain session-bound auth tokens that expire between tunes, so they must never be cached - only the stable encryption type is safe to persist across sessions.
 // The DRM skip optimization in setup.ts uses this cache to avoid installing the CDP interceptor for channels known to use DRM.
 const probeCache = new Map<string, { encryption: EncryptionType; timestamp: number }>();
 
-// Cache entries older than this are considered stale and re-probed. 24 hours covers the case where a service changes a channel's encryption profile (e.g., free →
+// Cache entries older than this are considered stale and re-probed. 24 hours covers the case where a service changes a channel's encryption profile (e.g., free ->
 // premium DRM). The DRM short-circuit in probeManifest() still applies within the TTL, so frequently-tuned DRM channels avoid repeated probe overhead.
 const PROBE_CACHE_TTL = 24 * 60 * 60 * 1000;
 
@@ -96,7 +96,7 @@ export function clearProbeCache(channelName: string): void {
 }
 
 /**
- * Probes an HLS master manifest to determine encryption type and select the best variant. The probe cache is checked for DRM channels only — if a previous probe
+ * Probes an HLS master manifest to determine encryption type and select the best variant. The probe cache is checked for DRM channels only - if a previous probe
  * classified the channel as DRM, we return the cached result immediately since the caller will bail out regardless of URLs. For viable channels (clear or aes128),
  * we always run the full probe because the variant URL and key URL contain auth tokens that expire between browser sessions.
  *
@@ -244,7 +244,7 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
 
   for(let i = 0; i < lines.length; i++) {
 
-    const line = lines[i].trim();
+    const line = lines[i]?.trim() ?? "";
 
     if(!line.startsWith("#EXT-X-STREAM-INF:")) {
 
@@ -252,28 +252,25 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
     }
 
     // Parse BANDWIDTH attribute.
-    const bandwidthMatch = /BANDWIDTH=(\d+)/.exec(line);
-    const bandwidth = bandwidthMatch ? Number(bandwidthMatch[1]) : 0;
+    const bandwidth = Number(/BANDWIDTH=(\d+)/.exec(line)?.[1] ?? 0);
 
     // Parse RESOLUTION attribute (e.g., RESOLUTION=1920x1080).
-    const resolutionMatch = /RESOLUTION=(\d+x\d+)/.exec(line);
-    const resolution: Nullable<string> = resolutionMatch ? resolutionMatch[1] : null;
+    const resolution: Nullable<string> = /RESOLUTION=(\d+x\d+)/.exec(line)?.[1] ?? null;
 
     // Parse CODECS attribute and map the video codec prefix to a human-readable label. The CODECS value contains comma-separated codec strings (e.g.,
-    // "avc1.640028,mp4a.40.2"). The video codec is identified by its prefix: avc1/avc3 → H264, hvc1/hev1 → HEVC, av01 → AV1, vp09 → VP9.
-    const codecsMatch = /CODECS="([^"]+)"/.exec(line);
+    // "avc1.640028,mp4a.40.2"). The video codec is identified by its prefix: avc1/avc3 -> H264, hvc1/hev1 -> HEVC, av01 -> AV1, vp09 -> VP9.
+    const codecsValue = /CODECS="([^"]+)"/.exec(line)?.[1];
     let codec: Nullable<string> = null;
 
-    if(codecsMatch) {
+    if(codecsValue) {
 
-      const codecStr = codecsMatch[1].split(",")[0].trim();
-      const prefix = codecStr.split(".")[0];
+      const prefix = codecsValue.split(",")[0]?.trim().split(".")[0];
 
-      codec = codecPrefixes[prefix] ?? null;
+      codec = prefix ? (codecPrefixes[prefix] ?? null) : null;
     }
 
     // The variant URL is on the next line.
-    const variantLine = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
+    const variantLine = lines[i + 1]?.trim() ?? "";
 
     if(!variantLine || variantLine.startsWith("#")) {
 
@@ -328,8 +325,7 @@ async function classifyEncryption(variantBody: string, variant: VariantSelection
     }
 
     // Parse METHOD attribute.
-    const methodMatch = /METHOD=([A-Za-z0-9-]+)/.exec(trimmed);
-    const method = methodMatch ? methodMatch[1].toUpperCase() : "NONE";
+    const method = /METHOD=([A-Za-z0-9-]+)/.exec(trimmed)?.[1]?.toUpperCase() ?? "NONE";
 
     if(method === "NONE") {
 
@@ -339,9 +335,9 @@ async function classifyEncryption(variantBody: string, variant: VariantSelection
     if(method === "AES-128") {
 
       // Parse URI attribute for the key URL.
-      const uriMatch = /URI="([^"]+)"/.exec(trimmed);
+      const uri = /URI="([^"]+)"/.exec(trimmed)?.[1];
 
-      if(!uriMatch) {
+      if(!uri) {
 
         LOG.debug("native:probe", "AES-128 key tag has no URI for %s.", channelName);
         encryption = "drm";
@@ -349,7 +345,7 @@ async function classifyEncryption(variantBody: string, variant: VariantSelection
         break;
       }
 
-      const rawKeyUrl = resolveUrl(uriMatch[1], variant.url);
+      const rawKeyUrl = resolveUrl(uri, variant.url);
 
       // Test that the key is accessible and is exactly 16 bytes.
       // eslint-disable-next-line no-await-in-loop
@@ -433,12 +429,12 @@ function parseAudioRendition(masterBody: string, masterUrl: string): Nullable<st
       continue;
     }
 
-    // Extract the URI attribute. Not all #EXT-X-MEDIA:TYPE=AUDIO tags have a URI — some are descriptive-only when audio is muxed into the video variant.
-    const uriMatch = /URI="([^"]+)"/.exec(trimmed);
+    // Extract the URI attribute. Not all #EXT-X-MEDIA:TYPE=AUDIO tags have a URI - some are descriptive-only when audio is muxed into the video variant.
+    const uri = /URI="([^"]+)"/.exec(trimmed)?.[1];
 
-    if(uriMatch) {
+    if(uri) {
 
-      return resolveUrl(uriMatch[1], masterUrl);
+      return resolveUrl(uri, masterUrl);
     }
   }
 

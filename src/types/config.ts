@@ -179,7 +179,7 @@ export interface ChannelsConfig {
   precacheServices: string[];
 
   // Whether the user has completed the initial Service Setup flow. When false, the setup wizard auto-presents on the first visit to the channels tab.
-  // Set to true on completion or explicit skip — never on browser close or navigation away.
+  // Set to true on completion or explicit skip - never on browser close or navigation away.
   setupCompleted: boolean;
 
   // Optional column field names that are currently visible in the channels table. Empty array means only required columns are shown.

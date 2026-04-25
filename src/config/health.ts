@@ -12,11 +12,11 @@ const { promises: fsPromises } = fs;
 
 /* This module tracks two kinds of observed state:
  *
- * 1. Channel health — did the last tune attempt for a specific channel succeed or fail? Each channel's health is independent. Switching a channel's domain resets its
+ * 1. Channel health - did the last tune attempt for a specific channel succeed or fail? Each channel's health is independent. Switching a channel's domain resets its
  *    health indicator because the stored domain no longer matches.
  *
- * 2. Domain authentication — has the user successfully tuned at least one channel on a given domain? Authentication is proven by success: one successful tune on any
- *    channel from a domain turns the entire domain green. There is no "red" state — domains are either verified (green) or unknown (no entry / TTL expired). This
+ * 2. Domain authentication - has the user successfully tuned at least one channel on a given domain? Authentication is proven by success: one successful tune on any
+ *    channel from a domain turns the entire domain green. There is no "red" state - domains are either verified (green) or unknown (no entry / TTL expired). This
  *    avoids brittle heuristics for detecting auth failures (domain redirects, login page detection, MVPD picker walls) in favor of a single reliable signal: did video
  *    actually start?
  *
@@ -30,7 +30,7 @@ type HealthStatus = "failed" | "success";
 
 interface ChannelHealthEntry {
 
-  // The domain at the time of recording. Used to detect domain changes — if the current domain differs, the entry is stale.
+  // The domain at the time of recording. Used to detect domain changes - if the current domain differs, the entry is stale.
   domain: string;
 
   // Whether the last tune succeeded or failed.
@@ -144,7 +144,7 @@ export async function loadHealthState(): Promise<void> {
     }
   } catch(error) {
 
-    // File doesn't exist — this is normal on first run.
+    // File doesn't exist - this is normal on first run.
     if((error as NodeJS.ErrnoException).code === "ENOENT") {
 
       return;
@@ -160,7 +160,7 @@ let writeInProgress = false;
 let flushPendingDuringWrite = false;
 
 /**
- * Writes the current in-memory health state to health.json. Debounced — multiple calls within FLUSH_DELAY are coalesced into a single write. If a write is already
+ * Writes the current in-memory health state to health.json. Debounced - multiple calls within FLUSH_DELAY are coalesced into a single write. If a write is already
  * in progress, the flush is deferred until the current write completes, then re-triggered to capture any state changes that occurred during the write.
  */
 function flushHealthState(): void {
@@ -248,7 +248,7 @@ export function markDomainAuth(domain: string): void {
 }
 
 /**
- * Records a failed tune for a channel. Sets the channel's health to "failed". Does not affect domain auth — a single channel failure doesn't prove the domain is
+ * Records a failed tune for a channel. Sets the channel's health to "failed". Does not affect domain auth - a single channel failure doesn't prove the domain is
  * unauthenticated. Triggers a debounced flush.
  * @param channelKey - The channel key (canonical key, e.g., "nbc").
  * @param domain - The auth domain for the currently selected service variant.
@@ -279,13 +279,13 @@ export function getChannelHealth(channelKey: string, domain: string): Nullable<{
     return null;
   }
 
-  // Stale entry — older than TTL.
+  // Stale entry - older than TTL.
   if(isHealthExpired(entry.timestamp)) {
 
     return null;
   }
 
-  // Domain was switched — the stored result is for a different domain.
+  // Domain was switched - the stored result is for a different domain.
   if(entry.domain !== domain) {
 
     return null;
@@ -309,7 +309,7 @@ export function getDomainAuth(domain: string): Nullable<number> {
     return null;
   }
 
-  // Stale entry — older than TTL.
+  // Stale entry - older than TTL.
   if(isHealthExpired(timestamp)) {
 
     return null;

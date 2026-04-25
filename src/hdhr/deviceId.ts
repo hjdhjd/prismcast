@@ -31,15 +31,16 @@ function computeChecksum(nibbles: number[]): number {
 
   let checksum = 0;
 
-  for(let i = 0; i < 8; i++) {
+  for(const [ i, nibble ] of nibbles.entries()) {
 
-    // Even positions use the lookup table, odd positions use the raw nibble value.
+    // Even positions use the lookup table, odd positions use the raw nibble value. Both lookups stay within-bounds by construction (nibble in [0, 15] and the
+    // lookup table has 16 entries); ?? 0 satisfies TypeScript without changing behavior.
     if((i % 2) === 0) {
 
-      checksum ^= DEVICEID_LOOKUP[nibbles[i]];
+      checksum ^= DEVICEID_LOOKUP[nibble] ?? 0;
     } else {
 
-      checksum ^= nibbles[i];
+      checksum ^= nibble;
     }
   }
 
@@ -79,14 +80,14 @@ export function generateDeviceId(): string {
 
   let partialChecksum = 0;
 
-  for(let i = 0; i < 6; i++) {
+  for(const [ i, nibble ] of nibbles.entries()) {
 
     if((i % 2) === 0) {
 
-      partialChecksum ^= DEVICEID_LOOKUP[nibbles[i]];
+      partialChecksum ^= DEVICEID_LOOKUP[nibble] ?? 0;
     } else {
 
-      partialChecksum ^= nibbles[i];
+      partialChecksum ^= nibble;
     }
   }
 
@@ -96,7 +97,7 @@ export function generateDeviceId(): string {
 
     const highNibble = (finalByte >> 4) & 0xF;
     const lowNibble = finalByte & 0xF;
-    const finalChecksum = partialChecksum ^ DEVICEID_LOOKUP[highNibble] ^ lowNibble;
+    const finalChecksum = partialChecksum ^ (DEVICEID_LOOKUP[highNibble] ?? 0) ^ lowNibble;
 
     if(finalChecksum === 0) {
 
@@ -104,6 +105,6 @@ export function generateDeviceId(): string {
     }
   }
 
-  // This is unreachable — a solution always exists within the 256 candidates. Fall back to a known-valid ID as a safety net.
+  // This is unreachable - a solution always exists within the 256 candidates. Fall back to a known-valid ID as a safety net.
   return "1000000f";
 }

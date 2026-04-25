@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.ts: Coordinator for native HLS streaming — manifest interception, DRM probe, and proxy lifecycle.
+ * index.ts: Coordinator for native HLS streaming - manifest interception, DRM probe, and proxy lifecycle.
  */
 import { LOG, formatError, startTimer } from "../utils/index.js";
 import { clearProbeCache, probeManifest } from "./probe.js";
@@ -38,7 +38,7 @@ const MIN_REFRESH_DELAY = 30000;
 // Minimum remaining token lifetime (in milliseconds) for a direct-fetched variant URL to be considered usable. If the variant URL's token expires sooner than this,
 // the direct fetch result is discarded and we fall back to a page reload to get a genuinely fresh token. This prevents handing the proxy a variant URL that expires
 // almost immediately. Set low (5s) because the proxy only needs the variant URL to survive one poll cycle (~3s). A higher threshold (e.g., 30s) would cause Fox.com
-// channels to reject perfectly usable variant URLs — Fox.com tokens have ~57s total lifetime, leaving ~27s at the 30s refresh point.
+// channels to reject perfectly usable variant URLs - Fox.com tokens have ~57s total lifetime, leaving ~27s at the 30s refresh point.
 const MIN_USABLE_TOKEN_LIFETIME = 5000;
 
 // Timeout for awaiting the manifest interception promise after playback init.
@@ -180,7 +180,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   LOG.debug("native:coordinator", "Native streaming viable for %s (%s, variant: %s).", channelName, probeResult.encryption, probeResult.bestVariantUrl.slice(0, 80));
 
   // For AES-128 streams, pre-fetch the decryption key before committing to native mode. This validates key accessibility while the capture pipeline is still intact,
-  // allowing a seamless fallback to capture if the key is inaccessible. Without this, the proxy would discover the problem on its first segment fetch — after the
+  // allowing a seamless fallback to capture if the key is inaccessible. Without this, the proxy would discover the problem on its first segment fetch - after the
   // capture pipeline has already been torn down and no fallback is possible.
   let prefetchedKey: Nullable<Buffer> = null;
 
@@ -333,7 +333,7 @@ function scheduleTokenRefresh(options: TokenRefreshOptions): void {
  *
  * L2 recovery (failure-triggered) from the monitor omits masterUrl, going straight to page reload since the stream is already failing and needs a full refresh.
  *
- * @param options - Refresh options. masterUrl is optional — when provided, direct fetch is attempted first.
+ * @param options - Refresh options. masterUrl is optional - when provided, direct fetch is attempted first.
  * @returns True if the refresh succeeded (proxy updated with new manifest), false otherwise.
  */
 export async function refreshNativeManifest(options: {
@@ -529,7 +529,7 @@ async function tryDirectManifestRefresh(masterUrl: string, channelName: string,
   }
 
   // Verify the variant URL's token hasn't already expired or is about to expire. Parse the expiry from the variant URL (not the master URL) since that's what the
-  // proxy will actually poll. If the token expires within MIN_USABLE_TOKEN_LIFETIME, the direct fetch result is stale — the page reload path will generate a
+  // proxy will actually poll. If the token expires within MIN_USABLE_TOKEN_LIFETIME, the direct fetch result is stale - the page reload path will generate a
   // genuinely fresh token.
   const variantExpiry = parseTokenExpiry(probeResult.bestVariantUrl);
 

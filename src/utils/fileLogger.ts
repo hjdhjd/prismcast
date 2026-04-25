@@ -248,7 +248,7 @@ async function checkAndTrimFile(): Promise<void> {
 
     approximateSize = stats.size;
 
-    // Skip trimming when debug logging is active. Debug sessions generate high-volume output that is valuable for diagnosis — trimming mid-session would discard
+    // Skip trimming when debug logging is active. Debug sessions generate high-volume output that is valuable for diagnosis - trimming mid-session would discard
     // the very data we are trying to capture.
     if((approximateSize > maxLogSize) && !isAnyDebugEnabled()) {
 

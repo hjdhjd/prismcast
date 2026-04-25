@@ -17,7 +17,7 @@ import { getProfilesFilePath } from "./paths.js";
  *   - "profiles": Custom site profile definitions (each must extend a built-in profile)
  *   - "domains": Domain-to-profile mappings (can reference built-in or user profiles)
  *
- * User profiles cannot extend other user profiles — only built-in profiles. This prevents cascading breakage when a referenced user profile is deleted.
+ * User profiles cannot extend other user profiles - only built-in profiles. This prevents cascading breakage when a referenced user profile is deleted.
  */
 
 // Legacy profile flag names that have been renamed. Keys are the old names, values are the current names. Used by initializeUserProfiles() and service pack import to
@@ -315,7 +315,7 @@ export async function initializeUserProfiles(): Promise<void> {
     }
   }
 
-  // Check for non-printable characters in loaded profile and domain string values. These warnings are informational — loaded data is not modified.
+  // Check for non-printable characters in loaded profile and domain string values. These warnings are informational - loaded data is not modified.
   for(const [ profileKey, profile ] of Object.entries(loadedUserProfiles)) {
 
     for(const [ field, value ] of Object.entries(profile)) {
@@ -400,7 +400,7 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
 
   const errors: string[] = [];
 
-  // The extends field is required for user profiles — they must build on a built-in profile.
+  // The extends field is required for user profiles - they must build on a built-in profile.
   if(!profile.extends) {
 
     errors.push("Profile '" + key + "': extends is required. User profiles must extend a built-in profile.");

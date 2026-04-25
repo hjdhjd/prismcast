@@ -16,6 +16,18 @@ import { getMaxSupportedViewport } from "../browser/display.js";
 const DEFAULT_VIEWPORT = { height: 720, width: 1280 };
 
 /**
+ * Setting paths that every quality preset populates. Declaring them as a tight object type (instead of a general Record<string, number>) keeps the lookups
+ * in this module statically typed - TypeScript knows each key is present, so we never have to narrow the result of preset.values[...] at call sites.
+ */
+export interface PresetValues {
+
+  "browser.viewport.height": number;
+  "browser.viewport.width": number;
+  "streaming.frameRate": number;
+  "streaming.videoBitsPerSecond": number;
+}
+
+/**
  * A quality preset that sets multiple configuration values at once.
  */
 export interface QualityPreset {
@@ -29,94 +41,112 @@ export interface QualityPreset {
   // Display name shown in the preset selector.
   name: string;
 
-  // Setting values to apply when this preset is selected. Keys are setting paths (e.g., "browser.viewport.width"), values are the preset values.
-  values: Record<string, number>;
+  // Setting values to apply when this preset is selected.
+  values: PresetValues;
 }
 
+/* Each preset is declared as a standalone const so downstream code can reference specific presets by name (PRESET_480P as the minimum fallback, PRESET_720P
+ * as the default) with fully-narrowed types. Exporting the assembled array gives consumers the ordered list; exporting the individual consts gives us stable
+ * references we can use without re-indexing into the array and fighting the type system.
+ */
+
+const PRESET_480P: QualityPreset = {
+
+  description: "Low bandwidth, older devices, minimal resource usage.",
+  id: "480p",
+  name: "480p",
+  values: {
+
+    "browser.viewport.height": 480,
+    "browser.viewport.width": 854,
+    "streaming.frameRate": 30,
+    "streaming.videoBitsPerSecond": 3000000
+  }
+};
+
+const PRESET_720P: QualityPreset = {
+
+  description: "Balanced quality and bandwidth. Good for most content.",
+  id: "720p",
+  name: "720p",
+  values: {
+
+    "browser.viewport.height": 720,
+    "browser.viewport.width": 1280,
+    "streaming.frameRate": 60,
+    "streaming.videoBitsPerSecond": 8000000
+  }
+};
+
+const PRESET_720P_HIGH: QualityPreset = {
+
+  description: "HD with higher bitrate. Best for sports and fast motion at 720p.",
+  id: "720p-high",
+  name: "720p High",
+  values: {
+
+    "browser.viewport.height": 720,
+    "browser.viewport.width": 1280,
+    "streaming.frameRate": 60,
+    "streaming.videoBitsPerSecond": 12000000
+  }
+};
+
+const PRESET_1080P: QualityPreset = {
+
+  description: "Full HD resolution. Requires good bandwidth.",
+  id: "1080p",
+  name: "1080p",
+  values: {
+
+    "browser.viewport.height": 1080,
+    "browser.viewport.width": 1920,
+    "streaming.frameRate": 60,
+    "streaming.videoBitsPerSecond": 15000000
+  }
+};
+
+const PRESET_1080P_HIGH: QualityPreset = {
+
+  description: "Full HD with higher bitrate. Best for sports and fast motion.",
+  id: "1080p-high",
+  name: "1080p High",
+  values: {
+
+    "browser.viewport.height": 1080,
+    "browser.viewport.width": 1920,
+    "streaming.frameRate": 60,
+    "streaming.videoBitsPerSecond": 20000000
+  }
+};
+
+const PRESET_4K: QualityPreset = {
+
+  description: "4K resolution. High resource and bandwidth usage.",
+  id: "4k",
+  name: "4K",
+  values: {
+
+    "browser.viewport.height": 2160,
+    "browser.viewport.width": 3840,
+    "streaming.frameRate": 60,
+    "streaming.videoBitsPerSecond": 35000000
+  }
+};
+
 /**
- * Available video quality presets. These presets configure viewport dimensions, video bitrate, and frame rate for common use cases. The presets are ordered from lowest
- * to highest quality.
+ * Available video quality presets. These presets configure viewport dimensions, video bitrate, and frame rate for common use cases. The presets are ordered
+ * from lowest to highest quality.
  */
 export const VIDEO_QUALITY_PRESETS: QualityPreset[] = [
-  {
-
-    description: "Low bandwidth, older devices, minimal resource usage.",
-    id: "480p",
-    name: "480p",
-    values: {
-
-      "browser.viewport.height": 480,
-      "browser.viewport.width": 854,
-      "streaming.frameRate": 30,
-      "streaming.videoBitsPerSecond": 3000000
-    }
-  },
-  {
-
-    description: "Balanced quality and bandwidth. Good for most content.",
-    id: "720p",
-    name: "720p",
-    values: {
-
-      "browser.viewport.height": 720,
-      "browser.viewport.width": 1280,
-      "streaming.frameRate": 60,
-      "streaming.videoBitsPerSecond": 8000000
-    }
-  },
-  {
-
-    description: "HD with higher bitrate. Best for sports and fast motion at 720p.",
-    id: "720p-high",
-    name: "720p High",
-    values: {
-
-      "browser.viewport.height": 720,
-      "browser.viewport.width": 1280,
-      "streaming.frameRate": 60,
-      "streaming.videoBitsPerSecond": 12000000
-    }
-  },
-  {
-
-    description: "Full HD resolution. Requires good bandwidth.",
-    id: "1080p",
-    name: "1080p",
-    values: {
-
-      "browser.viewport.height": 1080,
-      "browser.viewport.width": 1920,
-      "streaming.frameRate": 60,
-      "streaming.videoBitsPerSecond": 15000000
-    }
-  },
-  {
-
-    description: "Full HD with higher bitrate. Best for sports and fast motion.",
-    id: "1080p-high",
-    name: "1080p High",
-    values: {
-
-      "browser.viewport.height": 1080,
-      "browser.viewport.width": 1920,
-      "streaming.frameRate": 60,
-      "streaming.videoBitsPerSecond": 20000000
-    }
-  },
-  {
-
-    description: "4K resolution. High resource and bandwidth usage.",
-    id: "4k",
-    name: "4K",
-    values: {
-
-      "browser.viewport.height": 2160,
-      "browser.viewport.width": 3840,
-      "streaming.frameRate": 60,
-      "streaming.videoBitsPerSecond": 35000000
-    }
-  }
+  PRESET_480P, PRESET_720P, PRESET_720P_HIGH, PRESET_1080P, PRESET_1080P_HIGH, PRESET_4K
 ];
+
+// The default preset when no preset is configured. 720p is the established default.
+const DEFAULT_PRESET = PRESET_720P;
+
+// The minimum preset used when even the lowest-resolution preset does not fit the display - Chrome will constrain the actual viewport further.
+const MINIMUM_PRESET = PRESET_480P;
 
 /**
  * Returns the list of valid preset IDs.
@@ -188,10 +218,10 @@ export interface EffectivePresetResult {
  */
 export function findBestFittingPreset(maxWidth: number, maxHeight: number): Nullable<QualityPreset> {
 
-  // Iterate from highest to lowest resolution (reverse order since VIDEO_QUALITY_PRESETS is ordered low to high).
-  for(let i = VIDEO_QUALITY_PRESETS.length - 1; i >= 0; i--) {
+  // Iterate from highest to lowest resolution via toReversed() so the search order reads naturally as "try the largest first" and the loop body deals in
+  // fully-typed QualityPreset values rather than array-index lookups.
+  for(const preset of VIDEO_QUALITY_PRESETS.toReversed()) {
 
-    const preset = VIDEO_QUALITY_PRESETS[i];
     const presetWidth = preset.values["browser.viewport.width"];
     const presetHeight = preset.values["browser.viewport.height"];
 
@@ -213,7 +243,7 @@ export function findBestFittingPreset(maxWidth: number, maxHeight: number): Null
 export function getEffectivePreset(config: Config): EffectivePresetResult {
 
   // Find the configured preset.
-  const configuredPreset = VIDEO_QUALITY_PRESETS.find((p) => p.id === config.streaming.qualityPreset) ?? VIDEO_QUALITY_PRESETS[1];
+  const configuredPreset = VIDEO_QUALITY_PRESETS.find((p) => p.id === config.streaming.qualityPreset) ?? DEFAULT_PRESET;
   const maxViewport = getMaxSupportedViewport();
 
   // If display detection hasn't completed yet, use configured preset without degradation.
@@ -246,14 +276,14 @@ export function getEffectivePreset(config: Config): EffectivePresetResult {
   // Configured preset doesn't fit - find the best alternative.
   const bestFitting = findBestFittingPreset(maxViewport.width, maxViewport.height);
 
-  // Edge case: no preset fits (extremely small display). Use 480p as minimum and let Chrome constrain it.
+  // Edge case: no preset fits (extremely small display). Use the minimum preset and let Chrome constrain the actual viewport further.
   if(!bestFitting) {
 
     return {
 
       configuredPreset,
       degraded: true,
-      effectivePreset: VIDEO_QUALITY_PRESETS[0],
+      effectivePreset: MINIMUM_PRESET,
       maxViewport
     };
   }
@@ -371,7 +401,7 @@ export function getPresetOptionsWithDegradation(): PresetOptionsResult {
     // This preset doesn't fit - it will degrade to the best fitting preset.
     return {
 
-      degradedTo: bestFitting ?? VIDEO_QUALITY_PRESETS[0],
+      degradedTo: bestFitting ?? MINIMUM_PRESET,
       preset
     };
   });

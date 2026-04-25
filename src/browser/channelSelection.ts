@@ -26,7 +26,7 @@ import { yttvProvider } from "./tuning/youtubeTv.js";
  *
  * Each provider tuning file exports a single ProviderModule object that bundles identity metadata (slug, label, guideUrl), the tuning strategy, and a
  * discoverChannels implementation. The coordinator builds its strategy dispatch lookup from provider modules at evaluation time. Generic strategies
- * (thumbnailRow, tileClick) remain bare ChannelStrategyEntry objects — they are site-specific interaction patterns, not provider-level registrations.
+ * (thumbnailRow, tileClick) remain bare ChannelStrategyEntry objects - they are site-specific interaction patterns, not provider-level registrations.
  *
  * Shared utilities (scrollAndClick, normalizeChannelName, resolveMatchSelector, logAvailableChannels) live in tuning/shared.ts so that tuning strategy files can
  * import them without creating a circular dependency with this coordinator. This module re-exports them for backward compatibility.
@@ -51,7 +51,7 @@ import { yttvProvider } from "./tuning/youtubeTv.js";
  */
 
 // Provider module registry. The primary registry for all provider-level operations. Each entry bundles identity metadata, tuning strategy, and channel discovery.
-// Future capabilities become additional methods on ProviderModule — no new registries needed.
+// Future capabilities become additional methods on ProviderModule - no new registries needed.
 const providerModules: readonly ProviderModule[] = [
   coxProvider, directvProvider, foxProvider, hboProvider, huluProvider, slingProvider, spectrumProvider, xfinityProvider, yttvProvider
 ];
@@ -89,7 +89,7 @@ export async function resolveDirectUrl(profile: ResolvedSiteProfile, page: Page)
     return null;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
   return await strategies[channelSelection.strategy]?.resolveDirectUrl?.(channelSelector, page) ?? null;
 }
 
@@ -107,7 +107,7 @@ export function invalidateDirectUrl(profile: ResolvedSiteProfile): void {
     return;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
   strategies[channelSelection.strategy]?.invalidateDirectUrl?.(channelSelector);
 }
 
@@ -145,7 +145,7 @@ export function getProviderSlugs(): string[] {
 /**
  * Returns slug, label, domain, and optional icon URL for all registered provider modules. Used by the checkboxList setting for precache labels and by the
  * browse modal for provider picker cards with icons. The domain is extracted from the guide URL. The icon URL is derived from the provider's DOMAIN_CONFIG
- * entry — the single source of truth for provider icon URLs.
+ * entry - the single source of truth for provider icon URLs.
  * @returns Array of objects with domain, iconUrl, label, noDirectTuneOptimization, and slug properties.
  */
 export function getProviderModuleInfo(): { domain: string; iconUrl?: string; label: string; noDirectTuneOptimization?: boolean; slug: string }[] {
@@ -250,7 +250,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
 
   const entry = strategies[channelSelection.strategy];
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
   if(!entry) {
 
     LOG.warn("Unknown channel selection strategy: %s.", channelSelection.strategy);
@@ -258,11 +258,11 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     return { reason: "Unknown channel selection strategy.", success: false };
   }
 
-  // Pre-selection scroll phase. Some sites (e.g., Disney+) lazy-load entire page sections — headings, tiles, and images only appear in the DOM after scrolling
+  // Pre-selection scroll phase. Some sites (e.g., Disney+) lazy-load entire page sections - headings, tiles, and images only appear in the DOM after scrolling
   // them into the viewport. Two scroll modes are supported: scrollToBottom scrolls the page to the bottom to force all lazy content into the DOM, and
   // scrollSelector+scrollTarget progressively scrolls until a specific element with matching text content is found and scrolled into view. Both modes gate on a
-  // readiness signal before scrolling — scrollToBottom waits for the page to become scrollable (scrollHeight > innerHeight), while scrollSelector waits for the
-  // first matching DOM element — since SPAs typically fire the load event before React/framework rendering completes.
+  // readiness signal before scrolling - scrollToBottom waits for the page to become scrollable (scrollHeight > innerHeight), while scrollSelector waits for the
+  // first matching DOM element - since SPAs typically fire the load event before React/framework rendering completes.
   if(channelSelection.scrollToBottom) {
 
     // Wait for the SPA to render enough content to make the page scrollable. SPAs fire the load event before the framework renders page sections, so scrollHeight
@@ -286,7 +286,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
 
     // Targeted scroll: find a specific element matching scrollSelector whose text content equals scrollTarget, then scroll it into view. This is used when only a
     // particular section needs to be visible rather than the entire page. Progressively scrolls in viewport-sized increments, checking after each step whether the
-    // target element has appeared — necessary because sites with IntersectionObserver-based lazy loading only add sections to the DOM as they enter the viewport.
+    // target element has appeared - necessary because sites with IntersectionObserver-based lazy loading only add sections to the DOM as they enter the viewport.
     let found = false;
 
     // Wait for at least one element matching the selector to appear so the SPA has started rendering content.
@@ -354,7 +354,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     }
   }
 
-  // Poll for the channel element to appear and become visible. Only run when matchSelector is explicitly configured — the default fallback in
+  // Poll for the channel element to appear and become visible. Only run when matchSelector is explicitly configured - the default fallback in
   // resolveMatchSelector() is for strategy-internal use, and guide-based strategies that don't set matchSelector skip this wait entirely. For <img> elements, we
   // also verify load completion (img.complete + naturalWidth) to prevent race conditions where the element exists with the correct src but hasn't finished
   // rendering, which can cause layout instability and click failures.
@@ -398,7 +398,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
       LOG.debug("tuning:tileClick", "matchSelector poll succeeded: element found and visible.");
     } catch {
 
-      // Timeout — the element hasn't appeared or loaded yet. Proceed anyway and let the strategy evaluate and report not-found naturally.
+      // Timeout - the element hasn't appeared or loaded yet. Proceed anyway and let the strategy evaluate and report not-found naturally.
       LOG.debug("tuning:tileClick", "matchSelector poll timed out after %sms. Element not found or not visible.", CONFIG.playback.channelSelectorDelay);
     }
   }

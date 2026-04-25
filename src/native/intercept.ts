@@ -17,7 +17,7 @@ import type { Nullable } from "../types/index.js";
  * For multi-channel sites, the video player may load manifests for channels other than the one requested. The interceptor tracks both the first and latest master
  * manifest URLs to handle two distinct scenarios:
  *
- * - Direct-navigation sites (Fox Sports): The first manifest is the correct one — the player loaded it for the navigated URL. Background prefetches for other channels
+ * - Direct-navigation sites (Fox Sports): The first manifest is the correct one - the player loaded it for the navigated URL. Background prefetches for other channels
  *   may arrive later but should be ignored. finalize(directTune=true) selects the first manifest.
  *
  * - Guide-based sites (Fox.com, Hulu, Sling, YouTube TV): The player loads a default channel's manifest during page navigation, then the guide grid strategy clicks the
@@ -36,7 +36,7 @@ const FINALIZE_SETTLE_DELAY = 1500;
  */
 export interface ManifestInterceptionResult {
 
-  // The CDP session used for interception. Passed to the native proxy for lifecycle management — the proxy cleans it up on stop() and hands it off during token refresh.
+  // The CDP session used for interception. Passed to the native proxy for lifecycle management - the proxy cleans it up on stop() and hands it off during token refresh.
   cdpSession: CDPSession;
 
   // The master manifest URL intercepted from the browser's network requests. For direct tunes, the first manifest captured; for guide tunes, the most recent.
@@ -48,8 +48,8 @@ export interface ManifestInterceptionResult {
  */
 export interface ManifestInterceptorHandle {
 
-  // Signals that channel selection is complete. When directTune is true (single-channel site navigated by URL), resolves immediately with the first captured manifest —
-  // the one loaded for the navigated URL. When false (guide-based multi-channel site), applies a brief settle delay and resolves with the latest manifest — the one
+  // Signals that channel selection is complete. When directTune is true (single-channel site navigated by URL), resolves immediately with the first captured manifest -
+  // the one loaded for the navigated URL. When false (guide-based multi-channel site), applies a brief settle delay and resolves with the latest manifest - the one
   // from the channel switch click.
   finalize: (directTune: boolean) => void;
 
@@ -59,11 +59,11 @@ export interface ManifestInterceptorHandle {
 
 /**
  * Installs a CDP Network.responseReceived listener on the given page to capture master HLS manifest URLs. The listener tracks both the first and latest master
- * manifest URLs as they arrive. The returned handle provides a promise that resolves when finalize() is called — the caller invokes finalize() after channel
+ * manifest URLs as they arrive. The returned handle provides a promise that resolves when finalize() is called - the caller invokes finalize() after channel
  * selection is complete, passing directTune to control which manifest is selected.
  *
- * For direct-navigation sites (directTune=true), the first master manifest is the correct one — it was loaded for the navigated URL. Background prefetches for
- * other channels are ignored. For guide-based sites (directTune=false), the latest manifest is selected — it corresponds to the channel the user clicked.
+ * For direct-navigation sites (directTune=true), the first master manifest is the correct one - it was loaded for the navigated URL. Background prefetches for
+ * other channels are ignored. For guide-based sites (directTune=false), the latest manifest is selected - it corresponds to the channel the user clicked.
  *
  * @param page - The Puppeteer page to monitor.
  * @param timeout - Maximum time in milliseconds to wait for a manifest (default: 15 seconds). Acts as a safety net if finalize() is never called.
@@ -103,9 +103,9 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
 
   LOG.debug("native:intercept", "CDP manifest interceptor installed.");
 
-  // Track both the first and most recently observed master manifest URLs. For direct-navigation sites (directTune=true), the first manifest is the correct one — the
+  // Track both the first and most recently observed master manifest URLs. For direct-navigation sites (directTune=true), the first manifest is the correct one - the
   // player loaded it for the navigated URL. Background prefetches for other channels may arrive later and must not overwrite the selection. For guide-based sites
-  // (directTune=false), the last manifest is correct — the guide click triggers a new manifest fetch that replaces whatever the player initially loaded.
+  // (directTune=false), the last manifest is correct - the guide click triggers a new manifest fetch that replaces whatever the player initially loaded.
   let firstManifestUrl: Nullable<string> = null;
   let latestManifestUrl: Nullable<string> = null;
   let resolved = false;
@@ -114,7 +114,7 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
   const { promise, resolve } = Promise.withResolvers<Nullable<ManifestInterceptionResult>>();
 
   // Listen for completed responses. We use Network.responseReceived to capture .m3u8 URLs, then fetch the manifest body directly from Node.js to verify it is
-  // a master manifest. This avoids CDP's Network.getResponseBody which is unreliable — Chrome's network cache can evict response bodies before we read them.
+  // a master manifest. This avoids CDP's Network.getResponseBody which is unreliable - Chrome's network cache can evict response bodies before we read them.
   const onResponseReceived = async (params: { response: { url: string } }): Promise<void> => {
 
     if(resolved) {
@@ -125,7 +125,7 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
     const url = params.response.url;
 
     // Filter for .m3u8 URLs. Strip query parameters before checking the extension.
-    const urlPath = url.split("?")[0];
+    const urlPath = url.split("?")[0] ?? "";
 
     if(!urlPath.endsWith(".m3u8")) {
 
@@ -168,7 +168,7 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
     }
   };
 
-  // Wrap the async handler to avoid no-misused-promises — EventEmitter.on() does not handle returned promises.
+  // Wrap the async handler to avoid no-misused-promises - EventEmitter.on() does not handle returned promises.
   const wrappedHandler = (...args: [{ response: { url: string } }]): void => { void onResponseReceived(...args); };
 
   cdpSession.on("Network.responseReceived", wrappedHandler);
@@ -199,9 +199,9 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
   // Finalize function exposed on the returned handle. Called by the stream setup code after channel selection is complete. The resolution strategy depends on
   // two factors: whether a manifest has already been captured, and whether the tune is direct or guide-based.
   //
-  // - Manifest captured + direct tune: resolve immediately (A&E, most TVE sites — manifest arrived during page load).
-  // - Manifest captured + guide tune: wait FINALIZE_SETTLE_DELAY (Fox guide, Hulu — a newer manifest from the channel switch may still arrive).
-  // - No manifest captured + either: wait FINALIZE_SETTLE_DELAY (Fox Sports — manifest fetch starts after video element appears, hasn't arrived yet).
+  // - Manifest captured + direct tune: resolve immediately (A&E, most TVE sites - manifest arrived during page load).
+  // - Manifest captured + guide tune: wait FINALIZE_SETTLE_DELAY (Fox guide, Hulu - a newer manifest from the channel switch may still arrive).
+  // - No manifest captured + either: wait FINALIZE_SETTLE_DELAY (Fox Sports - manifest fetch starts after video element appears, hasn't arrived yet).
   const finalize = (directTune: boolean): void => {
 
     if(resolved) {
@@ -209,7 +209,7 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
       return;
     }
 
-    // Helper that resolves the promise with the current state. For direct tunes, the first manifest is the correct one (loaded for the navigated URL — background
+    // Helper that resolves the promise with the current state. For direct tunes, the first manifest is the correct one (loaded for the navigated URL - background
     // prefetches for other channels may have overwritten latestManifestUrl). For guide tunes, the last manifest is correct (from the channel switch click).
     const resolveNow = (): void => {
 
@@ -268,7 +268,7 @@ export function removeManifestInterceptor(cdpSession: CDPSession): void {
     void cdpSession.detach().catch(() => { /* Session may already be detached. */ });
   } catch(_error) {
 
-    // Ignore errors during cleanup — the session may already be detached.
+    // Ignore errors during cleanup - the session may already be detached.
   }
 
   LOG.debug("native:intercept", "CDP manifest interceptor removed.");

@@ -48,6 +48,10 @@ const CHANGELOG_URL = "https://raw.githubusercontent.com/hjdhjd/prismcast/main/C
 // How often to check for updates (2 hours in milliseconds).
 const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
 
+// Minimum interval between consecutive checkForUpdates() calls. Multiple invocations within this window collapse into a single check, preventing duplicate
+// network traffic when both the startup notification path and the periodic interval timer fire close together. Bypassed when the caller passes force=true.
+const UPDATE_CHECK_DEBOUNCE = 60 * 1000;
+
 // Cached version information.
 let cachedLatestVersion: Nullable<string> = null;
 let cachedChangelog: Nullable<string> = null;
@@ -153,8 +157,8 @@ async function fetchChangelogContent(): Promise<Nullable<string>> {
  */
 function extractVersionChangelog(changelog: string, version: string): Nullable<string> {
 
-  // Match the version header and capture everything until the next version header or end of file. The changelog format is: ## 1.0.8 (date)
-  // Note: We use (?![^]) instead of $ for end-of-string because the m flag makes $ match end-of-line, which would stop the non-greedy *? at the first line.
+  // Match the version header and capture everything until the next version header or end of file. The changelog format is "## 1.0.8 (date)". The end-of-string
+  // sentinel uses (?![^]) instead of $ because the m flag makes $ match end-of-line, which would stop the non-greedy *? at the first line.
   const pattern = new RegExp("^## " + version.replaceAll(".", "\\.") + "\\s+\\([^)]+\\)\\s*\\n([\\s\\S]*?)(?=^## \\d|(?![^]))", "m");
   const match = changelog.match(pattern);
 
@@ -164,7 +168,7 @@ function extractVersionChangelog(changelog: string, version: string): Nullable<s
   }
 
   // Clean up the entry: trim whitespace and remove leading/trailing blank lines.
-  return match[1].trim();
+  return match[1]?.trim() ?? null;
 }
 
 /**
@@ -176,8 +180,8 @@ export async function checkForUpdates(currentVersion: string, force = false): Pr
 
   const now = Date.now();
 
-  // Skip if we checked recently (within 1 minute) to avoid duplicate checks on startup, unless forced.
-  if(!force && ((now - lastCheckTime) < 60000)) {
+  // Skip when a check fired within the debounce window so duplicate startup paths collapse to one network request, unless force=true bypasses the guard.
+  if(!force && ((now - lastCheckTime) < UPDATE_CHECK_DEBOUNCE)) {
 
     return;
   }

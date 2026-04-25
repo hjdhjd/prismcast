@@ -422,7 +422,7 @@ export function generateConfigSubtabScript(): string {
     "  };",
 
     // Read the advanced section expansion state from localStorage. Returns the parsed object or {} if missing or corrupted. Single source of truth for
-    // reading this key — used by both toggleSection (read-modify-write) and initSections (read-only).
+    // reading this key - used by both toggleSection (read-modify-write) and initSections (read-only).
     "  function readAdvancedSectionState() {",
     "    const stored = safeStorageGet('prismcast-advanced-sections');",
     "    if(!stored) return {};",
@@ -1099,7 +1099,7 @@ export function generateConfigSubtabScript(): string {
     "  };",
 
     // Bulk add or remove a tag on all visible channels. The add parameter controls the direction: true adds the tag, false removes it. The tristate checkbox in
-    // Quick Actions calls this on click — from checked (all have tag) it removes; from unchecked or indeterminate it adds. Uses applyTagResponse (defined in
+    // Quick Actions calls this on click - from checked (all have tag) it removes; from unchecked or indeterminate it adds. Uses applyTagResponse (defined in
     // channels.ts, exposed on window) to update the tag manager modal, filter dropdown, and channel table in one call.
     "  window.bulkToggleTag = async (tag, add) => {",
     "    try {",
@@ -1120,7 +1120,7 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Inline tag edit portal — uses toggleDropdown with lifecycle hooks for batch-save behavior. The before-close hook saves pending changes whenever the
+    // Inline tag edit portal - uses toggleDropdown with lifecycle hooks for batch-save behavior. The before-close hook saves pending changes whenever the
     // dropdown closes (click-outside, scroll, resize, or next toggle). The onOpen hook populates checkbox state from the cell's data-tags attribute.
     "  let activeTagDropdown = null;",
     "  let tagPortal = null;",
@@ -1259,7 +1259,7 @@ export function generateConfigSubtabScript(): string {
     "    const cb = menu.querySelector('input[data-tag=\"' + tag + '\"]');",
     "    if(cb) { cb.checked = false; toggleServiceTag(cb); return; }",
 
-    // No checkbox exists for this tag — it is an orphaned entry with no corresponding service. Build the enabled list from the remaining chips and POST directly.
+    // No checkbox exists for this tag - it is an orphaned entry with no corresponding service. Build the enabled list from the remaining chips and POST directly.
     "    const chips = document.querySelectorAll('#provider-chips .provider-chip[data-tag]');",
     "    const enabledTags = [];",
     "    for(const chip of chips) {",
@@ -1549,8 +1549,8 @@ export function generateConfigSubtabScript(): string {
     "      if(checkbox) checkbox.checked = true;",
     "    }",
 
-    // Set indeterminate state on scope toggle checkboxes. HTML has no indeterminate attribute — it must be set via JS on page load. The enabled and total values
-    // are read from data attributes on the quick-action-count span, not from the display text — this decouples checkbox state from the text format.
+    // Set indeterminate state on scope toggle checkboxes. HTML has no indeterminate attribute - it must be set via JS on page load. The enabled and total values
+    // are read from data attributes on the quick-action-count span, not from the display text - this decouples checkbox state from the text format.
     "    const scopeSpans = document.querySelectorAll('.quick-action-count[data-enabled][data-total]');",
     "    for(const span of scopeSpans) {",
     "      const enabled = parseInt(span.getAttribute('data-enabled'), 10);",
@@ -1565,7 +1565,7 @@ export function generateConfigSubtabScript(): string {
     "    const hdhrToggle = document.getElementById('hdhr-bulk-toggle');",
     "    if(hdhrToggle && (hdhrToggle.getAttribute('data-indeterminate') === 'true')) hdhrToggle.indeterminate = true;",
 
-    // Set indeterminate state on tag bulk toggle checkboxes. Same pattern as HDHR — HTML has no indeterminate attribute, so JS must set it on page load.
+    // Set indeterminate state on tag bulk toggle checkboxes. Same pattern as HDHR - HTML has no indeterminate attribute, so JS must set it on page load.
     "    const tagToggles = document.querySelectorAll('.tag-bulk-toggle[data-indeterminate=\"true\"]');",
     "    for(const tagToggle of tagToggles) tagToggle.indeterminate = true;",
 
@@ -1578,7 +1578,7 @@ export function generateConfigSubtabScript(): string {
     "      addUrlInput.addEventListener('input', () => {",
     "        updateSelectorSuggestions('add-url', 'add-selectorList');",
 
-    // Deselect the active service pill if the user manually edits the URL. Check whether the current URL still matches the active pill's URL — if not, the
+    // Deselect the active service pill if the user manually edits the URL. Check whether the current URL still matches the active pill's URL - if not, the
     // user has overridden the auto-fill and the pill should unhighlight. Also re-enable the profile dropdown since manual URL entry may need a custom profile.
     "        const activePill = document.querySelector('.provider-pill.active');",
     "        if(activePill && (activePill.getAttribute('data-url') !== addUrlInput.value)) {",
@@ -1615,7 +1615,7 @@ export function generateConfigSubtabScript(): string {
     "    }",
 
     // Auto-fill station ID when the channelSelector matches a known entry with a stationId. Reads from the same channelSelectorsByDomain data used by the
-    // datalist. The data-auto attribute tracks whether the current value was auto-filled — user edits clear it, preventing overwrites of intentional input.
+    // datalist. The data-auto attribute tracks whether the current value was auto-filled - user edits clear it, preventing overwrites of intentional input.
     "    const addSelectorInput = document.getElementById('add-channelSelector');",
     "    const addStationInput = document.getElementById('add-stationId');",
     "    if(addSelectorInput && addStationInput) {",
@@ -1684,7 +1684,7 @@ export function generateConfigSubtabScript(): string {
     "    if(modal) modal.style.display = 'none';",
     "  }",
 
-    // Start polling login status to detect when tab is closed externally. Errors are logged only on the first failure per polling session — a dead endpoint
+    // Start polling login status to detect when tab is closed externally. Errors are logged only on the first failure per polling session - a dead endpoint
     // would otherwise spam the console at 1Hz. The flag resets at each startLoginStatusPolling() call so subsequent sessions get a fresh log.
     "  function startLoginStatusPolling() {",
     "    stopLoginStatusPolling();",

@@ -274,7 +274,7 @@ export function formatRecoveryMetricsSummary(metrics: RecoveryMetrics): string {
 
     if(count > 0) {
 
-      parts.push(String(count) + "× " + methodName);
+      parts.push(String(count) + "x " + methodName);
     }
   }
 
@@ -282,7 +282,7 @@ export function formatRecoveryMetricsSummary(metrics: RecoveryMetrics): string {
   const avgTimeMs = totalSuccesses > 0 ? metrics.totalRecoveryTimeMs / totalSuccesses : 0;
   const avgTimeStr = (avgTimeMs / 1000).toFixed(1) + "s";
 
-  // Format: "Recoveries: 8 (5× source reload, 3× page navigation), avg 4.2s."
+  // Format: "Recoveries: 8 (5x source reload, 3x page navigation), avg 4.2s."
   if(parts.length > 0) {
 
     return "Recoveries: " + String(totalSuccesses) + " (" + parts.join(", ") + "), avg " + avgTimeStr + ".";

@@ -70,7 +70,7 @@ function clearHboCache(): void {
 
 /**
  * Derives a DiscoveredChannel array from the unified channel cache. HBO does not create alias entries (resolveHboDirectUrl does exact-match only, no
- * prefix/alternate fallback), so deduplication is not needed — every cache value is unique. Sorts by name before returning.
+ * prefix/alternate fallback), so deduplication is not needed - every cache value is unique. Sorts by name before returning.
  * @returns Sorted array of discovered channels.
  */
 function buildHboDiscoveredChannels(): DiscoveredChannel[] {
@@ -163,7 +163,7 @@ async function readHboChannelRail(page: Page): Promise<HboRailResult> {
     return { channels: [], railFound: false };
   }
 
-  // The rail uses lazy loading via IntersectionObserver — tile content only populates when the rail is visible in the viewport. The rail section element appears
+  // The rail uses lazy loading via IntersectionObserver - tile content only populates when the rail is visible in the viewport. The rail section element appears
   // immediately with skeleton PhantomTile placeholders, but the actual channel tiles (with names and watch URLs) are fetched asynchronously after the rail scrolls
   // into view. We scroll the rail into view and then wait for anchor elements to appear, indicating the tiles have loaded.
   await page.evaluate((selector: string): void => {
@@ -228,9 +228,9 @@ async function readHboChannelRail(page: Page): Promise<HboRailResult> {
  * without loading the tab page.
  *
  * The strategy handles three navigations per tune:
- * 1. Homepage (already loaded by navigateToPage) → read menu bar for tab URL (or use cache)
- * 2. Tab page → read channel rail for all watch URLs
- * 3. Watch page → video playback begins
+ * 1. Homepage (already loaded by navigateToPage) -> read menu bar for tab URL (or use cache)
+ * 2. Tab page -> read channel rail for all watch URLs
+ * 3. Watch page -> video playback begins
  *
  * When the cached tab URL is stale (rail section not found), the strategy clears the cache, navigates back to the homepage, rediscovers the tab URL, and retries.
  * This fallback triggers at most once per tune attempt.

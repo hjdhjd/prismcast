@@ -21,7 +21,7 @@ export function generateStatusScript(): string {
     "const nativeResolutionLabels = { '360': '360p', '480': '480p', '720': '720p', '1080': '1080p', '2160': '4K' };",
 
     // Row background tints keyed by health state. Module-scope constant so renderStreamsTable reads from a single shared map instead of allocating a fresh
-    // object for every stream row. Consistent with clientTypeLabels and nativeResolutionLabels above — accessed inline at the call site, no wrapper helper.
+    // object for every stream row. Consistent with clientTypeLabels and nativeResolutionLabels above - accessed inline at the call site, no wrapper helper.
     "const rowTints = { healthy: 'transparent', buffering: 'var(--stream-tint-buffering)', stalled: 'var(--stream-tint-stalled)', " +
     "recovering: 'var(--stream-tint-recovering)', error: 'var(--stream-tint-error)' };",
 
@@ -207,7 +207,7 @@ export function generateStatusScript(): string {
     "}",
 
     // Shared cell content renderers. Used by both renderStreamsTable (full rebuild) and updateStreamRow (targeted update) so that each cell's HTML is produced
-    // by a single function. This prevents the two rendering paths from diverging — if a cell format changes, the shared function is the only place to update.
+    // by a single function. This prevents the two rendering paths from diverging - if a cell format changes, the shared function is the only place to update.
 
     // Health cell: client indicator dot + health badge.
     "function renderHealthCellContent(s) {",
@@ -405,7 +405,7 @@ export function generateStatusScript(): string {
 
     // Local helper that registers an event listener and updates the staleness timestamp on every event. Handlers are optional so heartbeat can
     // be registered with just on('heartbeat') for pure keepalive tracking. The onerror handler stays outside this wrapper because errors must
-    // not reset the staleness timer — a connection that only fires errors is still dead.
+    // not reset the staleness timer - a connection that only fires errors is still dead.
     "  function on(event, handler) {",
     "    statusEventSource.addEventListener(event, (e) => {",
     "      lastStatusEventTime = Date.now();",

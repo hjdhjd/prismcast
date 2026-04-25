@@ -14,7 +14,7 @@ import { getEffectiveViewport } from "../config/presets.js";
 import { spawn } from "node:child_process";
 
 /* When a client requests an HLS playlist for a channel that is still starting up, PrismCast returns a startup playlist immediately to prevent HTTP timeouts. Channels
- * DVR requires at least one segment in the playlist — an empty playlist is rejected with "Playlist had no segments." This module generates PREROLL_TOTAL_DURATION
+ * DVR requires at least one segment in the playlist - an empty playlist is rejected with "Playlist had no segments." This module generates PREROLL_TOTAL_DURATION
  * seconds of black+silence fMP4 at server startup, splits it into individual segments with naturally monotonic PTS, and serves them via global routes so the startup
  * playlist can reference valid media content.
  *
@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
  * The bundled ffmpeg-for-homebridge binary (which includes libx265) is used for all preroll generation, bypassing the Channels DVR FFmpeg whose minimal encoder
  * set may lack HEVC support.
  *
- * The preroll playlist is served progressively — segments are revealed over time based on elapsed wall-clock time, simulating a live stream. The client polls for
+ * The preroll playlist is served progressively - segments are revealed over time based on elapsed wall-clock time, simulating a live stream. The client polls for
  * updates, sees new segments appear, and keeps playing without stalling for the full duration of the tune. When real content arrives, the fMP4 segmenter's composite
  * playlist takes over, including preroll entries in its sliding window during the transition. As real segments accumulate, preroll entries fall off the window and the
  * playlist becomes purely live content.
@@ -176,7 +176,7 @@ export function getPrerollCodec(): CaptureCodec {
  *
  * Each variant spawns FFmpeg to create PREROLL_TOTAL_DURATION seconds of black frame + silence as fragmented MP4, then splits the output into an init segment
  * (ftyp + moov) and individual media segments (moof + mdat pairs) using the MP4 box parser. Each segment has naturally monotonic PTS because it comes from a
- * continuous FFmpeg encode. If the bundled FFmpeg is unavailable or a variant fails, the system degrades gracefully — the blocking stream setup path is used instead.
+ * continuous FFmpeg encode. If the bundled FFmpeg is unavailable or a variant fails, the system degrades gracefully - the blocking stream setup path is used instead.
  */
 export async function generatePreroll(): Promise<void> {
 
@@ -184,7 +184,7 @@ export async function generatePreroll(): Promise<void> {
 
   if(!ffmpegBin) {
 
-    LOG.warn("Bundled FFmpeg is not available. Preroll generation skipped — startup playlists will have no segments.");
+    LOG.warn("Bundled FFmpeg is not available. Preroll generation skipped - startup playlists will have no segments.");
 
     return;
   }
@@ -195,7 +195,7 @@ export async function generatePreroll(): Promise<void> {
   const size = String(viewport.width) + "x" + String(viewport.height);
 
   // Generate the H.264 variant. Baseline profile and level 3.1 match Chrome's MediaRecorder output (confirmed via parseMoovCodecConfig telemetry). Slow preset and
-  // CRF 18 produce higher quality — acceptable for a short duration of simple content generated once at startup.
+  // CRF 18 produce higher quality - acceptable for a short duration of simple content generated once at startup.
   await generateVariant(ffmpegBin, "h264", [
     "-c:v", "libx264", "-preset", "slow", "-tune", "stillimage", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
     "-crf", "18"
@@ -381,12 +381,12 @@ function splitPrerollBuffers(data: Buffer): Nullable<PrerollVariant> {
       timescales.set(trackId, info.timescale);
     }
 
-    // Extract duration from each segment's moof box. The offsetMoofTimestamps function with an empty offset map acts as a pure reader — it returns per-track
+    // Extract duration from each segment's moof box. The offsetMoofTimestamps function with an empty offset map acts as a pure reader - it returns per-track
     // durations without modifying the buffer (it writes back the same tfdt values it read since the offset is 0). A fresh map is created per segment to prevent
     // state accumulation across iterations.
     for(const segment of mediaSegments) {
 
-      // The segment buffer is moof+mdat concatenated. The moof is the first box — parse it to find its size.
+      // The segment buffer is moof+mdat concatenated. The moof is the first box - parse it to find its size.
       if(segment.length < 8) {
 
         durations.push(2);
@@ -453,7 +453,7 @@ export interface PrerollWindowOptions {
 /**
  * Computes the sliding window start index for a composite playlist containing both preroll and real segments. The start index is determined by three constraints:
  * (1) never negative, (2) the standard sliding window rule (current index minus window size), and (3) the preroll cap that limits how many preroll entries appear in
- * the window. The third constraint is the key addition — it prevents clients from playing through many seconds of remaining preroll before reaching live content.
+ * the window. The third constraint is the key addition - it prevents clients from playing through many seconds of remaining preroll before reaching live content.
  *
  * @param options - Window computation parameters.
  * @returns The start index for the composite playlist window.
@@ -489,7 +489,7 @@ export interface PrerollEntryOptions {
 
 /**
  * Builds an array of playlist segment entries for preroll segments within the given index range. Each entry has an absolute URL pointing to the global /preroll/ route
- * and the duration extracted from the preroll segment cache. No per-segment metadata tags (DISCONTINUITY, PROGRAM-DATE-TIME, etc.) are set — preroll is synthetic
+ * and the duration extracted from the preroll segment cache. No per-segment metadata tags (DISCONTINUITY, PROGRAM-DATE-TIME, etc.) are set - preroll is synthetic
  * placeholder content.
  *
  * @param options - Entry construction parameters.
@@ -514,7 +514,7 @@ export function buildPrerollEntries(options: PrerollEntryOptions): PlaylistSegme
 /**
  * Computes how many preroll segments should be visible based on elapsed wall-clock time since the preroll started. The initial window (PREROLL_INITIAL_WINDOW segments)
  * is revealed immediately so the client has enough content to begin playback per the HLS 3-from-end rule. Additional segments are revealed one at a time as wall-clock
- * time passes — each new segment appears when enough time has elapsed for the client to have consumed the prior content beyond the initial window.
+ * time passes - each new segment appears when enough time has elapsed for the client to have consumed the prior content beyond the initial window.
  *
  * @param codec - The preroll codec variant.
  * @param prerollStartTime - Wall-clock time when the preroll began.
@@ -534,7 +534,7 @@ export function computeProgressiveReveal(codec: CaptureCodec, prerollStartTime: 
 
   let revealCount = Math.min(PREROLL_INITIAL_WINDOW, totalSegments);
 
-  // Compute the total duration of the initial window. Segments beyond this threshold are revealed progressively — each one becomes visible when elapsed time
+  // Compute the total duration of the initial window. Segments beyond this threshold are revealed progressively - each one becomes visible when elapsed time
   // exceeds the cumulative duration of all segments before it, minus the initial window's duration (since those were available from the start).
   let initialWindowDuration = 0;
 
@@ -564,14 +564,14 @@ export function computeProgressiveReveal(codec: CaptureCodec, prerollStartTime: 
 
 /**
  * Generates a progressive HLS playlist referencing the global preroll segments for the specified codec. The playlist simulates a live stream by revealing segments
- * based on elapsed wall-clock time since the preroll started. On each client poll, more segments become visible — the client sees new content appear and keeps playing
+ * based on elapsed wall-clock time since the preroll started. On each client poll, more segments become visible - the client sees new content appear and keeps playing
  * without stalling.
  *
  * The playlist uses absolute URLs because preroll segments are served at global routes (/preroll/:codec/*) while the playlist itself is served under /hls/:name/.
- * Without absolute URLs, the client would request /hls/:name/preroll/... which does not exist. The playlist omits #EXT-X-ENDLIST so it behaves as a live playlist —
+ * Without absolute URLs, the client would request /hls/:name/preroll/... which does not exist. The playlist omits #EXT-X-ENDLIST so it behaves as a live playlist -
  * the client polls for updates and receives the real content playlist when ready.
  *
- * PROGRAM-DATE-TIME is intentionally omitted from the preroll playlist. Preroll is synthetic placeholder content — assigning it wall-clock timestamps would be
+ * PROGRAM-DATE-TIME is intentionally omitted from the preroll playlist. Preroll is synthetic placeholder content - assigning it wall-clock timestamps would be
  * misleading and would create a backward time jump at the preroll-to-live boundary (preroll PDT would overshoot real content PDT because the preroll covers 30
  * seconds of content but real content typically arrives in ~15 seconds). PDT is emitted only on real segments once the segmenter produces them.
  *
@@ -652,9 +652,9 @@ export function setupPrerollRoutes(app: Express): void {
       return;
     }
 
-    const index = parseInt(match[1], 10);
+    const index = parseInt(match[1] ?? "", 10);
 
-    if((index < 0) || (index >= variant.mediaSegments.length)) {
+    if(!Number.isFinite(index) || (index < 0) || (index >= variant.mediaSegments.length)) {
 
       res.status(404).send("Preroll segment not found.");
 

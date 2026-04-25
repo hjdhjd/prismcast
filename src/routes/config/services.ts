@@ -105,7 +105,7 @@ export function generateCustomProfilesPanel(): string {
     return lines.join("\n");
   }
 
-  // Build a reverse lookup: profile key → list of domains mapped to it.
+  // Build a reverse lookup: profile key -> list of domains mapped to it.
   const profileDomains: Record<string, { domain: string; service?: string; serviceTag?: string }[]> = {};
 
   for(const key of profileKeys) {
@@ -117,8 +117,7 @@ export function generateCustomProfilesPanel(): string {
 
     if(config.profile && (config.profile in userProfiles)) {
 
-      profileDomains[config.profile] ??= [];
-      profileDomains[config.profile].push({ domain, service: config.service, serviceTag: config.serviceTag });
+      (profileDomains[config.profile] ??= []).push({ domain, service: config.service, serviceTag: config.serviceTag });
     }
   }
 
@@ -141,6 +140,12 @@ export function generateCustomProfilesPanel(): string {
   for(const key of profileKeys) {
 
     const profile = userProfiles[key];
+
+    if(!profile) {
+
+      continue;
+    }
+
     const domains = profileDomains[key] ?? [];
     const strategy = profile.channelSelection?.strategy ?? "inherited";
     const count = channelCounts[key] ?? 0;
@@ -465,7 +470,7 @@ export function setupProfileRoutes(app: Express): void {
       }
 
       // Save the profile and domain mappings. When updating an existing profile, remove stale domain mappings that pointed to this profile before applying the new
-      // ones. This handles the case where a user changes domain mappings on edit — without this cleanup, old domain entries would persist alongside the new ones.
+      // ones. This handles the case where a user changes domain mappings on edit - without this cleanup, old domain entries would persist alongside the new ones.
       const existingDomains = getUserDomains();
       const mergedProfiles = { ...existingProfiles, [key]: profile };
       const cleanedDomains: Record<string, DomainConfig> = {};
@@ -636,8 +641,8 @@ export function setupProfileRoutes(app: Express): void {
         return;
       }
 
-      // Use the first profile key for the filename when exporting multiple profiles.
-      const filename = (profileKeys.length === 1) ? profileKeys[0] : "prismcast";
+      // Use the first profile key for the filename when exporting a single profile; fall back to a generic name for multi-profile packs or empty lists.
+      const filename = ((profileKeys.length === 1) ? profileKeys[0] : undefined) ?? "prismcast";
 
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Content-Disposition", "attachment; filename=\"" + filename + "-service-pack.json\"");

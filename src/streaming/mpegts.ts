@@ -17,7 +17,7 @@ import { waitForInitSegment } from "./hlsSegments.js";
 /* This module provides a continuous MPEG-TS byte stream for HDHomeRun-compatible clients (such as Plex) that expect raw MPEG-TS when tuning a channel. Two delivery
  * modes are supported:
  *
- * Capture mode (fMP4 → MPEG-TS): The capture pipeline produces fMP4 segments. Each MPEG-TS client gets its own FFmpeg remuxer that converts fMP4 to MPEG-TS with
+ * Capture mode (fMP4 -> MPEG-TS): The capture pipeline produces fMP4 segments. Each MPEG-TS client gets its own FFmpeg remuxer that converts fMP4 to MPEG-TS with
  * codec copy (no transcoding). FFmpeg reads the init segment + media segments from stdin and outputs a continuous MPEG-TS stream on stdout, piped to the HTTP response.
  *
  * Native mode (MPEG-TS pass-through): The native HLS proxy already produces MPEG-TS segments. These are written directly to the HTTP response without any remuxing.
@@ -33,7 +33,7 @@ import { waitForInitSegment } from "./hlsSegments.js";
  * mode-appropriate serving path (FFmpeg remuxer for capture mode, direct pass-through for native mode).
  *
  * For new streams, headers are flushed before stream setup begins so the client sees an immediate 200 response. This prevents timeout failures during the 4-10+
- * second startup sequence. The trade-off is that error responses cannot be sent after the flush — failures are logged server-side and the connection is closed.
+ * second startup sequence. The trade-off is that error responses cannot be sent after the flush - failures are logged server-side and the connection is closed.
  *
  * Route: GET /stream/:name
  *
@@ -62,7 +62,7 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
     return;
   }
 
-  // No existing stream — validate the channel before flushing headers. This ensures we can still return proper error responses for invalid channels, disabled
+  // No existing stream - validate the channel before flushing headers. This ensures we can still return proper error responses for invalid channels, disabled
   // channels, and login mode.
   const validation = validateChannel(channelName);
 
@@ -73,7 +73,7 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
     return;
   }
 
-  // Flush HTTP 200 headers immediately. The client sees "connection accepted, data coming" and waits patiently. After this point, we cannot send error status codes —
+  // Flush HTTP 200 headers immediately. The client sees "connection accepted, data coming" and waits patiently. After this point, we cannot send error status codes -
   // failures will close the connection with no data.
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "close");
@@ -170,7 +170,7 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
     return;
   }
 
-  // For native-mode streams, segments are already MPEG-TS — write them directly to the response without FFmpeg.
+  // For native-mode streams, segments are already MPEG-TS - write them directly to the response without FFmpeg.
   if(stream.streamingMode === "native") {
 
     connectMpegTsClient({
@@ -215,7 +215,7 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
 
   // Spawn an FFmpeg process to remux fMP4 to MPEG-TS. The process reads concatenated fMP4 (init segment + media segments) from stdin and outputs a continuous
   // MPEG-TS stream on stdout. Video (H264) and audio (AAC) are copied without transcoding. We declare cleanup as a let so the error callback can reference it before
-  // connectMpegTsClient assigns the real implementation — all assignments happen synchronously before any async events can fire.
+  // connectMpegTsClient assigns the real implementation - all assignments happen synchronously before any async events can fire.
   let cleanup: () => void = () => { /* No-op until connectMpegTsClient assigns the real cleanup below. */ };
 
   const streamLog = LOG.withStreamId(stream.streamIdStr);
@@ -244,7 +244,7 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
       // Pipe FFmpeg stdout to the HTTP response. When FFmpeg exits (either from stdin ending or being killed), stdout closes and the response ends automatically.
       remuxer.stdout.pipe(res);
 
-      // Write the init segment first — FFmpeg needs the ftyp and moov boxes before it can process any media segments.
+      // Write the init segment first - FFmpeg needs the ftyp and moov boxes before it can process any media segments.
       remuxer.stdin.write(stream.hls.initSegment);
     },
     extraCleanup: () => {

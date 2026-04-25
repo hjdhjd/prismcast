@@ -28,7 +28,7 @@ export interface ParseResult {
 
 /**
  * Summary of what was imported from a service pack. The primary import (profiles and domains) is tracked separately from the secondary channel import so that
- * callers can report partial success accurately — profiles may save while channels fail.
+ * callers can report partial success accurately - profiles may save while channels fail.
  */
 export interface ImportSummary {
 
@@ -92,7 +92,7 @@ export function parseServicePack(data: unknown): ParseResult {
     return { errors };
   }
 
-  // Normalize legacy profile field names before validation so that old service packs with renamed fields (e.g., noVideo → staticCapture) pass validation cleanly.
+  // Normalize legacy profile field names before validation so that old service packs with renamed fields (e.g., noVideo -> staticCapture) pass validation cleanly.
   const rawProfiles = raw.profiles as Record<string, SiteProfile>;
 
   normalizeLegacyProfileFlags(rawProfiles);
@@ -119,7 +119,7 @@ export function parseServicePack(data: unknown): ParseResult {
       errors.push("Invalid 'channels' field: expected an object.");
     } else {
 
-      // Basic channel structure validation — detailed validation happens during importServicePack.
+      // Basic channel structure validation - detailed validation happens during importServicePack.
       for(const [ key, value ] of Object.entries(raw.channels as Record<string, unknown>)) {
 
         if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
@@ -209,7 +209,7 @@ export async function importServicePack(pack: ServicePack, options: { skipChanne
     return { channelsAdded: 0, domainsAdded: 0, errors, profilesAdded: 0, success: false };
   }
 
-  // Import channels if present and not skipped. Channel import is secondary — failures here produce warnings but do not mark the overall import as failed since
+  // Import channels if present and not skipped. Channel import is secondary - failures here produce warnings but do not mark the overall import as failed since
   // profiles and domains were already saved successfully above.
   let channelsAdded = 0;
 
@@ -311,7 +311,7 @@ export function exportServicePack(
 
       if(entry.channel.profile && keySet.has(entry.channel.profile)) {
 
-        // Strip hdhrEnabled from exported channels — it's a local deployment preference, not a service configuration property.
+        // Strip hdhrEnabled from exported channels - it's a local deployment preference, not a service configuration property.
         const exportChannel = { ...entry.channel };
 
         Reflect.deleteProperty(exportChannel, "hdhrEnabled");

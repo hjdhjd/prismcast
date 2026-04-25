@@ -13,7 +13,7 @@ import type { Nullable } from "./shared.js";
 /**
  * Available channel selection strategies. Each strategy implements a different approach to finding and selecting channels in a multi-channel player UI.
  *
- * - "directvGrid": Tune via webpack injection — captures __webpack_require__, extracts the Redux store from the React fiber tree, matches by channel name, and
+ * - "directvGrid": Tune via webpack injection - captures __webpack_require__, extracts the Redux store from the React fiber tree, matches by channel name, and
  *   dispatches playConsumable. Falls back to logo aria-label click when the interceptor fails. Used by DirecTV Stream.
  * - "foxGrid": Find channel by station code in a non-virtualized guide grid, click the channel logo button via DOM .click(). Used by Fox.com.
  * - "guideGrid": Find channel by exact-matching image alt text, click nearest clickable ancestor. Optionally clicks a tab to reveal the list first. Used by Hulu
@@ -51,7 +51,7 @@ export interface ChannelSelectionConfig {
   listSelector?: string;
 
   // CSS selector template for finding the channel element on the page. The placeholder {channel} is replaced with the channel's channelSelector value at runtime
-  // (e.g., "img[src*=\"{channel}\"]" becomes "img[src*=\"espn\"]"). Supports any valid CSS selector — match by image src, aria-label, data-testid, title, or any
+  // (e.g., "img[src*=\"{channel}\"]" becomes "img[src*=\"espn\"]"). Supports any valid CSS selector - match by image src, aria-label, data-testid, title, or any
   // other attribute. Used by the tileClick and thumbnailRow strategies. When absent, these strategies default to image URL matching (img[src*="..."]).
   matchSelector?: string;
 
@@ -122,7 +122,7 @@ export interface SiteProfile {
   clickToPlay?: boolean;
 
   // CSS selector for an intermittent modal or overlay to dismiss after page load. Some sites (e.g., Paramount+) occasionally display a "Watch Live" or "Continue
-  // Watching" prompt that blocks video playback. When set, a background poll checks for this element during the first few seconds of the video wait — an immediate
+  // Watching" prompt that blocks video playback. When set, a background poll checks for this element during the first few seconds of the video wait - an immediate
   // check followed by periodic rechecks. If found, the element is clicked to dismiss it. The poll is fire-and-forget and never blocks the video wait.
   dismissSelector?: Nullable<string>;
 
@@ -213,7 +213,7 @@ export interface ResolvedSiteProfile {
   lockVolumeProperties: boolean;
 
   // Maximum continuous playback duration in hours before the site enforces a stream cutoff, or null if the site allows indefinite playback. When set, the monitor
-  // proactively reloads the page before this limit expires to maintain uninterrupted streaming. Only full page navigations reset the timer — source reloads do not.
+  // proactively reloads the page before this limit expires to maintain uninterrupted streaming. Only full page navigations reset the timer - source reloads do not.
   // This value is sourced from DOMAIN_CONFIG rather than site profiles because it represents a site policy, not a player behavior characteristic.
   maxContinuousPlayback: Nullable<number>;
 
@@ -286,7 +286,7 @@ export interface DomainConfig {
 
   // Service filter tag for streaming services. Channels whose canonical URL matches a domain with this field are identified as belonging to this streaming
   // service for filtering purposes. Domains that share a tag (e.g., "watch.sling.com" and a hypothetical "sling.com" variant) are treated as the same service.
-  // Omit for network-owned sites (abc.com, nbc.com, espn.com, etc.) — they are implicitly tagged "direct".
+  // Omit for network-owned sites (abc.com, nbc.com, espn.com, etc.) - they are implicitly tagged "direct".
   serviceTag?: string;
 
   // Maximum time in milliseconds to wait for the video element to reach a playable state. When set, overrides the global videoTimeout setting for all channels on
@@ -331,10 +331,10 @@ export interface UserProfilesLoadResult {
  */
 export interface ServicePack {
 
-  // Channel definitions to add alongside the profile. Optional — users may want to configure their own channel list.
+  // Channel definitions to add alongside the profile. Optional - users may want to configure their own channel list.
   channels?: ChannelMap;
 
-  // Domain-to-profile mappings. Optional — users may want to import just a profile to reference from their own domain mappings.
+  // Domain-to-profile mappings. Optional - users may want to import just a profile to reference from their own domain mappings.
   domains?: Record<string, DomainConfig>;
 
   // Human-readable service name for display during import.

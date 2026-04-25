@@ -85,8 +85,8 @@ export async function injectVideoSelector(page: Page): Promise<void> {
 }
 
 // Fullscreen activation queue. Chrome's Fullscreen API requires the target tab to be in the foreground (focused). When multiple streams start concurrently, each
-// tab must call page.bringToFront() before requestFullscreen() — but without serialization, tabs steal foreground from each other, causing silent failures. We
-// serialize the bringToFront → triggerFullscreen → verify sequence using a promise chain so each tab gets exclusive foreground access during fullscreen activation.
+// tab must call page.bringToFront() before requestFullscreen() - but without serialization, tabs steal foreground from each other, causing silent failures. We
+// serialize the bringToFront -> triggerFullscreen -> verify sequence using a promise chain so each tab gets exclusive foreground access during fullscreen activation.
 let fullscreenQueue: Promise<void> = Promise.resolve();
 
 /**
@@ -203,7 +203,7 @@ async function muteExistingVideos(page: Page): Promise<void> {
 }
 
 /**
- * Suppresses audio on a browser page for native HLS streaming. Native mode fetches segments directly from the provider's CDN — the page's video element is not needed
+ * Suppresses audio on a browser page for native HLS streaming. Native mode fetches segments directly from the provider's CDN - the page's video element is not needed
  * for content delivery, but the page stays alive for token refresh. Without suppression, the video continues playing audibly on the local machine.
  *
  * Uses two complementary mechanisms: (1) an immediate evaluate() to mute all currently playing video elements, and (2) an evaluateOnNewDocument() prototype override
@@ -216,7 +216,7 @@ async function muteExistingVideos(page: Page): Promise<void> {
 export async function suppressPageAudio(page: Page): Promise<void> {
 
   // Override HTMLMediaElement.prototype.play to mute before playback. This runs before site JavaScript on all future navigations (including token refresh via
-  // page.goto), matching the pattern established in precaching.ts. The override persists on the same page instance — a new page created by tab replacement won't
+  // page.goto), matching the pattern established in precaching.ts. The override persists on the same page instance - a new page created by tab replacement won't
   // inherit it.
   await page.evaluateOnNewDocument((): void => {
 
@@ -461,7 +461,7 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
 
   // Poll for a video element to appear in any iframe. Complex embedded players (Brightcove, JW Player, etc.) load additional resources and scripts after the
   // iframe element appears, so the video may not be immediately available. We retry the search with brief pauses, using the configured delay as the overall
-  // timeout ceiling. This replaces a fixed delay with early exit — if the video appears quickly, we proceed immediately.
+  // timeout ceiling. This replaces a fixed delay with early exit - if the video appears quickly, we proceed immediately.
   const deadline = Date.now() + CONFIG.playback.iframeInitDelay;
 
   let iframeSearchComplete = false;
@@ -496,7 +496,7 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
         }
       } catch(error) {
 
-        // AbortError means stream was terminated — stop polling immediately.
+        // AbortError means stream was terminated - stop polling immediately.
         if(error instanceof EvaluateAbortError) {
 
           iframeSearchComplete = true;
@@ -504,7 +504,7 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
           break;
         }
 
-        // Other errors (cross-origin, detached frame) — skip this frame and continue searching.
+        // Other errors (cross-origin, detached frame) - skip this frame and continue searching.
       }
     }
 
@@ -776,7 +776,7 @@ export async function triggerFullscreen(
 ): Promise<void> {
 
   // Try clicking a fullscreen button if configured. This fires before keyboard and API methods because clicking the site's own fullscreen control is the most
-  // reliable approach — it uses the site's native mechanism. The element existence check guards against toggle buttons that have changed state or disappeared
+  // reliable approach - it uses the site's native mechanism. The element existence check guards against toggle buttons that have changed state or disappeared
   // (e.g., after the player is already maximized). Keyboard and API methods serve as fallbacks below.
   if(profile.fullscreenSelector) {
 
@@ -909,7 +909,7 @@ async function isNativeFullscreenActive(context: Frame | Page): Promise<boolean>
 /**
  * Clicks the center of the video element to establish user activation in the browser. The Fullscreen API requires a recent user gesture (transient activation)
  * to succeed. Without it, requestFullscreen() is silently rejected. This function provides that activation by clicking the video via page.mouse.click(), which
- * dispatches real pointer events that Chrome recognizes as user gestures. The click may toggle play/pause on some players — the health monitor handles
+ * dispatches real pointer events that Chrome recognizes as user gestures. The click may toggle play/pause on some players - the health monitor handles
  * re-starting playback if needed.
  *
  * Note: page.mouse.click() uses page-level coordinates, while getBoundingClientRect() in an iframe returns iframe-relative coordinates. This function works
@@ -943,7 +943,7 @@ async function clickVideoForActivation(page: Page, context: Frame | Page, select
     }
   } catch {
 
-    // Click failure is non-fatal — the fullscreen retry will continue without activation.
+    // Click failure is non-fatal - the fullscreen retry will continue without activation.
   }
 }
 
@@ -1021,7 +1021,7 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
 
 /**
  * Ensures the video is displayed fullscreen with verification and retry logic. For profiles that use the native Fullscreen API, this serializes through a
- * promise-chain mutex so only one tab activates fullscreen at a time — Chrome requires the tab to be in the foreground for requestFullscreen() to succeed, and
+ * promise-chain mutex so only one tab activates fullscreen at a time - Chrome requires the tab to be in the foreground for requestFullscreen() to succeed, and
  * concurrent tabs would steal foreground from each other. When skipNativeFullscreen is true (monitor recovery), the mutex is bypassed entirely.
  * @param page - The Puppeteer page object for keyboard input.
  * @param context - The frame or page containing the video element.
@@ -1041,7 +1041,7 @@ export async function ensureFullscreen(
   const useNativeFullscreen = profile.useRequestFullscreen && !skipNativeFullscreen;
 
   // Inject a persistent stylesheet to hide site-specific overlay elements (e.g., player control bars, toolbars) that would otherwise appear in the captured stream.
-  // The style tag persists for the page lifetime and is idempotent — duplicate injections from recovery calls are harmless since CSS rules are deduplicated.
+  // The style tag persists for the page lifetime and is idempotent - duplicate injections from recovery calls are harmless since CSS rules are deduplicated.
   if(profile.hideSelector) {
 
     const css = profile.hideSelector + " { display: none !important; }";
@@ -1049,13 +1049,13 @@ export async function ensureFullscreen(
     await page.addStyleTag({ content: css }).catch(() => { /* Intentional no-op. */ });
   }
 
-  // CSS-only path (monitor recovery or profiles without native fullscreen). No serialization needed — CSS styling works fine from background tabs.
+  // CSS-only path (monitor recovery or profiles without native fullscreen). No serialization needed - CSS styling works fine from background tabs.
   if(!useNativeFullscreen) {
 
     return runFullscreenSequence(page, context, profile, selectorType, false);
   }
 
-  // Native fullscreen path. Serialize through the fullscreen queue so only one tab at a time goes through bringToFront → requestFullscreen → verify. Without
+  // Native fullscreen path. Serialize through the fullscreen queue so only one tab at a time goes through bringToFront -> requestFullscreen -> verify. Without
   // this, concurrent streams steal foreground from each other and all fullscreen attempts silently fail.
   const FULLSCREEN_QUEUE_TIMEOUT = 10000;
 
@@ -1115,7 +1115,7 @@ async function runFullscreenSequence(
   for(let attempt = 1; attempt <= maxSimpleRetries; attempt++) {
 
     // On retry for fullscreenApi profiles, click the video to provide fresh user activation. The Fullscreen API requires a recent user gesture (transient
-    // activation) to succeed — without it, requestFullscreen() is silently rejected. The initial attempt relies on activation from page navigation, but retries
+    // activation) to succeed - without it, requestFullscreen() is silently rejected. The initial attempt relies on activation from page navigation, but retries
     // need an explicit click.
     if((attempt > 1) && useNativeFullscreen) {
 
@@ -1204,7 +1204,7 @@ async function runFullscreenSequence(
     await page.keyboard.type("f");
   }
 
-  // Re-trigger the Fullscreen API after aggressive styling — the aggressive CSS ensures the video fills the viewport, and the API call hides site UI. Bring the
+  // Re-trigger the Fullscreen API after aggressive styling - the aggressive CSS ensures the video fills the viewport, and the API call hides site UI. Bring the
   // tab to foreground first, since other tabs may have stolen focus while we were escalating.
   if(useNativeFullscreen) {
 
@@ -1358,7 +1358,7 @@ const DISMISS_POLL_INTERVAL = 500;
 /**
  * Polls for an intermittent modal element and clicks it if found. Runs as a fire-and-forget background task alongside waitForVideoReady() to catch modals that
  * render after page load but before video starts playing. The first check is immediate (zero-wait), followed by up to DISMISS_POLL_DURATION of periodic rechecks.
- * Once the modal is found and clicked (or the poll window expires), the function resolves silently — it never throws.
+ * Once the modal is found and clicked (or the poll window expires), the function resolves silently - it never throws.
  * @param page - The Puppeteer page object.
  * @param selector - The CSS selector for the modal element to dismiss.
  */
@@ -1368,7 +1368,7 @@ async function dismissModalPoll(page: Page, selector: string): Promise<void> {
 
   for(let i = 0; i < checks; i++) {
 
-    // Delay between checks, but not before the first one — the first check is immediate.
+    // Delay between checks, but not before the first one - the first check is immediate.
     if(i > 0) {
 
       // eslint-disable-next-line no-await-in-loop
@@ -1418,7 +1418,7 @@ async function dismissModalPoll(page: Page, selector: string): Promise<void> {
  * @param page - The Puppeteer page object.
  * @param profile - The site profile containing all behavior flags.
  * @param skipChannelSelection - When true, skip the channel selection phase entirely. Used when navigating directly to a cached watch URL that already targets
- *   the correct channel — only video detection, playback, and fullscreen setup are needed.
+ *   the correct channel - only video detection, playback, and fullscreen setup are needed.
  * @returns The video context (frame or page) for subsequent monitoring, and a directTune flag when the channel was tuned via API interception.
  */
 export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, skipChannelSelection = false): Promise<TuneResult> {
@@ -1488,7 +1488,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
   }
 
   // Wait for video to be ready (readyState >= 3). This ensures enough data is buffered for playback to begin smoothly. If a dismissSelector is configured, launch
-  // a background poll that checks for the modal during the first 5 seconds of the video wait. The poll is fire-and-forget — it never blocks the video wait. If the
+  // a background poll that checks for the modal during the first 5 seconds of the video wait. The poll is fire-and-forget - it never blocks the video wait. If the
   // modal appears and is clicked, the video becomes unblocked and waitForVideoReady resolves normally.
   if(profile.dismissSelector) {
 

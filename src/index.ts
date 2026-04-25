@@ -117,7 +117,7 @@ function printEnvironmentVariables(): void {
 
   for(const category of categoryOrder) {
 
-    const settings = CONFIG_METADATA[category.key];
+    const settings = CONFIG_METADATA[category.key] ?? [];
 
     // Filter to settings that have an environment variable.
     const envSettings = settings.filter((s) => s.envVar !== null);
@@ -273,7 +273,7 @@ function parseArgs(): ParsedArgs {
 
     if((arg === "-p") || (arg === "--port")) {
 
-      const parsed = parseInt(args[++i]);
+      const parsed = parseInt(args[++i] ?? "");
 
       if(!isNaN(parsed)) {
 
@@ -283,21 +283,21 @@ function parseArgs(): ParsedArgs {
 
     if(arg === "--data-dir") {
 
-      dataDir = args[++i];
+      dataDir = args[++i] ?? "";
 
       requireAbsolutePath("--data-dir", dataDir);
     }
 
     if(arg === "--chrome-data-dir") {
 
-      chromeDataDir = args[++i];
+      chromeDataDir = args[++i] ?? "";
 
       requireAbsolutePath("--chrome-data-dir", chromeDataDir);
     }
 
     if(arg === "--log-file") {
 
-      logFile = args[++i];
+      logFile = args[++i] ?? "";
 
       requireAbsolutePath("--log-file", logFile);
     }
@@ -383,20 +383,20 @@ if(subcommand === "service") {
     setDebugLogging(true);
   }
 
-  /* Safety net for server exit paths. When the process exits — whether via process.exit(1) from a fatal startup error, an unrecoverable exception, or any other
-   * termination — we ensure Chrome processes are cleaned up and buffered log entries are flushed to disk. Without this, fatal exits during startup (e.g., capture
+  /* Safety net for server exit paths. When the process exits - whether via process.exit(1) from a fatal startup error, an unrecoverable exception, or any other
+   * termination - we ensure Chrome processes are cleaned up and buffered log entries are flushed to disk. Without this, fatal exits during startup (e.g., capture
    * probe timeout) silently orphan Chrome processes and lose diagnostic messages that are still in the file logger's write buffer.
    *
    * The 'exit' event runs synchronously, so only synchronous operations are safe here. killStaleChrome() uses process.kill() for signaling and Atomics.wait()
    * for polling, and flushLogBufferSync() writes directly to the filesystem. The graceful shutdown path (SIGTERM/SIGINT) handles cleanup via async closeBrowser()
-   * and shutdownFileLogger() — this handler is a fallback for paths that bypass graceful shutdown.
+   * and shutdownFileLogger() - this handler is a fallback for paths that bypass graceful shutdown.
    *
-   * This is registered only in the server branch — not for service subcommands like `prismcast service status`. Running killStaleChrome() from a service
+   * This is registered only in the server branch - not for service subcommands like `prismcast service status`. Running killStaleChrome() from a service
    * subcommand would kill Chrome belonging to the running PrismCast server instance.
    */
   process.on("exit", (): void => {
 
-    // Flush logs first — this is the critical operation. The error messages from a failed startup are sitting in the write buffer and must reach disk before the
+    // Flush logs first - this is the critical operation. The error messages from a failed startup are sitting in the write buffer and must reach disk before the
     // process terminates. Chrome will die when its pipes break since the parent is exiting; killing it explicitly is belt-and-suspenders.
     flushLogBufferSync();
 

@@ -4,7 +4,7 @@
  */
 
 /* This module provides a format-neutral HLS playlist builder used by both the capture-mode fMP4 segmenter and the native HLS proxy. It accepts playlist-level options
- * and an ordered array of segment entries, then produces the m3u8 string. All tag formatting lives here — PROGRAM-DATE-TIME, DISCONTINUITY-SEQUENCE, DISCONTINUITY,
+ * and an ordered array of segment entries, then produces the m3u8 string. All tag formatting lives here - PROGRAM-DATE-TIME, DISCONTINUITY-SEQUENCE, DISCONTINUITY,
  * SCTE-35, EXT-X-MAP, EXTINF. The builder is stateless and pure: it receives data and returns a string. It knows nothing about preroll, capture mode, native mode,
  * windowing, or where segments come from.
  */
@@ -50,8 +50,8 @@ export interface PlaylistSegmentEntry {
  */
 export interface PlaylistOptions {
 
-  // #EXT-X-DISCONTINUITY-SEQUENCE value. When undefined, the tag is omitted entirely — used when no discontinuities exist. When 0, the tag is emitted with value 0
-  // — used when discontinuities exist in the playlist but none have scrolled off the beginning of the window.
+  // #EXT-X-DISCONTINUITY-SEQUENCE value. When undefined, the tag is omitted entirely - used when no discontinuities exist. When 0, the tag is emitted with value 0
+  // - used when discontinuities exist in the playlist but none have scrolled off the beginning of the window.
   discontinuitySequence?: number;
 
   // #EXT-X-MAP URI for the first segment in the playlist window. Emitted before any segment entries. Used by fMP4 streams for the initialization segment; omitted
@@ -74,7 +74,7 @@ export interface PlaylistOptions {
 
 /**
  * Builds an HLS playlist string from playlist options and an ordered array of segment entries. This is the single formatting function used by all playlist generators
- * in PrismCast — the capture-mode fMP4 segmenter, the native HLS proxy, and the standalone preroll playlist. The builder is stateless and pure: it iterates the
+ * in PrismCast - the capture-mode fMP4 segmenter, the native HLS proxy, and the standalone preroll playlist. The builder is stateless and pure: it iterates the
  * entries, emits the appropriate HLS tags for each, and returns the formatted m3u8 string.
  *
  * Per-segment tag ordering follows the HLS spec and preserves the ordering used by both existing generators: DISCONTINUITY, MAP, PROGRAM-DATE-TIME, CUE-IN,
@@ -105,7 +105,7 @@ export function buildPlaylist(options: PlaylistOptions, entries: PlaylistSegment
   ];
 
   // Emit DISCONTINUITY-SEQUENCE when the caller provides a value. The distinction between undefined (no discontinuities in the stream's history) and 0
-  // (discontinuities exist but none have scrolled off the window) is meaningful for spec compliance — both capture and native paths control this independently.
+  // (discontinuities exist but none have scrolled off the window) is meaningful for spec compliance - both capture and native paths control this independently.
   if(options.discontinuitySequence !== undefined) {
 
     lines.push("#EXT-X-DISCONTINUITY-SEQUENCE:" + String(options.discontinuitySequence));

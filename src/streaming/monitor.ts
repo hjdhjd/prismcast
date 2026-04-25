@@ -31,7 +31,7 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.js";
  *
  * 1. Video progression: Compares currentTime to previous check. If currentTime has not advanced by at least STALL_THRESHOLD (0.1 seconds), the video is considered
  *    stalled. However, a single stall is not enough to trigger recovery - we require more than STALL_COUNT_THRESHOLD (default 2, so 3+) consecutive stalls to avoid
- *    reacting to momentary hiccups. Pause detection uses the same threshold — the video.paused property must be true for more than STALL_COUNT_THRESHOLD consecutive
+ *    reacting to momentary hiccups. Pause detection uses the same threshold - the video.paused property must be true for more than STALL_COUNT_THRESHOLD consecutive
  *    checks before triggering L1 recovery. This filters out transient rebuffer pauses where the player briefly pauses to refill its buffer and resumes on its own.
  *
  * 2. Buffering detection: Checks readyState and networkState to detect active buffering. Live streams occasionally buffer due to network conditions, so we allow a
@@ -239,7 +239,7 @@ export function monitorPlaybackHealth(
 
   // Recovery grace period. After a recovery action, we wait before checking for new issues to give the action time to take effect. L1 (play/unmute) is a quick
   // action. L2 (source reload) and L3 (page reload) need more time for rebuffering/navigation.
-  const recoveryGracePeriods = [ 0, 3000, 10000, 10000 ];  // L0, L1, L2, L3 in milliseconds.
+  const recoveryGracePeriods: readonly [number, number, number, number] = [ 0, 3000, 10000, 10000 ];  // L0, L1, L2, L3 in milliseconds.
 
   // Segment stall timeout. After L2/L3 recovery completes, if no new segments are produced within this timeout, the capture pipeline is considered dead and we
   // escalate directly to tab replacement. This catches the case where recovery reports success but the MediaRecorder/FFmpeg pipeline has silently died.
@@ -247,7 +247,7 @@ export function monitorPlaybackHealth(
 
   // Tiny segment detection thresholds. Used for continuous segment size monitoring to detect dead capture pipelines. When video capture dies but audio continues,
   // segments contain only audio data. Audio is transcoded at a controlled bitrate (max 512Kbps), so audio-only segments are at most ~192KB for 3-second segments.
-  // The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset (480p/3Mbps ≈ 750KB/segment).
+  // The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset (480p/3Mbps ~ 750KB/segment).
   const TINY_SEGMENT_THRESHOLD = 512000; // 500KB - segments below this indicate dead or degraded capture.
   const TINY_SEGMENT_COUNT_TRIGGER = 10;  // Default trigger count: 10 consecutive tiny segments (~20 seconds with 2-second segments).
 
@@ -258,13 +258,13 @@ export function monitorPlaybackHealth(
   const providerTinySegmentThreshold = providerModule?.tinySegmentThreshold ?? TINY_SEGMENT_COUNT_TRIGGER;
 
   // Segment staleness timeout. When no new segments have been produced for this duration, the capture pipeline is considered dead even though the video element may
-  // appear healthy. This catches the case where Chrome's MediaRecorder silently stops emitting data without raising an error — the input stream stays "open" but no
+  // appear healthy. This catches the case where Chrome's MediaRecorder silently stops emitting data without raising an error - the input stream stays "open" but no
   // data events fire. The 20-second threshold is 4x the maximum expected moof delivery interval (5 seconds) to avoid false positives during normal bursty delivery.
   const SEGMENT_STALENESS_TIMEOUT = 20000;  // 20 seconds.
 
   // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the configured viewport, the service's ABR is delivering
-  // low-quality content. The threshold is expressed as a ratio — if either dimension is below this fraction of the viewport, the resolution is considered degraded.
-  // 50% catches clear ABR degradation (768×432 on 1080p = 40%) while allowing legitimate 720p content on 1080p (67% > 50%).
+  // low-quality content. The threshold is expressed as a ratio - if either dimension is below this fraction of the viewport, the resolution is considered degraded.
+  // 50% catches clear ABR degradation (768x432 on 1080p = 40%) while allowing legitimate 720p content on 1080p (67% > 50%).
   const RESOLUTION_RATIO_THRESHOLD = 0.5;
 
   // Grace period in milliseconds after stream start and after each recovery action. Gives ABR time to ramp up before flagging degradation.
@@ -287,7 +287,7 @@ export function monitorPlaybackHealth(
   const selectorType = buildVideoSelectorType(profile);
 
   // Capture stream context for re-establishing on each interval tick. AsyncLocalStorage context is lost when entering setInterval callbacks. The show name
-  // resolver is lazy — it reads from the live show name cache at log time, so messages always reflect the current program even as shows change mid-stream.
+  // resolver is lazy - it reads from the live show name cache at log time, so messages always reflect the current program even as shows change mid-stream.
   const streamContext = {
 
     channelName: streamInfo.channelName ?? undefined,
@@ -348,12 +348,12 @@ export function monitorPlaybackHealth(
    * Checks segment delivery health for native streams. Detects stalled streams by comparing the proxy's segment index and last segment timestamp against thresholds.
    * Recovery follows three escalation levels per the plan:
    *
-   * - L1: Re-fetch manifest (handled by the proxy's internal retry loop — consecutive failures up to the threshold)
+   * - L1: Re-fetch manifest (handled by the proxy's internal retry loop - consecutive failures up to the threshold)
    * - L2: Reload page for fresh tokens (same mechanism as proactive token refresh, but triggered by segment staleness)
    * - L3: Fall back to capture mode via tab replacement (stops native proxy, creates fresh page with capture pipeline)
    *
    * Note: The `recoveryState.inProgress` guard at the top of the interval callback prevents re-entry during async L2/L3 recovery. The native path does not need its
-   * own guard — it reuses the shared flag.
+   * own guard - it reuses the shared flag.
    *
    * @param entry - The stream registry entry for the native stream.
    */
@@ -443,7 +443,7 @@ export function monitorPlaybackHealth(
       LOG.debug("native:monitor", "Native stream stalled for %s. No new segments in %ss (threshold: %ss).", storeKey, staleSec,
         Math.round(stalenessThreshold / 1000));
 
-      // L2: At 4× target duration, attempt a page reload for fresh tokens. This recovers from auth expiry where the manifest URL is still valid but segment URLs
+      // L2: At 4x target duration, attempt a page reload for fresh tokens. This recovers from auth expiry where the manifest URL is still valid but segment URLs
       // are rejected. The proxy continues serving cached segments during the reload.
       if((stalenessMs > (targetDuration * 4 * 1000)) && (nativeHealthState.recoveryAttempts === 0)) {
 
@@ -459,7 +459,7 @@ export function monitorPlaybackHealth(
         return;
       }
 
-      // L3: At 6× target duration (or if L2 was already attempted), fall back to capture mode via tab replacement.
+      // L3: At 6x target duration (or if L2 was already attempted), fall back to capture mode via tab replacement.
       if((stalenessMs > (targetDuration * 6 * 1000)) || ((stalenessMs > (targetDuration * 4 * 1000)) && (nativeHealthState.recoveryAttempts > 0))) {
 
         LOG.warn("Falling back to capture mode for %s: native streaming stalled after recovery attempt.", storeKey);
@@ -793,7 +793,7 @@ export function monitorPlaybackHealth(
 
   /**
    * Checks the page reload rate limit. Prunes expired timestamps, checks if the limit has been reached, and records the current timestamp if allowed. Callers are
-   * responsible for logging and handling the rate-limited case — consequences differ by context (circuit break, deferral, fallback to L2).
+   * responsible for logging and handling the rate-limited case - consequences differ by context (circuit break, deferral, fallback to L2).
    * @returns True if a page reload is allowed and the timestamp has been recorded, false if the rate limit has been reached.
    */
   function isPageReloadAllowed(): boolean {
@@ -829,7 +829,7 @@ export function monitorPlaybackHealth(
   function setRecoveryGracePeriod(level: number): void {
 
     pendingReMinimize = true;
-    recoveryState.graceUntil = Date.now() + recoveryGracePeriods[level];
+    recoveryState.graceUntil = Date.now() + (recoveryGracePeriods[level] ?? 0);
   }
 
   /**
@@ -848,7 +848,7 @@ export function monitorPlaybackHealth(
 
     if(cbResult.shouldTrip) {
 
-      LOG.error("Recovery exhausted (%s) — terminating stream.", context);
+      LOG.error("Recovery exhausted (%s) - terminating stream.", context);
 
       clearInterval(interval);
       onCircuitBreak();
@@ -897,16 +897,16 @@ export function monitorPlaybackHealth(
     metrics.currentRecoveryStartTime = null;
     metrics.currentRecoveryMethod = null;
 
-    LOG.warn("Tab replacement unsuccessful after retry — stream will be terminated.");
+    LOG.warn("Tab replacement unsuccessful after retry - stream will be terminated.");
 
     const failureOutcome = handleTabReplacementFailure(context);
 
     // If the circuit breaker did not trip but the old page is gone (handler destroyed it before createPageWithCapture failed), the stream is unrecoverable. The
-    // next monitor tick would silently clear the interval via currentPage.isClosed() with no termination log, no status emission, and no cleanup — creating a
+    // next monitor tick would silently clear the interval via currentPage.isClosed() with no termination log, no status emission, and no cleanup - creating a
     // zombie entry in the registry. Terminate explicitly instead.
     if((failureOutcome.outcome === "failed") && currentPage.isClosed()) {
 
-      LOG.error("Tab replacement failed and the original page is no longer available — terminating stream.");
+      LOG.error("Tab replacement failed and the original page is no longer available - terminating stream.");
 
       clearInterval(interval);
       onCircuitBreak();
@@ -950,7 +950,7 @@ export function monitorPlaybackHealth(
 
       let result = await onTabReplacement();
 
-      // First attempt failed — retry once. See idempotency notes in the JSDoc above.
+      // First attempt failed - retry once. See idempotency notes in the JSDoc above.
       if(!result) {
 
         LOG.debug("recovery:tab", "Tab replacement attempt 1/2 failed. Retrying...");
@@ -974,7 +974,7 @@ export function monitorPlaybackHealth(
       return handleExhaustedTabReplacement("tab replacement unsuccessful");
     } catch(error) {
 
-      // Unexpected error (not from onTabReplacement — those are caught internally by the handler in hls.ts and return null). Guard against registry corruption,
+      // Unexpected error (not from onTabReplacement - those are caught internally by the handler in hls.ts and return null). Guard against registry corruption,
       // getStream failures, or other unexpected errors.
       LOG.debug("recovery:tab", "Tab replacement attempt 1/2 failed: %s. Retrying...", formatError(error));
 
@@ -1075,7 +1075,7 @@ export function monitorPlaybackHealth(
    * Handles the case where no video element was found in the current context. Applies a grace period before triggering recovery: first failure waits, second failure
    * attempts frame re-search, third failure escalates to full page navigation. Distinguishes "no video element" from "video exists but not ready" (buffering).
    *
-   * Always exits the tick — no path falls through to subsequent health checks.
+   * Always exits the tick - no path falls through to subsequent health checks.
    * @param now - Current timestamp for timing calculations.
    */
   async function handleVideoNotFound(now: number): Promise<void> {
@@ -1156,14 +1156,14 @@ export function monitorPlaybackHealth(
     }
 
     // After 3+ consecutive failures, escalate to full page navigation recovery.
-    LOG.warn("Video element not found — recovering via %s.", RECOVERY_METHODS.pageNavigation);
+    LOG.warn("Video element not found - recovering via %s.", RECOVERY_METHODS.pageNavigation);
 
     // Check circuit breaker for too many failures.
     const cbResult = checkCircuitBreaker(circuitBreaker, now);
 
     if(cbResult.shouldTrip) {
 
-      LOG.error("Recovery failed after %s attempts — terminating stream.", cbResult.totalCount);
+      LOG.error("Recovery failed after %s attempts - terminating stream.", cbResult.totalCount);
 
       clearInterval(interval);
       onCircuitBreak();
@@ -1184,7 +1184,7 @@ export function monitorPlaybackHealth(
     // Check page reload limit before attempting recovery.
     if(!isPageReloadAllowed()) {
 
-      LOG.error("Page navigation rate limit reached (%s in %s minutes) — cannot recover without video element.",
+      LOG.error("Page navigation rate limit reached (%s in %s minutes) - cannot recover without video element.",
         CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
       clearInterval(interval);
@@ -1255,14 +1255,14 @@ export function monitorPlaybackHealth(
 
       if((currentIndex !== null) && (currentIndex > segmentState.preRecoveryIndex)) {
 
-        // Segments are flowing — recovery actually succeeded. Clear tracking state.
+        // Segments are flowing - recovery actually succeeded. Clear tracking state.
         segmentState.preRecoveryIndex = null;
         segmentState.waitStartTime = null;
         segmentState.productionStalled = false;
       } else if((now - segmentState.waitStartTime) > SEGMENT_STALL_TIMEOUT) {
 
         // No new segments for SEGMENT_STALL_TIMEOUT after recovery grace period. The capture pipeline is dead.
-        LOG.warn("No segments produced for %ss after recovery — capture pipeline may have stalled.", SEGMENT_STALL_TIMEOUT / 1000);
+        LOG.warn("No segments produced for %ss after recovery - capture pipeline may have stalled.", SEGMENT_STALL_TIMEOUT / 1000);
 
         segmentState.productionStalled = true;
       }
@@ -1295,7 +1295,7 @@ export function monitorPlaybackHealth(
 
         if(segmentState.consecutiveTinySegments >= effectiveThreshold) {
 
-          LOG.warn("Detected %d consecutive undersized segments (%dKB) — capture pipeline may have stalled.",
+          LOG.warn("Detected %d consecutive undersized segments (%dKB) - capture pipeline may have stalled.",
             segmentState.consecutiveTinySegments, Math.round(segmentSize / 1024));
 
           // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentState.productionStalled.
@@ -1328,7 +1328,7 @@ export function monitorPlaybackHealth(
       ((now - segmentState.lastSegmentAdvanceTime) > SEGMENT_STALENESS_TIMEOUT)) {
 
       /* Segment staleness detection. The segment index has not advanced for longer than SEGMENT_STALENESS_TIMEOUT. This catches the case where Chrome's
-       * MediaRecorder silently stops emitting data — the input Readable stream stays "open" (no end/error events) but no data events fire. The segmenter
+       * MediaRecorder silently stops emitting data - the input Readable stream stays "open" (no end/error events) but no data events fire. The segmenter
        * receives nothing, produces no new segments, and the playlist freezes at the last known sequence number. The video element on the page continues
        * playing normally (currentTime advances, no errors), so all video health checks pass. Without this check, the stale playlist persists indefinitely.
        *
@@ -1336,7 +1336,7 @@ export function monitorPlaybackHealth(
        * during stream startup before the first segment has been produced. The recovery grace guard prevents false triggering during legitimate pauses (e.g.,
        * after tab replacement while the new capture pipeline is initializing).
        */
-      LOG.warn("No new segments produced for %ss — capture pipeline may have stalled.", SEGMENT_STALENESS_TIMEOUT / 1000);
+      LOG.warn("No new segments produced for %ss - capture pipeline may have stalled.", SEGMENT_STALENESS_TIMEOUT / 1000);
 
       if(onTabReplacement && !recoveryState.inProgress) {
 
@@ -1404,7 +1404,7 @@ export function monitorPlaybackHealth(
 
       if(!isPageReloadAllowed()) {
 
-        LOG.warn("Resolution recovery deferred — page navigation rate limit reached (%s in %s minutes).",
+        LOG.warn("Resolution recovery deferred - page navigation rate limit reached (%s in %s minutes).",
           CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
         // Defer by pushing grace end forward to avoid re-triggering every 2 seconds.
@@ -1461,7 +1461,7 @@ export function monitorPlaybackHealth(
         return true;
       }
 
-      // Tab replacement not available — skip directly to acceptance.
+      // Tab replacement not available - skip directly to acceptance.
       resolutionState.recoveryAttempt = 2;
     }
 
@@ -1528,15 +1528,15 @@ export function monitorPlaybackHealth(
 
     recoveryState.inProgress = true;
 
-    // Check page reload rate limit. Proactive reload is best-effort maintenance — if the reload budget is exhausted from recent error recoveries, we gracefully
+    // Check page reload rate limit. Proactive reload is best-effort maintenance - if the reload budget is exhausted from recent error recoveries, we gracefully
     // yield. If the site eventually cuts the stream, normal error recovery handles it.
     if(!isPageReloadAllowed()) {
 
-      LOG.warn("Proactive reload deferred — page navigation rate limit reached (%s in %s minutes).",
+      LOG.warn("Proactive reload deferred - page navigation rate limit reached (%s in %s minutes).",
         CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
       // Set a grace period to prevent this deferral from re-triggering every 2 seconds while the rate limit remains in effect. We set recoveryState.graceUntil
-      // directly rather than calling setRecoveryGracePeriod() because no recovery action was performed — the window state is unchanged and pendingReMinimize
+      // directly rather than calling setRecoveryGracePeriod() because no recovery action was performed - the window state is unchanged and pendingReMinimize
       // should not be set.
       recoveryState.graceUntil = now + recoveryGracePeriods[3];
       recoveryState.inProgress = false;
@@ -1594,7 +1594,7 @@ export function monitorPlaybackHealth(
     // escalation ladder and go directly to tab replacement if available.
     if(segmentState.productionStalled && onTabReplacement) {
 
-      LOG.warn("Capture pipeline still stalled — escalating to %s.", RECOVERY_METHODS.tabReplacement);
+      LOG.warn("Capture pipeline still stalled - escalating to %s.", RECOVERY_METHODS.tabReplacement);
 
       await executeTabReplacement("capture pipeline stalled");
 
@@ -1608,7 +1608,7 @@ export function monitorPlaybackHealth(
 
       const elapsedSeconds = circuitBreaker.firstFailureTime ? Math.round((now - circuitBreaker.firstFailureTime) / 1000) : 0;
 
-      LOG.error("Recovery failed after %s attempts in %ss — terminating stream.", cbResult.totalCount, elapsedSeconds);
+      LOG.error("Recovery failed after %s attempts in %ss - terminating stream.", cbResult.totalCount, elapsedSeconds);
 
       clearInterval(interval);
       onCircuitBreak();
@@ -1652,12 +1652,12 @@ export function monitorPlaybackHealth(
     // If a previous recovery was pending (L1 or L2 that didn't result in healthy playback), log that it was unsuccessful before starting the new attempt.
     if(metrics.currentRecoveryMethod !== null) {
 
-      LOG.warn("%s did not resolve the issue — escalating to %s.", capitalize(metrics.currentRecoveryMethod), recoveryMethod);
+      LOG.warn("%s did not resolve the issue - escalating to %s.", capitalize(metrics.currentRecoveryMethod), recoveryMethod);
     } else {
 
       const issueDesc = getIssueDescription(issueCategory);
 
-      LOG.warn("Playback %s — recovering via %s.", issueDesc, recoveryMethod);
+      LOG.warn("Playback %s - recovering via %s.", issueDesc, recoveryMethod);
     }
 
     recordRecoveryAttempt(metrics, recoveryMethod);
@@ -1688,7 +1688,7 @@ export function monitorPlaybackHealth(
           markStreamDiscontinuity();
         }
 
-        recoveryState.graceUntil = now + recoveryGracePeriods[recoveryState.escalationLevel];
+        recoveryState.graceUntil = now + (recoveryGracePeriods[recoveryState.escalationLevel] ?? 0);
         resetResolutionState();
       } else {
 
@@ -1697,7 +1697,7 @@ export function monitorPlaybackHealth(
         // Safety check: If page navigation has failed twice consecutively, fall back to source reload.
         if(consecutiveNavigationFailures >= 2) {
 
-          LOG.warn("Page navigation has failed %s consecutive times — falling back to source reload.",
+          LOG.warn("Page navigation has failed %s consecutive times - falling back to source reload.",
             consecutiveNavigationFailures);
 
           recoveryState.escalationLevel = 2;
@@ -1708,7 +1708,7 @@ export function monitorPlaybackHealth(
 
           if(!isPageReloadAllowed()) {
 
-            LOG.warn("Page navigation rate limit reached (%s in %s minutes) — falling back to source reload.",
+            LOG.warn("Page navigation rate limit reached (%s in %s minutes) - falling back to source reload.",
               CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
             recoveryState.escalationLevel = 2;
@@ -1959,7 +1959,7 @@ export function monitorPlaybackHealth(
         }
 
         /* Fullscreen reinforcement. Some streaming sites (notably Hulu) revert the video to a mini-player or PiP layout in response to browser state changes such as
-         * window minimization or visibility events. Because the video continues playing normally in the smaller frame, no existing recovery condition is triggered — the
+         * window minimization or visibility events. Because the video continues playing normally in the smaller frame, no existing recovery condition is triggered - the
          * health monitor sees healthy, progressing playback while the captured frame shows a small video in the corner of the viewport. We verify that the video fills
          * the viewport on every healthy tick and re-apply CSS fullscreen styling when it shrinks. The response is graduated: basic CSS first (sufficient for
          * well-behaved sites like Hulu), escalating to !important priority only if basic styles don't hold by the next tick. The readyState guard prevents false
@@ -2112,7 +2112,7 @@ export function monitorPlaybackHealth(
           // After 3 consecutive timeouts, attempt tab replacement if the callback is available.
           if((consecutiveTimeouts >= 3) && onTabReplacement) {
 
-            LOG.warn("Tab unresponsive — recovering via %s.", RECOVERY_METHODS.tabReplacement);
+            LOG.warn("Tab unresponsive - recovering via %s.", RECOVERY_METHODS.tabReplacement);
 
             await executeTabReplacement("tab unresponsive");
 

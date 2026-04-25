@@ -10,7 +10,7 @@ import { handleMpegTsStream } from "../streaming/mpegts.js";
  * - GET /stream/:name - Returns a continuous MPEG-TS byte stream for a channel (starts stream if needed)
  *
  * This endpoint is used by HDHomeRun-compatible clients (such as Plex) that expect raw MPEG-TS when tuning a channel. The stream shares the same underlying capture
- * as HLS — no additional browser tabs or capture sessions are created.
+ * as HLS - no additional browser tabs or capture sessions are created.
  */
 
 /**

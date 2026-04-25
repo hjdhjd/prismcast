@@ -47,7 +47,7 @@ let loginTimeoutHandle: Nullable<ReturnType<typeof setTimeout>> = null;
 // Login timeout duration (15 minutes).
 const LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
 
-// Browser accessor functions injected by browser/index.ts via setBrowserAccessors(). This avoids a circular dependency — login.ts needs getBrowserInstance and
+// Browser accessor functions injected by browser/index.ts via setBrowserAccessors(). This avoids a circular dependency - login.ts needs getBrowserInstance and
 // minimizeBrowserWindow from index.ts, which imports login functions. The setter/getter pattern matches setChromeUserAgent in chromeFetch.ts and
 // registerProviderModuleProfile in sites.ts.
 interface BrowserAccessors {
@@ -269,7 +269,7 @@ export function getLoginPage(): Nullable<Page> {
 }
 
 /**
- * Clears all login state without attempting any browser operations. Used by the browser disconnect handler when the browser has already crashed — calling
+ * Clears all login state without attempting any browser operations. Used by the browser disconnect handler when the browser has already crashed - calling
  * endLoginMode() would fail because it tries to close the page and minimize the browser, which are impossible when the browser is gone.
  * @returns True if login mode was active and was cleared, false if it was not active.
  */

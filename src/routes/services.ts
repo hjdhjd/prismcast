@@ -15,7 +15,7 @@ import type { Page } from "puppeteer-core";
 
 /* The services endpoint exposes channel discovery for each registered service. A GET request to /services/:slug/channels creates a temporary browser page,
  * navigates to the service's guide, runs the service's discoverChannels implementation, and returns a sorted JSON array of discovered channels. The temporary
- * page is always closed in a finally block to prevent resource leaks. Concurrent requests for the same service are coalesced — only one discovery walk runs at a
+ * page is always closed in a finally block to prevent resource leaks. Concurrent requests for the same service are coalesced - only one discovery walk runs at a
  * time, and subsequent requests piggyback on the in-flight result. A refresh=true request aborts any in-flight discovery and starts fresh.
  */
 
@@ -68,7 +68,7 @@ async function runDiscovery(provider: ProviderModule, signal: AbortSignal): Prom
   let page: Page | null = null;
 
   // Close the page when the abort signal fires. This causes any in-progress Puppeteer operations to throw, propagating the cancellation through the discovery
-  // function without requiring explicit signal checking in each provider's implementation. The finally block also closes the page unconditionally — the
+  // function without requiring explicit signal checking in each provider's implementation. The finally block also closes the page unconditionally - the
   // redundant close is idempotent (caught by try/catch).
   const onAbort = (): void => {
 
@@ -174,7 +174,7 @@ interface LineupState {
   logoUrl?: string;
 
   // The stationId (Gracenote ID) for this canonical channel. Used to disambiguate when two canonicals (East and Pacific) share the same channelSelector
-  // for a service — the discovery entry's stationId is matched against this value to assign the correct canonical.
+  // for a service - the discovery entry's stationId is matched against this value to assign the correct canonical.
   stationId?: string;
 
   // Whether the channel is predefined or user-defined.
@@ -196,7 +196,7 @@ interface AnnotatedChannel extends DiscoveredChannel {
  * (predefined keys are hand-crafted and may not match generateChannelKey output).
  *
  * For each canonical in the listing, we check for a variant matching the browsed service (via getServiceGroup) and extract its channelSelector via
- * getResolvedChannel. This builds a channelSelector → lineup state map that the discovered channels are matched against.
+ * getResolvedChannel. This builds a channelSelector -> lineup state map that the discovered channels are matched against.
  *
  * @param channels - The raw discovered channels from the service.
  * @param serviceSlug - The slug of the service being browsed (e.g., "spectrum", "hulu").
@@ -204,9 +204,9 @@ interface AnnotatedChannel extends DiscoveredChannel {
  */
 function annotateWithLineupState(channels: DiscoveredChannel[], serviceSlug: string): AnnotatedChannel[] {
 
-  // Build a channelSelector → lineup state mapping for the browsed service. For each canonical entry in the listing, we find the variant that corresponds
+  // Build a channelSelector -> lineup state mapping for the browsed service. For each canonical entry in the listing, we find the variant that corresponds
   // to this service (if one exists) and index by that variant's channelSelector. This ensures matching works even when predefined keys don't match the
-  // normalized channel name (e.g., "axstv" vs generateChannelKey("AXS TV") → "axs-tv").
+  // normalized channel name (e.g., "axstv" vs generateChannelKey("AXS TV") -> "axs-tv").
   //
   // When two canonicals share the same channelSelector for a service (East/Pacific pairs like "Disney Channel"), the map stores an array of states. The
   // annotation step then uses the discovery entry's stationId to disambiguate which canonical to assign.
@@ -314,13 +314,13 @@ function annotateWithLineupState(channels: DiscoveredChannel[], serviceSlug: str
       return ch;
     }
 
-    // Single match — no disambiguation needed.
+    // Single match - no disambiguation needed.
     if(states.length === 1) {
 
       return { ...ch, lineup: states[0] };
     }
 
-    // Multiple matches — use stationId to pick the right canonical. Fall back to the first match if stationId doesn't disambiguate.
+    // Multiple matches - use stationId to pick the right canonical. Fall back to the first match if stationId doesn't disambiguate.
     const match = states.find((s) => s.stationId === ch.stationId) ?? states[0];
 
     return { ...ch, lineup: match };
@@ -346,8 +346,8 @@ export function setupServicesEndpoint(app: Express): void {
     }
 
     // When refresh=true is requested, clear the service's caches (unified channel cache, row caches, fully-enumerated flags, etc.) so the discovery walk runs
-    // against fresh data. This also resets warm tuning state (watch URLs, GUIDs), but the discovery walk repopulates the unified cache before returning — any
-    // subsequent tune resolves from the freshly populated cache as normal. If a discovery is already in flight, abort it first — clearing the cache while a
+    // against fresh data. This also resets warm tuning state (watch URLs, GUIDs), but the discovery walk repopulates the unified cache before returning - any
+    // subsequent tune resolves from the freshly populated cache as normal. If a discovery is already in flight, abort it first - clearing the cache while a
     // discovery is progressively populating it would corrupt its state.
     const lineup = req.query.lineup === "true";
     const refresh = req.query.refresh === "true";
@@ -400,7 +400,7 @@ export function setupServicesEndpoint(app: Express): void {
       inflight.set(slug, entry);
     }
 
-    // Await the in-flight discovery. If it was aborted by a refresh=true request, a new discovery should now be in the map — retry against that one. The caller
+    // Await the in-flight discovery. If it was aborted by a refresh=true request, a new discovery should now be in the map - retry against that one. The caller
     // doesn't know or care about the abort; they just want channels. Only DiscoveryAbortError triggers a retry; genuine failures are reported immediately.
     for(;;) {
 

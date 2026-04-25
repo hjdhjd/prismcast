@@ -49,9 +49,9 @@ export interface M3UParseResult {
  * @returns A lowercase, hyphen-separated key suitable for URLs.
  *
  * Examples:
- * - "CNN Live!" → "cnn-live"
- * - "BBC News 24/7" → "bbc-news-247"
- * - "  Spaces  Everywhere  " → "spaces-everywhere"
+ * - "CNN Live!" -> "cnn-live"
+ * - "BBC News 24/7" -> "bbc-news-247"
+ * - "  Spaces  Everywhere  " -> "spaces-everywhere"
  */
 export function generateChannelKey(name: string): string {
 
@@ -68,23 +68,18 @@ function extractAttribute(line: string, attribute: string): Nullable<string> {
 
   // Match attribute="value" (quoted).
   const quotedPattern = new RegExp(attribute + "=\"([^\"]*)\"", "i");
-  const quotedMatch = line.match(quotedPattern);
+  const quotedValue = line.match(quotedPattern)?.[1];
 
-  if(quotedMatch) {
+  if(quotedValue !== undefined) {
 
-    return quotedMatch[1];
+    return quotedValue;
   }
 
   // Match attribute=value (unquoted, ends at space or comma).
   const unquotedPattern = new RegExp(attribute + "=([^\\s,\"]+)", "i");
-  const unquotedMatch = line.match(unquotedPattern);
+  const unquotedValue = line.match(unquotedPattern)?.[1];
 
-  if(unquotedMatch) {
-
-    return unquotedMatch[1];
-  }
-
-  return null;
+  return unquotedValue ?? null;
 }
 
 /**
@@ -157,10 +152,10 @@ export function parseM3U(content: string): M3UParseResult {
 
   let pendingExtinf: Nullable<{ lineNumber: number; name: string; stationId?: string }> = null;
 
-  for(let i = 0; i < lines.length; i++) {
+  for(const [ i, rawLine ] of lines.entries()) {
 
     const lineNumber = i + 1;
-    const line = lines[i].trim();
+    const line = rawLine.trim();
 
     // Skip empty lines and comments (except #EXTINF).
     if((line.length === 0) || ((line.startsWith("#")) && !line.startsWith("#EXTINF"))) {

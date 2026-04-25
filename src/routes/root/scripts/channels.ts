@@ -82,7 +82,7 @@ export function generateChannelsSubtabScript(): string {
     // Pending import data stored while the import preview modal is open.
     "  let pendingImportData = null;",
 
-    // Import a service pack via file picker — shows a preview modal before importing.
+    // Import a service pack via file picker - shows a preview modal before importing.
     "  window.startServiceImport = () => {",
     "    const input = document.createElement('input');",
     "    input.type = 'file';",
@@ -472,7 +472,7 @@ export function generateChannelsSubtabScript(): string {
     "    if(hideInput) hideInput.addEventListener('input', function() { s.hideSelector = this.value; });",
 
     // Step 4: add-domain button and domain inputs with auto-fill for service tag. Per-iteration let bindings from for...of.entries() capture the correct index
-    // in each closure — no IIFE wrapper needed.
+    // in each closure - no IIFE wrapper needed.
     "    const addDomainBtn = document.getElementById('wizard-add-domain-btn');",
     "    if(addDomainBtn) addDomainBtn.addEventListener('click', addWizardDomain);",
     "    for(const [ idx, row ] of document.querySelectorAll('.wizard-domain-row').entries()) {",
@@ -869,7 +869,7 @@ export function generateChannelsSubtabScript(): string {
     "    document.getElementById('browse-content').innerHTML = html;",
     "    browseWizard.setTitle('Browse Channels <span class=\"browse-header-count\">(' + esc(label) + ' \\u2014 ' + channels.length + ' channels)</span>');",
 
-    // Set indeterminate state on checkboxes for channels that exist via a different service. The indeterminate property cannot be set via HTML attributes —
+    // Set indeterminate state on checkboxes for channels that exist via a different service. The indeterminate property cannot be set via HTML attributes -
     // it must be set via JavaScript after the elements are in the DOM.
     "    const switchCbs = document.querySelectorAll('.browse-channel-cb[data-original=\"switch\"]');",
     "    for(const sc of switchCbs) sc.indeterminate = true;",
@@ -1319,7 +1319,7 @@ export function generateChannelsSubtabScript(): string {
     "    }",
     "  };",
 
-    // Tag Column Filter — client-side view filter that shows/hides rows based on their data-channel-tags attribute. Transient (not persisted, resets on page load).
+    // Tag Column Filter - client-side view filter that shows/hides rows based on their data-channel-tags attribute. Transient (not persisted, resets on page load).
     // All tag checkboxes start checked (show all). Unchecking a tag hides rows that don't have ANY of the remaining checked tags.
 
     "  window.applyTagColumnFilter = () => {",
@@ -1395,7 +1395,7 @@ export function generateChannelsSubtabScript(): string {
     "    if(code) { copyToClipboard(code.textContent, 'Playlist URL copied to clipboard.'); }",
     "  };",
 
-    // Inline tag rename — replaces the tag pill with an input field. The original span is saved so it can be restored on cancel or error without a page reload.
+    // Inline tag rename - replaces the tag pill with an input field. The original span is saved so it can be restored on cancel or error without a page reload.
     "  window.startTagRename = (span, oldTag) => {",
     "    const originalSpan = span;",
     "    const input = document.createElement('input');",

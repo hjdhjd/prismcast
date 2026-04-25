@@ -12,7 +12,7 @@ import { getResumeFilePath } from "../config/paths.js";
 /* When PrismCast restarts mid-recording, HLS media sequences reset to 0. Channels DVR detects "Playlist reset to a lower sequence" and produces unpredictable
  * timestamps in the recording. This module persists final sequence numbers at shutdown and seeds from them on restart so sequences always move forward.
  *
- * The data is only relevant for ~90 seconds after shutdown — just long enough for Channels DVR to reconnect. The file is written once at shutdown and deleted
+ * The data is only relevant for ~90 seconds after shutdown - just long enough for Channels DVR to reconnect. The file is written once at shutdown and deleted
  * immediately after loading at the next startup.
  */
 
@@ -68,7 +68,7 @@ export interface ResumeData {
 const resumeMap = new Map<string, ResumeEntry>();
 
 /**
- * Loads resume state from disk into memory. Called once at startup after config loading. The file is deleted immediately after reading — it only needs to exist
+ * Loads resume state from disk into memory. Called once at startup after config loading. The file is deleted immediately after reading - it only needs to exist
  * between shutdown and the next startup. If the file is missing or corrupt, the map stays empty and all streams start at 0 (today's behavior).
  */
 export function loadResumeState(): void {
@@ -82,7 +82,7 @@ export function loadResumeState(): void {
     raw = fs.readFileSync(filePath, "utf-8");
   } catch {
 
-    // File does not exist — clean start.
+    // File does not exist - clean start.
     return;
   }
 
@@ -92,7 +92,7 @@ export function loadResumeState(): void {
     fs.unlinkSync(filePath);
   } catch {
 
-    // Non-fatal — the file will be overwritten on next shutdown.
+    // Non-fatal - the file will be overwritten on next shutdown.
   }
 
   let parsed: Record<string, ResumeEntryJSON>;
@@ -173,7 +173,7 @@ export function getResumeSegmentIndex(channelName: string): Nullable<number> {
 /**
  * Reads resume data for a channel without removing it from the map. Returns the seeding parameters if the entry exists and is within TTL, or null if no resume data
  * is available. The caller must call deleteResumeData() after successfully using the data to prevent double-consumption. This two-step pattern ensures resume data
- * survives if segmenter creation fails — the next stream start can retry with the same resume state instead of starting from scratch.
+ * survives if segmenter creation fails - the next stream start can retry with the same resume state instead of starting from scratch.
  * @param channelName - The channel key to look up.
  * @returns Resume data for seeding the segmenter, or null.
  */

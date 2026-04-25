@@ -33,14 +33,14 @@ function clearFoxCache(): void {
 /**
  * Fox.com grid strategy: finds a channel in the non-virtualized guide grid at fox.com/live/channels by matching the station code (button title attribute) on
  * GuideChannelLogo buttons, with fallback to internal station codes from data-content-impression-id attributes. All ~15 channels are present in the DOM
- * simultaneously once the grid renders dynamically (~4.5s after page load). Clicking the logo button is an SPA state transition — the Bitmovin player at the
+ * simultaneously once the grid renders dynamically (~4.5s after page load). Clicking the logo button is an SPA state transition - the Bitmovin player at the
  * top of the page switches channels without navigation, destroying and recreating its video element with a new blob src.
  *
  * The selection process:
  * 1. Poll via waitForFunction until the target appears as either a button title (e.g., FOXD2C, FNC) or an impression ID prefix (local affiliate call sign).
  * 2. Scan all channel rows, checking button title first, then impression ID prefix for fallback matching.
  * 3. Case-insensitive match against the channelSelector.
- * 4. On match, call logoButton.click() directly via DOM — coordinate-based clicking is not possible because the GuideProgramHero (sticky, z-40) overlays the
+ * 4. On match, call logoButton.click() directly via DOM - coordinate-based clicking is not possible because the GuideProgramHero (sticky, z-40) overlays the
  *    guide grid and intercepts all mouse events at the element's coordinates.
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile with a non-null channelSelector (station code like "FOXD2C" or a local affiliate call sign).
@@ -72,7 +72,7 @@ async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
           // Fallback: check the first data-content-impression-id prefix. The format is "{PREFIX}-program-..." where PREFIX is the internal station code.
           const impressionDiv = c.querySelector("[data-content-impression-id]");
           const impressionId = impressionDiv?.getAttribute("data-content-impression-id") ?? "";
-          const prefix = impressionId.split("-program-")[0].toLowerCase();
+          const prefix = (impressionId.split("-program-")[0] ?? "").toLowerCase();
 
           return (prefix.length > 0) && (prefix === codeLower);
         });
@@ -101,7 +101,7 @@ async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
 
           const impressionDiv = container.querySelector("[data-content-impression-id]");
           const impressionId = (impressionDiv?.getAttribute("data-content-impression-id") ?? "");
-          const prefix = impressionId.split("-program-")[0].trim();
+          const prefix = (impressionId.split("-program-")[0] ?? "").trim();
 
           if((prefix.length > 0) && (prefix !== title)) {
 
@@ -171,7 +171,7 @@ async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
 
       const impressionDiv = container.querySelector("[data-content-impression-id]");
       const impressionId = impressionDiv?.getAttribute("data-content-impression-id") ?? "";
-      const prefix = impressionId.split("-program-")[0].toLowerCase();
+      const prefix = (impressionId.split("-program-")[0] ?? "").toLowerCase();
 
       if((prefix.length > 0) && (prefix === codeLower)) {
 
@@ -217,7 +217,7 @@ async function readFoxChannels(page: Page): Promise<FoxChannelInfo[]> {
       // Extract the internal station code from the first data-content-impression-id. Format: "{PREFIX}-program-..." where PREFIX is the internal code.
       const impressionDiv = container.querySelector("[data-content-impression-id]");
       const impressionId = (impressionDiv?.getAttribute("data-content-impression-id") ?? "");
-      const internalCode = impressionId.split("-program-")[0].trim();
+      const internalCode = (impressionId.split("-program-")[0] ?? "").trim();
 
       // Locked channels have a lock-icon SVG overlaid on the first program thumbnail. These require TV provider authentication (add-on tier).
       const locked = container.querySelector("[data-testid=\"lock-icon\"]") !== null;
@@ -246,7 +246,7 @@ async function discoverFoxChannels(page: Page): Promise<DiscoveredChannel[]> {
   }
 
   // Wait for at least one GuideChannelContainer to confirm the guide grid has rendered. The route handler navigates with networkidle2, which ensures all API data
-  // has arrived before this function is called — no additional network idle wait is needed here.
+  // has arrived before this function is called - no additional network idle wait is needed here.
   try {
 
     await page.waitForSelector("[data-testid=\"GuideChannelContainer\"]", { timeout: CONFIG.streaming.videoTimeout });
@@ -257,7 +257,7 @@ async function discoverFoxChannels(page: Page): Promise<DiscoveredChannel[]> {
 
   const foxChannels = await readFoxChannels(page);
 
-  // Do not cache empty results — leave null so subsequent calls retry the full walk. Empty results can indicate no TV provider login.
+  // Do not cache empty results - leave null so subsequent calls retry the full walk. Empty results can indicate no TV provider login.
   if(foxChannels.length === 0) {
 
     return [];
@@ -297,7 +297,7 @@ export const foxProvider: ProviderModule = {
 
   // Profile for Fox.com live channel guide grid. The guide page presents all channels in a non-virtualized grid with station codes in the channel logo button
   // titles (e.g., FOXD2C, FNC, FS1). The channelSelector property matches against these station codes. Clicking the channel logo button is an SPA state
-  // transition — the player at the top of the page switches channels without navigation. The grid renders dynamically after page load, so the strategy waits
+  // transition - the player at the top of the page switches channels without navigation. The grid renders dynamically after page load, so the strategy waits
   // for GuideChannelContainer elements before scanning.
   profile: {
 

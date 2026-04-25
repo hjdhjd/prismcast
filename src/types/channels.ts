@@ -87,7 +87,7 @@ export interface Channel {
 
   // The canonical channel key that this entry is a variant of. Present on service variant entries (e.g., "espn-hulu" has canonicalKey "espn"). Set by the
   // flattener for predefined channels, by the browse modal for user channels, and by the one-time migration for pre-existing user channels. This is the single
-  // source of truth for variant relationships — buildServiceGroups groups channels by this field. Absent on canonical entries and standalone channels.
+  // source of truth for variant relationships - buildServiceGroups groups channels by this field. Absent on canonical entries and standalone channels.
   canonicalKey?: string;
 
   // Numeric channel number for guide matching. When set, this number is used as the channel-number in the M3U playlist for Channels DVR and as the GuideNumber in
@@ -226,7 +226,7 @@ export interface ChannelDelta {
 
 /**
  * What gets stored in channels.json per key. For user-defined channels (no predefined equivalent), this is a full Channel with a required url. For overrides of
- * predefined channels, this can be a ChannelDelta with only the differing fields. Legacy full-override entries (from before the delta model) are also valid — they
+ * predefined channels, this can be a ChannelDelta with only the differing fields. Legacy full-override entries (from before the delta model) are also valid - they
  * are just deltas that happen to override every field.
  */
 export type StoredChannel = Channel | ChannelDelta;

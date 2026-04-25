@@ -16,7 +16,7 @@ import { getUserDomains } from "./userProfiles.js";
  *    are shown in UI dropdowns and the service wizard. Profiles can inherit from other profiles using the "extends" property.
  *
  * 1b. PROVIDER_PROFILES: Internal profiles tied to specific provider modules (Hulu, YouTube TV, Sling, etc.). These have channel selection strategies and
- *     selectors tightly coupled to a streaming service's DOM structure. They are never shown in user-facing profile lists — users targeting these services should
+ *     selectors tightly coupled to a streaming service's DOM structure. They are never shown in user-facing profile lists - users targeting these services should
  *     use the predefined channels directly. Provider profiles can extend general profiles (e.g., fullscreenApi) and profile resolution checks both tables.
  *
  * 2. DOMAIN_CONFIG: A mapping from domain patterns to site profiles and service display names. When streaming a URL, we check if it matches any known domain and
@@ -59,7 +59,7 @@ import { getUserDomains } from "./userProfiles.js";
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
  *
- * Provider profiles (internal, not user-selectable — in PROVIDER_PROFILES table or registered by provider modules):
+ * Provider profiles (internal, not user-selectable - in PROVIDER_PROFILES table or registered by provider modules):
  * - coxStream, directvStream, disneyNow, disneyPlus, foxLive, hboMax, huluLive, slingLive, spectrum, xfinityStream, youtubeTV
  *
  * Each profile includes a description field documenting its purpose. This is metadata only - it's stripped during profile resolution and exists purely for
@@ -69,7 +69,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
   // Profile for multi-channel live TV pages that present a shelf of live channel tiles where clicking a tile auto-plays the selected channel. Uses the fullscreen
   // API and multi-video selection to find the actively playing stream after channel selection. Does not use iframe handling or network idle wait because these sites
-  // serve video directly in the main page and have persistent connections that prevent network idle. No playSelector — tile click is the final action.
+  // serve video directly in the main page and have persistent connections that prevent network idle. No playSelector - tile click is the final action.
   apiMultiVideo: {
 
     category: "multiChannel",
@@ -232,7 +232,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 /* Provider profiles are internal profiles tied to specific provider modules. They have channel selection strategies, selectors, and flags tightly coupled to a
  * specific streaming service's DOM structure and are not user-selectable. They live in a separate table from SITE_PROFILES so that UI-facing code (profile
  * dropdowns, service wizard, profile validation) can show only general-purpose profiles without maintaining an exclusion list. The extends mechanism works across
- * both tables — a provider profile can extend a general profile (e.g., fullscreenApi) and profile resolution checks both tables transparently.
+ * both tables - a provider profile can extend a general profile (e.g., fullscreenApi) and profile resolution checks both tables transparently.
  */
 export const PROVIDER_PROFILES: Record<string, SiteProfile> = {
 
@@ -249,7 +249,7 @@ export const PROVIDER_PROFILES: Record<string, SiteProfile> = {
 
   // Profile for Disney+ live channels. The live channel shelf displays tiles with network logos. Clicking a tile opens an entity modal with a "WATCH LIVE" button
   // (playSelector) that must be clicked to start the stream. Extends fullscreenApi for requestFullscreen() behavior. The player uses Web Components with Shadow DOM
-  // for its controls — the native <toggle-fullscreen> button cannot be clicked by Puppeteer (Shadow DOM boundary), so fullscreen is handled entirely by the inherited
+  // for its controls - the native <toggle-fullscreen> button cannot be clicked by Puppeteer (Shadow DOM boundary), so fullscreen is handled entirely by the inherited
   // requestFullscreen() API. The controls toolbar is hidden via hideSelector to prevent it from appearing in the captured stream. Uses selectReadyVideo because the
   // page has multiple video elements (previews, ads, main content).
   disneyPlus: {
@@ -271,11 +271,11 @@ export const PROVIDER_PROFILES: Record<string, SiteProfile> = {
 
 /* This mapping associates domain keys with site profiles, service display names, and service filter tags. Most keys are concise second-level domains
  * (e.g., "nbc.com", "foodnetwork.com") matching the output of extractDomain(). Keys can also be full hostnames (e.g., "tv.youtube.com") for subdomain-specific
- * overrides — getDomainConfig() tries the full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com"
+ * overrides - getDomainConfig() tries the full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com"
  * when the URL matches.
  *
  * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains without a service entry will display the
- * concise domain string (e.g., "hulu.com") in the UI. Entries with a serviceTag participate in the service filter system — channels whose canonical URL maps to
+ * concise domain string (e.g., "hulu.com") in the UI. Entries with a serviceTag participate in the service filter system - channels whose canonical URL maps to
  * a tagged domain are identified as belonging to that subscription service rather than being tagged as "direct" (free network sites).
  */
 export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
@@ -342,7 +342,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
  */
 export function getDomainConfig(url: string): DomainConfig | undefined {
 
-  // User domain mappings take precedence over built-in mappings. The lookup order is: user full hostname → built-in full hostname → user concise domain →
+  // User domain mappings take precedence over built-in mappings. The lookup order is: user full hostname -> built-in full hostname -> user concise domain ->
   // built-in concise domain. This allows users to override specific subdomain mappings or base domain mappings independently.
   const userDomains = getUserDomains();
 
@@ -367,7 +367,7 @@ export function getDomainConfig(url: string): DomainConfig | undefined {
     }
   } catch {
 
-    // Invalid URL — fall through to concise domain lookup.
+    // Invalid URL - fall through to concise domain lookup.
   }
 
   const conciseDomain = extractDomain(url);
@@ -389,7 +389,7 @@ const providerModuleProfiles = new Map<string, SiteProfile>();
 
 /**
  * Registers a provider module's profile. Called by the coordinator in channelSelection.ts at module evaluation time to make provider profiles available to the
- * profile resolution system. This avoids circular dependencies — sites.ts doesn't need to import from browser/ modules.
+ * profile resolution system. This avoids circular dependencies - sites.ts doesn't need to import from browser/ modules.
  * @param name - The profile name (e.g., "huluLive", "slingLive").
  * @param profile - The SiteProfile definition.
  */
@@ -405,7 +405,7 @@ export function registerProviderModuleProfile(name: string, profile: SiteProfile
 
 /**
  * Looks up a built-in profile by name, checking the general SITE_PROFILES table, the static PROVIDER_PROFILES table, and dynamically registered provider module
- * profiles. This is the single lookup function for all built-in profile resolution — callers should use this instead of accessing any table directly.
+ * profiles. This is the single lookup function for all built-in profile resolution - callers should use this instead of accessing any table directly.
  * @param name - The profile name to look up.
  * @returns The matching SiteProfile, or undefined if not found in any source.
  */

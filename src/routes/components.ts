@@ -554,13 +554,13 @@ export function generateWizardModal(options: WizardModalOptions): string {
 
     lines.push("<div class=\"wizard-steps\" id=\"" + escapeHtml(resolvedStepsId) + "\">");
 
-    for(let i = 0; i < steps.length; i++) {
+    for(const [ i, step ] of steps.entries()) {
 
       const stepClass = (i === 0) ? "wizard-step active" : "wizard-step";
 
       lines.push("<div class=\"" + stepClass + "\" data-step=\"" + String(i + 1) + "\">" +
         "<span class=\"step-circle\">" + String(i + 1) + "</span>" +
-        "<span class=\"step-label\">" + escapeHtml(steps[i]) + "</span></div>");
+        "<span class=\"step-label\">" + escapeHtml(step) + "</span></div>");
 
       // Connecting line between steps. Omitted after the last step.
       if(i < steps.length - 1) {

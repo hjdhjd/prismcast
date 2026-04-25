@@ -4,7 +4,7 @@
  */
 import { DEFAULTS, readConfig } from "../config/userConfig.js";
 import { SERVICE_NAME, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getServiceFilePath } from "../utils/platform.js";
-import { collectServiceEnvironment, detectStalePaths, getServiceGenerator, getServicePaths } from "./generators.js";
+import { buildServiceDefinition, detectStalePaths, getServiceGenerator, getServicePaths } from "./generators.js";
 import { print, printError } from "../utils/cliOutput.js";
 import type { Nullable } from "../types/index.js";
 import type { ServiceGenerator } from "./generators.js";
@@ -148,15 +148,11 @@ export async function handleInstall(force: boolean): Promise<number> {
   print("Installing " + SERVICE_NAME + " service...");
   print("");
 
-  // Collect environment variables to persist in the service file.
-  const envVars = collectServiceEnvironment();
-
-  // Generate and install the service.
+  // Install the service. Each generator takes a structured ServiceDefinition and decides how to realize it on its platform (launchd plist, systemd unit, or
+  // Windows Task Scheduler task).
   try {
 
-    const content = generator.generate({ envVars });
-
-    await generator.install(content);
+    await generator.install(buildServiceDefinition());
   } catch(error) {
 
     printError("Error: Failed to install service.");
@@ -284,7 +280,7 @@ export async function handleUninstall(): Promise<number> {
 async function restartService(generator: ServiceGenerator, action: string): Promise<number> {
 
   // Compare the paths in the existing service file against the current runtime paths to determine whether regeneration is needed. All supported platforms (launchd
-  // plist, systemd unit, Windows batch script) store paths in their service files, so getServicePaths() only returns null for corrupt or unparseable files.
+  // plist, systemd unit, Windows PowerShell launcher) store paths in their service files, so getServicePaths() only returns null for corrupt or unparseable files.
   const existingPaths = getServicePaths();
   const currentNodePath = getNodeExecutablePath();
   const currentEntryPoint = getPrismCastEntryPoint();
@@ -312,10 +308,7 @@ async function restartService(generator: ServiceGenerator, action: string): Prom
 
     try {
 
-      const envVars = collectServiceEnvironment();
-      const content = generator.generate({ envVars });
-
-      await generator.install(content);
+      await generator.install(buildServiceDefinition());
     } catch(error) {
 
       printError("Error: Failed to regenerate service file.");
@@ -331,7 +324,7 @@ async function restartService(generator: ServiceGenerator, action: string): Prom
     print("Updated service file with current paths.");
   } else {
 
-    // Paths match — normal start cycle without file rewrite.
+    // Paths match - normal start cycle without file rewrite.
     print("Starting " + SERVICE_NAME + " service...");
 
     try {
@@ -431,7 +424,7 @@ export async function handleStop(): Promise<number> {
     await generator.stop();
   } catch(error) {
 
-    // The stop call may fail if the service wasn't actually loaded or running. This is expected — each platform's stop() can throw when there's nothing to stop.
+    // The stop call may fail if the service wasn't actually loaded or running. This is expected - each platform's stop() can throw when there's nothing to stop.
     // We log the error but don't treat it as a failure since the end state (service stopped) is what we wanted.
     if(error instanceof Error) {
 
@@ -479,7 +472,7 @@ export async function handleRestart(): Promise<number> {
     await generator.stop();
   } catch {
 
-    // The service may not be running or loaded. This is fine — we just need it stopped before restart.
+    // The service may not be running or loaded. This is fine - we just need it stopped before restart.
   }
 
   print("");
@@ -518,7 +511,7 @@ export async function handleStatus(): Promise<number> {
   print("Installed:       " + (isInstalled ? "Yes" : "No"));
   print("Running:         " + (isRunning ? "Yes" : "No"));
 
-  // Warn about stale paths if the service is installed. This is the most common scenario users encounter after upgrading — the status shows "not running" with no
+  // Warn about stale paths if the service is installed. This is the most common scenario users encounter after upgrading - the status shows "not running" with no
   // explanation. The warning gives them a clear next step.
   if(isInstalled) {
 

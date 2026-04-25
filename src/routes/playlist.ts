@@ -27,7 +27,7 @@ interface IncludeExcludeFilter {
 
 /**
  * Parses and validates an include/exclude filter query parameter. The parameter is a comma-separated list of values with optional `-` prefix for exclusion mode.
- * All values must be either include (no prefix) or exclude (`-` prefix) — mixing is not allowed. Values are case-insensitive and validated against a known set.
+ * All values must be either include (no prefix) or exclude (`-` prefix) - mixing is not allowed. Values are case-insensitive and validated against a known set.
  * @param param - The raw query parameter string (e.g., "sports,news" or "-kids").
  * @param entityName - Human-readable name for error messages (e.g., "service tag", "tag").
  * @param knownValues - Array of valid values to validate against.
@@ -58,7 +58,7 @@ function parseIncludeExcludeFilter(param: string, entityName: string,
     }
   }
 
-  // Reject mixed mode — all tokens must be either include or exclude.
+  // Reject mixed mode - all tokens must be either include or exclude.
   if((excludeTokens.length > 0) && (includeTokens.length > 0)) {
 
     return { error: "Cannot mix include and exclude " + entityName + " filters. Use either \"a,b\" (include) or \"-a,-b\" (exclude).", validTags: [] };
@@ -120,7 +120,7 @@ export function resolveBaseUrl(req: Request): string {
   // Check X-Forwarded-Host first (may contain multiple hosts if proxied through multiple layers, take the first one). Then fall back to the standard Host header,
   // and finally to the configured server settings.
   const forwardedHost = req.get("x-forwarded-host");
-  const host = forwardedHost ? forwardedHost.split(",")[0].trim() : req.get("host");
+  const host = forwardedHost ? (forwardedHost.split(",")[0] ?? "").trim() : req.get("host");
   const fallbackHost = CONFIG.server.host + ":" + String(CONFIG.server.port);
   const resolvedHost = host ?? fallbackHost;
 
@@ -148,12 +148,12 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
   const sortField = sort ?? CONFIG.channels.channelSortField;
   const sortDir = direction ?? CONFIG.channels.channelSortDirection;
 
-  // Sort channel keys using the specified (or saved) sort field and direction. Default is name ascending.
-  const channelNames = Object.keys(channels).sort((a, b) => compareChannelSort(channels[a], a, channels[b], b, sortField, sortDir));
+  // Sort channel entries using the specified (or saved) sort field and direction. Default is name ascending. Iterating entries rather than keys keeps channel
+  // references fully typed throughout the loop, avoiding repeated Record lookups that noUncheckedIndexedAccess flags as possibly-undefined.
+  const channelEntries = Object.entries(channels)
+    .sort(([ keyA, channelA ], [ keyB, channelB ]) => compareChannelSort(channelA, keyA, channelB, keyB, sortField, sortDir));
 
-  for(const name of channelNames) {
-
-    const channel = channels[name];
+  for(const [ name, channel ] of channelEntries) {
 
     // Apply the service filter if specified.
     if(serviceFilter) {
@@ -169,7 +169,7 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
       }
     }
 
-    // Compute effective tags once per channel — used for both the tag filter check and M3U attribute generation. Tags are intersected with the active vocabulary
+    // Compute effective tags once per channel - used for both the tag filter check and M3U attribute generation. Tags are intersected with the active vocabulary
     // so deleted tags are invisible.
     const effectiveTags = getChannelEffectiveTags(channel);
 

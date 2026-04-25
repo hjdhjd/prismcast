@@ -74,7 +74,7 @@ async function discoverGuideChannels(page: Page): Promise<RawSpectrumChannel[]> 
     const results: RawSpectrumChannel[] = [];
     const seenTmsids = new Set<string>();
 
-    // Build a channel-index to rowheader display name map from the program grid section. Rowheaders use the format "Channel {number} {display name}" — we
+    // Build a channel-index to rowheader display name map from the program grid section. Rowheaders use the format "Channel {number} {display name}" - we
     // extract just the display name portion by stripping the "Channel {number} " prefix.
     const rowheaderMap = new Map<string, string>();
 
@@ -87,7 +87,7 @@ async function discoverGuideChannels(page: Page): Promise<RawSpectrumChannel[]> 
       // Strip the "Channel {number} " prefix to get the display name. The prefix always follows this format.
       const prefixMatch = /^Channel \d+ (.+)$/.exec(text);
 
-      if(prefixMatch) {
+      if(prefixMatch?.[1]) {
 
         rowheaderMap.set(index, prefixMatch[1]);
       }
@@ -111,16 +111,14 @@ async function discoverGuideChannels(page: Page): Promise<RawSpectrumChannel[]> 
 
       // Extract the Gracenote station ID from the logo image URL. The format is: /guide/{tmsid}?width=50&sourceType=colorhybrid.
       const src = logoImg.getAttribute("src") ?? "";
-      const tmsidMatch = /\/guide\/(\d+)\?/.exec(src);
+      const tmsid = /\/guide\/(\d+)\?/.exec(src)?.[1];
 
-      if(!tmsidMatch) {
+      if(!tmsid) {
 
         continue;
       }
 
-      const tmsid = tmsidMatch[1];
-
-      // Deduplicate by tmsid — first occurrence wins (lowest channel number). This eliminates legacy mirror ranges (1000+/1200+) that share the same tmsid
+      // Deduplicate by tmsid - first occurrence wins (lowest channel number). This eliminates legacy mirror ranges (1000+/1200+) that share the same tmsid
       // with primary entries but have no program listing data.
       if(seenTmsids.has(tmsid)) {
 
@@ -149,7 +147,7 @@ async function discoverGuideChannels(page: Page): Promise<RawSpectrumChannel[]> 
 /**
  * Attempts to recover from a degraded Spectrum guide state by clearing cached site data via CDP and reloading the guide page. This targets a failure mode where
  * the guide grid container renders but channel entries are not populated, which can be caused by stale AngularJS template or API response caches. Cookies and
- * login session state are preserved — only caching layers are cleared.
+ * login session state are preserved - only caching layers are cleared.
  * @param page - The Puppeteer page object.
  * @returns Discovered channels after recovery, or an empty array if recovery failed.
  */
@@ -198,7 +196,7 @@ async function attemptGuideRecovery(page: Page): Promise<RawSpectrumChannel[]> {
 
   if(channels.length > 0) {
 
-    LOG.info("Spectrum TV guide recovery succeeded — discovered %s channels after clearing site data.", channels.length);
+    LOG.info("Spectrum TV guide recovery succeeded - discovered %s channels after clearing site data.", channels.length);
   } else {
 
     LOG.warn("Spectrum TV guide still empty after clearing site data.");
@@ -230,9 +228,9 @@ function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
     let affiliate: string | undefined;
     let networkKey: string | undefined;
 
-    if(parenthetical) {
+    const preName = parenthetical?.[1];
 
-      const preName = parenthetical[1];
+    if(preName) {
 
       // Check if this is a broadcast affiliate (e.g., "NBC (WFLA) HD") or a subchannel (e.g., "Buzzr (WTVT)").
       if(BROADCAST_NETWORKS.has(preName.toLowerCase())) {
@@ -242,12 +240,12 @@ function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
         networkKey = preName.toLowerCase();
       } else {
 
-        // Subchannel or non-broadcast parenthetical — use the pre-parenthetical name as channelSelector.
+        // Subchannel or non-broadcast parenthetical - use the pre-parenthetical name as channelSelector.
         channelSelector = preName;
       }
     } else {
 
-      // Cable channel — use the stripped display name as channelSelector.
+      // Cable channel - use the stripped display name as channelSelector.
       channelSelector = stripped;
     }
 
@@ -271,7 +269,7 @@ function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
   // a cable channel named "Fox" would keep its key over a "FOX (WTVT)" affiliate entry).
   for(const { entry, networkKey, strippedKey } of entries) {
 
-    // Add stripped display name key if not already taken. First-write wins — if two channels strip to the same name, the first (lower channel number) keeps it.
+    // Add stripped display name key if not already taken. First-write wins - if two channels strip to the same name, the first (lower channel number) keeps it.
     if(!spectrumChannelCache.has(strippedKey)) {
 
       spectrumChannelCache.set(strippedKey, entry);
@@ -289,12 +287,12 @@ function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
  * Looks up a channel in the unified cache using tiered matching logic:
  *
  * 1. Exact match: cache key equals the lowercased input (matches callsigns like "espnhd" and stripped names like "espn" and network names like "nbc").
- * 2. HD/DT suffix tolerance: input + "hd" or input + "dt" matches a cache key (e.g., "espn" → "espnhd", "wfla" → "wfladt").
+ * 2. HD/DT suffix tolerance: input + "hd" or input + "dt" matches a cache key (e.g., "espn" -> "espnhd", "wfla" -> "wfladt").
  * 3. Display name iteration: iterate all cache entries, check if discovered.name (lowercased) equals input. Catches long display names like "Discovery Channel"
  *    when only the callsign-derived key was cached.
  *
  * When a non-exact match succeeds, the result is cached under the input key for O(1) lookup on subsequent calls. This function doubles as the resolveDirectUrl
- * hook — after the first tune populates the cache via channel discovery, every subsequent Spectrum tune resolves here without loading the guide page.
+ * hook - after the first tune populates the cache via channel discovery, every subsequent Spectrum tune resolves here without loading the guide page.
  * @param channelName - The channelSelector value (e.g., "ESPN", "NBC", "Discovery Channel").
  * @returns The matching cache entry or null if no match is found.
  */
@@ -356,7 +354,7 @@ function findSpectrumChannel(channelName: string): Nullable<SpectrumChannelEntry
 
 /**
  * Invalidates the cached Spectrum channel entry for the given channel selector. Called when a cached URL fails to produce a working stream. Deletes the
- * channelSelector key — the original keys from channel discovery are left intact and will be refreshed on the next strategy run when the guide page is reloaded.
+ * channelSelector key - the original keys from channel discovery are left intact and will be refreshed on the next strategy run when the guide page is reloaded.
  * @param channelSelector - The channel selector string to invalidate.
  */
 function invalidateSpectrumDirectUrl(channelSelector: string): void {
@@ -413,7 +411,7 @@ function buildSpectrumDiscoveredChannels(): DiscoveredChannel[] {
  * 3. If no channels are discovered (degraded guide state), attempt recovery by clearing cached site data via CDP and reloading.
  * 4. Populate the unified channel cache with all discovered channels.
  * 5. Look up the target channel using tiered matching (exact, suffix tolerance, display name) against the cache.
- * 6. Navigate to the matched watch URL via page.goto() — direct URL navigation with no clicking.
+ * 6. Navigate to the matched watch URL via page.goto() - direct URL navigation with no clicking.
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile with a non-null channelSelector (channel name, e.g., "ESPN", "CNN", "NBC").
  * @returns Result object with success status and optional failure reason.
@@ -435,7 +433,7 @@ async function spectrumGridStrategy(page: Page, profile: ChannelSelectionProfile
   // Discover all channels from the guide grid.
   let allChannels = await discoverGuideChannels(page);
 
-  // If the guide loaded but no channels were discovered, the guide is in a degraded state — the grid container rendered but channel entries were not populated.
+  // If the guide loaded but no channels were discovered, the guide is in a degraded state - the grid container rendered but channel entries were not populated.
   // This can happen when stale AngularJS template or API response caches become inconsistent. Track consecutive occurrences and attempt recovery by clearing
   // cached site data once the threshold is reached.
   if(allChannels.length === 0) {
@@ -454,10 +452,10 @@ async function spectrumGridStrategy(page: Page, profile: ChannelSelectionProfile
   // If we still have no channels after the initial discovery and any recovery attempt, there is nothing to search or cache.
   if(allChannels.length === 0) {
 
-    return { reason: "Spectrum guide is empty — no channels were discovered.", success: false };
+    return { reason: "Spectrum guide is empty - no channels were discovered.", success: false };
   }
 
-  // Successful discovery — reset the consecutive empty counter and repopulate the unified channel cache. Always repopulate rather than skipping when the cache
+  // Successful discovery - reset the consecutive empty counter and repopulate the unified channel cache. Always repopulate rather than skipping when the cache
   // has entries, because invalidated entries need to be restored with fresh data from the guide.
   consecutiveEmptyDiscoveries = 0;
   populateSpectrumChannelCache(allChannels);
@@ -541,7 +539,7 @@ async function discoverSpectrumChannels(page: Page): Promise<DiscoveredChannel[]
 
   const allChannels = await discoverGuideChannels(page);
 
-  // Do not cache empty results — leave the cache empty so subsequent calls retry the full walk. Empty results can indicate no subscription or transient failures.
+  // Do not cache empty results - leave the cache empty so subsequent calls retry the full walk. Empty results can indicate no subscription or transient failures.
   if(allChannels.length === 0) {
 
     return [];
@@ -575,7 +573,7 @@ export const spectrumProvider: ProviderModule = {
 
   // Profile for Spectrum TV (watch.spectrum.net) live guide grid. The guide page at /guide presents all ~442 streamable channels in a non-virtualized AngularJS
   // DOM. Channel headers provide callsigns, channel numbers, and Gracenote station IDs (tmsid from logo image URLs). The spectrumGrid strategy reads all channels
-  // in a single evaluate pass, caches them, and navigates directly to /livetv?tmsid={stationId} — no clicking, no SPA state changes, no overlays. The channelSelector
+  // in a single evaluate pass, caches them, and navigates directly to /livetv?tmsid={stationId} - no clicking, no SPA state changes, no overlays. The channelSelector
   // matches against clean channel names (e.g., "ESPN", "CNN", "NBC") with callsign suffix tolerance and affiliate network name resolution.
   profile: {
 

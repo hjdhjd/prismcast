@@ -7,7 +7,7 @@ import fs from "node:fs";
 
 /* PID files provide a lightweight mechanism for tracking running processes across restarts and crashes. Each PID file stores a single process ID as a plain text
  * integer. On startup, the stored PID is checked via signal 0 to determine whether the process is still alive. Stale PID files from crashed or terminated processes
- * are handled gracefully — ENOENT on read and ESRCH on signal check are both expected and silently ignored.
+ * are handled gracefully - ENOENT on read and ESRCH on signal check are both expected and silently ignored.
  *
  * This module is intentionally synchronous. PID file operations run in contexts where the event loop may not be available (process.on("exit") handlers), so all
  * I/O uses the synchronous fs API and process.kill() for signaling.
@@ -15,7 +15,7 @@ import fs from "node:fs";
 
 /**
  * Checks whether a process with the given PID is still running. Uses the signal 0 technique: process.kill(pid, 0) throws ESRCH if the process does not exist,
- * returns successfully if it does. EPERM (permission denied) means the process exists but belongs to another user — treated as "still running" since we cannot
+ * returns successfully if it does. EPERM (permission denied) means the process exists but belongs to another user - treated as "still running" since we cannot
  * kill it anyway. This is cross-platform and works on macOS, Linux, and Windows without external tools.
  * @param pid - The process ID to check.
  * @returns True if the process is running, false if it has exited.

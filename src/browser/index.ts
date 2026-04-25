@@ -46,7 +46,7 @@ let currentBrowser: Nullable<Browser> = null;
 let chromePid: Nullable<number> = null;
 
 // Tracks whether this process has taken ownership of Chrome cleanup by running killStaleChrome() during startup. The exit handler checks this flag to avoid
-// killing Chrome that belongs to another running PrismCast instance — e.g., when a duplicate instance is rejected by the instance guard and exits before
+// killing Chrome that belongs to another running PrismCast instance - e.g., when a duplicate instance is rejected by the instance guard and exits before
 // killStaleChrome() runs in the startup sequence.
 let ownsChromeCleanup = false;
 
@@ -287,7 +287,7 @@ function saveChromePid(pid: number): void {
 
 /**
  * Loads the Chrome PID from the module-level variable (fast path) or falls back to reading the PID file on disk (crash recovery path). Returns null if no PID
- * is available — either first run or the PID file was already cleaned up.
+ * is available - either first run or the PID file was already cleaned up.
  * @returns The Chrome process ID, or null if unavailable.
  */
 function loadChromePid(): Nullable<number> {
@@ -318,16 +318,16 @@ function syncSleep(ms: number): void {
 /**
  * Ensures a clean slate for browser launch by terminating any stale Chrome processes and removing orphaned profile lock files. Chrome locks its profile directory
  * while running, and if a previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. This function uses the
- * saved Chrome PID to find and terminate the process via process.kill(), then polls for exit using signal 0. This approach is fully cross-platform — it does not
+ * saved Chrome PID to find and terminate the process via process.kill(), then polls for exit using signal 0. This approach is fully cross-platform - it does not
  * rely on Unix-only tools like pkill or pgrep.
  *
  * The termination strategy escalates from SIGTERM to SIGKILL. SIGTERM is sent first, giving Chrome up to 5 seconds to flush its profile databases (LevelDB,
  * extension state, session storage) and exit cleanly. If Chrome does not exit, SIGKILL is sent as a fallback. This escalation is critical when called from the
- * process exit handler — Chrome may be running normally (e.g., after a capture probe timeout), and an immediate SIGKILL would corrupt its profile databases,
+ * process exit handler - Chrome may be running normally (e.g., after a capture probe timeout), and an immediate SIGKILL would corrupt its profile databases,
  * poisoning the Docker volume for subsequent container restarts.
  *
  * If no PID is available (first run or clean shutdown where the PID file was already removed), process killing is skipped entirely and only lock file cleanup
- * runs. When a PID file does exist but the process is gone (Docker restart with a mounted volume — the PID belongs to the previous container's PID namespace),
+ * runs. When a PID file does exist but the process is gone (Docker restart with a mounted volume - the PID belongs to the previous container's PID namespace),
  * process.kill() throws ESRCH, which is caught gracefully.
  *
  * This is called at startup before launching the browser and from the process exit handler as a crash recovery fallback. It's safe to call even when no stale
@@ -344,7 +344,7 @@ export function killStaleChrome(): void {
     try {
 
       // Send SIGTERM first to give Chrome a chance to flush its profile databases (LevelDB, extension state, session storage) before exiting. This is critical
-      // when called from the process exit handler — Chrome may be running normally (e.g., after a capture probe timeout) and SIGKILL would corrupt its profile
+      // when called from the process exit handler - Chrome may be running normally (e.g., after a capture probe timeout) and SIGKILL would corrupt its profile
       // databases, poisoning the Docker volume for subsequent restarts.
       process.kill(pid, "SIGTERM");
 
@@ -364,7 +364,7 @@ export function killStaleChrome(): void {
           process.kill(pid, "SIGKILL");
         } catch(_error) {
 
-          // ESRCH — Chrome exited between the poll check and the kill call.
+          // ESRCH - Chrome exited between the poll check and the kill call.
         }
 
         const KILL_WAIT_MS = 2000;
@@ -376,7 +376,7 @@ export function killStaleChrome(): void {
       }
     } catch(error: unknown) {
 
-      // ESRCH means the process does not exist — expected when there are no stale processes from a clean shutdown, or in Docker where the PID belongs to a
+      // ESRCH means the process does not exist - expected when there are no stale processes from a clean shutdown, or in Docker where the PID belongs to a
       // previous container's PID namespace.
       if((error as NodeJS.ErrnoException).code !== "ESRCH") {
 
@@ -405,7 +405,7 @@ export function canCleanupChrome(): boolean {
 }
 
 /**
- * Polls until the Chrome process with the given PID has exited, or the timeout expires. Uses process.kill(pid, 0) to check process existence — throws ESRCH
+ * Polls until the Chrome process with the given PID has exited, or the timeout expires. Uses process.kill(pid, 0) to check process existence - throws ESRCH
  * when the process is gone. Between polls, sleeps synchronously using Atomics.wait() for cross-platform compatibility.
  * @param pid - The Chrome process ID to wait for.
  * @param timeoutMs - Maximum time to wait in milliseconds.
@@ -669,7 +669,7 @@ function formatGpuSuffix(gpu: GpuCapabilities): string {
     return " (GPU: " + gpu.renderer + " [" + codecs.join(", ") + "])";
   }
 
-  // No hardware encoding available. A GPU may be present for rendering but lack hardware encoding — show the GPU name without codecs if we have a non-trivial
+  // No hardware encoding available. A GPU may be present for rendering but lack hardware encoding - show the GPU name without codecs if we have a non-trivial
   // renderer string, otherwise label as software rendering.
   if(gpu.renderer && (gpu.renderer !== "unknown")) {
 
@@ -728,7 +728,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
         break;
       }
 
-      // Chrome dimensions are negative — the window manager is still transitioning. Wait briefly and remeasure.
+      // Chrome dimensions are negative - the window manager is still transitioning. Wait briefly and remeasure.
       if(attempt < 2) {
 
         LOG.debug("browser:lifecycle", "Display detection measured negative chrome dimensions (%s\u00d7%s, attempt %s). Retrying after window state settles.",
@@ -767,7 +767,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
       dimensions.chromeWidth, dimensions.chromeHeight,
       maxWidth, maxHeight);
 
-    // Detect GPU capabilities via CDP SystemInfo.getInfo. This is the authoritative source for GPU identity and hardware encoding capabilities — it runs at the
+    // Detect GPU capabilities via CDP SystemInfo.getInfo. This is the authoritative source for GPU identity and hardware encoding capabilities - it runs at the
     // browser level (no page context or secure context required) and returns the actual list of hardware-accelerated video encoding profiles.
     try {
 
@@ -786,7 +786,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
 
         // Extract the GPU renderer from the primary device. The WebGL unmasked renderer provides a richer string (includes ANGLE backend info), so we query
         // that as well and prefer it when available.
-        const deviceName = (sysInfo.gpu.devices.length > 0) ? sysInfo.gpu.devices[0].deviceString : "unknown";
+        const deviceName = sysInfo.gpu.devices[0]?.deviceString ?? "unknown";
 
         // Get the unmasked WebGL renderer for a more descriptive GPU identity string.
         const webglRenderer = await evaluateWithAbort(targetPage, (): string => {
@@ -807,11 +807,11 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
         // Extract the meaningful GPU name. ANGLE wraps the actual GPU identity: "ANGLE (Vendor, GPU Name, API Version)". The GPU name is the second
         // comma-separated field. For non-ANGLE renderers, use the device string from CDP.
         let renderer = webglRenderer;
-        const angleMatch = /^ANGLE \([^,]+, ([^,]+)/.exec(webglRenderer);
+        const anglePart = /^ANGLE \([^,]+, ([^,]+)/.exec(webglRenderer)?.[1];
 
-        if(angleMatch) {
+        if(anglePart) {
 
-          renderer = angleMatch[1].trim();
+          renderer = anglePart.trim();
 
           // Strip the "ANGLE Metal Renderer: " prefix that macOS adds.
           const metalPrefix = "ANGLE Metal Renderer: ";
@@ -826,9 +826,9 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
         }
 
         // Determine hardware encoding capability. Two paths:
-        // 1. featureStatus.video_encode === "enabled" — authoritative Chrome-level flag indicating the platform's hardware encoding framework is active
+        // 1. featureStatus.video_encode === "enabled" - authoritative Chrome-level flag indicating the platform's hardware encoding framework is active
         //    (VideoToolbox on macOS, VA-API on Linux, DXVA on Windows). When enabled, H.264 hardware encoding is always available.
-        // 2. videoEncoding profile array — lists specific hardware-accelerated codec profiles (e.g., "H264 Main", "HEVC Main"). Populated on Linux/Windows
+        // 2. videoEncoding profile array - lists specific hardware-accelerated codec profiles (e.g., "H264 Main", "HEVC Main"). Populated on Linux/Windows
         //    via VA-API/DXVA but empty on macOS where VideoToolbox doesn't enumerate through this interface.
         const videoEncodeEnabled = sysInfo.gpu.featureStatus?.video_encode === "enabled";
         const h264FromProfiles = sysInfo.gpu.videoEncoding.some((e) => e.profile.startsWith("H264"));
@@ -839,7 +839,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
         const h264Hardware = videoEncodeEnabled || h264FromProfiles;
 
         // HEVC and AV1 hardware encoding: check the profile list first (authoritative on Linux/Windows). On macOS (empty profile list), probe via MediaRecorder
-        // in the page context — MediaRecorder.isTypeSupported works in non-secure contexts unlike VideoEncoder.
+        // in the page context - MediaRecorder.isTypeSupported works in non-secure contexts unlike VideoEncoder.
         let hevcHardware = hevcFromProfiles;
         let av1Hardware = av1FromProfiles;
 
@@ -1042,7 +1042,7 @@ async function launchBrowser(): Promise<Browser> {
     LOG.debug("timing:browser", "Chrome process spawned. (+%sms)", browserElapsed());
 
     // Poll for the puppeteer-stream extension to finish initializing. The extension injects a START_RECORDING function into its options page context. We poll
-    // for this function's existence rather than using a fixed delay, so the browser is ready as soon as the extension loads — typically 200-500ms rather than the
+    // for this function's existence rather than using a fixed delay, so the browser is ready as soon as the extension loads - typically 200-500ms rather than the
     // full configured timeout. Uses getExtensionPage() from puppeteer-stream to locate the extension's options page.
     try {
 
@@ -1083,7 +1083,7 @@ async function launchBrowser(): Promise<Browser> {
     // Emit system status update for SSE subscribers.
     await emitCurrentSystemStatus();
 
-    // Start background precaching of selected service channel lineups. Fire-and-forget — the setTimeout inside startPrecaching() ensures the actual work is fully
+    // Start background precaching of selected service channel lineups. Fire-and-forget - the setTimeout inside startPrecaching() ensures the actual work is fully
     // async and non-blocking.
     startPrecaching();
   } catch(error) {
@@ -1228,11 +1228,11 @@ export async function getBrowserPages(): Promise<Page[]> {
  *
  * - browserRef.close() sends CDP Browser.close and waits for WebSocket teardown, which hangs 3-5 seconds even after Chrome exits.
  * - browserRef.disconnect() drops the WebSocket instantly but orphans Chrome as a Node child process, creating a zombie that process.kill(pid, 0) cannot detect.
- * - Synchronous polling (Atomics.wait) blocks the event loop, preventing Node from processing SIGCHLD to reap the child — Chrome becomes a zombie regardless
+ * - Synchronous polling (Atomics.wait) blocks the event loop, preventing Node from processing SIGCHLD to reap the child - Chrome becomes a zombie regardless
  *   of how SIGTERM was sent.
  *
  * Instead, we send SIGTERM through the ChildProcess handle and listen for the `exit` event. This keeps the event loop running so Node can process SIGCHLD and
- * reap Chrome properly. The exit event fires only after the process is fully reaped — no zombies, no polling, no event loop blocking.
+ * reap Chrome properly. The exit event fires only after the process is fully reaped - no zombies, no polling, no event loop blocking.
  */
 export async function closeBrowser(): Promise<void> {
 
@@ -1526,7 +1526,7 @@ function checkBrowserRestart(): void {
 
     if(restartQuietTimer) {
 
-      LOG.debug("browser:lifecycle", "Browser restart quiet period cancelled — streams are active.");
+      LOG.debug("browser:lifecycle", "Browser restart quiet period cancelled - streams are active.");
 
       clearTimeout(restartQuietTimer);
       restartQuietTimer = null;
@@ -1538,7 +1538,7 @@ function checkBrowserRestart(): void {
   // No active streams and the browser is old enough. Start the quiet timer if one is not already running.
   if(!restartQuietTimer) {
 
-    LOG.debug("browser:lifecycle", "Browser uptime exceeds threshold. Quiet period started — restart will proceed if no streams start within %s minutes.",
+    LOG.debug("browser:lifecycle", "Browser uptime exceeds threshold. Quiet period started - restart will proceed if no streams start within %s minutes.",
       Math.round(BROWSER_RESTART_QUIET_PERIOD / 60000));
 
     restartQuietTimer = setTimeout(() => {
@@ -1561,7 +1561,7 @@ async function executeBrowserRestart(): Promise<void> {
   // mode was activated, or the browser disconnected on its own).
   if(gracefulShutdownInProgress || isLoginModeActive() || (getStreamCount() > 0) || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
 
-    LOG.debug("browser:lifecycle", "Browser restart aborted — preconditions no longer met.");
+    LOG.debug("browser:lifecycle", "Browser restart aborted - preconditions no longer met.");
 
     return;
   }
@@ -1577,7 +1577,7 @@ async function executeBrowserRestart(): Promise<void> {
     // closeBrowser() sets gracefulShutdownInProgress = true internally and performs SIGTERM-based Chrome termination.
     await closeBrowser();
 
-    // Reset the flag since the server is NOT shutting down — only the browser is restarting.
+    // Reset the flag since the server is NOT shutting down - only the browser is restarting.
     setGracefulShutdown(false);
 
     // Launch a fresh browser instance so it is ready for the next stream request.

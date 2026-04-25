@@ -47,7 +47,7 @@ function resolveNpmGlobalPrefix(): Nullable<string> {
  */
 export function detectInstallMethod(): InstallInfo {
 
-  // Docker detection comes first — inside a container, path-based detection is irrelevant.
+  // Docker detection comes first - inside a container, path-based detection is irrelevant.
   if(isRunningInContainer()) {
 
     return {

@@ -22,8 +22,5 @@ export function escapeHtml(text: string): string {
     ">": "&gt;"
   };
 
-  return text.replace(/[&<>"']/g, (char) => {
-
-    return replacements[char];
-  });
+  return text.replace(/[&<>"']/g, (char) => replacements[char] ?? char);
 }

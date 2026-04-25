@@ -236,7 +236,7 @@ interface SegmenterState {
   pendingDiscontinuity: boolean;
 
   // The base URL for absolute preroll segment URIs in the composite playlist. Null when no preroll is active for this segmenter. Set at construction and never
-  // modified — the preroll content is generated once at startup and shared across all streams.
+  // modified - the preroll content is generated once at startup and shared across all streams.
   readonly prerollBaseUrl: Nullable<string>;
 
   // The preroll codec variant for this segmenter's composite playlist. Used for duration lookups and URL path construction.
@@ -322,7 +322,7 @@ export function formatKeyframeStatsSummary(stats: KeyframeStats): string {
 
   const totalMoofs = stats.keyframeCount + stats.nonKeyframeCount + stats.indeterminateCount;
 
-  // No moof boxes were processed — stream ended before any media fragments arrived.
+  // No moof boxes were processed - stream ended before any media fragments arrived.
   if(totalMoofs === 0) {
 
     return "";
@@ -341,7 +341,7 @@ export function formatKeyframeStatsSummary(stats: KeyframeStats): string {
     parts.push(", interval ", minSec, "-", maxSec, "s avg ", avgSec, "s");
   }
 
-  // Note segments that didn't start with a keyframe — these directly correlate with potential frozen frame issues.
+  // Note segments that didn't start with a keyframe - these directly correlate with potential frozen frame issues.
   if(stats.segmentsWithoutLeadingKeyframe > 0) {
 
     parts.push(", ", String(stats.segmentsWithoutLeadingKeyframe), " segment");
@@ -482,7 +482,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     const realInitMapUri = "init.mp4?v=" + String(state.initVersion);
 
     // Check whether the preroll timer has fired and the client is actually watching preroll. The segment index offset (starting at prerollSegmentCount) is always
-    // applied structurally, but preroll entries are only included in the playlist when the deferred timer has fired — indicated by prerollStartTime being set on the
+    // applied structurally, but preroll entries are only included in the playlist when the deferred timer has fired - indicated by prerollStartTime being set on the
     // stream's HLS state. This is the same dynamic check the native proxy uses in its generatePlaylist(). Without this, fast capture streams (tuning before the
     // preroll delay elapses) would include unnecessary preroll entries in their first playlists.
     const stream = getStream(streamId);
@@ -532,14 +532,14 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       };
 
       // Add discontinuity marker and re-emit the init segment reference at preroll-to-real boundaries and recovery events. The preroll-to-real boundary is handled
-      // via the existing pendingDiscontinuity mechanism — outputSegment() adds prerollSegmentCount to discontinuityIndices when the first real segment is output.
+      // via the existing pendingDiscontinuity mechanism - outputSegment() adds prerollSegmentCount to discontinuityIndices when the first real segment is output.
       if(state.discontinuityIndices.has(i)) {
 
         entry.discontinuity = true;
         entry.mapUri = realInitMapUri;
       }
 
-      // Emit PROGRAM-DATE-TIME for real segments using the recorded wall-clock timestamp. Intentionally omitted from preroll segments — preroll is synthetic
+      // Emit PROGRAM-DATE-TIME for real segments using the recorded wall-clock timestamp. Intentionally omitted from preroll segments - preroll is synthetic
       // placeholder content and assigning it wall-clock timestamps would create a backward time jump at the preroll-to-live boundary.
       const timestamp = state.segmentTimestamps.get(i);
 
@@ -552,7 +552,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     }
 
     // Compute DISCONTINUITY-SEQUENCE: the count of discontinuities that have scrolled off the beginning of the playlist window. Only provided when discontinuities
-    // exist in the stream's history — when undefined, the builder omits the tag entirely.
+    // exist in the stream's history - when undefined, the builder omits the tag entirely.
     let discontinuitySequence: number | undefined;
 
     if(state.discontinuityIndices.size > 0) {
@@ -819,8 +819,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           }
 
           // Extract per-track metadata from the moov box in a single pass: timescales (for media-time EXTINF values) and handler types (for identifying the video
-          // track). The video trackId enables track-aware segment health monitoring — the monitor can distinguish dead capture pipelines (audio-only segments, no video
-          // trafs) from legitimate small segments produced by static content. Wrapped in try/catch so a malformed moov never prevents stream startup — EXTINF falls
+          // track). The video trackId enables track-aware segment health monitoring - the monitor can distinguish dead capture pipelines (audio-only segments, no video
+          // trafs) from legitimate small segments produced by static content. Wrapped in try/catch so a malformed moov never prevents stream startup - EXTINF falls
           // back to wall-clock time if parsing fails, and video traf tracking degrades gracefully to null.
           try {
 
@@ -954,14 +954,14 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       // Rewrite tfdt.baseMediaDecodeTime in each traf by adding a constant per-track offset to Chrome's original values. This preserves Chrome's wall-clock-based
       // inter-track sync rather than regenerating timestamps from trun durations (which accumulates drift). The offset is 0 during normal playback (pure pass-through).
       // During tab replacement, offsets are derived from a normalized reference position (mean of all tracks' old positions in seconds) to eliminate inter-track
-      // bias — see normalizedReferencePositionSec. Wrapped in try/catch so a malformed moof never crashes the segmenter — the segment passes through with Chrome's
+      // bias - see normalizedReferencePositionSec. Wrapped in try/catch so a malformed moof never crashes the segmenter - the segment passes through with Chrome's
       // original timestamps, which is better than dropping it entirely.
       try {
 
         const trackResults = offsetMoofTimestamps(box.data, state.trackOffsets);
 
         // Lazy offset initialization: compute offsets for all newly seen tracks before any corrective re-write. This two-pass approach is necessary because
-        // offsetMoofTimestamps processes ALL trafs in the moof — if we re-called after each individual track's initialization, already-offset tracks would get
+        // offsetMoofTimestamps processes ALL trafs in the moof - if we re-called after each individual track's initialization, already-offset tracks would get
         // their offset applied a second time. By computing all offsets first, a single re-call applies them all atomically. This is safe because on the first
         // moof of a segmenter all tracks are uninitialized, so the first call writes all tracks with offset 0 (no-op) and the re-call applies all offsets to
         // Chrome's original values. Chrome's MediaRecorder declares all tracks in the moov at stream start and tab replacement creates a fresh segmenter, so a
@@ -1020,7 +1020,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
           state.trackTimestamps.set(trackId, result.originalTfdt + trackOffset + result.duration);
 
-          // Accumulate duration for media-time EXTINF computation. No sanity check needed — Chrome's timestamps are trusted.
+          // Accumulate duration for media-time EXTINF computation. No sanity check needed - Chrome's timestamps are trusted.
           if(result.duration > 0n) {
 
             const prev = state.segmentTrackDurations.get(trackId) ?? 0n;
@@ -1036,7 +1036,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       }
 
       // When keyframe debugging is enabled, parse traf/trun sample flags to detect whether this moof starts with a keyframe. Wrapped in try/catch for failure
-      // isolation — a malformed moof should never crash the segmenter.
+      // isolation - a malformed moof should never crash the segmenter.
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if(KEYFRAME_DEBUG) {
 

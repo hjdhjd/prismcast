@@ -31,7 +31,7 @@ let directvFullyDiscovered = false;
 const directvPagesWithListeners = new WeakSet<Page>();
 
 // Per-page tune state. Each entry holds the resolve function for the tune result promise and the promise itself. Keyed by Page so concurrent tunes on different
-// pages are isolated — the console listener resolves the correct entry via the page reference it closes over, and the strategy function retrieves the promise for
+// pages are isolated - the console listener resolves the correct entry via the page reference it closes over, and the strategy function retrieves the promise for
 // its page. Entries are created by resolveDirectvDirectUrl before navigation and consumed by directvGridStrategy after page load.
 interface TuneState {
 
@@ -40,7 +40,7 @@ interface TuneState {
 }
 const pendingTunes = new WeakMap<Page, TuneState>();
 
-// DirecTV guide URL. All tunes navigate here — the webpack interceptor handles channel selection during page load.
+// DirecTV guide URL. All tunes navigate here - the webpack interceptor handles channel selection during page load.
 const DIRECTV_GUIDE_URL = "https://stream.directv.com/guide";
 
 // Maximum time to wait for the webpack interceptor to emit a tune result. This covers the time from page navigation start through webpack chunk interception,
@@ -59,7 +59,7 @@ const DIRECTV_LOCAL_NETWORKS = new Set([ "abc", "cbs", "cw", "fox", "nbc", "pbs"
 
 /**
  * Clears all DirecTV state: the unified channel cache and the fully-discovered flag. Called by clearChannelSelectionCaches() in the coordinator when the browser
- * restarts, since cached state may be stale in a new browser session. The pendingTunes WeakMap is self-cleaning — entries are GC'd when their Page references are
+ * restarts, since cached state may be stale in a new browser session. The pendingTunes WeakMap is self-cleaning - entries are GC'd when their Page references are
  * released after page close.
  */
 function clearDirectvCache(): void {
@@ -147,12 +147,15 @@ function processChannelLineup(json: string): void {
         }
       }
 
-      if(affiliates.length > 0) {
+      affiliates.sort((a, b) => a.key.localeCompare(b.key));
 
-        affiliates.sort((a, b) => a.key.localeCompare(b.key));
-        directvChannelCache.set(network, affiliates[0].entry);
+      const primaryAffiliate = affiliates[0];
 
-        LOG.debug("tuning:directv", "Cross-referenced cache: %s -> %s.", network, affiliates[0].entry.displayName);
+      if(primaryAffiliate) {
+
+        directvChannelCache.set(network, primaryAffiliate.entry);
+
+        LOG.debug("tuning:directv", "Cross-referenced cache: %s -> %s.", network, primaryAffiliate.entry.displayName);
       }
     }
   }
@@ -185,7 +188,7 @@ function setupConsoleListeners(page: Page): void {
       return;
     }
 
-    // Tune success signal — the playConsumable dispatch settled successfully (synchronous action or async thunk resolution).
+    // Tune success signal - the playConsumable dispatch settled successfully (synchronous action or async thunk resolution).
     if(text.startsWith("[DIRECTV-TUNE-OK]")) {
 
       pendingTunes.get(page)?.resolve(true);
@@ -193,7 +196,7 @@ function setupConsoleListeners(page: Page): void {
       return;
     }
 
-    // Tune failure signal — the playConsumable dispatch failed or the target channel was not found in the Redux store.
+    // Tune failure signal - the playConsumable dispatch failed or the target channel was not found in the Redux store.
     if(text.startsWith("[DIRECTV-TUNE-FAIL]")) {
 
       LOG.debug("tuning:directv", "Tune failure signal: %s.", text);
@@ -246,14 +249,14 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
     console.log("[DIRECTV-DIAG] Interceptor installed (target=" + targetName + ", discoverOnly=" + String(discoverOnlyFlag) + ").");
 
     // Captured __webpack_require__ function. Set by the chunk push wrapper when the first natural chunk callback fires. WreqType is defined inline because it
-    // describes a runtime shape used in type casts — compile-time-only aliases like Nullable<T> work fine since TypeScript erases them. This webpack 5 build
-    // does not expose a module cache property (.c) on __webpack_require__ — modules are loaded via wreq(moduleId) which uses an internal closure-based cache.
+    // describes a runtime shape used in type casts - compile-time-only aliases like Nullable<T> work fine since TypeScript erases them. This webpack 5 build
+    // does not expose a module cache property (.c) on __webpack_require__ - modules are loaded via wreq(moduleId) which uses an internal closure-based cache.
     interface WreqType { (moduleId: string): Record<string, unknown>; m: Record<string, unknown> }
     let wreq: WreqType | null = null;
 
     // Phase 2: Wrap webpackChunk push to capture __webpack_require__. This wrapper intercepts natural chunk pushes and captures __webpack_require__ from any chunk
     // that includes an entry point callback (the optional third element). DirecTV's current webpack build uses 2-element chunks without callbacks, so this wrapper
-    // serves as defense-in-depth — the primary capture mechanism is the synthetic chunk push in Phase 4. If a future DirecTV deploy changes the chunk format, this
+    // serves as defense-in-depth - the primary capture mechanism is the synthetic chunk push in Phase 4. If a future DirecTV deploy changes the chunk format, this
     // wrapper captures wreq early without needing a code change.
     const chunkArrayName = "webpackChunk_directv_web";
 
@@ -314,13 +317,13 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
     let mountPointLogged = false;
     let bfsExhaustedLogged = false;
 
-    // Tracks when the page body first has children (DOM content loaded). Used for milestone-based early exit — if the page has rendered content but no React
+    // Tracks when the page body first has children (DOM content loaded). Used for milestone-based early exit - if the page has rendered content but no React
     // mount point exists after MOUNT_SEARCH_TIMEOUT, the SPA structure is different from what we expect and continuing to poll is pointless.
     let pageContentTime = 0;
     const MOUNT_SEARCH_TIMEOUT = 5000;
 
-    // StoreType is declared outside the poll callback so cachedStore can reference it across iterations. The store object is stable — Redux stores are
-    // created once and never replaced — so holding a reference across poll ticks is safe.
+    // StoreType is declared outside the poll callback so cachedStore can reference it across iterations. The store object is stable - Redux stores are
+    // created once and never replaced - so holding a reference across poll ticks is safe.
     interface StoreType { dispatch: (action: unknown) => unknown; getState: () => Record<string, unknown> }
     let cachedStore: StoreType | null = null;
 
@@ -335,13 +338,13 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
         clearInterval(pollTimer);
 
         // eslint-disable-next-line no-console
-        console.log("[DIRECTV-DIAG] Overall poll timeout (" + String(MAX_POLL_TIME) + "ms) — " +
+        console.log("[DIRECTV-DIAG] Overall poll timeout (" + String(MAX_POLL_TIME) + "ms) - " +
           (cachedStore ? "Redux store found but channel lineup never populated." : "Redux store not found."));
 
         if(!discoverOnlyFlag) {
 
           // eslint-disable-next-line no-console
-          console.log("[DIRECTV-TUNE-FAIL] Timed out — " +
+          console.log("[DIRECTV-TUNE-FAIL] Timed out - " +
             (cachedStore ? "channel lineup never populated in Redux store." : "React mount point or Redux store not found."));
         }
 
@@ -353,7 +356,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
       if(!cachedStore) {
 
         // Find the React mount point. Try the known DirecTV ID first (fast path), then scan body's direct children for any element with React fiber
-        // properties. This resilient approach survives element ID changes — if DirecTV renames their root container, the body scan finds it automatically.
+        // properties. This resilient approach survives element ID changes - if DirecTV renames their root container, the body scan finds it automatically.
         let mountEl: Element | null = document.getElementById("app-root");
         let reactKey: string | undefined = mountEl ? findReactKey(mountEl) : undefined;
 
@@ -407,7 +410,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
 
           // eslint-disable-next-line no-console
           console.log("[DIRECTV-DIAG] React mount: <" + mountEl.tagName.toLowerCase() + " id=\"" + (mountEl.id || "") + "\"> via " +
-            reactKey.split("$")[0] + "$.");
+            (reactKey.split("$")[0] ?? "") + "$.");
         }
 
         // Get the fiber root from the React property. __reactContainer$ returns an internal root object whose .current property is the actual fiber node.
@@ -475,7 +478,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
           return;
         }
 
-        // Cache the store reference for subsequent poll iterations. The store object is stable — Redux stores are never recreated.
+        // Cache the store reference for subsequent poll iterations. The store object is stable - Redux stores are never recreated.
         cachedStore = store;
 
         // eslint-disable-next-line no-console
@@ -524,7 +527,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
 
       if(channels.length === 0) {
 
-        // The channel data hasn't arrived yet — the SPA is still fetching from DirecTV's API. Log once and continue polling.
+        // The channel data hasn't arrived yet - the SPA is still fetching from DirecTV's API. Log once and continue polling.
         if(!channelsEmptyLogged) {
 
           channelsEmptyLogged = true;
@@ -536,7 +539,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
         return;
       }
 
-      // Channel data found — stop polling and proceed with emission and (optionally) tuning.
+      // Channel data found - stop polling and proceed with emission and (optionally) tuning.
       clearInterval(pollTimer);
 
       // eslint-disable-next-line no-console
@@ -561,10 +564,10 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
       }
 
       // If wreq wasn't captured naturally from chunk callbacks (DirecTV's current webpack build uses 2-element chunks without entry point callbacks), use a
-      // synthetic chunk push to capture __webpack_require__. By this point webpack has fully initialized — it replaced the chunk array's push method with its own
+      // synthetic chunk push to capture __webpack_require__. By this point webpack has fully initialized - it replaced the chunk array's push method with its own
       // webpackJsonpCallback handler during bootstrap. Pushing a synthetic chunk with an entry point callback (third element) triggers webpack to call it with
       // __webpack_require__ as the argument, giving us access to all loaded modules. The ref holder pattern isolates the synchronous callback mutation from
-      // TypeScript's control flow narrowing — wreq is narrowed to null in this scope, so we capture into a holder and only assign after a null check.
+      // TypeScript's control flow narrowing - wreq is narrowed to null in this scope, so we capture into a holder and only assign after a null check.
       if(!wreq) {
 
         const wreqHolder: { ref: WreqType | null } = { ref: null };
@@ -590,7 +593,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
         } else {
 
           // eslint-disable-next-line no-console
-          console.log("[DIRECTV-DIAG] Synthetic chunk push did not trigger callback — webpack handler may not be in place.");
+          console.log("[DIRECTV-DIAG] Synthetic chunk push did not trigger callback - webpack handler may not be in place.");
         }
       }
 
@@ -627,7 +630,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
 
       // Find the playConsumable module by searching webpack module factories for the characteristic function signature. The factory source must contain both
       // "playConsumable" and "playAsset" to positively identify the module. Once found, load it via wreq(moduleId) which uses webpack's internal closure-based
-      // cache and correctly resolves all closure dependencies. Manual factory execution (wreq.m[id](mod, exports, wreq)) does NOT work — it creates a fresh
+      // cache and correctly resolves all closure dependencies. Manual factory execution (wreq.m[id](mod, exports, wreq)) does NOT work - it creates a fresh
       // closure scope where minified dependency variables are uninitialized, causing "a is not a function" at call time.
       let playConsumableFn: ((payload: Record<string, unknown>) => void) | null = null;
 
@@ -697,9 +700,9 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
       // eslint-disable-next-line no-console
       console.log("[DIRECTV-DIAG] Dispatching playConsumable for " + (targetChannel.channelName ?? "") + ".");
 
-      // Call playConsumable directly with the validated payload. The function is self-dispatching — it uses the dispatch and getState functions passed in the
+      // Call playConsumable directly with the validated payload. The function is self-dispatching - it uses the dispatch and getState functions passed in the
       // payload to internally dispatch Redux actions for authorization, CDN token generation, manifest construction, and player initialization. This is NOT a
-      // Redux action creator — do not wrap the call in store.dispatch().
+      // Redux action creator - do not wrap the call in store.dispatch().
       try {
 
         playConsumableFn({
@@ -733,11 +736,11 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
 /**
  * Installs the DirecTV webpack interceptor before navigation. Called by the coordinator's resolveDirectUrl before page.goto fires. Always returns null so
  * channel selection runs directvGridStrategy, which awaits the interceptor result and falls back to logo click if it fails. The interceptor is installed
- * regardless of cache state — warm tunes dispatch playConsumable immediately, cold tunes discover the channel via Redux store extraction during page load.
+ * regardless of cache state - warm tunes dispatch playConsumable immediately, cold tunes discover the channel via Redux store extraction during page load.
  *
  * @param channelSelector - The channel selector string (e.g., "CNN", "ESPN").
  * @param page - The Puppeteer page for evaluateOnNewDocument installation and console listener setup.
- * @returns Always null — channel selection is never skipped.
+ * @returns Always null - channel selection is never skipped.
  */
 async function resolveDirectvDirectUrl(channelSelector: string, page: Page): Promise<Nullable<string>> {
 
@@ -796,7 +799,7 @@ async function directvGridStrategy(page: Page, profile: ChannelSelectionProfile)
   if(tuneState) {
 
     // Race the tune promise against a timeout. The promise maps to discriminated string results so we can distinguish "interceptor reported failure" from
-    // "no signal arrived" — critical for debugging whether the interceptor ran at all or stalled silently.
+    // "no signal arrived" - critical for debugging whether the interceptor ran at all or stalled silently.
     const result = await Promise.race([
       tuneState.promise.then((v) => v ? "success" : "failure"),
       delay(TUNE_TIMEOUT).then(() => "timeout")
@@ -831,10 +834,10 @@ async function directvGridStrategy(page: Page, profile: ChannelSelectionProfile)
 }
 
 /**
- * Logo click fallback for DirecTV Stream. The guide's logo column is NOT virtualized — all ~152 channel logos are always in the DOM with
+ * Logo click fallback for DirecTV Stream. The guide's logo column is NOT virtualized - all ~152 channel logos are always in the DOM with
  * aria-label="view {channelName}" attributes. This function:
  * 1. Finds the logo element by aria-label
- * 2. Scrolls it into view and clicks it (DOM click, not coordinate-based — an invisible overlay blocks coordinate clicks)
+ * 2. Scrolls it into view and clicks it (DOM click, not coordinate-based - an invisible overlay blocks coordinate clicks)
  * 3. Waits for the mini-guide play button to appear
  * 4. Clicks the inner Pressable to start playback
  *
@@ -890,11 +893,8 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
 
         const prefixMatches = logos.filter(({ label }) => label.startsWith(lowerName + "-"));
 
-        if(prefixMatches.length > 0) {
-
-          prefixMatches.sort((a, b) => a.label.localeCompare(b.label));
-          logo = prefixMatches[0].el;
-        }
+        prefixMatches.sort((a, b) => a.label.localeCompare(b.label));
+        logo = prefixMatches[0]?.el ?? null;
       }
     }
 
@@ -1046,7 +1046,7 @@ async function discoverDirectvChannels(page: Page): Promise<DiscoveredChannel[]>
   // Set up console listeners before navigation so we capture the [DIRECTV-CHANNELS] signal.
   setupConsoleListeners(page);
 
-  // Install the interceptor in discover-only mode — skip the playConsumable tune phase.
+  // Install the interceptor in discover-only mode - skip the playConsumable tune phase.
   try {
 
     await installDirectTuneInterceptor(page, "", true);
@@ -1104,7 +1104,7 @@ export const directvProvider: ProviderModule = {
   label: "DirecTV Stream",
 
   // Profile for DirecTV Stream (stream.directv.com) live guide. The guide page is a React Native for Web SPA where all ~152 channel logos are always in the DOM
-  // (not virtualized). The primary tuning mechanism bypasses DOM interaction entirely by injecting into webpack internals — capturing __webpack_require__ via the
+  // (not virtualized). The primary tuning mechanism bypasses DOM interaction entirely by injecting into webpack internals - capturing __webpack_require__ via the
   // chunk push array, extracting the Redux store from the React fiber tree, and dispatching the playConsumable action to switch channels. The fallback uses logo
   // aria-label matching with DOM click (coordinate clicks are blocked by an invisible overlay). Uses selectReadyVideo because the page has multiple video elements.
   profile: {

@@ -11,7 +11,7 @@ import { emitCurrentSystemStatus } from "../browser/index.js";
 import { getStream } from "./registry.js";
 
 /* This module polls the Channels DVR schedule API to discover upcoming recordings and pretunes channels 30 seconds before they start. When the DVR requests the
- * stream, it's already live with buffered segments — achieving near-instant tuning instead of 3-7 second cold starts.
+ * stream, it's already live with buffered segments - achieving near-instant tuning instead of 3-7 second cold starts.
  *
  * The polling loop runs every 60 seconds, checking for jobs starting within a 5-minute scheduling horizon. For each eligible job (PrismCast channel as the DVR's
  * preferred source), a precise setTimeout is scheduled for 30 seconds before the recording start time. When the timer fires, the module validates the channel,
@@ -19,7 +19,7 @@ import { getStream } from "./registry.js";
  *
  * Key design decisions:
  * - Only pretune when a PrismCast guide number is the FIRST entry in the job's channels array (DVR's preferred source).
- * - Skip channels that are already streaming — no duplicate streams for the same channel.
+ * - Skip channels that are already streaming - no duplicate streams for the same channel.
  * - Pretune alongside existing streams freely; capacity enforcement is handled by initializeStream().
  * - Retry up to 5 times within the pretune window on failure.
  * - Safety timeout at start_time + 90s handles cancelled jobs or missed client connections.
@@ -193,12 +193,13 @@ async function pollForUpcomingJobs(): Promise<void> {
     }
 
     // Only consider jobs where the first (preferred) channel is a PrismCast channel.
-    if(job.channels.length === 0) {
+    const guideNumber = job.channels[0];
+
+    if(!guideNumber) {
 
       continue;
     }
 
-    const guideNumber = job.channels[0];
     const channelId = resolveGuideNumber(mappings, guideNumber);
 
     if(!channelId) {

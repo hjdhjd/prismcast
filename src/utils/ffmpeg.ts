@@ -193,7 +193,7 @@ export interface FFmpegProcess {
 
 /* MPEG-TS muxer flags for the fMP4-to-MPEG-TS remuxer. Tuned to produce output resembling a real HDHomeRun CONNECT DUO (HDTC-2US) ATSC transport stream.
  * Plex's transcoder may make assumptions about stream structure based on the reported device model (PID assignments, PAT/PMT frequency). Using ATSC-conventional
- * values avoids "Invalid argument" failures when Plex tries to transcode the live session for remote clients. These are pure container metadata changes — the actual
+ * values avoids "Invalid argument" failures when Plex tries to transcode the live session for remote clients. These are pure container metadata changes - the actual
  * A/V data is untouched by -c copy.
  */
 const MPEGTS_OUTPUT_FLAGS = [
@@ -263,7 +263,7 @@ function spawnFFmpegProcess({ args, label, onError, streamId }: {
 
     if(signal === "SIGTERM") {
 
-      // Normal termination via kill() — do not treat as error.
+      // Normal termination via kill() - do not treat as error.
       return;
     }
 
@@ -370,7 +370,7 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 
 /**
  * Spawns an FFmpeg process configured to remux fMP4 input to MPEG-TS output with codec copy. The process reads a continuous fMP4 stream (init segment followed by
- * media segments) from stdin and writes MPEG-TS to stdout. No transcoding occurs — both video and audio are copied unchanged — so CPU usage is minimal.
+ * media segments) from stdin and writes MPEG-TS to stdout. No transcoding occurs - both video and audio are copied unchanged - so CPU usage is minimal.
  *
  * FFmpeg arguments:
  * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors

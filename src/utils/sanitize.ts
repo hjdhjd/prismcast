@@ -12,13 +12,13 @@
  */
 
 // Pattern matching non-printable characters. Covers: C0 controls except TAB/LF/CR, DEL, BOM, zero-width spaces, directional markers, and line/paragraph separators.
-// The no-control-regex rule is suppressed because this regex genuinely needs to match control characters — that is its entire purpose.
+// The no-control-regex rule is suppressed because this regex genuinely needs to match control characters - that is its entire purpose.
 // eslint-disable-next-line no-control-regex
 const NON_PRINTABLE_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFEFF\u200B-\u200F\u2028-\u2029]/g;
 
 /**
  * Strips non-printable characters from a string and trims whitespace. Replaces `.trim()` at data-collection points to ensure string values contain only visible
- * content. Safe to call on already-clean strings — the regex replacement is a no-op when no non-printable characters are present.
+ * content. Safe to call on already-clean strings - the regex replacement is a no-op when no non-printable characters are present.
  * @param value - The string to sanitize.
  * @returns The sanitized string with non-printable characters removed and whitespace trimmed.
  */
@@ -28,14 +28,14 @@ export function sanitizeString(value: string): string {
 }
 
 /**
- * Tests whether a string contains any non-printable characters. Used for startup warnings when loading persisted data — the warning alerts users to corruption
+ * Tests whether a string contains any non-printable characters. Used for startup warnings when loading persisted data - the warning alerts users to corruption
  * without modifying the loaded values.
  * @param value - The string to test.
  * @returns True if the string contains at least one non-printable character.
  */
 export function containsNonPrintable(value: string): boolean {
 
-  // Reset lastIndex before testing — the global flag on NON_PRINTABLE_PATTERN causes .test() to advance lastIndex on each call, which would produce alternating
+  // Reset lastIndex before testing - the global flag on NON_PRINTABLE_PATTERN causes .test() to advance lastIndex on each call, which would produce alternating
   // true/false results without this reset.
   NON_PRINTABLE_PATTERN.lastIndex = 0;
 

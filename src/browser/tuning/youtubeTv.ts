@@ -56,7 +56,7 @@ const CHANNEL_ALTERNATES: Record<string, string[]> = {
  * 3. Parenthetical suffix: cache key starts with the name followed by " (". Catches timezone/region variants like "magnolia network (pacific)".
  *
  * When a non-exact match succeeds, the result is also cached under the primary channelSelector key for O(1) lookup on subsequent calls. This function doubles as
- * the resolveDirectUrl hook — after the first tune populates the cache via channel discovery, every subsequent YTTV tune resolves here without loading the guide
+ * the resolveDirectUrl hook - after the first tune populates the cache via channel discovery, every subsequent YTTV tune resolves here without loading the guide
  * page.
  * @param channelName - The channelSelector value (e.g., "CNN", "NBC", "CW").
  * @returns The full watch URL or null if no match is found.
@@ -69,7 +69,7 @@ function findWatchUrl(channelName: string): Nullable<string> {
   // because TypeScript's Record indexing doesn't capture that the key may not exist at runtime.
   const alternates = CHANNEL_ALTERNATES[lower];
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
   const namesToTry = alternates ? [ lower, ...alternates.map((a) => a.toLowerCase()) ] : [lower];
 
   for(const name of namesToTry) {
@@ -118,7 +118,7 @@ function findWatchUrl(channelName: string): Nullable<string> {
 
 /**
  * Invalidates the cached YouTube TV watch URL for the given channel selector. Called when a cached URL fails to produce a working stream. Deletes the
- * channelSelector key — the guide-name entries from channel discovery are left intact and will be refreshed on the next strategy run when the guide page is
+ * channelSelector key - the guide-name entries from channel discovery are left intact and will be refreshed on the next strategy run when the guide page is
  * reloaded.
  * @param channelSelector - The channel selector string to invalidate.
  */
@@ -176,7 +176,7 @@ async function discoverGuideChannels(page: Page): Promise<{ name: string; watchP
 /**
  * Attempts to recover from a degraded YouTube TV guide state by clearing cached site data (service workers and cache storage) via CDP and reloading the guide page.
  * This targets the specific failure mode where the guide grid container renders but channel entries are not populated, typically caused by stale browser session
- * state after a Chrome update. Cookies and login session are preserved — only caching layers are cleared.
+ * state after a Chrome update. Cookies and login session are preserved - only caching layers are cleared.
  * @param page - The Puppeteer page object.
  * @returns Discovered channels after recovery, or an empty array if recovery failed.
  */
@@ -184,7 +184,7 @@ async function attemptGuideRecovery(page: Page): Promise<{ name: string; watchPa
 
   LOG.warn("Clearing YouTube TV cached site data to recover from empty guide.");
 
-  // Clear service workers and cache storage for the YouTube TV origin. These are caching layers that will be repopulated on reload — cookies and login session
+  // Clear service workers and cache storage for the YouTube TV origin. These are caching layers that will be repopulated on reload - cookies and login session
   // state are deliberately preserved to avoid forcing re-authentication.
   try {
 
@@ -226,7 +226,7 @@ async function attemptGuideRecovery(page: Page): Promise<{ name: string; watchPa
 
   if(channels.length > 0) {
 
-    LOG.info("YouTube TV guide recovery succeeded — discovered %s channels after clearing site data.", channels.length);
+    LOG.info("YouTube TV guide recovery succeeded - discovered %s channels after clearing site data.", channels.length);
   } else {
 
     LOG.warn("YouTube TV guide still empty after clearing site data.");
@@ -272,8 +272,8 @@ function buildYttvDiscoveredChannels(): DiscoveredChannel[] {
 
 /**
  * Populates the unified channel cache from raw guide channel data. For each channel, builds a DiscoveredChannel with affiliate detection and pairs it with the
- * full watch URL. Detects affiliates via two mechanisms: (1) prefix+digit pattern constrained to known broadcast networks (e.g., "NBC 5" → affiliate of "NBC"),
- * and (2) CHANNEL_ALTERNATES entries for affiliates that use different names entirely (e.g., "WGN" → affiliate of "CW"). Shared by youtubeGridStrategy
+ * full watch URL. Detects affiliates via two mechanisms: (1) prefix+digit pattern constrained to known broadcast networks (e.g., "NBC 5" -> affiliate of "NBC"),
+ * and (2) CHANNEL_ALTERNATES entries for affiliates that use different names entirely (e.g., "WGN" -> affiliate of "CW"). Shared by youtubeGridStrategy
  * (tuning-time population) and discoverYttvChannels (discovery endpoint).
  * @param rawChannels - Array of channel names and watch paths from discoverGuideChannels().
  */
@@ -296,15 +296,15 @@ function populateYttvChannelCache(rawChannels: { name: string; watchPath: string
 
     // Detect affiliates via prefix+digit pattern, but only for known broadcast networks. This prevents false positives like "ESPN 2" or "Fox Sports 1"
     // from being tagged as affiliates.
-    const prefixMatch = YTTV_AFFILIATE_PATTERN.exec(ch.name);
+    const prefixMatch = YTTV_AFFILIATE_PATTERN.exec(ch.name)?.[1];
 
-    if(prefixMatch && YTTV_BROADCAST_NETWORKS.has(prefixMatch[1].toLowerCase())) {
+    if(prefixMatch && YTTV_BROADCAST_NETWORKS.has(prefixMatch.toLowerCase())) {
 
-      entry.affiliate = prefixMatch[1].toUpperCase();
+      entry.affiliate = prefixMatch.toUpperCase();
       entry.channelSelector = entry.affiliate;
     } else {
 
-      // Detect affiliates via CHANNEL_ALTERNATES (e.g., "WGN" → affiliate of "CW", "WTTW" → affiliate of "PBS"). Only checked when prefix+digit didn't
+      // Detect affiliates via CHANNEL_ALTERNATES (e.g., "WGN" -> affiliate of "CW", "WTTW" -> affiliate of "PBS"). Only checked when prefix+digit didn't
       // match, since the two mechanisms target different affiliate naming patterns.
       const altNetwork = alternateToNetwork.get(ch.name.toLowerCase());
 
@@ -351,7 +351,7 @@ async function youtubeGridStrategy(page: Page, profile: ChannelSelectionProfile)
   // Discover all channels from the guide grid.
   let allChannels = await discoverGuideChannels(page);
 
-  // If the guide loaded but no channels were discovered, the guide is in a degraded state — the grid container rendered but channel entries were not populated.
+  // If the guide loaded but no channels were discovered, the guide is in a degraded state - the grid container rendered but channel entries were not populated.
   // This can happen when stale browser session state (service workers, cached SPA code) becomes inconsistent after a Chrome update. Track consecutive occurrences
   // and attempt recovery by clearing cached site data once the threshold is reached.
   if(allChannels.length === 0) {
@@ -371,10 +371,10 @@ async function youtubeGridStrategy(page: Page, profile: ChannelSelectionProfile)
   // distinct from the name-mismatch "not found" message below so users can immediately tell the guide itself is broken rather than suspecting a wrong channel name.
   if(allChannels.length === 0) {
 
-    return { reason: "YouTube TV guide is empty — no channels were discovered.", success: false };
+    return { reason: "YouTube TV guide is empty - no channels were discovered.", success: false };
   }
 
-  // Successful discovery — reset the consecutive empty counter and repopulate the unified channel cache. Always repopulate rather than skipping when the cache has
+  // Successful discovery - reset the consecutive empty counter and repopulate the unified channel cache. Always repopulate rather than skipping when the cache has
   // entries, because invalidated entries (deleted by invalidateYttvDirectUrl) need to be restored with fresh watch URLs from the guide.
   consecutiveEmptyDiscoveries = 0;
   populateYttvChannelCache(allChannels);
@@ -454,7 +454,7 @@ async function discoverYttvChannels(page: Page): Promise<DiscoveredChannel[]> {
   }
 
   // Wait for at least one EPG row to confirm the guide grid has rendered. The route handler navigates with networkidle2, which ensures all API data has arrived
-  // before this function is called — no additional network idle wait is needed here.
+  // before this function is called - no additional network idle wait is needed here.
   try {
 
     await page.waitForSelector("ytu-epg-row", { timeout: CONFIG.streaming.videoTimeout });
@@ -465,7 +465,7 @@ async function discoverYttvChannels(page: Page): Promise<DiscoveredChannel[]> {
 
   const allChannels = await discoverGuideChannels(page);
 
-  // Do not cache empty results — leave the cache empty so subsequent calls retry the full walk. Empty results can indicate no subscription or transient failures.
+  // Do not cache empty results - leave the cache empty so subsequent calls retry the full walk. Empty results can indicate no subscription or transient failures.
   if(allChannels.length === 0) {
 
     return [];
@@ -499,7 +499,7 @@ export const yttvProvider: ProviderModule = {
 
   // Profile for YouTube TV (tv.youtube.com/live). The guide grid renders all ~256 channel rows in the DOM simultaneously (no virtualization), each containing a
   // direct watch URL. The youtubeGrid strategy performs a single querySelector to find the target channel's watch link via aria-label, extracts the URL, and
-  // navigates directly — no scrolling, clicking, or timing workarounds needed. Uses selectReadyVideo because the watch page has ~36 video elements (live preview
+  // navigates directly - no scrolling, clicking, or timing workarounds needed. Uses selectReadyVideo because the watch page has ~36 video elements (live preview
   // thumbnails from the guide) but only one active stream with readyState >= 3 and videoWidth > 0. Extends fullscreenApi because requestFullscreen() works
   // directly on the active video element without gesture requirements.
   profile: {

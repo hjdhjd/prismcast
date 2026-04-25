@@ -8,14 +8,14 @@ import { CHANNELS } from "../../channels/index.js";
 import type { Page } from "puppeteer-core";
 
 /* These utility functions are used by multiple tuning strategy files (hulu, sling, fox, etc.) and the channel selection coordinator. They live in this shared module
- * to avoid circular imports — the coordinator imports tuning strategy modules, and those modules need these utilities. Placing the utilities in the coordinator would
- * create a circular dependency (coordinator → tuning → coordinator).
+ * to avoid circular imports - the coordinator imports tuning strategy modules, and those modules need these utilities. Placing the utilities in the coordinator would
+ * create a circular dependency (coordinator -> tuning -> coordinator).
  */
 
 /**
  * Scrolls a target element into view and clicks it using coordinate-based mouse click. The 200ms settle delay after scrolling allows lazy-loaded content and
- * animations to complete before the click is dispatched. Coordinate-based clicking generates the full pointer event chain (pointerdown → mousedown → pointerup →
- * mouseup → click), which is more reliable for React/SPA-based sites than synthetic DOM click events.
+ * animations to complete before the click is dispatched. Coordinate-based clicking generates the full pointer event chain (pointerdown -> mousedown -> pointerup ->
+ * mouseup -> click), which is more reliable for React/SPA-based sites than synthetic DOM click events.
  * @param page - The Puppeteer page object.
  * @param target - The x/y coordinates to click.
  * @returns True if the click was executed.
@@ -127,7 +127,7 @@ export function logAvailableChannels(options: {
     countLabel = "uncovered (" + String(filteredChannels.length) + " of " + String(availableChannels.length) + ")";
   } else {
 
-    // No preset suffix — log all available channels unfiltered. Used for small channel sets (Fox, HBO) where the full list is actionable without filtering.
+    // No preset suffix - log all available channels unfiltered. Used for small channel sets (Fox, HBO) where the full list is actionable without filtering.
     filteredChannels = availableChannels;
     countLabel = String(filteredChannels.length);
   }

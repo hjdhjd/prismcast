@@ -5,7 +5,7 @@
 
 /**
  * Formats the current date and time as a log timestamp string: `yyyy/mm/dd hh:mm:ss.mmm AM/PM`. Uses 12-hour time with decimalized seconds and AM/PM.
- * Single source of truth for all log timestamp formatting — used by the console wrapper in app.ts, the file logger, and the Morgan HTTP request logger.
+ * Single source of truth for all log timestamp formatting - used by the console wrapper in app.ts, the file logger, and the Morgan HTTP request logger.
  * @returns Formatted timestamp string.
  */
 export function formatTimestamp(): string {

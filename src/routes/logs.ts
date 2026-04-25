@@ -78,7 +78,7 @@ function parseLogLine(line: string): Nullable<LogEntry> {
 
     level = "debug";
 
-    // Extract the category suffix from "DEBUG:tuning:hulu" → "tuning:hulu". This preserves category information for web UI rendering so file-loaded entries
+    // Extract the category suffix from "DEBUG:tuning:hulu" -> "tuning:hulu". This preserves category information for web UI rendering so file-loaded entries
     // display the same [DEBUG:category] badge as live SSE entries.
     const colonIndex = levelStr.indexOf(":");
 

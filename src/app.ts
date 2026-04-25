@@ -348,12 +348,12 @@ async function buildApp(): Promise<Express> {
   return app;
 }
 
-/* PrismCast instance guard. Only one server instance should run at a time — a second instance would launch a competing Chrome process, bind to the same port, and
+/* PrismCast instance guard. Only one server instance should run at a time - a second instance would launch a competing Chrome process, bind to the same port, and
  * corrupt shared state. The guard uses a PID file written immediately after the instance check passes, before Chrome launches or the port binds. On the next
  * startup, we check whether the stored PID is still alive and exit early if so. Stale PID files (from crashes or container restarts) are handled gracefully via
  * isProcessRunning(), and the exit handler removes the file if startup fails.
  *
- * The ownsServerPid flag tracks whether this process has written the PID file. Without it, the exit handler would unconditionally remove the file — including when
+ * The ownsServerPid flag tracks whether this process has written the PID file. Without it, the exit handler would unconditionally remove the file - including when
  * a duplicate instance is rejected by the guard. That would delete the legitimately running instance's PID file, allowing a third instance to bypass the check.
  */
 
@@ -419,7 +419,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Apply timestamps to console output only when using console logging. Wraps the four standard console methods so each call prepends a timestamp matching the
   // file logger's format, ensuring console output and prismcast.log share identical timestamps. The wrappers are installed once at startup and affect every log
-  // call from anywhere in the process — ours, Node's internal warnings, third-party library output — without distributing the responsibility across hundreds of
+  // call from anywhere in the process - ours, Node's internal warnings, third-party library output - without distributing the responsibility across hundreds of
   // call sites. The no-console suppressions are intentional: the entire purpose of this block is to replace console's standard methods with timestamped wrappers.
   if(parsedArgs.consoleLogging) {
 
@@ -476,7 +476,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   await ensureDataDirectory();
 
   // Check for an already-running instance before launching Chrome or binding the port. This must come after ensureDataDirectory() since the PID file lives there.
-  // We write the PID immediately after the check passes to close the race window — without this, a second instance launched during Chrome startup or port binding
+  // We write the PID immediately after the check passes to close the race window - without this, a second instance launched during Chrome startup or port binding
   // could pass the same check. If startup subsequently fails, the exit handler calls clearServerPid() to remove the stale file.
   checkForRunningInstance();
   saveServerPid();
@@ -547,7 +547,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   }
 
   // Generate the preroll fMP4 segment for immediate HLS response during stream startup. This runs after browser launch so that display detection has completed and
-  // getEffectiveViewport() returns the true dimensions — ensuring the preroll resolution matches what Chrome MediaRecorder will actually produce.
+  // getEffectiveViewport() returns the true dimensions - ensuring the preroll resolution matches what Chrome MediaRecorder will actually produce.
   await generatePreroll();
 
   // Verify the capture system works before accepting requests. This detects stale tabCapture state from a previous Chrome process and exits immediately if

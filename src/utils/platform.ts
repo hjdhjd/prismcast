@@ -141,9 +141,9 @@ export function getServiceFilePath(): string {
 
     case "windows": {
 
-      // The batch startup script is the primary service file on Windows. It contains the runtime configuration (working directory, environment variables, node and
-      // entry point paths) and serves as the single source of truth for stale path detection.
-      return path.join(getDataDir(), "prismcast-service.cmd");
+      // The PowerShell launcher script is the primary service file on Windows. It contains the runtime configuration (working directory, environment variables,
+      // node and entry point paths) and serves as the single source of truth for stale path detection. Task Scheduler invokes this launcher at user logon.
+      return path.join(getDataDir(), "prismcast-service.ps1");
     }
 
     default: {

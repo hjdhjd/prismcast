@@ -146,7 +146,7 @@ async function thumbnailRowStrategyFn(page: Page, profile: ChannelSelectionProfi
       );
     } catch {
 
-      // Timeout — readyState never dropped. Proceed normally.
+      // Timeout - readyState never dropped. Proceed normally.
     }
 
     return { success: true };

@@ -9,7 +9,7 @@ import { getAllStreams } from "../streaming/registry.js";
 import { getPackageVersion } from "../utils/index.js";
 
 /* These endpoints implement the HDHomeRun HTTP API that Plex and other clients use to identify, configure, and monitor tuners. Plex does not auto-detect emulated
- * tuners on non-standard ports — users must manually enter the address (IP:port) in Plex's DVR setup. The core discovery endpoints are device.xml (UPnP device
+ * tuners on non-standard ports - users must manually enter the address (IP:port) in Plex's DVR setup. The core discovery endpoints are device.xml (UPnP device
  * description), discover.json (device identity), lineup.json (channel lineup), and lineup_status.json (scan status). Additional endpoints include lineup.post
  * (scan control acknowledgement) and status.json (real-time tuner activity for monitoring dashboards).
  *
@@ -57,7 +57,7 @@ function resolveHostname(req: Request): string {
 
   // Check X-Forwarded-Host first (reverse proxy scenarios), then fall back to the Host header.
   const forwardedHost = req.get("x-forwarded-host");
-  const hostHeader = forwardedHost ? forwardedHost.split(",")[0].trim() : req.get("host");
+  const hostHeader = forwardedHost ? (forwardedHost.split(",")[0] ?? "").trim() : req.get("host");
 
   if(hostHeader) {
 
@@ -193,15 +193,14 @@ export function setupHdhrEndpoints(app: Express): void {
     const tuners: TunerStatusEntry[] = [];
 
     // Build active tuner entries from currently running streams.
-    for(let i = 0; i < streams.length; i++) {
+    for(const [ i, stream ] of streams.entries()) {
 
-      const stream = streams[i];
       const channelEntry = channelByKey.get(stream.info.storeKey);
 
       // Build the tuner entry. Active tuners include channel info and signal stats. Signal values are hardcoded at 100 since PrismCast streams are network-based and
-      // either working or not — there is no analog signal quality to report. Channel info is merged conditionally: prefer the channel map for VctNumber (numeric
+      // either working or not - there is no analog signal quality to report. Channel info is merged conditionally: prefer the channel map for VctNumber (numeric
       // channel) and VctName (display name), fall back to stream.channelName for VctName if the channel was removed from the map after the stream started. Client
-      // address is normalized to strip IPv6-mapped IPv4 prefixes (::ffff:192.168.1.1 → 192.168.1.1).
+      // address is normalized to strip IPv6-mapped IPv4 prefixes (::ffff:192.168.1.1 -> 192.168.1.1).
       const tuner: TunerStatusEntry = {
 
         Frequency: 0,

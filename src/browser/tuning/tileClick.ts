@@ -9,7 +9,7 @@ import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
 
 // Maximum number of play button click attempts before giving up. The first click sometimes misses due to coordinate shifts from SPA animations or overlay
-// interference — retrying with fresh coordinates resolves most transient failures.
+// interference - retrying with fresh coordinates resolves most transient failures.
 const MAX_PLAY_CLICK_ATTEMPTS = 3;
 
 // Timeout in milliseconds to wait for the play button to disappear after clicking it. This is the verification signal that the SPA transitioned to the player view.
@@ -26,7 +26,7 @@ const PLAY_CLICK_VERIFY_TIMEOUT = 3000;
  * 1. Find channel elements matching the resolved matchSelector CSS selector
  * 2. Walk up the DOM from the first visible match to find the nearest clickable ancestor (the tile container)
  * 3. Scroll the tile into view and click it
- * 4. If `playSelector` is configured: wait for the play button, click it, and verify the modal dismissed — retrying up to 3 times on silent failures
+ * 4. If `playSelector` is configured: wait for the play button, click it, and verify the modal dismissed - retrying up to 3 times on silent failures
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile with a non-null channelSelector.
  * @returns Result object with success status and optional failure reason.
@@ -129,7 +129,7 @@ async function tileClickStrategyFn(page: Page, profile: ChannelSelectionProfile)
 
     // Click the play button with retry. Coordinate-based clicks can silently miss due to SPA animations, overlay interference, or stale coordinates. We verify each
     // click by checking whether the play button disappears (indicating the modal dismissed and the SPA transitioned to the player). On failure, we re-read
-    // coordinates and retry — the same pattern used by Sling's clickWithRetry.
+    // coordinates and retry - the same pattern used by Sling's clickWithRetry.
     for(let attempt = 0; attempt < MAX_PLAY_CLICK_ATTEMPTS; attempt++) {
 
       // Get the play button coordinates. Re-read on every attempt because SPA animations or layout shifts may have moved the button since the last read.
@@ -157,7 +157,7 @@ async function tileClickStrategyFn(page: Page, profile: ChannelSelectionProfile)
 
       if(!playTarget) {
 
-        // Play button disappeared between attempts — the previous click likely worked and the SPA transitioned. This can happen when the verification timeout races
+        // Play button disappeared between attempts - the previous click likely worked and the SPA transitioned. This can happen when the verification timeout races
         // against a slow modal dismissal animation.
         if(attempt > 0) {
 
@@ -183,7 +183,7 @@ async function tileClickStrategyFn(page: Page, profile: ChannelSelectionProfile)
         return { success: true };
       } catch {
 
-        // Play button still visible — the click had no effect. Log and retry.
+        // Play button still visible - the click had no effect. Log and retry.
         if(attempt < (MAX_PLAY_CLICK_ATTEMPTS - 1)) {
 
           LOG.info("Play button click attempt %s of %s did not dismiss the modal. Retrying with fresh coordinates.",

@@ -282,22 +282,22 @@ function generateDebugBody(): string {
   for(const group of groups) {
 
     const groupId = "group-" + group.prefix;
-    const isSingleChild = (group.children.length === 1) && (group.children[0].category === group.prefix);
+    const firstChild = group.children[0];
+    const isSingleChild = (group.children.length === 1) && (firstChild?.category === group.prefix);
 
     parts.push("<div class=\"debug-group\">");
 
     if(isSingleChild) {
 
       // Standalone category (no colon, no sub-categories). Render as a single checkbox.
-      const child = group.children[0];
-      const checked = isCategoryEnabled(child.category) ? " checked" : "";
+      const checked = isCategoryEnabled(firstChild.category) ? " checked" : "";
 
       parts.push("<div class=\"debug-group-header\">");
-      parts.push("<input type=\"checkbox\" id=\"cat-" + escapeHtml(child.category) + "\" data-category=\"" + escapeHtml(child.category) + "\"");
+      parts.push("<input type=\"checkbox\" id=\"cat-" + escapeHtml(firstChild.category) + "\" data-category=\"" + escapeHtml(firstChild.category) + "\"");
       parts.push(" data-group=\"" + escapeHtml(group.prefix) + "\"" + checked);
       parts.push(" onchange=\"syncRawFromCheckboxes()\">");
-      parts.push("<label for=\"cat-" + escapeHtml(child.category) + "\">" + escapeHtml(child.category) + "</label>");
-      parts.push("<span class=\"debug-child-desc\">" + escapeHtml(child.description) + "</span>");
+      parts.push("<label for=\"cat-" + escapeHtml(firstChild.category) + "\">" + escapeHtml(firstChild.category) + "</label>");
+      parts.push("<span class=\"debug-child-desc\">" + escapeHtml(firstChild.description) + "</span>");
       parts.push("</div>");
     } else {
 
@@ -361,7 +361,7 @@ function generateDebugBody(): string {
  */
 export function setupDebugEndpoint(app: Express): void {
 
-  // GET /debug — Renders the debug category management page.
+  // GET /debug - Renders the debug category management page.
   app.get("/debug", (_req: Request, res: Response): void => {
 
     const html = generatePageWrapper(
@@ -374,7 +374,7 @@ export function setupDebugEndpoint(app: Express): void {
     res.send(html);
   });
 
-  // POST /debug — Applies a new debug filter pattern, persists it to config.json, and redirects back to the page.
+  // POST /debug - Applies a new debug filter pattern, persists it to config.json, and redirects back to the page.
   app.post("/debug", async (req: Request, res: Response): Promise<void> => {
 
     const body = req.body as Record<string, unknown>;

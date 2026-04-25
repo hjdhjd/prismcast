@@ -297,7 +297,7 @@ export function generateLandingPageStyles(): string {
 
     // Predefined channel override indicator. Left-border accent + blue dot on the first cell matches the settings form's .form-group.modified treatment
     // (border + dot = "modified from defaults"). The border targets td:first-child because border-collapse: separate prevents borders on <tr> elements. The
-    // dot is a ::before pseudo-element on the same cell so it's always the first visual element in the row, right next to the border. No background tint — the
+    // dot is a ::before pseudo-element on the same cell so it's always the first visual element in the row, right next to the border. No background tint - the
     // border and dot are the sole differentiators, exactly like modified settings.
     ".channel-table tr.channel-override td:first-child { border-left: 3px solid var(--interactive-primary); }",
     ".channel-table tr.channel-override td:first-child::before { content: ''; display: inline-block; width: 8px; height: 8px; " +
@@ -314,7 +314,7 @@ export function generateLandingPageStyles(): string {
     ".channel-table tr.channel-unavailable td { color: var(--text-tertiary); }",
     ".channel-table tr.channel-unavailable.channel-disabled { opacity: 0.5; }",
     ".channel-table.hide-disabled tr.channel-unavailable { display: none; }",
-    // Tag pills — rounded labels for tag display in the channel table, tag manager modal, and edit form. The pill shape provides clear visual identity and
+    // Tag pills - rounded labels for tag display in the channel table, tag manager modal, and edit form. The pill shape provides clear visual identity and
     // scannability across all surfaces where tags appear.
     ".tag-badge { display: inline-block; padding: 1px 7px; margin: 1px 2px; font-size: 11px; border-radius: 10px; " +
       "background: var(--surface-elevated); border: 1px solid var(--border-default); color: var(--text-secondary); font-weight: 500; }",
@@ -325,7 +325,7 @@ export function generateLandingPageStyles(): string {
     ".tag-checkbox-label input { margin: 0; }",
     ".tag-checkbox-label .tag-badge { cursor: pointer; }",
 
-    // Inline tag edit portal — shared dropdown portaled to <body> via JS. The td has the dropdown class so the document click handler recognizes it as a dropdown
+    // Inline tag edit portal - shared dropdown portaled to <body> via JS. The td has the dropdown class so the document click handler recognizes it as a dropdown
     // context. The display override preserves table-cell layout (the .dropdown class defaults to display: inline-block for div-based dropdowns).
     "td.dropdown { display: table-cell; }",
     ".inline-tag-menu { min-width: 140px; }",
@@ -335,7 +335,7 @@ export function generateLandingPageStyles(): string {
     ".tag-rename-input { font-size: 11px; padding: 1px 4px; border: 1px solid var(--interactive-primary); border-radius: 10px; " +
       "outline: none; width: 120px; }",
 
-    // Tag manager modal — list of tags with add/delete/restore actions. Hint and error styling use shared wizard classes.
+    // Tag manager modal - list of tags with add/delete/restore actions. Hint and error styling use shared wizard classes.
     ".tag-manager-add { display: flex; gap: 8px; margin-bottom: 8px; }",
     ".tag-manager-add input { flex: 1; padding: 4px 8px; font-size: 13px; border: 1px solid var(--form-input-border); border-radius: 4px; }",
     ".tag-manager-list { display: flex; flex-direction: column; gap: 4px; }",
@@ -420,7 +420,7 @@ export function generateLandingPageStyles(): string {
     ".health-success { color: var(--interactive-success); }",
     ".health-failed { color: var(--interactive-delete); }",
 
-    // Health icon is non-interactive — no hover effect, default cursor. The .user-channel override needs matching specificity (0-3-0) to prevent the
+    // Health icon is non-interactive - no hover effect, default cursor. The .user-channel override needs matching specificity (0-3-0) to prevent the
     // tinted hover background from making the health icon look clickable on user-defined channel rows.
     ".btn-icon-health { cursor: default; }",
     ".btn-icon-health:hover { background: transparent; color: var(--text-secondary); }",

@@ -5,45 +5,68 @@
 import type { Platform, ServiceManager } from "../utils/platform.js";
 import { SERVICE_ID, SERVICE_NAME, getLogsDirectory, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getPrismCastWorkingDirectory, getServiceFileDirectory,
   getServiceFilePath } from "../utils/platform.js";
-import { execFileSync, execSync } from "node:child_process";
+import { CONFIG_METADATA } from "../config/userConfig.js";
 import type { Nullable } from "../types/index.js";
+import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 
 const { promises: fsPromises } = fs;
 
+/* Promisified execFile is used for every external tool invocation in this module. execFile (as opposed to exec) passes arguments directly to the OS spawn call,
+ * bypassing the shell and eliminating every class of shell-quoting hazard. The Windows PowerShell invocations build a single -Command string inside a scriptblock
+ * with single-quote-escaped positional args (see invokePowerShell); macOS and Linux pass each argument as its own array element.
+ */
+const execFile = promisify(execFileCallback);
+
 /* These generators create platform-specific service definitions that allow PrismCast to run as a managed service. Each generator produces the appropriate
- * configuration format for its service manager (launchd plist for macOS, systemd unit for Linux, Task Scheduler task for Windows).
+ * configuration format for its service manager (launchd plist for macOS, systemd unit for Linux, Task Scheduler task for Windows), and owns every file it writes
+ * and every external call it makes.
  *
- * Key features of generated services:
- * - Auto-start at user login (user-level service, no root required)
- * - Auto-restart on crash (KeepAlive/Restart=always)
- * - PRISMCAST_SERVICE=1 environment variable for service detection
- * - Stdout/stderr capture for backup logging
+ * The interface exposes a single install(definition) entry point. Callers build a ServiceDefinition from the platform helpers and hand it to the generator; the
+ * generator decides how to realize it. This keeps the caller free of platform-specific file-count or file-format concerns, and lets each generator remain
+ * internally cohesive.
+ *
+ * Key features of the generated services:
+ * - Auto-start at user login (user-level service, no root or UAC required).
+ * - Auto-restart on crash (KeepAlive/Restart=always/RestartOnFailure).
+ * - PRISMCAST_SERVICE=1 environment variable for service detection.
+ * - Stdout/stderr capture to the data directory (launchd StandardOutPath/StandardErrorPath, Windows Start-Process stream redirection). Linux defers to the systemd
+ *   journal, which is the native logging surface on that platform.
+ *
+ * All external tool invocations are genuinely asynchronous (promisified execFile, fsPromises) so that install/start/stop/uninstall honor their Promise<void>
+ * contracts and do not block the event loop during multi-second operations such as the Windows task-state poll.
  */
 
 /**
- * Options for generating a service file.
+ * Structured description of the service to install. Each generator consumes this and realizes it in whatever file(s) and registration calls its platform requires.
  */
-export interface ServiceOptions {
+export interface ServiceDefinition {
 
-  // Environment variables to include in the service (in addition to PRISMCAST_SERVICE=1).
-  envVars?: Record<string, string>;
+  // The absolute path to PrismCast's entry point (dist/index.js).
+  readonly entryPoint: string;
+
+  // Environment variables to set when the service runs. PRISMCAST_SERVICE=1 is always included.
+  readonly envVars: Readonly<Record<string, string>>;
+
+  // Absolute path to the directory where service stdout/stderr logs should be written (where the platform supports redirection).
+  readonly logsDir: string;
+
+  // Absolute path to the Node.js executable.
+  readonly nodePath: string;
+
+  // Absolute working directory for the service process.
+  readonly workingDir: string;
 }
 
 /**
- * Interface for platform-specific service generators.
+ * Interface for platform-specific service generators. Each implementation owns all I/O and external tool invocations for its platform.
  */
 export interface ServiceGenerator {
 
-  // Generate the service file content.
-  generate(options: ServiceOptions): string;
-
-  // Get the path where the service file should be installed.
-  getInstallPath(): string;
-
-  // Install the service (write file and enable).
-  install(content: string): Promise<void>;
+  // Install the service from its structured definition. The generator writes any support files and registers the service with its platform's service manager.
+  install(definition: ServiceDefinition): Promise<void>;
 
   // Check if the service is currently installed.
   isInstalled(): Promise<boolean>;
@@ -51,10 +74,10 @@ export interface ServiceGenerator {
   // Check if the service is currently running.
   isRunning(): Promise<boolean>;
 
-  // Get the platform this generator is for.
+  // The platform this generator is for.
   platform: Platform;
 
-  // Get the service manager type.
+  // The service manager type.
   serviceManager: ServiceManager;
 
   // Start the service.
@@ -63,18 +86,12 @@ export interface ServiceGenerator {
   // Stop the service.
   stop(): Promise<void>;
 
-  // Uninstall the service (disable and remove file).
+  // Uninstall the service (deregister and remove any support files).
   uninstall(): Promise<void>;
 }
 
-/* Generates a launchd property list (plist) file for macOS. The plist is installed to ~/Library/LaunchAgents/ and configured with:
- * - RunAtLoad: Start when user logs in
- * - KeepAlive: Restart automatically if the process exits
- * - StandardOutPath/StandardErrorPath: Capture stdout/stderr to the data directory
- */
-
 /**
- * Escapes a string for use in XML by replacing special characters with entities.
+ * Escapes a string for use in XML by replacing special characters with entities. Used by the macOS plist generator; the other platforms do not emit XML.
  * @param str - The string to escape.
  * @returns The escaped string safe for XML.
  */
@@ -84,127 +101,177 @@ function escapeXml(str: string): string {
 }
 
 /**
+ * Runs an asynchronous child_process call and, on failure, re-throws an Error whose message includes the trimmed stderr text captured from the failed child and
+ * whose cause chain points back at the original Error. Without the stderr enrichment, execFile/exec failures surface to users as a generic "Command failed: ..."
+ * line while the actual diagnostic - written by the child to stderr - is left on the Error's unread stderr Buffer. Attaching the original via Error.cause
+ * preserves the original stack and structured properties (status, signal, stdout, stderr) for any programmatic consumer.
+ * @param description - A short human-readable label describing what was attempted; prepended to the error message.
+ * @param run - The child_process thunk to execute.
+ */
+async function runAndSurfaceStderr(description: string, run: () => Promise<unknown>): Promise<void> {
+
+  try {
+
+    await run();
+  } catch(error) {
+
+    if(!(error instanceof Error)) {
+
+      throw error;
+    }
+
+    const raw = (error as { stderr?: unknown }).stderr;
+    const detail = (Buffer.isBuffer(raw) ? raw.toString("utf8") : ((typeof raw === "string") ? raw : "")).trim();
+
+    throw new Error(description + ": " + ((detail.length > 0) ? detail : error.message), { cause: error });
+  }
+}
+
+/**
+ * Returns the service definition's environment variables as a deterministically ordered array of [key, value] entries. Consumed by every generator to produce
+ * byte-stable output across regenerations (essential for reliable stale-path detection and clean diffs when users inspect the generated files).
+ * @param envVars - The environment variable map to order.
+ * @returns The entries sorted alphabetically by key.
+ */
+function sortedEnvEntries(envVars: Readonly<Record<string, string>>): [string, string][] {
+
+  return Object.entries(envVars).toSorted(([a], [b]) => a.localeCompare(b));
+}
+
+/**
+ * Checks whether a file exists using the async fs API. Replaces fs.existsSync in async method bodies so the Promise<boolean> return type is backed by real I/O
+ * rather than a synchronous call papered over with an eslint-disable comment.
+ * @param filePath - The absolute path to check.
+ * @returns True if the file exists and is accessible, false otherwise.
+ */
+async function fileExists(filePath: string): Promise<boolean> {
+
+  try {
+
+    await fsPromises.access(filePath);
+
+    return true;
+  } catch {
+
+    return false;
+  }
+}
+
+/* Generates a launchd property list (plist) file for macOS. The plist is installed to ~/Library/LaunchAgents/ and configured with:
+ * - RunAtLoad: Start when user logs in.
+ * - KeepAlive: Restart automatically if the process exits.
+ * - StandardOutPath/StandardErrorPath: Capture stdout/stderr to the data directory.
+ */
+
+/**
  * Creates a launchd service generator for macOS.
  * @returns A ServiceGenerator for launchd.
  */
 function createLaunchdGenerator(): ServiceGenerator {
 
+  /**
+   * Builds the plist XML from a service definition.
+   * @param definition - The service definition to serialize.
+   * @returns The plist content as a UTF-8 string.
+   */
+  function generatePlist(definition: ServiceDefinition): string {
+
+    const envEntries = sortedEnvEntries(definition.envVars)
+      .map(([ key, value ]) => [ "      <key>" + escapeXml(key) + "</key>", "      <string>" + escapeXml(value) + "</string>" ].join("\n"))
+      .join("\n");
+
+    return [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
+      "<plist version=\"1.0\">",
+      "<dict>",
+      "  <key>Label</key>",
+      "  <string>" + escapeXml(SERVICE_ID) + "</string>",
+      "",
+      "  <key>ProgramArguments</key>",
+      "  <array>",
+      "    <string>" + escapeXml(definition.nodePath) + "</string>",
+      "    <string>" + escapeXml(definition.entryPoint) + "</string>",
+      "  </array>",
+      "",
+      "  <key>WorkingDirectory</key>",
+      "  <string>" + escapeXml(definition.workingDir) + "</string>",
+      "",
+      "  <key>EnvironmentVariables</key>",
+      "  <dict>",
+      envEntries,
+      "  </dict>",
+      "",
+      "  <key>RunAtLoad</key>",
+      "  <true/>",
+      "",
+      "  <key>KeepAlive</key>",
+      "  <true/>",
+      "",
+      "  <key>StandardOutPath</key>",
+      "  <string>" + escapeXml(path.join(definition.logsDir, "service-stdout.log")) + "</string>",
+      "",
+      "  <key>StandardErrorPath</key>",
+      "  <string>" + escapeXml(path.join(definition.logsDir, "service-stderr.log")) + "</string>",
+      "</dict>",
+      "</plist>",
+      ""
+    ].join("\n");
+  }
+
   return {
 
-    generate(options: ServiceOptions): string {
+    async install(definition: ServiceDefinition): Promise<void> {
 
-      const nodePath = getNodeExecutablePath();
-      const entryPoint = getPrismCastEntryPoint();
-      const workingDir = getPrismCastWorkingDirectory();
-      const logsDir = getLogsDirectory();
-
-      // Build environment variables section. Always include PRISMCAST_SERVICE=1 for service detection.
-      const envVars: Record<string, string> = { PRISMCAST_SERVICE: "1", ...options.envVars };
-
-      // Generate the environment dictionary entries.
-      const envEntries = Object.entries(envVars)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([ key, value ]) => [
-          "      <key>" + escapeXml(key) + "</key>",
-          "      <string>" + escapeXml(value) + "</string>"
-        ].join("\n"))
-        .join("\n");
-
-      // Generate the plist content.
-      return [
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
-        "<plist version=\"1.0\">",
-        "<dict>",
-        "  <key>Label</key>",
-        "  <string>" + escapeXml(SERVICE_ID) + "</string>",
-        "",
-        "  <key>ProgramArguments</key>",
-        "  <array>",
-        "    <string>" + escapeXml(nodePath) + "</string>",
-        "    <string>" + escapeXml(entryPoint) + "</string>",
-        "  </array>",
-        "",
-        "  <key>WorkingDirectory</key>",
-        "  <string>" + escapeXml(workingDir) + "</string>",
-        "",
-        "  <key>EnvironmentVariables</key>",
-        "  <dict>",
-        envEntries,
-        "  </dict>",
-        "",
-        "  <key>RunAtLoad</key>",
-        "  <true/>",
-        "",
-        "  <key>KeepAlive</key>",
-        "  <true/>",
-        "",
-        "  <key>StandardOutPath</key>",
-        "  <string>" + escapeXml(logsDir + "/service-stdout.log") + "</string>",
-        "",
-        "  <key>StandardErrorPath</key>",
-        "  <string>" + escapeXml(logsDir + "/service-stderr.log") + "</string>",
-        "</dict>",
-        "</plist>",
-        ""
-      ].join("\n");
-    },
-
-    getInstallPath(): string {
-
-      return getServiceFilePath();
-    },
-
-    async install(content: string): Promise<void> {
-
-      const installPath = this.getInstallPath();
+      const installPath = getServiceFilePath();
       const installDir = getServiceFileDirectory();
-      const logsDir = getLogsDirectory();
 
       // Ensure directories exist.
       await fsPromises.mkdir(installDir, { recursive: true });
-      await fsPromises.mkdir(logsDir, { recursive: true });
+      await fsPromises.mkdir(definition.logsDir, { recursive: true });
 
-      // Write the plist file.
-      await fsPromises.writeFile(installPath, content, "utf8");
+      // Write the plist.
+      await fsPromises.writeFile(installPath, generatePlist(definition), "utf8");
 
-      // Load the service with launchctl.
+      // Load the service with launchctl. If load fails because the definition is already loaded (common on reinstall), unload first then reload.
       try {
 
-        execSync("launchctl load -w \"" + installPath + "\"", { stdio: "pipe" });
+        await execFile("launchctl", [ "load", "-w", installPath ]);
       } catch {
 
-        // If load fails, try to unload first then reload (handles reinstall case).
         try {
 
-          execSync("launchctl unload \"" + installPath + "\"", { stdio: "pipe" });
+          await execFile("launchctl", [ "unload", installPath ]);
         } catch {
 
           // Ignore unload errors.
         }
 
-        execSync("launchctl load -w \"" + installPath + "\"", { stdio: "pipe" });
+        await runAndSurfaceStderr("launchctl load failed", async () => execFile("launchctl", [ "load", "-w", installPath ]));
       }
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async isInstalled(): Promise<boolean> {
 
-      return fs.existsSync(this.getInstallPath());
+      return fileExists(getServiceFilePath());
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async isRunning(): Promise<boolean> {
 
       try {
 
-        // Use launchctl list | grep to get tab-separated output: "PID\tStatus\tLabel". The grep exits non-zero if not found.
-        const result = execSync("launchctl list | grep " + SERVICE_ID, { encoding: "utf8", stdio: "pipe" });
+        // launchctl list emits tab-separated rows: "PID\tStatus\tLabel". We find the row for this service and parse the PID from the first column. A PID of "-"
+        // means the service is loaded but not actively running.
+        const { stdout } = await execFile("launchctl", ["list"]);
+        const line = stdout.split("\n").find((row) => row.includes(SERVICE_ID));
 
-        // Parse the PID from the first column. Format: "12345\t0\tcom.github.hjdhjd.prismcast" or "-\t0\t..." if loaded but not running.
-        const pid = result.trim().split("\t")[0];
+        if(!line) {
 
-        // PID is "-" when loaded but process not running, or a number when actually running.
+          return false;
+        }
+
+        const pid = line.trim().split("\t")[0];
+
         return (pid !== "-") && !isNaN(Number(pid));
       } catch {
 
@@ -216,47 +283,40 @@ function createLaunchdGenerator(): ServiceGenerator {
 
     serviceManager: "launchd",
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async start(): Promise<void> {
 
-      const installPath = this.getInstallPath();
+      const installPath = getServiceFilePath();
 
-      // Unload first to clear any stale loaded-but-not-running state. Without this, `launchctl load -w` is a no-op when the definition is already loaded
-      // (e.g., after a crash or upgrade with changed paths), and the cached stale definition is reused.
+      // Unload first to clear any stale loaded-but-not-running state. Without this, `launchctl load -w` is a no-op when the definition is already loaded (e.g.,
+      // after a crash or upgrade with changed paths), and the cached stale definition is reused.
       try {
 
-        execSync("launchctl unload \"" + installPath + "\"", { stdio: "pipe" });
+        await execFile("launchctl", [ "unload", installPath ]);
       } catch {
 
-        // Ignore — may not be loaded.
+        // Ignore - may not be loaded.
       }
 
-      // Load the plist with the current (possibly updated) definition.
-      execSync("launchctl load -w \"" + installPath + "\"", { stdio: "pipe" });
-
-      // Explicitly start the service. This handles the case where RunAtLoad doesn't trigger (e.g., load-then-start sequence).
-      execSync("launchctl start " + SERVICE_ID, { stdio: "pipe" });
+      await runAndSurfaceStderr("launchctl load failed", async () => execFile("launchctl", [ "load", "-w", installPath ]));
+      await runAndSurfaceStderr("launchctl start failed", async () => execFile("launchctl", [ "start", SERVICE_ID ]));
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async stop(): Promise<void> {
 
-      const installPath = this.getInstallPath();
-
-      execSync("launchctl unload \"" + installPath + "\"", { stdio: "pipe" });
+      await runAndSurfaceStderr("launchctl unload failed", async () => execFile("launchctl", [ "unload", getServiceFilePath() ]));
     },
 
     async uninstall(): Promise<void> {
 
-      const installPath = this.getInstallPath();
+      const installPath = getServiceFilePath();
 
       // Unload the service first.
       try {
 
-        execSync("launchctl unload \"" + installPath + "\"", { stdio: "pipe" });
+        await execFile("launchctl", [ "unload", installPath ]);
       } catch {
 
-        // Ignore errors if service wasn't loaded.
+        // Ignore errors if the service was not loaded.
       }
 
       // Remove the plist file.
@@ -266,9 +326,12 @@ function createLaunchdGenerator(): ServiceGenerator {
 }
 
 /* Generates a systemd user service unit file for Linux. The unit is installed to ~/.config/systemd/user/ and configured with:
- * - Restart=always: Restart automatically if the process exits
- * - RestartSec=5: Wait 5 seconds before restarting
- * - WantedBy=default.target: Start when user session begins
+ * - Restart=always: Restart automatically if the process exits.
+ * - RestartSec=5: Wait 5 seconds before restarting.
+ * - WantedBy=default.target: Start when user session begins.
+ *
+ * Linux deliberately does not redirect stdout/stderr to files - systemd captures them to the journal, which is the native Linux logging surface (journalctl
+ * --user -u prismcast).
  */
 
 /**
@@ -277,86 +340,74 @@ function createLaunchdGenerator(): ServiceGenerator {
  */
 function createSystemdGenerator(): ServiceGenerator {
 
+  /**
+   * Builds the systemd unit file from a service definition.
+   * @param definition - The service definition to serialize.
+   * @returns The unit file content as a UTF-8 string.
+   */
+  function generateUnit(definition: ServiceDefinition): string {
+
+    const envLines = sortedEnvEntries(definition.envVars).map(([ key, value ]) => "Environment=\"" + key + "=" + value + "\"").join("\n");
+
+    return [
+      "[Unit]",
+      "Description=" + SERVICE_NAME + " Streaming Server",
+      "After=network.target",
+      "",
+      "[Service]",
+      "Type=simple",
+      "ExecStart=" + definition.nodePath + " " + definition.entryPoint,
+      "WorkingDirectory=" + definition.workingDir,
+      "Restart=always",
+      "RestartSec=5",
+      envLines,
+      "",
+      "[Install]",
+      "WantedBy=default.target",
+      ""
+    ].join("\n");
+  }
+
   return {
 
-    generate(options: ServiceOptions): string {
+    async install(definition: ServiceDefinition): Promise<void> {
 
-      const nodePath = getNodeExecutablePath();
-      const entryPoint = getPrismCastEntryPoint();
-      const workingDir = getPrismCastWorkingDirectory();
-
-      // Build environment variables. Always include PRISMCAST_SERVICE=1 for service detection.
-      const envVars: Record<string, string> = { PRISMCAST_SERVICE: "1", ...options.envVars };
-
-      // Generate Environment= lines, sorted alphabetically.
-      const envLines = Object.entries(envVars).sort(([a], [b]) => a.localeCompare(b)).map(([ key, value ]) => "Environment=\"" + key + "=" + value + "\"").join("\n");
-
-      // Generate the unit file content.
-      return [
-        "[Unit]",
-        "Description=" + SERVICE_NAME + " Streaming Server",
-        "After=network.target",
-        "",
-        "[Service]",
-        "Type=simple",
-        "ExecStart=" + nodePath + " " + entryPoint,
-        "WorkingDirectory=" + workingDir,
-        "Restart=always",
-        "RestartSec=5",
-        envLines,
-        "",
-        "[Install]",
-        "WantedBy=default.target",
-        ""
-      ].join("\n");
-    },
-
-    getInstallPath(): string {
-
-      return getServiceFilePath();
-    },
-
-    async install(content: string): Promise<void> {
-
-      const installPath = this.getInstallPath();
+      const installPath = getServiceFilePath();
       const installDir = getServiceFileDirectory();
-      const logsDir = getLogsDirectory();
 
       // Ensure directories exist.
       await fsPromises.mkdir(installDir, { recursive: true });
-      await fsPromises.mkdir(logsDir, { recursive: true });
+      await fsPromises.mkdir(definition.logsDir, { recursive: true });
 
       // Write the unit file.
-      await fsPromises.writeFile(installPath, content, "utf8");
+      await fsPromises.writeFile(installPath, generateUnit(definition), "utf8");
 
       // Reload systemd to pick up the new unit file.
       try {
 
-        execSync("systemctl --user daemon-reload", { stdio: "pipe" });
+        await execFile("systemctl", [ "--user", "daemon-reload" ]);
       } catch {
 
         // Ignore if systemctl isn't available (shouldn't happen on systemd systems).
       }
 
       // Enable and start the service.
-      execSync("systemctl --user enable prismcast.service", { stdio: "pipe" });
-      execSync("systemctl --user start prismcast.service", { stdio: "pipe" });
+      await runAndSurfaceStderr("systemctl enable failed", async () => execFile("systemctl", [ "--user", "enable", "prismcast.service" ]));
+      await runAndSurfaceStderr("systemctl start failed", async () => execFile("systemctl", [ "--user", "start", "prismcast.service" ]));
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async isInstalled(): Promise<boolean> {
 
-      return fs.existsSync(this.getInstallPath());
+      return fileExists(getServiceFilePath());
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async isRunning(): Promise<boolean> {
 
       try {
 
-        const result = execSync("systemctl --user is-active prismcast.service", { encoding: "utf8", stdio: "pipe" });
+        const { stdout } = await execFile("systemctl", [ "--user", "is-active", "prismcast.service" ]);
 
-        return result.trim() === "active";
+        return stdout.trim() === "active";
       } catch {
 
         return false;
@@ -367,26 +418,24 @@ function createSystemdGenerator(): ServiceGenerator {
 
     serviceManager: "systemd",
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async start(): Promise<void> {
 
-      execSync("systemctl --user start prismcast.service", { stdio: "pipe" });
+      await runAndSurfaceStderr("systemctl start failed", async () => execFile("systemctl", [ "--user", "start", "prismcast.service" ]));
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async stop(): Promise<void> {
 
-      execSync("systemctl --user stop prismcast.service", { stdio: "pipe" });
+      await runAndSurfaceStderr("systemctl stop failed", async () => execFile("systemctl", [ "--user", "stop", "prismcast.service" ]));
     },
 
     async uninstall(): Promise<void> {
 
-      const installPath = this.getInstallPath();
+      const installPath = getServiceFilePath();
 
       // Stop and disable the service.
       try {
 
-        execSync("systemctl --user stop prismcast.service", { stdio: "pipe" });
+        await execFile("systemctl", [ "--user", "stop", "prismcast.service" ]);
       } catch {
 
         // Ignore if not running.
@@ -394,7 +443,7 @@ function createSystemdGenerator(): ServiceGenerator {
 
       try {
 
-        execSync("systemctl --user disable prismcast.service", { stdio: "pipe" });
+        await execFile("systemctl", [ "--user", "disable", "prismcast.service" ]);
       } catch {
 
         // Ignore if not enabled.
@@ -406,7 +455,7 @@ function createSystemdGenerator(): ServiceGenerator {
       // Reload systemd.
       try {
 
-        execSync("systemctl --user daemon-reload", { stdio: "pipe" });
+        await execFile("systemctl", [ "--user", "daemon-reload" ]);
       } catch {
 
         // Ignore.
@@ -415,22 +464,155 @@ function createSystemdGenerator(): ServiceGenerator {
   };
 }
 
-/* Uses Windows Task Scheduler to run PrismCast at user logon. Three files in the data directory define the service: a batch startup script (.cmd) with environment
- * setup and the node invocation, a VBScript wrapper (.vbs) that launches it with a hidden console window, and a Task Scheduler XML definition (.xml) imported via
- * schtasks /Create /XML. The XML format avoids the shell quoting issues inherent in schtasks /TR and enables advanced task settings (restart on failure, unlimited
- * execution time, battery policy) that command-line flags cannot express. All schtasks calls use execFileSync to bypass cmd.exe shell interpretation entirely.
+/* Registers a Windows Task Scheduler task for PrismCast. The architecture is:
+ *
+ * - One support file: a PowerShell launcher (.ps1) that sets environment variables and spawns node with stdout/stderr redirected to the data directory. The
+ *   launcher serves the same role as the macOS plist's EnvironmentVariables dict and the systemd unit's Environment= lines - it is the persistent, human-readable
+ *   definition of the service's runtime.
+ *
+ * - One registration mechanism: the PowerShell ScheduledTasks module (Register-ScheduledTask, Start-ScheduledTask, etc.), which is the Task Scheduler 2.0 COM
+ *   surface exposed as typed cmdlets. We do not emit Task Scheduler XML and we do not invoke schtasks.exe. That choice eliminates the MSXML encoding dialect, the
+ *   shell-quoting hazards of schtasks /TR, and the need to get the Task XML schema's element order exactly right.
+ *
+ * - Task Scheduler spawns `powershell.exe -WindowStyle Hidden -File <launcher.ps1>`. PowerShell with -WindowStyle Hidden suppresses the console window natively on
+ *   Windows 10+, so no .vbs launcher is needed. VBScript was deprecated by Microsoft in 2024.
+ *
+ * All PowerShell invocations from Node go through invokePowerShell(), which documents the single argument-escape rule in its docstring. Values flow through Node's
+ * execFile without shell interpretation, and inside the PowerShell command string the one escape surface is single-quote doubling - see invokePowerShell below.
  */
 
 /**
- * Escapes a string for use in a Windows batch (.cmd) file. Literal percent characters must be doubled because batch interprets % as variable expansion even inside
- * quoted strings.
- * @param value - The string to escape.
- * @returns The escaped string safe for batch files.
+ * Escapes a value for embedding inside a single-quoted PowerShell string. PowerShell's single-quoted strings are literal (no interpolation, no backslash escapes);
+ * the only character that requires escaping is the single quote itself, which is written as two consecutive single quotes.
+ * @param value - The value to escape.
+ * @returns The value with internal single quotes doubled.
  */
-function escapeBatchValue(value: string): string {
+function escapePowerShellSingleQuoted(value: string): string {
 
-  return value.replaceAll("%", "%%");
+  return value.replaceAll("'", "''");
 }
+
+/**
+ * Wraps a value in a PowerShell single-quoted string literal, escaping any internal single quotes.
+ * @param value - The value to quote.
+ * @returns The PowerShell literal (including the surrounding quotes).
+ */
+function powerShellLiteral(value: string): string {
+
+  return "'" + escapePowerShellSingleQuoted(value) + "'";
+}
+
+/**
+ * Invokes powershell.exe with a script block and a set of positional arguments. The scriptBody is expected to declare its inputs via a param() clause at the top;
+ * each argument is serialized through powerShellLiteral() and appended to the command after the scriptblock, so PowerShell's own parser binds them to the declared
+ * parameters.
+ *
+ * The only escape surface in this path is the single-quote doubling performed by powerShellLiteral(). That one rule is total: inside a PowerShell single-quoted
+ * string, no other character has meaning - there is no interpolation, no backslash escape, no subshell, no variable expansion - and Windows filesystem rules forbid
+ * the double-quote character that could let a path escape the outer literal quoting we use inside the launcher's ArgumentList. Node's execFile then passes the
+ * composed command string to powershell.exe as a single UTF-16 argv element, bypassing cmd.exe entirely and eliminating shell-level quoting concerns.
+ *
+ * On failure, any stderr text that PowerShell wrote (e.g., a cmdlet's error record) is folded into the thrown Error's message by runAndSurfaceStderr, and the
+ * original Error is attached via the cause chain so programmatic consumers retain access to the structured failure details.
+ * @param scriptBody - The PowerShell script body, including any param() declaration.
+ * @param args - Positional arguments to pass to the script block.
+ */
+async function invokePowerShell(scriptBody: string, args: string[] = []): Promise<void> {
+
+  const quotedArgs = args.map((value) => powerShellLiteral(value)).join(" ");
+  const command = "& { " + scriptBody + " } " + quotedArgs;
+
+  await runAndSurfaceStderr("PowerShell invocation failed",
+    async () => execFile("powershell.exe", [ "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command ]));
+}
+
+/* Script bodies for Task Scheduler operations. Each script is a self-contained PowerShell block that reads its inputs from positional parameters - never from string
+ * interpolation or inline variables - so that Node-side argument quoting is always the single-quoted-literal escape and nothing else.
+ */
+
+/* Registers (or replaces) the PrismCast Task Scheduler task. Takes two positional parameters: the task name and the absolute path to the launcher .ps1 file.
+ *
+ * The first step stops any currently-running instance of the existing task and waits for its process to actually terminate before we replace the definition. Two
+ * Microsoft-documented facts make this wait necessary: Stop-ScheduledTask initiates the stop but returns before the process has exited (there is no -Wait
+ * switch and no built-in completion primitive), and "You can make changes to a task definition even if an instance of the task is running. The changes do not
+ * affect the current instance." (Set-ScheduledTask docs, which applies equally to Register-ScheduledTask -Force). Without the poll loop, `prismcast service
+ * install --force` on a running service would leave the old node process holding port 5589 while Start-ScheduledTask spawns a new node that fails to bind,
+ * triggering the 1-minute RestartOnFailure backoff and silently delaying the service becoming available for up to three minutes.
+ *
+ * The poll checks State every 250 ms against a 30-second ceiling. The ceiling is a belt-and-suspenders fallback - if the old process is pathologically stuck,
+ * Task Scheduler's own TerminateProcess path will clean it up later. A null state means the task was unregistered concurrently, which is also a valid "not
+ * running anymore" exit.
+ *
+ * The action invokes powershell.exe with -WindowStyle Hidden and -File pointing at the launcher. -ExecutionPolicy Bypass is the Microsoft-documented pattern for
+ * installer-scripted scenarios - it disables the interactive-use execution policy gate without globally weakening script security on the machine.
+ *
+ * The trigger fires at user logon. The principal runs the task as the current user with Interactive logon and Limited (LeastPrivilege) run level, mirroring the
+ * user-scoped semantics of launchd user agents and systemd --user units. On workgroup machines where USERDOMAIN is not set, we fall back to COMPUTERNAME.
+ *
+ * Settings express unlimited execution time (PT0S), battery-friendly behavior, ignore-new-instance policy, and automatic restart on failure (3 attempts, 1-minute
+ * interval).
+ */
+const WINDOWS_REGISTER_SCRIPT = [
+  "param($TaskName, $Launcher)",
+  "$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue",
+  "if($existing) {",
+  "  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null",
+  "  $deadline = (Get-Date).AddSeconds(30)",
+  "  while((Get-Date) -lt $deadline) {",
+  "    $state = (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).State",
+  "    if(($null -eq $state) -or ($state -ne 'Running')) { break }",
+  "    Start-Sleep -Milliseconds 250",
+  "  }",
+  "}",
+  "$userId = $env:USERDOMAIN + '\\' + $env:USERNAME",
+  "if(-not $env:USERDOMAIN) { $userId = $env:COMPUTERNAME + '\\' + $env:USERNAME }",
+  "$taskArg = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"' + $Launcher + '\"'",
+  "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $taskArg",
+  "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId",
+  "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0) " +
+    "-MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)",
+  "$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited",
+  "Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null"
+].join("\n");
+
+/* Unregisters the task. Takes the task name as its sole parameter.
+ */
+const WINDOWS_UNREGISTER_SCRIPT = [
+  "param($TaskName)",
+  "Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue | Out-Null"
+].join("\n");
+
+/* Starts the task, re-enabling it first in case a previous stop() call left it disabled. Takes the task name as its sole parameter.
+ */
+const WINDOWS_START_SCRIPT = [
+  "param($TaskName)",
+  "Enable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null",
+  "Start-ScheduledTask -TaskName $TaskName | Out-Null"
+].join("\n");
+
+/* Stops the task. Disables it first to prevent the RestartOnFailure policy from re-launching the process after we stop it. Start-ScheduledTask in WINDOWS_START_SCRIPT
+ * re-enables the task. Takes the task name as its sole parameter.
+ */
+const WINDOWS_STOP_SCRIPT = [
+  "param($TaskName)",
+  "Disable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null",
+  "Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null"
+].join("\n");
+
+/* Exits 0 if the task is registered, 1 otherwise. Takes the task name as its sole parameter.
+ */
+const WINDOWS_IS_INSTALLED_SCRIPT = [
+  "param($TaskName)",
+  "if(Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
+].join("\n");
+
+/* Exits 0 if the task's State property is 'Running', 1 otherwise. Takes the task name as its sole parameter.
+ */
+const WINDOWS_IS_RUNNING_SCRIPT = [
+  "param($TaskName)",
+  "$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue",
+  "if($task -and ($task.State -eq 'Running')) { exit 0 } else { exit 1 }"
+].join("\n");
 
 /**
  * Creates a Windows Task Scheduler generator.
@@ -441,163 +623,116 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
   const taskName = SERVICE_NAME;
 
   /**
-   * Returns the path to the VBScript wrapper file that launches PrismCast with a hidden console window.
-   * @returns The absolute path to the .vbs file in the data directory.
+   * Generates the PowerShell launcher script (.ps1) that Task Scheduler will invoke at user logon. The launcher sets environment variables and spawns node via
+   * Start-Process, with stdout and stderr redirected to separate log files in the data directory. Start-Process binds the child's stream file descriptors directly
+   * to the output files, so PowerShell's host-level encoding conversions never touch the stream - node's raw UTF-8 bytes land unchanged in the log file.
+   *
+   * Path and value embedding uses PowerShell single-quoted string literals, which are fully literal (no interpolation, no backslash escapes). The only escape
+   * needed is doubling any internal single-quote character. Windows filesystem rules forbid double quotes in paths, so wrapping the Start-Process ArgumentList in
+   * literal double quotes safely handles paths with spaces.
+   *
+   * The node and entry point paths are also written as comment metadata near the top of the file, so that stale-path detection can recover them without having to
+   * parse the Start-Process invocation.
+   * @param definition - The service definition to serialize.
+   * @returns The launcher content as a UTF-8 string with a leading BOM.
    */
-  function getVbsPath(): string {
+  function generateLauncher(definition: ServiceDefinition): string {
 
-    return path.join(getServiceFileDirectory(), "prismcast-service.vbs");
-  }
+    const stdoutLog = path.join(definition.logsDir, "service-stdout.log");
+    const stderrLog = path.join(definition.logsDir, "service-stderr.log");
+    const envLines = sortedEnvEntries(definition.envVars).map(([ key, value ]) => "$env:" + key + " = " + powerShellLiteral(value));
 
-  /**
-   * Returns the path to the Task Scheduler XML definition file.
-   * @returns The absolute path to the .xml file in the data directory.
-   */
-  function getXmlPath(): string {
+    // The Start-Process ArgumentList is a PowerShell single-quoted string that contains a literal double-quoted entry-point path. Windows disallows double quotes
+    // in paths, so this quoting is always well-formed.
+    const argumentList = "'\"" + escapePowerShellSingleQuoted(definition.entryPoint) + "\"'";
 
-    return path.join(getServiceFileDirectory(), "prismcast-task.xml");
-  }
-
-  /**
-   * Generates the Task Scheduler XML definition. The XML format provides structured task configuration without shell quoting and supports advanced settings
-   * (restart on failure, no execution time limit, battery policy) that schtasks command-line flags cannot express. Element ordering follows the Task Scheduler
-   * XML schema.
-   * @param vbsFilePath - The absolute path to the VBScript wrapper that launches PrismCast.
-   * @returns The XML content for the task definition.
-   */
-  function generateTaskXml(vbsFilePath: string): string {
-
-    return [
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-      "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">",
-      "  <RegistrationInfo>",
-      "    <Description>" + escapeXml(SERVICE_NAME + " Streaming Server") + "</Description>",
-      "  </RegistrationInfo>",
-      "  <Triggers>",
-      "    <LogonTrigger>",
-      "      <Enabled>true</Enabled>",
-      "    </LogonTrigger>",
-      "  </Triggers>",
-      "  <Principals>",
-      "    <Principal id=\"Author\">",
-      "      <LogonType>InteractiveToken</LogonType>",
-      "      <RunLevel>HighestAvailable</RunLevel>",
-      "    </Principal>",
-      "  </Principals>",
-      "  <Settings>",
-      "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
-      "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
-      "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
-      "    <Enabled>true</Enabled>",
-      "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
-      "    <RestartOnFailure>",
-      "      <Interval>PT5S</Interval>",
-      "      <Count>3</Count>",
-      "    </RestartOnFailure>",
-      "  </Settings>",
-      "  <Actions Context=\"Author\">",
-      "    <Exec>",
-      "      <Command>wscript.exe</Command>",
-      "      <Arguments>" + escapeXml("\"" + vbsFilePath + "\"") + "</Arguments>",
-      "    </Exec>",
-      "  </Actions>",
-      "</Task>",
+    // PowerShell 5.1's default file encoding is ambiguous. A leading UTF-8 BOM (U+FEFF) ensures every supported PowerShell version parses the launcher as UTF-8.
+    // Windows line endings (CRLF) are conventional for .ps1 files and match what tools like Set-Content produce.
+    return "\uFEFF" + [
+      "# PrismCast service launcher.",
+      "#",
+      "# This file is auto-generated by `prismcast service install`. Manual edits will be overwritten the next time the service is installed or restarted.",
+      "#",
+      "# The following metadata lines are read back by `prismcast service status` to detect stale paths after a PrismCast upgrade. Do not remove them.",
+      "# node: " + definition.nodePath,
+      "# entry: " + definition.entryPoint,
+      "",
+      "# Environment variables for the service process.",
+      ...envLines,
+      "",
+      "# Spawn node with stdout and stderr redirected to separate log files. Start-Process binds the child's file descriptors directly, so byte-level content flows",
+      "# through unmodified. WindowStyle 'Hidden' gives node its own hidden console - the reliable pattern for combining stream redirection with a suppressed window",
+      "# across every supported PowerShell version. Since the outer PowerShell is already launched hidden by Task Scheduler, the user sees no window at any point.",
+      "# -Wait keeps the PowerShell host alive until node exits, so Task Scheduler's RestartOnFailure policy can observe non-zero exit codes and restart as intended.",
+      "$startArgs = @{",
+      "  ArgumentList = " + argumentList,
+      "  FilePath = " + powerShellLiteral(definition.nodePath),
+      "  PassThru = $true",
+      "  RedirectStandardError = " + powerShellLiteral(stderrLog),
+      "  RedirectStandardOutput = " + powerShellLiteral(stdoutLog),
+      "  Wait = $true",
+      "  WindowStyle = 'Hidden'",
+      "  WorkingDirectory = " + powerShellLiteral(definition.workingDir),
+      "}",
+      "",
+      "$process = Start-Process @startArgs",
+      "exit $process.ExitCode",
       ""
-    ].join("\n");
+    ].join("\r\n");
+  }
+
+  /**
+   * Removes the legacy three-file service artifacts (.cmd launcher, .vbs wrapper, .xml task definition) and the long-obsolete service-installed.marker file from
+   * prior PrismCast versions. Safe to call unconditionally; missing files are silently ignored.
+   * @param installDir - The service file directory.
+   */
+  async function removeLegacyWindowsArtifacts(installDir: string): Promise<void> {
+
+    const legacyFiles = [
+      path.join(installDir, "prismcast-service.cmd"),
+      path.join(installDir, "prismcast-service.vbs"),
+      path.join(installDir, "prismcast-task.xml"),
+      path.join(installDir, "service-installed.marker")
+    ];
+
+    await Promise.all(legacyFiles.map(async (filePath) => fsPromises.rm(filePath, { force: true })));
   }
 
   return {
 
-    generate(options: ServiceOptions): string {
+    async install(definition: ServiceDefinition): Promise<void> {
 
-      const nodePath = getNodeExecutablePath();
-      const entryPoint = getPrismCastEntryPoint();
-      const workingDir = getPrismCastWorkingDirectory();
-
-      // Build environment variables. Always include PRISMCAST_SERVICE=1 for service detection.
-      const envVars: Record<string, string> = { PRISMCAST_SERVICE: "1", ...options.envVars };
-
-      // Generate set commands for environment variables, sorted alphabetically. Values are escaped for batch interpretation where literal % must be doubled.
-      const envLines = Object.entries(envVars)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([ key, value ]) => "set \"" + key + "=" + escapeBatchValue(value) + "\"");
-
-      // Generate the batch file content. Each line uses exactly one level of quoting because the batch file is a standalone script, not an inline argument embedded
-      // in another command. The rem lines provide machine-readable path metadata for stale path detection, parsed by getServicePaths(). CRLF line endings follow
-      // Windows batch file convention.
-      return [
-        "@echo off",
-        "rem node:" + nodePath,
-        "rem entry:" + entryPoint,
-        "cd /d \"" + escapeBatchValue(workingDir) + "\"",
-        ...envLines,
-        "\"" + escapeBatchValue(nodePath) + "\" \"" + escapeBatchValue(entryPoint) + "\""
-      ].join("\r\n") + "\r\n";
-    },
-
-    getInstallPath(): string {
-
-      return getServiceFilePath();
-    },
-
-    async install(content: string): Promise<void> {
-
-      const cmdPath = getServiceFilePath();
-      const vbsPath = getVbsPath();
-      const xmlPath = getXmlPath();
+      const launcherPath = getServiceFilePath();
       const installDir = getServiceFileDirectory();
-      const logsDir = getLogsDirectory();
 
       // Ensure directories exist.
       await fsPromises.mkdir(installDir, { recursive: true });
-      await fsPromises.mkdir(logsDir, { recursive: true });
+      await fsPromises.mkdir(definition.logsDir, { recursive: true });
 
-      // Delete existing task if it exists.
+      // Remove legacy artifacts from pre-PowerShell versions so the data directory contains only the current launcher.
+      await removeLegacyWindowsArtifacts(installDir);
+
+      // Write the launcher .ps1 with a UTF-8 BOM for unambiguous PowerShell parsing across versions.
+      await fsPromises.writeFile(launcherPath, generateLauncher(definition), "utf8");
+
+      // Register (or replace) the scheduled task. -Force in the registration script handles reinstall.
+      await invokePowerShell(WINDOWS_REGISTER_SCRIPT, [ taskName, launcherPath ]);
+
+      // Start the task immediately so the user does not need to log out and back in.
       try {
 
-        execFileSync("schtasks", [ "/Delete", "/TN", taskName, "/F" ], { stdio: "pipe" });
+        await invokePowerShell(WINDOWS_START_SCRIPT, [taskName]);
       } catch {
 
-        // Ignore if task doesn't exist.
-      }
-
-      // Write the batch startup script.
-      await fsPromises.writeFile(cmdPath, content, "utf8");
-
-      // Write the VBScript wrapper that launches the batch file with a hidden console window. The WshShell.Run second parameter (0) specifies the vbHide window
-      // style, and the third parameter (False) means don't wait for the script to finish.
-      const vbsContent = "Set WshShell = CreateObject(\"WScript.Shell\")\r\nWshShell.Run \"\"\"" + cmdPath + "\"\"\", 0, False\r\n";
-
-      await fsPromises.writeFile(vbsPath, vbsContent, "utf8");
-
-      // Write the Task Scheduler XML definition and import it. Using XML import instead of schtasks /TR avoids all shell quoting issues and enables advanced task
-      // settings that command-line flags cannot express.
-      const xmlContent = generateTaskXml(vbsPath);
-
-      await fsPromises.writeFile(xmlPath, xmlContent, "utf8");
-
-      // Import the task definition. execFileSync passes arguments directly to the Windows API, bypassing cmd.exe shell interpretation entirely.
-      execFileSync("schtasks", [ "/Create", "/XML", xmlPath, "/TN", taskName, "/F" ], { stdio: "pipe" });
-
-      // Clean up legacy marker file from previous versions that used a separate metadata file for path tracking.
-      await fsPromises.rm(path.join(installDir, "service-installed.marker"), { force: true });
-
-      // Start the task immediately.
-      try {
-
-        execFileSync("schtasks", [ "/Run", "/TN", taskName ], { stdio: "pipe" });
-      } catch {
-
-        // Ignore if start fails.
+        // Best-effort start. The task is registered and will fire at next logon regardless.
       }
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async isInstalled(): Promise<boolean> {
 
       try {
 
-        execFileSync("schtasks", [ "/Query", "/TN", taskName ], { stdio: "pipe" });
+        await invokePowerShell(WINDOWS_IS_INSTALLED_SCRIPT, [taskName]);
 
         return true;
       } catch {
@@ -606,14 +741,13 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
       }
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async isRunning(): Promise<boolean> {
 
       try {
 
-        const result = execFileSync("schtasks", [ "/Query", "/TN", taskName, "/FO", "CSV", "/NH" ], { encoding: "utf8", stdio: "pipe" });
+        await invokePowerShell(WINDOWS_IS_RUNNING_SCRIPT, [taskName]);
 
-        return result.includes("Running");
+        return true;
       } catch {
 
         return false;
@@ -624,55 +758,33 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
 
     serviceManager: "windows-scheduler",
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async start(): Promise<void> {
 
-      // Re-enable the task (it may have been disabled by stop() to prevent RestartOnFailure from restarting the process) and run it.
-      try {
-
-        execFileSync("schtasks", [ "/Change", "/TN", taskName, "/Enable" ], { stdio: "pipe" });
-      } catch {
-
-        // Ignore if already enabled or task doesn't exist.
-      }
-
-      execFileSync("schtasks", [ "/Run", "/TN", taskName ], { stdio: "pipe" });
+      await invokePowerShell(WINDOWS_START_SCRIPT, [taskName]);
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     async stop(): Promise<void> {
 
-      // Disable the task first to prevent RestartOnFailure from automatically restarting the process after we terminate it.
-      try {
-
-        execFileSync("schtasks", [ "/Change", "/TN", taskName, "/Disable" ], { stdio: "pipe" });
-      } catch {
-
-        // Ignore if task doesn't exist.
-      }
-
-      execFileSync("schtasks", [ "/End", "/TN", taskName ], { stdio: "pipe" });
+      await invokePowerShell(WINDOWS_STOP_SCRIPT, [taskName]);
     },
 
     async uninstall(): Promise<void> {
 
-      const cmdPath = getServiceFilePath();
-      const vbsPath = getVbsPath();
-      const xmlPath = getXmlPath();
+      const launcherPath = getServiceFilePath();
+      const installDir = getServiceFileDirectory();
 
-      // Delete the scheduled task.
+      // Deregister the task. SilentlyContinue in the script makes this a no-op if the task was never registered.
       try {
 
-        execFileSync("schtasks", [ "/Delete", "/TN", taskName, "/F" ], { stdio: "pipe" });
+        await invokePowerShell(WINDOWS_UNREGISTER_SCRIPT, [taskName]);
       } catch {
 
-        // Ignore if task doesn't exist.
+        // Ignore - task may not exist.
       }
 
-      // Remove all service files and legacy marker file from previous versions.
-      await Promise.all(
-        [ cmdPath, vbsPath, xmlPath, path.join(getServiceFileDirectory(), "service-installed.marker") ].map(async (filePath) => fsPromises.rm(filePath, { force: true }))
-      );
+      // Remove the launcher and any residual legacy artifacts.
+      await fsPromises.rm(launcherPath, { force: true });
+      await removeLegacyWindowsArtifacts(installDir);
     }
   };
 }
@@ -706,8 +818,8 @@ export interface StalePathResult {
 
 /**
  * Reads the existing service file and extracts the node binary and PrismCast entry point paths. Each platform has its own format: launchd plist XML, systemd unit
- * ExecStart line, or Windows batch startup script with rem-prefixed path comments.
- * @returns The extracted paths, or null if the file doesn't exist or can't be parsed.
+ * ExecStart line, or Windows PowerShell launcher with comment metadata.
+ * @returns The extracted paths, or null if the file does not exist or cannot be parsed.
  */
 export function getServicePaths(): Nullable<ServicePaths> {
 
@@ -730,14 +842,10 @@ export function getServicePaths(): Nullable<ServicePaths> {
 
   switch(getPlatform()) {
 
-    // Launchd plist: ProgramArguments contains two <string> elements — first is the node path, second is the entry point.
+    // Launchd plist: the ProgramArguments array contains two <string> elements - the first is the node path, the second is the entry point. We slice to the section
+    // after the ProgramArguments key, then take the first two string values via matchAll + iterator helpers (lazy, early-terminating, no intermediate arrays).
     case "darwin": {
 
-      const stringPattern = /<string>([^<]+)<\/string>/g;
-      const matches: string[] = [];
-      let match: Nullable<RegExpExecArray>;
-
-      // Walk the ProgramArguments array. We look for the section after the ProgramArguments key and extract the first two string values.
       const programArgsIndex = content.indexOf("<key>ProgramArguments</key>");
 
       if(programArgsIndex === -1) {
@@ -745,60 +853,53 @@ export function getServicePaths(): Nullable<ServicePaths> {
         return null;
       }
 
-      // Extract strings from the <array> section following ProgramArguments.
-      const arraySection = content.slice(programArgsIndex);
+      const [ nodePath, entryPoint ] = content.slice(programArgsIndex)
+        .matchAll(/<string>([^<]+)<\/string>/g)
+        .take(2)
+        .map((match) => match[1])
+        .toArray();
 
-      while((match = stringPattern.exec(arraySection)) !== null) {
-
-        matches.push(match[1]);
-
-        if(matches.length === 2) {
-
-          break;
-        }
-      }
-
-      if(matches.length < 2) {
+      if(!nodePath || !entryPoint) {
 
         return null;
       }
 
-      return { entryPoint: matches[1], nodePath: matches[0] };
+      return { entryPoint, nodePath };
     }
 
     // Systemd unit: ExecStart=<node> <entrypoint> on one line.
     case "linux": {
 
-      const execStartMatch = /^ExecStart=(.+)$/m.exec(content);
+      const execStart = /^ExecStart=(.+)$/m.exec(content)?.[1];
 
-      if(!execStartMatch) {
-
-        return null;
-      }
-
-      const parts = execStartMatch[1].split(" ");
-
-      if(parts.length < 2) {
+      if(!execStart) {
 
         return null;
       }
 
-      return { entryPoint: parts[1], nodePath: parts[0] };
+      const [ nodePath, entryPoint ] = execStart.split(" ");
+
+      if(!nodePath || !entryPoint) {
+
+        return null;
+      }
+
+      return { entryPoint, nodePath };
     }
 
-    // Windows: paths are stored as "rem node:<path>" and "rem entry:<path>" comments in the batch startup script (.cmd file). The .trim() handles CRLF line
-    // endings in batch files where \r would otherwise be captured by the regex.
+    // Windows: paths are stored as "# node:<path>" and "# entry:<path>" metadata comments near the top of the PowerShell launcher. The .trim() handles CRLF line
+    // endings where \r would otherwise be captured by the regex.
     case "windows": {
 
-      const nodeMatch = /^rem node:(.+)$/m.exec(content);
-      const entryMatch = /^rem entry:(.+)$/m.exec(content);
+      const nodePath = /^# node:(.+)$/m.exec(content)?.[1]?.trim();
+      const entryPoint = /^# entry:(.+)$/m.exec(content)?.[1]?.trim();
 
-      if(!nodeMatch || !entryMatch) {
+      if(!nodePath || !entryPoint) {
 
         return null;
       }
 
-      return { entryPoint: entryMatch[1].trim(), nodePath: nodeMatch[1].trim() };
+      return { entryPoint, nodePath };
     }
 
     default: {
@@ -811,7 +912,7 @@ export function getServicePaths(): Nullable<ServicePaths> {
 /**
  * Checks whether the paths in the existing service file still exist on disk. This detects the common post-upgrade scenario where Homebrew or npm has moved the
  * installation to a new versioned directory and the old paths no longer resolve.
- * @returns A StalePathResult indicating which paths are missing, or null if the service file doesn't exist or can't be parsed.
+ * @returns A StalePathResult indicating which paths are missing, or null if the service file does not exist or cannot be parsed.
  */
 export function detectStalePaths(): Nullable<StalePathResult> {
 
@@ -832,9 +933,6 @@ export function detectStalePaths(): Nullable<StalePathResult> {
     stale: nodeStale || entryStale
   };
 }
-
-/* Returns the appropriate service generator for the current platform.
- */
 
 /**
  * Returns the service generator for the current platform.
@@ -866,8 +964,29 @@ export function getServiceGenerator(): Nullable<ServiceGenerator> {
   }
 }
 
+/* Env vars that belong in the service environment but are not declared in CONFIG_METADATA. PRISMCAST_DATA_DIR resolves before config.json is read
+ * (chicken-and-egg bootstrap), and PRISMCAST_DEBUG is a runtime-only setting parsed in the entry point - see src/index.ts where both are called out as special
+ * cases for the same reason.
+ */
+const BOOTSTRAP_ENV_VARS = [ "PRISMCAST_DATA_DIR", "PRISMCAST_DEBUG" ] as const;
+
 /**
- * Collects environment variables that should be persisted in the service file. This includes settings that differ from defaults or have been explicitly configured.
+ * Returns the full set of env var names that represent user-configurable PrismCast settings. Derived from CONFIG_METADATA (the documented single source of truth
+ * for configurable settings) plus the bootstrap-only variables enumerated above. Deriving from CONFIG_METADATA means new settings are automatically captured by
+ * the service layer the moment they are declared in config metadata - no second list to maintain.
+ * @returns An array of env var names.
+ */
+function getConfigurableEnvVarNames(): string[] {
+
+  const fromMetadata = Object.values(CONFIG_METADATA).flat().map((setting) => setting.envVar).filter((envVar) => envVar !== null);
+
+  return [ ...fromMetadata, ...BOOTSTRAP_ENV_VARS ];
+}
+
+/**
+ * Collects environment variables that should be persisted in the service definition. Captures every CONFIG_METADATA-declared env var (plus the bootstrap
+ * variables that cannot live there) that is currently set in process.env, so anything the user configured via env for this run is preserved into the installed
+ * service.
  * @returns A record of environment variable names to values.
  */
 export function collectServiceEnvironment(): Record<string, string> {
@@ -875,30 +994,13 @@ export function collectServiceEnvironment(): Record<string, string> {
   const envVars: Record<string, string> = {};
 
   // Always capture PATH so that FFmpeg and other tools can be found. Service managers like launchd use a minimal PATH by default (/usr/bin:/bin:/usr/sbin:/sbin)
-  // which doesn't include Homebrew or other common tool locations.
+  // which does not include Homebrew or other common tool locations.
   if(process.env.PATH) {
 
     envVars.PATH = process.env.PATH;
   }
 
-  // Include key settings if they're set via environment. These are the settings most likely to be intentionally configured.
-  const keysToCapture = [
-    "AUDIO_BITRATE",
-    "CAPTURE_MODE",
-    "CHROME_BIN",
-    "FRAME_RATE",
-    "HOST",
-    "LOG_MAX_SIZE",
-    "PORT",
-    "PRISMCAST_CHROME_DATA_DIR",
-    "PRISMCAST_DATA_DIR",
-    "PRISMCAST_DEBUG",
-    "PRISMCAST_LOG_FILE",
-    "QUALITY_PRESET",
-    "VIDEO_BITRATE"
-  ];
-
-  for(const key of keysToCapture) {
+  for(const key of getConfigurableEnvVarNames()) {
 
     const value = process.env[key];
 
@@ -909,4 +1011,23 @@ export function collectServiceEnvironment(): Record<string, string> {
   }
 
   return envVars;
+}
+
+/**
+ * Builds a ServiceDefinition from the current runtime context. Composes the platform helpers (node path, entry point, working directory, logs directory) with the
+ * collected service environment, and stamps PRISMCAST_SERVICE=1 for service-mode detection.
+ * @returns The structured service definition.
+ */
+export function buildServiceDefinition(): ServiceDefinition {
+
+  const envVars: Record<string, string> = { PRISMCAST_SERVICE: "1", ...collectServiceEnvironment() };
+
+  return {
+
+    entryPoint: getPrismCastEntryPoint(),
+    envVars,
+    logsDir: getLogsDirectory(),
+    nodePath: getNodeExecutablePath(),
+    workingDir: getPrismCastWorkingDirectory()
+  };
 }

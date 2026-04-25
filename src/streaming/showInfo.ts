@@ -127,7 +127,7 @@ interface DeviceMappingsCache {
   // Last refresh timestamp.
   lastRefresh: number;
 
-  // Map of DeviceID → (Map of GuideNumber → channel ID).
+  // Map of DeviceID -> (Map of GuideNumber -> channel ID).
   mappings: Map<string, Map<string, string>>;
 }
 
@@ -350,7 +350,7 @@ async function updateShowNames(): Promise<void> {
 
     if(stream.clientAddress) {
 
-      // Normalize IPv6-mapped IPv4 addresses (::ffff:192.168.1.1 → 192.168.1.1).
+      // Normalize IPv6-mapped IPv4 addresses (::ffff:192.168.1.1 -> 192.168.1.1).
       const host = stream.clientAddress.startsWith("::ffff:") ? stream.clientAddress.slice(7) : stream.clientAddress;
 
       discoveryHosts.add(host);
@@ -379,7 +379,7 @@ async function updateShowNames(): Promise<void> {
     return;
   }
 
-  // No DVR host available — clear show names for all streams.
+  // No DVR host available - clear show names for all streams.
   for(const stream of allStreamEntries) {
 
     showNameCache.delete(stream.id);
@@ -410,7 +410,7 @@ async function updateShowNamesForHost(host: string, hostStreams: { channelKey: s
   // Fetch active jobs.
   const jobs = await fetchFromDvr<ChannelsDvrJob>(host, "/dvr/jobs");
 
-  // Build a map of channel key → show name from active recordings.
+  // Build a map of channel key -> show name from active recordings.
   const recordingShowNames = new Map<string, string>();
 
   for(const job of jobs) {
@@ -467,7 +467,7 @@ async function updateShowNamesForHost(host: string, hostStreams: { channelKey: s
 /**
  * Gets device channel mappings for a DVR host, refreshing the cache if needed.
  * @param host - The DVR server hostname or IP address.
- * @returns Map of DeviceID → (Map of GuideNumber → channel ID).
+ * @returns Map of DeviceID -> (Map of GuideNumber -> channel ID).
  */
 export async function getDeviceMappings(host: string): Promise<Map<string, Map<string, string>>> {
 
@@ -532,7 +532,7 @@ export async function getDeviceMappings(host: string): Promise<Map<string, Map<s
     LOG.debug("streaming:showinfo", "Matched M3U device %s as PrismCast source (%d channels, %d%% overlap).",
       device.DeviceID, device.Channels.length, Math.round(overlapRatio * 100));
 
-    // Build guide number → channel ID map for this device and extract logo URLs. Logo URLs are cached by station ID (resolved from the channel key via
+    // Build guide number -> channel ID map for this device and extract logo URLs. Logo URLs are cached by station ID (resolved from the channel key via
     // getChannelStationId) so that Pacific channels and service variants all share the same logo entry.
     const guideToChannelId = new Map<string, string>();
     const logos = new Map<string, string>();
@@ -574,7 +574,7 @@ export async function getDeviceMappings(host: string): Promise<Map<string, Map<s
 /**
  * Gets guide show names for a DVR host by fetching current program data.
  * @param host - The DVR server hostname or IP address.
- * @returns Map of channel ID → show name for currently airing programs.
+ * @returns Map of channel ID -> show name for currently airing programs.
  */
 async function getGuideShowNames(host: string): Promise<Map<string, string>> {
 
@@ -591,7 +591,7 @@ async function getGuideShowNames(host: string): Promise<Map<string, string>> {
     deviceCache.deviceIds.map(async (deviceId) => fetchFromDvr<ChannelsDvrGuideEntry>(host, "/devices/" + deviceId + "/guide/now"))
   );
 
-  // Build channel ID → show name map from all devices.
+  // Build channel ID -> show name map from all devices.
   const showNames = new Map<string, string>();
 
   for(const guideEntries of guideResults) {

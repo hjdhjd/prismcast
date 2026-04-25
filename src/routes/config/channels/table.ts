@@ -23,7 +23,7 @@ import { generateWizardModal } from "../../components.js";
 
 /**
  * Generates an annotated service display span. The client-side page-load script processes these elements via serviceIconHtml, rendering the appropriate
- * icon + text combination. The server just emits the text with data attributes — all icon rendering is client-side through the single serviceIconHtml path.
+ * icon + text combination. The server just emits the text with data attributes - all icon rendering is client-side through the single serviceIconHtml path.
  * @param name - The service display name.
  * @param domain - The service's domain for icon fallback derivation. Undefined for services without a known domain.
  * @param iconUrl - Optional explicit icon URL to try before domain-derived fallbacks.
@@ -153,7 +153,7 @@ function generateProfileDropdown(id: string, selectedProfile: string, profiles: 
   const lines: string[] = [];
   const groups = categorizeProfiles(profiles);
 
-  // Modification tracking for the profile dropdown. Same visual treatment as text fields — border accent, dot, and reset button when the current selection
+  // Modification tracking for the profile dropdown. Same visual treatment as text fields - border accent, dot, and reset button when the current selection
   // differs from the predefined default.
   const isModified = (defaultProfile !== undefined) && (defaultProfile !== selectedProfile);
   const modifiedClass = isModified ? " modified" : "";
@@ -610,24 +610,24 @@ function generateChannelSelectorData(): string {
     byDomain[hostname].push({ label: channel.name ?? selector, stationId: channel.stationId, value: selector });
   }
 
-  // Merge cached service-discovered channels into the domain map. Predefined entries take precedence — we only add discovered channels whose channelSelector
+  // Merge cached service-discovered channels into the domain map. Predefined entries take precedence - we only add discovered channels whose channelSelector
   // value is not already present for that domain. This enriches the datalist with the full service lineup when precaching or prior discovery has run.
   for(const provider of getCachedProviderChannels()) {
 
-    seen[provider.hostname] ??= new Set();
-    byDomain[provider.hostname] ??= [];
+    const seenForHost = seen[provider.hostname] ??= new Set();
+    const entriesForHost = byDomain[provider.hostname] ??= [];
 
     for(const entry of provider.entries) {
 
-      if(!seen[provider.hostname].has(entry.value)) {
+      if(!seenForHost.has(entry.value)) {
 
-        seen[provider.hostname].add(entry.value);
-        byDomain[provider.hostname].push(entry);
+        seenForHost.add(entry.value);
+        entriesForHost.push(entry);
       }
     }
   }
 
-  // Build the hostname→slug map and slug→guideUrl map for all services (including those with cold caches) so the client-side fetch can trigger discovery for any
+  // Build the hostname->slug map and slug->guideUrl map for all services (including those with cold caches) so the client-side fetch can trigger discovery for any
   // service domain and the URL hint can suggest the correct guide URL.
   const serviceByDomain = getProviderDomainMap();
   const serviceGuideUrl = getProviderGuideUrls();
@@ -645,7 +645,7 @@ function generateChannelSelectorData(): string {
 }
 
 /**
- * Generates the tag column filter dropdown content. This is the single source of truth for the filter checkbox list — used for both the initial header render
+ * Generates the tag column filter dropdown content. This is the single source of truth for the filter checkbox list - used for both the initial header render
  * and for incremental updates after tag CRUD operations. The dropdown shell (button, dropdown-menu wrapper) is rendered by the header generator; this function
  * provides only the inner content (checkbox labels + "Show All" item).
  * @returns HTML string for the filter dropdown content.
@@ -672,7 +672,7 @@ export function generateTagFilterContent(): string {
 }
 
 /**
- * Generates the Tag Management modal body HTML. This is the single source of truth for tag manager content — used for both the initial server render and for
+ * Generates the Tag Management modal body HTML. This is the single source of truth for tag manager content - used for both the initial server render and for
  * incremental updates after tag CRUD operations. The endpoints return this HTML in the response so the client can replace the modal content without a page reload.
  * @returns HTML string for the tag manager body (tag list, input field, deleted tags section).
  */
@@ -693,7 +693,7 @@ export function generateTagManagerBody(): string {
       "')\">" + ICON_DELETE + "</button></div>");
   }
 
-  // Deleted predefined tags section — show restore option for tags the user has deleted.
+  // Deleted predefined tags section - show restore option for tags the user has deleted.
   const deletedItems: string[] = [];
 
   for(const tag of registry.deletedTags) {
@@ -818,12 +818,12 @@ export interface ChannelRowHtml {
   // The display row HTML (always present).
   displayRow: string;
 
-  // The edit form row HTML (always present for all channels — predefined, override, and user-defined).
+  // The edit form row HTML (always present for all channels - predefined, override, and user-defined).
   editRow: string;
 }
 
 /**
- * Generates the HTML for a single channel's table rows (display row and edit form row). All channels — predefined, override, and user-defined — get both rows.
+ * Generates the HTML for a single channel's table rows (display row and edit form row). All channels - predefined, override, and user-defined - get both rows.
  * The edit form is pre-populated with the effective (resolved) values so users see what they're changing. When called from generateChannelsPanel() which already
  * has the listing entry, pass it via the entry parameter to avoid redundant getChannelListing() calls. POST handlers that generate a single row omit the
  * parameter to trigger an internal lookup.
@@ -857,7 +857,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   // Build the service tags data attribute for client-side filtering.
   const serviceTags = getChannelServiceTags(key).join(",");
 
-  // Generate display row. User-created channels and predefined overrides get distinct CSS classes — user-created channels have a subtle background tint
+  // Generate display row. User-created channels and predefined overrides get distinct CSS classes - user-created channels have a subtle background tint
   // ("user-channel"), while predefined overrides get a left-border accent and blue dot indicator via CSS ::before ("channel-override") matching the settings
   // form's visual language for "modified from defaults." Disabled and service-filtered rows get additional classes for opacity and visibility control.
   const displayLines: string[] = [];
@@ -884,7 +884,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   const rowClassAttr = (rowClasses.length > 0) ? " class=\"" + rowClasses.join(" ") + "\"" : "";
   const rowTitleAttr = isOverride ? " title=\"Customized from predefined defaults\"" : "";
 
-  // Compute effective tags early — used for both the row data attribute (tag column filter) and the Tags column cell rendering below.
+  // Compute effective tags early - used for both the row data attribute (tag column filter) and the Tags column cell rendering below.
   const effectiveTags = getChannelEffectiveTags(channel);
   const channelTagsAttr = (effectiveTags.length > 0) ? " data-channel-tags=\"" + escapeHtml(effectiveTags.join(",")) + "\"" : "";
 
@@ -1036,7 +1036,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   }
 
   // Position 4: enable/disable toggle for predefined channels (regardless of override state), delete for user-defined channels. The enable/disable state and
-  // property overrides are independent concerns — a predefined channel can be disabled AND have customizations, and the toggle always reflects the visibility state.
+  // property overrides are independent concerns - a predefined channel can be disabled AND have customizations, and the toggle always reflects the visibility state.
   if(isPredefined) {
 
     if(isDisabled) {
@@ -1083,7 +1083,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapedKey + "\">");
 
   // For override channels, look up the predefined defaults so each field can show the "modified from defaults" indicator when its value differs. This applies
-  // the same visual treatment used by the settings form — border accent, blue dot, and per-field reset button — so users can immediately see which fields they
+  // the same visual treatment used by the settings form - border accent, blue dot, and per-field reset button - so users can immediately see which fields they
   // customized and reset individual fields without reverting the entire channel.
   const predefined = isOverride ? PREDEFINED_CHANNELS[key] : undefined;
   const predefinedTags = predefined ? getChannelEffectiveTags(predefined).join(", ") : undefined;
@@ -1158,7 +1158,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
 /**
  * Channel table state snapshot. Represents the complete set of summary counts for the channel header and scope toggles. Computed server-side as the single
- * source of truth — the client applies these values directly to DOM elements without recalculation.
+ * source of truth - the client applies these values directly to DOM elements without recalculation.
  */
 export interface ChannelTableCounts {
 
@@ -1205,7 +1205,7 @@ export interface ChannelTablePatch {
 }
 
 /**
- * Computes the complete channel table state — summary counts and scope toggle counts — from the current channel listing. This is the server-side single source
+ * Computes the complete channel table state - summary counts and scope toggle counts - from the current channel listing. This is the server-side single source
  * of truth for all count computation, replacing the client-side DOM-scanning approach. Called once per mutation as part of building a patch.
  * @param listing - Optional pre-fetched listing. When omitted, fetches from getChannelListing(). Passing the listing avoids a redundant computation when
  *   buildChannelTablePatch already has it.
@@ -1456,7 +1456,7 @@ export function generateServiceFilterToolbar(): string {
 export function generateChannelsPanel(channelMessage?: string, channelError?: boolean, editingChannelKey?: string, showAddForm?: boolean,
   formErrors?: Map<string, string>, formValues?: Map<string, string>): string {
 
-  // Get the canonical channel listing (service variants already filtered out, sorted by key). This is the single source of truth for merged channel data —
+  // Get the canonical channel listing (service variants already filtered out, sorted by key). This is the single source of truth for merged channel data -
   // it handles predefined/user merging, disabled state, and service availability.
   const listing = getChannelListing();
   const profiles = getProfiles();
@@ -1482,7 +1482,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<div class=\"channel-toolbar\">");
   lines.push("<div class=\"toolbar-group\">");
 
-  // Manage Channels dropdown — primary channel creation and setup actions.
+  // Manage Channels dropdown - primary channel creation and setup actions.
   lines.push("<div class=\"dropdown\">");
   lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm toolbar-icon-btn\" title=\"Add, browse, or set up channels\" " +
     "onclick=\"toggleDropdown(this)\">" + ICON_MANAGE + " Manage Channels &#9662;</button>");
@@ -1515,7 +1515,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</div>");
   lines.push("</div>");
 
-  // Import / Export dropdown — data I/O operations.
+  // Import / Export dropdown - data I/O operations.
   lines.push("<div class=\"dropdown\">");
   lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" title=\"Import or export channel data\" " +
     "onclick=\"toggleDropdown(this)\">" + ICON_TRANSFER + " Import / Export &#9662;</button>");
@@ -1541,17 +1541,17 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Visible column set, used by Quick Actions to gate column-dependent options and by the table header to set initial hide classes.
   const visibleCols = new Set(CONFIG.channels.visibleColumns);
 
-  // Quick Actions dropdown — bulk operations for predefined channels.
+  // Quick Actions dropdown - bulk operations for predefined channels.
   lines.push("<div class=\"dropdown quick-actions-dropdown\">");
   lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" title=\"Bulk operations for predefined channels\" " +
     "onclick=\"toggleDropdown(this)\">" + ICON_BOLT + " Quick Actions &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
 
-  // Compute initial toggle counts for predefined channel scopes. The server is the single source of truth — the client renders what we return here.
+  // Compute initial toggle counts for predefined channel scopes. The server is the single source of truth - the client renders what we return here.
   const scopeCounts = getPredefinedScopeCounts();
 
   // Three toggle rows: checkbox + label + count. Clicking toggles the group via bulkTogglePredefined(). The onclick uses event.preventDefault() to stop the
-  // native checkbox toggle — the server response drives the update.
+  // native checkbox toggle - the server response drives the update.
   const scopes: { count: number; label: string; scope: string; total: number }[] = [
     { count: scopeCounts.all.enabled, label: "All Predefined", scope: "all", total: scopeCounts.all.total },
     { count: scopeCounts.east.enabled, label: "East Variants", scope: "east", total: scopeCounts.east.total },
@@ -1570,7 +1570,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   lines.push("<div class=\"dropdown-divider\"></div>");
 
-  // Bulk assign select — switch all multi-service channels to a single service.
+  // Bulk assign select - switch all multi-service channels to a single service.
   const allTags = getAllServiceTags();
   const enabled = getEnabledServices();
   const hasFilter = enabled.length > 0;
@@ -1597,7 +1597,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   lines.push("<div class=\"dropdown-divider\" id=\"quick-action-divider\"" + dividerVisible + "></div>");
 
-  // Auto-number channels — assign sequential channel numbers to visible channels in current sort order. Visible when the channel number column is shown.
+  // Auto-number channels - assign sequential channel numbers to visible channels in current sort order. Visible when the channel number column is shown.
   const autoNumberVisible = visibleCols.has("channelNumber") ? "" : " style=\"display: none;\"";
 
   lines.push("<div id=\"quick-action-autonumber\"" + autoNumberVisible + ">");
@@ -1609,7 +1609,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</div>");
   lines.push("</div>");
 
-  // HDHR bulk toggle — tri-state checkbox to enable/disable all channels for the HDHomeRun lineup. Visible when the HDHR column is shown.
+  // HDHR bulk toggle - tri-state checkbox to enable/disable all channels for the HDHomeRun lineup. Visible when the HDHR column is shown.
   const hdhrVisible = visibleCols.has("hdhrEnabled") ? "" : " style=\"display: none;\"";
   const hdhrCounts = getHdhrCounts(listing);
   const hdhrCheckedAttr = (hdhrCounts.enabled === hdhrCounts.total) ? " checked" : "";
@@ -1623,7 +1623,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</label>");
   lines.push("</div>");
 
-  // Bulk tag toggles — tristate checkboxes for each tag in the active vocabulary. Visible when the tags column is shown. Each checkbox shows how many enabled
+  // Bulk tag toggles - tristate checkboxes for each tag in the active vocabulary. Visible when the tags column is shown. Each checkbox shows how many enabled
   // channels have the tag, and clicking it adds or removes the tag on all visible channels.
   const tagsVisible = visibleCols.has("tags") ? "" : " style=\"display: none;\"";
   const tagsVocabulary = getActiveTagVocabulary();
@@ -1866,7 +1866,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   ];
 
   // All sortable headers use the same DOM structure: <th onclick> wraps a <span class="sort-label"> for the label text. The sort update logic targets
-  // .sort-label to modify only the label — never touching other children like the Tags filter dropdown. Clicking anywhere on the <th> triggers sort;
+  // .sort-label to modify only the label - never touching other children like the Tags filter dropdown. Clicking anywhere on the <th> triggers sort;
   // additional children (like the filter button) use event.stopPropagation() to prevent sort when interacting with them.
   for(const hdr of sortableHeaders) {
 
@@ -1878,7 +1878,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     lines.push("<span class=\"sort-label\">" + hdr.label + activeIndicator + "</span>");
 
     // Tags header: additional filter dropdown alongside the sort label. The dropdown is a client-side-only view filter (transient, not persisted) that
-    // shows/hides rows based on their data-channel-tags attribute. The dropdown content comes from generateTagFilterContent() — the single source of truth
+    // shows/hides rows based on their data-channel-tags attribute. The dropdown content comes from generateTagFilterContent() - the single source of truth
     // shared with the tag CRUD incremental update path.
     if(hdr.field === "tags") {
 
@@ -1959,7 +1959,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // tag management API endpoints.
   lines.push(generateTagManagementModal());
 
-  // Inline tag edit portal — a shared dropdown portaled to <body> on first use by getTagPortal() in config.ts. One instance shared across all channel rows;
+  // Inline tag edit portal - a shared dropdown portaled to <body> on first use by getTagPortal() in config.ts. One instance shared across all channel rows;
   // populated dynamically from the clicked cell's data-tags attribute. Positioned via getBoundingClientRect() to escape the table wrapper's overflow:auto clipping.
   const vocabulary = getActiveTagVocabulary();
 

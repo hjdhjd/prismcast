@@ -185,7 +185,7 @@ export function getProfileForChannel(channel: {
   }
 
   // If the resolved profile requires channel selection (strategy other than "none") but the channel has no channelSelector, the hostname-specific domain entry
-  // (e.g., watch.sling.com → slingLive) is not appropriate for this direct-URL channel. Fall back to the concise domain entry (e.g., sling.com →
+  // (e.g., watch.sling.com -> slingLive) is not appropriate for this direct-URL channel. Fall back to the concise domain entry (e.g., sling.com ->
   // embeddedVolumeLock) which provides generic player handling for direct URLs on the same service.
   if((profile.channelSelection.strategy !== "none") && !channel.channelSelector && channel.url) {
 
@@ -200,7 +200,7 @@ export function getProfileForChannel(channel: {
 
   // Merge domain-level properties that apply regardless of how the profile was resolved. These represent site-specific behaviors or policies that must always be
   // applied based on the channel's URL even when the player profile is explicitly overridden. For the URL-based path above, getProfileForUrl() already merges
-  // these — the re-application here is idempotent. For the explicit-profile path, this fills the gap.
+  // these - the re-application here is idempotent. For the explicit-profile path, this fills the gap.
   if(channel.url) {
 
     profile = mergeDomainProperties(profile, getDomainConfig(channel.url));
@@ -335,7 +335,7 @@ export function validateProfiles(): void {
     throw new Error([ "Profile validation failed:\n  ", errors.join("\n  ") ].join(""));
   }
 
-  // Validate user-defined profiles and domain mappings. These are warnings, not fatal errors — broken user profiles should not prevent the server from starting.
+  // Validate user-defined profiles and domain mappings. These are warnings, not fatal errors - broken user profiles should not prevent the server from starting.
   // The user can fix them via the web UI.
   const userWarnings: string[] = [];
   const allProfileNames = new Set([ ...allBuiltinProfiles.keys(), ...Object.keys(userProfiles) ]);
@@ -398,10 +398,8 @@ export function getProfiles(): ProfileInfo[] {
 
   const result: ProfileInfo[] = [];
 
-  // Add built-in profiles.
-  for(const name of Object.keys(SITE_PROFILES).sort()) {
-
-    const profile = SITE_PROFILES[name];
+  // Add built-in profiles. Iterate entries so each profile reference is fully-typed (keys from Object.keys would force a Record lookup per iteration).
+  for(const [ name, profile ] of Object.entries(SITE_PROFILES).sort(([a], [b]) => a.localeCompare(b))) {
 
     result.push({
 
@@ -416,9 +414,7 @@ export function getProfiles(): ProfileInfo[] {
   // Add user-defined profiles. User profiles default to the "custom" category unless they explicitly specify a different category.
   const userProfiles = getUserProfiles();
 
-  for(const name of Object.keys(userProfiles).sort()) {
-
-    const profile = userProfiles[name];
+  for(const [ name, profile ] of Object.entries(userProfiles).sort(([a], [b]) => a.localeCompare(b))) {
 
     result.push({
 

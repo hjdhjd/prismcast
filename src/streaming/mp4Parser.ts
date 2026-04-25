@@ -3,6 +3,7 @@
  * mp4Parser.ts: Low-level MP4 box parsing for PrismCast.
  */
 import type { Nullable } from "../types/index.js";
+
 /* MP4 files consist of a sequence of "boxes" (also called "atoms"). Each box has a simple structure:
  *
  * - 4 bytes: size (big-endian uint32) - total box size including header
@@ -213,7 +214,7 @@ export function iterateChildBoxes(data: Buffer, callback: (type: string, data: B
       boxSize = data.readUInt32BE(pos + 12);
     } else if((sizeField < MIN_HEADER_SIZE) || (sizeField === 0)) {
 
-      // Invalid size or "extends to end of file" — stop iterating.
+      // Invalid size or "extends to end of file" - stop iterating.
       return;
     } else {
 
@@ -377,9 +378,9 @@ function parseTfhd(data: Buffer, offset: number, size: number): Nullable<TfhdInf
 /**
  * Extracts the sample flags for the first sample in a trun (track fragment run) box. The flags are resolved from three sources in priority order:
  *
- * 1. first_sample_flags field in the trun (trun flags bit 0x004) — explicitly overrides the first sample's flags.
- * 2. Per-sample flags from the first sample entry (trun flags bit 0x400) — individual sample flags are present in each entry.
- * 3. default_sample_flags from the parent tfhd — applies when neither first_sample_flags nor per-sample flags are available.
+ * 1. first_sample_flags field in the trun (trun flags bit 0x004) - explicitly overrides the first sample's flags.
+ * 2. Per-sample flags from the first sample entry (trun flags bit 0x400) - individual sample flags are present in each entry.
+ * 3. default_sample_flags from the parent tfhd - applies when neither first_sample_flags nor per-sample flags are available.
  *
  * trun layout (FullBox):
  * - [0-3] size, [4-7] "trun", [8] version, [9-11] flags, [12-15] sample_count
@@ -464,7 +465,7 @@ function extractFirstSampleFlags(data: Buffer, offset: number, size: number, def
 /**
  * Detects whether a moof box starts with a keyframe (sync sample) by examining the sample flags of the first sample in each trun box. The detection inspects all traf
  * boxes within the moof to handle multi-track containers (e.g., separate audio and video tracks). A non-keyframe signal from any traf (sample_depends_on === 2) takes
- * precedence because audio tracks are always independently decodable — the only source of sample_depends_on === 2 is a non-keyframe video track. This avoids needing
+ * precedence because audio tracks are always independently decodable - the only source of sample_depends_on === 2 is a non-keyframe video track. This avoids needing
  * to map track IDs back to the moov box's codec metadata.
  *
  * The function checks three flag sources in priority order per the ISO 14496-12 spec: trun first_sample_flags (0x004), trun per-sample flags (0x400), and tfhd
@@ -652,7 +653,7 @@ export interface OffsetTrackResult {
 /**
  * Applies a constant per-track offset to Chrome's original tfdt.baseMediaDecodeTime values. Reads Chrome's original tfdt, adds the per-track offset, and writes back.
  * During normal playback the offset is 0 (pure pass-through of Chrome's wall-clock-based timestamps). At tab replacement boundaries the offset bridges the PTS
- * discontinuity — it is computed once per track from the difference between the previous segmenter's "next expected" value and Chrome's new starting tfdt.
+ * discontinuity - it is computed once per track from the difference between the previous segmenter's "next expected" value and Chrome's new starting tfdt.
  *
  * This approach preserves Chrome's inter-track synchronization. Chrome uses wall-clock-based timestamps that keep audio and video aligned regardless of frame drops.
  *
@@ -661,7 +662,7 @@ export interface OffsetTrackResult {
  *
  * @param moofData - The complete moof box buffer including its 8-byte header. Modified in place.
  * @param trackOffsets - Map from track_ID to the constant offset (in timescale units) to add to Chrome's original tfdt. Entries may be absent for tracks whose
- * offsets have not been initialized yet — the caller initializes them lazily from the returned originalTfdt values.
+ * offsets have not been initialized yet - the caller initializes them lazily from the returned originalTfdt values.
  * @returns Map from track_ID to { originalTfdt, duration }. The caller uses originalTfdt for lazy offset initialization and duration for EXTINF and "next expected"
  * tracking. Each entry corresponds to one traf box in the moof.
  */
@@ -727,7 +728,7 @@ export function offsetMoofTimestamps(moofData: Buffer, trackOffsets: Map<number,
         }
 
         // Compute the new tfdt by adding the per-track offset. If the offset hasn't been initialized for this track yet, the caller will initialize it lazily
-        // from the returned originalTfdt — for now, treat it as 0 (pure pass-through).
+        // from the returned originalTfdt - for now, treat it as 0 (pure pass-through).
         const trackOffset = trackOffsets.get(tfhdInfo.trackId) ?? 0n;
         const newTfdt = originalTfdt + trackOffset;
 
@@ -817,7 +818,7 @@ export function parseMoovTrackInfo(moovData: Buffer): Map<number, MoovTrackInfo>
     let handlerType: Nullable<string> = null;
 
     // Walk the trak's child boxes to find tkhd (track header) and mdia (media container). The spec mandates tkhd before mdia, so trackId is available before we
-    // need it, but we don't depend on ordering — all three fields are extracted independently and combined after iteration.
+    // need it, but we don't depend on ordering - all three fields are extracted independently and combined after iteration.
     iterateChildBoxes(trakData, (childType, childData, childOffset, childSize) => {
 
       if(childType === "tkhd") {
@@ -1067,17 +1068,16 @@ export function parseMoovCodecConfig(moovData: Buffer): MoovCodecConfig {
                         // extended size (we handle only single-byte sizes for simplicity).
                         let sizeOffset = i + 1;
 
-                        while((sizeOffset < esdsPayload.length) && (esdsPayload[sizeOffset] >= 0x80)) {
+                        while((sizeOffset < esdsPayload.length) && ((esdsPayload[sizeOffset] ?? 0) >= 0x80)) {
 
                           sizeOffset++;
                         }
 
                         const configStart = sizeOffset + 1;
+                        const byte0 = esdsPayload[configStart];
+                        const byte1 = esdsPayload[configStart + 1];
 
-                        if((configStart + 1) < esdsPayload.length) {
-
-                          const byte0 = esdsPayload[configStart];
-                          const byte1 = esdsPayload[configStart + 1];
+                        if((byte0 !== undefined) && (byte1 !== undefined)) {
 
                           audio = {
 

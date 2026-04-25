@@ -13,11 +13,11 @@ import { mutateConfig } from "../config/userConfig.js";
 import { setupHdhrEndpoints } from "./discover.js";
 
 /* When HDHomeRun emulation is enabled, PrismCast runs a separate Express server that responds to HDHomeRun API requests from Plex. This server is intentionally
- * lightweight — it only serves device discovery and lineup metadata. All actual video streaming flows through PrismCast's main HTTP server via the HLS URLs in
+ * lightweight - it only serves device discovery and lineup metadata. All actual video streaming flows through PrismCast's main HTTP server via the HLS URLs in
  * the lineup response.
  *
  * The HDHR server runs on a configurable port (default 5004) independently of the main server. If the port is unavailable, the HDHR feature is disabled
- * gracefully without affecting the main server. Plex does not auto-detect emulated tuners — users must manually enter the address (IP:port) in Plex's DVR setup.
+ * gracefully without affecting the main server. Plex does not auto-detect emulated tuners - users must manually enter the address (IP:port) in Plex's DVR setup.
  */
 
 // The HDHR HTTP server instance, used for graceful shutdown.

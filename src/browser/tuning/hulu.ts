@@ -10,7 +10,7 @@ import type { Page } from "puppeteer-core";
 
 // Unified channel cache entry combining discovery metadata, tuning data, and guide grid scroll positions. Populated from two sources: (1) details and listing API
 // responses intercepted during page load (provides uuid, programs, displayName), and (2) guide grid DOM reads during binary search or discovery linear scan
-// (provides rowNumber, displayName). When position inference maps a network name to a call sign's entry, both keys share the same object reference — mutating
+// (provides rowNumber, displayName). When position inference maps a network name to a call sign's entry, both keys share the same object reference - mutating
 // programs on one propagates to the other.
 interface HuluChannelEntry {
 
@@ -21,7 +21,7 @@ interface HuluChannelEntry {
   uuid?: string;
 }
 
-// Unified channel cache for Hulu. Maps normalized channel names to their combined entry. Aliases (e.g., "abc" → same entry as "wls") share object references for
+// Unified channel cache for Hulu. Maps normalized channel names to their combined entry. Aliases (e.g., "abc" -> same entry as "wls") share object references for
 // automatic propagation of fresh programs and EAB data. Cleared on browser disconnect via clearHuluCache().
 const huluChannelCache = new Map<string, HuluChannelEntry>();
 
@@ -120,7 +120,7 @@ function resolveHuluCacheKey(normalizedName: string): Nullable<string> {
 }
 
 /**
- * Looks up a channel in the unified cache by normalized name, with fuzzy fallback via resolveHuluCacheKey. Only used for lookups keyed by channelSelector —
+ * Looks up a channel in the unified cache by normalized name, with fuzzy fallback via resolveHuluCacheKey. Only used for lookups keyed by channelSelector -
  * internal cache operations that use API-derived names should use huluChannelCache.get() directly.
  * @param normalizedName - The normalized (lowercased, whitespace-collapsed) channel name to look up.
  * @returns The matching cache entry, or null if no match found.
@@ -281,14 +281,14 @@ async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChanne
 
           const nameMatch = /^(.+?) Details, row/.exec(text);
 
-          if(nameMatch) {
+          if(nameMatch?.[1]) {
 
             displayName = nameMatch[1].trim();
           }
 
           const rowMatch = /row (\d+) of/.exec(text);
 
-          if(rowMatch) {
+          if(rowMatch?.[1]) {
 
             // Row numbers in sr-only text are 1-based. Convert to 0-based for scroll offset calculation.
             rowNumber = parseInt(rowMatch[1], 10) - 1;
@@ -310,11 +310,9 @@ async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChanne
   // Assign DOM indices and populate the unified channel cache with row numbers and display names.
   const rendered: RenderedChannel[] = [];
 
-  for(let i = 0; i < channels.length; i++) {
+  for(const [ domIndex, ch ] of channels.entries()) {
 
-    const ch = channels[i];
-
-    rendered.push({ displayName: ch.displayName, domIndex: i, name: ch.name, rowNumber: ch.rowNumber });
+    rendered.push({ displayName: ch.displayName, domIndex, name: ch.name, rowNumber: ch.rowNumber });
 
     // Cache the row number and display name for future direct-scroll lookups.
     if(ch.rowNumber >= 0) {
@@ -420,7 +418,7 @@ async function scrollToGuideRow(page: Page, gridDocTop: number, rowHeight: numbe
 /**
  * Locates the on-now program cell for the channel at the given data-testid name (lowercased, trimmed), scrolls it into view, and returns its center coordinates
  * for a subsequent page.mouse.click(). We return coordinates rather than clicking inside the evaluate because page.mouse.click() generates the full pointer event
- * chain (pointerdown → mousedown → pointerup → mouseup → click) that React's event delegation requires, whereas a bare DOM .click() dispatches only a synthetic
+ * chain (pointerdown -> mousedown -> pointerup -> mouseup -> click) that React's event delegation requires, whereas a bare DOM .click() dispatches only a synthetic
  * click event that may not be processed reliably in a Puppeteer automation context.
  * @param page - The Puppeteer page object.
  * @param targetName - The lowercased, trimmed channel name to match against data-testid.
@@ -476,9 +474,9 @@ async function locateOnNowCell(page: Page, targetName: string): Promise<Nullable
 const CALL_SIGN_PATTERN = /^[WK][A-Z]{2,3}$/i;
 
 // Network names that map to local affiliate call signs in Hulu's guide. The details API returns channel_info.name as the local call sign rather than the
-// network name, so these names won't match any details response entry. Cold direct tuning is skipped for these — the guide grid handles them via
+// network name, so these names won't match any details response entry. Cold direct tuning is skipped for these - the guide grid handles them via
 // position-based inference. On the first guide grid tune, the in-page interceptor captures the affiliate's channel_id from the playlist request and caches
-// it under the channelSelector key (e.g., "abc" → uuid). Subsequent tunes resolve via warm direct tuning.
+// it under the channelSelector key (e.g., "abc" -> uuid). Subsequent tunes resolve via warm direct tuning.
 const NETWORK_NAMES_WITH_AFFILIATES = new Set([ "abc", "cbs", "cw", "fox", "nbc", "pbs" ]);
 
 /**
@@ -517,19 +515,10 @@ function inferLocalAffiliate(rendered: RenderedChannel[], targetName: string): N
   }
 
   // Find the insertion point: the first anchor whose name sorts after the target.
-  let insertBeforeIndex = -1;
+  const insertBeforeIndex = anchors.findIndex((anchor) => targetName.localeCompare(anchor.name) < 0);
 
-  for(let i = 0; i < anchors.length; i++) {
-
-    if(targetName.localeCompare(anchors[i].name) < 0) {
-
-      insertBeforeIndex = i;
-
-      break;
-    }
-  }
-
-  // Determine the DOM index range between the two surrounding anchor channels.
+  // Determine the DOM index range between the two surrounding anchor channels. The anchor indexing is guaranteed in-range by construction of
+  // insertBeforeIndex above, but noUncheckedIndexedAccess needs explicit narrowing.
   let lowerDomIndex: number;
   let upperDomIndex: number;
 
@@ -537,7 +526,7 @@ function inferLocalAffiliate(rendered: RenderedChannel[], targetName: string): N
 
     // Target sorts before all anchors. Look for call signs before the first anchor.
     lowerDomIndex = -1;
-    upperDomIndex = anchors[0].domIndex;
+    upperDomIndex = anchors[0]?.domIndex ?? rendered.length;
   } else if(insertBeforeIndex === -1) {
 
     // Target sorts after all anchors. Look for call signs after the last anchor.
@@ -546,8 +535,8 @@ function inferLocalAffiliate(rendered: RenderedChannel[], targetName: string): N
   } else {
 
     // Target sorts between two anchors.
-    lowerDomIndex = anchors[insertBeforeIndex - 1].domIndex;
-    upperDomIndex = anchors[insertBeforeIndex].domIndex;
+    lowerDomIndex = anchors[insertBeforeIndex - 1]?.domIndex ?? -1;
+    upperDomIndex = anchors[insertBeforeIndex]?.domIndex ?? rendered.length;
   }
 
   // Find call sign channels in the DOM range between the two anchors.
@@ -624,8 +613,8 @@ async function waitForPlayButton(page: Page, playSelector?: string, timeout?: nu
 
 /**
  * Clicks the on-now program cell and waits for the play button, retrying on failure. Handles two distinct failure modes: (1) the on-now cell click doesn't
- * register because React hasn't fully hydrated event handlers — the play button never appears; (2) the play button appears and is clicked but the click is
- * silently swallowed — playback doesn't start. Both failures are detected by waitForPlayButton and trigger a retry of the full on-now cell and play button
+ * register because React hasn't fully hydrated event handlers - the play button never appears; (2) the play button appears and is clicked but the click is
+ * silently swallowed - playback doesn't start. Both failures are detected by waitForPlayButton and trigger a retry of the full on-now cell and play button
  * sequence after a brief delay.
  * @param page - The Puppeteer page object.
  * @param clickTarget - The lowercased, trimmed channel name to locate in the guide grid.
@@ -638,7 +627,7 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
   // Maximum number of on-now cell click attempts. The first click may not register if React hasn't finished hydrating the guide's event handlers.
   const MAX_CLICK_ATTEMPTS = 3;
 
-  // Shorter timeout for the play button on non-final attempts. When a click registers, the play button appears in under 10ms — this timeout only determines how
+  // Shorter timeout for the play button on non-final attempts. When a click registers, the play button appears in under 10ms - this timeout only determines how
   // quickly we detect a missed click and retry. Keeping it low saves ~2s per failed attempt compared to the previous 3000ms value.
   const RETRY_PLAY_TIMEOUT = 1000;
 
@@ -763,7 +752,7 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
  * self-resolved from in-page API data. Two resolution mechanisms handle different channel types:
  *
  * 1. Server-side injection: finds the currently-airing EAB from the entry's program schedule and calls __prismcastResolveDirectTune to inject both values into the
- *    held playlist request. Primary mechanism for local affiliates whose call signs don't match the channelSelector network name — the interceptor can't
+ *    held playlist request. Primary mechanism for local affiliates whose call signs don't match the channelSelector network name - the interceptor can't
  *    self-resolve by name for these, so external injection is the only path.
  * 2. Self-resolution detection: queries __prismcastIsDirectTuneResolved to check if the interceptor already captured UUID+EAB from the expanded
  *    Details+Listing API responses and resolved the playlist autonomously. Primary mechanism for non-affiliate channels on cold cache, where the interceptor's
@@ -874,13 +863,13 @@ async function releaseHeldPlaylist(page: Page): Promise<void> {
 /**
  * Guide grid strategy: finds a channel in a virtualized, alphabetically sorted channel grid by scrolling the page to the target row using binary search, then
  * clicking the on-now program cell to open the playback overlay. This strategy works for sites like Hulu Live TV where the channel guide is rendered as a
- * virtualized list — only ~13 of ~124 rows exist in the DOM at any time, positioned absolutely within a tall spacer div. The virtualizer renders rows based on
+ * virtualized list - only ~13 of ~124 rows exist in the DOM at any time, positioned absolutely within a tall spacer div. The virtualizer renders rows based on
  * the page scroll position (`document.documentElement.scrollTop`), so we scroll to bring the target channel into the DOM, then interact with it directly.
  *
  * Three mechanisms handle different channel types:
- * 1. Binary search with passive row number caching — primary mechanism for most channels (~800ms first time, ~200ms on cache hit)
- * 2. Position-based inference — handles local affiliates when searching by network name (e.g., "ABC" finds the local call sign at the right sort position)
- * 3. Linear scan fallback — safety net for raw call sign searches or any channel the binary search cannot find (~2.4 seconds)
+ * 1. Binary search with passive row number caching - primary mechanism for most channels (~800ms first time, ~200ms on cache hit)
+ * 2. Position-based inference - handles local affiliates when searching by network name (e.g., "ABC" finds the local call sign at the right sort position)
+ * 3. Linear scan fallback - safety net for raw call sign searches or any channel the binary search cannot find (~2.4 seconds)
  *
  * The selection process:
  * 1. If listSelector is provided, click the tab/button to reveal the channel list (e.g., a "Channels" tab)
@@ -900,7 +889,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
   const { listSelector, playSelector } = channelSelection;
 
   // Ensure the guide is open and on the correct tab. We wait for the tab button to become VISIBLE (not just present in the DOM) because the guide overlay may exist
-  // in the DOM structure while still hidden during page initialization or animation. Clicking a hidden button dispatches a DOM event but has no visual effect — the
+  // in the DOM structure while still hidden during page initialization or animation. Clicking a hidden button dispatches a DOM event but has no visual effect - the
   // guide remains hidden and the virtualizer never populates rows. We use $eval for the click because overlapping elements (spinners, overlays) can intercept
   // Puppeteer's coordinate-based mouse events.
   if(listSelector) {
@@ -918,7 +907,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     }
   }
 
-  // Wait for channel grid rows to become visible. If rows don't appear within a short initial window, retry the tab click once — the first click may have fired
+  // Wait for channel grid rows to become visible. If rows don't appear within a short initial window, retry the tab click once - the first click may have fired
   // during a transitional state before the guide was fully interactive, or the guide may have been animating open.
   let rowsVisible = false;
 
@@ -1044,7 +1033,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     }
 
     // Determine binary search direction by comparing the target against the first and last rendered non-call-sign channel names. Call sign channels (W*/K*
-    // local affiliates) are excluded from direction comparison because they sort by hidden network name, not by their displayed call sign — using them for
+    // local affiliates) are excluded from direction comparison because they sort by hidden network name, not by their displayed call sign - using them for
     // localeCompare would send the search the wrong way.
     const nonCallSigns = rendered.filter((ch) => !CALL_SIGN_PATTERN.test(ch.name));
 
@@ -1056,7 +1045,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
       continue;
     }
 
-    const first = nonCallSigns[0].name;
+    const first = nonCallSigns[0]?.name ?? "";
     const last = nonCallSigns.at(-1)?.name ?? "";
 
     if(normalizedName.localeCompare(first) < 0) {
@@ -1075,7 +1064,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
       continue;
     }
 
-    // The target is alphabetically between the first and last rendered channels but was not found by exact data-testid match. This is the "missing" case — the
+    // The target is alphabetically between the first and last rendered channels but was not found by exact data-testid match. This is the "missing" case - the
     // channel may be a local affiliate whose call sign doesn't match the network name we're searching for. Try position-based inference.
     const inferred = inferLocalAffiliate(rendered, normalizedName);
 
@@ -1166,7 +1155,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
   // triggers full Details+Listing API responses. For non-affiliates, the in-page interceptor may have already self-resolved from those responses (capturing
   // UUID+EAB and swapping the playlist autonomously). For channels where the interceptor hasn't self-resolved, the unified cache provides UUID+EAB for
   // injection. Either path avoids the redundant on-now cell click. Note: for affiliates, the inference block above may have already called tryFastPathTune with
-  // the same entry — that call is redundant here but harmless (~10ms), and avoiding it with a flag would create a fragile coupling to the inference block.
+  // the same entry - that call is redundant here but harmless (~10ms), and avoiding it with a flag would create a fragile coupling to the inference block.
   const fastPathSuccess = await tryFastPathTune(page, findHuluChannelEntry(normalizedName), channelName);
 
   if(fastPathSuccess) {
@@ -1174,7 +1163,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     return { success: true };
   }
 
-  // Release the held playlist before falling through to the click path. Neither tryFastPathTune nor the inference block calls releaseHeldPlaylist — they either
+  // Release the held playlist before falling through to the click path. Neither tryFastPathTune nor the inference block calls releaseHeldPlaylist - they either
   // inject successfully (resolving the held playlist directly) or return false without side effects. The release is a no-op if the hold was already resolved.
   await releaseHeldPlaylist(page);
 
@@ -1216,7 +1205,7 @@ async function guideGridWithRetry(page: Page, profile: ChannelSelectionProfile):
 /**
  * Sets up server-side response interception on the page to capture channel data from Hulu's guide APIs. As the live page loads, Hulu fetches program details from
  * guide.hulu.com/guide/details in batches and program schedules from guide.hulu.com/guide/listing. We intercept both responses to populate the unified channel
- * cache: listing data goes into the staging map (UUID → programs), then details data triggers populateHuluChannelCache which joins name → UUID with staged
+ * cache: listing data goes into the staging map (UUID -> programs), then details data triggers populateHuluChannelCache which joins name -> UUID with staged
  * programs. Also bridges in-page console signals (HULU-DIAG, HULU-CACHE, HULU-FAIL) to the Node.js LOG. Uses a WeakSet to prevent duplicate listener
  * registration.
  * @param page - The Puppeteer page object.
@@ -1280,7 +1269,7 @@ function setupDetailsResponseInterception(page: Page): void {
 
     // Direct tune failure: the interceptor's hold period expired without resolving UUID+EAB for the target channel. The 503 response prevents Hulu from playing
     // the wrong channel. The guide grid binary search runs as the fallback. Since all cold tunes go through the guide grid (triggering full API expansion), this
-    // path should rarely be reached — it provides defense-in-depth against silent false positives.
+    // path should rarely be reached - it provides defense-in-depth against silent false positives.
     if(text.startsWith("[HULU-FAIL]")) {
 
       LOG.warn(text);
@@ -1296,7 +1285,7 @@ function setupDetailsResponseInterception(page: Page): void {
       return;
     }
 
-    // Details API: populate the unified channel cache by joining name → UUID from this response with programs from the listing staging map.
+    // Details API: populate the unified channel cache by joining name -> UUID from this response with programs from the listing staging map.
     if(url.includes("guide.hulu.com/guide/details")) {
 
       void response.json().then((data: HuluDetailsResponse) => {
@@ -1364,7 +1353,7 @@ function setupDetailsResponseInterception(page: Page): void {
 /**
  * Resolves a direct URL for Hulu channel tuning and installs a fetch interceptor that handles both warm and cold tunes. On warm cache (UUID and EAB known from
  * previous API responses), the interceptor has both values at install time and swaps the first playlist request immediately. On cold cache (no UUID), returns
- * null so the guide grid runs — the Channels tab click triggers full Details+Listing API expansion for all ~123 channels, and the interceptor captures UUID+EAB
+ * null so the guide grid runs - the Channels tab click triggers full Details+Listing API expansion for all ~123 channels, and the interceptor captures UUID+EAB
  * from those expanded responses to resolve the held playlist. Without the Channels tab click, the initial page load only provides data for ~10 visible channels.
  * On all tunes, the interceptor also expands listing and details API requests to populate the full cache for future warm tunes.
  * @param channelSelector - The channel selector string (e.g., "Fox", "CNN", "ESPN").
@@ -1382,7 +1371,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
   setupDetailsResponseInterception(page);
 
   // Look up the currently-airing EAB for the target channel (if UUID and programs are known). On warm cache (both UUID and EAB available), the interceptor has
-  // both at install time and swaps immediately. On cold cache (no UUID), we return null below so the guide grid runs — the Channels tab click triggers full API
+  // both at install time and swaps immediately. On cold cache (no UUID), we return null below so the guide grid runs - the Channels tab click triggers full API
   // expansion.
   const cachedEab = (cachedEntry?.programs) ? findCurrentEabFromPrograms(cachedEntry.programs) : null;
   const isWarmCache = Boolean(cachedUuid && cachedEab);
@@ -1392,7 +1381,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
     LOG.debug("tuning:hulu", "resolveHuluDirectUrl: warm cache for %s (uuid=%s, eab=%s).", channelSelector, cachedUuid, cachedEab);
   } else if(!cachedUuid) {
 
-    // On cold cache, all channels fall through to the guide grid — the Channels tab click triggers full Details+Listing API expansion for all ~123 channels.
+    // On cold cache, all channels fall through to the guide grid - the Channels tab click triggers full Details+Listing API expansion for all ~123 channels.
     // The affiliate/non-affiliate distinction is diagnostic only (both return null). Affiliates use position-based inference; non-affiliates use exact match.
     if(NETWORK_NAMES_WITH_AFFILIATES.has(normalizedName)) {
 
@@ -1436,7 +1425,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
   /* Install the fetch interceptor before navigation on both warm and cold tunes. On warm tunes, it swaps channel_id and content_eab_id in playlist requests
    * immediately. On cold tunes, the guide grid's Channels tab click triggers full API expansion, and the interceptor holds the playlist request until both
    * UUID and EAB are captured from those responses. On all tunes, it captures listing API responses to build an in-page EAB map and expands subsequent
-   * details API requests, populating the UUID cache to ~123 channels on a single page load. The script runs via evaluateOnNewDocument — it executes before
+   * details API requests, populating the UUID cache to ~123 channels on a single page load. The script runs via evaluateOnNewDocument - it executes before
    * any page JavaScript, patching window.fetch so Hulu's module-scoped fetch reference captures the interceptor. Each stream gets its own page via
    * createPageWithCapture(), so there's no persistence concern.
    */
@@ -1451,7 +1440,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       targetName: string, holdPlaylist: boolean
     ): void => {
 
-      // evaluateOnNewDocument runs in every frame, including ad iframes. We only want to intercept fetches in the main frame — iframes don't make Hulu API
+      // evaluateOnNewDocument runs in every frame, including ad iframes. We only want to intercept fetches in the main frame - iframes don't make Hulu API
       // calls. The try/catch handles cross-origin iframes where accessing window.top throws a SecurityError.
       try {
 
@@ -1479,7 +1468,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       let holdActive = holdPlaylist;
 
       // Tracks whether the initial page-load playlist request has been seen. When holdActive is false (cold affiliate guide grid click fallback), the first live
-      // playlist request carries the previously-playing channel's UUID — not the target's. We skip that one and only capture from subsequent requests, which
+      // playlist request carries the previously-playing channel's UUID - not the target's. We skip that one and only capture from subsequent requests, which
       // are triggered by the guide grid's play button click and carry the correct affiliate UUID.
       let initialPlaylistSeen = false;
 
@@ -1501,7 +1490,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       let directTuneResolved = Boolean(uuid && eab);
 
       // Checks whether both UUID and EAB are now known and resolves directTunePromise if so. Called after each successful capture from listing or details API
-      // responses. Order-independent — handles both "listing first, details second" and "details first, listing second" sequences.
+      // responses. Order-independent - handles both "listing first, details second" and "details first, listing second" sequences.
       function tryResolveDirectTune(): void {
 
         if(uuid && eab && directTuneResolve) {
@@ -1545,7 +1534,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       };
 
       // Query endpoint for the guide grid strategy to check if the interceptor has already resolved the direct tune. Returns true if the playlist was swapped
-      // (self-resolution from API data, external injection, or warm cache). The guide grid checks this after finding the target channel — if the interceptor
+      // (self-resolution from API data, external injection, or warm cache). The guide grid checks this after finding the target channel - if the interceptor
       // already handled the tune, the on-now cell click is redundant and can be skipped.
       (window as unknown as Record<string, unknown>).__prismcastIsDirectTuneResolved = (): boolean => directTuneResolved;
 
@@ -1555,7 +1544,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
       // Deferred Promise that resolves when captureListingData finishes parsing the first listing response. Details API requests await this Promise (with a 2s
       // timeout) before expanding, so even the very first details request gets expanded with listing-derived EABs. The listing response typically arrives
-      // ~200-600ms after the request fires, adding minimal latency to the details response — and the details API is not on the critical path for the channel
+      // ~200-600ms after the request fires, adding minimal latency to the details response - and the details API is not on the critical path for the channel
       // grid that binary search needs (it only provides program info for the mini-guide overlay).
       let listingCapturedResolve: Nullable<() => void> = null;
 
@@ -1611,7 +1600,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
             }
 
             // If the target UUID is already known (from a details response that arrived first), look up its EAB in the freshly captured listing data. This
-            // handles the "details first, listing second" ordering — the details parser set uuid but couldn't find the EAB yet.
+            // handles the "details first, listing second" ordering - the details parser set uuid but couldn't find the EAB yet.
             if(uuid && !eab) {
 
               const capturedEab = capturedCurrentEabs.get(uuid);
@@ -1632,12 +1621,12 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
           }).catch(() => { /* Intentional no-op. */ });
         } catch {
 
-          // Response doesn't support clone() or json() — silently skip capture.
+          // Response doesn't support clone() or json() - silently skip capture.
         }
       }
 
       // Fire-and-forget: parses a details API response to extract the target channel's UUID for cold direct tune. On warm cache (uuid already set at install
-      // time), this is a no-op — the UUID is already available. On cold cache, this is the primary mechanism for discovering the target's UUID: the expanded
+      // time), this is a no-op - the UUID is already available. On cold cache, this is the primary mechanism for discovering the target's UUID: the expanded
       // details response contains channel_info for all ~123 channels, and we match by normalized name. After finding the UUID, looks up the EAB in the captured
       // listing data and calls tryResolveDirectTune to release the held playlist request.
       function captureDetailsData(response: Response): void {
@@ -1691,7 +1680,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
           }).catch(() => { /* Intentional no-op. */ });
         } catch {
 
-          // Response doesn't support clone() or json() — silently skip capture.
+          // Response doesn't support clone() or json() - silently skip capture.
         }
       }
 
@@ -1713,7 +1702,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       }
 
       // Sends a fetch request with a modified body, reconstructing the request from a URL string when the input is a Request object. Using input.url as a
-      // string sidesteps the Fetch spec's body-lock check — getBodyText() locked the ReadableStream via input.clone().text(), and the spec checks lock status
+      // string sidesteps the Fetch spec's body-lock check - getBodyText() locked the ReadableStream via input.clone().text(), and the spec checks lock status
       // on the first argument BEFORE applying init overrides, causing a TypeError even though we provide a replacement body.
       async function fetchWithBody(input: RequestInfo | URL, init: RequestInit | undefined, body: string): Promise<Response> {
 
@@ -1769,7 +1758,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
               }
             } catch {
 
-              // Body parse error — pass through unmodified.
+              // Body parse error - pass through unmodified.
             }
           }
 
@@ -1783,11 +1772,11 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
         // Expand details API requests to include EABs for all known channels. The mini-guide details request only covers ~7 visible channels (~19 EABs),
         // but we have EABs from two sources: pre-injected cachedEabs from Node.js (available on warm tunes and subsequent cold tunes), and dynamically
         // captured capturedCurrentEabs from the listing API response (the primary source on the first cold tune). Merging both ensures the details response
-        // returns channel_info (name→UUID mappings) for all ~123 channels on any tune, even the very first cold tune after a restart.
+        // returns channel_info (name->UUID mappings) for all ~123 channels on any tune, even the very first cold tune after a restart.
         if(url.includes("guide.hulu.com") && url.includes("/guide/details")) {
 
           // If the in-page EAB map is empty and no pre-injected EABs are available, wait for the listing response to be parsed before proceeding. This holds
-          // the first details request for ~200-600ms until captureListingData resolves the Promise. The 2s timeout is a safety net — if the listing response
+          // the first details request for ~200-600ms until captureListingData resolves the Promise. The 2s timeout is a safety net - if the listing response
           // never arrives, the details request proceeds without expansion (same behavior as before).
           if((capturedCurrentEabs.size === 0) && (cachedEabs.length === 0)) {
 
@@ -1828,7 +1817,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
               }
             } catch {
 
-              // Body parse error — pass through unmodified.
+              // Body parse error - pass through unmodified.
             }
           }
 
@@ -1880,10 +1869,10 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
                   }
                 } catch {
 
-                  // Body parse error — skip capture.
+                  // Body parse error - skip capture.
                 }
 
-                // Must use fetchWithBody — getBodyText may have locked the Request's ReadableStream via clone().
+                // Must use fetchWithBody - getBodyText may have locked the Request's ReadableStream via clone().
                 return fetchWithBody(input, init, affiliateBody);
               }
 
@@ -1921,7 +1910,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
               }
             } catch {
 
-              // Body parse error — pass through unmodified.
+              // Body parse error - pass through unmodified.
             }
           }
         }
@@ -1936,7 +1925,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
     return null;
   }
 
-  // On cold cache (no UUID), fall through to the guide grid. The initial page load only provides Details API data for ~10 visible channels — the guide grid's
+  // On cold cache (no UUID), fall through to the guide grid. The initial page load only provides Details API data for ~10 visible channels - the guide grid's
   // Channels tab click triggers full expansion for all ~123 channels, and the interceptor captures UUID+EAB from those expanded responses to resolve the held
   // playlist. Affiliates additionally need position-based inference because their channel_info.name uses call signs rather than network names.
   if(!cachedUuid) {
@@ -1983,7 +1972,7 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
   }
 
   // Set up response interception BEFORE navigation so we capture the initial details and listing API responses during page load. These responses populate the
-  // unified channel cache with UUID, programs, and display names for all ~130 channels — warming the tuning cache as a side effect of discovery. The same
+  // unified channel cache with UUID, programs, and display names for all ~130 channels - warming the tuning cache as a side effect of discovery. The same
   // setupDetailsResponseInterception function used by the tuning path ensures a single code path for all API response processing.
   setupDetailsResponseInterception(page);
 
@@ -1995,7 +1984,7 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
     return [];
   }
 
-  // Click the Channels tab to reveal the channel list and trigger full API expansion. Matches the tuning path's retry logic — if guide rows don't appear after
+  // Click the Channels tab to reveal the channel list and trigger full API expansion. Matches the tuning path's retry logic - if guide rows don't appear after
   // the first tab click, retry once with a longer delay in case the first click fired during a transitional state before the guide was fully interactive.
   const listSelector = "#CHANNELS";
 
@@ -2088,8 +2077,8 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
   // domIndex values are from individual scroll windows (0-12) and are not meaningful across the full channel list.
   const indexedChannels: RenderedChannel[] = allChannels.map((ch, i) => ({ ...ch, domIndex: i }));
 
-  // Build a callSign → networkName map by reusing inferLocalAffiliate for each broadcast network. This is the same position-based inference the tuning strategy
-  // uses during binary search — a call sign channel occupies the alphabetical position where its network name would sort.
+  // Build a callSign -> networkName map by reusing inferLocalAffiliate for each broadcast network. This is the same position-based inference the tuning strategy
+  // uses during binary search - a call sign channel occupies the alphabetical position where its network name would sort.
   const affiliateMap = new Map<string, string>();
 
   for(const network of NETWORK_NAMES_WITH_AFFILIATES) {
@@ -2137,7 +2126,7 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
     return { channelSelector: ch.displayName, name: ch.displayName } as DiscoveredChannel;
   });
 
-  // Do not cache empty results — leave the flag false so subsequent calls retry the full walk. Empty results can indicate no Hulu + Live TV subscription.
+  // Do not cache empty results - leave the flag false so subsequent calls retry the full walk. Empty results can indicate no Hulu + Live TV subscription.
   if(discovered.length > 0) {
 
     discovered.sort((a, b) => a.name.localeCompare(b.name));

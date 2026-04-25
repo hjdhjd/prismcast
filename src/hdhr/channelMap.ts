@@ -71,21 +71,15 @@ export function buildChannelMap(): ChannelMapEntry[] {
     }
   }
 
-  // Auto-assign numbers to channels without explicit channelNumber. Sort keys alphabetically for deterministic assignment.
-  const unassignedKeys = Object.keys(channels)
-    .filter((key) => {
-
-      const channel = channels[key];
-
-      return (channel.hdhrEnabled !== false) && ((channel.channelNumber === undefined) || (channel.channelNumber <= 0));
-    })
-    .sort();
+  // Auto-assign numbers to channels without explicit channelNumber. Iterate entries (not just keys) so the channel reference stays narrowed; sort by key
+  // alphabetically for deterministic assignment.
+  const unassignedEntries = Object.entries(channels)
+    .filter(([ , channel ]) => (channel.hdhrEnabled !== false) && ((channel.channelNumber === undefined) || (channel.channelNumber <= 0)))
+    .sort(([a], [b]) => a.localeCompare(b));
 
   let nextNumber = AUTO_ASSIGN_START;
 
-  for(const key of unassignedKeys) {
-
-    const channel = channels[key];
+  for(const [ key, channel ] of unassignedEntries) {
 
     // Skip numbers already claimed by explicit assignments.
     while(explicitNumbers.has(nextNumber)) {

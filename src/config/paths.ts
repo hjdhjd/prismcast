@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 /* This module is the single source of truth for all filesystem paths used by PrismCast. All other modules import path getters from here instead of computing paths
- * independently. The data directory is resolved once at startup via initializeDataDir(), before config.json is loaded — this is necessary because the data directory
+ * independently. The data directory is resolved once at startup via initializeDataDir(), before config.json is loaded - this is necessary because the data directory
  * determines where config.json lives, creating a chicken-and-egg dependency that cannot be resolved through config.json itself.
  *
  * Resolution priority for the data directory (highest to lowest):
@@ -111,7 +111,7 @@ export function getResumeFilePath(): string {
 }
 
 /**
- * Returns the path to the Chrome PID file. Used for cross-platform process cleanup — the PID file survives crashes and allows the next startup to find and
+ * Returns the path to the Chrome PID file. Used for cross-platform process cleanup - the PID file survives crashes and allows the next startup to find and
  * terminate orphaned Chrome processes without relying on Unix-only tools like pkill/pgrep.
  * @returns The absolute path to chrome.pid inside the data directory.
  */
@@ -121,7 +121,7 @@ export function getChromePidFilePath(): string {
 }
 
 /**
- * Returns the path to the server PID file. Used to detect duplicate PrismCast instances — the PID file is written immediately after the instance check passes and
+ * Returns the path to the server PID file. Used to detect duplicate PrismCast instances - the PID file is written immediately after the instance check passes and
  * checked at the start of the next launch to prevent two instances from running simultaneously.
  * @returns The absolute path to prismcast.pid inside the data directory.
  */

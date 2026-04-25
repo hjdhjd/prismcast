@@ -9,11 +9,11 @@ import { getProviderBySlug } from "./channelSelection.js";
 import { markDomainAuth } from "../config/health.js";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
- * sequentially — discovery opens a browser page and navigates to a heavy SPA, so running all services concurrently would stress CPU and GPU on resource-constrained
+ * sequentially - discovery opens a browser page and navigates to a heavy SPA, so running all services concurrently would stress CPU and GPU on resource-constrained
  * systems. The HTTP server starts immediately; precaching begins in the background after a brief delay.
  *
  * Precaching is triggered from launchBrowser() in browser/index.ts. This covers both initial server startup and browser crash recovery (where all caches are cleared).
- * Each service has its own try/catch — one failure does not stop the rest. The browser reference is obtained per-service via getCurrentBrowser() so that a browser
+ * Each service has its own try/catch - one failure does not stop the rest. The browser reference is obtained per-service via getCurrentBrowser() so that a browser
  * crash between services is handled transparently (the next service gets the relaunched browser).
  */
 
@@ -66,7 +66,7 @@ async function runPrecacheCycle(): Promise<void> {
 
   try {
 
-    // Services are precached sequentially — each opens a browser page and navigates to a heavy SPA, so concurrent execution would stress system resources.
+    // Services are precached sequentially - each opens a browser page and navigates to a heavy SPA, so concurrent execution would stress system resources.
     for(const slug of slugs) {
 
       const provider = getProviderBySlug(slug);
@@ -132,7 +132,7 @@ async function runPrecacheCycle(): Promise<void> {
           LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (serviceElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
 
           // A successful discovery with results proves the service is accessible and authenticated. Mark it so the UI shows the green indicator immediately
-          // rather than waiting for the first manual tune. When a provider module defines validatePrecache, defer to it — some services (e.g., Sling) return guide data
+          // rather than waiting for the first manual tune. When a provider module defines validatePrecache, defer to it - some services (e.g., Sling) return guide data
           // even without authentication, so a non-empty result alone does not prove paid access.
           if((channels.length > 0) && (!provider.validatePrecache || provider.validatePrecache(channels))) {
 

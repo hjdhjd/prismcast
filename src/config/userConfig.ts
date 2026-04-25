@@ -67,7 +67,7 @@ export interface SettingMetadata {
   path: string;
 
   // Key identifying which list item provider to use when rendering a checkboxList. The provider is looked up in the LIST_ITEM_PROVIDERS registry in the settings
-  // renderer. This keeps the config layer free of browser/runtime dependencies — the routes layer owns the registry and can safely import browser capabilities.
+  // renderer. This keeps the config layer free of browser/runtime dependencies - the routes layer owns the registry and can safely import browser capabilities.
   listItemsKey?: string;
 
   // Data type for validation and form field rendering.
@@ -982,7 +982,7 @@ function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<b
 
     case "path": {
 
-      // An empty path env var means "use default" — return null so the downstream code sees the same sentinel as an unset config field.
+      // An empty path env var means "use default" - return null so the downstream code sees the same sentinel as an unset config field.
       return (value.trim() === "") ? null : value;
     }
 
@@ -1028,9 +1028,7 @@ export function setNestedValue(obj: Record<string, unknown>, settingPath: string
   const parts = settingPath.split(".");
   let current = obj;
 
-  for(let i = 0; i < (parts.length - 1); i++) {
-
-    const part = parts[i];
+  for(const part of parts.slice(0, -1)) {
 
     if(current[part] === undefined) {
 
@@ -1367,10 +1365,10 @@ export function getAdvancedSections(): AdvancedSection[] {
 
   for(const path of advancedPaths) {
 
-    const category = path.split(".")[0];
+    const [category] = path.split(".");
     const setting = getSettingByPath(path);
 
-    if(setting) {
+    if(setting && category) {
 
       if(!byCategory.has(category)) {
 

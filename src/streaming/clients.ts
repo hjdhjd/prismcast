@@ -5,11 +5,11 @@
 import { getStream } from "./registry.js";
 
 /* This module tracks which clients are connected to each stream by protocol (HLS or MPEG-TS). MPEG-TS clients have persistent connections and are registered on
- * connect, unregistered on disconnect. HLS clients are stateless — each playlist request refreshes a TTL-based entry that expires after 30 seconds of inactivity. The
+ * connect, unregistered on disconnect. HLS clients are stateless - each playlist request refreshes a TTL-based entry that expires after 30 seconds of inactivity. The
  * monitor queries client summaries every ~2 seconds to include them in SSE status updates for the UI.
  *
  * This module is intentionally separate from the stream registry to keep StreamRegistryEntry focused on capture state. The separation follows the same pattern as
- * channelToStreamId in lifecycle.ts — a lookup index maintained alongside the registry but owned by a different module.
+ * channelToStreamId in lifecycle.ts - a lookup index maintained alongside the registry but owned by a different module.
  */
 
 // Types.
@@ -116,7 +116,7 @@ export function registerClient(streamId: number, clientAddress: string, protocol
 }
 
 /**
- * Unregisters a client from a stream. Used for MPEG-TS clients on disconnect. HLS clients are not explicitly unregistered — they expire via TTL cleanup in
+ * Unregisters a client from a stream. Used for MPEG-TS clients on disconnect. HLS clients are not explicitly unregistered - they expire via TTL cleanup in
  * getClientSummary(). If the client map has already been cleared (e.g., during stream termination), this is a no-op.
  * @param streamId - The numeric stream ID.
  * @param clientAddress - The raw client IP address.
@@ -146,7 +146,7 @@ export function unregisterClient(streamId: number, clientAddress: string, protoc
 // Summary.
 
 /**
- * Returns an aggregated client summary for a stream. Performs lazy TTL cleanup of stale HLS clients as a side effect — entries that have not been refreshed within
+ * Returns an aggregated client summary for a stream. Performs lazy TTL cleanup of stale HLS clients as a side effect - entries that have not been refreshed within
  * HLS_CLIENT_TTL are removed. MPEG-TS clients are managed explicitly via register/unregister and are never expired by TTL.
  *
  * Called by the monitor every ~2 seconds during status emission.

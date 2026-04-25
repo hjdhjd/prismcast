@@ -42,7 +42,7 @@ export type ChannelStrategyHandler = (page: Page, profile: ChannelSelectionProfi
 
 /**
  * The complete contract for a channel selection strategy. Each provider file exports a single object implementing this interface. The coordinator accesses all
- * provider behavior through these hooks — no strategy-specific imports or hardcoded strategy name checks outside the registry.
+ * provider behavior through these hooks - no strategy-specific imports or hardcoded strategy name checks outside the registry.
  */
 export interface ChannelStrategyEntry {
 
@@ -99,7 +99,7 @@ export interface DiscoveredChannel {
 /**
  * Unified provider contract that bundles identity metadata, tuning strategy, and channel discovery into a single registry entry. Each provider tuning file
  * exports one ProviderModule. The coordinator builds its strategy dispatch lookup from provider modules at evaluation time. Generic strategies (thumbnailRow,
- * tileClick) remain bare ChannelStrategyEntry objects — they are not providers.
+ * tileClick) remain bare ChannelStrategyEntry objects - they are not providers.
  */
 export interface ProviderModule {
 
@@ -156,7 +156,7 @@ export interface ProviderModule {
 
   // Optional validator called after a successful precache to determine whether the results prove the provider is authenticated. When defined, precaching calls
   // this with the discovered channels and only marks the provider as authenticated if it returns true. When omitted, any non-empty precache result proves auth.
-  // Used by providers like Sling that return a guide lineup even without authentication — free-tier channels appear regardless of login state, so a non-empty
+  // Used by providers like Sling that return a guide lineup even without authentication - free-tier channels appear regardless of login state, so a non-empty
   // result alone does not prove the user has a paid subscription.
   validatePrecache?: (channels: DiscoveredChannel[]) => boolean;
 
@@ -186,7 +186,7 @@ export interface TuneResult {
   // The frame or page containing the video element, used for subsequent monitoring and recovery.
   context: Frame | Page;
 
-  // Propagated from ChannelSelectorResult — true when the tune succeeded via API interception rather than DOM interaction.
+  // Propagated from ChannelSelectorResult - true when the tune succeeded via API interception rather than DOM interaction.
   directTune?: boolean;
 }
 
