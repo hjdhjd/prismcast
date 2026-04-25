@@ -23,9 +23,9 @@ export const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this c
  * @param stored - The stored channel data (may be a delta or full definition).
  * @returns The hint string, or an empty string when no M3U-affecting fields are present.
  */
-export function playlistHintForStored(stored: StoredChannel): string {
+export function playlistHintForStored(stored: StoredChannel | undefined): string {
 
-  return M3U_FIELDS.some((f) => f in stored) ? PLAYLIST_HINT : "";
+  return stored && M3U_FIELDS.some((f) => f in stored) ? PLAYLIST_HINT : "";
 }
 
 /**

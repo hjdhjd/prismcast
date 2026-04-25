@@ -516,7 +516,15 @@ export function registerCrudRoutes(app: Express): void {
       return;
     }
 
-    const field = presentFields[0];
+    // presentFields.length was validated above to be exactly 1. Narrow with an explicit check - TypeScript does not propagate the length check to the index
+    // access, but the guard is free at runtime (an impossible branch) and keeps the rest of the handler type-safe without a non-null assertion.
+    const [field] = presentFields;
+
+    if(field === undefined) {
+
+      return;
+    }
+
     const value = body[field];
 
     // channelNumber validation uses the shared validator, which takes a string and re-parses. Feed it the numeric value rendered as a string.

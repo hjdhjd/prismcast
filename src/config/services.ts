@@ -2,11 +2,11 @@
  *
  * services.ts: Service group management for multi-service channels.
  */
-import { CHANNEL_IDENTITY_FIELDS, PREDEFINED_CHANNELS } from "../channels/index.js";
 import type { Channel, ChannelMap, ChannelSortField, ServiceGroup, SortDirection } from "../types/index.js";
 import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
 import { CONFIG } from "./index.js";
+import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import { getChannelEffectiveTags } from "./userChannels.js";
 import { getProfileForChannel } from "./profiles.js";
 import { getUserDomains } from "./userProfiles.js";
@@ -14,8 +14,8 @@ import { mutateConfig } from "./userConfig.js";
 
 /* Service groups allow multiple streaming services to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
- * All variant relationships — predefined and user-defined — are expressed via the canonicalKey field on Channel. The flattener sets canonicalKey on predefined
- * variant entries, the browse modal sets it on user variant entries, and the one-time migration stamps it on pre-existing user entries. buildServiceGroups
+ * All variant relationships - predefined and user-defined - are expressed via the canonicalKey field on Channel. The flattener sets canonicalKey on predefined
+ * variant entries, the browse modal sets it on user variant entries, and the schema-version migration stamps it on entries that lack it. buildServiceGroups
  * scans all channels once and groups by canonicalKey. One field, one mechanism, one code path.
  *
  * User overrides: When a user defines a channel with the same key as a predefined channel, both versions appear in the service dropdown. The user's custom version
@@ -32,7 +32,7 @@ export const PREDEFINED_SUFFIX = ":predefined";
 
 /**
  * Strips the :predefined suffix from a channel key if present, returning the base key. Synthetic keys like "pbs:predefined" are created when a user overrides a
- * predefined channel — the original predefined entry gets this suffix to coexist with the user's custom version in the service dropdown. Functions that look up
+ * predefined channel - the original predefined entry gets this suffix to coexist with the user's custom version in the service dropdown. Functions that look up
  * channel data by key must strip the suffix to find the actual channel entry.
  * @param key - The channel key, possibly with :predefined suffix.
  * @returns The base key without the suffix.
@@ -84,7 +84,7 @@ function resolveServiceTag(channel: Channel): string {
 /**
  * Gets the service tag for a channel key. For channels in a service group, reads the pre-computed tag from the group variant entry (computed at group-building
  * time by buildServiceGroups). For standalone channels not in any group, derives the tag from the channel's URL domain. This function should not be called with
- * :predefined synthetic keys — those only exist inside service groups and their tags are available via the group's variant entries.
+ * :predefined synthetic keys - those only exist inside service groups and their tags are available via the group's variant entries.
  * @param key - The channel key.
  * @returns The service tag string.
  */
@@ -107,7 +107,7 @@ export function getServiceTagForChannel(key: string): string {
   // For standalone channels not in any group, derive from the channel's URL domain.
   const channel = channelsRef[effectiveKey] ?? PREDEFINED_CHANNELS[effectiveKey];
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
   if(!channel) {
 
     return "direct";
@@ -117,7 +117,7 @@ export function getServiceTagForChannel(key: string): string {
 }
 
 /**
- * Returns the auth domain for a channel key. Domain is the natural auth boundary — browser cookies and sessions scope to it. Multi-channel services work correctly
+ * Returns the auth domain for a channel key. Domain is the natural auth boundary - browser cookies and sessions scope to it. Multi-channel services work correctly
  * because all their channels share one domain, and canonical channels work correctly because each has its own domain.
  * @param key - The channel key.
  * @returns The extracted domain from the channel's URL, or empty string if the channel or URL cannot be resolved.
@@ -127,7 +127,7 @@ export function getAuthDomainForChannel(key: string): string {
   const effectiveKey = stripPredefinedSuffix(key);
   const channel = channelsRef[effectiveKey] ?? PREDEFINED_CHANNELS[effectiveKey];
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
   if(!channel?.url) {
 
     return "";
@@ -152,7 +152,7 @@ export function getChannelServiceTags(canonicalKey: string): string[] {
 
     for(const variant of group.variants) {
 
-      // Skip predefined suffix variants — they share the canonical's tag (but derived from the predefined URL, which may differ from the user override).
+      // Skip predefined suffix variants - they share the canonical's tag (but derived from the predefined URL, which may differ from the user override).
       if(variant.key.endsWith(PREDEFINED_SUFFIX)) {
 
         continue;
@@ -164,7 +164,7 @@ export function getChannelServiceTags(canonicalKey: string): string[] {
     return [...tags];
   }
 
-  // Standalone channel — derive tag from the channel directly.
+  // Standalone channel - derive tag from the channel directly.
   return [getServiceTagForChannel(canonicalKey)];
 }
 
@@ -182,7 +182,7 @@ export function getAllServiceTags(): { displayName: string; domain?: string; ico
 
   for(const key of allKeys) {
 
-    // Skip variant keys — they are covered by getChannelServiceTags() on the canonical.
+    // Skip variant keys - they are covered by getChannelServiceTags() on the canonical.
     const group = serviceGroups.get(key);
 
     if(group && (group.canonicalKey !== key)) {
@@ -301,7 +301,7 @@ export async function saveEnabledServices(): Promise<void> {
  */
 export function isServiceTagEnabled(tag: string): boolean {
 
-  // No filter active — all services are enabled.
+  // No filter active - all services are enabled.
   if(enabledServices.length === 0) {
 
     return true;
@@ -323,7 +323,7 @@ export function isServiceTagEnabled(tag: string): boolean {
  */
 export function isChannelAvailableByService(canonicalKey: string): boolean {
 
-  // No filter active — all channels are available.
+  // No filter active - all channels are available.
   if(enabledServices.length === 0) {
 
     return true;
@@ -335,7 +335,7 @@ export function isChannelAvailableByService(canonicalKey: string): boolean {
 }
 
 /**
- * Checks if a channel in the merged map is a user override of a predefined channel. This uses object reference comparison — getAllChannels() spreads
+ * Checks if a channel in the merged map is a user override of a predefined channel. This uses object reference comparison - getAllChannels() spreads
  * PREDEFINED_CHANNELS directly into the result, so if the reference differs, a user channel has replaced the predefined one.
  * @param key - The channel key to check.
  * @param channels - The merged channel map.
@@ -350,16 +350,14 @@ function isUserOverride(key: string, channels: ChannelMap): boolean {
 }
 
 /**
- * Builds service groups by scanning all channels and grouping by canonicalKey. Variant entries declare their canonical via the canonicalKey field (set by the
- * flattener for predefined channels, by the browse modal for user channels, and by the one-time migration for pre-existing user entries). This is a single
- * pass over the merged channel map — one field, one mechanism for both predefined and user-defined variant relationships.
+ * Builds service groups by scanning all channels and grouping by canonicalKey. The flattener sets canonicalKey on predefined variants, the browse modal sets it
+ * on user variants, and the schema-version migration stamps it on entries that lack it. One field, one mechanism, one pass.
  *
  * User overrides of predefined channels (same key, different object reference) produce a two-entry group with "Custom" and the original predefined version,
  * even for single-service channels that don't have canonicalKey-based variants.
  *
- * After building groups, validates stored service selections against the new variant structure and reverts any stale selections to the canonical default. This
- * catches all staleness sources in one place: service key renames across versions, variant removal in code, user-deleted custom variants, and reverted
- * predefined overrides.
+ * After grouping, every stored service selection is validated against the rebuilt variant structure. Selections that no longer correspond to a real variant are
+ * reverted to the canonical default. This is the single resolution boundary for stale selections; read-side resolvers stay pure.
  * @param channels - The merged channel map (predefined + user channels).
  * @returns Canonical keys whose service selections were stale and reverted. Empty array if all selections are valid. The caller decides whether to persist.
  */
@@ -394,7 +392,7 @@ export function buildServiceGroups(channels: ChannelMap): string[] {
 
     const canonical = channels[canonicalKey];
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
     if(!canonical) {
 
       continue;
@@ -403,17 +401,25 @@ export function buildServiceGroups(channels: ChannelMap): string[] {
     const variants: ServiceGroup["variants"] = [];
 
     // Handle user override of the canonical entry. Two scenarios: (A) the user customized properties (station ID, tags, etc.) but the URL still matches a known
-    // service domain — no "Custom" variant needed, just the normal service label with a visual override indicator in the table; (B) the user set a genuinely
-    // non-standard URL — "Custom (domain)" is a real service variant and the :predefined entry gives access to the original service URL.
-    if(isUserOverride(canonicalKey, channels)) {
+    // service domain - no "Custom" variant needed, just the normal service label with a visual override indicator in the table; (B) the user set a genuinely
+    // non-standard URL - "Custom (domain)" is a real service variant and the :predefined entry gives access to the original service URL.
+    // isUserOverride returned true means predefined exists for canonicalKey (it's defined as `Boolean(predefined) && (channels[key] !== predefined)`). Look it
+    // up here and narrow away the undefined so the scenarios below can rely on the predefined reference.
+    const predefined = isUserOverride(canonicalKey, channels) ? PREDEFINED_CHANNELS[canonicalKey] : undefined;
 
-      const predefined = PREDEFINED_CHANNELS[canonicalKey];
+    if(predefined) {
+
       const userDomain = extractDomain(canonical.url);
       const knownDomains = new Set([extractDomain(predefined.url)]);
 
       for(const variantKey of variantKeys) {
 
-        knownDomains.add(extractDomain(channels[variantKey].url));
+        const variantChannel = channels[variantKey];
+
+        if(variantChannel) {
+
+          knownDomains.add(extractDomain(variantChannel.url));
+        }
       }
 
       if(knownDomains.has(userDomain)) {
@@ -440,7 +446,11 @@ export function buildServiceGroups(channels: ChannelMap): string[] {
 
       const variant = channels[variantKey];
 
-      variants.push({ key: variantKey, label: getChannelServiceLabel(variant), tag: resolveServiceTag(variant) });
+      // Defensive: every variantKey in variantKeys came from Pass 1's scan of this same channels map, so the lookup succeeds. The narrowing keeps the types honest.
+      if(variant) {
+
+        variants.push({ key: variantKey, label: getChannelServiceLabel(variant), tag: resolveServiceTag(variant) });
+      }
     }
 
     const group: ServiceGroup = { canonicalKey, variants };
@@ -456,7 +466,7 @@ export function buildServiceGroups(channels: ChannelMap): string[] {
     LOG.debug("config:general", "Service group '%s': variants=%s.", canonicalKey, variants.map((v) => v.key).join(", "));
   }
 
-  // Pass 3: Create groups for user overrides of single-service predefined channels. Only Scenario B (genuinely custom URL) gets a service group — the user needs
+  // Pass 3: Create groups for user overrides of single-service predefined channels. Only Scenario B (genuinely custom URL) gets a service group - the user needs
   // a dropdown to switch between their custom URL and the predefined service. Scenario A (property override on the same domain) skips group creation entirely
   // because there is only one service and no dropdown is needed; the modified-dot indicator in the table renderer signals the override.
   for(const key of Object.keys(channels)) {
@@ -474,7 +484,14 @@ export function buildServiceGroups(channels: ChannelMap): string[] {
     const userChannel = channels[key];
     const predefined = PREDEFINED_CHANNELS[key];
 
-    // Scenario A: URL domain matches the predefined service. No service group needed — renders as a single-service channel with a modified-dot indicator.
+    // Defensive: isUserOverride returning true means both predefined and the user entry exist. The narrowing here satisfies the type-checker and guards
+    // against an impossible edge case.
+    if(!userChannel || !predefined) {
+
+      continue;
+    }
+
+    // Scenario A: URL domain matches the predefined service. No service group needed - renders as a single-service channel with a modified-dot indicator.
     if(extractDomain(userChannel.url) === extractDomain(predefined.url)) {
 
       continue;
@@ -517,9 +534,8 @@ export function buildServiceGroups(channels: ChannelMap): string[] {
     }
   }
 
-  // Validate stored service selections against the rebuilt groups. Any selection whose variant key no longer exists in the group is stale and reverted to the
-  // canonical default. This handles all staleness sources: service key renames across versions, variant removal, user-deleted custom variants, and reverted
-  // predefined overrides. The caller decides whether to persist based on whether any keys were cleaned.
+  // Validate stored service selections against the rebuilt groups. Any selection whose variant key is not present in the group is stale and reverted to the
+  // canonical default. The caller decides whether to persist based on whether any keys were cleaned.
   const staleKeys: string[] = [];
 
   for(const [ canonicalKey, selection ] of serviceSelections) {
@@ -581,7 +597,7 @@ export function getPredefinedDomainMap(): Record<string, PredefinedChannelSummar
 /**
  * Resolves a URL to a friendly service display name. Checks built-in DOMAIN_CONFIG first for a stable, well-known service name, then falls back to
  * getDomainConfig() which includes user domain mappings. This ordering prevents user domain overrides from corrupting display labels for predefined channel
- * variants — a user mapping a built-in domain to a custom profile should not rename every service dropdown entry that uses that domain.
+ * variants - a user mapping a built-in domain to a custom profile should not rename every service dropdown entry that uses that domain.
  * @param url - The URL to resolve a service display name for.
  * @returns The service display name, or the concise domain if no service name is configured.
  */
@@ -594,7 +610,7 @@ export function getServiceDisplayName(url: string): string {
     const hostname = new URL(url).hostname;
     const builtinFull = DOMAIN_CONFIG[hostname];
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
     if(builtinFull?.service) {
 
       return builtinFull.service;
@@ -603,14 +619,14 @@ export function getServiceDisplayName(url: string): string {
     const concise = extractDomain(url);
     const builtinConcise = DOMAIN_CONFIG[concise];
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
     if(builtinConcise?.service) {
 
       return builtinConcise.service;
     }
   } catch {
 
-    // Invalid URL — fall through to getDomainConfig.
+    // Invalid URL - fall through to getDomainConfig.
   }
 
   // For domains not in DOMAIN_CONFIG, fall back to getDomainConfig() which includes user domain mappings.
@@ -621,7 +637,7 @@ export function getServiceDisplayName(url: string): string {
 
 /**
  * Resolves service identity (tag and display name) for a user-defined profile by scanning its domain mappings. Returns the first matching domain config's
- * serviceTag and service name. This is the single source of truth for "profile key → service identity" resolution, used by both tag and label lookups to avoid
+ * serviceTag and service name. This is the single source of truth for "profile key -> service identity" resolution, used by both tag and label lookups to avoid
  * duplicating the domain scan logic.
  * @param profileKey - The user profile key to resolve.
  * @returns The service identity from the profile's domain mappings, or undefined if no matching domain mapping exists.
@@ -686,7 +702,7 @@ export const VALID_SORT_FIELDS = new Set<ChannelSortField>(
  */
 export function getChannelSortKey(channel: Channel, key: string, field: ChannelSortField): string {
 
-  // Resolve the selected service variant so all sort keys reflect the user's service selection. For URL-dependent fields (profile, service), this is essential —
+  // Resolve the selected service variant so all sort keys reflect the user's service selection. For URL-dependent fields (profile, service), this is essential -
   // a canonical's URL may differ from the selected variant's (e.g., bbcnews canonical uses cox but the user selected the directv variant). For identity fields
   // (name, stationId, channelNumber), the flattener eagerly sets these on all entries, so the resolved channel has identical values regardless of variant.
   const effective = getResolvedChannel(resolveServiceKey(key)) ?? channel;
@@ -771,8 +787,8 @@ export function getChannelSortKey(channel: Channel, key: string, field: ChannelS
 
 /**
  * Compares two channels for sorting by the specified field and direction with a built-in channel name tiebreaker. The tiebreaker is always ascending so that rows
- * within each group maintain a consistent alphabetical order regardless of the primary sort direction. This is the single comparator for all sort sites — server HTML
- * render, client re-sort, and M3U playlist — to prevent ordering divergence.
+ * within each group maintain a consistent alphabetical order regardless of the primary sort direction. This is the single comparator for all sort sites - server HTML
+ * render, client re-sort, and M3U playlist - to prevent ordering divergence.
  * @param channelA - First channel definition.
  * @param keyA - First channel key.
  * @param channelB - Second channel definition.
@@ -900,8 +916,8 @@ export function setServiceSelection(canonicalKey: string, serviceKey: string): v
  * service's key. Otherwise returns the canonical key (default service). When the service filter is active, falls back to the first enabled variant if the stored
  * selection's service is filtered out.
  *
- * This function is a pure resolver with no side effects. Stale selection cleanup is handled by buildServiceGroups(), which validates all stored selections
- * against the rebuilt variant structure every time groups are rebuilt - both at startup and after runtime channel mutations.
+ * Pure resolver with no side effects. Stale selection cleanup belongs to buildServiceGroups(), which validates all stored selections against the rebuilt variant
+ * structure on startup and after runtime channel mutations. Reads are safe to call from any context, including inside other mutations.
  * @param canonicalKey - The canonical channel key.
  * @returns The resolved service key to use for streaming.
  */
@@ -909,7 +925,7 @@ export function resolveServiceKey(canonicalKey: string): string {
 
   const selection = serviceSelections.get(canonicalKey);
 
-  // No selection stored — use the canonical key (default service). If the canonical's service tag is filtered out, fall back to the first enabled variant.
+  // No selection stored - use the canonical key (default service). If the canonical's service tag is filtered out, fall back to the first enabled variant.
   if(!selection) {
 
     if((enabledServices.length > 0) && !isServiceTagEnabled(getServiceTagForChannel(canonicalKey))) {
@@ -920,7 +936,7 @@ export function resolveServiceKey(canonicalKey: string): string {
     return canonicalKey;
   }
 
-  // Valid selection — if its service tag is filtered out, fall back to the first enabled variant.
+  // Valid selection - if its service tag is filtered out, fall back to the first enabled variant.
   if((enabledServices.length > 0) && !isServiceTagEnabled(getServiceTagForChannel(selection))) {
 
     return findFirstEnabledVariant(canonicalKey) ?? selection;
@@ -961,115 +977,61 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 }
 
 /**
- * Applies variant inheritance: the variant contributes service-specific fields (url, channelSelector, profile, etc.) while identity fields always come from the
- * canonical base. Identity fields describe what the channel IS — name, station ID, tags, channel number — and are independent of which service serves it. The
- * spread brings in all variant fields, then identity fields are unconditionally overwritten from the canonical. This ensures user overrides on the canonical
- * (e.g., renaming a channel or adding tags) propagate to all service variants, rather than being masked by stale flattener-copied values on the variant.
- * The field list comes from CHANNEL_IDENTITY_FIELDS — the single source of truth for the identity/service-specific separation.
- * @param variant - The variant channel definition (service-specific fields).
- * @param base - The canonical (base) channel with user overrides applied (identity fields).
- * @returns A new Channel with identity fields from the canonical and service-specific fields from the variant.
- */
-function applyVariantInheritance(variant: Channel, base: Channel): Channel {
-
-  const result: Channel = { ...variant };
-
-  for(const field of CHANNEL_IDENTITY_FIELDS) {
-
-    copyField(result, base, field);
-  }
-
-  return result;
-}
-
-// Type-safe field copy using a generic to preserve the field-value relationship. TypeScript can't prove that result[field] and base[field] have compatible types
-// when field is a union of literal keys (each key maps to a different type). The generic K narrows to a single key per call, making the assignment type-safe.
-// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- K is necessary to correlate the key type between target and source assignments.
-function copyField<K extends keyof Channel>(target: Channel, source: Channel, key: K): void {
-
-  target[key] = source[key];
-}
-
-/**
- * Gets a channel with inheritance applied. For service variants, this merges the variant's properties with inherited properties from the canonical entry
- * using the live channel data (which includes user overrides). Use `resolvePredefinedVariant()` when you need resolution against pure predefined data.
- * @param key - The channel key (canonical or variant).
- * @returns The complete channel with inheritance applied, or undefined if the channel doesn't exist.
+ * Gets a channel with inheritance applied. Variant inheritance is resolved at load time by resolveStoredChannel in userChannels.ts - entries in channelsRef
+ * are already fully merged with their canonical (variant values win when set, canonical fills in the rest). This function is a thin accessor that also
+ * handles the synthetic :predefined suffix used when a user overrides a canonical but the service dropdown references the original predefined variant.
+ * @param key - The channel key (canonical, variant, or :predefined suffix).
+ * @returns The complete channel, or undefined if the channel doesn't exist.
  */
 export function getResolvedChannel(key: string): Channel | undefined {
 
-  // Handle predefined suffix — return the original predefined channel when user has overridden the canonical but selects the predefined service.
+  // Handle the :predefined suffix - return the original predefined channel when the user has overridden the canonical but selects the predefined service.
   if(key.endsWith(PREDEFINED_SUFFIX)) {
 
-    const baseKey = key.slice(0, -PREDEFINED_SUFFIX.length);
-
-    return PREDEFINED_CHANNELS[baseKey];
+    return PREDEFINED_CHANNELS[key.slice(0, -PREDEFINED_SUFFIX.length)];
   }
 
-  const channel = channelsRef[key];
-
-  // Runtime check needed even though TypeScript thinks channel is always defined (Record indexing quirk).
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!channel) {
-
-    return undefined;
-  }
-
-  const group = serviceGroups.get(key);
-
-  // If not part of a group or is the canonical entry, return as-is.
-  if(!group || (group.canonicalKey === key)) {
-
-    return channel;
-  }
-
-  // This is a variant — merge with canonical entry.
-  const canonical = channelsRef[group.canonicalKey];
-
-  // Runtime check — canonical entry should exist if the group exists, but we check defensively.
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!canonical) {
-
-    // Canonical entry missing (shouldn't happen), return variant as-is.
-    return channel;
-  }
-
-  return applyVariantInheritance(channel, canonical);
+  return channelsRef[key];
 }
 
 /**
- * Resolves a variant channel key against pure predefined data (ignoring user overrides). This is used for revert detection — when the user's edits match a
- * variant's predefined definition, the custom override can be removed and the service selection switched to that variant. For canonical keys, returns the raw
- * predefined channel. For variant keys, applies the same inheritance rules as `getResolvedChannel()` but against `PREDEFINED_CHANNELS` instead of `channelsRef`.
+ * Resolves a variant channel key against pure predefined data (ignoring user overrides). Used for revert detection: when an edit's values match a variant's
+ * predefined definition, the custom override can be dropped and the service selection switched to that variant. Predefined variant entries carry only
+ * service-specific fields and canonicalKey; identity inherits from the canonical. This resolver layers the variant's service fields onto the canonical so
+ * findMatchingVariant can compare form values against a fully-populated variant view.
  * @param key - The channel key (canonical or variant).
- * @returns The channel with inheritance applied against predefined data, or undefined if the key has no predefined definition.
+ * @returns The resolved predefined channel, or undefined when the key has no predefined definition.
  */
 export function resolvePredefinedVariant(key: string): Channel | undefined {
 
-  const channel = PREDEFINED_CHANNELS[key];
+  const entry = PREDEFINED_CHANNELS[key];
 
-  // Runtime check — the key may not exist in PREDEFINED_CHANNELS.
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!channel) {
+
+  if(!entry) {
 
     return undefined;
   }
 
-  const group = serviceGroups.get(key);
+  // Canonical entries have full identity already; return as-is.
+  if(!entry.canonicalKey || (entry.canonicalKey === key)) {
 
-  // If not part of a group or is the canonical entry, return the predefined channel as-is.
-  if(!group || (group.canonicalKey === key)) {
-
-    return channel;
+    return entry;
   }
 
-  const canonical = PREDEFINED_CHANNELS[group.canonicalKey];
+  // Predefined variant: identity inherits from the canonical. Build a fresh Channel that merges canonical identity with the variant's service-specific fields.
+  const canonical = PREDEFINED_CHANNELS[entry.canonicalKey];
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
   if(!canonical) {
 
-    return channel;
+    return entry;
   }
 
-  return applyVariantInheritance(channel, canonical);
+  // Start from the canonical (identity source), then overlay the variant's own fields. Since the variant is itself a plain Channel object (no nulls, no
+  // deltas), a direct spread gives the correct result: variant fields win, canonical fills in the rest. Defensive copy of tags breaks shared array references.
+  const resolved: Channel = { ...canonical, ...entry };
+
+  resolved.tags &&= resolved.tags.slice();
+
+  return resolved;
 }

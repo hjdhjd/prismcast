@@ -28,8 +28,13 @@ interface ModifyEntry {
 }
 
 /**
- * Builds a UserChannel object from a modify-request entry. When canonicalKey is provided, the result is a service variant - identity fields (name, stationId) are
- * omitted because they inherit from the canonical at runtime via applyVariantInheritance. Standalone channels (no canonicalKey) include all fields.
+ * Builds a UserChannel object from a modify-request entry. When canonicalKey is set, the result is a service variant stored as a delta against its canonical -
+ * identity fields that the user explicitly provides (e.g., stationId for a local affiliate) are preserved so the variant carries its own identity; the delta
+ * normalizer later strips any field whose value matches the canonical. Standalone channels (no canonicalKey) need the full identity on the entry itself
+ * because there is no canonical to inherit from.
+ *
+ * Submitting a stationId for a variant is how a user persists per-variant identity - the canonical may lack a stationId (e.g., the generic "abc" network has
+ * no single station ID; only its local affiliates do), and in that case the variant's value is the only source of identity for EPG matching and HDHR.
  * @param entry - The raw entry fields as submitted by the browse modal.
  * @param name - The sanitized display name.
  * @param url - The sanitized URL.
@@ -46,7 +51,10 @@ function buildUserChannel(entry: ModifyEntry, name: string, url: string, selecto
     url
   };
 
-  if(!canonicalKey && entry.stationId) {
+  // Variant-specific stationId: broadcast network canonicals (abc, cbs, fox, nbc) typically lack a stationId because there is no single national ID - the
+  // ID belongs to the local affiliate. Preserving the submitted stationId on the variant is how the user records that identity. Values that happen to match
+  // the canonical are stripped later by the delta normalizer, so there is no redundant storage.
+  if(entry.stationId) {
 
     channel.stationId = sanitizeString(entry.stationId);
   }

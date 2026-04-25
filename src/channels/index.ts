@@ -4,10 +4,11 @@
  */
 import type { Channel, ChannelDefinition, ChannelMap, ServiceVariant } from "../types/index.js";
 
-// Channel identity fields — metadata that describes the channel itself, independent of which service serves it. This is the single source of truth for the
-// identity/service-specific field separation used by: (1) applyVariantInheritance in services.ts (identity fields always come from the canonical),
-// (2) startup migration in userChannels.ts (strips legacy identity fields from variant entries), and (3) DELTA_ALLOWED_FIELDS derivation (identity +
-// service-specific editable fields). Adding a new identity field here automatically propagates to all three consumers.
+// Channel identity fields - metadata that describes the channel itself, independent of which service serves it. This list feeds DELTA_ALLOWED_FIELDS in
+// userChannels.ts (identity + service-specific editable fields) and the legacy-variant shape classifier in collectLegacyVariantStamps (to detect whether a
+// stored entry's identity matches its canonical, which is the signal for safe canonicalKey stamping). Adding a new identity field here propagates to both
+// automatically. Identity inheritance itself is not driven by this list - it is a uniform delta-overlay applied by resolveStoredChannel, so every field
+// inherits by the same rule (variant value wins when set, canonical fills in the rest).
 export const CHANNEL_IDENTITY_FIELDS = new Set([ "channelNumber", "guideTitle", "hdhrEnabled", "logoUrl", "name", "stationId", "tags", "tvgShift" ] as const);
 
 // Predefined tag vocabulary. These tags ship with PrismCast and are assigned to predefined channel definitions below. Users can delete predefined tags from
@@ -2361,7 +2362,7 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
 
     const pacificKey = key + "p";
 
-    // Manual Pacific definition takes precedence — don't generate.
+    // Manual Pacific definition takes precedence - don't generate.
     if(pacificKey in definitions) {
 
       continue;
@@ -2392,7 +2393,7 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
     const eastKey = pacKey.slice(0, -1);
     const eastDef = definitions[eastKey];
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
     if(!eastDef) {
 
       continue;
@@ -2436,8 +2437,14 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
  * 2. Otherwise, services are sorted alphabetically by key. The first service populates the canonical entry. No variant key is emitted for it.
  * 3. All remaining services produce variant entries keyed as "{key}-{slug}".
  *
- * Identity fields (name, stationId, channelNumber, tvgShift) are set on the canonical entry and inherited by all variants. Service-specific fields
- * (channelSelector, url, profile, etc.) come from each ServiceVariant. ServiceVariant fields override ChannelDefinition fields when both are set.
+ * Canonical entries carry the full identity (name, stationId, channelNumber, tags, tvgShift) from the ChannelDefinition plus the canonical service's URL and
+ * service-specific fields. Variant entries carry only service-specific fields (url, channelSelector, profile, etc.) plus canonicalKey pointing at the
+ * canonical - identity inherits at resolution time from the (possibly user-overridden) canonical. A variant may still specify its own channelNumber override
+ * via ServiceVariant.channelNumber; that is the one identity-shaped field a variant is allowed to carry, because a service may publish the channel on a
+ * different lineup position than the canonical.
+ *
+ * This shape makes variants first-class deltas against their canonical - the same treatment user-defined variants get in storage - so canonical overrides
+ * propagate automatically to every variant without a separate runtime inheritance pass.
  */
 function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition>): ChannelMap {
 
@@ -2446,19 +2453,26 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
   for(const [ key, def ] of Object.entries(definitions)) {
 
     const slugs = Object.keys(def.services).sort();
+    // Determine the canonical service: "site" wins, otherwise first alphabetically. The undefined branch also serves as the empty-services guard - a
+    // ChannelDefinition with no services is skipped entirely.
+    const firstSlug = slugs[0];
 
-    if(slugs.length === 0) {
+    if(firstSlug === undefined) {
 
       continue;
     }
 
-    // Determine the canonical service: "site" wins, otherwise first alphabetically.
-    const canonicalSlug = slugs.includes(SITE_KEY) ? SITE_KEY : slugs[0];
+    const canonicalSlug = slugs.includes(SITE_KEY) ? SITE_KEY : firstSlug;
     const canonicalVariant = def.services[canonicalSlug];
 
-    // Build the canonical flat entry with identity fields + canonical service's fields. pacificStationId is set only on the canonical entry - it drives Pacific
-    // auto-generation and is not meaningful on service variants.
-    const canonicalEntry = buildFlatEntry(def, canonicalVariant);
+    if(canonicalVariant === undefined) {
+
+      continue;
+    }
+
+    // Build the canonical flat entry with identity fields + canonical service's URL and service-specific fields. pacificStationId is set only on the canonical
+    // entry - it drives Pacific auto-generation and is not meaningful on service variants.
+    const canonicalEntry = buildCanonicalEntry(def, canonicalVariant);
 
     if(def.pacificStationId) {
 
@@ -2468,7 +2482,8 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
     channels[key] = canonicalEntry;
 
     // Build variant entries for all non-canonical services. Each variant gets canonicalKey set to the definition key so that buildServiceGroups can group
-    // channels by a single mechanism - scanning canonicalKey - regardless of whether the channel is predefined or user-defined.
+    // channels by a single mechanism - scanning canonicalKey - regardless of whether the channel is predefined or user-defined. Variant entries carry only
+    // service-specific fields; identity inherits from the canonical at resolution time.
     for(const slug of slugs) {
 
       if(slug === canonicalSlug) {
@@ -2478,7 +2493,13 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
 
       const variantKey = key + "-" + slug;
       const variant = def.services[slug];
-      const variantEntry = buildFlatEntry(def, variant);
+
+      if(variant === undefined) {
+
+        continue;
+      }
+
+      const variantEntry = buildVariantEntry(variant);
 
       variantEntry.canonicalKey = key;
       channels[variantKey] = variantEntry;
@@ -2489,13 +2510,13 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
 }
 
 /**
- * Builds a flat Channel entry by merging a ChannelDefinition's identity fields with a ServiceVariant's service-specific fields. ServiceVariant fields
- * override ChannelDefinition fields when both are set.
+ * Builds the canonical flat entry for a channel definition: identity fields from the definition plus the canonical service's URL and service-specific fields.
+ * The canonical is the one entry where identity lives; variants inherit from it at resolution time.
  * @param def - The parent ChannelDefinition with identity fields.
- * @param variant - The ServiceVariant with service-specific fields.
- * @returns A flat Channel entry.
+ * @param variant - The canonical ServiceVariant with service-specific fields and URL.
+ * @returns The canonical flat Channel entry.
  */
-function buildFlatEntry(def: ChannelDefinition, variant: ServiceVariant): Channel {
+function buildCanonicalEntry(def: ChannelDefinition, variant: ServiceVariant): Channel {
 
   const entry: Channel = {
 
@@ -2503,13 +2524,13 @@ function buildFlatEntry(def: ChannelDefinition, variant: ServiceVariant): Channe
     url: variant.url
   };
 
-  // Identity fields from ChannelDefinition. pacificStationId is intentionally omitted here — it is set only on the canonical entry by the flattener.
   if(def.stationId) {
 
     entry.stationId = def.stationId;
   }
 
-  // channelNumber: variant override wins, then definition default.
+  // channelNumber: variant override wins, then definition default. For the canonical, "variant" is the canonical service's ServiceVariant - its channelNumber
+  // override counts because it's the active service when the canonical is selected.
   const channelNumber = variant.channelNumber ?? def.channelNumber;
 
   if(channelNumber !== undefined) {
@@ -2517,30 +2538,59 @@ function buildFlatEntry(def: ChannelDefinition, variant: ServiceVariant): Channe
     entry.channelNumber = channelNumber;
   }
 
-  // Tags from definition only (identity field, inherited by all variants).
   if(def.tags) {
 
     entry.tags = def.tags.slice();
   }
 
-  // tvgShift from definition only (not overridable per-variant).
   if(def.tvgShift !== undefined) {
 
     entry.tvgShift = def.tvgShift;
   }
 
-  // Service-specific fields from ServiceVariant.
-  const variantKeys = [ "channelSelector", "dismissSelector", "profile", "scrollSelector", "scrollTarget", "scrollToBottom", "service" ] as const;
-
-  for(const key of variantKeys) {
-
-    if(variant[key] !== undefined) {
-
-      (entry as unknown as Record<string, unknown>)[key] = variant[key];
-    }
-  }
+  copyServiceFields(entry, variant);
 
   return entry;
+}
+
+/**
+ * Builds a variant flat entry: service-specific fields only. Identity (name, stationId, tags, tvgShift) inherits from the canonical at resolution time and is
+ * deliberately absent here so canonical overrides propagate automatically. ServiceVariant.channelNumber is the one identity-shaped field a variant may
+ * carry, because a service may list the channel at a different lineup position than the canonical.
+ * @param variant - The ServiceVariant with service-specific fields.
+ * @returns A flat variant Channel entry without identity fields.
+ */
+function buildVariantEntry(variant: ServiceVariant): Channel {
+
+  const entry: Channel = { url: variant.url };
+
+  if(variant.channelNumber !== undefined) {
+
+    entry.channelNumber = variant.channelNumber;
+  }
+
+  copyServiceFields(entry, variant);
+
+  return entry;
+}
+
+/**
+ * Copies the non-identity, service-specific fields from a ServiceVariant onto a flat entry. These are the fields that describe how to reach the channel on a
+ * particular service (selector, profile, scrolling behavior, dismissal overlays, dropdown label) and are always service-scoped.
+ * @param entry - The target flat entry.
+ * @param variant - The ServiceVariant source.
+ */
+function copyServiceFields(entry: Channel, variant: ServiceVariant): void {
+
+  const serviceFields = [ "channelSelector", "dismissSelector", "profile", "scrollSelector", "scrollTarget", "scrollToBottom", "service" ] as const;
+
+  for(const field of serviceFields) {
+
+    if(variant[field] !== undefined) {
+
+      (entry as unknown as Record<string, unknown>)[field] = variant[field];
+    }
+  }
 }
 
 // Compile the nested definitions into flat output.

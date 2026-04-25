@@ -69,7 +69,10 @@ export interface UserChannelsLoadResult {
   // Error message if parseError is true.
   parseErrorMessage?: string;
 
-  // Service selections loaded from the file (canonical key → service variant key).
+  // Schema version as stored in the file. Files predating the field are reported as 1 so one-time migrations can detect them.
+  schemaVersion: number;
+
+  // Service selections loaded from the file (canonical key -> service variant key).
   serviceSelections: Record<string, string>;
 
   // Tag registry state (user-created tags and deleted predefined tags).
@@ -123,12 +126,25 @@ export function getChannelsParseErrorMessage(): string | undefined {
  * type so callers work directly with StoredChannelMap. The beforeWrite hook injects metadata from module state.
  */
 
+/* Current schema version for channels.json. Bumped when a one-shot migration needs to run against existing files. Versioning lets migrations be idempotent
+ * across restarts - they execute once to upgrade a pre-v1.9.1 file and are skipped on every subsequent boot. Files without a version are treated as v1 and
+ * picked up for migration; after migration, the version is stamped and persisted so the work does not repeat.
+ *
+ * Version history:
+ *   1 - Pre-delta-model user variants. Identity fields stored redundantly on variants and stripped eagerly at load time.
+ *   2 - Delta-model user variants. Variants store only fields that differ from their canonical. Migration converts legacy-shaped variants by stamping
+ *       canonicalKey on entries whose identity fields match the canonical (shape-compatible with a legitimate variant) and skipping entries whose fields
+ *       differ (user standalones that happened to share a hyphenated key with a predefined canonical).
+ */
+const CURRENT_CHANNELS_SCHEMA_VERSION = 2;
+
 /**
  * Compound data type for the channels file store. Carries channel entries alongside the metadata keys that are stored in the same JSON file.
  */
 interface ChannelsFileData {
 
   channels: StoredChannelMap;
+  schemaVersion: number;
   serviceSelections: Record<string, string>;
   tagRegistry: TagRegistry;
 }
@@ -146,9 +162,19 @@ function parseChannelsFile(raw: string): ChannelsFileData {
   const serviceSelections: Record<string, string> = {};
   const tagRegistry: TagRegistry = { deletedTags: [], tags: [] };
 
+  // Files predating the schemaVersion field are treated as version 1. The one-time migration in initializeUserChannels upgrades them to the current version.
+  let schemaVersion = 1;
+
   for(const [ key, value ] of Object.entries(parsed)) {
 
-    if((key === "serviceSelections") || (key === "providerSelections")) {
+    if(key === "schemaVersion") {
+
+      // Tolerate bad data by falling back to version 1 - any plausibly-legacy value is fine, since the migration is idempotent when no work is needed.
+      if((typeof value === "number") && Number.isFinite(value) && (value >= 1)) {
+
+        schemaVersion = Math.floor(value);
+      }
+    } else if((key === "serviceSelections") || (key === "providerSelections")) {
 
       // Copy service selections if it's an object. Accepts the legacy "providerSelections" key for backward compatibility.
       if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
@@ -199,10 +225,12 @@ function parseChannelsFile(raw: string): ChannelsFileData {
     Reflect.deleteProperty(legacy, "provider");
   }
 
-  return { channels, serviceSelections, tagRegistry };
+  return { channels, schemaVersion, serviceSelections, tagRegistry };
 }
 
-/* Array-valued ChannelDelta fields whose comparison requires canonical case-insensitive ordering before JSON.stringify. The `satisfies` constraint keeps this
+/* Array-valued ChannelDelta fields whose comparison requires canonical case-insensitive ordering before JSON.stringify. Tags are the only such field today -
+ * user-submitted tag arrays may arrive in arbitrary case/order and we want equality to ignore both when diffing against the base. The Set is intentionally
+ * plural-shaped: if a future array-valued identity field needs the same treatment, adding it here is a one-line change. The `satisfies` constraint keeps this
  * list in sync with ChannelDelta's actual keys at compile time - renaming or removing a field forces this tuple to be updated.
  */
 const CANONICAL_SORTED_ARRAY_FIELDS = new Set<keyof ChannelDelta>(
@@ -210,91 +238,321 @@ const CANONICAL_SORTED_ARRAY_FIELDS = new Set<keyof ChannelDelta>(
 );
 
 /**
- * Normalizes predefined channel deltas by stripping no-op fields and strips null fields from user channels. A delta field is a no-op if: (1) its value is null
- * and the predefined doesn't have the field, (2) its value is undefined, or (3) its value matches the predefined's value exactly. After stripping, deltas with
- * no remaining fields are removed entirely.
+ * Normalizes a single stored entry as a delta against a base channel. Delta fields are dropped when they are no-ops: undefined values, nulls against a base
+ * that has no such field, and values that match the base exactly. Array-valued fields use JSON.stringify for equality with case-insensitive canonical sorting
+ * for the fields listed in CANONICAL_SORTED_ARRAY_FIELDS so authoring-order differences do not defeat the match. Non-delta fields (e.g., canonicalKey) pass
+ * through unchanged so the stored entry retains its relationship metadata.
+ * @param stored - The raw stored entry.
+ * @param base - The base Channel to diff against (predefined definition for overrides, resolved canonical for variants).
+ * @returns The normalized entry, or null when every field is a no-op and the entry would carry no information.
+ */
+function normalizeEntryAgainstBase(stored: StoredChannel, base: Channel): StoredChannel | null {
+
+  const cleaned: Record<string, unknown> = {};
+  let hasFields = false;
+
+  for(const [ field, value ] of Object.entries(stored)) {
+
+    // Non-delta fields (like canonicalKey) pass through so the stored entry keeps its relationship metadata - except when the base already declares the same
+    // value. For example, a user override of a predefined variant doesn't need to store canonicalKey because the predefined variant entry already declares it;
+    // stripping the redundant copy keeps the stored record minimal and lets an empty override collapse to nothing.
+    if(!DELTA_ALLOWED_FIELDS.has(field)) {
+
+      if(value === undefined) {
+
+        continue;
+      }
+
+      const baseValue = (base as unknown as Record<string, unknown>)[field];
+
+      if(baseValue !== value) {
+
+        cleaned[field] = value;
+        hasFields = true;
+      }
+
+      continue;
+    }
+
+    // Undefined delta values are no-ops.
+    if(value === undefined) {
+
+      continue;
+    }
+
+    // Null means "clear this field on the base." When the base does not have the field, the clear is a no-op and gets dropped. Otherwise null is preserved so
+    // the clear survives.
+    if(value === null) {
+
+      if((field as keyof Channel) in base) {
+
+        cleaned[field] = null;
+        hasFields = true;
+      }
+
+      continue;
+    }
+
+    // Values that match the base exactly are redundant. Arrays compare by JSON.stringify; fields in CANONICAL_SORTED_ARRAY_FIELDS are sorted on both sides
+    // first so the equality check is order-independent.
+    const baseValue = (base as unknown as Record<string, unknown>)[field];
+
+    if(Array.isArray(value)) {
+
+      const canonical = CANONICAL_SORTED_ARRAY_FIELDS.has(field as keyof ChannelDelta);
+      const left = canonical ? sortTags(value as string[]) : value;
+      const right = canonical ? sortTags((baseValue ?? []) as string[]) : baseValue;
+
+      if(JSON.stringify(left) === JSON.stringify(right)) {
+
+        continue;
+      }
+    } else if(baseValue === value) {
+
+      continue;
+    }
+
+    cleaned[field] = value;
+    hasFields = true;
+  }
+
+  return hasFields ? (cleaned as StoredChannel) : null;
+}
+
+/* Every channel entry falls into one of three kinds. The classifier is the single source of truth for this taxonomy; every consumer (resolution, normalization,
+ * export) routes through it so the rules live in one place. The variant case splits into "predefined variant" and "user variant" based on which source declared
+ * canonicalKey, but both paths go through the same layered overlay at resolution time - so the union collapses them into one discriminant.
+ */
+
+/**
+ * Classification of a channel entry. Canonical and variant cases carry enough context (predefined entry, stored entry, canonicalKey for variants) that callers
+ * do not need to re-read the source maps.
+ */
+type EntryClassification =
+  { kind: "canonical"; predefined: Channel; stored: StoredChannel | undefined } |
+  { kind: "variant"; canonicalKey: string; predefined: Channel | undefined; stored: StoredChannel | undefined } |
+  { kind: "standalone"; stored: StoredChannel };
+
+/**
+ * Classifies a channel entry by consulting both the predefined catalog and the user's stored map. The kind determines how the entry is resolved, normalized, and
+ * displayed.
+ *
+ * Precondition: at least one of the predefined catalog or the stored map must have the key. Callers iterate over the union of key sets and therefore always
+ * satisfy this. Violating the precondition throws rather than returning a nullable - the alternative is a defensive undefined check at every call site for a
+ * case that never occurs, which is both dead code and a misleading contract.
+ * @param key - The channel key.
+ * @param stored - The stored entry from the user's channels map (if any).
+ * @returns The classification. Never undefined; see the precondition.
+ * @throws Error when neither PREDEFINED_CHANNELS nor the caller's stored map contains the key.
+ */
+function classifyEntry(key: string, stored: StoredChannel | undefined): EntryClassification {
+
+  const predefined = PREDEFINED_CHANNELS[key] as Channel | undefined;
+  const userCanonicalKey = stored ? (stored as Channel).canonicalKey : undefined;
+  const canonicalKey = userCanonicalKey ?? predefined?.canonicalKey;
+
+  // Variant: either source declares canonicalKey pointing at a different entry.
+  if(canonicalKey && (canonicalKey !== key)) {
+
+    return { canonicalKey, kind: "variant", predefined, stored };
+  }
+
+  // Canonical: a predefined entry exists (optionally with a user override on top).
+  if(predefined) {
+
+    return { kind: "canonical", predefined, stored };
+  }
+
+  // Standalone: user-only entry. Stored must be defined here; predefined is falsy (else canonical branch caught) and the neither-side-present state violates
+  // the precondition.
+  if(stored) {
+
+    return { kind: "standalone", stored };
+  }
+
+  throw new Error("classifyEntry called with key '" + key + "' that exists in neither PREDEFINED_CHANNELS nor the stored map.");
+}
+
+/**
+ * Resolves a variant by layering the canonical, the predefined variant entry (service-specific fields), and the user delta in order. Each layer is optional:
+ * the canonical is required (the caller supplies it from the Pass 1 resolved canonical map), but the predefined variant and user delta are skipped when absent.
+ * Fields propagate through the delta-overlay kernel so null-means-clear and undefined-means-inherit semantics apply uniformly at every layer.
+ * @param canonical - The resolved canonical channel. Variant identity inherits from here.
+ * @param predefined - The predefined variant entry, if the key has one. Contributes service-specific fields (URL, channelSelector) and any per-variant
+ *   channelNumber override.
+ * @param stored - The user's stored delta for this variant, if any. Applied last so user edits win over predefined variant fields.
+ * @returns The fully resolved variant Channel.
+ */
+function resolveVariant(canonical: Channel, predefined: Channel | undefined, stored: StoredChannel | undefined): Channel {
+
+  let resolved = canonical;
+
+  if(predefined) {
+
+    resolved = overlayDelta(resolved, predefined);
+  }
+
+  if(stored) {
+
+    resolved = overlayDelta(resolved, stored);
+  }
+
+  return resolved;
+}
+
+/* Dangling-canonical warning dedup. When a variant's canonicalKey points at a missing canonical, getMergedChannelMap preserves the variant as best it can but
+ * the user deserves a diagnostic - their data references something that is not there, and silently carrying on would hide a real data-integrity issue. We log
+ * once per (variant, canonical) pair to surface the problem without spamming the log on every mutation. When the canonical later reappears (user re-creates
+ * it, predefined gets restored), the pair is cleared from the set so a future regression re-warns.
+ */
+const warnedDanglingVariants = new Set<string>();
+
+/**
+ * Composes a stable token identifying a dangling-variant relationship for the warning dedup set.
+ * @param variantKey - The variant channel key.
+ * @param canonicalKey - The canonical key the variant references.
+ * @returns The composite token.
+ */
+function danglingToken(variantKey: string, canonicalKey: string): string {
+
+  return variantKey + " -> " + canonicalKey;
+}
+
+/**
+ * Emits a dangling-canonical warning at most once per (variant, canonical) pair for the lifetime of this process. Called from getMergedChannelMap whenever a
+ * variant references a canonical that is not present in the resolved map.
+ * @param variantKey - The variant key whose canonicalKey points at a missing canonical.
+ * @param canonicalKey - The missing canonical key.
+ */
+function warnDanglingCanonical(variantKey: string, canonicalKey: string): void {
+
+  const token = danglingToken(variantKey, canonicalKey);
+
+  if(warnedDanglingVariants.has(token)) {
+
+    return;
+  }
+
+  warnedDanglingVariants.add(token);
+
+  LOG.warn("Channel variant '%s' references missing canonical '%s'. Preserving the variant as-is; restore the canonical or remove the variant to clear this.",
+    variantKey, canonicalKey);
+}
+
+/**
+ * Builds the Pass 1 resolved-canonical map for a given stored map. Iterates every key present in either the predefined catalog or the stored map, resolves
+ * non-variant entries (canonicals and standalones), and returns the resulting ChannelMap. Variants are deliberately skipped - they depend on this map and are
+ * resolved in Pass 2 by the caller.
+ *
+ * This is shared by getMergedChannelMap (which uses the map directly as the starting point for its full resolution) and normalizeChannelDeltas (which uses the
+ * map as a source of bases for diffing variant deltas).
+ * @param stored - The stored channels map.
+ * @returns The resolved-canonical map, keyed by channel key.
+ */
+function buildResolvedCanonicals(stored: StoredChannelMap): ChannelMap {
+
+  const result: ChannelMap = {};
+  const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(stored) ]);
+
+  for(const key of allKeys) {
+
+    const classification = classifyEntry(key, stored[key] as StoredChannel | undefined);
+
+    if(classification.kind === "variant") {
+
+      continue;
+    }
+
+    if(classification.kind === "canonical") {
+
+      result[key] = classification.stored ? overlayDelta(classification.predefined, classification.stored) : classification.predefined;
+
+      continue;
+    }
+
+    // Standalone: defensive copy so downstream mutation cannot leak back into loadedUserChannels.
+    const copy: Channel = { ...classification.stored } as Channel;
+
+    copy.tags &&= copy.tags.slice();
+    result[key] = copy;
+  }
+
+  return result;
+}
+
+/**
+ * Strips null fields from a stored entry. Null is a delta-only convention meaning "clear this field on the base"; without a base to clear against, nulls
+ * have no meaning and get dropped. Used by normalizeChannelDeltas for standalone user channels and for dangling-canonical variants that fall back to
+ * standalone-style normalization.
+ * @param stored - The raw stored entry.
+ * @returns The entry with null-valued fields removed.
+ */
+function stripNulls(stored: StoredChannel): StoredChannel {
+
+  return Object.fromEntries(Object.entries(stored).filter(([ , v ]) => v !== null)) as StoredChannel;
+}
+
+/**
+ * Normalizes the stored channels map to its minimal delta form. Each entry is classified, diffed against its applicable base, and any no-op fields are
+ * stripped. Standalone user channels have no base, so nulls are stripped but everything else is preserved.
+ *
+ * The flow is uniform across kinds:
+ *
+ * - Canonical (predefined with user override): base is the predefined channel.
+ * - Variant: base is the resolved canonical layered with the predefined variant's service fields (the view the user sees in the form/table, so the delta
+ *   records only what differs from that).
+ * - Standalone: no base, null values are stripped as a storage convention.
+ *
+ * Entries whose normalized delta is empty collapse to nothing and get dropped - a redundant override carries no information, and resolution falls through to
+ * the default.
  * @param channels - The raw channel entries to normalize.
  * @returns The normalized channel map.
  */
 function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
 
   const filtered: StoredChannelMap = {};
+  const resolvedCanonicals = buildResolvedCanonicals(channels);
 
   for(const [ key, stored ] of Object.entries(channels)) {
 
-    if(key in PREDEFINED_CHANNELS) {
+    const classification = classifyEntry(key, stored);
 
-      const predefined = PREDEFINED_CHANNELS[key];
-      const cleaned: Record<string, unknown> = {};
-      let hasFields = false;
+    if(classification.kind === "canonical") {
 
-      for(const [ field, value ] of Object.entries(stored)) {
+      const normalized = normalizeEntryAgainstBase(stored, classification.predefined);
 
-        // Skip non-delta fields (like canonicalKey) that aren't in the allowlist.
-        if(!DELTA_ALLOWED_FIELDS.has(field)) {
+      if(normalized) {
 
-          continue;
-        }
-
-        // Skip undefined values - they have no effect.
-        if(value === undefined) {
-
-          continue;
-        }
-
-        // Skip null values when the predefined doesn't have the field - clearing a nonexistent field is a no-op.
-        if((value === null) && !((field as keyof Channel) in predefined)) {
-
-          continue;
-        }
-
-        // Skip values that match the predefined exactly - redundant copies. Array fields use JSON.stringify for comparison since reference equality always fails
-        // for arrays. Fields listed in CANONICAL_SORTED_ARRAY_FIELDS are sortTagsed on both sides first so the equality check is order-independent regardless of
-        // authoring order on the predefined side or historical write order on the stored side.
-        if(value !== null) {
-
-          const predefinedValue = (predefined as unknown as Record<string, unknown>)[field];
-
-          if(Array.isArray(value)) {
-
-            const canonical = CANONICAL_SORTED_ARRAY_FIELDS.has(field as keyof ChannelDelta);
-            const left = canonical ? sortTags(value as string[]) : value;
-            const right = canonical ? sortTags((predefinedValue ?? []) as string[]) : predefinedValue;
-
-            if(JSON.stringify(left) === JSON.stringify(right)) {
-
-              continue;
-            }
-          } else if(predefinedValue === value) {
-
-            continue;
-          }
-        }
-
-        cleaned[field] = value;
-        hasFields = true;
+        filtered[key] = normalized;
       }
 
-      // Preserve non-delta fields (like canonicalKey) that were on the stored entry.
-      for(const [ field, value ] of Object.entries(stored)) {
+      continue;
+    }
 
-        if(!DELTA_ALLOWED_FIELDS.has(field) && (value !== undefined)) {
+    if(classification.kind === "standalone") {
 
-          cleaned[field] = value;
-          hasFields = true;
-        }
-      }
+      filtered[key] = stripNulls(stored);
 
-      if(hasFields) {
+      continue;
+    }
 
-        filtered[key] = cleaned as StoredChannel;
-      }
-    } else {
+    // Variant. Base is the resolved canonical layered with the predefined variant's service fields (if any). A dangling canonical falls back to standalone
+    // normalization so the user does not silently lose data.
+    const canonical = resolvedCanonicals[classification.canonicalKey] as Channel | undefined;
 
-      // User channels: strip null fields. Null is a delta convention for predefined channels ("clear this field") and has no meaning on full Channel
-      // definitions...the Channel type uses T | undefined, never T | null. This allows callers to uniformly use null for "empty/clear" without needing to
-      // know the storage convention.
-      filtered[key] = Object.fromEntries(Object.entries(stored).filter(([ , v ]) => v !== null)) as StoredChannel;
+    if(!canonical) {
+
+      filtered[key] = stripNulls(stored);
+
+      continue;
+    }
+
+    const base = classification.predefined ? overlayDelta(canonical, classification.predefined) : canonical;
+    const normalized = normalizeEntryAgainstBase(stored, base);
+
+    if(normalized) {
+
+      filtered[key] = normalized;
     }
   }
 
@@ -310,8 +568,9 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
  */
 function prepareChannelsForWrite(data: ChannelsFileData): unknown {
 
-  // Build the serializable output with metadata from module state.
-  const output: Record<string, unknown> = { ...data.channels };
+  // Build the serializable output with metadata from module state. schemaVersion always reflects the running code's current version - any mutation that
+  // reaches this hook has passed through initialization, so stamping the current version here finalizes the upgrade.
+  const output: Record<string, unknown> = { schemaVersion: CURRENT_CHANNELS_SCHEMA_VERSION, ...data.channels };
   const selections = getServiceSelections();
 
   if(Object.keys(selections).length > 0) {
@@ -331,7 +590,13 @@ function prepareChannelsForWrite(data: ChannelsFileData): unknown {
 const channelsStore = createFileStore<ChannelsFileData>({
 
   beforeWrite: prepareChannelsForWrite,
-  defaultValue: (): ChannelsFileData => ({ channels: {}, serviceSelections: {}, tagRegistry: { deletedTags: [], tags: [] } }),
+  defaultValue: (): ChannelsFileData => ({
+
+    channels: {},
+    schemaVersion: CURRENT_CHANNELS_SCHEMA_VERSION,
+    serviceSelections: {},
+    tagRegistry: { deletedTags: [], tags: [] }
+  }),
   label: "channels",
   parse: parseChannelsFile,
   path: getChannelsFilePath
@@ -351,6 +616,7 @@ export async function readChannels(): Promise<UserChannelsLoadResult> {
     channels: result.data.channels,
     parseError: result.parseError,
     parseErrorMessage: result.parseErrorMessage,
+    schemaVersion: result.data.schemaVersion,
     serviceSelections: result.data.serviceSelections,
     tagRegistry: result.data.tagRegistry
   };
@@ -433,6 +699,91 @@ export async function resetUserChannels(): Promise<void> {
  */
 
 /**
+ * Classifies which stored entries are legitimate legacy variants eligible for canonicalKey stamping. A legitimate legacy variant has a hyphenated key whose
+ * prefix matches a predefined canonical AND every stored identity field either is absent or matches the canonical's value. Entries with diverging identity
+ * are user-created standalones that happen to share the hyphenated key shape (e.g., "abc-kabc" as a local affiliate with its own channel number and station
+ * ID) and must be left alone - stamping them would mark them for delta normalization and silently destroy the user's custom identity.
+ *
+ * Array-valued identity fields (tags) compare via JSON.stringify with case-insensitive canonical sorting so historical write order does not defeat the match.
+ * @param channels - The raw stored channel entries.
+ * @returns Keys that should receive a canonicalKey stamp. Empty when nothing needs migrating.
+ */
+function collectLegacyVariantStamps(channels: StoredChannelMap): string[] {
+
+  const stamps: string[] = [];
+
+  for(const [ key, stored ] of Object.entries(channels)) {
+
+    // Entries that already declare canonicalKey are already on the new model - skip.
+    if((stored as Channel).canonicalKey) {
+
+      continue;
+    }
+
+    const hyphenIndex = key.indexOf("-");
+
+    if(hyphenIndex === -1) {
+
+      continue;
+    }
+
+    const prefix = key.substring(0, hyphenIndex);
+    const canonical = PREDEFINED_CHANNELS[prefix];
+
+
+    if(!canonical) {
+
+      continue;
+    }
+
+    // Safe classifier: stamp only when every stored identity field is either absent or matches the canonical exactly. Any divergence signals a user-created
+    // standalone that happens to share the variant-shaped key; stamping would trigger delta normalization and destroy the user's custom identity.
+    let shapeCompatible = true;
+
+    for(const field of CHANNEL_IDENTITY_FIELDS) {
+
+      const storedValue = (stored as Record<string, unknown>)[field];
+
+      if(storedValue === undefined) {
+
+        continue;
+      }
+
+      const canonicalValue = (canonical as unknown as Record<string, unknown>)[field];
+
+      if(Array.isArray(storedValue) && Array.isArray(canonicalValue)) {
+
+        const left = JSON.stringify(sortTags(storedValue as string[]));
+        const right = JSON.stringify(sortTags(canonicalValue as string[]));
+
+        if(left !== right) {
+
+          shapeCompatible = false;
+
+          break;
+        }
+
+        continue;
+      }
+
+      if(storedValue !== canonicalValue) {
+
+        shapeCompatible = false;
+
+        break;
+      }
+    }
+
+    if(shapeCompatible) {
+
+      stamps.push(key);
+    }
+  }
+
+  return stamps;
+}
+
+/**
  * Initializes user channels by loading them from the file. This should be called once at server startup. Also builds service groups and loads service selections.
  */
 export async function initializeUserChannels(): Promise<void> {
@@ -452,14 +803,14 @@ export async function initializeUserChannels(): Promise<void> {
 
   for(const [ canonicalKey, selectedVariant ] of Object.entries(result.serviceSelections)) {
 
-    // foxcom → foxone: original Fox service slug renamed.
+    // foxcom -> foxone: original Fox service slug renamed.
     if(selectedVariant.endsWith("-foxcom")) {
 
       result.serviceSelections[canonicalKey] = selectedVariant.slice(0, -6) + "foxone";
       channelsMigrated = true;
     }
 
-    // fox-site → fox-foxone: the "fox" channel's FoxOne variant was briefly keyed as "site" in v1.8.0 instead of "foxone" like every other Fox channel.
+    // fox-site -> fox-foxone: the "fox" channel's FoxOne variant was briefly keyed as "site" in v1.8.0 instead of "foxone" like every other Fox channel.
     if((canonicalKey === "fox") && (selectedVariant === "fox-site")) {
 
       result.serviceSelections[canonicalKey] = "fox-foxone";
@@ -475,13 +826,13 @@ export async function initializeUserChannels(): Promise<void> {
 
     await mutateChannels((channels) => {
 
-      // Apply the foxcom → foxone channel key migration. The mutation reads fresh from disk, so we replay the transform rather than passing the in-memory
+      // Apply the foxcom -> foxone channel key migration. The mutation reads fresh from disk, so we replay the transform rather than passing the in-memory
       // result. The fox-site selection migration is selection-only (no channel keys to rename).
-      for(const key of Object.keys(channels)) {
+      for(const [ key, value ] of Object.entries(channels)) {
 
         if(key.endsWith("-foxcom")) {
 
-          channels[key.slice(0, -6) + "foxone"] = channels[key];
+          channels[key.slice(0, -6) + "foxone"] = value;
           Reflect.deleteProperty(channels, key);
         }
       }
@@ -530,110 +881,49 @@ export async function initializeUserChannels(): Promise<void> {
     }
   }
 
-  // One-time migration: stamp canonicalKey on existing user channel variant entries that were created before explicit variant relationships were introduced.
-  // These entries have hyphenated keys where the prefix is a known predefined canonical (e.g., "espn-hulu" where "espn" exists). The heuristic runs once —
-  // new entries get canonicalKey written at creation time by the browse modal.
-  let canonicalKeyMigrated = false;
+  // One-time migration (v1 -> v2): stamp canonicalKey on legacy-shaped variant entries. Pre-v1.9.1 files did not carry the canonicalKey field; variants were
+  // inferred at runtime from hyphenated keys whose prefix matched a predefined canonical. Stamping canonicalKey explicitly lets the variant resolver and
+  // normalizer treat these entries as deltas against their canonical.
+  //
+  // The classifier is deliberately conservative: a hyphenated key alone is not enough, because users have historically created standalone channels named
+  // like "abc-kabc" or "cbs-kcbs" (local affiliates named after their call signs). Stamping those as variants of ABC/CBS would let the normalizer strip
+  // identity fields that differ from the canonical - silently destroying user-entered channel numbers and station IDs. To avoid that, we only stamp entries
+  // whose identity fields are absent or already match the canonical's values. Any divergence means the user customized the channel and we leave it as a
+  // standalone.
+  //
+  // Gated on schemaVersion so this work runs exactly once per file. After the pass, mutateChannels persists schemaVersion via prepareChannelsForWrite so
+  // later boots skip the scan entirely.
+  if(result.schemaVersion < CURRENT_CHANNELS_SCHEMA_VERSION) {
 
-  for(const [ key, channel ] of Object.entries(result.channels)) {
+    const stampedKeys = collectLegacyVariantStamps(result.channels);
 
-    // Skip entries that already have canonicalKey.
-    if((channel as Channel).canonicalKey) {
+    if(stampedKeys.length > 0) {
 
-      continue;
-    }
+      await mutateChannels((channels) => {
 
-    const hyphenIndex = key.indexOf("-");
+        for(const key of stampedKeys) {
 
-    if(hyphenIndex === -1) {
+          const channel = channels[key];
 
-      continue;
-    }
 
-    const prefix = key.substring(0, hyphenIndex);
+          if(!channel) {
 
-    // Only stamp canonicalKey if the prefix exists as a predefined channel. This matches the old buildServiceGroups heuristic exactly.
-    if(prefix in PREDEFINED_CHANNELS) {
-
-      (channel as Channel).canonicalKey = prefix;
-      canonicalKeyMigrated = true;
-    }
-  }
-
-  if(canonicalKeyMigrated) {
-
-    await mutateChannels((channels) => {
-
-      for(const [ key, channel ] of Object.entries(channels)) {
-
-        if((channel as Channel).canonicalKey) {
-
-          continue;
-        }
-
-        const hyphenIndex = key.indexOf("-");
-
-        if(hyphenIndex === -1) {
-
-          continue;
-        }
-
-        const prefix = key.substring(0, hyphenIndex);
-
-        if(prefix in PREDEFINED_CHANNELS) {
-
-          (channel as Channel).canonicalKey = prefix;
-        }
-      }
-    });
-
-    LOG.info("Migrated user channel variant entries with explicit canonical key declarations.");
-  }
-
-  // One-time migration: strip identity fields from user channel variant entries. Identity fields (name, stationId, tags, etc.) are resolved from the canonical
-  // at runtime via applyVariantInheritance, so storing them on variants is redundant. Older versions wrote these fields on variant creation. This migration
-  // cleans them up so channels.json only contains service-specific fields on variant entries.
-  let variantFieldsMigrated = false;
-
-  for(const channel of Object.values(result.channels)) {
-
-    if(!(channel as Channel).canonicalKey) {
-
-      continue;
-    }
-
-    for(const field of CHANNEL_IDENTITY_FIELDS) {
-
-      if(field in channel) {
-
-        Reflect.deleteProperty(channel, field);
-        variantFieldsMigrated = true;
-      }
-    }
-  }
-
-  if(variantFieldsMigrated) {
-
-    await mutateChannels((channels) => {
-
-      for(const channel of Object.values(channels)) {
-
-        if(!(channel as Channel).canonicalKey) {
-
-          continue;
-        }
-
-        for(const field of CHANNEL_IDENTITY_FIELDS) {
-
-          if(field in channel) {
-
-            Reflect.deleteProperty(channel, field);
+            continue;
           }
-        }
-      }
-    });
 
-    LOG.info("Stripped redundant identity fields from user channel variant entries.");
+          const hyphenIndex = key.indexOf("-");
+
+          (channel as Channel).canonicalKey = key.substring(0, hyphenIndex);
+        }
+      });
+
+      LOG.info("Stamped canonicalKey on %d legacy user channel variant entries.", stampedKeys.length);
+    } else if(Object.keys(result.channels).length > 0) {
+
+      // Nothing to stamp, but the file is stale - write once so schemaVersion is recorded and the scan is skipped on subsequent boots. An empty mutation is
+      // sufficient; normalizeChannelDeltas is a no-op on already-normalized data, and prepareChannelsForWrite injects the version.
+      await mutateChannels(() => { /* no-op: the write exists to stamp schemaVersion. */ });
+    }
   }
 
   // Build the merged channels map and then build service groups.
@@ -666,7 +956,7 @@ export async function initializeUserChannels(): Promise<void> {
     setEnabledServices(configuredServices);
   }
 
-  // Check for non-printable characters in loaded channel string values. These warnings are informational — loaded data is not modified.
+  // Check for non-printable characters in loaded channel string values. These warnings are informational - loaded data is not modified.
   for(const [ channelKey, stored ] of Object.entries(loadedUserChannels)) {
 
     for(const [ field, value ] of Object.entries(stored)) {
@@ -698,67 +988,131 @@ const SERVICE_SPECIFIC_EDITABLE_FIELDS = [ "channelSelector", "profile", "url" ]
 const DELTA_ALLOWED_FIELDS = new Set<string>([ ...CHANNEL_IDENTITY_FIELDS, ...SERVICE_SPECIFIC_EDITABLE_FIELDS ]);
 
 /**
- * Resolves a stored channel entry (full definition or delta) into a fully resolved Channel. For user-defined channels with no predefined equivalent, the stored
- * entry is returned as-is (it must be a full Channel). For overrides of predefined channels, the predefined definition is used as a base and only allowlisted
- * delta fields are overlaid. Fields set to null in the delta are removed from the result. Fields not in the allowlist are silently ignored.
- * @param key - The channel key.
- * @param stored - The stored channel data (full definition or delta).
- * @returns A fully resolved Channel with all fields populated.
+ * Overlays a stored channel (full definition or delta) onto a base Channel. Allowlisted delta fields in the stored entry override the base: a null value clears
+ * the field from the resolved object, a defined value replaces it, and missing fields inherit from the base. Non-delta fields on the stored entry (e.g.,
+ * canonicalKey) pass through so the resolved channel retains its relationship metadata. The returned object is a fresh reference with a defensive copy of any
+ * array-valued fields, so callers can mutate it without corrupting the base.
+ *
+ * This is the single delta-overlay kernel used by both predefined overrides and user variants: predefined overrides pass the predefined channel as base,
+ * user variants pass their canonical (which may itself be resolved from a predefined + user override).
+ * @param base - The base Channel to inherit from.
+ * @param stored - The stored entry (delta) to overlay.
+ * @returns A new Channel with the base's fields and the stored entry's overrides applied.
  */
-export function resolveStoredChannel(key: string, stored: StoredChannel): Channel {
+function overlayDelta(base: Channel, stored: StoredChannel): Channel {
 
-  const predefined = PREDEFINED_CHANNELS[key];
-
-  // No predefined equivalent — this is a user-defined channel, return as-is. The caller is responsible for ensuring it has a url field.
-  // Runtime check needed — TypeScript thinks Record indexing always returns a value, but the key may not exist.
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if(!predefined) {
-
-    return stored as Channel;
-  }
-
-  // Start with a copy of the predefined definition, then overlay allowlisted non-null delta fields. The spread creates a shallow copy — reference-type fields
-  // (like tags) share the same array instance as PREDEFINED_CHANNELS. The defensive copy below ensures the returned Channel is fully independent so callers can
-  // safely modify it without corrupting the predefined source of truth.
-  const resolved: Channel = { ...predefined };
+  const resolved: Channel = { ...base };
 
   for(const [ field, value ] of Object.entries(stored)) {
 
-    if(!DELTA_ALLOWED_FIELDS.has(field)) {
+    if(DELTA_ALLOWED_FIELDS.has(field)) {
+
+      if(value === null) {
+
+        // Explicit null means "clear this field" - delete it from the resolved object.
+        Reflect.deleteProperty(resolved, field);
+      } else if(value !== undefined) {
+
+        // Non-null, non-undefined - override the base value.
+        (resolved as unknown as Record<string, unknown>)[field] = value;
+      }
 
       continue;
     }
 
-    if(value === null) {
+    // Non-delta fields (e.g., canonicalKey) pass through from the stored entry so the resolved channel carries its relationship metadata. Undefined values are
+    // skipped because they have no effect and would only overwrite a defined field on the base with undefined.
+    if(value !== undefined) {
 
-      // Explicit null means "clear this field" — delete it from the resolved object.
-      Reflect.deleteProperty(resolved, field);
-    } else if(value !== undefined) {
-
-      // Non-null, non-undefined — override the predefined value.
       (resolved as unknown as Record<string, unknown>)[field] = value;
     }
   }
 
-  // Defensive copy of reference-type fields to break shared references with PREDEFINED_CHANNELS. The delta overlay above may have replaced tags entirely (if
-  // the delta included a tags array), but when no delta is present for tags, the spread leaves the predefined's array reference on the resolved object.
+  // Defensive copy of reference-type fields to break shared references with the base. The delta overlay above may have replaced tags entirely (if the stored
+  // entry included a tags array), but when no delta is present for tags, the spread leaves the base's array reference on the resolved object.
   resolved.tags &&= resolved.tags.slice();
 
   return resolved;
 }
 
 /**
+ * Resolves a stored channel entry into a fully populated Channel. Handles the two non-variant cases:
+ *
+ * 1. Predefined override (key matches a predefined entry): the stored entry is a delta over the predefined definition.
+ * 2. Standalone user channel (no predefined equivalent): the stored entry is already a full Channel; a defensive copy is returned so downstream mutations
+ *    cannot leak into loadedUserChannels.
+ *
+ * Variants are resolved by getMergedChannelMap via the layered overlay (canonical -> predefined variant -> user delta) because they need a resolved canonical
+ * as base. Callers that need a resolved variant should read from channelsRef (via getResolvedChannel) rather than calling this function with a variant key.
+ * @param key - The channel key (must not be a variant key).
+ * @param stored - The stored channel data.
+ * @returns A fully resolved Channel with all fields populated.
+ */
+export function resolveStoredChannel(key: string, stored: StoredChannel): Channel {
+
+  const predefined = PREDEFINED_CHANNELS[key] as Channel | undefined;
+
+  if(predefined) {
+
+    return overlayDelta(predefined, stored);
+  }
+
+  // Standalone: defensive copy so callers can mutate the result without corrupting loadedUserChannels.
+  const standalone: Channel = { ...stored } as Channel;
+
+  standalone.tags &&= standalone.tags.slice();
+
+  return standalone;
+}
+
+/**
  * Returns the merged channel map (predefined + user) without filtering by enabled status or service variants. Used internally for building service groups.
- * Resolves any delta overrides into full Channel objects so the result contains only complete definitions.
+ * Resolves deltas into fully populated Channel objects.
+ *
+ * Built from buildResolvedCanonicals (Pass 1: canonicals and standalones) plus a variant pass (Pass 2: layered canonical -> predefined variant -> user delta).
+ * The dangling-canonical path preserves whatever data exists so the user does not silently lose anything when a canonicalKey points at a missing entry.
  * @returns The complete merged channel map.
  */
 function getMergedChannelMap(): ChannelMap {
 
-  const result: ChannelMap = { ...PREDEFINED_CHANNELS };
+  const result = buildResolvedCanonicals(loadedUserChannels);
+  const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(loadedUserChannels) ]);
 
-  for(const [ key, stored ] of Object.entries(loadedUserChannels)) {
+  for(const key of allKeys) {
 
-    result[key] = resolveStoredChannel(key, stored);
+    const stored = loadedUserChannels[key] as StoredChannel | undefined;
+    const classification = classifyEntry(key, stored);
+
+    if(classification.kind !== "variant") {
+
+      continue;
+    }
+
+    const canonical = result[classification.canonicalKey] as Channel | undefined;
+
+    if(canonical) {
+
+      result[key] = resolveVariant(canonical, classification.predefined, classification.stored);
+
+      // Clear the dangling-warning dedup entry if one was recorded earlier: a previously-missing canonical is now present, so a future regression should
+      // re-warn rather than staying silent because we already warned once.
+      warnedDanglingVariants.delete(danglingToken(key, classification.canonicalKey));
+
+      continue;
+    }
+
+    // Dangling canonical: the variant references a canonical that is not present. Warn once per (variant, canonical) pair, then preserve the variant as best
+    // we can so the user does not silently lose data. When a stored entry exists, funnel through resolveStoredChannel - it already overlays onto the
+    // predefined definition (if any) or returns a standalone copy. When only the predefined entry exists, use it directly.
+    warnDanglingCanonical(key, classification.canonicalKey);
+
+    if(classification.stored) {
+
+      result[key] = resolveStoredChannel(key, classification.stored);
+    } else if(classification.predefined) {
+
+      result[key] = classification.predefined;
+    }
   }
 
   return result;
@@ -769,7 +1123,7 @@ function getMergedChannelMap(): ChannelMap {
  */
 
 /**
- * Returns the full channel listing with source classification and enabled status. This is the authoritative merge point for predefined and user channels — all
+ * Returns the full channel listing with source classification and enabled status. This is the authoritative merge point for predefined and user channels - all
  * code that needs a merged view of channels should use this function (or getAllChannels() which delegates to it).
  *
  * For each channel key, the source is classified as:
@@ -780,7 +1134,7 @@ function getMergedChannelMap(): ChannelMap {
  * The enabled field reflects whether the channel is available for streaming. Predefined-only channels can be disabled via configuration; user and override
  * channels are always enabled.
  *
- * Service variants (non-canonical keys in service groups) are filtered out from this listing — they are accessed via the service selection mechanism instead.
+ * Service variants (non-canonical keys in service groups) are filtered out from this listing - they are accessed via the service selection mechanism instead.
  *
  * Override entries produce a new resolved Channel object (via resolveStoredChannel()), which is a different reference from PREDEFINED_CHANNELS[key]. The service
  * system (services.ts) relies on this reference difference to detect user overrides via isUserOverride(). Predefined-only entries preserve the original reference.
@@ -796,7 +1150,7 @@ export function getChannelListing(): ChannelListingEntry[] {
 
   for(const key of allKeys) {
 
-    // Skip service variants — they're accessed via service selection, not as separate channels.
+    // Skip service variants - they're accessed via service selection, not as separate channels.
     if(isServiceVariant(key)) {
 
       continue;
@@ -821,10 +1175,20 @@ export function getChannelListing(): ChannelListingEntry[] {
 
     // For user entries (including overrides), resolve the stored delta/definition into a full Channel. The resolved object is a new reference, which preserves
     // the isUserOverride() contract in services.ts (reference comparison against PREDEFINED_CHANNELS[key]). Predefined-only entries keep the original reference.
-    const channel: Channel = isUser ? resolveStoredChannel(key, loadedUserChannels[key]) : PREDEFINED_CHANNELS[key];
+    const userEntry = loadedUserChannels[key];
+    const predefinedEntry = PREDEFINED_CHANNELS[key];
+    const resolvedBase = isUser && userEntry ? resolveStoredChannel(key, userEntry) : predefinedEntry;
+
+    if(!resolvedBase) {
+
+      // Defensive: the entry exists in at least one source per the allKeys construction, so this branch is unreachable.
+      continue;
+    }
+
+    const channel: Channel = resolvedBase;
 
     // When a non-default service is selected, resolve the variant so consumers see the correct URL, channelSelector, stationId, and channelNumber. We skip
-    // resolution when the resolved key matches the canonical key — the channel object is already correct and preserving its reference avoids a redundant lookup.
+    // resolution when the resolved key matches the canonical key - the channel object is already correct and preserving its reference avoids a redundant lookup.
     const resolvedKey = resolveServiceKey(key);
     const resolvedChannel = (resolvedKey !== key) ? getResolvedChannel(resolvedKey) : undefined;
 
@@ -941,7 +1305,7 @@ export function getActiveTagVocabulary(): string[] {
 }
 
 /**
- * Returns a channel's effective tags — the intersection of the channel's assigned tags with the active vocabulary. Tags that exist on the channel but are not in
+ * Returns a channel's effective tags - the intersection of the channel's assigned tags with the active vocabulary. Tags that exist on the channel but are not in
  * the active vocabulary are filtered out, ensuring only assignable and queryable tags are visible in the UI and playlist responses. Output preserves the source
  * order of channel.tags; every write path (sortTags) keeps that source order canonical, so in practice the returned array is sorted.
  * @param channel - The channel to get effective tags for.
@@ -961,7 +1325,7 @@ export function getChannelEffectiveTags(channel: Channel): string[] {
 
 /**
  * Case-insensitive tag comparison. Tags are freeform strings with preserved casing, but all matching throughout the system is case-insensitive. This function
- * is the single source of truth for that policy — all tag identity checks should use it rather than inline toLowerCase() calls.
+ * is the single source of truth for that policy - all tag identity checks should use it rather than inline toLowerCase() calls.
  * @param a - The first tag.
  * @param b - The second tag.
  * @returns True if the tags match case-insensitively.
@@ -984,10 +1348,10 @@ export function isInVocabulary(tag: string): boolean {
 }
 
 /**
- * Applies a tag transformation across channels and persists the result. This is the single source of truth for batch tag mutations — delete, rename, and bulk
+ * Applies a tag transformation across channels and persists the result. This is the single source of truth for batch tag mutations - delete, rename, and bulk
  * toggle all route through this function. The caller provides a filter (which channels to transform) and a transform (how to modify each channel's tags). This
  * function handles loading stored channel data, applying the transform, and saving. Delta normalization in mutateChannels() handles predefined channel
- * delta computation automatically — callers do not need to reason about deltas vs. full definitions.
+ * delta computation automatically - callers do not need to reason about deltas vs. full definitions.
  * @param filter - Predicate selecting which listing entries to transform. Receives each ChannelListingEntry from getChannelListing().
  * @param transform - Pure function mapping a channel's current resolved tags to its new tags. Receives the channel's current tags array (may be empty, ordering
  *   not guaranteed). Must return the desired tags array (may be empty to clear all tags). The returned array is sorted before storage.
@@ -1046,13 +1410,33 @@ export async function transformChannelTags(
 }
 
 /**
- * Returns the predefined channel definition for a key.
+ * Returns the predefined channel definition for a key. For predefined variant entries (which carry only service-specific fields plus canonicalKey), resolves
+ * the variant against its predefined canonical so callers receive the full view - canonical identity inherited onto the variant. This matches what the user
+ * sees in the form/table and is the correct base for delta-from-predefined computations in crud.ts and channelForm.ts.
  * @param key - The channel key to look up.
  * @returns The predefined channel, or undefined if the key is not predefined.
  */
 export function getPredefinedChannel(key: string): Channel | undefined {
 
-  return PREDEFINED_CHANNELS[key];
+  const entry = PREDEFINED_CHANNELS[key];
+
+
+  if(!entry) {
+
+    return undefined;
+  }
+
+  // Canonical entries have full identity already; return as-is.
+  if(!entry.canonicalKey || (entry.canonicalKey === key)) {
+
+    return entry;
+  }
+
+  // Predefined variant: overlay its service fields onto the canonical so callers see the resolved view with canonical identity.
+  const canonical = PREDEFINED_CHANNELS[entry.canonicalKey];
+
+
+  return canonical ? overlayDelta(canonical, entry) : entry;
 }
 
 /**
@@ -1135,11 +1519,14 @@ export function getChannelStationId(channelKey: string): string | undefined {
   const effectiveKey = getEastCanonicalKey(channelKey) ?? channelKey;
 
   // User channels take precedence - resolveStoredChannel merges deltas with the predefined base, so overrides that change the stationId are reflected here.
-  return (effectiveKey in loadedUserChannels) ?
-    resolveStoredChannel(effectiveKey, loadedUserChannels[effectiveKey]).stationId :
-    // Runtime check needed - TypeScript thinks Record indexing always returns a value, but the key may not exist.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    PREDEFINED_CHANNELS[effectiveKey]?.stationId;
+  const userEntry = loadedUserChannels[effectiveKey];
+
+  if(userEntry) {
+
+    return resolveStoredChannel(effectiveKey, userEntry).stationId;
+  }
+
+  return PREDEFINED_CHANNELS[effectiveKey]?.stationId;
 }
 
 /**
@@ -1175,7 +1562,7 @@ export function isUserChannel(key: string): boolean {
  */
 
 /**
- * Checks if a predefined channel is disabled. The disabled state is determined solely by the disabledPredefined list in config — the user's explicit visibility
+ * Checks if a predefined channel is disabled. The disabled state is determined solely by the disabledPredefined list in config - the user's explicit visibility
  * intent. Property overrides (HDHR toggle, name change, tag edits) stored as deltas in channels.json are orthogonal and do not affect the enabled/disabled state.
  * @param key - The channel key to check.
  * @returns True if the channel is predefined and disabled.
@@ -1340,7 +1727,7 @@ export function getPredefinedChannels(): ChannelMap {
 /**
  * Filters predefined channel keys by their relationship to the Pacific timezone naming convention. For "pacific" mode, returns keys that end in "p" and
  * whose East counterpart (key minus trailing "p") exists. For "east" mode, returns keys that do NOT end in "p" and whose Pacific counterpart (key plus "p")
- * exists. Service variants are excluded — only canonical keys are returned.
+ * exists. Service variants are excluded - only canonical keys are returned.
  * @param side - Which side of the East/Pacific pair to select.
  * @returns Sorted array of matching canonical predefined channel keys.
  */
@@ -1350,7 +1737,7 @@ function filterPredefinedKeysByTimezone(side: "east" | "pacific"): string[] {
 
   for(const key of Object.keys(PREDEFINED_CHANNELS)) {
 
-    // Skip service variants — they are internal implementation details, not channels.
+    // Skip service variants - they are internal implementation details, not channels.
     if(isServiceVariant(key)) {
 
       continue;
@@ -1814,3 +2201,20 @@ export function parseTagInput(raw: string): string[] {
 
   return sortTags(new Set(raw.split(",").map((t) => t.trim()).filter((t) => t.length > 0)));
 }
+
+/* Test-only export barrel. The helpers below are intentionally file-private for production code - the resolver, normalizer, and migration classifier are
+ * internal building blocks, and exposing them as public API would invite misuse from routes and streaming code that should be going through the higher-level
+ * functions above. Unit tests need direct access to exercise each building block in isolation, so they reach in through this named export. Production code
+ * must not import from this barrel; its shape is not stable and its presence in the module carries no API guarantee.
+ */
+export const __internalForTests = {
+
+  buildResolvedCanonicals,
+  classifyEntry,
+  collectLegacyVariantStamps,
+  normalizeChannelDeltas,
+  normalizeEntryAgainstBase,
+  overlayDelta,
+  resolveVariant,
+  stripNulls
+};
