@@ -445,7 +445,7 @@ async function locateOnNowCell(page: Page, targetName: string): Promise<Nullable
           return null;
         }
 
-        const onNow = row.querySelector(".LiveGuideProgram--first") as Nullable<HTMLElement>;
+        const onNow = row.querySelector(".LiveGuideProgram--first");
 
         if(!onNow) {
 
@@ -578,7 +578,7 @@ async function waitForPlayButton(page: Page, playSelector?: string, timeout?: nu
     // rather than a bare DOM .click().
     const playTarget = await evaluateWithAbort(page, (selector: string): Nullable<{ x: number; y: number }> => {
 
-      const el = document.querySelector(selector) as Nullable<HTMLElement>;
+      const el = document.querySelector(selector);
 
       if(!el) {
 
@@ -2120,10 +2120,10 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
 
     if(network) {
 
-      return { affiliate: network, channelSelector: network, name: ch.displayName } as DiscoveredChannel;
+      return { affiliate: network, channelSelector: network, name: ch.displayName };
     }
 
-    return { channelSelector: ch.displayName, name: ch.displayName } as DiscoveredChannel;
+    return { channelSelector: ch.displayName, name: ch.displayName };
   });
 
   // Do not cache empty results - leave the flag false so subsequent calls retry the full walk. Empty results can indicate no Hulu + Live TV subscription.

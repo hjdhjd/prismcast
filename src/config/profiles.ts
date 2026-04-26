@@ -58,7 +58,7 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
 
   // Check all profile sources: static built-in tables (general + provider) and registered provider module profiles via getBuiltinProfile(), then user-defined
   // profiles. User profiles can only extend built-in profiles (not other user profiles), so the resolution chain always terminates at a built-in profile.
-  const profile = getBuiltinProfile(profileName) ?? (getUserProfiles()[profileName] as SiteProfile | undefined);
+  const profile = getBuiltinProfile(profileName) ?? (getUserProfiles()[profileName]);
 
   if(!profile) {
 
@@ -189,7 +189,7 @@ export function getProfileForChannel(channel: {
   // embeddedVolumeLock) which provides generic player handling for direct URLs on the same service.
   if((profile.channelSelection.strategy !== "none") && !channel.channelSelector && channel.url) {
 
-    const conciseConfig = DOMAIN_CONFIG[extractDomain(channel.url)] as DomainConfig | undefined;
+    const conciseConfig = DOMAIN_CONFIG[extractDomain(channel.url)];
 
     if(conciseConfig?.profile && (conciseConfig.profile !== profileName)) {
 

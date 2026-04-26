@@ -864,7 +864,7 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
   const found = await page.evaluate((name: string): boolean => {
 
     // Try exact match first, then case-insensitive fallback, then prefix match for local affiliates.
-    let logo = document.querySelector("[aria-label=\"view " + name + "\"]") as Nullable<HTMLElement>;
+    let logo = document.querySelector("[aria-label=\"view " + name + "\"]");
 
     if(!logo) {
 
@@ -940,7 +940,7 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
   // Click the previously-tagged logo element via DOM click.
   const logoClicked = await page.evaluate((): boolean => {
 
-    const logo = document.querySelector("[data-prismcast-target=\"1\"]") as Nullable<HTMLElement>;
+    const logo = document.querySelector<HTMLElement>("[data-prismcast-target=\"1\"]");
 
     if(!logo) {
 
@@ -976,7 +976,7 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
   // Click the inner Pressable element inside the on-now tile. The outer element has the aria-label but the clickable Pressable is the first focusable child.
   const clicked = await page.evaluate((): boolean => {
 
-    const onNow = document.querySelector("[aria-label^=\"on now,\"]") as Nullable<HTMLElement>;
+    const onNow = document.querySelector<HTMLElement>("[aria-label^=\"on now,\"]");
 
     if(!onNow) {
 
@@ -984,7 +984,7 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
     }
 
     // Find the inner clickable element. DirecTV uses tabindex="0" on Pressable components.
-    const pressable = onNow.querySelector("[tabindex=\"0\"]") as Nullable<HTMLElement> ?? onNow;
+    const pressable = onNow.querySelector<HTMLElement>("[tabindex=\"0\"]") ?? onNow;
 
     pressable.click();
 

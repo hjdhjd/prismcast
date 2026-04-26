@@ -81,7 +81,7 @@ export function parseServicePack(data: unknown): ParseResult {
     errors.push("Unsupported version " + String(raw.version) + ". This version of PrismCast supports up to version " + String(CURRENT_VERSION) + ".");
   }
 
-  if(!raw.profiles || (typeof raw.profiles !== "object") || Array.isArray(raw.profiles) || (Object.keys(raw.profiles as Record<string, unknown>).length === 0)) {
+  if(!raw.profiles || (typeof raw.profiles !== "object") || Array.isArray(raw.profiles) || (Object.keys(raw.profiles).length === 0)) {
 
     errors.push("Missing or empty 'profiles' field (at least one profile is required).");
   }
@@ -258,7 +258,7 @@ export function exportServicePack(
 
   for(const key of profileKeys) {
 
-    const profile = userProfiles[key] as SiteProfile | undefined;
+    const profile = userProfiles[key];
 
     if(profile) {
 

@@ -88,7 +88,9 @@ function formatValueForDisplay(value: unknown, settingType?: string): string {
   }
 
   // Config values are always primitives (string, number, boolean). Numbers and strings are handled above.
-  return String(value as boolean);
+  const primitive: boolean = value as boolean;
+
+  return String(primitive);
 }
 
 /**
@@ -1032,7 +1034,8 @@ export function setupSettingsRoutes(app: Express): void {
           }
 
           // Parse the value (convert from display units to storage units if needed).
-          const parsedValue = parseFormValue(setting, String(rawValue as string | number | boolean));
+          const primitive: string | number | boolean = rawValue as string | number | boolean;
+          const parsedValue = parseFormValue(setting, String(primitive));
 
           // Validate the value.
           const validationError = validateSettingValue(setting, parsedValue);
@@ -1198,7 +1201,7 @@ export function setupSettingsRoutes(app: Express): void {
 
             if((typeof category === "object") && (category !== null)) {
 
-              Reflect.deleteProperty(category as Record<string, unknown>, fieldKey);
+              Reflect.deleteProperty(category, fieldKey);
             }
           }
         }

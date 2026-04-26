@@ -483,7 +483,7 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
   // Reject domains that collide with built-in domain mappings. User domains that shadow built-in domains cause the built-in service to disappear from the system,
   // affecting all channels on that domain. Users should set the profile field on individual channels to use a custom profile on a built-in domain instead.
   const conciseDomain = extractDomain("https://" + domain);
-  const collidesWithBuiltin = (DOMAIN_CONFIG[domain] as DomainConfig | undefined) ?? (DOMAIN_CONFIG[conciseDomain] as DomainConfig | undefined);
+  const collidesWithBuiltin = (DOMAIN_CONFIG[domain]) ?? (DOMAIN_CONFIG[conciseDomain]);
 
   if(collidesWithBuiltin) {
 

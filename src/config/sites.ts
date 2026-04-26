@@ -351,7 +351,7 @@ export function getDomainConfig(url: string): DomainConfig | undefined {
     const hostname = new URL(url).hostname;
 
     // Try user domains for the full hostname first.
-    const userHostnameMatch = userDomains[hostname] as DomainConfig | undefined;
+    const userHostnameMatch = userDomains[hostname];
 
     if(userHostnameMatch) {
 
@@ -359,7 +359,7 @@ export function getDomainConfig(url: string): DomainConfig | undefined {
     }
 
     // Try the built-in full hostname for subdomain-specific overrides (e.g., "tv.youtube.com" before "youtube.com").
-    const hostnameMatch = DOMAIN_CONFIG[hostname] as DomainConfig | undefined;
+    const hostnameMatch = DOMAIN_CONFIG[hostname];
 
     if(hostnameMatch) {
 
@@ -373,14 +373,14 @@ export function getDomainConfig(url: string): DomainConfig | undefined {
   const conciseDomain = extractDomain(url);
 
   // Try user domains for the concise domain.
-  const userConciseMatch = userDomains[conciseDomain] as DomainConfig | undefined;
+  const userConciseMatch = userDomains[conciseDomain];
 
   if(userConciseMatch) {
 
     return userConciseMatch;
   }
 
-  return DOMAIN_CONFIG[conciseDomain] as DomainConfig | undefined;
+  return DOMAIN_CONFIG[conciseDomain];
 }
 
 // Provider module profiles registered at import time via registerProviderModuleProfile(). Provider modules define their profiles alongside their tuning code and
@@ -411,7 +411,7 @@ export function registerProviderModuleProfile(name: string, profile: SiteProfile
  */
 export function getBuiltinProfile(name: string): SiteProfile | undefined {
 
-  return (SITE_PROFILES[name] as SiteProfile | undefined) ?? (PROVIDER_PROFILES[name] as SiteProfile | undefined) ?? providerModuleProfiles.get(name);
+  return (SITE_PROFILES[name]) ?? (PROVIDER_PROFILES[name]) ?? providerModuleProfiles.get(name);
 }
 
 /**

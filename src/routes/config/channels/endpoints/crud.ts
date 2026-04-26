@@ -543,8 +543,10 @@ export function registerCrudRoutes(app: Express): void {
 
     await mutateChannels((channels) => {
 
-      const stored = channels[key] ?? {};
-      const delta = stored as ChannelDelta;
+      // The inline-edit endpoint writes scalar override fields that all align with ChannelDelta's nullable shape. Reuse the stored entry when present so
+      // existing fields survive, otherwise start from an empty delta. mutateChannels() persists the resulting record either way.
+      const stored: ChannelDelta = channels[key] ?? {};
+      const delta = stored;
 
       switch(field) {
 

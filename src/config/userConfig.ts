@@ -1448,7 +1448,10 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
   }
 
   // Compare as strings for consistent comparison across types (handles number/string coercion). Config values are always primitives.
-  return String(value as string | number | boolean) === String(defaultValue as string | number | boolean);
+  const primitive: string | number | boolean = value as string | number | boolean;
+  const defaultPrimitive: string | number | boolean = defaultValue as string | number | boolean;
+
+  return String(primitive) === String(defaultPrimitive);
 }
 
 /**
@@ -1560,5 +1563,5 @@ export function filterDefaults(config: UserConfig): UserConfig {
   }
 
   // Remove any empty nested objects that resulted from filtering.
-  return removeEmptyObjects(filtered) as UserConfig;
+  return removeEmptyObjects(filtered);
 }

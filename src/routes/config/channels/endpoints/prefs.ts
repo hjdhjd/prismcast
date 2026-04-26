@@ -5,11 +5,11 @@
  * These endpoints are thin adapters over the display-prefs and setup-state helpers in config/userChannels. Validation happens here (HTTP boundary); the actual
  * state mutation and persistence lives in the config layer.
  */
-import type { ChannelSortField, SortDirection } from "../../../../types/index.js";
 import type { Express, Request, Response } from "express";
 import { VALID_OPTIONAL_COLUMNS, buildChannelTableState } from "../table.js";
 import { markSetupCompleted, saveChannelDisplayPrefs, setChannelDisplayPrefs } from "../../../../config/userChannels.js";
 import { sendSuccess, sendValidationError } from "../http/envelope.js";
+import type { ChannelSortField } from "../../../../types/index.js";
 import { VALID_SORT_FIELDS } from "../../../../config/services.js";
 import { route } from "../http/handler.js";
 
@@ -61,7 +61,7 @@ export function registerPrefsRoutes(app: Express): void {
 
     setChannelDisplayPrefs({
 
-      channelSortDirection: body.sortDirection as SortDirection | undefined,
+      channelSortDirection: body.sortDirection,
       channelSortField: body.sortField as ChannelSortField | undefined,
       visibleColumns: body.visibleColumns
     });

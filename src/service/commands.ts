@@ -573,7 +573,7 @@ export async function handleStatus(): Promise<number> {
  */
 export async function handleServiceCommand(args: string[]): Promise<number> {
 
-  const command = args[0] as string | undefined;
+  const command = args[0];
 
   // Handle empty args (show help).
   if(command === undefined) {

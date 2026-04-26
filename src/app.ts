@@ -451,7 +451,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
     if(parsedArgs[argKey] !== undefined) {
 
-      cliOverrides[configPath] = parsedArgs[argKey] as string | number;
+      cliOverrides[configPath] = parsedArgs[argKey];
     }
   }
 

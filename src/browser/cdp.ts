@@ -166,7 +166,7 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
 
       // Verify the resize took effect by reading back the current window bounds. If the dimensions match our target, the resize succeeded.
       // eslint-disable-next-line no-await-in-loop
-      const result = await session.send("Browser.getWindowBounds", { windowId }) as { bounds: { height?: number; width?: number } };
+      const result = await session.send("Browser.getWindowBounds", { windowId });
 
       if((result.bounds.height === targetHeight) && (result.bounds.width === targetWidth)) {
 

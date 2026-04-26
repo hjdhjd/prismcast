@@ -153,7 +153,7 @@ async function readSlingChannelsAndLocate(page: Page, targetName: Nullable<strin
 
         if(rowContainer) {
 
-          const onNow = rowContainer.querySelector(".grid-program-cell-container.active") as Nullable<HTMLElement>;
+          const onNow = rowContainer.querySelector(".grid-program-cell-container.active");
 
           if(onNow) {
 
