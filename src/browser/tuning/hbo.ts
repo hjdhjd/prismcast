@@ -117,7 +117,7 @@ async function readHboTabUrl(page: Page): Promise<Nullable<string>> {
 
   const href = await evaluateWithAbort(page, (selector: string): Nullable<string> => {
 
-    const tab = document.querySelector(selector) as Nullable<HTMLAnchorElement>;
+    const tab = document.querySelector(selector);
 
     if(!tab) {
 
@@ -436,7 +436,7 @@ export const hboProvider: ProviderModule = {
   label: "HBO Max",
 
   // Profile for HBO Max live channels (play.hbomax.com). The HBO brand page contains a "Distribution Channels" rail showing all 5 live linear channels (HBO, HBO
-  // Hits, HBO Drama, HBO Comedy, HBO Movies) as tiles. The hboGrid strategy discovers the HBO tab URL from the homepage menu bar, navigates to it, then scrapes the
+  // Hits, HBO Drama, HBO Comedy, HBO Movies) as tiles. The hboGrid strategy discovers the HBO tab URL from the homepage menu bar, navigates to it, then reads the
   // channel rail for the watch URL matching the channelSelector name. Extends fullscreenApi for requestFullscreen() behavior inherited by the watch page.
   profile: {
 

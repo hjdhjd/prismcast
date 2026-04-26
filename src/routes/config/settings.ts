@@ -921,8 +921,9 @@ export function generateCollapsibleSection(section: AdvancedSection, validationE
     lines.push(generateSettingField(setting, currentValue, defaultValue, envOverride, validationError));
   }
 
-  lines.push("</div>"); // End section-content.
-  lines.push("</div>"); // End advanced-section.
+  // Close section-content, then advanced-section, in reverse order of the opens above.
+  lines.push("</div>");
+  lines.push("</div>");
 
   return lines.join("\n");
 }

@@ -125,8 +125,8 @@ function processChannelLineup(json: string): void {
 
     LOG.debug("tuning:directv", "Channel lineup populated: %s channels.", count);
 
-    // Cross-reference local affiliates so the short network name (e.g., "abc") resolves to the affiliate's cache entry (e.g., "abc-wabc"). This mirrors Hulu's
-    // affiliate cache aliasing (hulu.ts:1089-1098) and ensures warm-cache diagnostic logging works for local channels.
+    // Cross-reference local affiliates so the short network name (e.g., "abc") resolves to the affiliate's cache entry (e.g., "abc-wabc"). This mirrors the
+    // affiliate-aliasing pattern used in the Hulu provider's channel cache and ensures warm-cache diagnostic logging works for local channels.
     for(const network of DIRECTV_LOCAL_NETWORKS) {
 
       // Skip if the network name itself is already an exact cache key (unlikely on DirecTV, but defensive).

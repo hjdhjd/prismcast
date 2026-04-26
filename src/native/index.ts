@@ -264,10 +264,14 @@ function parseTokenExpiry(url: string): Nullable<number> {
 
   // Each pattern captures a 10-13 digit expiration timestamp from a different token format. The patterns are tried in order; the first match wins.
   const expiryPatterns = [
-    /[?&]exp=(\d{10,13})/,       // Plain query parameter: exp=N.
-    /~exp=(\d{10,13})~/,          // Akamai token in query parameter: hdnea=...~exp=N~...
-    /\/exp=(\d{10,13})~/,         // Akamai token in URL path: /exp=N~acl=...
-    /exp%3D(\d{10,13})/           // URL-encoded hdnts parameter: exp%3DN.
+    // Plain query parameter: exp=N.
+    /[?&]exp=(\d{10,13})/,
+    // Akamai token in query parameter: hdnea=...~exp=N~...
+    /~exp=(\d{10,13})~/,
+    // Akamai token in URL path: /exp=N~acl=...
+    /\/exp=(\d{10,13})~/,
+    // URL-encoded hdnts parameter: exp%3DN.
+    /exp%3D(\d{10,13})/
   ];
 
   for(const pattern of expiryPatterns) {

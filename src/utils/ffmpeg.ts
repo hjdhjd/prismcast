@@ -6,14 +6,11 @@ import type { Readable, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { LOG } from "./logger.js";
 import type { Nullable } from "../types/index.js";
+import bundledFFmpegPath from "ffmpeg-for-homebridge";
 import { existsSync } from "node:fs";
-import ffmpegForHomebridge from "ffmpeg-for-homebridge";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-
-// The ffmpeg-for-homebridge package has incorrect type definitions (declares named export but JS uses default export). Cast to the correct type.
-const ffmpegPath = ffmpegForHomebridge as unknown as string | undefined;
 
 // FFmpeg stderr noise patterns that are suppressed from logging. The -nostats flag suppresses most progress output, but some FFmpeg builds or versions may still
 // emit these patterns. The filter acts as a safety net to keep logs clean.
@@ -27,35 +24,24 @@ const FFMPEG_NOISE_PATTERNS = [ "Press [q] to stop", "frame=", "size=", "time=",
  */
 export function getBundledFFmpegPath(): string | undefined {
 
-  if(ffmpegPath && existsSync(ffmpegPath)) {
+  if(bundledFFmpegPath && existsSync(bundledFFmpegPath)) {
 
-    return ffmpegPath;
+    return bundledFFmpegPath;
   }
 
   return undefined;
 }
 
-/* When using Matroska capture mode, Chrome's MediaRecorder outputs a Matroska container with video (H264 or HEVC depending on hardware capabilities) and Opus audio.
- * For HLS compatibility, we need an fMP4 container with AAC audio. FFmpeg handles this conversion:
- *
- * - Video: Passed through unchanged (copy codec) - no quality loss, minimal CPU
- * - Audio: Transcoded from Opus to AAC - lightweight operation
- * - Container: Converted from Matroska to fragmented MP4 with streaming-friendly flags
- *
- * The FFmpeg process runs for the lifetime of the stream, reading Matroska from stdin and writing fMP4 to stdout. This output feeds directly into the existing fMP4
- * segmenter.
- */
-
-/* FFmpeg can be located in several places depending on how it was installed. We check in order of preference:
- * 1. Channels DVR bundled FFmpeg:
- *    - macOS: ~/Library/Application Support/ChannelsDVR/latest/ffmpeg
- *    - Windows: C:\ProgramData\channelsdvr\latest\ffmpeg.exe
- *    - Linux: ~/channels-dvr/latest/ffmpeg, /usr/local/channels-dvr/latest/ffmpeg, /opt/channels-dvr/latest/ffmpeg
- * 2. Bundled FFmpeg from ffmpeg-for-homebridge package
- * 3. System PATH (standard installation via package manager or manual install)
- *
- * The resolved path is cached after the first successful lookup to avoid repeated filesystem checks.
- */
+// Common input-side flags shared by every FFmpeg spawner. They silence the banner and per-frame stats, restrict logging to warnings and errors, tolerate corrupt
+// input frames rather than aborting on read errors, and cap input probing at 16KB so the encoder begins emitting output as soon as the first segment lands.
+const FFMPEG_INPUT_FLAGS: readonly string[] = [
+  "-hide_banner",
+  "-nostats",
+  "-loglevel", "warning",
+  "-fflags", "+discardcorrupt",
+  "-err_detect", "ignore_err",
+  "-probesize", "16384"
+];
 
 // Cached FFmpeg path after resolution. Null means not yet resolved, undefined means not found.
 let cachedFFmpegPath: Nullable<string> | undefined = null;
@@ -87,8 +73,17 @@ async function checkFFmpegAtPath(pathToCheck: string): Promise<boolean> {
 }
 
 /**
- * Resolves the FFmpeg executable path. Checks Channels DVR (macOS, Windows, Linux), then the bundled ffmpeg-for-homebridge, then system PATH. The resolved path is
- * cached for subsequent calls.
+ * Resolves the FFmpeg executable path. The resolved path is cached after the first successful lookup to avoid repeated filesystem checks.
+ *
+ * FFmpeg can be located in several places depending on how it was installed. We check in order of preference:
+ *
+ * 1. Channels DVR bundled FFmpeg:
+ *    - macOS: ~/Library/Application Support/ChannelsDVR/latest/ffmpeg
+ *    - Windows: C:\ProgramData\channelsdvr\latest\ffmpeg.exe
+ *    - Linux: ~/channels-dvr/latest/ffmpeg, /usr/local/channels-dvr/latest/ffmpeg, /opt/channels-dvr/latest/ffmpeg
+ * 2. Bundled FFmpeg from the ffmpeg-for-homebridge package.
+ * 3. System PATH (standard installation via package manager or manual install).
+ *
  * @returns Promise resolving to the FFmpeg path if found, or undefined if not available.
  */
 export async function resolveFFmpegPath(): Promise<string | undefined> {
@@ -148,9 +143,9 @@ export async function resolveFFmpegPath(): Promise<string | undefined> {
   }
 
   // Check ffmpeg-for-homebridge bundled FFmpeg. This provides a reliable fallback without requiring manual FFmpeg installation.
-  if(ffmpegPath && existsSync(ffmpegPath) && (await checkFFmpegAtPath(ffmpegPath))) {
+  if(bundledFFmpegPath && existsSync(bundledFFmpegPath) && (await checkFFmpegAtPath(bundledFFmpegPath))) {
 
-    cachedFFmpegPath = ffmpegPath;
+    cachedFFmpegPath = bundledFFmpegPath;
 
     return cachedFFmpegPath;
   }
@@ -310,20 +305,16 @@ function spawnFFmpegProcess({ args, label, onError, streamId }: {
 // Public FFmpeg Spawners.
 
 /**
- * Spawns an FFmpeg process configured to remux Matroska to fMP4. Video is passed through unchanged (codec copy); audio is transcoded from Opus to AAC for HLS
- * compatibility. The video codec (H264 or HEVC) is determined by Chrome's MediaRecorder based on hardware capabilities. The process reads from stdin and writes
- * to stdout, allowing it to be integrated into a Node.js stream pipeline.
+ * Spawns an FFmpeg process configured to remux Matroska to fMP4. The process reads from stdin and writes to stdout, allowing integration into a Node.js stream
+ * pipeline.
  *
- * FFmpeg arguments:
- * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
- * - `-probesize 16384`: Limit input probing to 16KB (Chrome's Matroska header fits well under this) to minimize startup delay
- * - `-i pipe:0`: Read input from stdin
- * - `-c:v copy`: Copy video stream without re-encoding (passthrough)
- * - `-c:a aac -b:a <bitrate>`: Transcode audio to AAC at specified bitrate
- * - `-f mp4`: Output MP4 container format
- * - `-movflags frag_keyframe+empty_moov+default_base_moof`: Streaming-friendly fMP4 flags
- * - `-flush_packets 1`: Flush output immediately after each packet to minimize latency
- * - `pipe:1`: Write output to stdout
+ * Chrome's MediaRecorder outputs a Matroska container with video (H264 or HEVC depending on hardware capabilities) and Opus audio. HLS clients need fMP4 with
+ * AAC audio. This function configures FFmpeg to bridge the gap: video is copied unchanged (no quality loss, minimal CPU), audio is transcoded from Opus to AAC
+ * (lightweight), and the container is rewritten as fragmented MP4 with streaming-friendly flags. The output feeds directly into the fMP4 segmenter.
+ *
+ * The exact flag set lives inline in the args array below, with grouped comments above each set of related flags. Common input-side flags shared with
+ * spawnMpegTsRemuxer come from FFMPEG_INPUT_FLAGS.
+ *
  * @param audioBitrate - Audio bitrate in bits per second (e.g., 256000 for 256 kbps).
  * @param onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
  * @param streamId - Stream identifier for logging.
@@ -336,18 +327,18 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
   const aacEncoder = process.platform === "darwin" ? "aac_at" : "aac";
 
   const ffmpegArgs = [
-    "-hide_banner",
-    "-nostats",
-    "-loglevel", "warning",
-    "-fflags", "+discardcorrupt",
-    "-err_detect", "ignore_err",
-    "-probesize", "16384",
+    ...FFMPEG_INPUT_FLAGS,
+    // Read Matroska from stdin.
     "-i", "pipe:0",
+    // Pass video through unchanged (codec copy) and transcode audio to AAC at the requested bitrate. macOS uses Apple's hardware AAC encoder; other platforms fall
+    // back to FFmpeg's software encoder.
     "-c:v", "copy",
     "-c:a", aacEncoder,
     "-b:a", String(audioBitrate),
+    // Emit fragmented MP4 with a moov-less header so HLS segmenters can consume the stream incrementally. skip_sidx and skip_trailer keep init-segment overhead low.
     "-f", "mp4",
     "-movflags", "frag_keyframe+empty_moov+default_base_moof+skip_sidx+skip_trailer",
+    // Flush each packet immediately to minimize the latency between MediaRecorder output and downstream segmentation.
     "-flush_packets", "1"
   ];
 
@@ -357,6 +348,7 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
     ffmpegArgs.push("-metadata", "comment=PrismCast - " + comment);
   }
 
+  // Write output to stdout. This must come last so any preceding flags (including optional metadata) take effect on the output stream.
   ffmpegArgs.push("pipe:1");
 
   return spawnFFmpegProcess({
@@ -372,13 +364,9 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
  * Spawns an FFmpeg process configured to remux fMP4 input to MPEG-TS output with codec copy. The process reads a continuous fMP4 stream (init segment followed by
  * media segments) from stdin and writes MPEG-TS to stdout. No transcoding occurs - both video and audio are copied unchanged - so CPU usage is minimal.
  *
- * FFmpeg arguments:
- * - `-hide_banner -loglevel warning`: Reduce noise, only show warnings/errors
- * - `-probesize 16384`: Limit input probing to 16KB (fMP4 init segment is ~1.3KB) to minimize startup delay
- * - `-f mp4 -i pipe:0`: Read fragmented MP4 from stdin
- * - `-c copy`: Copy both video and audio codecs without transcoding
- * - MPEG-TS output flags: See MPEGTS_OUTPUT_FLAGS for ATSC-conventional settings
- * - `pipe:1`: Write output to stdout
+ * The exact flag set lives inline in the args array below. Common input-side flags shared with spawnFFmpeg come from FFMPEG_INPUT_FLAGS; ATSC-conventional output
+ * flags come from MPEGTS_OUTPUT_FLAGS.
+ *
  * @param onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
  * @param streamId - Optional stream identifier for logging.
  * @returns FFmpeg process wrapper with stdin, stdout, and kill function.
@@ -386,16 +374,13 @@ export function spawnFFmpeg(audioBitrate: number, onError: (error: Error) => voi
 export function spawnMpegTsRemuxer(onError: (error: Error) => void, streamId?: string): FFmpegProcess {
 
   const ffmpegArgs = [
-    "-hide_banner",
-    "-nostats",
-    "-loglevel", "warning",
-    "-fflags", "+discardcorrupt",
-    "-err_detect", "ignore_err",
-    "-probesize", "16384",
+    ...FFMPEG_INPUT_FLAGS,
+    // Read fragmented MP4 from stdin and copy both video and audio without transcoding.
     "-f", "mp4",
     "-i", "pipe:0",
     "-c", "copy",
     ...MPEGTS_OUTPUT_FLAGS,
+    // Write MPEG-TS to stdout.
     "pipe:1"
   ];
 

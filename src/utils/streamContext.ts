@@ -10,8 +10,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * This is particularly useful for logging - log statements anywhere in the call chain automatically include the stream ID prefix without functions needing to accept
  * and pass through a streamId parameter.
  *
- * IMPORTANT: AsyncLocalStorage context is lost when entering a new async context, such as setInterval or setTimeout callbacks. For these cases, you must re-establish
- * the context by calling runWithStreamContext() at the start of the callback.
+ * AsyncLocalStorage context is lost when entering a new async context, such as setInterval or setTimeout callbacks. For these cases, the context must be
+ * re-established by calling runWithStreamContext() at the start of the callback.
  */
 
 /**

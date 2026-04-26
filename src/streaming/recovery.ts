@@ -321,8 +321,8 @@ export interface CircuitBreakerResult {
 }
 
 /**
- * Records a failure and checks whether the circuit breaker should trip. This centralizes the circuit breaker logic that was previously duplicated in multiple
- * recovery paths. The function updates the state in place and returns whether the breaker should trip.
+ * Records a failure and checks whether the circuit breaker should trip. This is the single entry point for circuit breaker decisions across every recovery
+ * path - any code that wants to count a failure goes through this function. Updates the state in place and returns the trip decision along with diagnostic info.
  * @param state - The circuit breaker state to update.
  * @param now - The current timestamp.
  * @returns Result indicating whether the circuit breaker should trip and diagnostic info.

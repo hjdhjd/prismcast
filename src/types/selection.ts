@@ -158,7 +158,8 @@ export interface ProviderModule {
   // detection of audio-only failures.
   tinySegmentThreshold?: number;
 
-  // Links back to the site profile strategy name for derived strategy lookup.
+  // Must equal the channelSelection.strategy value on this provider's registered profile. The coordinator's tune dispatcher uses this field to route tune calls
+  // to the correct provider module - if this drifts from the profile, the dispatcher will not find the provider and channels will fall through to generic handling.
   strategyName: ChannelSelectionStrategy;
 
   // Optional validator called after a successful precache to determine whether the results prove the provider is authenticated. When defined, precaching calls

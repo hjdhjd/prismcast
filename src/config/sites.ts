@@ -15,15 +15,15 @@ import { getUserDomains } from "./userProfiles.js";
  * 1. SITE_PROFILES: General-purpose behavior configurations that users can select for custom channels. These describe common player implementation patterns and
  *    are shown in UI dropdowns and the service wizard. Profiles can inherit from other profiles using the "extends" property.
  *
- * 1b. PROVIDER_PROFILES: Internal profiles tied to specific provider modules (Hulu, YouTube TV, Sling, etc.). These have channel selection strategies and
- *     selectors tightly coupled to a streaming service's DOM structure. They are never shown in user-facing profile lists - users targeting these services should
- *     use the predefined channels directly. Provider profiles can extend general profiles (e.g., fullscreenApi) and profile resolution checks both tables.
+ * 2. PROVIDER_PROFILES: Internal profiles tied to specific provider modules (Hulu, YouTube TV, Sling, etc.). These have channel selection strategies and
+ *    selectors tightly coupled to a streaming service's DOM structure. They are never shown in user-facing profile lists - users targeting these services should
+ *    use the predefined channels directly. Provider profiles can extend general profiles (e.g., fullscreenApi) and profile resolution checks both tables.
  *
- * 2. DOMAIN_CONFIG: A mapping from domain patterns to site profiles and service display names. When streaming a URL, we check if it matches any known domain and
+ * 3. DOMAIN_CONFIG: A mapping from domain patterns to site profiles and service display names. When streaming a URL, we check if it matches any known domain and
  *    use the corresponding profile. Service display names give friendly labels (e.g., "Hulu" instead of "hulu.com") for the UI source column and service
  *    dropdowns. This is the primary mechanism for automatically selecting the right behavior and generating friendly display names.
  *
- * 3. Channel-level profile hints: Individual channel definitions can specify an explicit profile name, overriding URL-based detection. This is useful when a
+ * 4. Channel-level profile hints: Individual channel definitions can specify an explicit profile name, overriding URL-based detection. This is useful when a
  *    channel's URL doesn't match the expected domain pattern, or when the same domain serves multiple channel types that need different handling.
  *
  * Profile resolution happens at stream startup and the resolved profile is passed through the entire streaming pipeline. The profile flags control:

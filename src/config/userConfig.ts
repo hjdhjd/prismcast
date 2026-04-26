@@ -773,8 +773,8 @@ export interface UserConfigLoadResult {
  * All config modifications go through mutateConfig(), which prevents the class of bugs where a corrupt file gets silently overwritten with nearly-empty data.
  */
 
-// Transactional store instance for config.json. The beforeWrite hook applies filterDefaults() universally so that every save produces a minimal config file
-// containing only non-default values. This was previously inconsistent...some callers applied filterDefaults and some didn't.
+// Transactional store instance for config.json. The beforeWrite hook is the single chokepoint where the persisted shape is normalized: filterDefaults() runs on
+// every save so the file on disk contains only non-default values, regardless of which call site initiated the write.
 const configStore = createFileStore<UserConfig>({
 
   beforeWrite: (data: UserConfig): UserConfig => filterDefaults(data),

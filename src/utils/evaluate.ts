@@ -17,8 +17,8 @@ import { raceWithTimeout } from "./delay.js";
  * The wrapper automatically retrieves the abort signal from the stream registry using the stream context from AsyncLocalStorage. If no stream context is available
  * (e.g., during browser initialization), it falls back to timeout-only behavior.
  *
- * IMPORTANT: When aborting or timing out, the underlying CDP call is still pending in Puppeteer - we just stop waiting for it locally. We attach a no-op .catch() to
- * the evaluate promise to suppress unhandled rejection warnings when the CDP call eventually completes or times out.
+ * When aborting or timing out, the underlying CDP call is still pending in Puppeteer - we just stop waiting for it locally. We attach a no-op .catch() to the
+ * evaluate promise to suppress unhandled rejection warnings when the CDP call eventually completes or times out.
  */
 
 // Default timeout for evaluate calls in milliseconds.
@@ -129,7 +129,7 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
   // signatures that are difficult to type precisely.
   const evaluatePromise = args ?
     context.evaluate(pageFunction as unknown as (...args: unknown[]) => T, ...args) :
-    context.evaluate(pageFunction as unknown as () => T);
+    context.evaluate(pageFunction);
 
   // Attach a no-op catch to suppress unhandled rejection warnings. When we abort or timeout, the underlying CDP call is still pending and will eventually resolve or
   // reject. Without this, we'd get unhandled rejection warnings when the CDP call completes after we've moved on.

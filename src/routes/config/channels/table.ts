@@ -567,7 +567,8 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
     lines.push("<div class=\"hint\">" + hdhrHint + "</div>");
   }
 
-  lines.push("</div>"); // End advanced fields.
+  // Close the advanced-fields wrapper opened at the top of this builder.
+  lines.push("</div>");
 
   return lines;
 }
@@ -1817,7 +1818,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("</div>");
 
   lines.push("</form>");
-  lines.push("</div>"); // End add-channel-form.
+
+  // Close the add-channel-form wrapper opened at the top of this builder.
+  lines.push("</div>");
 
   // Profile reference section (hidden by default, toggled via link in profile dropdown hint).
   lines.push(generateProfileReference(profiles));
