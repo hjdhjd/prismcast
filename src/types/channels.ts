@@ -1,21 +1,209 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * channels.ts: Channel definition and channel map type definitions for PrismCast.
+ * channels.ts: Channel type definitions and the identity/service-binding partition for PrismCast.
  */
 import type { Nullable } from "./shared.js";
 
-/* Nested channel definitions separate channel identity from service affiliation. A ChannelDefinition holds identity fields (name, stationId) and a services
- * map keyed by service slug. The "site" key represents the channel's own website. At module load, the flattener compiles nested definitions into the flat
- * ChannelMap consumed by the rest of the codebase. See channels/index.ts for the flattener and canonical resolution rules.
+/* The channel data model is partitioned into two orthogonal concerns:
+ *
+ * - Identity: properties of the channel itself (name, station ID, channel number, EPG metadata). Independent of which service streams it.
+ * - Service binding: how to reach the channel on a particular service (URL, channelSelector, profile, scroll/dismiss DOM hints).
+ *
+ * A canonical channel carries both - it is the "what this channel is" plus the canonical service's "how to reach it." A variant channel carries only the
+ * service binding plus a reference to its canonical; identity inherits from the canonical at resolution time. This shape makes the canonical->variant inheritance
+ * relationship correct by construction: variants structurally cannot carry identity, so they cannot leak the canonical service's identity into a different
+ * service's variant.
+ *
+ * The discriminated union Channel = CanonicalChannel | VariantChannel is the shape of raw stored and predefined-catalog entries. ResolvedChannel is the
+ * post-resolution shape consumers see, where a variant's identity has been merged in from its canonical. Most of the codebase consumes ResolvedChannel; only
+ * the flatten, resolve, and normalize internals work with the discriminated raw shape.
+ *
+ * CHANNEL_IDENTITY_KEYS and CHANNEL_BINDING_KEYS are the single source of truth for the partition. The compile-time exhaustiveness check at the bottom of this
+ * file ensures every Channel field is classified - adding a new field anywhere in the type without classifying it is a build error, not a latent bug.
  */
 
 /**
- * Nested channel definition separating identity from service affiliation. The authoring format for predefined channels in channels/index.ts. The flattener
- * compiles these into flat Channel entries keyed as "{canonical}" (for the canonical service) and "{canonical}-{slug}" (for each additional service).
+ * Identity fields - properties of the channel itself, independent of any specific service. These inherit from canonical to variant during resolution. A user
+ * may override identity fields on a canonical entry (renaming, retagging, custom logo, etc.); the override applies to the canonical and propagates to all
+ * variants through resolution.
+ */
+export interface ChannelIdentity {
+
+  // Numeric channel number for guide matching. When set, this number is used as the channel-number in the M3U playlist for Channels DVR and as the GuideNumber
+  // in the HDHomeRun lineup for Plex. When omitted, no channel number is included in the M3U playlist and a number is auto-assigned for HDHomeRun. A variant
+  // may override this on a per-service basis - see VariantChannel.channelNumber.
+  channelNumber?: number;
+
+  // Human-readable title for electronic program guide display. When set, this value is emitted as the tvg-name attribute in the M3U playlist instead of the
+  // channel name. Useful for channels without EPG data (e.g., static page channels) where the channel name alone doesn't describe the content.
+  guideTitle?: string;
+
+  // Whether this channel is included in the HDHomeRun lineup for Plex. When absent or true, the channel appears in the HDHR lineup and is available for Plex
+  // DVR tuning. When false, the channel is excluded from the HDHR lineup but remains available in the M3U playlist for Channels DVR. Only stored in user
+  // config when explicitly set to false (sparse storage).
+  hdhrEnabled?: boolean;
+
+  // Custom logo URL for this channel. When set, this value is emitted as the tvg-logo attribute in the M3U playlist, overriding any logo derived from Channels
+  // DVR. Useful for channels without EPG data or when the user prefers a specific logo.
+  logoUrl?: string;
+
+  // Human-readable channel name displayed in the M3U playlist. This is what users see in their channel guide. Set eagerly by the flattener on canonical
+  // entries from the parent ChannelDefinition's name field. For user-defined channels, set explicitly at creation time.
+  name?: string;
+
+  // Gracenote station ID for the Pacific timezone feed. When present on a canonical entry, the Pacific generator auto-creates a sibling ChannelDefinition with
+  // this station ID, inheriting services (filtered for East/West-specific channelSelectors). See generatePacificDefinitions() in channels/index.ts.
+  pacificStationId?: string;
+
+  // Gracenote station ID for electronic program guide integration. When set, this ID is included in the M3U playlist as the tvc-guide-stationid attribute,
+  // allowing Channels DVR to fetch program guide data for the channel.
+  stationId?: string;
+
+  // Organizational tags for playlist filtering. Tags are freeform strings with preserved casing, compared case-insensitively via tagsMatch(). Used by the
+  // ?tag= playlist query parameter to generate filtered playlists.
+  tags?: string[];
+
+  // EPG time shift in hours. When set, this value is included in the M3U playlist as the tvg-shift attribute, telling Channels DVR to offset the guide data
+  // by this many hours. Useful for time-delayed feeds that share a station ID with the primary feed (e.g., Pacific feeds that air 3 hours after the East feed).
+  tvgShift?: number;
+}
+
+/**
+ * Service binding fields - how to reach the channel on a particular service's platform. These do NOT inherit from canonical to variant, because each service
+ * has its own URL, its own selector vocabulary, its own player DOM hooks. A variant must declare its own binding fields (or have them populated by discovery);
+ * the canonical service's binding is meaningful only for the canonical service.
+ */
+export interface ChannelServiceBinding {
+
+  // Service-specific channel identifier for multi-channel players. For sites where the base URL is shared but different channels require clicking different
+  // UI elements (e.g., Hulu, Sling, YouTube TV, Fox.com guide grid).
+  channelSelector?: string;
+
+  // CSS selector for an intermittent modal or overlay to dismiss after page load. Service-specific because dismissal patterns differ per provider.
+  dismissSelector?: string;
+
+  // Profile name to use for this binding, overriding URL-based profile detection. Use when a service's behavior doesn't match what would be inferred from its
+  // domain, or when a specific channel needs different handling than other channels on the same service.
+  profile?: string;
+
+  // CSS selector to narrow the DOM search when scrollTarget is set. Service-specific lazy-load handling.
+  scrollSelector?: string;
+
+  // Text content to match when scrolling a lazy-loaded section into view before channel selection. Service-specific lazy-load handling.
+  scrollTarget?: string;
+
+  // Whether to scroll to the bottom of the page before channel selection. Service-specific lazy-load handling.
+  scrollToBottom?: boolean;
+
+  // Display name override for the service selection dropdown on this binding. Normally auto-derived from the URL domain via DOMAIN_CONFIG in config/profiles.ts.
+  // Only needed when a binding's display name should differ from the domain-level default.
+  service?: string;
+
+  // URL of the streaming page to capture. This should be the direct URL to the live stream player, not a landing page or show page. Authentication cookies
+  // from the Chrome profile are used, so the URL can be to authenticated content.
+  url: string;
+}
+
+/**
+ * Canonical or standalone channel entry. Carries identity (the "what") plus the canonical service's binding (the "how to reach it on this service"). The
+ * canonicalKey field is structurally absent (typed as never) so that the discriminated union below distinguishes canonicals from variants by shape: a value
+ * with a string canonicalKey is a VariantChannel, anything else is a CanonicalChannel.
+ *
+ * Predefined canonicals are produced by the flattener; standalone user channels (no predefined parent) take this same shape.
+ */
+export interface CanonicalChannel extends ChannelIdentity, ChannelServiceBinding {
+
+  // Always absent on canonicals and standalones. Typed as `never` so the type system rejects any attempt to set it - that would convert this entry into a variant.
+  canonicalKey?: never;
+}
+
+/**
+ * Variant channel entry. Carries the binding for one non-canonical service, plus a canonicalKey reference to its parent and any per-variant identity overrides.
+ * Identity fields are all optional on variants: when absent, the canonical's value is inherited at resolution time; when present, the variant's value wins.
+ *
+ * The structural invariant a variant DOES enforce is the discriminator: canonicalKey is required (and structurally absent on CanonicalChannel via never). The
+ * resolution-time invariant - that a variant does not inherit the canonical's service binding (URL, channelSelector, etc.) - lives in resolveVariant via the
+ * pickIdentity helper. Per-variant identity overrides are legitimate (e.g., a local-affiliate variant of a network canonical carries the affiliate's stationId
+ * because the canonical has no single national ID), so identity fields stay optional rather than forbidden.
+ */
+export interface VariantChannel extends ChannelServiceBinding, Partial<ChannelIdentity> {
+
+  // Required - the discriminator that marks this entry as a variant of another channel.
+  canonicalKey: string;
+}
+
+/**
+ * The shape of a raw stored or predefined-catalog channel entry. Used by the flattener output (PREDEFINED_CHANNELS), by the on-disk channels.json store, and
+ * by internal flatten/resolve/normalize logic. Consumers of resolved data use ResolvedChannel instead.
+ */
+export type Channel = CanonicalChannel | VariantChannel;
+
+/**
+ * Map of channel keys to raw stored or predefined-catalog channel entries. Channel keys are URL-safe slugs (lowercase letters, numbers, hyphens) since they
+ * appear in stream request URLs.
+ */
+export type ChannelMap = Record<string, Channel>;
+
+/**
+ * Post-resolution channel shape. Variants have had their identity merged in from the canonical, so this carries both identity and binding plus an optional
+ * canonicalKey indicating the variant relationship (kept for downstream consumers that need to distinguish a resolved variant from a resolved canonical).
+ *
+ * This is what most of the codebase consumes - getMergedChannelMap, getChannelListing, the playlist generator, the HDHR lineup, route handlers, and so on
+ * all return or handle ResolvedChannel data.
+ */
+export interface ResolvedChannel extends ChannelIdentity, ChannelServiceBinding {
+
+  // Optional. Present when this resolved entry corresponds to a variant; absent on canonical and standalone resolutions. Consumers that need to know whether
+  // an entry is a variant inspect this field.
+  canonicalKey?: string;
+}
+
+/**
+ * Map of channel keys to resolved channels. The output type of getMergedChannelMap and the consumption type for the rest of the codebase.
+ */
+export type ResolvedChannelMap = Record<string, ResolvedChannel>;
+
+/**
+ * Single source of truth for which Channel fields are identity. Used by resolveVariant and normalizeChannelDeltas to extract the inheritable subset of a
+ * canonical, by the M3U/HDHR output layers to know which fields to read for guide metadata, and by the user-edit form's allowlist for predefined-channel
+ * overrides. Adding a field to ChannelIdentity without listing it here is a compile error via the exhaustiveness check below.
+ */
+export const CHANNEL_IDENTITY_KEYS = [ "channelNumber", "guideTitle", "hdhrEnabled", "logoUrl", "name", "pacificStationId", "stationId", "tags", "tvgShift" ] as const;
+
+/**
+ * Single source of truth for which Channel fields are service-bindings. Used by the variant builder, the resolver (which excludes these from canonical->variant
+ * inheritance), the user-edit form's binding-override allowlist, and any code that needs to distinguish "how to reach the channel" from "what the channel is."
+ * Adding a field to ChannelServiceBinding without listing it here is a compile error via the exhaustiveness check below.
+ */
+export const CHANNEL_BINDING_KEYS = [ "channelSelector", "dismissSelector", "profile", "scrollSelector", "scrollTarget", "scrollToBottom", "service", "url" ] as const;
+
+/* Compile-time partition completeness check. Every key on CanonicalChannel and VariantChannel must be classified as identity, binding, or the explicit
+ * "neither" set ("canonicalKey"). If a new field is added without classifying it, the _ChannelKeyExhaustiveness type will not collapse to `never` and the
+ * `_partitionCompleteness` assignment will fail to type-check.
+ *
+ * The intent is that this is the only place anyone needs to look to confirm "every Channel field has been considered" - the compiler enforces it.
+ */
+type _ClassifiedChannelKey = typeof CHANNEL_IDENTITY_KEYS[number] | typeof CHANNEL_BINDING_KEYS[number] | "canonicalKey";
+type _ChannelKeyExhaustiveness = Exclude<keyof CanonicalChannel | keyof VariantChannel, _ClassifiedChannelKey>;
+
+interface _PartitionError {
+
+  error: "Add field to CHANNEL_IDENTITY_KEYS, CHANNEL_BINDING_KEYS, or the canonicalKey carve-out";
+  field: _ChannelKeyExhaustiveness;
+}
+
+const _partitionCompleteness: [_ChannelKeyExhaustiveness] extends [never] ? true : _PartitionError = true;
+
+/* Mark the assertion as intentionally unused - its only purpose is the compile-time check above. */
+void _partitionCompleteness;
+
+/**
+ * Nested channel definition - the AUTHORING shape for predefined channels in channels/index.ts. Already correctly partitioned: identity at the top level,
+ * services map below. The flattener compiles these into the runtime Channel discriminated union.
  */
 export interface ChannelDefinition {
 
-  // Numeric channel number for guide matching. Inherited by all service variants unless overridden on the variant.
+  // Numeric channel number for guide matching. Inherited by all service variants unless overridden on a specific ServiceVariant.
   channelNumber?: number;
 
   // Human-readable channel name displayed in the M3U playlist and channel guide. Required for all channel definitions.
@@ -76,93 +264,8 @@ export interface ServiceVariant {
   url: string;
 }
 
-/* Channels map short URL-friendly names to streaming site URLs with optional metadata. The channel name appears in stream URLs (e.g., /stream/nbc) and must be
- * URL-safe. Channel definitions can override profile settings for specific channels and provide metadata for M3U playlist generation.
- */
-
 /**
- * Channel definition mapping a short name to a streaming URL with optional configuration overrides.
- */
-export interface Channel {
-
-  // The canonical channel key that this entry is a variant of. Present on service variant entries (e.g., "espn-hulu" has canonicalKey "espn"). Set by the
-  // flattener for predefined channels, by the browse modal for user channels, and by the one-time migration for pre-existing user channels. This is the single
-  // source of truth for variant relationships - buildServiceGroups groups channels by this field. Absent on canonical entries and standalone channels.
-  canonicalKey?: string;
-
-  // Numeric channel number for guide matching. When set, this number is used as the channel-number in the M3U playlist for Channels DVR and as the GuideNumber in
-  // the HDHomeRun lineup for Plex. When omitted, no channel number is included in the M3U playlist and a number is auto-assigned for HDHomeRun.
-  channelNumber?: number;
-
-  // CSS selector for channel selection within a multi-channel player. This overrides any channelSelector in the profile. Used for sites like Pluto TV where the
-  // base URL is the same but different channels require clicking different UI elements.
-  channelSelector?: string;
-
-  // CSS selector for an intermittent modal or overlay to dismiss after page load. Overrides the domain-level dismissSelector for this channel. When set, the system
-  // checks for this element after navigation and clicks it if present.
-  dismissSelector?: string;
-
-  // Human-readable title for electronic program guide display. When set, this value is emitted as the tvg-name attribute in the M3U playlist instead of the
-  // channel name. Useful for channels without EPG data (e.g., static page channels) where the channel name alone doesn't describe the content. For example,
-  // a channel named "Flighty" might have guideTitle "Flighty Airport Delays" to provide context in the guide.
-  guideTitle?: string;
-
-  // Whether this channel is included in the HDHomeRun lineup for Plex. When absent or true, the channel appears in the HDHR lineup and is available for Plex DVR
-  // tuning. When false, the channel is excluded from the HDHR lineup but remains available in the M3U playlist for Channels DVR. Only stored in the user config
-  // when explicitly set to false (sparse storage).
-  hdhrEnabled?: boolean;
-
-  // Custom logo URL for this channel. When set, this value is emitted as the tvg-logo attribute in the M3U playlist, overriding any logo derived from Channels
-  // DVR. Useful for channels without EPG data or when the user prefers a specific logo.
-  logoUrl?: string;
-
-  // Human-readable channel name displayed in the M3U playlist. This is what users see in their channel guide. Set eagerly by the flattener on all predefined
-  // entries (canonical and variant alike) from the parent ChannelDefinition's name field. For user channels, set explicitly at creation time.
-  name?: string;
-
-  // Gracenote station ID for the Pacific timezone feed. When present on a canonical entry, the Pacific generator auto-creates a sibling ChannelDefinition with
-  // this station ID, inheriting services (filtered for East/West-specific channelSelectors). See generatePacificDefinitions() in channels/index.ts.
-  pacificStationId?: string;
-
-  // Profile name to use for this channel, overriding URL-based profile detection. Use this when a site's behavior doesn't match what would be inferred from its
-  // domain, or when a specific channel needs different handling than others on the same site.
-  profile?: string;
-
-  // Display name override for the service selection dropdown. Normally auto-derived from the URL domain via DOMAIN_CONFIG in config/profiles.ts (e.g., a
-  // hulu.com URL automatically resolves to "Hulu"). Only needed when a channel's display name should differ from the domain-level default.
-  service?: string;
-
-  // CSS selector to narrow the DOM search when scrollTarget is set. Overrides the profile-level scrollSelector for this channel. See ChannelSelectionConfig for
-  // full documentation.
-  scrollSelector?: string;
-
-  // Text content to match when scrolling a lazy-loaded section into view before channel selection. Overrides the profile-level scrollTarget for this channel. See
-  // ChannelSelectionConfig for full documentation.
-  scrollTarget?: string;
-
-  // Whether to scroll to the bottom of the page before channel selection. Overrides the profile-level scrollToBottom for this channel. See
-  // ChannelSelectionConfig for full documentation.
-  scrollToBottom?: boolean;
-
-  // Gracenote station ID for electronic program guide integration. When set, this ID is included in the M3U playlist as the tvc-guide-stationid attribute,
-  // allowing Channels DVR to fetch program guide data for the channel.
-  stationId?: string;
-
-  // Organizational tags for playlist filtering. Set by the flattener from the parent ChannelDefinition's tags field. Tags are freeform strings with preserved
-  // casing, compared case-insensitively via tagsMatch(). Used by the ?tag= playlist query parameter to generate filtered playlists (e.g., /playlist?tag=sports).
-  tags?: string[];
-
-  // EPG time shift in hours. When set, this value is included in the M3U playlist as the tvg-shift attribute, telling Channels DVR to offset the guide data by
-  // this many hours. Useful for time-delayed feeds that share a station ID with the primary feed (e.g., Pacific feeds that air 3 hours after the East feed).
-  tvgShift?: number;
-
-  // URL of the streaming page to capture. This should be the direct URL to the live stream player, not a landing page or show page. Authentication cookies from
-  // the Chrome profile are used, so the URL can be to authenticated content.
-  url: string;
-}
-
-/**
- * Enriched channel entry returned by getChannelListing(). Wraps a Channel definition with source classification and enabled status metadata, providing the
+ * Enriched channel entry returned by getChannelListing(). Wraps a resolved Channel with source classification and enabled status metadata, providing the
  * single source of truth for merged channel data across the codebase.
  */
 export interface ChannelListingEntry {
@@ -170,8 +273,8 @@ export interface ChannelListingEntry {
   // Whether the channel has at least one service variant available given the current service filter. When false, the channel is hidden from the playlist and guide.
   availableByService: boolean;
 
-  // The channel definition with all properties (name, url, profile, etc.).
-  channel: Channel;
+  // The resolved channel with all properties (name, url, profile, etc.) populated from canonical+variant inheritance.
+  channel: ResolvedChannel;
 
   // Whether the channel is enabled for streaming and playlist inclusion. Disabled predefined channels (without user overrides) have this set to false.
   enabled: boolean;
@@ -184,9 +287,12 @@ export interface ChannelListingEntry {
 }
 
 /**
- * A delta override for a predefined channel. All fields are optional because only fields that differ from the predefined definition are stored. String and number
- * fields use Nullable<T> to distinguish "user cleared this field" (null) from "inherit from predefined" (absent). When a field is null, the predefined value is
- * removed in the resolved channel. When a field is absent, the predefined value is inherited.
+ * A delta override for a predefined channel. All fields are optional because only fields that differ from the predefined definition are stored. String and
+ * number fields use Nullable<T> to distinguish "user cleared this field" (null) from "inherit from predefined" (absent). When a field is null, the predefined
+ * value is removed in the resolved channel. When a field is absent, the predefined value is inherited.
+ *
+ * The set of fields here is the union of identity-override fields (canonical-level overrides) and the user-editable subset of binding fields. Non-editable
+ * binding fields (scroll/dismiss DOM hooks) are not user-overridable and intentionally absent from this type.
  */
 export interface ChannelDelta {
 
@@ -225,9 +331,9 @@ export interface ChannelDelta {
 }
 
 /**
- * What gets stored in channels.json per key. For user-defined channels (no predefined equivalent), this is a full Channel with a required url. For overrides of
- * predefined channels, this can be a ChannelDelta with only the differing fields. Legacy full-override entries (from before the delta model) are also valid - they
- * are just deltas that happen to override every field.
+ * What gets stored in channels.json per key. For user-defined channels (no predefined equivalent), this is a full Channel with a required url. For overrides
+ * of predefined channels, this can be a ChannelDelta with only the differing fields. Legacy full-override entries (from before the delta model) are also valid -
+ * they are just deltas that happen to override every field.
  */
 export type StoredChannel = Channel | ChannelDelta;
 
@@ -235,12 +341,6 @@ export type StoredChannel = Channel | ChannelDelta;
  * Map of channel keys to stored channel data (full definitions or deltas). This is the raw type for the channels.json file contents.
  */
 export type StoredChannelMap = Record<string, StoredChannel>;
-
-/**
- * Map of channel short names to channel definitions. Channel names must be URL-safe strings (lowercase letters, numbers, hyphens) since they appear in stream
- * request URLs.
- */
-export type ChannelMap = Record<string, Channel>;
 
 /* Service groups allow multiple streaming services to offer the same content (e.g., ESPN via ESPN.com or Disney+). All variant relationships are expressed via
  * the canonicalKey field on Channel. The flattener sets it on predefined variants, the browse modal sets it on user variants, and buildServiceGroups groups

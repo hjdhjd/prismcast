@@ -13,7 +13,7 @@
  * discoverable. This file imports from both userChannels.ts and services.ts but is not imported by either, so adding new comparisons here never creates a circular
  * dependency.
  */
-import type { Channel, ChannelDelta } from "../types/index.js";
+import type { ChannelDelta, ResolvedChannel } from "../types/index.js";
 import { PREDEFINED_SUFFIX, getServiceGroup, resolvePredefinedVariant } from "./services.js";
 import { getChannelEffectiveTags, sortTags } from "./userChannels.js";
 
@@ -59,7 +59,7 @@ export interface ChannelFormValues {
 const FORM_SCALAR_FIELDS = [
 
   "channelNumber", "channelSelector", "guideTitle", "hdhrEnabled", "logoUrl", "name", "profile", "stationId", "url"
-] as const satisfies readonly (keyof Channel & keyof ChannelDelta)[];
+] as const satisfies readonly (keyof ResolvedChannel & keyof ChannelDelta)[];
 
 type FormScalarField = (typeof FORM_SCALAR_FIELDS)[number];
 
@@ -71,7 +71,7 @@ type FormScalarField = (typeof FORM_SCALAR_FIELDS)[number];
  * @param field - The scalar field name.
  * @returns The comparable value as a boolean, number, string, or undefined.
  */
-function channelScalar(channel: Channel, field: FormScalarField): boolean | number | string | undefined {
+function channelScalar(channel: ResolvedChannel, field: FormScalarField): boolean | number | string | undefined {
 
   switch(field) {
 
@@ -102,7 +102,7 @@ function channelScalar(channel: Channel, field: FormScalarField): boolean | numb
  * @param tags - The tag array submitted with the form.
  * @returns True when every scalar field and the tag set match the channel's effective state.
  */
-export function channelMatches(channel: Channel, formValues: ChannelFormValues, tags: readonly string[]): boolean {
+export function channelMatches(channel: ResolvedChannel, formValues: ChannelFormValues, tags: readonly string[]): boolean {
 
   for(const field of FORM_SCALAR_FIELDS) {
 
@@ -136,7 +136,7 @@ export interface PredefinedDeltaResult {
  * @param tags - The tag array submitted with the form. Internal comparison via tagsEqual sorts defensively; caller does not need to pre-sort.
  * @returns The computed delta and a flag indicating whether any field differs from the base.
  */
-export function computePredefinedDelta(predefinedBase: Channel, formValues: ChannelFormValues, tags: readonly string[]): PredefinedDeltaResult {
+export function computePredefinedDelta(predefinedBase: ResolvedChannel, formValues: ChannelFormValues, tags: readonly string[]): PredefinedDeltaResult {
 
   const delta: ChannelDelta = {};
   let hasChanges = false;

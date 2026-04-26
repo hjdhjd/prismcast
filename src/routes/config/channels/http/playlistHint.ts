@@ -6,13 +6,13 @@
  * so the user needs to reload it to see downstream changes. Centralizing the field list and the hint text here ensures every call site agrees on what "relevant"
  * means and what prose to append.
  */
-import type { Channel, ChannelDelta, StoredChannel } from "../../../../types/index.js";
+import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.js";
 
-/* Fields that appear in the generated M3U playlist and affect Channels DVR's view of the channel. When any of these change, we append PLAYLIST_HINT so the user
- * knows to reload the playlist in Channels DVR for the change to take effect. The `satisfies` constraint ensures every entry is a real Channel property name, so
- * renaming a Channel field flags this list at compile time instead of silently orphaning the check.
+/* Fields that appear in the generated M3U playlist and affect Channels DVR's view of the channel. When any of these change, we append PLAYLIST_HINT so the
+ * user knows to reload the playlist in Channels DVR for the change to take effect. The `satisfies` constraint ensures every entry is a real ResolvedChannel
+ * property name, so renaming a Channel identity field flags this list at compile time instead of silently orphaning the check.
  */
-export const M3U_FIELDS = [ "channelNumber", "guideTitle", "logoUrl", "name", "stationId", "tvgShift" ] as const satisfies readonly (keyof Channel)[];
+export const M3U_FIELDS = [ "channelNumber", "guideTitle", "logoUrl", "name", "stationId", "tvgShift" ] as const satisfies readonly (keyof ResolvedChannel)[];
 
 // Appended to success messages when an M3U-affecting field changed. Begins with a leading space so callers can concatenate directly onto their message.
 export const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this change.";
@@ -46,7 +46,7 @@ export function playlistHintForDelta(delta: ChannelDelta): string {
  * @param next - The channel record after the mutation.
  * @returns The hint string, or an empty string when no M3U-affecting fields changed.
  */
-export function playlistHintForChange(previous: Channel | undefined, next: Channel): string {
+export function playlistHintForChange(previous: ResolvedChannel | undefined, next: ResolvedChannel): string {
 
   // Adds always change the playlist - a new channel is inherently a new M3U entry.
   if(!previous) {

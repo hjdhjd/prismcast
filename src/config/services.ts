@@ -2,12 +2,12 @@
  *
  * services.ts: Service group management for multi-service channels.
  */
-import type { Channel, ChannelMap, ChannelSortField, ServiceGroup, SortDirection } from "../types/index.js";
+import type { Channel, ChannelMap, ChannelSortField, ResolvedChannel, ServiceGroup, SortDirection } from "../types/index.js";
 import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
+import { getChannelEffectiveTags, pickIdentity } from "./userChannels.js";
 import { CONFIG } from "./index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
-import { getChannelEffectiveTags } from "./userChannels.js";
 import { getProfileForChannel } from "./profiles.js";
 import { getUserDomains } from "./userProfiles.js";
 import { mutateConfig } from "./userConfig.js";
@@ -45,8 +45,9 @@ function stripPredefinedSuffix(key: string): string {
 // Module-level storage for service groups, keyed by canonical channel key.
 const serviceGroups = new Map<string, ServiceGroup>();
 
-// Reference to the channels map for inheritance resolution.
-let channelsRef: ChannelMap = {};
+// Reference to the resolved channels map (post canonical+variant inheritance). All consumer reads go through here, so it stores ResolvedChannel values where
+// every entry has both identity and binding populated.
+let channelsRef: Record<string, ResolvedChannel> = {};
 
 // User's service selections, keyed by canonical channel key. Values are the selected service key (e.g., "espn-disneyplus").
 let serviceSelections = new Map<string, string>();
@@ -361,7 +362,7 @@ function isUserOverride(key: string, channels: ChannelMap): boolean {
  * @param channels - The merged channel map (predefined + user channels).
  * @returns Canonical keys whose service selections were stale and reverted. Empty array if all selections are valid. The caller decides whether to persist.
  */
-export function buildServiceGroups(channels: ChannelMap): string[] {
+export function buildServiceGroups(channels: Record<string, ResolvedChannel>): string[] {
 
   channelsRef = channels;
   serviceGroups.clear();
@@ -515,7 +516,7 @@ export function buildServiceGroups(channels: ChannelMap): string[] {
 
   for(const [ key, channel ] of Object.entries(PREDEFINED_CHANNELS)) {
 
-    if(channel.canonicalKey) {
+    if(channel.canonicalKey !== undefined) {
 
       continue;
     }
@@ -664,7 +665,7 @@ function resolveUserProfileService(profileKey: string): { service?: string; serv
  * @param channel - The channel to resolve a label for.
  * @returns The service display label.
  */
-export function getChannelServiceLabel(channel: Channel): string {
+export function getChannelServiceLabel(channel: ResolvedChannel): string {
 
   if(channel.service) {
 
@@ -700,7 +701,7 @@ export const VALID_SORT_FIELDS = new Set<ChannelSortField>(
  * @param field - The sort field to extract.
  * @returns A lowercase string suitable for comparison-based sorting.
  */
-export function getChannelSortKey(channel: Channel, key: string, field: ChannelSortField): string {
+export function getChannelSortKey(channel: ResolvedChannel, key: string, field: ChannelSortField): string {
 
   // Resolve the selected service variant so all sort keys reflect the user's service selection. For URL-dependent fields (profile, service), this is essential -
   // a canonical's URL may differ from the selected variant's (e.g., bbcnews canonical uses cox but the user selected the directv variant). For identity fields
@@ -798,7 +799,7 @@ export function getChannelSortKey(channel: Channel, key: string, field: ChannelS
  * @returns A negative, zero, or positive number for sort ordering.
  */
 export function compareChannelSort(
-  channelA: Channel, keyA: string, channelB: Channel, keyB: string, field: ChannelSortField, direction: SortDirection
+  channelA: ResolvedChannel, keyA: string, channelB: ResolvedChannel, keyB: string, field: ChannelSortField, direction: SortDirection
 ): number {
 
   const valA = getChannelSortKey(channelA, keyA, field);
@@ -983,12 +984,15 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
  * @param key - The channel key (canonical, variant, or :predefined suffix).
  * @returns The complete channel, or undefined if the channel doesn't exist.
  */
-export function getResolvedChannel(key: string): Channel | undefined {
+export function getResolvedChannel(key: string): ResolvedChannel | undefined {
 
-  // Handle the :predefined suffix - return the original predefined channel when the user has overridden the canonical but selects the predefined service.
+  // Handle the :predefined suffix - return the original predefined channel when the user has overridden the canonical but selects the predefined service. The
+  // suffix is only meaningful for canonical keys, so the lookup target is structurally a CanonicalChannel (which is a valid ResolvedChannel).
   if(key.endsWith(PREDEFINED_SUFFIX)) {
 
-    return PREDEFINED_CHANNELS[key.slice(0, -PREDEFINED_SUFFIX.length)];
+    const predefined = PREDEFINED_CHANNELS[key.slice(0, -PREDEFINED_SUFFIX.length)];
+
+    return (predefined && (predefined.canonicalKey === undefined)) ? predefined : undefined;
   }
 
   return channelsRef[key];
@@ -1002,36 +1006,30 @@ export function getResolvedChannel(key: string): Channel | undefined {
  * @param key - The channel key (canonical or variant).
  * @returns The resolved predefined channel, or undefined when the key has no predefined definition.
  */
-export function resolvePredefinedVariant(key: string): Channel | undefined {
+export function resolvePredefinedVariant(key: string): ResolvedChannel | undefined {
 
   const entry = PREDEFINED_CHANNELS[key];
-
 
   if(!entry) {
 
     return undefined;
   }
 
-  // Canonical entries have full identity already; return as-is.
-  if(!entry.canonicalKey || (entry.canonicalKey === key)) {
+  // Canonical entries (and standalones, but those are not in PREDEFINED_CHANNELS) carry full identity already. Narrow on the canonicalKey discriminator to
+  // confirm: undefined canonicalKey means CanonicalChannel.
+  if(entry.canonicalKey === undefined) {
 
     return entry;
   }
 
-  // Predefined variant: identity inherits from the canonical. Build a fresh Channel that merges canonical identity with the variant's service-specific fields.
+  // Predefined variant: identity inherits from the canonical, binding comes from the variant. We start with canonical identity ONLY (via pickIdentity) so the
+  // canonical service's binding does not leak into a different service's variant. The variant's own binding fields then populate via spread.
   const canonical = PREDEFINED_CHANNELS[entry.canonicalKey];
 
+  if(!canonical || (canonical.canonicalKey !== undefined)) {
 
-  if(!canonical) {
-
-    return entry;
+    return undefined;
   }
 
-  // Start from the canonical (identity source), then overlay the variant's own fields. Since the variant is itself a plain Channel object (no nulls, no
-  // deltas), a direct spread gives the correct result: variant fields win, canonical fills in the rest. Defensive copy of tags breaks shared array references.
-  const resolved: Channel = { ...canonical, ...entry };
-
-  resolved.tags &&= resolved.tags.slice();
-
-  return resolved;
+  return { ...pickIdentity(canonical), ...entry };
 }
