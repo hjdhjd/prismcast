@@ -2,25 +2,18 @@
  *
  * logger.ts: Logging utilities with color-coded output for PrismCast.
  */
+import { format, styleText } from "node:util";
 import { getStreamId, resolveContextShowName } from "./streamContext.js";
 import { initDebugFilter, isAnyDebugEnabled, isCategoryEnabled } from "./debugFilter.js";
+import type { LogColor } from "./fileLogger.js";
 import type { LogEntry } from "./logEmitter.js";
 import { emitLogEntry } from "./logEmitter.js";
-import { format } from "node:util";
 import { formatTimestamp } from "./format.js";
 import { writeLogEntry } from "./fileLogger.js";
 
-/* Terminal color codes for log output formatting. Warnings appear in yellow and errors in red, making it easy to spot issues when scanning log output. The reset
- * code restores the default color after each colored message to prevent color bleeding into subsequent output.
+/* Terminal color choices for log output. Warnings appear in yellow and errors in red, making it easy to spot issues when scanning log output. Coloring is delegated
+ * to node:util.styleText so the SGR sequences are managed by the platform rather than hand-written escape codes.
  */
-
-const ANSI_COLORS = {
-
-  cyan: "\x1b[36m",
-  red: "\x1b[31m",
-  reset: "\x1b[0m",
-  yellow: "\x1b[33m"
-};
 
 /* The logger can operate in two modes: console mode (output to stdout/stderr with colors) or file mode (output to the configured log file). By default, file mode
  * is used. Console mode is enabled via the --console CLI flag for Docker deployments or interactive debugging.
@@ -104,13 +97,13 @@ function emitToSubscribers(level: LogEntry["level"], message: string, categoryTa
 /**
  * Core logging implementation shared by all log levels. Handles stream ID prefixing, SSE emission, and output routing.
  * @param level - The log level (error, warn, info, debug).
- * @param color - ANSI color code for console output (empty string for no color).
+ * @param color - Color name accepted by node:util.styleText, or null for the default terminal color.
  * @param message - The format string.
  * @param args - Format arguments.
  * @param explicitStreamId - Optional explicit stream ID (used by withStreamId helper).
  * @param categoryTag - Optional debug category tag for category-filtered debug messages.
  */
-function logWithLevel(level: LogEntry["level"], color: string, message: string, args: unknown[], explicitStreamId?: string, categoryTag?: string): void {
+function logWithLevel(level: LogEntry["level"], color: LogColor, message: string, args: unknown[], explicitStreamId?: string, categoryTag?: string): void {
 
   const streamId = explicitStreamId ?? getStreamId();
   const formatted = args.length > 0 ? format(message, ...args) : message;
@@ -165,14 +158,16 @@ function logWithLevel(level: LogEntry["level"], color: string, message: string, 
 
     if(color) {
 
-      consoleMethod("%s%s%s", color, logMessage, ANSI_COLORS.reset);
+      // styleText emits both the SGR opening code and the trailing reset, so callers do not need to manage the reset themselves. We disable validateStream because
+      // we want colors regardless of TTY detection - downstream consumers (Docker log drivers, file viewers with -R) handle the codes correctly.
+      consoleMethod(styleText(color, logMessage, { validateStream: false }));
     } else {
 
       consoleMethod(logMessage);
     }
   } else {
 
-    writeLogEntry(level, logMessage, color || undefined, categoryTag);
+    writeLogEntry(level, logMessage, color, categoryTag);
   }
 }
 
@@ -205,7 +200,7 @@ export const LOG = {
       return;
     }
 
-    logWithLevel("debug", ANSI_COLORS.cyan, message, args, undefined, category);
+    logWithLevel("debug", "cyan", message, args, undefined, category);
   },
 
   /**
@@ -218,7 +213,7 @@ export const LOG = {
    */
   error: function(message: string, ...args: unknown[]): void {
 
-    logWithLevel("error", ANSI_COLORS.red, message, args);
+    logWithLevel("error", "red", message, args);
   },
 
   /**
@@ -231,7 +226,7 @@ export const LOG = {
    */
   info: function(message: string, ...args: unknown[]): void {
 
-    logWithLevel("info", "", message, args);
+    logWithLevel("info", null, message, args);
   },
 
   /**
@@ -244,7 +239,7 @@ export const LOG = {
    */
   warn: function(message: string, ...args: unknown[]): void {
 
-    logWithLevel("warn", ANSI_COLORS.yellow, message, args);
+    logWithLevel("warn", "yellow", message, args);
   },
 
   /**
@@ -267,12 +262,12 @@ export const LOG = {
 
         if(isAnyDebugEnabled() && isCategoryEnabled(category)) {
 
-          logWithLevel("debug", ANSI_COLORS.cyan, message, args, streamId, category);
+          logWithLevel("debug", "cyan", message, args, streamId, category);
         }
       },
-      error: (message: string, ...args: unknown[]): void => { logWithLevel("error", ANSI_COLORS.red, message, args, streamId); },
-      info: (message: string, ...args: unknown[]): void => { logWithLevel("info", "", message, args, streamId); },
-      warn: (message: string, ...args: unknown[]): void => { logWithLevel("warn", ANSI_COLORS.yellow, message, args, streamId); }
+      error: (message: string, ...args: unknown[]): void => { logWithLevel("error", "red", message, args, streamId); },
+      info: (message: string, ...args: unknown[]): void => { logWithLevel("info", null, message, args, streamId); },
+      warn: (message: string, ...args: unknown[]): void => { logWithLevel("warn", "yellow", message, args, streamId); }
     };
   }
 };

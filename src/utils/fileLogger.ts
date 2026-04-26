@@ -7,8 +7,14 @@ import { formatTimestamp } from "./format.js";
 import fs from "node:fs";
 import { isAnyDebugEnabled } from "./debugFilter.js";
 import path from "node:path";
+import { styleText } from "node:util";
 
 const { promises: fsPromises } = fs;
+
+/* Color names accepted by node:util.styleText for log output. The logger uses cyan for debug, yellow for warnings, and red for errors. A null value indicates the
+ * default terminal color (used by info-level messages).
+ */
+export type LogColor = "cyan" | "red" | "yellow" | null;
 
 /* The file logger provides persistent logging to a configurable log file with automatic size-based trimming. When the log file exceeds the configured maximum
  * size, it is trimmed to half the maximum size, keeping only complete lines (the most recent logs are preserved). This approach prevents unbounded log growth while
@@ -19,8 +25,11 @@ const { promises: fsPromises } = fs;
  * 1. Asynchronous buffered writes - Logs are collected in a buffer and flushed periodically to avoid blocking the event loop during high-frequency logging.
  * 2. Periodic size checking - File size is checked every N writes rather than on each write to minimize syscall overhead.
  * 3. Atomic trim operations - Trimming writes to a temp file then renames, preventing data loss if the process crashes during trim.
- * 4. Timestamps - Uses the format yyyy/mm/dd HH:MM:ss.l. The same format is used by the console method wrappers in app.ts so file and console logs share
- *    identical timestamps.
+ * 4. Timestamps - Delegates to formatTimestamp() in utils/format.ts, which emits yyyy/mm/dd hh:mm:ss.mmm AM/PM. The same helper feeds the console method
+ *    wrappers in app.ts and the Morgan HTTP request logger, so file, console, and request logs share identical timestamps.
+ * 5. Terminal coloring - SGR escape codes are baked into the file output via styleText so that viewing the log with terminal commands (tail -f, less -R, cat)
+ *    shows the same color scheme as console output. styleText emits both the opening color code and the trailing reset in one call, with validateStream disabled
+ *    because the log file is not a TTY but we still want the codes preserved for downstream terminal viewers.
  */
 
 /* The file logger maintains state for the log file path, write buffer, and size tracking. State is initialized when initializeFileLogger() is called during server
@@ -64,12 +73,6 @@ const SIZE_CHECK_FREQUENCY = 100;
 
 // Duration in milliseconds to disable logging after a write error before retrying.
 const ERROR_RETRY_DELAY_MS = 60000;
-
-/* Terminal color codes for log file output. These match the colors used in console mode so that viewing the log file with terminal commands (tail -f, less -R, cat)
- * shows the same color scheme as console output.
- */
-
-const ANSI_RESET = "\x1b[0m";
 
 // Initialization.
 
@@ -128,10 +131,10 @@ export async function initializeFileLogger(logPath: string, maxSize: number): Pr
  * Writes a log entry to the buffer. Entries are flushed to disk periodically.
  * @param level - Log level ("info", "warn", "error", "debug").
  * @param message - The formatted log message.
- * @param color - Optional ANSI color code to apply to the level prefix and message.
+ * @param color - Color name accepted by node:util.styleText, or null for the default terminal color.
  * @param categoryTag - Optional debug category tag (e.g., "recovery:tab"). Appended to the level prefix as [DEBUG:category].
  */
-export function writeLogEntry(level: string, message: string, color?: string, categoryTag?: string): void {
+export function writeLogEntry(level: string, message: string, color: LogColor, categoryTag?: string): void {
 
   if(!isInitialized || !logFilePath) {
 
@@ -150,13 +153,13 @@ export function writeLogEntry(level: string, message: string, color?: string, ca
     isDisabled = false;
   }
 
-  // Format the log entry with timestamp and level. Apply ANSI color if provided.
+  // Format the log entry with timestamp and level. See the file's design block for the rationale behind baking SGR codes into the file output.
   const timestamp = formatTimestamp();
   const levelTag = categoryTag ? [ level.toUpperCase(), ":", categoryTag ].join("") : level.toUpperCase();
   const levelPrefix = (level === "info") ? "" : [ "[", levelTag, "] " ].join("");
-  const colorStart = color ?? "";
-  const colorEnd = color ? ANSI_RESET : "";
-  const entry = [ "[", timestamp, "] ", colorStart, levelPrefix, message, colorEnd, "\n" ].join("");
+  const body = levelPrefix + message;
+  const coloredBody = color ? styleText(color, body, { validateStream: false }) : body;
+  const entry = [ "[", timestamp, "] ", coloredBody, "\n" ].join("");
 
   // Add to buffer.
   writeBuffer.push(entry);

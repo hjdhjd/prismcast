@@ -37,8 +37,8 @@ export function createMorganStream(): StreamOptions {
         console.log([ "[", timestamp, "] ", trimmedMessage ].join(""));
       } else {
 
-        // File logging mode - route through the file logger which adds its own timestamp.
-        writeLogEntry("info", trimmedMessage);
+        // File logging mode - route through the file logger which adds its own timestamp. HTTP request logs use the default terminal color, matching info-level output.
+        writeLogEntry("info", trimmedMessage, null);
       }
     }
   };
