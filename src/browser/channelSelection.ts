@@ -2,8 +2,8 @@
  *
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
-import type { ChannelSelectorResult, ChannelStrategyEntry, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.js";
-import { LOG, delay, evaluateWithAbort } from "../utils/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.js";
+import { LOG, delay, evaluateWithAbort, formatError } from "../utils/index.js";
 import { getDomainConfig, registerProviderModuleProfile } from "../config/sites.js";
 import { CONFIG } from "../config/index.js";
 import type { Page } from "puppeteer-core";
@@ -134,6 +134,18 @@ export function getProviderBySlug(slug: string): ProviderModule | undefined {
 }
 
 /**
+ * Looks up a provider module by its channel-selection strategy name. Used by code paths that have a resolved profile (and therefore the strategy name) but not
+ * a slug. Returns undefined when no provider registers the given strategy or when the strategy is one of the generic non-provider strategies (thumbnailRow,
+ * tileClick, etc.).
+ * @param strategyName - The ChannelSelectionStrategy value (e.g., "foxGrid", "huluLive", "slingLive").
+ * @returns The matching provider module or undefined.
+ */
+export function getProviderByStrategy(strategyName: string): ProviderModule | undefined {
+
+  return providerModules.find((p) => p.strategyName === strategyName);
+}
+
+/**
  * Returns all registered provider module slugs. Used for validation in the checkboxList setting for precache providers.
  * @returns Array of provider slugs.
  */
@@ -225,20 +237,44 @@ export function getCachedProviderChannels(): { entries: { label: string; station
 export { logAvailableChannels, normalizeChannelName, resolveMatchSelector, scrollAndClick } from "./tuning/shared.js";
 
 /**
+ * Options that callers may supply to selectChannel(). All fields are optional; omitting them preserves the historical no-op call signature.
+ */
+export interface SelectChannelOptions {
+
+  /**
+   * Callback invoked when the resolution layer converts a category selector to a concrete per-user channel identifier. The framework calls this with the resolved
+   * call sign so the caller can persist the value to the user's channel store. After persistence, subsequent tunes start with the concrete selector and skip the
+   * resolution path entirely.
+   *
+   * Construction of this callback happens in the streaming setup layer where the active channel key and service tag are in scope. selectChannel deliberately does
+   * not know about the user channel store; it only invokes the callback the caller supplies. Errors thrown from the callback do not abort the tune - the resolved
+   * selector still flows into the strategy and verifier for the current attempt; only persistence to disk is lost.
+   *
+   * Null/undefined means "do not persist." The resolution still happens and the resolved selector is used for this tune; it just isn't saved. Useful for ad-hoc
+   * tunes (no associated channel record) and for testing.
+   */
+  persistResolution?: (resolvedSelector: string) => Promise<void>;
+}
+
+/**
  * Selects a channel from a multi-channel player UI using the strategy specified in the profile. This is the main entry point for channel selection, called by
- * tuneToChannel() after page navigation.
+ * initializePlayback() after page navigation.
  *
- * The function handles:
- * - Pre-selection scroll phase to force lazy-loaded content into the DOM (when scrollToBottom or scrollSelector+scrollTarget is set)
- * - Polling for channel element readiness before strategy dispatch (when profile.channelSelection.matchSelector is set)
- * - Strategy dispatch based on profile.channelSelection.strategy
- * - No-op for single-channel sites (strategy "none" or no channelSelector)
- * - Logging of selection attempts and results
+ * The function handles, in order:
+ * - No-op short-circuit for single-channel sites (strategy "none" or no channelSelector).
+ * - Category resolution: when the active provider declares categorySelectors and the profile's selector matches, resolveCategorySelector() is invoked to convert
+ *   the category to a concrete per-user identifier. The resolved value replaces profile.channelSelector for the rest of the call and is persisted via the
+ *   options.persistResolution callback if supplied. Resolution failures fall through with the original category selector - the strategy attempts a best-effort
+ *   match and the verifier fails open.
+ * - Pre-selection scroll phase to force lazy-loaded content into the DOM (when scrollToBottom or scrollSelector+scrollTarget is set).
+ * - Polling for channel element readiness before strategy dispatch (when profile.channelSelection.matchSelector is set).
+ * - Strategy dispatch based on profile.channelSelection.strategy.
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile containing channelSelection config and channelSelector slug.
+ * @param options - Optional callbacks for the resolution layer. Currently the only field is persistResolution.
  * @returns Result object with success status and optional failure reason.
  */
-export async function selectChannel(page: Page, profile: ResolvedSiteProfile): Promise<ChannelSelectorResult> {
+export async function selectChannel(page: Page, profile: ResolvedSiteProfile, options: SelectChannelOptions = {}): Promise<ChannelSelectorResult> {
 
   const { channelSelection } = profile;
 
@@ -246,6 +282,57 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
   if((channelSelection.strategy === "none") || !isChannelSelectionProfile(profile)) {
 
     return { success: true };
+  }
+
+  // The narrowed profile is used for the rest of this function. Resolution may produce a refined profile with a concrete channelSelector replacing the original
+  // category value; the strategy receives the refined version. Reassigning the parameter would lose the narrowing TypeScript inferred from isChannelSelectionProfile
+  // above, so we keep a separate local instead.
+  let activeProfile: ChannelSelectionProfile = profile;
+
+  // Category resolution. When the profile's selector is a category value declared by the active provider, we delegate to the provider's category resolver to
+  // convert the category to a concrete per-user identifier (e.g., "FOXD2C" -> "WFLD" for a Chicago-market user). The resolved value replaces the profile's selector
+  // for the remainder of this function so the strategy and verifier act on a concrete identifier. Persistence is fire-and-forget on the caller's persistResolution
+  // callback - failures there do not abort the tune; the resolved selector still flows through this attempt, only the disk write is lost. When resolution returns
+  // a CategoryResolutionFailure, the framework's response is governed by categories.requireResolution: strict providers abort the tune with the resolver-authored
+  // reason; permissive providers log the reason and let the strategy attempt a best-effort match while the verifier fails open for the wildcard case.
+  //
+  // The whole resolution feature is gated by a single optional sub-object on the provider, so one optional-chain access decides whether to engage the layer at
+  // all. The type system guarantees that if `categories` is present, every field needed for resolution is also present.
+  const provider = getProviderByStrategy(channelSelection.strategy);
+  const categoryResolution = provider?.categoryResolution;
+
+  if(categoryResolution?.selectors.includes(activeProfile.channelSelector)) {
+
+    const resolution = await categoryResolution.resolve(activeProfile.channelSelector, page);
+
+    if("callSign" in resolution) {
+
+      LOG.debug("tuning", "Resolved category selector \"%s\" to \"%s\" via %s.", activeProfile.channelSelector, resolution.callSign, provider?.label ?? "unknown");
+
+      activeProfile = { ...activeProfile, channelSelector: resolution.callSign };
+
+      if(options.persistResolution) {
+
+        const resolved = resolution.callSign;
+
+        options.persistResolution(resolved).catch((persistError: unknown) => {
+
+          LOG.debug("tuning", "Failed to persist resolved category selector to \"%s\": %s.", resolved, formatError(persistError));
+        });
+      }
+    } else if(categoryResolution.requireResolution) {
+
+      // Strict provider: a category selector that cannot be resolved is an unrecoverable error. The resolver authored the reason - it has the knowledge to write
+      // a complete, domain-shaped sentence including any selector- or provider-specific remediation guidance - so the framework relays it verbatim into the
+      // setup-failure path that marks channel health, terminates the pending stream, and surfaces the message to the user.
+      return { reason: resolution.reason, success: false };
+    } else {
+
+      // Permissive provider: log the resolver-authored reason at debug level and fall through. The strategy will attempt a best-effort match against the original
+      // category selector, and the verifier will fail open for the wildcard case if the captured manifest URL cannot be cross-checked against discovered category
+      // members.
+      LOG.debug("tuning", "%s", resolution.reason);
+    }
   }
 
   const entry = strategies[channelSelection.strategy];
@@ -360,7 +447,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
   // rendering, which can cause layout instability and click failures.
   if(channelSelection.matchSelector) {
 
-    const selector = resolveMatchSelector(profile);
+    const selector = resolveMatchSelector(activeProfile);
 
     LOG.debug("tuning:tileClick", "Polling for matchSelector: %s (timeout: %sms).", selector, CONFIG.playback.channelSelectorDelay);
 
@@ -403,8 +490,8 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile): P
     }
   }
 
-  // Dispatch to the appropriate strategy via the registry.
-  const result = await entry.execute(page, profile);
+  // Dispatch to the appropriate strategy via the registry. The strategy receives activeProfile so it sees the resolved category selector when applicable.
+  const result = await entry.execute(page, activeProfile);
 
   return result;
 }

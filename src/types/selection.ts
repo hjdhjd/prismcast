@@ -80,6 +80,13 @@ export interface DiscoveredChannel {
   // applicable.
   affiliate?: string;
 
+  // Category-selector membership. When the discovered channel belongs to a category that the provider declares in ProviderModule.categorySelectors, this field
+  // names which category selector value the channel belongs to (one of the strings in that array) - e.g., "FOXD2C" for every Fox-owned local affiliate Fox.com
+  // surfaces in the user's market. The field name intentionally mirrors ProviderModule.categorySelectors (singular vs plural) to make the relationship explicit:
+  // the catalog lives on the provider, the membership lives on each discovered channel. Consumed by the resolver (to find the user's specific instance of a
+  // category) and the verifier (to confirm a captured URL's call sign belongs to the expected category set). Omitted for entries that are not category members.
+  categorySelector?: string;
+
   // The value to use as channelSelector in channels/index.ts for tuning to this channel. Always present. For most channels this equals name. For Hulu affiliates
   // this is the network name. For YTTV affiliates this is the network name. For Fox FOXD2C entries this is the internal call sign.
   channelSelector: string;
@@ -164,6 +171,80 @@ export interface ProviderModule {
   // handler calls this with the channel selector and only marks provider auth if it returns true. Channel health is always recorded regardless. When omitted,
   // any successful tune proves auth. Used by Sling where free-tier (Freestream) channels succeed without a paid subscription.
   validateTune?: (channelSelector: string) => boolean;
+
+  // Optional failsafe called after manifest interception finalizes. Inspects the captured master manifest URL to confirm it belongs to the channel identified by
+  // channelSelector. Returns null when the URL is acceptable (either it matches the selector, or its shape is unrecognizable - we fail open in that case so a
+  // CDN-side path change does not break tuning). Returns a human-readable failure reason when the URL clearly belongs to a different channel - which is the
+  // signature of a click that did not switch the player. Currently implemented by foxProvider; other providers can opt in if they have similar risk.
+  verifyManifestForChannel?: (url: string, channelSelector: string) => Nullable<string>;
+
+  // Category resolution configuration. Present when this provider exposes selector values that represent a category of channels needing per-user resolution to a
+  // concrete identifier (e.g., Fox's "FOXD2C", which resolves to a per-market call sign like "WFLD"). Omitted for providers whose selectors are always concrete
+  // (Hulu, Sling, etc.). When present, the type system guarantees the entire feature is configured - selectors, resolver, and strict-resolution flag travel
+  // together; declaring the list without a resolver is structurally impossible. See CategoryResolutionConfig for the per-field semantics.
+  categoryResolution?: CategoryResolutionConfig;
+}
+
+/**
+ * Successful outcome of resolving a category selector. Carries the concrete per-user channel selector that the strategy will use for matching and the verifier
+ * will use for URL comparison (e.g., "WFLD" for a Chicago-market user resolving the "FOXD2C" category). The value is always a concrete identifier, never another
+ * category value - the resolver guarantees the resolution is terminal.
+ */
+export interface CategoryResolutionSuccess {
+
+  // The resolved per-user channel selector.
+  callSign: string;
+}
+
+/**
+ * Failed outcome of resolving a category selector. Carries a provider-authored, user-facing explanation that the framework relays verbatim - to debug logs on
+ * permissive paths, to user-facing errors on strict paths. The resolver writes a complete sentence including any selector- or provider-specific context the user
+ * needs to understand the failure and remediate it; the framework adds nothing.
+ */
+export interface CategoryResolutionFailure {
+
+  // Provider-authored, user-facing explanation of why the selector could not be resolved.
+  reason: string;
+}
+
+/**
+ * Outcome of resolving a category selector. Discriminated union of CategoryResolutionSuccess and CategoryResolutionFailure. Resolvers must always return one of
+ * these two shapes - there is no null. This forces every resolver to articulate its outcome explicitly, which guarantees diagnostic detail on every failure and
+ * removes ambiguity between "could not resolve" and "did not attempt to resolve."
+ *
+ * The union is structurally discriminated by the `callSign` and `reason` field names so consumers can use TypeScript's `"callSign" in result` narrowing without
+ * needing a tagged enum. A future evolution that needs additional outcomes (e.g., resolution to a list of candidates for user disambiguation) can add a new
+ * variant here as a new named interface without touching the existing two.
+ */
+export type CategoryResolution = CategoryResolutionSuccess | CategoryResolutionFailure;
+
+/**
+ * Cohesive configuration for a provider that exposes one or more category selectors - selector values that represent a category of channels needing per-user
+ * resolution to a concrete identifier rather than naming a specific channel directly. Grouping the three related fields into one sub-object makes the contract
+ * atomic in the type system: a provider either has the entire configuration or has none of it. There is no way to declare a category list without a resolver, no
+ * way to set a resolver without category values, and no way to set the strict-resolution flag without the rest of the machinery being present.
+ *
+ * Fox is the canonical example: its category selectors include "FOXD2C" (a title shared by every Fox-owned local affiliate Fox.com surfaces in the user's market),
+ * and its resolver converts that to a concrete per-market call sign like "WFLD" or "WPWRDT". Providers with no category structure (e.g., Hulu, Sling, where every
+ * selector names a specific channel) omit this configuration entirely.
+ */
+export interface CategoryResolutionConfig {
+
+  // Resolver that converts a category selector to a concrete per-user channel identifier. Receives the page so the resolver can read DOM state or run discovery
+  // in-line when needed. Returns CategoryResolutionSuccess on success or CategoryResolutionFailure with a provider-authored, user-facing reason on failure - the
+  // framework relays the reason verbatim. Resolvers must always return one of these shapes; throwing is reserved for internal contract violations (i.e., bugs)
+  // and propagates through the standard unexpected-error path.
+  resolve: (selector: string, page: Page) => Promise<CategoryResolution>;
+
+  // When true (strict), an unresolved category selector aborts the tune with the resolver-authored failure reason. When false or omitted (permissive, the
+  // default), the strategy proceeds with the original category selector and the verifier fails open for that case - appropriate for providers like Fox where the
+  // strategy can still find a reasonable container by best-effort match.
+  requireResolution?: boolean;
+
+  // The selector values that this provider treats as categories. Selectors in this list are routed through resolve() before strategy dispatch; selectors outside
+  // it bypass the resolution layer entirely. Read by the resolution layer in selectChannel() to decide whether to invoke the resolver, and by provider
+  // implementations as the single source of truth for which values are categories (so the verifier and other internal logic can consult the same list).
+  selectors: readonly string[];
 }
 
 /**

@@ -13,7 +13,7 @@ import type { Nullable } from "../types/index.js";
 import type { PlaylistSegmentEntry } from "../streaming/playlistBuilder.js";
 import { buildPlaylist } from "../streaming/playlistBuilder.js";
 import { getStream } from "../streaming/registry.js";
-import { removeManifestInterceptor } from "./intercept.js";
+import { removeManifestInterceptor } from "../browser/manifestInterceptor.js";
 import { resolveUrl } from "./probe.js";
 
 /* This module implements the native HLS proxy that replaces Chrome screen capture for viable streams. It polls the service's variant manifest at regular intervals,

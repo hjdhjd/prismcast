@@ -213,6 +213,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "timing:tune", description: "Tune waterfall: navigation, channel selection, video ready." },
   { category: "tuning:cox", description: "Cox Contour TV: channelmap API interception, SPA channel switching, Watch Now modal dismissal." },
   { category: "tuning:directv", description: "DirecTV Stream: interceptor tuning, cache, logo click fallback." },
+  { category: "tuning:fox", description: "Fox.com guide grid: console bridge, page errors, request failures, channel-switch diagnostics." },
   { category: "tuning:hbo", description: "HBO Max: tab URL discovery, channel rail, navigation." },
   { category: "tuning:hulu", description: "Hulu Live guide grid: binary search, cache, click retries." },
   { category: "tuning:sling", description: "Sling TV guide grid: binary search, cache, click retries." },

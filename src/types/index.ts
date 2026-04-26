@@ -9,8 +9,8 @@ export type { CanonicalChannel, Channel, ChannelDefinition, ChannelDelta, Channe
 export { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS } from "./channels.js";
 export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, ProfileCategory, ProfileResolutionResult, ProfilesValidationResult,
   ResolvedSiteProfile, ServicePack, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "./profiles.js";
-export type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule,
-  TuneResult, UiSize } from "./selection.js";
+export type { CategoryResolution, CategoryResolutionConfig, CategoryResolutionFailure, CategoryResolutionSuccess, ChannelSelectionProfile, ChannelSelectorResult,
+  ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule, TuneResult, UiSize } from "./selection.js";
 export type { ChannelSortField, Nullable, SortDirection } from "./shared.js";
 export type { CaptureCodec, HealthStatus, StreamListItem, StreamListResponse, StreamingMode, UrlValidationResult, VideoSelectorType,
   VideoState } from "./streaming.js";

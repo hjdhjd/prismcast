@@ -4,9 +4,9 @@
  */
 import { LOG, formatError, startTimer } from "../utils/index.js";
 import { clearProbeCache, probeManifest } from "./probe.js";
-import { installManifestInterceptor, removeManifestInterceptor } from "./intercept.js";
+import { installManifestInterceptor, removeManifestInterceptor } from "../browser/manifestInterceptor.js";
 import type { CaptureCodec } from "../streaming/codec.js";
-import type { ManifestInterceptionResult } from "./intercept.js";
+import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.js";
 import type { NativeProxy } from "./proxy.js";
 import type { Nullable } from "../types/index.js";
 import type { Page } from "puppeteer-core";

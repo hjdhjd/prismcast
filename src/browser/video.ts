@@ -1407,6 +1407,24 @@ async function dismissModalPoll(page: Page, selector: string): Promise<void> {
 }
 
 /**
+ * Optional behaviors for initializePlayback(). All fields are optional; an empty options object preserves the default tune flow.
+ */
+export interface InitializePlaybackOptions {
+
+  /**
+   * Forwarded to selectChannel() so the resolution layer can persist a resolved category selector (e.g., Fox "FOXD2C" -> "WFLD") back to the user's channel
+   * store. The streaming setup layer constructs this closure with the channel key and service tag in scope.
+   */
+  persistResolution?: (resolvedSelector: string) => Promise<void>;
+
+  /**
+   * When true, skip the channel selection phase entirely. Used when navigating directly to a cached watch URL that already targets the correct channel - only
+   * video detection, playback, and fullscreen setup are needed.
+   */
+  skipChannelSelection?: boolean;
+}
+
+/**
  * Performs all post-navigation channel initialization: selects the channel, finds the video context, clicks to play if needed, waits for video readiness, and
  * ensures playback with fullscreen styling. This function is separated from navigateToPage() so that retryOperation() in setup.ts can wrap only navigation with a
  * timeout, while channel selection and video setup run with their own internal time budgets (click retry loops, videoTimeout, etc.) without being killed by the
@@ -1417,13 +1435,13 @@ async function dismissModalPoll(page: Page, selector: string): Promise<void> {
  *
  * @param page - The Puppeteer page object.
  * @param profile - The site profile containing all behavior flags.
- * @param skipChannelSelection - When true, skip the channel selection phase entirely. Used when navigating directly to a cached watch URL that already targets
- *   the correct channel - only video detection, playback, and fullscreen setup are needed.
+ * @param options - Optional behaviors. See InitializePlaybackOptions.
  * @returns The video context (frame or page) for subsequent monitoring, and a directTune flag when the channel was tuned via API interception.
  */
-export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, skipChannelSelection = false): Promise<TuneResult> {
+export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, options: InitializePlaybackOptions = {}): Promise<TuneResult> {
 
   const elapsed = startTimer();
+  const { persistResolution, skipChannelSelection = false } = options;
 
   // Mute any existing video elements to suppress wrong-channel audio during tuning. On SPA-based providers (Hulu, Fox, USA Network, etc.), a default livestream
   // auto-plays when the page loads. Since the capture pipeline is already running, this audio bleeds into the stream until channel selection completes and
@@ -1437,7 +1455,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
   if(!skipChannelSelection) {
 
-    let channelResult = await selectChannel(page, profile);
+    let channelResult = await selectChannel(page, profile, { persistResolution });
 
     if(!channelResult.success) {
 
@@ -1448,7 +1466,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
         await dismissGuideOverlay(page);
 
-        channelResult = await selectChannel(page, profile);
+        channelResult = await selectChannel(page, profile, { persistResolution });
       }
 
       if(!channelResult.success) {
@@ -1546,7 +1564,7 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
 
       LOG.debug("timing:tune", "Direct URL navigation complete. (+%sms)", tuneElapsed());
 
-      const result = await initializePlayback(page, profile, true);
+      const result = await initializePlayback(page, profile, { skipChannelSelection: true });
 
       LOG.debug("timing:tune", "Tune complete (cached). Total: %sms.", tuneElapsed());
 

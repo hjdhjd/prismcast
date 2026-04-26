@@ -2,10 +2,10 @@
  *
  * fox.ts: Fox.com guide grid channel selection strategy.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
+import type { CategoryResolution, ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
+import { LOG, evaluateWithAbort, formatError } from "../../utils/index.js";
 import { CONFIG } from "../../config/index.js";
 import type { Page } from "puppeteer-core";
-import { evaluateWithAbort } from "../../utils/index.js";
 import { logAvailableChannels } from "./shared.js";
 
 // Raw channel info extracted from each GuideChannelContainer during discovery. The stationCode comes from the button title (e.g., "FOXD2C", "FNC"), the internalCode
@@ -22,12 +22,185 @@ interface FoxChannelInfo {
 // the discovery endpoint populates this cache. Cleared on browser disconnect via clearFoxCache().
 let cachedDiscoveredChannels: Nullable<DiscoveredChannel[]> = null;
 
+// Single source of truth for Fox's category-selector membership. Read by foxProvider.categorySelectors so the resolution layer in selectChannel() knows which
+// selectors to route through resolveFoxCategorySelector, and read by verifyFoxManifest so it applies wildcard semantics on the same set. Adding a new Fox category
+// selector means appending one entry here - the provider declaration and the verifier pick it up automatically.
+const FOX_CATEGORY_SELECTORS: readonly string[] = ["FOXD2C"];
+
 /**
  * Clears the Fox discovery cache. Called by clearChannelSelectionCaches() in the coordinator when the browser restarts.
  */
 function clearFoxCache(): void {
 
   cachedDiscoveredChannels = null;
+}
+
+/**
+ * Extracts the channel call sign from a fox.com master HLS manifest URL. The URL shape is
+ *
+ *     https://<host>/<auth-token>/<prefix>/<callsign>-<region>/index.m3u8?<query>
+ *
+ * where the second-to-last path segment encodes the call sign and region (e.g., "wfld-ue2", "fnc-ue2", "fbn-ue2"). The call sign is the part before the first
+ * dash. Returns null when the URL is not parseable, has fewer than two path segments, or does not match the expected shape - the caller treats null as "shape
+ * unrecognized" and fails open rather than rejecting a stream that might still be correct.
+ * @param url - The full master manifest URL.
+ * @returns The lowercase call sign, or null when not extractable.
+ */
+function extractCallSignFromManifestUrl(url: string): Nullable<string> {
+
+  let pathname: string;
+
+  try {
+
+    pathname = new URL(url).pathname;
+  } catch {
+
+    return null;
+  }
+
+  const segments = pathname.split("/").filter((segment) => segment.length > 0);
+
+  if(segments.length < 2) {
+
+    return null;
+  }
+
+  // Second-to-last segment is the channel directory; the file name is the last segment.
+  const channelSegment = segments[segments.length - 2] ?? "";
+  const dashIndex = channelSegment.indexOf("-");
+
+  if(dashIndex <= 0) {
+
+    return null;
+  }
+
+  return channelSegment.substring(0, dashIndex).toLowerCase();
+}
+
+/**
+ * Failsafe verifier called by streaming/hls.ts after the master manifest URL has been captured for a Fox tune. Confirms the URL belongs to the channel the user
+ * asked for. The selector is compared lowercase against the call sign extracted from the URL path - both cable channels (FBN, FNC, FS1, etc.) and local affiliate
+ * call signs (WFLD, WPWRDT, etc.) follow the same lowercase convention in Fox's CDN paths. Returns null on match. Returns null when the URL shape is unrecognized
+ * (fail-open: better to accept a stream we cannot inspect than to reject a working one when Fox restructures their CDN). Returns a failure reason when the URL
+ * decodes cleanly to a different call sign - that is the unmistakable signature of a click that did not switch the player, and we want the stream to fail loudly
+ * rather than silently deliver the wrong channel.
+ * @param url - The master manifest URL captured by the interceptor.
+ * @param channelSelector - The expected channel selector for this tune.
+ * @returns Null on match or unrecognizable URL. Failure reason string when the URL belongs to a different channel.
+ */
+function verifyFoxManifest(url: string, channelSelector: string): Nullable<string> {
+
+  const callSign = extractCallSignFromManifestUrl(url);
+
+  // Fail open on unparseable URLs - we cannot inspect the URL but the strategy and player gates upstream are working hard enough that we trust them when the
+  // failsafe cannot speak. Emit a debug line so a CDN-side restructure does not silently disable verification - the next tune attempt (with debug enabled) will
+  // surface the unrecognized shape, giving us a forward-warning signal rather than a missing-coverage gap that goes unnoticed until something else breaks.
+  if(!callSign) {
+
+    LOG.debug("tuning:fox", "Manifest URL shape unrecognized; verification fail-open. URL: %s.", url);
+
+    return null;
+  }
+
+  const expected = channelSelector.toLowerCase();
+
+  // Category selector path. The resolution layer in selectChannel() converts category selectors to concrete call signs before strategy dispatch, so this branch
+  // only fires when resolution failed (cache empty AND in-line discovery yielded nothing). With cache populated we accept any call sign discovery has tagged as a
+  // member of this category; we deliberately do not allow arbitrary call signs through, so a click that landed on a non-category station still surfaces a clear
+  // mismatch. With cache empty we fail open - the resolver tried, the strategy made a best-effort match, and without discovery data we cannot prove the click was
+  // wrong. Membership is determined by ch.categorySelector rather than ch.affiliate so the test stays explicit even as more categories are introduced over time.
+  if(FOX_CATEGORY_SELECTORS.includes(channelSelector)) {
+
+    if(!cachedDiscoveredChannels) {
+
+      LOG.debug("tuning:fox", "Category selector \"%s\" reached the verifier without discovery cache; failing open. URL call sign: %s.", channelSelector,
+        callSign);
+
+      return null;
+    }
+
+    const isKnownCategoryMember = cachedDiscoveredChannels.some((ch) => (ch.categorySelector === channelSelector) && (ch.affiliate?.toLowerCase() === callSign));
+
+    if(isKnownCategoryMember) {
+
+      return null;
+    }
+
+    return "Manifest URL is for channel \"" + callSign + "\", which is not a known member of the \"" + channelSelector + "\" category in this market.";
+  }
+
+  if(callSign === expected) {
+
+    return null;
+  }
+
+  return "Manifest URL is for channel \"" + callSign + "\", but \"" + channelSelector + "\" was requested.";
+}
+
+/**
+ * Resolves a Fox category selector to a concrete per-user call sign. Today the only category is "FOXD2C" - the title shared by every Fox-owned local affiliate
+ * Fox.com surfaces in the user's market. Resolution consults discovery: if discovery has cached results, we read the first FOXD2C-tagged entry (the entry whose
+ * affiliate field is populated, set only for FOXD2C entries during discovery). If the cache is empty, we run discovery in-line on the already-loaded page; the
+ * resolver is invoked from selectChannel() after navigation, so the guide grid is rendered or about to render. Returns null when no FOXD2C affiliate is present,
+ * which happens before the grid hydrates or when the user is not authenticated; the resolution layer treats null as "could not resolve" and falls through to a
+ * best-effort match with the original category selector.
+ *
+ * For users in markets with multiple FOXD2C affiliates (e.g., Chicago has both WFLD and WPWRDT - Fox-owned Fox and CW O&O), discovery returns them in DOM order
+ * because the in-line walk preserves it and the post-walk alphabetical sort is stable for name ties (every FOXD2C entry has name="FOXD2C"). The first entry is
+ * the primary Fox-owned Fox affiliate in nearly all markets. Users who want the secondary station can manually edit the per-channel override after the system
+ * persists the resolved selector - the override is the same delta a user-set selector produces.
+ * @param selector - The category selector value being resolved (one of the entries in foxProvider.categorySelectors).
+ * @param page - The active Fox.com page. Used to run discovery in-line when the cache is empty.
+ * @returns The resolution containing the user's call sign, or null when resolution cannot be performed.
+ */
+async function resolveFoxCategorySelector(selector: string, page: Page): Promise<CategoryResolution> {
+
+  // Defensive: only resolve selectors this provider actually declares as categories. selectChannel only invokes the resolver for selectors in categorySelectors,
+  // so reaching this branch indicates a bug - either selectChannel routed wrong, or a caller bypassed selectChannel and invoked the resolver directly with the
+  // wrong value. We throw rather than returning a CategoryResolutionFailure because the resolver's `reason` field is contracted as user-facing prose for
+  // operational failures; an internal contract violation is a developer-audience event and belongs in the exception channel where it propagates to the existing
+  // unexpected-error handling path (handleSetupFailure logs at error level with a stack trace).
+  if(!FOX_CATEGORY_SELECTORS.includes(selector)) {
+
+    throw new Error("resolveFoxCategorySelector invoked with non-category selector \"" + selector + "\". This is a contract violation - the resolver may only " +
+      "be called with values declared in FOX_CATEGORY_SELECTORS.");
+  }
+
+  // Prefer cached discovery (typically populated by precaching at startup or by an earlier discovery call). Fall through to in-line discovery on the loaded page
+  // when the cache is empty - the route handler's networkidle2 navigation has already occurred by the time selectChannel runs, so the guide grid is hydrated or
+  // very close to it. Wrap in try/catch so unexpected errors (page closed, navigation aborted, Puppeteer evaluate timeout) become an articulated CategoryResolution
+  // rather than a thrown exception escaping the resolver. The technical detail goes to the debug log under the "tuning:fox" category for developer diagnosis; the
+  // user-facing reason is clean prose with actionable remediation, written for the audience that will see it.
+  let channels: DiscoveredChannel[];
+
+  try {
+
+    channels = cachedDiscoveredChannels ?? (await discoverFoxChannels(page));
+  } catch(error) {
+
+    LOG.debug("tuning:fox", "discoverFoxChannels threw during category resolution for \"%s\": %s.", selector, formatError(error));
+
+    return { reason: "Fox channel discovery could not complete because the Fox.com page state is unstable. Retry the tune; if the problem persists, restart the " +
+      "browser session." };
+  }
+
+  if(channels.length === 0) {
+
+    return { reason: "Fox.com returned no channels for this session. Sign in to your TV provider on Fox One in the browser, then re-run channel discovery to " +
+      "confirm your lineup is reachable." };
+  }
+
+  // Iterate in discovery order and return the first member of the requested category. Discovery preserves DOM order for entries with equal names (the in-line walk
+  // is in DOM order and the post-walk sort is stable), so the first match is the primary station in the user's market for the category.
+  const member = channels.find((ch) => (ch.categorySelector === selector) && Boolean(ch.affiliate));
+
+  if(!member?.affiliate) {
+
+    return { reason: "Fox.com discovery returned no \"" + selector + "\" category members for this market. The user's account may not include a Fox-owned " +
+      "local affiliate, or the guide grid had not finished hydrating when discovery ran." };
+  }
+
+  return { callSign: member.affiliate };
 }
 
 /**
@@ -130,6 +303,29 @@ async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
     return { reason: "Station code " + stationCode + " not found in Fox.com guide grid.", success: false };
   }
 
+  // Wait for Bitmovin to finish booting its initial player session before clicking. The grid-render wait above proves React has mounted the channel logos, but
+  // Fox's React component only delegates the channel switch to Bitmovin once the player has a live, decoding session - which we observe externally as <video>
+  // having a blob: src AND readyState >= HAVE_CURRENT_DATA (2), i.e. the decoder has produced at least one frame. The combined gate avoids two failure modes:
+  // clicking before any src is assigned (player not wired up at all), and clicking during the brief window when Bitmovin is reassigning src as it transitions
+  // from a placeholder to the first MSE-backed source. Without this gate, the click registers in React (sidebar caption updates) but the player isn't ready to
+  // act on it, and the page sits on its page-default channel for the rest of the stream's lifetime. Best-effort: if the player never reaches this state we still
+  // attempt the click, and the user's symptom report will surface the failure.
+  try {
+
+    await page.waitForFunction(
+      (): boolean => {
+
+        const video = document.querySelector("video");
+
+        return Boolean(video && video.src.startsWith("blob:") && (video.readyState >= 2));
+      },
+      { timeout: CONFIG.streaming.videoTimeout }
+    );
+  } catch {
+
+    LOG.debug("tuning:fox", "Bitmovin player did not reach a decoding state within the timeout. Proceeding with click anyway.");
+  }
+
   // Click the channel logo button to tune the player. We use DOM element.click() rather than coordinate-based page.mouse.click() because the GuideProgramHero
   // section (sticky top-[64px], z-40) overlays the guide grid and intercepts all coordinate-based mouse events. DOM .click() dispatches the event directly to the
   // element, bypassing the sticky hero's hit-testing.
@@ -143,7 +339,7 @@ async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
 
     for(const container of Array.from(containers)) {
 
-      const logoButton = container.querySelector("[data-testid=\"GuideChannelLogo\"] button") as Nullable<HTMLElement>;
+      const logoButton = container.querySelector<HTMLElement>("[data-testid=\"GuideChannelLogo\"] button");
 
       if(!logoButton) {
 
@@ -162,7 +358,7 @@ async function foxGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
     // Fallback pass: match against impression ID prefix for call-sign-based selectors.
     for(const container of Array.from(containers)) {
 
-      const logoButton = container.querySelector("[data-testid=\"GuideChannelLogo\"] button") as Nullable<HTMLElement>;
+      const logoButton = container.querySelector<HTMLElement>("[data-testid=\"GuideChannelLogo\"] button");
 
       if(!logoButton) {
 
@@ -267,11 +463,14 @@ async function discoverFoxChannels(page: Page): Promise<DiscoveredChannel[]> {
 
     const entry: DiscoveredChannel = { channelSelector: ch.stationCode, name: ch.stationCode };
 
-    // FOXD2C entries are local affiliates distinguished by their internal call sign. Use the call sign as channelSelector for unambiguous
-    // tuning and tag the affiliate field so the relationship is visible in discovery output.
-    if(ch.stationCode === "FOXD2C") {
+    // Category-selector membership. When a station's title is one of the values declared in FOX_CATEGORY_SELECTORS, the entry is a member of that category and we
+    // tag it with the category name plus the affiliate (the per-market call sign) so the resolver and the verifier can both reason about category membership
+    // without needing to know which titles are categories. Use the affiliate as the entry's channelSelector so the discovery output is directly usable as a
+    // unique-per-container selector.
+    if(FOX_CATEGORY_SELECTORS.includes(ch.stationCode)) {
 
       entry.affiliate = ch.internalCode;
+      entry.categorySelector = ch.stationCode;
       entry.channelSelector = ch.internalCode;
     }
 
@@ -289,6 +488,15 @@ async function discoverFoxChannels(page: Page): Promise<DiscoveredChannel[]> {
 }
 
 export const foxProvider: ProviderModule = {
+
+  // Category resolution for Fox: "FOXD2C" is a category title shared across every Fox-owned local affiliate Fox.com surfaces in the user's market. Each user gets
+  // a per-market resolution (e.g., a Chicago user resolves "FOXD2C" to "WFLD"). The configuration is permissive (requireResolution omitted = false) so a failed
+  // resolution falls through to a best-effort strategy match plus wildcard verifier behavior rather than aborting the tune.
+  categoryResolution: {
+
+    resolve: resolveFoxCategorySelector,
+    selectors: FOX_CATEGORY_SELECTORS
+  },
 
   discoverChannels: discoverFoxChannels,
   getCachedChannels: (): Nullable<DiscoveredChannel[]> => cachedDiscoveredChannels,
@@ -310,5 +518,6 @@ export const foxProvider: ProviderModule = {
   profileName: "foxLive",
   slug: "foxone",
   strategy: { clearCache: clearFoxCache, execute: foxGridStrategy },
-  strategyName: "foxGrid"
+  strategyName: "foxGrid",
+  verifyManifestForChannel: verifyFoxManifest
 };

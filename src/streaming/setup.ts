@@ -9,11 +9,11 @@ import type { RecoveryMetrics, TabReplacementResult } from "./recovery.js";
 import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.js";
+import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.js";
 import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.js";
-import { invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.js";
 import { CONFIG } from "../config/index.js";
 import type { FFmpegProcess } from "../utils/index.js";
-import type { ManifestInterceptorHandle } from "../native/intercept.js";
+import type { ManifestInterceptorHandle } from "../browser/manifestInterceptor.js";
 import type { MonitorStreamInfo } from "./monitor.js";
 import type { Readable } from "node:stream";
 import { chromeFetch } from "../utils/index.js";
@@ -22,9 +22,10 @@ import { getCaptureMimeType } from "./codec.js";
 import { getDomainConfig } from "../config/sites.js";
 import { getEffectiveViewport } from "../config/presets.js";
 import { getServiceDisplayName } from "../config/services.js";
-import { installManifestInterceptor } from "../native/intercept.js";
+import { installManifestInterceptor } from "../browser/manifestInterceptor.js";
 import { isChannelSelectionProfile } from "../types/index.js";
 import { monitorPlaybackHealth } from "./monitor.js";
+import { mutateChannels } from "../config/userChannels.js";
 import { pipeline } from "node:stream/promises";
 import { resizeAndMinimizeWindow } from "../browser/cdp.js";
 
@@ -208,6 +209,11 @@ export interface CreatePageWithCaptureOptions {
 
   // Callback invoked on FFmpeg process errors (only used in ffmpeg capture mode).
   onFFmpegError?: (error: Error) => void;
+
+  // Forwarded to initializePlayback() and ultimately selectChannel(). Persists a category-selector resolution (e.g., Fox "FOXD2C" -> "WFLD") to the user's channel
+  // store so subsequent tunes start with the concrete selector. Construction belongs to the streaming setup or recovery layer where the channel key and service tag
+  // are in scope; createPageWithCapture forwards it without inspection. Omit for ad-hoc URL streams that have no stable channel record to update.
+  persistResolution?: (resolvedSelector: string) => Promise<void>;
 
   // The resolved site profile for video handling.
   profile: ResolvedSiteProfile;
@@ -512,7 +518,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     const stream = await Promise.race([ streamPromise, timeoutPromise ]);
 
     // Store the raw capture stream. This must be destroyed before closing the page.
-    rawCaptureStream = stream as unknown as Readable;
+    rawCaptureStream = stream;
 
     // For FFmpeg mode, spawn FFmpeg to transcode the Matroska stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC.
     if(useFFmpeg) {
@@ -658,7 +664,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       const PLAYBACK_INIT_TIMEOUT = 45000;
 
       const tuneResult = await Promise.race([
-        initializePlayback(page, profile, usedDirectUrl),
+        initializePlayback(page, profile, { persistResolution: options.persistResolution, skipChannelSelection: usedDirectUrl }),
         new Promise<never>((_, reject) => {
 
           setTimeout(() => {
@@ -757,6 +763,36 @@ async function resolveRedirectUrl(url: string): Promise<Nullable<string>> {
 }
 
 // Stream Setup.
+
+/**
+ * Constructs the persistResolution callback for a tune. When the resolution layer in selectChannel() converts a category selector to a concrete per-user call sign,
+ * this callback writes the result to the user's channel store as a per-service-variant override - the same delta shape produced by manual edits in the web UI. The
+ * variant key is the canonical channel key plus the service tag, so this closure must be built at the streaming setup layer where both are in scope. Returns a
+ * Promise that resolves once the write is committed; resolution-layer errors thrown from the underlying file store are surfaced for caller-side logging but do not
+ * abort the tune (selectChannel attaches a .catch on the returned promise).
+ *
+ * Idempotent at the storage layer: writing the same selector twice is a no-op (the file store deduplicates identical deltas via normalization). The closure does
+ * not pre-check whether the value differs - the underlying store handles that.
+ * @param canonicalKey - The canonical channel key (e.g., "fox").
+ * @param serviceTag - The active service tag (e.g., "foxone").
+ * @returns Async callback that persists the resolved selector to the channel store.
+ */
+function buildPersistResolutionCallback(canonicalKey: string, serviceTag: string): (resolvedSelector: string) => Promise<void> {
+
+  const variantKey = canonicalKey + "-" + serviceTag;
+
+  return async (resolvedSelector: string): Promise<void> => {
+
+    await mutateChannels((channels) => {
+
+      const existing = channels[variantKey] ?? {};
+
+      channels[variantKey] = { ...existing, channelSelector: resolvedSelector };
+    });
+
+    LOG.debug("tuning", "Persisted resolved selector \"%s\" to channel store as \"%s\".", resolvedSelector, variantKey);
+  };
+}
 
 /**
  * Sets up a stream: validates input, creates browser page, initializes capture, navigates to URL, and starts health monitoring.
@@ -899,10 +935,19 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       // before the interceptor timeout cleans it up.
       const skipInterception = channelName ? (getCachedEncryption(channelName) === "drm") : false;
 
+      // Build the persistResolution closure for the active channel. When the resolution layer in selectChannel() converts a category selector to a concrete call
+      // sign, this closure writes the result to the user's channel store as a per-service-variant override - the same shape produced when a user manually edits
+      // the selector via the web UI. Omitted for ad-hoc URL streams (no channel record to update).
+      const serviceTag = getDomainConfig(url)?.serviceTag;
+      const persistResolution = (channelName && serviceTag) ?
+        buildPersistResolutionCallback(channelName, serviceTag) :
+        undefined;
+
       captureResult = await createPageWithCapture({
 
         comment: metadataComment,
         onFFmpegError: onCircuitBreak,
+        persistResolution,
         profile,
         skipManifestInterception: skipInterception,
         streamId,
@@ -928,6 +973,62 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     }
 
     const { captureStream, context, directTune, ffmpegProcess, manifestInterception, page, rawCaptureStream } = captureResult;
+
+    // Tune verification. Finalize the manifest interceptor and confirm the captured master manifest URL belongs to the channel that was just tuned. This step
+    // makes setupStream "verified by construction" - every consumer of StreamSetupResult (HLS preroll, HLS blocking, MPEG-TS, native proxy, capture mode) receives
+    // a stream guaranteed to be on the requested channel without having to opt in or coordinate.
+    //
+    // The verifier is a per-provider hook on ProviderModule.verifyManifestForChannel. Today only foxProvider implements it (Fox's CDN URL encodes the channel call
+    // sign in the path). Verification is opportunistic: providers without a verifier and streams without a manifest interception (e.g., DRM-cached channels, tab
+    // replacements) skip the check. When a verifier returns a failure reason, we tear down the capture and throw StreamSetupError so the existing failure path
+    // marks channel health, terminates the pending registry entry, and surfaces a clear error - never silently delivers the wrong channel.
+    if(manifestInterception) {
+
+      manifestInterception.finalize(directTune);
+
+      const provider = getProviderByStrategy(profile.channelSelection.strategy);
+
+      if(provider?.verifyManifestForChannel && profile.channelSelector) {
+
+        const interception = await manifestInterception.promise;
+
+        if(interception) {
+
+          const verifyError = provider.verifyManifestForChannel(interception.masterManifestUrl, profile.channelSelector);
+
+          if(verifyError) {
+
+            // Verification failed. Tear down the capture before throwing so we do not leak the page, FFmpeg process, or browser-side capture session. We replicate
+            // the relevant cleanup steps inline because the cleanup() closure has not been constructed yet at this point in the function.
+            if(!rawCaptureStream.destroyed) {
+
+              rawCaptureStream.destroy();
+            }
+
+            if(ffmpegProcess) {
+
+              ffmpegProcess.kill();
+            }
+
+            unregisterManagedPage(page);
+
+            if(!page.isClosed()) {
+
+              page.close().catch((closeError: unknown) => {
+
+                LOG.debug("streaming:setup", "Page close error during verification failure cleanup: %s.", formatError(closeError));
+              });
+            }
+
+            await minimizeBrowserWindow();
+
+            const failureLabel = channel?.name ?? channelName ?? url;
+
+            throw new StreamSetupError("Tune verification failed: " + verifyError, 502, "Tune verification failed for " + failureLabel + ". " + verifyError);
+          }
+        }
+      }
+    }
 
     // Monitor stream info for status updates. The serviceTag enables service-specific monitoring flags (e.g., tinySegmentThreshold).
     const monitorStreamInfo: MonitorStreamInfo = {

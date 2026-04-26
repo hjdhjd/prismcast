@@ -1091,7 +1091,8 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
     return null;
   }
 
-  setup.manifestInterception.finalize(setup.directTune);
+  // The manifest interception was finalized and verified during setupStream(). By the time we get here, setup.manifestInterception.promise has already resolved
+  // (or is about to) with the URL setupStream verified. We just consume it.
 
   // Read the preroll segment count from the pending entry to pass to the native coordinator. This value is set at registration time (not in the timer callback),
   // so it's available regardless of whether the deferred preroll timer has fired. The proxy uses it for segment index offset. The base URL for composite playlists
