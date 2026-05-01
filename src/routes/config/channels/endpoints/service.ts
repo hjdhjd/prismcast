@@ -7,12 +7,12 @@
  */
 import type { Express, Request, Response } from "express";
 import { getAllServiceTags, getCanonicalKey, getChannelServiceLabel, getEnabledServices, getResolvedChannel, getServiceGroup, getServiceSelection,
-  getServiceTagForChannel, saveEnabledServices, setEnabledServices, setServiceSelection } from "../../../../config/services.js";
-import { getChannelListing, saveServiceSelections } from "../../../../config/userChannels.js";
+  getServiceTagForChannel, mutateEnabledServices, mutateServiceSelections, setServiceSelection } from "../../../../config/services.js";
 import { sendSuccess, sendValidationError } from "../http/envelope.js";
 import { LOG } from "../../../../utils/index.js";
 import type { Nullable } from "../../../../types/index.js";
 import { buildChannelTableState } from "../table.js";
+import { getChannelListing } from "../../../../config/userChannels.js";
 import { route } from "../http/handler.js";
 
 /**
@@ -63,9 +63,7 @@ export function registerServiceRoutes(app: Express): void {
       return;
     }
 
-    setServiceSelection(canonicalKey, serviceKey);
-
-    await saveServiceSelections();
+    await setServiceSelection(canonicalKey, serviceKey);
 
     const canonicalChannel = getResolvedChannel(canonicalKey);
     const variantChannel = getResolvedChannel(serviceKey);
@@ -105,9 +103,7 @@ export function registerServiceRoutes(app: Express): void {
       }
     }
 
-    setEnabledServices(tags);
-
-    await saveEnabledServices();
+    await mutateEnabledServices(tags);
 
     LOG.info("Service filter updated: %s.", tags.length > 0 ? tags.join(", ") : "all services");
 
@@ -133,6 +129,7 @@ export function registerServiceRoutes(app: Express): void {
     let affected = 0;
     const previousSelections: Record<string, Nullable<string>> = {};
     const selections: Record<string, { profile: Nullable<string>; variant: string }> = {};
+    const updates: Record<string, string> = {};
 
     const listing = getChannelListing();
 
@@ -154,7 +151,7 @@ export function registerServiceRoutes(app: Express): void {
 
         previousSelections[entry.key] = currentVariant ?? null;
 
-        setServiceSelection(entry.key, matchingVariant.key);
+        updates[entry.key] = matchingVariant.key;
         affected++;
 
         const resolvedChannel = getResolvedChannel(matchingVariant.key);
@@ -163,7 +160,12 @@ export function registerServiceRoutes(app: Express): void {
       }
     }
 
-    await saveServiceSelections();
+    // Single atomic write for all selection changes. Eliminates the prior set-then-save pattern that produced one disk write per call but visited module
+    // state N times before persisting.
+    if(Object.keys(updates).length > 0) {
+
+      await mutateServiceSelections(updates);
+    }
 
     LOG.info("Bulk assign to '%s': %d of %d channels affected.", serviceTag, affected, listing.length);
 
@@ -185,6 +187,7 @@ export function registerServiceRoutes(app: Express): void {
 
     let restored = 0;
     const selections: Record<string, { profile: Nullable<string>; variant: string }> = {};
+    const updates: Record<string, string> = {};
 
     for(const [ key, variantKey ] of Object.entries(previousSelections)) {
 
@@ -195,10 +198,11 @@ export function registerServiceRoutes(app: Express): void {
         continue;
       }
 
-      // A null value means the channel was using the default (canonical) selection. Restoring by setting the selection to the canonical key clears the override.
+      // A null value means the channel was using the default (canonical) selection. Restoring by setting the selection to the canonical key clears the
+      // override (mutateServiceSelections treats serviceKey === canonicalKey as delete).
       if(variantKey === null) {
 
-        setServiceSelection(key, key);
+        updates[key] = key;
       } else {
 
         // Validate the variant belongs to this channel's service group before restoring.
@@ -209,7 +213,7 @@ export function registerServiceRoutes(app: Express): void {
           continue;
         }
 
-        setServiceSelection(key, variantKey);
+        updates[key] = variantKey;
       }
 
       restored++;
@@ -221,7 +225,11 @@ export function registerServiceRoutes(app: Express): void {
       selections[key] = { profile: resolvedChannel?.profile ?? null, variant: effectiveKey };
     }
 
-    await saveServiceSelections();
+    // Single atomic write for all restored selections.
+    if(Object.keys(updates).length > 0) {
+
+      await mutateServiceSelections(updates);
+    }
 
     LOG.info("Bulk restore: %d channel(s) reverted.", restored);
 

@@ -6,7 +6,7 @@
  * assignments consistent with the vocabulary. All responses include the full tag UI bundle so the filter dropdown and tag manager modal stay in sync.
  */
 import type { Express, Request, Response } from "express";
-import { getActiveTagVocabulary, getPredefinedChannel, getTagRegistry, isInVocabulary, saveTagRegistry, setTagRegistry, tagsMatch,
+import { getActiveTagVocabulary, getPredefinedChannel, getTagRegistry, isInVocabulary, setTagRegistry, tagsMatch,
   transformChannelTags } from "../../../../config/userChannels.js";
 import { sendConflictError, sendError, sendNotFoundError, sendSuccess, sendValidationError } from "../http/envelope.js";
 import { LOG } from "../../../../utils/index.js";
@@ -96,9 +96,7 @@ export function registerTagRoutes(app: Express): void {
     }
 
     registry.tags.push(tag);
-    setTagRegistry(registry);
-
-    await saveTagRegistry();
+    await setTagRegistry(registry);
 
     LOG.info("Created tag: %s.", tag);
 
@@ -147,7 +145,7 @@ export function registerTagRoutes(app: Express): void {
       registry.tags = registry.tags.filter((t) => !tagsMatch(t, tag));
     }
 
-    setTagRegistry(registry);
+    await setTagRegistry(registry);
 
     // Cascade: strip the deleted tag from every channel that has it. transformChannelTags handles loading, delta normalization, and persistence.
     const { affectedKeys, error } = await transformChannelTags(
@@ -191,7 +189,7 @@ export function registerTagRoutes(app: Express): void {
     }
 
     registry.deletedTags = registry.deletedTags.filter((t) => !tagsMatch(t, tag));
-    setTagRegistry(registry);
+    await setTagRegistry(registry);
 
     // Resolve the canonical predefined tag name for the restored tag so channel data uses the predefined casing.
     const canonicalTag = PREDEFINED_TAGS.find((t) => tagsMatch(t, tag)) ?? tag;
@@ -285,7 +283,7 @@ export function registerTagRoutes(app: Express): void {
       registry.tags = registry.tags.map((t) => tagsMatch(t, oldTag) ? newTag : t);
     }
 
-    setTagRegistry(registry);
+    await setTagRegistry(registry);
 
     const { affectedKeys, error } = await transformChannelTags(
       (entry) => entry.channel.tags?.some((t) => tagsMatch(t, oldTag)) === true,

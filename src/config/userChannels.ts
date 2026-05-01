@@ -2,14 +2,14 @@
  *
  * userChannels.ts: User channel file management for PrismCast.
  */
-import type { Channel, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelSortField, ResolvedChannel, ResolvedChannelMap, SortDirection,
-  StoredChannel, StoredChannelMap } from "../types/index.js";
-import { FileStoreParseError, createFileStore } from "./persistence.js";
+import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "../types/index.js";
+import type { Channel, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelSortField, CustomizableField, ResolvedChannel, ResolvedChannelMap,
+  SortDirection, StoredChannel, StoredChannelMap } from "../types/index.js";
+import { FileStoreParseError, type Migration, type ValidationIssue, createFileStore } from "./persistence.js";
 import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.js";
 import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.js";
-import { buildServiceGroups, getAllServiceTags, getResolvedChannel, getServiceSelections, isChannelAvailableByService, isServiceVariant,
+import { buildServiceGroups, getAllServiceTags, getResolvedChannel, isChannelAvailableByService, isServiceVariant,
   resolveServiceKey, setEnabledServices, setServiceSelections } from "./services.js";
-import { CHANNEL_IDENTITY_KEYS } from "../types/index.js";
 import { CONFIG } from "./index.js";
 import fs from "node:fs";
 import { getChannelsFilePath } from "./paths.js";
@@ -62,7 +62,7 @@ export interface TagRegistry {
  */
 export interface UserChannelsLoadResult {
 
-  // The loaded user channels (empty object if file doesn't exist or parse error).
+  // The loaded user channels (empty object if file doesn't exist or parse error). Already migrated to the current schema version by the file store framework.
   channels: StoredChannelMap;
 
   // True if the file exists but contains invalid JSON.
@@ -70,9 +70,6 @@ export interface UserChannelsLoadResult {
 
   // Error message if parseError is true.
   parseErrorMessage?: string;
-
-  // Schema version as stored in the file. Files predating the field are reported as 1 so one-time migrations can detect them.
-  schemaVersion: number;
 
   // Service selections loaded from the file (canonical key -> service variant key).
   serviceSelections: Record<string, string>;
@@ -128,32 +125,37 @@ export function getChannelsParseErrorMessage(): string | undefined {
  * type so callers work directly with StoredChannelMap. The beforeWrite hook injects metadata from module state.
  */
 
-/* Current schema version for channels.json. Bumped when a one-shot migration needs to run against existing files. Versioning lets migrations be idempotent
- * across restarts - they execute once to upgrade a pre-v1.9.1 file and are skipped on every subsequent boot. Files without a version are treated as v1 and
- * picked up for migration; after migration, the version is stamped and persisted so the work does not repeat.
+/* Current schema version for channels.json. Migrations are declared in channelsMigrations below; the framework runs them in order from the file's stored
+ * version up to this constant, stamps the new version after each, and records the audit trail in migrationsApplied.
  *
  * Version history:
  *   1 - Pre-delta-model user variants. Identity fields stored redundantly on variants and stripped eagerly at load time.
- *   2 - Delta-model user variants. Variants store only fields that differ from their canonical. Migration converts legacy-shaped variants by stamping
- *       canonicalKey on entries whose identity fields match the canonical (shape-compatible with a legitimate variant) and skipping entries whose fields
- *       differ (user standalones that happened to share a hyphenated key with a predefined canonical).
+ *   2 - Delta-model user variants. Variants store only fields that differ from their canonical. The v1 -> v2 migration converts legacy-shaped variants by
+ *       stamping canonicalKey on entries whose identity fields match the canonical (shape-compatible with a legitimate variant) and skipping entries whose
+ *       fields differ (user standalones that happened to share a hyphenated key with a predefined canonical).
+ *   3 - Foxone-era service naming. The v2 -> v3 migration renames "foxcom" -> "foxone" in service selections and channel keys, and the special-case
+ *       "fox-site" -> "fox-foxone" rename for the FoxOne variant briefly mis-keyed in v1.8.0. Bumping this version also flushes parser-side legacy field
+ *       cleanups (provider -> service field, providerSelections -> serviceSelections key) to disk on the same write that lands the foxone rename.
  */
-const CURRENT_CHANNELS_SCHEMA_VERSION = 2;
+const CURRENT_CHANNELS_SCHEMA_VERSION = 3;
 
 /**
- * Compound data type for the channels file store. Carries channel entries alongside the metadata keys that are stored in the same JSON file.
+ * Compound data type for the channels file store. Carries channel entries alongside the metadata keys that are stored in the same JSON file. The framework
+ * uses schemaVersion and migrationsApplied for migration tracking; everything else is application-owned.
  */
 interface ChannelsFileData {
 
   channels: StoredChannelMap;
+  migrationsApplied: string[];
   schemaVersion: number;
   serviceSelections: Record<string, string>;
   tagRegistry: TagRegistry;
 }
 
 /**
- * Parses raw channels.json content into the compound data type. Extracts channel entries, service selections, and tag registry from the top-level JSON object.
- * Also applies the legacy "provider" to "service" field migration.
+ * Parses raw channels.json content into the compound data type. Extracts channel entries, service selections, tag registry, and framework metadata
+ * (schemaVersion, migrationsApplied) from the top-level JSON object. Also performs structural normalization for legacy field/key naming so consumer code only
+ * sees the current shape; the schemaVersion progression governs when the cleanup is persisted to disk via the migration framework.
  * @param raw - The raw JSON string from the file.
  * @returns The parsed compound data.
  */
@@ -163,22 +165,37 @@ function parseChannelsFile(raw: string): ChannelsFileData {
   const channels: StoredChannelMap = {};
   const serviceSelections: Record<string, string> = {};
   const tagRegistry: TagRegistry = { deletedTags: [], tags: [] };
+  const migrationsApplied: string[] = [];
 
-  // Files predating the schemaVersion field are treated as version 1. The one-time migration in initializeUserChannels upgrades them to the current version.
+  // Files predating the schemaVersion field are treated as version 1. The migration runner in the file store framework upgrades them to the current version.
   let schemaVersion = 1;
 
   for(const [ key, value ] of Object.entries(parsed)) {
 
     if(key === "schemaVersion") {
 
-      // Tolerate bad data by falling back to version 1 - any plausibly-legacy value is fine, since the migration is idempotent when no work is needed.
+      // Tolerate bad data by falling back to version 1 - any plausibly-legacy value is fine, since migrations are idempotent when no work is needed.
       if((typeof value === "number") && Number.isFinite(value) && (value >= 1)) {
 
         schemaVersion = Math.floor(value);
       }
+    } else if(key === "migrationsApplied") {
+
+      // Audit trail of migrations that have already been applied to this file. Strings only; non-string entries are dropped silently.
+      if(Array.isArray(value)) {
+
+        for(const entry of value) {
+
+          if(typeof entry === "string") {
+
+            migrationsApplied.push(entry);
+          }
+        }
+      }
     } else if((key === "serviceSelections") || (key === "providerSelections")) {
 
-      // Copy service selections if it's an object. Accepts the legacy "providerSelections" key for backward compatibility.
+      // Copy service selections if it is an object. Accepts the legacy "providerSelections" key for structural compatibility - the v2 -> v3 schema migration
+      // ensures the file is rewritten under the current key on next persist.
       if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
 
         for(const [ selKey, selValue ] of Object.entries(value)) {
@@ -208,32 +225,37 @@ function parseChannelsFile(raw: string): ChannelsFileData {
       }
     } else if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
 
-      // It's a channel definition or delta override.
+      // It is a channel definition or delta override.
       channels[key] = value;
     }
   }
 
-  // Silent migration: rename legacy "provider" field to "service" on channel entries. The old field was used as a display name override for the service selection
-  // dropdown. New installs always write "service". This migration ensures existing channels.json files are upgraded transparently.
+  // Structural normalization: rename legacy "provider" field to "service" on channel entries. The old field was used as a display name override for the
+  // service selection dropdown; new installs always write "service". The schema migration to v3 stamps the version after this normalization is in memory,
+  // ensuring the persist on next write drops the legacy field from disk.
   for(const channel of Object.values(channels)) {
 
     const legacy = channel as Record<string, unknown>;
 
-    if(("provider" in legacy) && !("service" in legacy)) {
+    if("provider" in legacy) {
 
-      legacy.service = legacy.provider;
+      if(!("service" in legacy)) {
+
+        legacy.service = legacy.provider;
+      }
+
+      Reflect.deleteProperty(legacy, "provider");
     }
-
-    Reflect.deleteProperty(legacy, "provider");
   }
 
-  return { channels, schemaVersion, serviceSelections, tagRegistry };
+  return { channels, migrationsApplied, schemaVersion, serviceSelections, tagRegistry };
 }
 
-/* Array-valued ChannelDelta fields whose comparison requires canonical case-insensitive ordering before JSON.stringify. Tags are the only such field today -
- * user-submitted tag arrays may arrive in arbitrary case/order and we want equality to ignore both when diffing against the base. The Set is intentionally
- * plural-shaped: if a future array-valued identity field needs the same treatment, adding it here is a one-line change. The `satisfies` constraint keeps this
- * list in sync with ChannelDelta's actual keys at compile time - renaming or removing a field forces this tuple to be updated.
+/* Array-valued ChannelDelta fields whose equality requires canonical case-insensitive ordering before JSON.stringify. The set declares which array fields are
+ * unordered-set semantics rather than order-significant lists; equality for these fields canonical-sorts both sides so authoring-order or case differences do
+ * not defeat the match. Tags are the only such field today, but the property-based framing is the architectural truth: any unordered-set array field belongs in
+ * this set. The `satisfies` constraint keeps the list in sync with ChannelDelta's actual keys at compile time - renaming or removing a field forces this tuple
+ * to be updated.
  */
 const CANONICAL_SORTED_ARRAY_FIELDS = new Set<keyof ChannelDelta>(
   ["tags"] as const satisfies readonly (keyof ChannelDelta)[]
@@ -376,6 +398,62 @@ function classifyEntry(key: string, stored: StoredChannel | undefined): EntryCla
 }
 
 /**
+ * Computes the field-name allowlist for a stored entry's expected shape. Stored entries fall into two structural shapes determined by classification:
+ *
+ *  - Canonical-shaped (kind = canonical or standalone): allowed fields are DELTA_ELIGIBLE_IDENTITY_KEYS ∪ DELTA_ELIGIBLE_BINDING_KEYS. The full delta surface.
+ *  - Variant-shaped (kind = variant): allowed fields are DELTA_ELIGIBLE_BINDING_KEYS plus the structural canonicalKey discriminator. Identity inherits from the
+ *    canonical and must not appear on variants per the architectural principle.
+ *
+ * Single source of truth for the shape rule. Used by filterToDeltaSurface (normalizer pre-strip) and by the customization accessor's per-pass walks. Routes
+ * shape determination through classifyEntry so any caller automatically picks up classifier improvements - no parallel logic for "is this a variant?".
+ * @param key - The channel key for classification.
+ * @param stored - The stored entry for classification.
+ * @returns The set of field names allowed for this entry's shape.
+ */
+function getAllowedFieldsForShape(key: string, stored: StoredChannel): ReadonlySet<string> {
+
+  const isVariant = classifyEntry(key, stored).kind === "variant";
+
+  if(isVariant) {
+
+    return new Set<string>([ ...DELTA_ELIGIBLE_BINDING_KEYS, "canonicalKey" ]);
+  }
+
+  return new Set<string>([ ...DELTA_ELIGIBLE_IDENTITY_KEYS, ...DELTA_ELIGIBLE_BINDING_KEYS ]);
+}
+
+/**
+ * Filters a stored entry to its expected delta surface, stripping any field outside the allowed shape. Returns both the filtered entry and the names of any
+ * fields that were stripped, so callers can surface diagnostics.
+ *
+ * The shape rule is enforced here at storage-write time (called from normalizeChannelDeltas) so legacy data with orphan fields - non-delta-eligible identity
+ * (pacificStationId), non-delta-eligible binding (DOM hooks), or identity-on-variants - cleans up automatically on next save. The `stripped` array lets the
+ * caller log a warning when cleanup happens, giving operators visibility into the violation.
+ * @param key - The channel key for shape classification.
+ * @param stored - The stored entry to filter.
+ * @returns The filtered entry plus the list of stripped field names.
+ */
+function filterToDeltaSurface(key: string, stored: StoredChannel): { filtered: StoredChannel; stripped: readonly string[] } {
+
+  const allowed = getAllowedFieldsForShape(key, stored);
+  const filtered: Record<string, unknown> = {};
+  const stripped: string[] = [];
+
+  for(const [ field, value ] of Object.entries(stored)) {
+
+    if(allowed.has(field)) {
+
+      filtered[field] = value;
+    } else {
+
+      stripped.push(field);
+    }
+  }
+
+  return { filtered, stripped };
+}
+
+/**
  * Resolves a variant by layering canonical identity, the predefined variant entry (service binding), and the user delta in order. The canonical contributes
  * ONLY identity (name, stationId, channelNumber, tags, etc.) - its service binding is for the canonical service and would be structurally wrong for any other
  * service variant. The variant's binding is supplied by the predefined variant entry (typically: discovery-driven channelSelector, service-specific URL,
@@ -398,14 +476,16 @@ function resolveVariant(canonical: ResolvedChannel, predefined: Channel | undefi
   // present - which is the documented invariant for any well-formed variant entry.
   let resolved = pickIdentity(canonical) as ResolvedChannel;
 
+  // Variant overlays apply binding fields only - identity stays from the canonical per the architectural principle that variants are pure tuning data. Both
+  // the predefined variant and the user's stored variant entry use the same binding-only overlay.
   if(predefined) {
 
-    resolved = overlayDelta(resolved, predefined);
+    resolved = overlayVariantBinding(resolved, predefined);
   }
 
   if(stored) {
 
-    resolved = overlayDelta(resolved, stored);
+    resolved = overlayVariantBinding(resolved, stored);
   }
 
   return resolved;
@@ -527,11 +607,25 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
 
   for(const [ key, stored ] of Object.entries(channels)) {
 
-    const classification = classifyEntry(key, stored);
+    // Step 1: enforce the expected stored shape via filterToDeltaSurface. Strips orphan fields (non-delta-eligible identity, non-delta-eligible binding,
+    // identity-on-variants) before any diff computation. When fields are stripped, log a warning so operators see when their data is being cleaned. The shape
+    // rule is the same regardless of classification kind - canonicalKey-discriminated through filterToDeltaSurface internally.
+    const { filtered: shapeFiltered, stripped } = filterToDeltaSurface(key, stored);
+
+    if(stripped.length > 0) {
+
+      const isVariant = classifyEntry(key, stored).kind === "variant";
+
+      LOG.warn("Channel '%s' (%s-shaped) carried fields outside the delta surface: [%s]. Stripped during normalization.",
+        key, isVariant ? "variant" : "canonical", stripped.join(", "));
+    }
+
+    // Step 2: classification-driven delta minimization against the appropriate base.
+    const classification = classifyEntry(key, shapeFiltered);
 
     if(classification.kind === "canonical") {
 
-      const normalized = normalizeEntryAgainstBase(stored, classification.predefined);
+      const normalized = normalizeEntryAgainstBase(shapeFiltered, classification.predefined);
 
       if(normalized) {
 
@@ -543,7 +637,7 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
 
     if(classification.kind === "standalone") {
 
-      filtered[key] = stripNulls(stored);
+      filtered[key] = stripNulls(shapeFiltered);
 
       continue;
     }
@@ -557,14 +651,16 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
 
     if(!canonical) {
 
-      filtered[key] = stripNulls(stored);
+      filtered[key] = stripNulls(shapeFiltered);
 
       continue;
     }
 
     const identityBase = pickIdentity(canonical) as ResolvedChannel;
-    const base = classification.predefined ? overlayDelta(identityBase, classification.predefined) : identityBase;
-    const normalized = normalizeEntryAgainstBase(stored, base);
+    // Mirror the resolveVariant chain: predefined-variant overlay applies binding fields only. The base computed here is what a stored variant entry should
+    // be diffed against - using a category-aware overlay keeps normalization symmetric with resolution.
+    const base = classification.predefined ? overlayVariantBinding(identityBase, classification.predefined) : identityBase;
+    const normalized = normalizeEntryAgainstBase(shapeFiltered, base);
 
     if(normalized) {
 
@@ -584,38 +680,178 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
  */
 function prepareChannelsForWrite(data: ChannelsFileData): unknown {
 
-  // Build the serializable output with metadata from module state. schemaVersion always reflects the running code's current version - any mutation that
-  // reaches this hook has passed through initialization, so stamping the current version here finalizes the upgrade.
-  const output: Record<string, unknown> = { schemaVersion: CURRENT_CHANNELS_SCHEMA_VERSION, ...data.channels };
-  const selections = getServiceSelections();
+  // Pure function of data. The framework guarantees data is the source of truth at write time - serviceSelections and tagRegistry come from data, never from
+  // module state. Module-state caches in services.ts and userChannels.ts are downstream of this writer (hydrated post-mutate from the same data), so reading
+  // them here would be a side channel that breaks correctness when the boot persist runs before module state is populated.
+  const output: Record<string, unknown> = { schemaVersion: data.schemaVersion, ...data.channels };
 
-  if(Object.keys(selections).length > 0) {
+  if(data.migrationsApplied.length > 0) {
 
-    output.serviceSelections = selections;
+    output.migrationsApplied = data.migrationsApplied;
   }
 
-  if((loadedTagRegistry.tags.length > 0) || (loadedTagRegistry.deletedTags.length > 0)) {
+  if(Object.keys(data.serviceSelections).length > 0) {
 
-    output.tagRegistry = loadedTagRegistry;
+    output.serviceSelections = data.serviceSelections;
+  }
+
+  if((data.tagRegistry.tags.length > 0) || (data.tagRegistry.deletedTags.length > 0)) {
+
+    output.tagRegistry = data.tagRegistry;
   }
 
   return output;
+}
+
+/* Declarative schema migrations. The file store framework runs these in order from the file's stored schemaVersion up to CURRENT_CHANNELS_SCHEMA_VERSION,
+ * stamping the new version and recording the description in migrationsApplied after each application. Apply functions mutate the data in place. Any new
+ * migration is a single entry below; the framework wires the rest.
+ */
+const channelsMigrations: Record<number, Migration<ChannelsFileData>> = {
+
+  2: {
+
+    apply: (data: ChannelsFileData): void => {
+
+      // Stamp canonicalKey on hyphenated user channel entries whose identity matches a predefined canonical (shape-compatible variants). Conservative
+      // classifier - entries whose identity diverges are treated as user standalones and left alone.
+      const stampedKeys = collectLegacyVariantStamps(data.channels);
+
+      for(const key of stampedKeys) {
+
+        const channel = data.channels[key];
+
+        if(!channel) {
+
+          continue;
+        }
+
+        const hyphenIndex = key.indexOf("-");
+
+        (channel as Channel).canonicalKey = key.substring(0, hyphenIndex);
+      }
+    },
+    description: "Stamp canonicalKey on legacy user channel variant entries"
+  },
+  3: {
+
+    apply: (data: ChannelsFileData): void => {
+
+      // Rename foxcom -> foxone in service selections, the special-case fox-site -> fox-foxone, and corresponding channel keys. Bumping to v3 also flushes
+      // any parser-side legacy field cleanups (provider -> service field, providerSelections -> serviceSelections key) since the migration runner triggers a
+      // persist that writes the cleaned shape via prepareChannelsForWrite.
+      for(const [ canonicalKey, selectedVariant ] of Object.entries(data.serviceSelections)) {
+
+        if(selectedVariant.endsWith("-foxcom")) {
+
+          data.serviceSelections[canonicalKey] = selectedVariant.slice(0, -6) + "foxone";
+        }
+
+        if((canonicalKey === "fox") && (selectedVariant === "fox-site")) {
+
+          data.serviceSelections[canonicalKey] = "fox-foxone";
+        }
+      }
+
+      for(const [ key, value ] of Object.entries(data.channels)) {
+
+        if(key.endsWith("-foxcom")) {
+
+          data.channels[key.slice(0, -6) + "foxone"] = value;
+          Reflect.deleteProperty(data.channels, key);
+        }
+      }
+    },
+    description: "Rename foxcom service references to foxone and persist legacy field name cleanup"
+  }
+};
+
+/**
+ * Pre-write integrity validator for the channels store. Detects two classes of suspicious mutations:
+ *
+ *   1. Identity-field loss: a stored channel's identity field went from set to undefined without canonical fallback (the H1 check). Catches code that
+ *      accidentally drops user-authored channel data while normalizing or transforming entries.
+ *   2. Metadata wholesale clear: a top-level metadata collection (serviceSelections, tagRegistry.tags, tagRegistry.deletedTags) went from non-empty to empty
+ *      in a single mutation. Catches code that accidentally drops the entire collection (the original bug class - if a future writer or fn regression empties
+ *      one of these, this guard logs loudly even though the change is structurally allowed).
+ *
+ * Both checks are log-only - issues surface as warnings without blocking the write. Promotion to throwing is a future hardening step once observation
+ * confirms no legitimate paths trip them. Genuine wholesale clears (operator clears all selections via UI) are the rare false-positive case here; in practice
+ * those happen via per-entry mutations rather than a single empty assignment.
+ * @param prev - Pre-mutation snapshot of the file data.
+ * @param next - Post-mutation, post-normalize file data.
+ * @returns Issues found, or empty array.
+ */
+function validateChannelsIntegrity(prev: ChannelsFileData, next: ChannelsFileData): ValidationIssue[] {
+
+  const issues: ValidationIssue[] = [];
+
+  for(const loss of detectIdentityFieldLoss(prev.channels, next.channels)) {
+
+    issues.push({
+
+      category: "identity-field-loss",
+      description: loss + " would be silently cleared without canonical fallback",
+      severity: "warning"
+    });
+  }
+
+  // Metadata wholesale-clear detection. Checks each top-level collection independently. Empty -> empty is a no-op (no issue); non-empty -> non-empty (any
+  // size) is a normal mutation; only non-empty -> empty is flagged.
+  if((Object.keys(prev.serviceSelections).length > 0) && (Object.keys(next.serviceSelections).length === 0)) {
+
+    issues.push({
+
+      category: "metadata-wholesale-clear",
+      description: "serviceSelections went from " + String(Object.keys(prev.serviceSelections).length) + " entries to empty in a single mutation",
+      severity: "warning"
+    });
+  }
+
+  if((prev.tagRegistry.tags.length > 0) && (next.tagRegistry.tags.length === 0)) {
+
+    issues.push({
+
+      category: "metadata-wholesale-clear",
+      description: "tagRegistry.tags went from " + String(prev.tagRegistry.tags.length) + " entries to empty in a single mutation",
+      severity: "warning"
+    });
+  }
+
+  if((prev.tagRegistry.deletedTags.length > 0) && (next.tagRegistry.deletedTags.length === 0)) {
+
+    issues.push({
+
+      category: "metadata-wholesale-clear",
+      description: "tagRegistry.deletedTags went from " + String(prev.tagRegistry.deletedTags.length) + " entries to empty in a single mutation",
+      severity: "warning"
+    });
+  }
+
+  return issues;
 }
 
 // Transactional store instance for channels.json.
 const channelsStore = createFileStore<ChannelsFileData>({
 
   beforeWrite: prepareChannelsForWrite,
+  currentSchemaVersion: CURRENT_CHANNELS_SCHEMA_VERSION,
   defaultValue: (): ChannelsFileData => ({
 
     channels: {},
+    migrationsApplied: [],
     schemaVersion: CURRENT_CHANNELS_SCHEMA_VERSION,
     serviceSelections: {},
     tagRegistry: { deletedTags: [], tags: [] }
   }),
+  getSchemaVersion: (data: ChannelsFileData): number => data.schemaVersion,
   label: "channels",
+  migrations: channelsMigrations,
   parse: parseChannelsFile,
-  path: getChannelsFilePath
+  path: getChannelsFilePath,
+  recordMigration: (data: ChannelsFileData, description: string): void => { data.migrationsApplied.push(description); },
+  setSchemaVersion: (data: ChannelsFileData, version: number): void => { data.schemaVersion = version; },
+  validate: validateChannelsIntegrity
 });
 
 /**
@@ -632,37 +868,125 @@ export async function readChannels(): Promise<UserChannelsLoadResult> {
     channels: result.data.channels,
     parseError: result.parseError,
     parseErrorMessage: result.parseErrorMessage,
-    schemaVersion: result.data.schemaVersion,
     serviceSelections: result.data.serviceSelections,
     tagRegistry: result.data.tagRegistry
   };
 }
 
 /**
- * Serialized read-modify-write operation on channels.json. The mutation function receives the current StoredChannelMap and modifies it in place. The store
- * handles atomicity, serialization, corruption guard, backup, and metadata injection. Delta normalization is applied after the caller's mutation and before the
- * file write so that the normalized result is available for the post-write cache update.
- * @param fn - Mutation function. Receives current channels. Modify in place; return value is ignored.
- * @throws FileStoreParseError if channels.json contains invalid JSON.
+ * Pre-write integrity guard. Compares the channels map captured immediately after parse against the channels map about to be written, and reports identity
+ * fields that have been silently dropped without a canonical fallback.
+ *
+ * Allowed transitions for any identity field:
+ *   - value -> same value  (no change)
+ *   - value -> different value (legitimate update)
+ *   - value -> null (explicit clear; null is the codebase-wide "clear this field" signal)
+ *   - field absent -> any value (new data)
+ *
+ * Forbidden transition (what this guard catches):
+ *   - value -> undefined / missing  WHERE the canonical (for variants and predefined-overrides) does not provide the same value
+ *
+ * Variant inheritance is honored: stripping a stored field that matches the canonical's value is delta minimization, not data loss, and is allowed. The check
+ * is currently log-only - it surfaces suspicious patterns for review without blocking legitimate code paths. After a release of observation it can be
+ * promoted to a hard failure (throw) once any false positives in legitimate code have been weeded out.
+ * @param before - The channels map captured immediately after parse, before the caller's mutation ran.
+ * @param after - The channels map after the caller's mutation and delta normalization.
+ * @returns A list of "key.field" strings naming each detected silent drop. Empty list means no losses.
  */
-export async function mutateChannels(fn: (channels: StoredChannelMap) => void): Promise<void> {
+function detectIdentityFieldLoss(before: StoredChannelMap, after: StoredChannelMap): string[] {
 
-  // Normalized channels captured from inside the mutation callback for post-write cache update. Normalization runs inside the callback (under the
-  // serialization lock) so the same normalized data is written to disk and assigned to the cache.
-  let normalizedChannels: StoredChannelMap = {};
+  const losses: string[] = [];
+
+  for(const [ key, beforeEntry ] of Object.entries(before)) {
+
+    const afterEntry = after[key];
+
+    // Whole entry removed - this is intentional deletion (deleteUserChannel etc.), not a silent drop.
+    if(!afterEntry) {
+
+      continue;
+    }
+
+    // Determine the canonical fallback. For variants the canonicalKey field points at it; for overrides of predefined channels the entry's key is the
+    // canonical. For standalones (no predefined match, no canonicalKey) there is no fallback - any drop is a loss.
+    const canonicalKey = (afterEntry as Channel).canonicalKey ?? key;
+    const canonical = PREDEFINED_CHANNELS[canonicalKey];
+
+    for(const field of CHANNEL_IDENTITY_KEYS) {
+
+      const beforeValue = (beforeEntry as Record<string, unknown>)[field];
+      const afterValue = (afterEntry as Record<string, unknown>)[field];
+
+      // Field was not set before - any post state is fine.
+      if((beforeValue === undefined) || (beforeValue === null)) {
+
+        continue;
+      }
+
+      // Field is still present after (with any value, including null which means explicit clear) - allowed.
+      if(afterValue !== undefined) {
+
+        continue;
+      }
+
+      // Field went value -> undefined. Check whether the canonical provides the same value, in which case this is variant inheritance / delta minimization
+      // and not data loss. Array-valued fields (notably tags) are compared via JSON.stringify since reference equality would always fail.
+      const canonicalValue = canonical ? (canonical as unknown as Record<string, unknown>)[field] : undefined;
+
+      if(canonicalValue !== undefined) {
+
+        const sameValue = (Array.isArray(beforeValue) && Array.isArray(canonicalValue)) ?
+          (JSON.stringify(beforeValue) === JSON.stringify(canonicalValue)) :
+          (beforeValue === canonicalValue);
+
+        if(sameValue) {
+
+          continue;
+        }
+      }
+
+      losses.push(key + "." + field);
+    }
+  }
+
+  return losses;
+}
+
+/**
+ * Serialized read-modify-write operation on channels.json. The mutation function receives the full file data (channels + serviceSelections + tagRegistry +
+ * framework metadata) and modifies it in place. The store handles atomicity, serialization, corruption guard, backup, schema migrations, and pre-write
+ * integrity validation. Delta normalization is applied to data.channels after the caller's mutation and before the file write so that the normalized result is
+ * available for the post-write cache hydration.
+ *
+ * After a successful write, the in-memory caches that mirror persisted state (loadedUserChannels, loadedTagRegistry, services.ts serviceSelections Map,
+ * runtime service groups) are hydrated from the just-written normalized data. This is the single direction caches flow: data is the source of truth, caches
+ * are derived. Callers must never poke caches directly and rely on a later save to pick up the change - all mutations go through this function.
+ * @param fn - Mutation function. Receives the full file data. Modify in place; return value is ignored.
+ * @throws FileStoreParseError if channels.json contains invalid JSON and the .bak rotation is also unparseable.
+ */
+export async function mutateChannels(fn: (data: ChannelsFileData) => void): Promise<void> {
+
+  // Captured from inside the callback so the post-write cache hydration sees the same normalized data the framework wrote to disk. Captured before the await
+  // returns, but the assignments below only run if the store mutation (including atomic file write) completed without error.
+  let writtenData: ChannelsFileData | undefined;
 
   await channelsStore.mutate((data: ChannelsFileData) => {
 
-    fn(data.channels);
+    fn(data);
 
-    // Normalize deltas before the beforeWrite hook serializes the data. This ensures the in-memory cache and the on-disk representation are identical.
-    // The beforeWrite hook (prepareChannelsForWrite) handles metadata injection only.
+    // Normalize channel deltas before the beforeWrite hook serializes the data. This ensures the in-memory cache and the on-disk representation are
+    // identical. Other top-level fields (serviceSelections, tagRegistry, framework metadata) are not delta-shaped and pass through unchanged.
     data.channels = normalizeChannelDeltas(data.channels);
-    normalizedChannels = data.channels;
+    writtenData = data;
   });
 
-  // Side effects after successful write. These only run if the store mutation (including atomic file write) completed without error.
-  loadedUserChannels = { ...normalizedChannels };
+  // Side effects after successful write. The store framework guarantees writtenData reflects exactly what was persisted.
+  if(writtenData) {
+
+    loadedUserChannels = { ...writtenData.channels };
+    loadedTagRegistry = writtenData.tagRegistry;
+    setServiceSelections(writtenData.serviceSelections);
+  }
 
   buildServiceGroups(getMergedChannelMap());
 
@@ -678,12 +1002,58 @@ export async function mutateChannels(fn: (channels: StoredChannelMap) => void): 
  */
 export async function deleteUserChannel(key: string): Promise<void> {
 
-  await mutateChannels((channels) => {
+  await mutateChannels((data) => {
 
-    Reflect.deleteProperty(channels, key);
+    Reflect.deleteProperty(data.channels, key);
   });
 
   LOG.info("User channel '%s' deleted.", key);
+}
+
+/**
+ * Removes all user override entries for a canonical channel - both the canonical-stored entry and the active service variant's stored entry (when one resolves
+ * via explicit selection or service-filter fallback). Returns the stored entry that was deleted (canonical takes precedence; falls back to the variant entry
+ * when canonical is absent) so callers can compute downstream effects like the playlist reload hint without duplicating the lookup.
+ *
+ * Callers wrap the call in mutateChannels() and pass the resulting StoredChannelMap. The helper operates on the map directly; it does not own the mutation
+ * lifecycle, allowing callers to combine the dual-delete with other operations (e.g., setting serviceSelections) in the same atomic write.
+ * @param channels - The stored channels map to mutate in place.
+ * @param canonicalKey - The canonical channel key. The active variant is resolved internally via resolveServiceKey.
+ * @returns The stored entry that existed pre-deletion (canonical first, variant fallback). Undefined when neither entry existed.
+ */
+export function clearChannelOverrides(channels: StoredChannelMap, canonicalKey: string): StoredChannel | undefined {
+
+  const resolvedKey = resolveServiceKey(canonicalKey);
+  const activeVariantKey = (resolvedKey === canonicalKey) ? undefined : resolvedKey;
+
+  // Canonical takes precedence for the returned entry because the canonical entry is the editing target; the variant entry is secondary cleanup. Falls back
+  // to the variant entry only when canonical is absent so callers still see a non-undefined result for variant-only revert cases.
+  const stored = channels[canonicalKey] ?? (activeVariantKey ? channels[activeVariantKey] : undefined);
+
+  Reflect.deleteProperty(channels, canonicalKey);
+
+  if(activeVariantKey) {
+
+    Reflect.deleteProperty(channels, activeVariantKey);
+  }
+
+  return stored;
+}
+
+/**
+ * Merges a partial ChannelDelta into a stored entry. Returns a new entry with the existing fields preserved and the delta's fields layered on top. Used by
+ * bulk operations that update one or more delta fields across many channels - the helper handles both the "no entry exists yet" case (uses an empty record)
+ * and the "entry exists with prior overrides" case (preserves them) without forcing each call site to write the spread + assign manually.
+ *
+ * The merged entry is returned in StoredChannel shape; callers assign it back to data.channels[key]. The post-mutation normalizer (filterToDeltaSurface +
+ * normalizeEntryAgainstBase) handles delta minimization and shape enforcement, so callers can pass arbitrary ChannelDelta keys without pre-validating them.
+ * @param stored - The existing stored entry, or undefined when the channel has no prior overrides.
+ * @param delta - Fields to assign onto the entry. Null values flow through unchanged for the delta-clear semantic.
+ * @returns The merged stored entry.
+ */
+export function applyChannelDelta(stored: StoredChannel | undefined, delta: ChannelDelta): StoredChannel {
+
+  return { ...stored, ...delta };
 }
 
 /**
@@ -804,82 +1174,25 @@ function collectLegacyVariantStamps(channels: StoredChannelMap): string[] {
  */
 export async function initializeUserChannels(): Promise<void> {
 
+  // Read the file. Schema migrations (canonicalKey stamping, foxcom -> foxone rename, etc.) run automatically inside the file store framework via the
+  // declarative channelsMigrations registry; ensureMigrated (called by the release boot coordinator at startup) persists any upgrades to disk before this
+  // function runs. The data returned here is always at CURRENT_CHANNELS_SCHEMA_VERSION.
   const result = await readChannels();
 
-  // Populate module-level state from the loaded file. Migrations below may call mutateChannels(), which updates loadedUserChannels via its side effects
-  // with normalized data. Setting the initial state here ensures the cache is populated even when no migrations run.
+  // Populate module-level state from the loaded (and already-migrated) data.
   loadedUserChannels = result.channels;
   loadedTagRegistry = result.tagRegistry;
   userChannelsParseError = result.parseError;
   userChannelsParseErrorMessage = result.parseErrorMessage;
 
-  // Silent migrations: rename stale service keys to their current equivalents. Migrates service selections (channels.json) and user channel variant keys.
-  // The service filter (config.json) is handled separately below since it's already loaded into CONFIG at this point.
-  let channelsMigrated = false;
-
-  for(const [ canonicalKey, selectedVariant ] of Object.entries(result.serviceSelections)) {
-
-    // foxcom -> foxone: original Fox service slug renamed.
-    if(selectedVariant.endsWith("-foxcom")) {
-
-      result.serviceSelections[canonicalKey] = selectedVariant.slice(0, -6) + "foxone";
-      channelsMigrated = true;
-    }
-
-    // fox-site -> fox-foxone: the "fox" channel's FoxOne variant was briefly keyed as "site" in v1.8.0 instead of "foxone" like every other Fox channel.
-    if((canonicalKey === "fox") && (selectedVariant === "fox-site")) {
-
-      result.serviceSelections[canonicalKey] = "fox-foxone";
-      channelsMigrated = true;
-    }
-  }
-
-  // Load service selections before saving so that mutateChannels (which persists both channels and selections via the beforeWrite hook) captures the
-  // migrated values from module state.
+  // Load service selections so prepareChannelsForWrite captures them on subsequent writes.
   setServiceSelections(result.serviceSelections);
 
-  if(channelsMigrated) {
+  // Inference for setupCompleted: existing users who already have services or channels configured should not see the first-run setup wizard. This is runtime
+  // inference (not a schema migration) because it depends on observed state from two stores (channels and config) and never changes the file shape - only
+  // sets a flag based on what exists. Lives here at the cross-store boundary where both stores are loaded.
+  const configuredServices = CONFIG.channels.enabledServices;
 
-    await mutateChannels((channels) => {
-
-      // Apply the foxcom -> foxone channel key migration. The mutation reads fresh from disk, so we replay the transform rather than passing the in-memory
-      // result. The fox-site selection migration is selection-only (no channel keys to rename).
-      for(const [ key, value ] of Object.entries(channels)) {
-
-        if(key.endsWith("-foxcom")) {
-
-          channels[key.slice(0, -6) + "foxone"] = value;
-          Reflect.deleteProperty(channels, key);
-        }
-      }
-    });
-
-    LOG.info("Migrated stale Fox service references.");
-  }
-
-  // Load enabled services from the configuration, validating that each tag is recognized. Invalid tags (e.g., from hand-edited config.json typos) are stripped
-  // silently after logging a warning. Validation must happen after buildServiceGroups() because getAllServiceTags() depends on the groups being built.
-  let configuredServices = CONFIG.channels.enabledServices;
-
-  // Silent migration: rename "foxcom" to "foxone" in the service filter if present. Persisted to config.json immediately so the stale value doesn't remain.
-  if(configuredServices.includes("foxcom")) {
-
-    configuredServices = configuredServices.map((tag) => (tag === "foxcom") ? "foxone" : tag);
-    CONFIG.channels.enabledServices = configuredServices;
-
-    await mutateConfig((config) => {
-
-      if(config.channels?.enabledServices) {
-
-        config.channels.enabledServices = configuredServices;
-      }
-    });
-
-    LOG.info("Migrated service filter from foxcom to foxone.");
-  }
-
-  // Upgrade inference for setupCompleted: existing users who already have services or channels configured should not see the first-run setup wizard. If the
-  // flag is not set in the config file and evidence of prior configuration exists, infer true and persist.
   if(!CONFIG.channels.setupCompleted) {
 
     const hasServices = configuredServices.length > 0;
@@ -897,61 +1210,24 @@ export async function initializeUserChannels(): Promise<void> {
     }
   }
 
-  // One-time migration (v1 -> v2): stamp canonicalKey on legacy-shaped variant entries. Pre-v1.9.1 files did not carry the canonicalKey field; variants were
-  // inferred at runtime from hyphenated keys whose prefix matched a predefined canonical. Stamping canonicalKey explicitly lets the variant resolver and
-  // normalizer treat these entries as deltas against their canonical.
-  //
-  // The classifier is deliberately conservative: a hyphenated key alone is not enough, because users have historically created standalone channels named
-  // like "abc-kabc" or "cbs-kcbs" (local affiliates named after their call signs). Stamping those as variants of ABC/CBS would let the normalizer strip
-  // identity fields that differ from the canonical - silently destroying user-entered channel numbers and station IDs. To avoid that, we only stamp entries
-  // whose identity fields are absent or already match the canonical's values. Any divergence means the user customized the channel and we leave it as a
-  // standalone.
-  //
-  // Gated on schemaVersion so this work runs exactly once per file. After the pass, mutateChannels persists schemaVersion via prepareChannelsForWrite so
-  // later boots skip the scan entirely.
-  if(result.schemaVersion < CURRENT_CHANNELS_SCHEMA_VERSION) {
-
-    const stampedKeys = collectLegacyVariantStamps(result.channels);
-
-    if(stampedKeys.length > 0) {
-
-      await mutateChannels((channels) => {
-
-        for(const key of stampedKeys) {
-
-          const channel = channels[key];
-
-
-          if(!channel) {
-
-            continue;
-          }
-
-          const hyphenIndex = key.indexOf("-");
-
-          (channel as Channel).canonicalKey = key.substring(0, hyphenIndex);
-        }
-      });
-
-      LOG.info("Stamped canonicalKey on %d legacy user channel variant entries.", stampedKeys.length);
-    } else if(Object.keys(result.channels).length > 0) {
-
-      // Nothing to stamp, but the file is stale - write once so schemaVersion is recorded and the scan is skipped on subsequent boots. An empty mutation is
-      // sufficient; normalizeChannelDeltas is a no-op on already-normalized data, and prepareChannelsForWrite injects the version.
-      await mutateChannels(() => { /* no-op: the write exists to stamp schemaVersion. */ });
-    }
-  }
-
   // Build the merged channels map and then build service groups.
   const mergedChannels = getMergedChannelMap();
 
-  // buildServiceGroups validates stored service selections against the rebuilt variant structure and reverts any that are stale. If any were cleaned, persist
-  // once so the cleanup survives restarts. At runtime (via mutateChannels), the in-memory cleanup is sufficient and persists naturally on the next write.
+  // buildServiceGroups validates stored service selections against the rebuilt variant structure and reverts any that are stale (cleared from module state).
+  // If any were cleaned, persist the same cleanup to disk so the file matches the runtime state and the cleanup survives restarts. mutateChannels operates on
+  // the freshly-read on-disk data; explicitly deleting the stale keys from data.serviceSelections is the data-side equivalent of the module-side cleanup
+  // buildServiceGroups already performed.
   const staleSelections = buildServiceGroups(mergedChannels);
 
   if(staleSelections.length > 0) {
 
-    await saveServiceSelections();
+    await mutateChannels((data) => {
+
+      for(const key of staleSelections) {
+
+        Reflect.deleteProperty(data.serviceSelections, key);
+      }
+    });
   }
 
   // Now that service groups are built, validate the configured service tags. Strip any unrecognized tags and warn.
@@ -997,11 +1273,17 @@ export async function initializeUserChannels(): Promise<void> {
   }
 }
 
-// User-editable subset of the service-binding fields. The full CHANNEL_BINDING_KEYS set includes DOM-level hooks (scrollSelector, dismissSelector, etc.) that
-// are not exposed in the edit form, so we maintain a distinct allowlist here. Adding a new user-editable binding field requires adding it to this list and to
-// the form UI; the partition itself (which fields are bindings vs identity) lives in CHANNEL_BINDING_KEYS in types/channels.ts.
-const USER_EDITABLE_BINDING_KEYS = [ "channelSelector", "profile", "url" ] as const;
-const DELTA_ALLOWED_FIELDS = new Set<string>([ ...CHANNEL_IDENTITY_KEYS, ...USER_EDITABLE_BINDING_KEYS ]);
+// Variant overlay allowlist used by the resolver (overlayVariantBinding). The resolver runs against catalog data merged with user storage, and predefined
+// variants legitimately carry DOM-hook binding fields (dismissSelector, scrollSelector, etc.) set by the catalog flattener. So the resolver's allowlist is the
+// FULL binding partition, NOT the delta-eligible subset - this is correct domain asymmetry: the resolver accepts catalog-domain data, while storage filtering
+// (filterToDeltaSurface) restricts to user-domain data. Identity fields encountered in a variant entry are silently dropped here - canonical's identity always
+// wins by construction.
+const VARIANT_OVERLAY_ALLOWED_FIELDS = new Set<string>(CHANNEL_BINDING_KEYS);
+
+// The runtime delta surface: every field that may legitimately appear in a stored ChannelDelta override. Derived from the partition arrays in types/channels.ts
+// so adding or removing a delta-eligible field in one place propagates everywhere. Typed as Set<string> for ergonomics at .has() call sites that take string-keyed
+// values from Object.entries iteration; the contents are statically-known CustomizableField values via the spread above.
+const DELTA_ALLOWED_FIELDS = new Set<string>([ ...DELTA_ELIGIBLE_IDENTITY_KEYS, ...DELTA_ELIGIBLE_BINDING_KEYS ]);
 
 /**
  * Extracts the identity-only subset of a channel. Used by resolveVariant and normalizeChannelDeltas to compute the inheritance base for variants: a variant
@@ -1084,6 +1366,59 @@ function overlayDelta(base: ResolvedChannel, stored: StoredChannel): ResolvedCha
 
   // Defensive copy of reference-type fields to break shared references with the base. The delta overlay above may have replaced tags entirely (if the stored
   // entry included a tags array), but when no delta is present for tags, the spread leaves the base's array reference on the resolved object.
+  resolved.tags &&= resolved.tags.slice();
+
+  return resolved;
+}
+
+/**
+ * Variant-binding-only overlay. Like overlayDelta but applies only fields in CHANNEL_BINDING_KEYS - identity fields on the variant entry are silently dropped
+ * during resolution. This enforces the architectural principle that variants are pure tuning data: how to reach the channel via this service. Identity
+ * (channelNumber, hdhrEnabled, tags, name, etc.) is a property of the channel as a whole and lives only on the canonical entry.
+ *
+ * Used by resolveVariant for both predefined-variant and stored-variant overlays. Legacy data, hand-edited files, or future migrations that put identity
+ * fields on variant entries are inert at resolution time - canonical's identity always wins. canonicalKey passes through as relationship metadata so the
+ * resolved variant can still be identified as a variant.
+ *
+ * Null/undefined semantics match overlayDelta: null clears the field; undefined inherits.
+ * @param base - The base channel (typically canonical identity from pickIdentity).
+ * @param stored - The variant entry (predefined or user-stored).
+ * @returns A new ResolvedChannel with binding fields applied from the variant.
+ */
+function overlayVariantBinding(base: ResolvedChannel, stored: StoredChannel): ResolvedChannel {
+
+  const resolved: ResolvedChannel = { ...base };
+
+  for(const [ field, value ] of Object.entries(stored)) {
+
+    // canonicalKey is relationship metadata, not a category-classified field; pass it through so the resolved entry retains its variant identification.
+    if(field === "canonicalKey") {
+
+      if(value !== undefined) {
+
+        (resolved as unknown as Record<string, unknown>)[field] = value;
+      }
+
+      continue;
+    }
+
+    // Variant overlay applies binding fields only. Identity fields encountered here (legacy data, hand edits, future migrations) are silently dropped per
+    // the architectural principle - the canonical's identity is the single source of truth for the channel.
+    if(!VARIANT_OVERLAY_ALLOWED_FIELDS.has(field)) {
+
+      continue;
+    }
+
+    if(value === null) {
+
+      Reflect.deleteProperty(resolved, field);
+    } else if(value !== undefined) {
+
+      (resolved as unknown as Record<string, unknown>)[field] = value;
+    }
+  }
+
+  // Defensive copy of reference-type fields to break shared references with the base.
   resolved.tags &&= resolved.tags.slice();
 
   return resolved;
@@ -1241,7 +1576,10 @@ export function getChannelListing(): ChannelListingEntry[] {
       continue;
     }
 
-    const channel: Channel = resolvedBase;
+    // Variants are filtered out at the top of this loop via isServiceVariant, so resolvedBase reaching here is structurally canonical-shaped (a CanonicalChannel
+    // from the catalog or a fully-resolved stored entry). Type as ResolvedChannel so the boundary rule in types/channels.ts holds: post-resolution values are
+    // typed ResolvedChannel.
+    const channel: ResolvedChannel = resolvedBase;
 
     // When a non-default service is selected, resolve the variant so consumers see the correct URL, channelSelector, stationId, and channelNumber. We skip
     // resolution when the resolved key matches the canonical key - the channel object is already correct and preserving its reference avoids a redundant lookup.
@@ -1304,6 +1642,197 @@ export function getAllChannels(): ResolvedChannelMap {
 }
 
 /**
+ * Returns a copy of the raw stored user channels map - the unresolved entries as they exist in channels.json. Used by the consistency probe to check
+ * cross-store invariants without applying delta resolution. Callers should not rely on the shape for anything beyond key/canonicalKey inspection.
+ * @returns Shallow copy of the loaded user channels.
+ */
+export function getStoredUserChannels(): StoredChannelMap {
+
+  return { ...loadedUserChannels };
+}
+
+/**
+ * Where a customized field's override lives in storage. "canonical" means the override is on the canonical channel's stored entry (typically identity fields
+ * like name, stationId, tags). "variant" means the override is on the active service variant's stored entry (typically binding fields like url,
+ * channelSelector). The form's save handler uses this to route changes to the correct entry; the per-field reset uses it to compute the resetValue from the
+ * matching predefined source.
+ */
+export type CustomizationStoredIn = "canonical" | "variant";
+
+/**
+ * Per-field customization metadata: where the override is stored and what the field would resolve to if the override were removed (the per-field "reset to
+ * default" value).
+ */
+export interface ChannelCustomizationEntry {
+
+  // The value the field would resolve to after removing the user's override. For canonical-stored fields, this is the predefined canonical's value (or
+  // undefined when the predefined entry has no value for the field). For variant-stored fields, this is the predefined variant's value, falling back to the
+  // predefined canonical's value when the variant doesn't carry the field (variant-inheritance fallback). Undefined means the field has no predefined value
+  // and reset would clear the input.
+  resetValue: unknown;
+
+  // Whether the override lives on the canonical or variant stored entry.
+  storedIn: CustomizationStoredIn;
+}
+
+/**
+ * Result of getChannelCustomizations. Carries the per-field provenance map and identifies the active service variant (if a non-canonical service is resolved
+ * via explicit selection or service-filter fallback). Callers - the channel edit form's render and save paths - rely on both pieces to display the right
+ * "modified from default" indicators and to route saves to the correct entry.
+ */
+export interface ChannelCustomizations {
+
+  // The variant key the canonical resolves to via the active service selection or service-filter fallback. Undefined when the canonical service is active
+  // (no selection, or selection points back at the canonical key, or canonical's service is enabled and no override is in play).
+  activeVariantKey: string | undefined;
+
+  // Field-name keyed customization map. Includes only fields that the user has explicitly stored (in either the canonical or the active-variant entry).
+  // When the same field appears in both stored entries, the variant entry wins because variant resolution overlays the variant's value last.
+  //
+  // Map keys are typed as CustomizableField so consumers cannot look up arbitrary strings - typos and unsupported fields are caught at compile time. Pass 2
+  // (variant-stored fields) applies the variant binding-only allowlist via getAllowedFieldsForShape so identity fields encountered on a variant entry never
+  // surface as customizations.
+  customizations: Map<CustomizableField, ChannelCustomizationEntry>;
+}
+
+/**
+ * Computes the per-field reset value for a customized field. The reset value is what the field would resolve to in the user's effective view if the override
+ * were removed - so it must apply the same effective-view rules consumers see (vocabulary-filtered tags, implicit-true hdhrEnabled). Field-specific dispatch
+ * routes through the existing single-source helpers (getChannelEffectiveTags, getEffectiveHdhrEnabled) so the rules live in exactly one place.
+ *
+ * For canonical-stored fields, the reset value reads from the predefined canonical. For variant-stored fields, it reads from the predefined variant first,
+ * falling back to the predefined canonical when the variant doesn't carry the field (variant-inheritance fallback). Returns undefined when no predefined
+ * source has the field - a reset would clear the input.
+ * @param field - The customized field name.
+ * @param storedIn - Where the override is stored (canonical or variant).
+ * @param predefinedCanonical - The predefined canonical entry (raw catalog read).
+ * @param predefinedVariant - The predefined variant entry, if applicable (raw catalog read).
+ * @returns The effective reset value, or undefined.
+ */
+function computeResetValue(field: string, storedIn: CustomizationStoredIn, predefinedCanonical: Channel | undefined, predefinedVariant: Channel | undefined): unknown {
+
+  // Pick the right predefined source for this storage location. Variant-stored fields prefer the predefined variant; fall back to canonical when the variant
+  // doesn't carry the field (e.g., a variant that inherits profile from canonical's URL-based detection).
+  let source: Channel | undefined;
+
+  if(storedIn === "canonical") {
+
+    source = predefinedCanonical;
+  } else if(predefinedVariant && ((predefinedVariant as unknown as Record<string, unknown>)[field] !== undefined)) {
+
+    source = predefinedVariant;
+  } else {
+
+    source = predefinedCanonical;
+  }
+
+  if(!source) {
+
+    return undefined;
+  }
+
+  // Delegate to the effective-view helpers for fields with view semantics. Channel structurally satisfies ResolvedChannel here (CanonicalChannel and
+  // VariantChannel both assign), so no cast is needed at the boundary.
+  switch(field) {
+
+    case "tags": {
+
+      return getChannelEffectiveTags(source);
+    }
+
+    case "hdhrEnabled": {
+
+      return getEffectiveHdhrEnabled(source);
+    }
+
+    default: {
+
+      return (source as unknown as Record<string, unknown>)[field];
+    }
+  }
+}
+
+/**
+ * Returns the customization provenance for the given canonical channel. The form layer uses this as the single source of truth for which fields are
+ * customized (instead of comparing resolved values to predefined values, which produces false positives when a non-canonical service is active and the
+ * resolved value legitimately differs from the canonical's predefined value).
+ *
+ * Resolution: for each field present in the user's canonical-stored entry, mark customized with storedIn="canonical" and resetValue from computeResetValue.
+ * For each field present in the active variant's stored entry, mark customized with storedIn="variant" and resetValue from computeResetValue (which handles
+ * variant-inheritance fallback). Variant entries override canonical entries on the same field name because variant resolution overlays the variant's value
+ * last.
+ *
+ * Pass 2 (variant-stored fields) restricts the walked field set via getAllowedFieldsForShape so identity fields encountered on a variant entry are silently
+ * dropped from the customization map, matching the resolver's behavior. The "canonicalKey" field is similarly excluded from both passes - structural metadata,
+ * not user-customizable.
+ * @param canonicalKey - The canonical channel key.
+ * @returns The customization provenance map and the active variant key (when applicable).
+ */
+export function getChannelCustomizations(canonicalKey: string): ChannelCustomizations {
+
+  const customizations = new Map<CustomizableField, ChannelCustomizationEntry>();
+  const predefinedCanonical = PREDEFINED_CHANNELS[canonicalKey];
+
+  // Determine the active variant via the service resolver. resolveServiceKey returns the canonical key itself when the canonical service is selected (no
+  // override is needed) and the variant key otherwise (whether via stored selection or filter fallback).
+  const resolvedKey = resolveServiceKey(canonicalKey);
+  const activeVariantKey = (resolvedKey === canonicalKey) ? undefined : resolvedKey;
+
+  // Walk a stored entry against its shape's allowed-field set, recording each customized field. The shape rule is computed via getAllowedFieldsForShape so
+  // canonical-stored entries see the full delta surface and variant-stored entries see only the variant binding-only subset (identity-on-variants is dropped).
+  const recordCustomizations = (storedKey: string, stored: StoredChannel, storedIn: CustomizationStoredIn, predefinedVariant: Channel | undefined): void => {
+
+    const allowed = getAllowedFieldsForShape(storedKey, stored);
+
+    for(const [ field, value ] of Object.entries(stored)) {
+
+      // canonicalKey is structural metadata, not a customization. Other non-allowed fields (e.g., orphan identity on a variant) are silently ignored here -
+      // the normalizer's filterToDeltaSurface will strip them on next save with a warning.
+      if(!allowed.has(field) || (field === "canonicalKey")) {
+
+        continue;
+      }
+
+      if(value === undefined) {
+
+        continue;
+      }
+
+      // Cast acknowledges that field is one of the allowed customizable names per the allowlist check above.
+      customizations.set(field as CustomizableField, {
+
+        resetValue: computeResetValue(field, storedIn, predefinedCanonical, predefinedVariant),
+        storedIn
+      });
+    }
+  };
+
+  // Pass 1: canonical-stored customizations. The canonical entry's allowed shape is the full delta surface (identity + binding delta-eligible).
+  const canonicalStored = loadedUserChannels[canonicalKey];
+
+  if(canonicalStored) {
+
+    recordCustomizations(canonicalKey, canonicalStored, "canonical", undefined);
+  }
+
+  // Pass 2: variant-stored customizations. The variant entry's allowed shape is binding-only. Variant entries override canonical entries on the same field
+  // name (last-overlay-wins matches resolution semantics).
+  if(activeVariantKey) {
+
+    const variantStored = loadedUserChannels[activeVariantKey];
+
+    if(variantStored) {
+
+      const predefinedVariant = PREDEFINED_CHANNELS[activeVariantKey];
+
+      recordCustomizations(activeVariantKey, variantStored, "variant", predefinedVariant);
+    }
+  }
+
+  return { activeVariantKey, customizations };
+}
+
+/**
  * Returns the raw stored channel data (without predefined channels). Entries may be full Channel definitions or ChannelDelta overrides.
  * @returns The stored channel map.
  */
@@ -1324,13 +1853,20 @@ export function getTagRegistry(): TagRegistry {
 }
 
 /**
- * Updates the tag registry state in memory. The caller's input is not mutated - both arrays are sorted non-destructively via sortTags and stored as fresh
- * copies. Call saveTagRegistry() after to persist the change.
+ * Persists a new tag registry state. Goes through mutateChannels so the file write, integrity validation, and post-mutate cache hydration all run uniformly -
+ * after the call returns, both disk and module-state cache reflect the new value. The caller's input arrays are not mutated; both are sorted non-destructively
+ * via sortTags so storage shares one canonical ordering.
  * @param registry - The new tag registry state.
+ * @throws FileStoreParseError if channels.json contains invalid JSON and the .bak rotation is also unparseable.
  */
-export function setTagRegistry(registry: TagRegistry): void {
+export async function setTagRegistry(registry: TagRegistry): Promise<void> {
 
-  loadedTagRegistry = { deletedTags: sortTags(registry.deletedTags), tags: sortTags(registry.tags) };
+  const sorted: TagRegistry = { deletedTags: sortTags(registry.deletedTags), tags: sortTags(registry.tags) };
+
+  await mutateChannels((data) => {
+
+    data.tagRegistry = sorted;
+  });
 }
 
 /**
@@ -1380,6 +1916,19 @@ export function getChannelEffectiveTags(channel: ResolvedChannel): string[] {
 }
 
 /**
+ * Returns whether a channel is effectively included in the HDHomeRun lineup. Codifies the sparse-storage convention that absent or true means included, and only
+ * an explicit `false` means excluded. This is the single source of truth for the convention - every site that needs to ask "is HDHR enabled for this channel?"
+ * routes through this helper rather than reaching for the inline `channel.hdhrEnabled !== false` pattern. Storage-shape inspections that ask a different
+ * question ("did the client send literal false?", "did the user override?") stay inline because they are not asking about effective state.
+ * @param channel - The channel to evaluate.
+ * @returns True when the channel is effectively included in the HDHR lineup.
+ */
+export function getEffectiveHdhrEnabled(channel: ResolvedChannel): boolean {
+
+  return channel.hdhrEnabled !== false;
+}
+
+/**
  * Case-insensitive tag comparison. Tags are freeform strings with preserved casing, but all matching throughout the system is case-insensitive. This function
  * is the single source of truth for that policy - all tag identity checks should use it rather than inline toLowerCase() calls.
  * @param a - The first tag.
@@ -1422,7 +1971,7 @@ export async function transformChannelTags(
 
   try {
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
       for(const entry of getChannelListing()) {
 
@@ -1445,10 +1994,10 @@ export async function transformChannelTags(
 
         // Set the new tags on the stored entry. Callers use null uniformly for "clear/empty" - the normalizer in mutateChannels() handles the storage
         // conventions: delta normalization for predefined channels (comparing against raw definitions), null-stripping for user channels.
-        const existing = channels[entry.key] ?? {};
+        const existing = data.channels[entry.key] ?? {};
 
         (existing as Record<string, unknown>).tags = (newTags.length > 0) ? newTags : null;
-        channels[entry.key] = existing;
+        data.channels[entry.key] = existing;
         affectedKeys.push(entry.key);
       }
     });
@@ -1465,34 +2014,62 @@ export async function transformChannelTags(
   return { affectedKeys };
 }
 
-/**
- * Returns the predefined channel definition for a key. For predefined variant entries (which carry only service-specific fields plus canonicalKey), resolves
- * the variant against its predefined canonical so callers receive the full view - canonical identity inherited onto the variant. This matches what the user
- * sees in the form/table and is the correct base for delta-from-predefined computations in crud.ts and channelForm.ts.
- * @param key - The channel key to look up.
- * @returns The predefined channel, or undefined if the key is not predefined.
+/* Dangling-canonical warning dedup for getPredefinedChannel. The catalog flattener should make a missing canonical structurally impossible, so observing one
+ * indicates real data corruption that an operator needs to know about. We log once per variant key for the lifetime of this process - a tight loop calling
+ * getPredefinedChannel on the corrupt entry would otherwise spam the log on every form render.
  */
-export function getPredefinedChannel(key: string): Channel | undefined {
+const warnedMissingCanonicalForPredefined = new Set<string>();
+
+/**
+ * Returns the predefined channel definition for a key as a fully-resolved view. For predefined variant entries (which carry only service-specific fields plus
+ * canonicalKey), overlays the variant's binding onto its predefined canonical so callers receive the resolved view - canonical identity inherited onto the
+ * variant. This matches what the user sees in the form/table and is the correct base for delta-from-predefined computations in crud.ts and channelForm.ts.
+ *
+ * Always returns ResolvedChannel-shaped data: identity fields (name, tags, hdhrEnabled, etc.) are always available, sourced from the canonical when this key is
+ * a variant. CanonicalChannel and VariantChannel both assign structurally to ResolvedChannel since the identity fields are optional in both types.
+ *
+ * Returns undefined when the key is not predefined OR when the catalog is internally inconsistent (variant references a missing canonical). The latter case is
+ * structurally impossible by construction of the flattener, so observing it is a real corruption indicator: the function logs once per offending key and
+ * returns undefined rather than fabricating a half-resolved view that would lie about its identity fields.
+ * @param key - The channel key to look up.
+ * @returns The resolved predefined channel, or undefined if the key is not predefined or the catalog is inconsistent.
+ */
+export function getPredefinedChannel(key: string): ResolvedChannel | undefined {
 
   const entry = PREDEFINED_CHANNELS[key];
-
 
   if(!entry) {
 
     return undefined;
   }
 
-  // Canonical entries have full identity already; return as-is.
+  // Canonical entries have full identity already; return as-is. CanonicalChannel assigns to ResolvedChannel structurally (canonicalKey: never is assignable to
+  // canonicalKey?: string).
   if(!entry.canonicalKey || (entry.canonicalKey === key)) {
 
     return entry;
   }
 
-  // Predefined variant: overlay its service fields onto the canonical so callers see the resolved view with canonical identity.
+  // Predefined variant: overlay its binding fields onto the canonical so callers see the resolved view with canonical identity. Variant overlays apply
+  // binding fields only per the architectural principle - matches resolveVariant's behavior so callers get the same view regardless of which path produced it.
   const canonical = PREDEFINED_CHANNELS[entry.canonicalKey];
 
+  if(!canonical) {
 
-  return canonical ? overlayDelta(canonical, entry) : entry;
+    // Catalog inconsistency. Log once per offending key, then return undefined. Returning a half-resolved view (the variant typed as ResolvedChannel) would
+    // lie about which identity fields are reachable and silently hide the corruption from consumers.
+    if(!warnedMissingCanonicalForPredefined.has(key)) {
+
+      warnedMissingCanonicalForPredefined.add(key);
+
+      LOG.warn("Catalog inconsistency: predefined variant '%s' references missing canonical '%s'. Returning undefined; the flattener should make this impossible.",
+        key, entry.canonicalKey);
+    }
+
+    return undefined;
+  }
+
+  return overlayVariantBinding(canonical, entry);
 }
 
 /**
@@ -1705,47 +2282,37 @@ export async function enablePredefinedChannels(keys: readonly string[]): Promise
 }
 
 /**
- * Partial update of channel-table display preferences (sort field, sort direction, visible columns). Only fields present in `prefs` are written to runtime
- * CONFIG; absent fields are left untouched. Does NOT persist to config.json - callers follow up with saveChannelDisplayPrefs() to write to disk, matching the
- * codebase's "set then save" convention for mutable shared state (setEnabledServices / saveEnabledServices, setServiceSelection / saveServiceSelections,
- * setTagRegistry / saveTagRegistry).
+ * Persists a partial update of channel-table display preferences (sort field, sort direction, visible columns) to config.json. Only fields present in `prefs`
+ * are written; absent fields are left untouched. The mutate fn copies the new values into data and the runtime CONFIG cache is updated post-write to match.
+ * Single-call replacement for the prior set-then-save pattern, consistent with mutateServiceSelections, mutateEnabledServices, and setTagRegistry.
  * @param prefs - Subset of display preferences to update.
+ * @throws FileStoreParseError if config.json contains invalid JSON and the .bak rotation is also unparseable.
  */
-export function setChannelDisplayPrefs(prefs: {
+export async function mutateChannelDisplayPrefs(prefs: {
   channelSortDirection?: SortDirection;
   channelSortField?: ChannelSortField;
   visibleColumns?: readonly string[];
-}): void {
+}): Promise<void> {
 
-  if(prefs.channelSortField !== undefined) {
+  const next = {
 
-    CONFIG.channels.channelSortField = prefs.channelSortField;
-  }
-
-  if(prefs.channelSortDirection !== undefined) {
-
-    CONFIG.channels.channelSortDirection = prefs.channelSortDirection;
-  }
-
-  if(prefs.visibleColumns !== undefined) {
-
-    CONFIG.channels.visibleColumns = [...prefs.visibleColumns];
-  }
-}
-
-/**
- * Persists the current display preferences (sort field, direction, visible columns) to config.json. Reads from runtime CONFIG (written by setChannelDisplayPrefs
- * or by config file load) and writes through mutateConfig. Filters-defaults handling in userConfig's store strips unchanged values on write.
- */
-export async function saveChannelDisplayPrefs(): Promise<void> {
+    channelSortDirection: prefs.channelSortDirection ?? CONFIG.channels.channelSortDirection,
+    channelSortField: prefs.channelSortField ?? CONFIG.channels.channelSortField,
+    visibleColumns: prefs.visibleColumns ? [...prefs.visibleColumns] : [...CONFIG.channels.visibleColumns]
+  };
 
   await mutateConfig((config) => {
 
     config.channels ??= {};
-    config.channels.channelSortDirection = CONFIG.channels.channelSortDirection;
-    config.channels.channelSortField = CONFIG.channels.channelSortField;
-    config.channels.visibleColumns = CONFIG.channels.visibleColumns;
+    config.channels.channelSortDirection = next.channelSortDirection;
+    config.channels.channelSortField = next.channelSortField;
+    config.channels.visibleColumns = next.visibleColumns;
   });
+
+  // Hydrate the runtime CONFIG cache from the values just written.
+  CONFIG.channels.channelSortDirection = next.channelSortDirection;
+  CONFIG.channels.channelSortField = next.channelSortField;
+  CONFIG.channels.visibleColumns = next.visibleColumns;
 }
 
 /**
@@ -2188,12 +2755,14 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
     channels[key] = channel;
   }
 
-  // Validate channelNumber uniqueness across all imported channels. We check after building the full map so that all duplicates are reported.
+  // Validate channelNumber uniqueness across all imported channels. We check after building the full map so that all duplicates are reported. channelNumber
+  // is identity (canonical-only by architectural principle); the validator above only constructs canonical-shaped entries, but the StoredChannelMap is typed
+  // as the union, so we narrow with an in-check before reading.
   const numberToKey = new Map<number, string>();
 
   for(const [ key, channel ] of Object.entries(channels)) {
 
-    if(channel.channelNumber === undefined) {
+    if(!("channelNumber" in channel) || (channel.channelNumber === undefined)) {
 
       continue;
     }
@@ -2210,32 +2779,6 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
   }
 
   return { channels, errors, valid: errors.length === 0 };
-}
-
-/* Service selections are stored in the channels.json file alongside user channels. When a selection changes, we save the entire file (channels + selections)
- * to persist the change.
- */
-
-/**
- * Saves the current service selections to the channels file. The no-op mutation triggers a write that picks up current serviceSelections from module state via the
- * beforeWrite hook.
- * @throws If the file cannot be written.
- */
-export async function saveServiceSelections(): Promise<void> {
-
-  // No-op mutation: the beforeWrite hook injects current serviceSelections from module state.
-  await mutateChannels(() => { /* metadata-only write */ });
-}
-
-/**
- * Saves the current tag registry to the channels file. The no-op mutation triggers a write that picks up the current tag registry from module state via the
- * beforeWrite hook.
- * @throws If the file cannot be written.
- */
-export async function saveTagRegistry(): Promise<void> {
-
-  // No-op mutation: the beforeWrite hook injects the current tag registry from module state.
-  await mutateChannels(() => { /* metadata-only write */ });
 }
 
 /**

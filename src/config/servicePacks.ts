@@ -219,9 +219,9 @@ export async function importServicePack(pack: ServicePack, options: { skipChanne
 
     try {
 
-      await mutateChannels((channels) => {
+      await mutateChannels((data) => {
 
-        Object.assign(channels, packChannels);
+        Object.assign(data.channels, packChannels);
       });
 
       channelsAdded = Object.keys(packChannels).length;

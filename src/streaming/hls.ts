@@ -3,9 +3,9 @@
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
 import { type CaptureCodec, getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.js";
-import type { Channel, Nullable, ResolvedSiteProfile } from "../types/index.js";
 import type { HLSState, StreamRegistryEntry } from "./registry.js";
 import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.js";
+import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.js";
 import type { Request, Response } from "express";
 import { StreamSetupError, type StreamSetupResult, createPageWithCapture, generateStreamId, setupStream } from "./setup.js";
 import { createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.js";
@@ -65,7 +65,7 @@ const PREROLL_DELAY_MS = 9_000;
  * either a plain string (for text error responses) or an object (for JSON error responses), so callers can use typeof to pick res.send() vs res.json().
  */
 export type ValidateChannelResult =
-  { channel: Channel; resolvedKey: string; valid: true } |
+  { channel: ResolvedChannel; resolvedKey: string; valid: true } |
   { body: Record<string, string> | string; statusCode: number; valid: false };
 
 // Login mode error body used by both validateChannel() and handlePlayStream() to ensure consistent response format.
@@ -802,8 +802,8 @@ function createTabReplacementHandler(
  */
 interface InitializeStreamOptions {
 
-  // Channel definition. Undefined for ad-hoc URL streams.
-  channel?: Channel;
+  // Resolved channel definition (with canonical-to-variant identity inheritance applied). Undefined for ad-hoc URL streams.
+  channel?: ResolvedChannel;
 
   // Channel selector for multi-channel sites (e.g., "E-_East" for usanetwork.com/live). Only used for ad-hoc streams; predefined channels get their selector from
   // the channel definition via getProfileForChannel.
@@ -897,7 +897,7 @@ interface PendingStreamResult {
  * @param codec - The preroll codec variant to use for this stream.
  * @returns The allocated stream IDs.
  */
-function registerPendingStream(channelName: string, channel: Channel, clientAddress: Nullable<string>, req: Request, codec: CaptureCodec): PendingStreamResult {
+function registerPendingStream(channelName: string, channel: ResolvedChannel, clientAddress: Nullable<string>, req: Request, codec: CaptureCodec): PendingStreamResult {
 
   const numericStreamId = getNextStreamId();
   const streamIdStr = generateStreamId(channelName, channel.url);
@@ -954,8 +954,8 @@ function registerPendingStream(channelName: string, channel: Channel, clientAddr
  */
 interface CreatePendingEntryOptions {
 
-  // Channel definition. Undefined for ad-hoc URL streams.
-  channel?: Channel;
+  // Resolved channel definition (with canonical-to-variant identity inheritance applied). Undefined for ad-hoc URL streams.
+  channel?: ResolvedChannel;
 
   // Key for channelToStreamId registration.
   channelName: string;
@@ -1034,7 +1034,7 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
  * @param error - The error that caused the failure.
  * @param logError - Whether to log the error. False when the caller will re-throw (blocking path), true when fire-and-forget (non-blocking path).
  */
-function handleSetupFailure(numericStreamId: number, channelName: string, channel: Channel | undefined, error: unknown, logError = true): void {
+function handleSetupFailure(numericStreamId: number, channelName: string, channel: ResolvedChannel | undefined, error: unknown, logError = true): void {
 
   // Mark channel health as failed. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity.
   if(channel) {
@@ -1488,7 +1488,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
  * @param channel - The resolved channel definition (with inheritance applied for service variants).
  * @returns The stream ID if successful, null if an error occurred (error response already sent).
  */
-async function startHLSStream(channelName: string, url: string, req: Request, res: Response, channel?: Channel): Promise<Nullable<number>> {
+async function startHLSStream(channelName: string, url: string, req: Request, res: Response, channel?: ResolvedChannel): Promise<Nullable<number>> {
 
   const profileOverride = req.query.profile as string | undefined;
   const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;

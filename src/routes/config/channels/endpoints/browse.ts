@@ -8,9 +8,9 @@
  */
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.js";
-import { type UserChannel, disablePredefinedChannels, enablePredefinedChannels, isPredefinedChannel, mutateChannels, saveServiceSelections,
+import { type UserChannel, disablePredefinedChannels, enablePredefinedChannels, isPredefinedChannel, mutateChannels,
   validateChannelUrl } from "../../../../config/userChannels.js";
-import { getServiceTagForChannel, resolveServiceKey, setServiceSelection } from "../../../../config/services.js";
+import { getServiceTagForChannel, resolveServiceKey } from "../../../../config/services.js";
 import { sendSuccess, sendValidationError } from "../http/envelope.js";
 import { PREDEFINED_CHANNELS } from "../../../../channels/index.js";
 import { buildServiceFilterWarning } from "../http/serviceWarning.js";
@@ -28,15 +28,16 @@ interface ModifyEntry {
 }
 
 /**
- * Builds a UserChannel object from a modify-request entry. When canonicalKey is set, the result is a service variant stored as a delta against its canonical -
- * identity fields that the user explicitly provides (e.g., stationId for a local affiliate) are preserved so the variant carries its own identity; the delta
- * normalizer later strips any field whose value matches the canonical. Standalone channels (no canonicalKey) need the full identity on the entry itself
- * because there is no canonical to inherit from.
+ * Builds a UserChannel object from a modify-request entry. When canonicalKey is set, the result is a service variant carrying only the binding fields needed
+ * to tune the channel via that service (canonicalKey, url, channelSelector). Identity comes from the canonical at resolution time per the architectural
+ * principle - variants are pure tuning data. When canonicalKey is absent, the result is a standalone canonical channel that owns its own identity (name,
+ * stationId, etc.).
  *
- * Submitting a stationId for a variant is how a user persists per-variant identity - the canonical may lack a stationId (e.g., the generic "abc" network has
- * no single station ID; only its local affiliates do), and in that case the variant's value is the only source of identity for EPG matching and HDHR.
+ * Per-affiliate identity (e.g., a local Chicago Fox affiliate that needs its own station ID) is modeled as a separate canonical channel rather than as a
+ * variant carrying override identity. The browse modal's "add" action (no canonicalKey) is the path for that case; "switch"/"enable" actions create variants
+ * which inherit identity from their canonical.
  * @param entry - The raw entry fields as submitted by the browse modal.
- * @param name - The sanitized display name.
+ * @param name - The sanitized display name (used for standalone canonicals only; variants inherit the name from the canonical).
  * @param url - The sanitized URL.
  * @param selector - The sanitized channelSelector.
  * @param canonicalKey - The canonical channel key when this is a service variant, otherwise undefined.
@@ -44,16 +45,28 @@ interface ModifyEntry {
  */
 function buildUserChannel(entry: ModifyEntry, name: string, url: string, selector: string, canonicalKey?: string): UserChannel {
 
+  if(canonicalKey) {
+
+    // Service variant: binding fields only. stationId from the modify entry (often supplied by service-side discovery) is intentionally ignored - identity is
+    // canonical-only per the architectural principle. If a user wants per-affiliate identity, they create the affiliate as a separate canonical via the "add"
+    // action of the browse modal.
+    return {
+
+      canonicalKey,
+      channelSelector: selector || undefined,
+      url
+    };
+  }
+
+  // Standalone canonical: carries its own identity. stationId from the modify entry is preserved here because the standalone is the identity authority for
+  // this channel.
   const channel: UserChannel = {
 
-    ...(canonicalKey ? { canonicalKey } : { name }),
     channelSelector: selector || undefined,
+    name,
     url
   };
 
-  // Variant-specific stationId: broadcast network canonicals (abc, cbs, fox, nbc) typically lack a stationId because there is no single national ID - the
-  // ID belongs to the local affiliate. Preserving the submitted stationId on the variant is how the user records that identity. Values that happen to match
-  // the canonical are stripped later by the delta normalizer, so there is no redundant storage.
   if(entry.stationId) {
 
     channel.stationId = sanitizeString(entry.stationId);
@@ -91,14 +104,12 @@ export function registerBrowseRoutes(app: Express): void {
     let removed = 0;
     let switched = 0;
 
-    // Flags tracking whether channels or selections changed during the mutation. Declared as a state object rather than bare booleans so that TypeScript's control-
-    // flow narrowing does not produce false positives when reading the flags after the callback (which mutates them via closure).
-    const modified = { channels: false, selections: false };
+    // Process all entries inside a single transactional mutation. Both channel changes and service-selection changes go through data.* directly so the entire
+    // batch lands as one atomic write. This eliminates the prior set-then-save pattern (sync setServiceSelection followed by saveServiceSelections) and the
+    // associated "did anything change?" tracking - the framework persists exactly what the fn produced.
+    await mutateChannels((data) => {
 
-    // Process all entries inside a single transactional mutation to avoid TOCTOU races between load and save.
-    await mutateChannels((existingChannels) => {
-
-      const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(existingChannels) ]);
+      const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(data.channels) ]);
 
       for(const entry of entries) {
 
@@ -125,14 +136,13 @@ export function registerBrowseRoutes(app: Express): void {
           // specific fields only, no identity fields).
           if(!allKeys.has(variantKey)) {
 
-            existingChannels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
+            data.channels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
               sanitizeString(entry.channelSelector?.trim() ?? ""), canonicalKey);
             allKeys.add(variantKey);
-            modified.channels = true;
           }
 
-          setServiceSelection(canonicalKey, variantKey);
-          modified.selections = true;
+          // Selecting a variant: store the explicit selection. variantKey is canonicalKey + "-" + serviceSlug, so it's never equal to canonicalKey here.
+          data.serviceSelections[canonicalKey] = variantKey;
           switched++;
           affectedKeys.add(canonicalKey);
 
@@ -152,8 +162,8 @@ export function registerBrowseRoutes(app: Express): void {
             continue;
           }
 
-          setServiceSelection(canonicalKey, canonicalKey);
-          modified.selections = true;
+          // Clear the selection by deleting it (selecting the canonical default is represented as no entry).
+          Reflect.deleteProperty(data.serviceSelections, canonicalKey);
 
           const resolvedKey = resolveServiceKey(canonicalKey);
           const resolvedTag = getServiceTagForChannel(resolvedKey);
@@ -166,8 +176,7 @@ export function registerBrowseRoutes(app: Express): void {
               keysToDisable.add(canonicalKey);
             } else {
 
-              Reflect.deleteProperty(existingChannels, canonicalKey);
-              modified.channels = true;
+              Reflect.deleteProperty(data.channels, canonicalKey);
             }
           }
 
@@ -226,9 +235,8 @@ export function registerBrowseRoutes(app: Express): void {
         // specific fields. Standalone channels (key === baseKey) get the full channel object with identity fields.
         const newChannel = buildUserChannel(entry, name, url, channelSelector, (key !== baseKey) ? baseKey : undefined);
 
-        existingChannels[key] = newChannel;
+        data.channels[key] = newChannel;
         allKeys.add(key);
-        modified.channels = true;
         added++;
         affectedKeys.add(canonicalExists ? baseKey : key);
       }
@@ -242,12 +250,6 @@ export function registerBrowseRoutes(app: Express): void {
     if(enableKeys.length > 0) {
 
       await enablePredefinedChannels(enableKeys);
-    }
-
-    // When channels were modified, the mutation already persisted selections as part of the write. When only selections changed, save them explicitly.
-    if(!modified.channels && modified.selections) {
-
-      await saveServiceSelections();
     }
 
     await disablePredefinedChannels([...keysToDisable]);

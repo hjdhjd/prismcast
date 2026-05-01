@@ -2,9 +2,9 @@
  *
  * setup.ts: Common stream setup logic for PrismCast.
  */
-import type { Channel, Nullable, ResolvedSiteProfile, UrlValidationResult } from "../types/index.js";
 import type { Frame, Page } from "puppeteer-core";
 import { LOG, delay, extractDomain, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.js";
+import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.js";
 import type { RecoveryMetrics, TabReplacementResult } from "./recovery.js";
 import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
 import { getNextStreamId, getStreamCount } from "./registry.js";
@@ -88,8 +88,8 @@ export type TabReplacementHandlerFactory = (
  */
 export interface StreamSetupOptions {
 
-  // The channel definition if streaming a named channel.
-  channel?: Channel;
+  // The resolved channel definition (with canonical-to-variant identity inheritance applied) if streaming a named channel.
+  channel?: ResolvedChannel;
 
   // The channel name (key) if streaming a named channel.
   channelName?: string;
@@ -783,11 +783,11 @@ function buildPersistResolutionCallback(canonicalKey: string, serviceTag: string
 
   return async (resolvedSelector: string): Promise<void> => {
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
-      const existing = channels[variantKey] ?? {};
+      const existing = data.channels[variantKey] ?? {};
 
-      channels[variantKey] = { ...existing, channelSelector: resolvedSelector };
+      data.channels[variantKey] = { ...existing, channelSelector: resolvedSelector };
     });
 
     LOG.debug("tuning", "Persisted resolved selector \"%s\" to channel store as \"%s\".", resolvedSelector, variantKey);

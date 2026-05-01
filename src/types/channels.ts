@@ -118,19 +118,40 @@ export interface CanonicalChannel extends ChannelIdentity, ChannelServiceBinding
 }
 
 /**
- * Variant channel entry. Carries the binding for one non-canonical service, plus a canonicalKey reference to its parent and any per-variant identity overrides.
- * Identity fields are all optional on variants: when absent, the canonical's value is inherited at resolution time; when present, the variant's value wins.
+ * Variant channel entry. Carries the binding (tuning) for one non-canonical service, plus a canonicalKey reference to its parent. Variants are pure tuning
+ * data: how to reach the channel via this service. Identity (the channel's name, station ID, channel number, hdhrEnabled, tags, etc.) lives on the canonical
+ * entry alone and inherits to variants at resolution time. Per-affiliate identity (e.g., a local Chicago Fox affiliate that needs its own station ID) is
+ * modeled as a separate canonical channel rather than as a variant carrying override identity.
  *
- * The structural invariant a variant DOES enforce is the discriminator: canonicalKey is required (and structurally absent on CanonicalChannel via never). The
- * resolution-time invariant - that a variant does not inherit the canonical's service binding (URL, channelSelector, etc.) - lives in resolveVariant via the
- * pickIdentity helper. Per-variant identity overrides are legitimate (e.g., a local-affiliate variant of a network canonical carries the affiliate's stationId
- * because the canonical has no single national ID), so identity fields stay optional rather than forbidden.
+ * Enforcement layers:
+ *
+ *   1. Type system (this declaration): VariantChannel extends only ChannelServiceBinding. The Partial&lt;ChannelIdentity&gt; that appeared in the original
+ *      partition has been removed - the type now refuses to admit identity fields on variants in code.
+ *   2. Catalog source (ServiceVariant in this file): carries binding fields only. The catalog flattener cannot produce identity-bearing variants.
+ *   3. Resolver (overlayVariantBinding in userChannels.ts): variant overlays apply CHANNEL_BINDING_KEYS only. Identity fields encountered in a variant entry
+ *      (legacy data, hand-edited files, future migrations) are silently dropped during resolution - canonical's identity always wins.
+ *   4. PUT handler routing (handlePredefinedEdit in routes/config/channels/endpoints/crud.ts): identity-field edits route to the canonical entry, binding-
+ *      field edits route to the active variant entry. Users cannot create identity-on-variant state through the UI.
+ *
+ * The structural invariant the type DOES enforce is the discriminator: canonicalKey is required (and structurally absent on CanonicalChannel via never), so a
+ * value with a string canonicalKey is unambiguously a VariantChannel.
  */
-export interface VariantChannel extends ChannelServiceBinding, Partial<ChannelIdentity> {
+export interface VariantChannel extends ChannelServiceBinding {
 
   // Required - the discriminator that marks this entry as a variant of another channel.
   canonicalKey: string;
 }
+
+/* Resolution boundary rule (codified for future contributors).
+ *
+ * Raw stored or catalog values are typed `Channel` (`CanonicalChannel | VariantChannel`) or `StoredChannel` (the storage-only union including `ChannelDelta`).
+ * Values downstream of any resolver - `resolveStoredChannel`, `getResolvedChannel`, `overlayDelta`, `overlayVariantBinding`, `pickIdentity` - are typed
+ * `ResolvedChannel`. Crossing this boundary by downcasting is a defect: variants do not structurally carry identity, and a `Channel`-typed post-resolution
+ * value lies about which fields are reachable on the variant case.
+ *
+ * The single test for whether a value is `ResolvedChannel`: was it produced by, or returned through, a function whose body ran resolution? If yes, type it
+ * `ResolvedChannel`. If no, type it `Channel` or `StoredChannel`. The compiler will not catch a misuse - reviewers must.
+ */
 
 /**
  * The shape of a raw stored or predefined-catalog channel entry. Used by the flattener output (PREDEFINED_CHANNELS), by the on-disk channels.json store, and
@@ -198,6 +219,58 @@ const _partitionCompleteness: [_ChannelKeyExhaustiveness] extends [never] ? true
 void _partitionCompleteness;
 
 /**
+ * Identity fields that participate in the user-facing delta surface (form input, JSON import, channels.json hand edit). Subset of CHANNEL_IDENTITY_KEYS that
+ * excludes catalog-driven structural fields like pacificStationId, which trigger Pacific auto-generation in the flattener and are not user-overridable through
+ * any path. Symmetric to DELTA_ELIGIBLE_BINDING_KEYS - both arrays describe "delta-eligible," the universe of fields that may legitimately appear in a
+ * ChannelDelta or a stored override.
+ *
+ * The `satisfies` constraint guarantees every entry is in CHANNEL_IDENTITY_KEYS - this array can never include a field that isn't structurally identity.
+ */
+export const DELTA_ELIGIBLE_IDENTITY_KEYS = [
+  "channelNumber", "guideTitle", "hdhrEnabled", "logoUrl", "name", "stationId", "tags", "tvgShift"
+] as const satisfies readonly typeof CHANNEL_IDENTITY_KEYS[number][];
+
+/**
+ * Binding fields that participate in the user-facing delta surface. Subset of CHANNEL_BINDING_KEYS that excludes internal DOM-hook fields (dismissSelector,
+ * scrollSelector, scrollTarget, scrollToBottom, service) that are set by site profiles and ServiceVariant catalog entries, never by user input. Symmetric to
+ * DELTA_ELIGIBLE_IDENTITY_KEYS.
+ *
+ * The `satisfies` constraint guarantees every entry is in CHANNEL_BINDING_KEYS.
+ */
+export const DELTA_ELIGIBLE_BINDING_KEYS = [
+  "channelSelector", "profile", "url"
+] as const satisfies readonly typeof CHANNEL_BINDING_KEYS[number][];
+
+/**
+ * The universe of fields that may legitimately appear in a stored override (ChannelDelta) or be customized by the user. Used to type the customization
+ * accessor's Map keys, drive the runtime DELTA_ALLOWED_FIELDS Set in userChannels.ts, and underpin every "is this field user-overridable?" question across the
+ * codebase. Equal to DELTA_ELIGIBLE_IDENTITY_KEYS ∪ DELTA_ELIGIBLE_BINDING_KEYS.
+ */
+export type CustomizableField = typeof DELTA_ELIGIBLE_IDENTITY_KEYS[number] | typeof DELTA_ELIGIBLE_BINDING_KEYS[number];
+
+/* Compile-time delta-shape completeness check. Mirrors the _partitionCompleteness pattern above. ChannelDelta's keys must exactly equal CustomizableField - no
+ * more, no less. Adding a field to ChannelDelta without listing it in DELTA_ELIGIBLE_IDENTITY_KEYS or DELTA_ELIGIBLE_BINDING_KEYS, or vice versa, fails to
+ * type-check.
+ *
+ * The check has two halves: extras (keys in ChannelDelta but not in the partition) and missing (keys in the partition but not in ChannelDelta). Either failure
+ * produces a build error with a descriptive message.
+ */
+type _DeltaExtraKeys = Exclude<keyof ChannelDelta, CustomizableField>;
+type _DeltaMissingKeys = Exclude<CustomizableField, keyof ChannelDelta>;
+
+interface _DeltaShapeError {
+
+  error: "ChannelDelta keys must exactly equal DELTA_ELIGIBLE_IDENTITY_KEYS ∪ DELTA_ELIGIBLE_BINDING_KEYS. Update ChannelDelta or the partition arrays.";
+  extra: _DeltaExtraKeys;
+  missing: _DeltaMissingKeys;
+}
+
+const _deltaCompleteness: [_DeltaExtraKeys, _DeltaMissingKeys] extends [never, never] ? true : _DeltaShapeError = true;
+
+/* Mark the assertion as intentionally unused - its only purpose is the compile-time check above. */
+void _deltaCompleteness;
+
+/**
  * Nested channel definition - the AUTHORING shape for predefined channels in channels/index.ts. Already correctly partitioned: identity at the top level,
  * services map below. The flattener compiles these into the runtime Channel discriminated union.
  */
@@ -230,13 +303,12 @@ export interface ChannelDefinition {
 }
 
 /**
- * A single service's streaming configuration within a ChannelDefinition. Each service variant specifies how to reach the channel on that service's platform.
- * Optional fields override the parent ChannelDefinition's values when this variant is the active service.
+ * A single service's streaming configuration within a ChannelDefinition. Each service variant specifies how to reach the channel on that service's platform -
+ * exclusively binding (tuning) data. Identity fields (channelNumber, hdhrEnabled, tags, etc.) are user preferences for the channel as a whole and live on the
+ * ChannelDefinition (canonical) rather than on individual service variants. Adding a field here that conceptually represents user preference rather than
+ * tuning is a category error.
  */
 export interface ServiceVariant {
-
-  // Override for channel number on this specific service.
-  channelNumber?: number;
 
   // Service-specific channel identifier for multi-channel players. This is always service-specific (e.g., Fox uses station codes "FOXD2C" while Sling uses
   // guide names "FOX") and is never inherited from the parent ChannelDefinition.
@@ -291,8 +363,9 @@ export interface ChannelListingEntry {
  * number fields use Nullable<T> to distinguish "user cleared this field" (null) from "inherit from predefined" (absent). When a field is null, the predefined
  * value is removed in the resolved channel. When a field is absent, the predefined value is inherited.
  *
- * The set of fields here is the union of identity-override fields (canonical-level overrides) and the user-editable subset of binding fields. Non-editable
- * binding fields (scroll/dismiss DOM hooks) are not user-overridable and intentionally absent from this type.
+ * The set of fields here is the union of DELTA_ELIGIBLE_IDENTITY_KEYS (delta-eligible identity overrides) and DELTA_ELIGIBLE_BINDING_KEYS (delta-eligible
+ * binding overrides). Catalog-driven identity (pacificStationId) and internal binding (DOM hooks) are not user-overridable and intentionally absent. The
+ * _deltaCompleteness compile-time check (above) enforces that this interface and the two partition arrays stay in agreement.
  */
 export interface ChannelDelta {
 

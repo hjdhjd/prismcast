@@ -5,7 +5,7 @@
 import type { Channel, ChannelMap, ChannelSortField, ResolvedChannel, ServiceGroup, SortDirection } from "../types/index.js";
 import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
 import { LOG, extractDomain } from "../utils/index.js";
-import { getChannelEffectiveTags, pickIdentity } from "./userChannels.js";
+import { getChannelEffectiveTags, getEffectiveHdhrEnabled, mutateChannels, pickIdentity } from "./userChannels.js";
 import { CONFIG } from "./index.js";
 import { PREDEFINED_CHANNELS } from "../channels/index.js";
 import { getProfileForChannel } from "./profiles.js";
@@ -271,10 +271,10 @@ export function getEnabledServices(): string[] {
 }
 
 /**
- * Sets the enabled service tags in memory (module state + runtime CONFIG). Does NOT persist to config.json - callers that want to persist the change must
- * follow up with saveEnabledServices(). This "set then save" split matches the codebase's convention for other mutable shared state (setServiceSelection /
- * saveServiceSelections, setTagRegistry / saveTagRegistry). Empty array means "no filter" (all services shown).
- * @param tags - The service tags to enable.
+ * Hydrates the in-memory enabled-services cache from a serialized list. Called by initializeUserChannels at startup with the validated tags list and by the
+ * consistency probe's auto-fix after stripping unknown tags. Never called by route code directly - mutations go through mutateEnabledServices, which is the
+ * single async path that updates both the cache and the persisted file in one atomic operation.
+ * @param tags - The service tags to load into the cache. Empty array means "no filter" (all services shown).
  */
 export function setEnabledServices(tags: readonly string[]): void {
 
@@ -283,16 +283,25 @@ export function setEnabledServices(tags: readonly string[]): void {
 }
 
 /**
- * Persists the current enabledServices state to config.json. Reads module state (written by setEnabledServices) and writes it into the config file. Separate
- * from setEnabledServices so callers that load values from disk don't trigger a spurious write-back.
+ * Persists a new enabled-services list through the file store. Goes through mutateConfig so the file write, snapshot machinery, and post-mutate cache update
+ * all run uniformly - after the call returns, both disk and the module-state cache reflect the new value. Empty array means "no filter" (all services shown).
+ * @param tags - The new enabled service tags.
+ * @throws FileStoreParseError if config.json contains invalid JSON and the .bak rotation is also unparseable.
  */
-export async function saveEnabledServices(): Promise<void> {
+export async function mutateEnabledServices(tags: readonly string[]): Promise<void> {
+
+  const next = [...tags];
 
   await mutateConfig((config) => {
 
     config.channels ??= {};
-    config.channels.enabledServices = [...enabledServices];
+    config.channels.enabledServices = next;
   });
+
+  // Module-state cache hydration after successful write. Mirrors the post-mutate hydration done in mutateChannels for serviceSelections and tagRegistry,
+  // keeping the in-memory view consistent with what was just persisted.
+  enabledServices = next;
+  CONFIG.channels.enabledServices = next;
 }
 
 /**
@@ -724,8 +733,9 @@ export function getChannelSortKey(channel: ResolvedChannel, key: string, field: 
 
     case "hdhrEnabled": {
 
-      // Sort enabled channels before disabled. "0" (enabled/absent) sorts before "1" (disabled).
-      return (effective.hdhrEnabled === false) ? "1" : "0";
+      // Sort enabled channels before disabled. "0" (enabled/absent) sorts before "1" (disabled). The effective-view helper centralizes the implicit-true
+      // convention so the sort key here, the table's checked attribute, and every other consumer agree on the meaning of an absent value.
+      return getEffectiveHdhrEnabled(effective) ? "0" : "1";
     }
 
     case "key": {
@@ -868,7 +878,8 @@ export function getCanonicalKey(key: string): string {
 }
 
 /**
- * Sets the user's service selections. Called when loading from channels.json.
+ * Hydrates the in-memory selections cache from a serialized record. Called by mutateChannels' post-write hook (with the freshly-written disk state) and by
+ * initializeUserChannels at startup. Never called by route code directly - mutations go through setServiceSelection (single) or mutateServiceSelections (bulk).
  * @param selections - Service selections keyed by canonical channel key.
  */
 export function setServiceSelections(selections: Record<string, string>): void {
@@ -877,7 +888,7 @@ export function setServiceSelections(selections: Record<string, string>): void {
 }
 
 /**
- * Gets all service selections.
+ * Gets all service selections from the in-memory cache. Cache is hydrated from disk on every successful mutate, so this is always consistent with the file.
  * @returns Copy of the service selections object.
  */
 export function getServiceSelections(): Record<string, string> {
@@ -896,20 +907,53 @@ export function getServiceSelection(canonicalKey: string): string | undefined {
 }
 
 /**
- * Sets the service selection for a channel.
+ * Persists a single service selection through the file store. Goes through mutateChannels so the file write, integrity validation, and post-mutate cache
+ * hydration all run uniformly - after the call returns, both disk and the module-state Map reflect the new value. Selecting the canonical key itself (the
+ * default service) deletes the selection rather than storing a redundant entry.
+ *
+ * For bulk updates, prefer mutateServiceSelections to coalesce multiple changes into a single atomic write.
  * @param canonicalKey - The canonical channel key.
- * @param serviceKey - The selected service key.
+ * @param serviceKey - The selected service key. When equal to canonicalKey, the selection is removed.
+ * @throws FileStoreParseError if channels.json contains invalid JSON and the .bak rotation is also unparseable.
  */
-export function setServiceSelection(canonicalKey: string, serviceKey: string): void {
+export async function setServiceSelection(canonicalKey: string, serviceKey: string): Promise<void> {
 
-  // If selecting the canonical (default), remove the selection instead of storing it.
-  if(serviceKey === canonicalKey) {
+  await mutateChannels((data) => {
 
-    serviceSelections.delete(canonicalKey);
-  } else {
+    if(serviceKey === canonicalKey) {
 
-    serviceSelections.set(canonicalKey, serviceKey);
-  }
+      Reflect.deleteProperty(data.serviceSelections, canonicalKey);
+    } else {
+
+      data.serviceSelections[canonicalKey] = serviceKey;
+    }
+  });
+}
+
+/**
+ * Bulk variant of setServiceSelection. Applies multiple selection changes inside a single mutate transaction so all changes land atomically with one disk
+ * write. Use this whenever a single user action (e.g., browse-modal submit, bulk service assignment) updates more than one selection - serial awaits over
+ * setServiceSelection would produce N writes and N intermediate disk states.
+ *
+ * Each entry follows the same canonical-key-equals-service-key convention as setServiceSelection: when the value matches the key, the selection is removed.
+ * @param updates - Object mapping canonical channel keys to their new service keys.
+ * @throws FileStoreParseError if channels.json contains invalid JSON and the .bak rotation is also unparseable.
+ */
+export async function mutateServiceSelections(updates: Record<string, string>): Promise<void> {
+
+  await mutateChannels((data) => {
+
+    for(const [ canonicalKey, serviceKey ] of Object.entries(updates)) {
+
+      if(serviceKey === canonicalKey) {
+
+        Reflect.deleteProperty(data.serviceSelections, canonicalKey);
+      } else {
+
+        data.serviceSelections[canonicalKey] = serviceKey;
+      }
+    }
+  });
 }
 
 /**

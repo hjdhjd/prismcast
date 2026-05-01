@@ -5,8 +5,8 @@
 export type { BrowserConfig, CaptureMode, ChannelsConfig, Config, HdhrConfig, HLSConfig, LoggingConfig, PathsConfig, PlaybackConfig, RecoveryConfig,
   ServerConfig, StreamingConfig } from "./config.js";
 export type { CanonicalChannel, Channel, ChannelDefinition, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelServiceBinding,
-  ResolvedChannel, ResolvedChannelMap, ServiceGroup, ServiceVariant, StoredChannel, StoredChannelMap, VariantChannel } from "./channels.js";
-export { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS } from "./channels.js";
+  CustomizableField, ResolvedChannel, ResolvedChannelMap, ServiceGroup, ServiceVariant, StoredChannel, StoredChannelMap, VariantChannel } from "./channels.js";
+export { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "./channels.js";
 export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, ProfileCategory, ProfileResolutionResult, ProfilesValidationResult,
   ResolvedSiteProfile, ServicePack, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "./profiles.js";
 export type { CategoryResolution, CategoryResolutionConfig, CategoryResolutionFailure, CategoryResolutionSuccess, ChannelSelectionProfile, ChannelSelectorResult,

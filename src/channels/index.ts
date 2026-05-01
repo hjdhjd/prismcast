@@ -2432,10 +2432,12 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
  * 3. All remaining services produce variant entries keyed as "{key}-{slug}".
  *
  * Canonical entries carry the full identity (name, stationId, channelNumber, tags, tvgShift) from the ChannelDefinition plus the canonical service's URL and
- * service-specific fields. Variant entries carry only service-specific fields (url, channelSelector, profile, etc.) plus canonicalKey pointing at the
- * canonical - identity inherits at resolution time from the (possibly user-overridden) canonical. A variant may still specify its own channelNumber override
- * via ServiceVariant.channelNumber; that is the one identity-shaped field a variant is allowed to carry, because a service may publish the channel on a
- * different lineup position than the canonical.
+ * service-specific binding fields. Variant entries carry only service-specific binding fields (url, channelSelector, profile, etc.) plus canonicalKey pointing
+ * at the canonical - identity inherits at resolution time from the (possibly user-overridden) canonical.
+ *
+ * Variants are pure tuning data: how to reach the channel via this service. Identity (channelNumber, hdhrEnabled, tags, etc.) is a user preference for the
+ * channel as a whole and is not parameterized per service. ServiceVariant carries only binding fields; identity-shaped fields on user-stored variants are
+ * possible at the type level for legacy data tolerance but are not produced by the predefined catalog.
  *
  * This shape makes variants first-class deltas against their canonical - the same treatment user-defined variants get in storage - so canonical overrides
  * propagate automatically to every variant without a separate runtime inheritance pass.
@@ -2469,8 +2471,8 @@ function flattenChannelDefinitions(definitions: Record<string, ChannelDefinition
     channels[key] = buildCanonicalEntry(def, canonicalVariant);
 
     // Build variant entries for all non-canonical services. Each variant gets canonicalKey set to the definition key so that buildServiceGroups can group
-    // channels by a single mechanism (scanning canonicalKey) regardless of whether the channel is predefined or user-defined. The VariantChannel type
-    // structurally prevents variants from carrying identity fields - that inheritance happens at resolution time from the canonical.
+    // channels by a single mechanism (scanning canonicalKey) regardless of whether the channel is predefined or user-defined. Identity inheritance happens at
+    // resolution time from the canonical - variants only carry binding (tuning) data here.
     for(const slug of slugs) {
 
       if(slug === canonicalSlug) {
@@ -2518,13 +2520,11 @@ function buildCanonicalEntry(def: ChannelDefinition, variant: ServiceVariant): C
     entry.pacificStationId = def.pacificStationId;
   }
 
-  // channelNumber: variant override wins, then definition default. For the canonical, "variant" is the canonical service's ServiceVariant - its channelNumber
-  // override counts because it's the active service when the canonical is selected.
-  const channelNumber = variant.channelNumber ?? def.channelNumber;
+  // channelNumber comes from the ChannelDefinition (the canonical's user preference for lineup position). It is not per-service - ServiceVariant carries no
+  // channelNumber field because the channel's lineup position is the channel's, not the service's.
+  if(def.channelNumber !== undefined) {
 
-  if(channelNumber !== undefined) {
-
-    entry.channelNumber = channelNumber;
+    entry.channelNumber = def.channelNumber;
   }
 
   if(def.tags) {
@@ -2543,9 +2543,9 @@ function buildCanonicalEntry(def: ChannelDefinition, variant: ServiceVariant): C
 }
 
 /**
- * Builds a variant entry: service-binding fields only, plus a canonicalKey reference to the parent canonical and an optional per-service channelNumber
- * override. Identity (name, stationId, tags, tvgShift) is intentionally absent and inherits from the canonical at resolution time. The VariantChannel type
- * makes this structural - the only identity-shaped field a variant is allowed to carry is channelNumber, which is a legitimate per-service override.
+ * Builds a variant entry: service-binding fields only, plus a canonicalKey reference to the parent canonical. Identity fields (name, stationId, channelNumber,
+ * hdhrEnabled, tags, tvgShift, etc.) are intentionally absent and inherit from the canonical at resolution time. Variants are pure tuning data; identity is a
+ * user preference for the channel as a whole and lives only on the canonical entry.
  * @param variant - The ServiceVariant with service-binding fields.
  * @param canonicalKey - The parent definition key.
  * @returns A variant entry typed as VariantChannel.
@@ -2553,11 +2553,6 @@ function buildCanonicalEntry(def: ChannelDefinition, variant: ServiceVariant): C
 function buildVariantEntry(variant: ServiceVariant, canonicalKey: string): VariantChannel {
 
   const entry: VariantChannel = { canonicalKey, url: variant.url };
-
-  if(variant.channelNumber !== undefined) {
-
-    entry.channelNumber = variant.channelNumber;
-  }
 
   applyServiceBinding(entry, variant);
 
@@ -2575,7 +2570,7 @@ function applyServiceBinding(entry: CanonicalChannel | VariantChannel, variant: 
 
   for(const field of CHANNEL_BINDING_KEYS) {
 
-    // url is handled directly by the caller (required field), and channelNumber is identity-shaped so it is set explicitly outside this helper.
+    // url is handled directly by the caller (required field, set during entry construction).
     if(field === "url") {
 
       continue;

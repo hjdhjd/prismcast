@@ -2,7 +2,7 @@
  *
  * channelMap.ts: Channel key to channel number mapping for HDHomeRun emulation.
  */
-import { getAllChannels } from "../config/userChannels.js";
+import { getAllChannels, getEffectiveHdhrEnabled } from "../config/userChannels.js";
 
 /* HDHomeRun devices use numeric channel numbers (GuideNumber) for each channel. Plex requires these for EPG (electronic program guide) matching. PrismCast uses
  * string keys (e.g., "cnn", "nbc") for channels, so we need a mapping layer.
@@ -52,7 +52,7 @@ export function buildChannelMap(): ChannelMapEntry[] {
   for(const [ key, channel ] of Object.entries(channels)) {
 
     // Skip channels excluded from the HDHR lineup.
-    if(channel.hdhrEnabled === false) {
+    if(!getEffectiveHdhrEnabled(channel)) {
 
       continue;
     }
@@ -74,7 +74,7 @@ export function buildChannelMap(): ChannelMapEntry[] {
   // Auto-assign numbers to channels without explicit channelNumber. Iterate entries (not just keys) so the channel reference stays narrowed; sort by key
   // alphabetically for deterministic assignment.
   const unassignedEntries = Object.entries(channels)
-    .filter(([ , channel ]) => (channel.hdhrEnabled !== false) && ((channel.channelNumber === undefined) || (channel.channelNumber <= 0)))
+    .filter(([ , channel ]) => getEffectiveHdhrEnabled(channel) && ((channel.channelNumber === undefined) || (channel.channelNumber <= 0)))
     .sort(([a], [b]) => a.localeCompare(b));
 
   let nextNumber = AUTO_ASSIGN_START;

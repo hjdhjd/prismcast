@@ -59,7 +59,9 @@ export let configParseErrorMessage: string | undefined;
  */
 export async function initializeConfiguration(cliOverrides?: CliOverrides): Promise<void> {
 
-  // Load user configuration from file.
+  // Load user configuration from file. Schema migrations (legacy provider field renames, foxcom -> foxone in enabledServices) run automatically inside the
+  // file store framework via the declarative configMigrations registry; ensureMigrated (called by the release boot coordinator at startup) persists any
+  // upgrades to disk before this function runs. The data returned here is always at CURRENT_CONFIG_SCHEMA_VERSION.
   const result = await readConfig();
 
   configParseError = result.parseError;

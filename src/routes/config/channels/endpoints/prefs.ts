@@ -7,7 +7,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { VALID_OPTIONAL_COLUMNS, buildChannelTableState } from "../table.js";
-import { markSetupCompleted, saveChannelDisplayPrefs, setChannelDisplayPrefs } from "../../../../config/userChannels.js";
+import { markSetupCompleted, mutateChannelDisplayPrefs } from "../../../../config/userChannels.js";
 import { sendSuccess, sendValidationError } from "../http/envelope.js";
 import type { ChannelSortField } from "../../../../types/index.js";
 import { VALID_SORT_FIELDS } from "../../../../config/services.js";
@@ -20,7 +20,7 @@ import { route } from "../http/handler.js";
 export function registerPrefsRoutes(app: Express): void {
 
   // POST /config/channels/display-prefs - Update channel table display preferences (visible columns, sort field, sort direction). Every field is optional;
-  // only supplied fields are updated. The setChannelDisplayPrefs/saveChannelDisplayPrefs helpers own the runtime CONFIG update and the file persistence.
+  // only supplied fields are updated. mutateChannelDisplayPrefs persists the change and updates the runtime CONFIG cache atomically.
   app.post("/config/channels/display-prefs", route("update display preferences", async (req: Request, res: Response) => {
 
     const body = req.body as { sortDirection?: string; sortField?: string; visibleColumns?: string[] };
@@ -59,14 +59,26 @@ export function registerPrefsRoutes(app: Express): void {
       return;
     }
 
-    setChannelDisplayPrefs({
+    // After the validation guards above, sortDirection narrows to "asc" | "desc" via TypeScript's control-flow analysis. sortField stays string-typed because
+    // Set.has does not carry a type predicate, so the cast bridges that gap.
+    const update: Parameters<typeof mutateChannelDisplayPrefs>[0] = {};
 
-      channelSortDirection: body.sortDirection,
-      channelSortField: body.sortField as ChannelSortField | undefined,
-      visibleColumns: body.visibleColumns
-    });
+    if(body.sortDirection !== undefined) {
 
-    await saveChannelDisplayPrefs();
+      update.channelSortDirection = body.sortDirection;
+    }
+
+    if(body.sortField !== undefined) {
+
+      update.channelSortField = body.sortField as ChannelSortField;
+    }
+
+    if(body.visibleColumns !== undefined) {
+
+      update.visibleColumns = body.visibleColumns;
+    }
+
+    await mutateChannelDisplayPrefs(update);
 
     sendSuccess(res);
   }));

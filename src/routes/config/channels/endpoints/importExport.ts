@@ -172,11 +172,11 @@ export function registerImportExportRoutes(app: Express): void {
     }
 
     // Apply the validated entries inside the transactional mutation. Conflict detection happens against the current stored channels.
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
       for(const { channel, key } of validEntries) {
 
-        if(key in channels) {
+        if(key in data.channels) {
 
           conflicts.push(key);
 
@@ -194,7 +194,7 @@ export function registerImportExportRoutes(app: Express): void {
           imported++;
         }
 
-        channels[key] = channel;
+        data.channels[key] = channel;
         affectedKeys.push(key);
       }
     });

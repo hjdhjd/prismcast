@@ -2,20 +2,20 @@
  *
  * table.ts: Channel table rendering for the PrismCast configuration interface.
  */
+import type { ChannelListingEntry, CustomizableField } from "../../../types/index.js";
 import { ICON_BOLT, ICON_COPY, ICON_DELETE, ICON_DISABLE, ICON_EDIT, ICON_ENABLE, ICON_FILTER, ICON_HEALTH, ICON_LINK, ICON_LOGIN, ICON_MANAGE,
   ICON_REVERT, ICON_TRANSFER } from "../../icons.js";
 import { compareChannelSort, getAllServiceTags, getAuthDomainForChannel, getChannelServiceLabel, getChannelServiceTags, getChannelSortKey,
   getEnabledServices, getPredefinedDomainMap, getServiceGroup, hasMultipleServices, isChannelAvailableByService, isServiceTagEnabled,
   resolvePredefinedVariant, resolveServiceKey } from "../../../config/services.js";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
-import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, getChannelLogo, getChannelsParseErrorMessage,
-  getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel, isPredefinedChannelDisabled,
-  isUserChannel, isVisibleChannel, tagsMatch } from "../../../config/userChannels.js";
+import { getActiveTagVocabulary, getChannelCustomizations, getChannelEffectiveTags, getChannelListing, getChannelLogo, getChannelsParseErrorMessage,
+  getEffectiveHdhrEnabled, getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel,
+  isPredefinedChannelDisabled, isUserChannel, isVisibleChannel, tagsMatch } from "../../../config/userChannels.js";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.js";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
 import { CONFIG } from "../../../config/index.js";
-import type { ChannelListingEntry } from "../../../types/index.js";
 import { PREDEFINED_CHANNELS } from "../../../channels/index.js";
 import type { ProfileInfo } from "../../../config/profiles.js";
 import { categorizeProfiles } from "../index.js";
@@ -69,13 +69,17 @@ export const VALID_OPTIONAL_COLUMNS = new Set(OPTIONAL_COLUMNS.map((c) => c.fiel
  */
 interface TextFieldOptions {
 
-  // Predefined default value for modification tracking. When provided and different from the current value, the field renders with the settings form's
-  // "modified from defaults" treatment: left-border accent, blue dot, data-default attribute, and a per-field reset button. Omit for fields that do not
-  // have a predefined baseline (e.g., user-created channels, add forms).
+  // The value the per-field reset button substitutes when the field is customized. Rendered as the data-default HTML attribute that the client-side reset
+  // reads. Should be supplied alongside isCustomized=true; when isCustomized is false/undefined, this value is ignored (no reset button is rendered).
   defaultValue?: string;
 
   // Hint text displayed below the input (optional).
   hint?: string;
+
+  // True when the user has explicitly customized this field (the field is present in their stored channel deltas, on either the canonical or active variant
+  // entry). Determines whether the field renders with the "modified" visual treatment - left-border accent, blue dot, and per-field reset button. This is the
+  // single source of truth for customization status; do not infer it from value comparison.
+  isCustomized?: boolean;
 
   // Associates the input with a <datalist> for suggestions. When provided, a list attribute is added to the input and an empty <datalist> element is appended.
   list?: string;
@@ -111,8 +115,9 @@ function generateTextField(id: string, name: string, label: string, value: strin
   const pattern = options.pattern ? " pattern=\"" + options.pattern + "\"" : "";
   const placeholder = options.placeholder ? " placeholder=\"" + escapeHtml(options.placeholder) + "\"" : "";
 
-  // Modification tracking: compare against the predefined default and render the settings form's "modified" visual treatment when they differ.
-  const isModified = (options.defaultValue !== undefined) && (options.defaultValue !== value);
+  // Modification tracking is driven by storage provenance (isCustomized), not value comparison. A field is customized iff the user has explicitly set it on
+  // the canonical or active variant stored entry - that is the single source of truth, supplied by getChannelCustomizations in the storage layer.
+  const isModified = options.isCustomized === true;
   const modifiedClass = isModified ? " modified" : "";
   const modifiedDot = isModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
   const defaultAttr = (options.defaultValue !== undefined) ? " data-default=\"" + escapeHtml(options.defaultValue) + "\"" : "";
@@ -146,16 +151,19 @@ function generateTextField(id: string, name: string, label: string, value: strin
  * @param selectedProfile - The currently selected profile (empty string for autodetect).
  * @param profiles - List of available profiles with descriptions and summaries.
  * @param showHint - Whether to show the hint text with profile reference link.
+ * @param defaultProfile - When provided, used as the data-default attribute for the per-field reset button. Should be supplied alongside isCustomized=true.
+ * @param isCustomized - True when the user has explicitly customized the profile field (presence in stored deltas). Drives the modified visual treatment and
+ *   the per-field reset button. Independent of value comparison - storage provenance is the single source of truth.
  * @returns Array of HTML strings for the form row.
  */
-function generateProfileDropdown(id: string, selectedProfile: string, profiles: readonly ProfileInfo[], showHint = true, defaultProfile?: string): string[] {
+function generateProfileDropdown(id: string, selectedProfile: string, profiles: readonly ProfileInfo[], showHint = true, defaultProfile?: string,
+  isCustomized?: boolean): string[] {
 
   const lines: string[] = [];
   const groups = categorizeProfiles(profiles);
 
-  // Modification tracking for the profile dropdown. Same visual treatment as text fields - border accent, dot, and reset button when the current selection
-  // differs from the predefined default.
-  const isModified = (defaultProfile !== undefined) && (defaultProfile !== selectedProfile);
+  // Modification tracking is driven by storage provenance (isCustomized), not value comparison. Symmetric with generateTextField.
+  const isModified = isCustomized === true;
   const modifiedClass = isModified ? " modified" : "";
   const modifiedDot = isModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
   const defaultAttr = (defaultProfile !== undefined) ? " data-default=\"" + escapeHtml(defaultProfile) + "\"" : "";
@@ -424,14 +432,20 @@ interface AdvancedFieldOptions {
   // Current channel selector value (empty string for none).
   channelSelectorValue?: string;
 
-  // Predefined defaults for modification tracking. When provided, each field compares its current value against the corresponding default and renders
-  // the settings form's "modified" visual treatment if they differ. Omit entirely for fields without a predefined baseline (add forms, user-created channels).
+  // Set of field names the user has explicitly customized (presence in stored deltas, on either canonical or active variant entry). Drives the "modified"
+  // visual treatment for each field. Independent of value comparison - storage provenance is the single source of truth. Field names use the form-input
+  // names (channelNumber, channelSelector, guideTitle, hdhrEnabled, logoUrl, stationId, tags). Omit for forms with no predefined baseline (add, user-created).
+  customizedFields?: ReadonlySet<string>;
+
+  // Reset values for each field. Each entry is the stringified default value the form embeds into the data-default attribute on the input - resetValueFor in
+  // the caller handles all stringification (boolean -> "true"/"false", arrays -> comma-joined). Required when customizedFields contains the field; ignored
+  // otherwise. Uniform `string | undefined` shape across every field (including hdhrEnabled and tags, which previously had distinct types).
   defaults?: {
 
     channelNumber?: string;
     channelSelector?: string;
     guideTitle?: string;
-    hdhrEnabled?: boolean;
+    hdhrEnabled?: string;
     logoUrl?: string;
     stationId?: string;
     tags?: string;
@@ -473,21 +487,24 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
   // Station ID.
   const stationIdHint = showHints ? "Optional Gracenote station ID for guide data (tvc-guide-stationid)." : undefined;
   const defs = options.defaults;
+  const customized = options.customizedFields;
 
   lines.push(...generateTextField(idPrefix + "-stationId", "stationId", "Station ID", stationIdValue,
-    { defaultValue: defs?.stationId, hint: stationIdHint, placeholder: showHints ? "e.g., 12345" : undefined }));
+    { defaultValue: defs?.stationId, hint: stationIdHint, isCustomized: customized?.has("stationId"), placeholder: showHints ? "e.g., 12345" : undefined }));
 
   // Guide title override. When set, this value replaces the channel name in the M3U playlist's tvg-name attribute and guide placeholder airings.
   const guideTitleHint = showHints ? "Optional title for guide display. When set, overrides the channel name in the M3U playlist (tvg-name)." : undefined;
 
   lines.push(...generateTextField(idPrefix + "-guideTitle", "guideTitle", "Guide Title", guideTitleValue,
-    { defaultValue: defs?.guideTitle, hint: guideTitleHint, placeholder: showHints ? "e.g., Flighty Airport Delays" : undefined }));
+    { defaultValue: defs?.guideTitle, hint: guideTitleHint, isCustomized: customized?.has("guideTitle"),
+      placeholder: showHints ? "e.g., Flighty Airport Delays" : undefined }));
 
   // Custom logo URL. When set, this value is emitted as the tvg-logo attribute in the M3U playlist.
   const logoUrlHint = showHints ? "Optional logo URL for the channel. Overrides any logo derived from Channels DVR." : undefined;
 
   lines.push(...generateTextField(idPrefix + "-logoUrl", "logoUrl", "Logo URL", logoUrlValue,
-    { defaultValue: defs?.logoUrl, hint: logoUrlHint, placeholder: showHints ? "https://example.com/logo.png" : undefined, type: "url" }));
+    { defaultValue: defs?.logoUrl, hint: logoUrlHint, isCustomized: customized?.has("logoUrl"),
+      placeholder: showHints ? "https://example.com/logo.png" : undefined, type: "url" }));
 
   // Channel selector. The guide-based service list is derived from the provider module registry so it stays current as services are added.
   const guideProviderNames = getProviderModuleInfo().map((p) => p.label).sort().join(", ");
@@ -499,7 +516,8 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
     undefined;
 
   lines.push(...generateTextField(idPrefix + "-channelSelector", "channelSelector", "Channel Selector", channelSelectorValue,
-    { defaultValue: defs?.channelSelector, hint: channelSelectorHint, list: idPrefix + "-selectorList", placeholder: showHints ? "e.g., ESPN" : undefined }));
+    { defaultValue: defs?.channelSelector, hint: channelSelectorHint, isCustomized: customized?.has("channelSelector"),
+      list: idPrefix + "-selectorList", placeholder: showHints ? "e.g., ESPN" : undefined }));
 
   // Channel number for Channels DVR and Plex integration.
   const channelNumberHint = showHints ?
@@ -507,7 +525,8 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
     undefined;
 
   lines.push(...generateTextField(idPrefix + "-channelNumber", "channelNumber", "Channel Number", channelNumberValue,
-    { defaultValue: defs?.channelNumber, hint: channelNumberHint, placeholder: showHints ? "e.g., 501" : undefined }));
+    { defaultValue: defs?.channelNumber, hint: channelNumberHint, isCustomized: customized?.has("channelNumber"),
+      placeholder: showHints ? "e.g., 501" : undefined }));
 
   // Tags field: checkbox grid of the active tag vocabulary. Checked tags are collected into a hidden input as a comma-separated value on form submission.
   // This prevents users from entering tag names that don't exist in the managed vocabulary.
@@ -516,7 +535,8 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 
   if(vocabulary.length > 0) {
 
-    const tagsModified = (defs?.tags !== undefined) && (defs.tags !== tagsValue);
+    // Tags are an identity field stored on the canonical entry. Customization is presence in the canonical-stored entry, surfaced via customizedFields.
+    const tagsModified = customized?.has("tags") === true;
     const tagsModifiedClass = tagsModified ? " modified" : "";
     const tagsModifiedDot = tagsModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
     const tagsDefaultAttr = (defs?.tags !== undefined) ? " data-default=\"" + escapeHtml(defs.tags) + "\"" : "";
@@ -549,11 +569,12 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
   // HDHomeRun lineup inclusion. A hidden input provides the "false" value when the checkbox is unchecked (unchecked checkboxes are not submitted in FormData).
   // When checked, the checkbox value "true" overwrites the hidden input's "false" since it appears later in DOM order.
   const hdhrChecked = hdhrEnabled ? " checked" : "";
-  const hdhrDefaultEnabled = defs?.hdhrEnabled ?? true;
-  const hdhrModified = (defs?.hdhrEnabled !== undefined) && (hdhrEnabled !== hdhrDefaultEnabled);
+  // Customization is presence in stored deltas (identity field, lives on canonical entry); surfaced via customizedFields. The default value (when present)
+  // arrives pre-stringified as "true" or "false" from resetValueFor -> getEffectiveHdhrEnabled, so it goes directly into the data-default attribute.
+  const hdhrModified = customized?.has("hdhrEnabled") === true;
   const hdhrModifiedClass = hdhrModified ? " modified" : "";
   const hdhrModifiedDot = hdhrModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
-  const hdhrDefaultAttr = (defs?.hdhrEnabled !== undefined) ? " data-default=\"" + String(hdhrDefaultEnabled) + "\"" : "";
+  const hdhrDefaultAttr = (defs?.hdhrEnabled !== undefined) ? " data-default=\"" + defs.hdhrEnabled + "\"" : "";
   const hdhrHint = showHints ? "When unchecked, this channel is hidden from the HDHomeRun lineup and not available in Plex." : undefined;
 
   lines.push("<div class=\"form-row form-row-checkbox" + hdhrModifiedClass + "\">");
@@ -595,8 +616,15 @@ function generateChannelSelectorData(): string {
 
     // Use the resolved channel (with inheritance from the canonical) so stationId, name, and other inherited fields are populated correctly for variants.
     // The channelSelector is captured from the raw entry (already validated as non-null) to avoid non-null assertions on the resolved channel's optional field.
+    // resolvePredefinedVariant returns a fully-typed ResolvedChannel for both canonical and variant keys; defensive skip for the rare missing-canonical case.
     const selector = raw.channelSelector;
-    const channel = resolvePredefinedVariant(key) ?? raw;
+    const channel = resolvePredefinedVariant(key);
+
+    if(!channel) {
+
+      continue;
+    }
+
     const hostname = new URL(channel.url).hostname;
 
     seen[hostname] ??= new Set();
@@ -946,7 +974,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
     "</td>");
 
   // HDHR column: inline checkbox for quick toggling. The checkbox submits changes via the toggleHdhr() client-side function.
-  const hdhrCheckedAttr = (channel.hdhrEnabled !== false) ? " checked" : "";
+  const hdhrCheckedAttr = getEffectiveHdhrEnabled(channel) ? " checked" : "";
 
   displayLines.push("<td class=\"col-hdhr\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "hdhrEnabled")) +
     "\"><input type=\"checkbox\" data-key=\"" + cellKey + "\"" + hdhrCheckedAttr +
@@ -1083,50 +1111,92 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   editLines.push("<input type=\"hidden\" name=\"action\" value=\"edit\">");
   editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapedKey + "\">");
 
-  // For override channels, look up the predefined defaults so each field can show the "modified from defaults" indicator when its value differs. This applies
-  // the same visual treatment used by the settings form - border accent, blue dot, and per-field reset button - so users can immediately see which fields they
-  // customized and reset individual fields without reverting the entire channel.
-  const predefined = isOverride ? PREDEFINED_CHANNELS[key] : undefined;
-  const predefinedTags = predefined ? getChannelEffectiveTags(predefined).join(", ") : undefined;
+  // For override channels, fetch the customization provenance once. The accessor returns which fields the user has explicitly customized (across canonical and
+  // active-variant stored entries) and the per-field reset value (looked up from the appropriate predefined entry, with variant-inheritance fallback). This is
+  // the single source of truth for the modified-field treatment - it produces no false positives when service variants are resolved (the legacy value-comparison
+  // approach incorrectly flagged variant-resolved fields as customized just because the resolved value differed from the canonical predefined value).
+  //
+  // For non-override channels (predefined-only or pure user-defined), the customization concept does not apply: predefined-only channels have no user
+  // customizations to mark, and pure user channels have no predefined baseline to compare against. Both paths skip the accessor and pass undefined defaults.
+  const customizations = isOverride ? getChannelCustomizations(key).customizations : undefined;
+  const customizedFields = customizations ? new Set(customizations.keys()) : undefined;
+
+  // resetValueFor stringifies the raw resetValue from the accessor for use in input data-default attributes. Returns undefined when the field is not
+  // customized, signalling the field generators to skip data-default and the modified treatment entirely. Array values (tags) are joined with ", " to match
+  // the comma-separated form representation; primitive values are stringified normally; null/undefined become the empty string. Field parameter is typed as
+  // CustomizableField so the call sites below get compile-time validation that they reference real customizable fields.
+  const resetValueFor = (field: CustomizableField): string | undefined => {
+
+    const entry = customizations?.get(field);
+
+    if(!entry) {
+
+      return undefined;
+    }
+
+    const value = entry.resetValue;
+
+    if((value === undefined) || (value === null)) {
+
+      return "";
+    }
+
+    if(Array.isArray(value)) {
+
+      return value.join(", ");
+    }
+
+    if((typeof value === "string") || (typeof value === "number") || (typeof value === "boolean")) {
+
+      return String(value);
+    }
+
+    return "";
+  };
 
   // Channel name.
   editLines.push(...generateTextField("edit-name-" + key, "name", "Display Name", channel.name ?? key, {
 
-    defaultValue: predefined ? (predefined.name ?? key) : undefined,
+    defaultValue: resetValueFor("name"),
     hint: "Friendly name shown in the playlist and UI.",
+    isCustomized: customizedFields?.has("name"),
     required: true
   }));
 
   // Channel URL.
   editLines.push(...generateTextField("edit-url-" + key, "url", "Stream URL", channel.url, {
 
-    defaultValue: predefined?.url,
+    defaultValue: resetValueFor("url"),
     hint: "The URL of the streaming page to capture.",
+    isCustomized: customizedFields?.has("url"),
     required: true,
     type: "url"
   }));
 
   // Profile dropdown.
   editLines.push(...generateProfileDropdown("edit-profile-" + key, channel.profile ?? "", profiles, true,
-    isOverride ? (predefined?.profile ?? "") : undefined));
+    resetValueFor("profile"), customizedFields?.has("profile")));
 
-  // Advanced fields.
+  // Advanced fields. Every reset value flows through resetValueFor, which delegates to getChannelCustomizations -> computeResetValue. The accessor applies the
+  // effective-view rules (vocabulary-filtered tags, implicit-true hdhrEnabled) and looks up the right predefined source (canonical or variant with inheritance
+  // fallback) so the form sees a uniformly stringified default for every field.
   editLines.push(...generateAdvancedFields("edit-" + key, {
 
     channelNumberValue: channel.channelNumber ? String(channel.channelNumber) : "",
     channelSelectorValue: channel.channelSelector ?? "",
-    defaults: predefined ? {
+    customizedFields,
+    defaults: isOverride ? {
 
-      channelNumber: predefined.channelNumber ? String(predefined.channelNumber) : "",
-      channelSelector: predefined.channelSelector ?? "",
-      guideTitle: predefined.guideTitle ?? "",
-      hdhrEnabled: predefined.hdhrEnabled !== false,
-      logoUrl: predefined.logoUrl ?? "",
-      stationId: predefined.stationId ?? "",
-      tags: predefinedTags
+      channelNumber: resetValueFor("channelNumber"),
+      channelSelector: resetValueFor("channelSelector"),
+      guideTitle: resetValueFor("guideTitle"),
+      hdhrEnabled: resetValueFor("hdhrEnabled"),
+      logoUrl: resetValueFor("logoUrl"),
+      stationId: resetValueFor("stationId"),
+      tags: resetValueFor("tags")
     } : undefined,
     guideTitleValue: channel.guideTitle ?? "",
-    hdhrEnabled: channel.hdhrEnabled !== false,
+    hdhrEnabled: getEffectiveHdhrEnabled(channel),
     logoUrlValue: channel.logoUrl ?? "",
     stationIdValue: channel.stationId ?? "",
     tagsValue: effectiveTags.join(", ")
@@ -1267,7 +1337,7 @@ function getHdhrCounts(listing: ChannelListingEntry[]): { enabled: number; total
 
     total++;
 
-    if(entry.channel.hdhrEnabled !== false) {
+    if(getEffectiveHdhrEnabled(entry.channel)) {
 
       enabled++;
     }
@@ -1300,9 +1370,6 @@ function getTagCounts(listing: ChannelListingEntry[]): Record<string, { count: n
 
   const result: Record<string, { count: number; total: number }> = {};
   let total = 0;
-
-  // Pre-compute the vocabulary Set once for the per-channel effective tags filter.
-  const vocabularySet = new Set(vocabulary);
   const counts = new Map<string, number>();
 
   for(const tag of vocabulary) {
@@ -1319,7 +1386,9 @@ function getTagCounts(listing: ChannelListingEntry[]): Record<string, { count: n
 
     total++;
 
-    const effectiveTags = entry.channel.tags ? entry.channel.tags.filter((tag) => vocabularySet.has(tag)) : [];
+    // Use the canonical helper for vocabulary-filtered tags. Inline filtering would diverge from the rest of the codebase on the case-insensitive matching
+    // policy that getChannelEffectiveTags applies via tagsMatch.
+    const effectiveTags = getChannelEffectiveTags(entry.channel);
 
     for(const tag of effectiveTags) {
 

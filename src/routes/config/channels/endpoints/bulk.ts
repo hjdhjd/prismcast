@@ -7,7 +7,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { VALID_SORT_FIELDS, compareChannelSort } from "../../../../config/services.js";
-import { getVisibleChannels, isInVocabulary, isVisibleChannel, mutateChannels, tagsMatch,
+import { applyChannelDelta, getEffectiveHdhrEnabled, getVisibleChannels, isInVocabulary, isVisibleChannel, mutateChannels, tagsMatch,
   transformChannelTags } from "../../../../config/userChannels.js";
 import { sendError, sendSuccess, sendValidationError } from "../http/envelope.js";
 import type { ChannelSortField } from "../../../../types/index.js";
@@ -50,17 +50,17 @@ export function registerBulkRoutes(app: Express): void {
 
     const affectedKeys: string[] = [];
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
+      // Bulk channelNumber operations target canonical entries: channelNumber is identity (canonical-only by architectural principle), and getVisibleChannels
+      // filters out variants so listing entries are always canonical keys. applyChannelDelta merges the partial delta with any existing stored entry, handling
+      // both the "no entry exists yet" and "entry exists with prior overrides" cases without per-call casts.
       if(clearMode) {
 
         // Clear channel numbers from all visible channels. Null signals "clear this field" - the normalizer handles the storage conventions.
         for(const entry of listing) {
 
-          const existing = channels[entry.key] ?? {};
-
-          existing.channelNumber = null;
-          channels[entry.key] = existing;
+          data.channels[entry.key] = applyChannelDelta(data.channels[entry.key], { channelNumber: null });
           affectedKeys.push(entry.key);
         }
 
@@ -77,10 +77,7 @@ export function registerBulkRoutes(app: Express): void {
           break;
         }
 
-        const existing = channels[entry.key] ?? {};
-
-        existing.channelNumber = num;
-        channels[entry.key] = existing;
+        data.channels[entry.key] = applyChannelDelta(data.channels[entry.key], { channelNumber: num });
         affectedKeys.push(entry.key);
       }
     });
@@ -109,7 +106,7 @@ export function registerBulkRoutes(app: Express): void {
     // Pre-compute which channels need updating. The listing snapshot is consistent since no concurrent mutation can change it before we enter the lock.
     for(const entry of listing) {
 
-      const current = entry.channel.hdhrEnabled !== false;
+      const current = getEffectiveHdhrEnabled(entry.channel);
 
       if(current === enable) {
 
@@ -126,14 +123,13 @@ export function registerBulkRoutes(app: Express): void {
       return;
     }
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
+      // Same canonical-only narrowing as the channel-number bulk endpoint: hdhrEnabled is identity (canonical-only), and getVisibleChannels filters out
+      // variants so listing keys are always canonical. applyChannelDelta handles the merge with any existing stored entry.
       for(const key of affectedKeys) {
 
-        const existing = channels[key] ?? {};
-
-        existing.hdhrEnabled = enable ? null : false;
-        channels[key] = existing;
+        data.channels[key] = applyChannelDelta(data.channels[key], { hdhrEnabled: enable ? null : false });
       }
     });
 

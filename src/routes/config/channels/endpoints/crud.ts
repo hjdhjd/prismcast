@@ -12,16 +12,18 @@
  *   POST   /config/channels/:key/revert      - Revert a predefined channel override to defaults.
  *   PATCH  /config/channels/:key             - Partial update (inline cell edits: channelNumber, stationId, hdhrEnabled, tags).
  */
-import type { Channel, ChannelDelta } from "../../../../types/index.js";
+import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS } from "../../../../types/index.js";
+import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.js";
 import type { Express, Request, Response } from "express";
 import { LOG, sanitizeString } from "../../../../utils/index.js";
-import { type UserChannel, getPredefinedChannel, isPredefinedChannel, isUserChannel, mutateChannels, parseTagInput, sortTags, validateChannelKey,
-  validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl } from "../../../../config/userChannels.js";
+import { type UserChannel, clearChannelOverrides, getPredefinedChannel, isPredefinedChannel, isUserChannel, mutateChannels, parseTagInput, sortTags,
+  validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl } from "../../../../config/userChannels.js";
 import { channelMatches, computePredefinedDelta, findMatchingVariant } from "../../../../config/channelForm.js";
-import { getResolvedChannel, resolveServiceKey, setServiceSelection } from "../../../../config/services.js";
+import { getResolvedChannel, resolveServiceKey } from "../../../../config/services.js";
 import { playlistHintForChange, playlistHintForDelta, playlistHintForStored } from "../http/playlistHint.js";
 import { sendFormErrors, sendSuccess, sendValidationError } from "../http/envelope.js";
 import type { ChannelFormValues } from "../../../../config/channelForm.js";
+import { PREDEFINED_CHANNELS } from "../../../../channels/index.js";
 import { buildServiceFilterWarning } from "../http/serviceWarning.js";
 import { getProfiles } from "../../../../config/profiles.js";
 import { route } from "../http/handler.js";
@@ -190,19 +192,74 @@ function buildUserChannelFromForm(formValues: ChannelFormValues, tags: readonly 
   return channel;
 }
 
+/* Field category sets used by handlePredefinedEdit to route per-field saves to the correct stored entry. Identity fields live on the canonical entry; binding
+ * fields live on the active variant entry (when a non-canonical service is resolved) or the canonical entry (when canonical is active). Built once from the
+ * type-system source of truth so renaming or adding a field surfaces here at compile time via the as-const tuples in types/channels.ts.
+ */
+const IDENTITY_FIELD_SET = new Set<string>(CHANNEL_IDENTITY_KEYS);
+const BINDING_FIELD_SET = new Set<string>(CHANNEL_BINDING_KEYS);
+
 /**
- * Handles PUT /config/channels/:key for a channel that has a predefined base. Computes the delta, detects no-op/implicit-revert/variant-revert cases, and
- * returns the response envelope. Separated from the main handler to keep the decision tree readable.
- * @param key - The channel key being edited.
+ * Filters a delta to only the fields in the allowlist. Used to split a full delta into identity-only and binding-only halves so the routed save can write
+ * each half to the correct stored entry.
+ */
+function filterDeltaFields(delta: ChannelDelta, allowlist: ReadonlySet<string>): ChannelDelta {
+
+  const filtered: Record<string, unknown> = {};
+
+  for(const [ field, value ] of Object.entries(delta)) {
+
+    if(allowlist.has(field)) {
+
+      filtered[field] = value;
+    }
+  }
+
+  return filtered;
+}
+
+/**
+ * Applies the new variant-binding delta to an existing variant stored entry while preserving any non-binding fields the entry already carries (notably
+ * canonicalKey). Removes any prior binding-field overrides that the new delta does not include - the new delta is the complete declaration of binding-field
+ * customization for this save. Returns null when the resulting entry would be empty (no binding overrides, no preserved non-binding fields), signalling the
+ * caller to delete the entry entirely.
+ */
+function applyVariantDelta(existing: StoredChannel | undefined, delta: ChannelDelta): StoredChannel | null {
+
+  const next: Record<string, unknown> = { ...(existing as Record<string, unknown> | undefined) };
+
+  // Strip prior binding-field overrides; the new delta is authoritative for this category.
+  for(const field of CHANNEL_BINDING_KEYS) {
+
+    Reflect.deleteProperty(next, field);
+  }
+
+  // Apply the new binding-field overrides.
+  Object.assign(next, delta);
+
+  return (Object.keys(next).length > 0) ? next : null;
+}
+
+/**
+ * Handles PUT /config/channels/:key for a channel that has a predefined base. Routes the submitted form values to the correct stored entry per field category:
+ * identity fields go to the canonical entry; binding fields go to the active variant entry (when a non-canonical service is resolved via explicit selection or
+ * service-filter fallback) or the canonical entry (when canonical service is active). All writes happen in a single atomic mutate so per-field routing is
+ * indistinguishable from a single transaction.
+ *
+ * The form's "no changes" detection compares submitted values against the resolved display channel (which may be a variant), so saving without modifications is
+ * a true no-op even when a variant is active. The "values match predefined" path is an implicit revert: with a variant active, both stored entries (canonical
+ * override and variant override) are deleted; without a variant, only the canonical entry is deleted. The "values match a sibling variant" path is unchanged -
+ * it switches the service selection to that variant and clears the canonical override.
+ * @param key - The canonical channel key being edited.
  * @param predefinedBase - The canonical predefined channel for this key.
  * @param formValues - The normalized form values.
  * @param tags - The sorted tag array.
  * @param res - The Express response.
  */
-async function handlePredefinedEdit(key: string, predefinedBase: Channel, formValues: ChannelFormValues, tags: readonly string[], res: Response): Promise<void> {
+async function handlePredefinedEdit(key: string, predefinedBase: ResolvedChannel, formValues: ChannelFormValues, tags: readonly string[], res: Response): Promise<void> {
 
   // First check: does the submission match what the form showed? The edit form is pre-populated with the resolved display channel (which may be a variant), so
-  // saving without modification should be a no-op - preserve the existing override.
+  // saving without modification should be a no-op - preserve all existing overrides on both entries.
   const resolvedKey = resolveServiceKey(key);
   const displayChannel = getResolvedChannel(resolvedKey) ?? predefinedBase;
 
@@ -213,26 +270,35 @@ async function handlePredefinedEdit(key: string, predefinedBase: Channel, formVa
     return;
   }
 
-  // Second check: compute the delta vs the canonical predefined.
-  const { delta, hasChanges } = computePredefinedDelta(predefinedBase, formValues, tags);
+  // Determine the active variant. Undefined when the canonical service is active (no override needed); otherwise the variant key the canonical resolves to.
+  const activeVariantKey = (resolvedKey === key) ? undefined : resolvedKey;
+  const predefinedVariant = activeVariantKey ? PREDEFINED_CHANNELS[activeVariantKey] : undefined;
 
-  if(!hasChanges) {
+  // Compute the canonical-relative delta. This determines the no-op-vs-canonical case (revert path) and supplies identity-field values for the canonical
+  // entry. With a variant active, binding-field values in this delta are computed against canonical's binding (e.g., Cox URL) - those values are not what we
+  // want to store; the variant-relative delta below has the correct binding-field comparisons.
+  const { delta: canonicalRelativeDelta, hasChanges: canonicalHasChanges } = computePredefinedDelta(predefinedBase, formValues, tags);
 
-    // Submitted values match the predefined base exactly. If an override exists, treat as implicit revert.
-    if(isUserChannel(key)) {
+  if(!canonicalHasChanges) {
 
-      let revertHint = "";
+    // Submitted values match the canonical predefined exactly. With a variant active, this means the user has cleared all customizations from both entries
+    // (identity and binding both equal canonical) - delete both entries. Without a variant, only the canonical entry exists to delete. Both cases route through
+    // the shared clearChannelOverrides helper.
+    const hasCanonicalEntry = isUserChannel(key);
+    const hasVariantEntry = activeVariantKey ? isUserChannel(activeVariantKey) : false;
 
-      await mutateChannels((channels) => {
+    if(hasCanonicalEntry || hasVariantEntry) {
 
-        revertHint = playlistHintForStored(channels[key]);
+      let clearedEntry: StoredChannel | undefined;
 
-        Reflect.deleteProperty(channels, key);
+      await mutateChannels((data) => {
+
+        clearedEntry = clearChannelOverrides(data.channels, key);
       });
 
       LOG.info("Channel '%s' reverted to predefined defaults (edit matched predefined values).", key);
 
-      sendSuccess(res, { affectedKeys: [key], data: { key }, message: "Channel '" + key + "' reverted to defaults." + revertHint });
+      sendSuccess(res, { affectedKeys: [key], data: { key }, message: "Channel '" + key + "' reverted to defaults." + playlistHintForStored(clearedEntry) });
 
       return;
     }
@@ -242,21 +308,29 @@ async function handlePredefinedEdit(key: string, predefinedBase: Channel, formVa
     return;
   }
 
-  // Third check: do the values match a sibling variant's predefined definition? That's an implicit revert-to-variant, not a new custom override.
+  // Sibling variant match: the submitted values match a different variant's predefined definition exactly. That's an implicit revert-to-that-variant -
+  // delete the canonical override and switch the service selection. Variant-stored overrides on the active variant are also cleared since the user is
+  // explicitly reverting to a sibling.
   const matchedVariantKey = isUserChannel(key) ? findMatchingVariant(key, formValues, tags) : undefined;
 
   if(matchedVariantKey) {
 
     let variantRevertHint = "";
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
-      variantRevertHint = playlistHintForStored(channels[key]);
+      variantRevertHint = playlistHintForStored(data.channels[key]);
 
-      Reflect.deleteProperty(channels, key);
+      Reflect.deleteProperty(data.channels, key);
+
+      // Clear any stored override on the previously-active variant since the user is switching away from it.
+      if(activeVariantKey && (activeVariantKey !== matchedVariantKey)) {
+
+        Reflect.deleteProperty(data.channels, activeVariantKey);
+      }
+
+      data.serviceSelections[key] = matchedVariantKey;
     });
-
-    setServiceSelection(key, matchedVariantKey);
 
     LOG.info("Channel '%s' reverted to variant '%s' (edit matched variant values).", key, matchedVariantKey);
 
@@ -265,13 +339,48 @@ async function handlePredefinedEdit(key: string, predefinedBase: Channel, formVa
     return;
   }
 
-  // No match - store the delta and switch the service selection to the canonical key so the service dropdown shows "Custom".
-  setServiceSelection(key, key);
+  // Real edit. Route per-field to the correct stored entry. With a variant active: identity fields go to canonical, binding fields go to variant (computed
+  // against the predefined variant's binding values, since that's the right baseline for the variant entry). Without a variant: everything goes to canonical
+  // as before.
+  if(activeVariantKey && predefinedVariant) {
 
-  await mutateChannels((channels) => {
+    const { delta: variantRelativeDelta } = computePredefinedDelta(predefinedVariant, formValues, tags);
 
-    channels[key] = delta;
-  });
+    const canonicalEntryDelta = filterDeltaFields(canonicalRelativeDelta, IDENTITY_FIELD_SET);
+    const variantEntryDelta = filterDeltaFields(variantRelativeDelta, BINDING_FIELD_SET);
+
+    await mutateChannels((data) => {
+
+      // Canonical entry: replace with identity-only delta. Empty delta -> remove the entry.
+      if(Object.keys(canonicalEntryDelta).length > 0) {
+
+        data.channels[key] = canonicalEntryDelta;
+      } else {
+
+        Reflect.deleteProperty(data.channels, key);
+      }
+
+      // Variant entry: merge binding-only delta with the entry's preserved non-binding fields (notably canonicalKey). Empty result -> remove the entry.
+      const next = applyVariantDelta(data.channels[activeVariantKey], variantEntryDelta);
+
+      if(next) {
+
+        data.channels[activeVariantKey] = next;
+      } else {
+
+        Reflect.deleteProperty(data.channels, activeVariantKey);
+      }
+    });
+  } else {
+
+    // No variant active - everything routes to canonical. The service selection is cleared so the dropdown reflects the "Custom" state if the user has now
+    // diverged from any sibling variant.
+    await mutateChannels((data) => {
+
+      data.channels[key] = canonicalRelativeDelta;
+      Reflect.deleteProperty(data.serviceSelections, key);
+    });
+  }
 
   LOG.info("User channel '%s' updated.", key);
 
@@ -284,7 +393,7 @@ async function handlePredefinedEdit(key: string, predefinedBase: Channel, formVa
 
     affectedKeys: [key],
     data: { key },
-    message: "Channel '" + key + "' updated successfully." + playlistHintForDelta(delta)
+    message: "Channel '" + key + "' updated successfully." + playlistHintForDelta(canonicalRelativeDelta)
   });
 }
 
@@ -320,9 +429,9 @@ export function registerCrudRoutes(app: Express): void {
 
     const channel = buildUserChannelFromForm(formValues, tags);
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
-      channels[key] = channel;
+      data.channels[key] = channel;
     });
 
     if(formValues.stationId) {
@@ -380,11 +489,13 @@ export function registerCrudRoutes(app: Express): void {
     const channel = buildUserChannelFromForm(formValues, tags);
     let playlistHint = "";
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
-      const oldChannel = (key in channels) ? channels[key] as Channel : undefined;
+      // User-only path: the entry is structurally a CanonicalChannel (no predefined exists for this key), which assigns to ResolvedChannel for the
+      // playlistHintForChange comparison below.
+      const oldChannel = (key in data.channels) ? data.channels[key] as ResolvedChannel : undefined;
 
-      channels[key] = channel;
+      data.channels[key] = channel;
       playlistHint = playlistHintForChange(oldChannel, channel);
     });
 
@@ -422,9 +533,9 @@ export function registerCrudRoutes(app: Express): void {
       return;
     }
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
-      Reflect.deleteProperty(channels, key);
+      Reflect.deleteProperty(data.channels, key);
     });
 
     LOG.info("User channel '%s' deleted.", key);
@@ -438,7 +549,10 @@ export function registerCrudRoutes(app: Express): void {
     });
   }));
 
-  // POST /config/channels/:key/revert - Remove the override of a predefined channel, restoring it to defaults.
+  // POST /config/channels/:key/revert - Remove the override of a predefined channel, restoring it to defaults. Mirrors the PUT handler's per-field routing model
+  // in reverse: revert clears both the canonical-stored override (identity fields) and the active-variant-stored override (binding fields), since either one
+  // alone would leave the channel in a partially-customized state. The active variant is determined by resolveServiceKey, so service-filter fallback and explicit
+  // service selection both surface the variant entry that needs clearing.
   app.post("/config/channels/:key/revert", route("revert channel", async (req: Request, res: Response) => {
 
     const key = (req.params as { key?: string }).key?.trim();
@@ -457,20 +571,26 @@ export function registerCrudRoutes(app: Express): void {
       return;
     }
 
-    if(!isUserChannel(key)) {
+    // Determine the active variant. Undefined when the canonical service is active (no variant override possible); otherwise the variant key the canonical
+    // resolves to via explicit service selection or service-filter fallback.
+    const resolvedKey = resolveServiceKey(key);
+    const activeVariantKey = (resolvedKey === key) ? undefined : resolvedKey;
+
+    const hasCanonicalEntry = isUserChannel(key);
+    const hasVariantEntry = activeVariantKey ? isUserChannel(activeVariantKey) : false;
+
+    if(!hasCanonicalEntry && !hasVariantEntry) {
 
       sendValidationError(res, "Cannot revert '" + key + "': no override exists.");
 
       return;
     }
 
-    let revertHint = "";
+    let clearedEntry: StoredChannel | undefined;
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
-      revertHint = playlistHintForStored(channels[key]);
-
-      Reflect.deleteProperty(channels, key);
+      clearedEntry = clearChannelOverrides(data.channels, key);
     });
 
     LOG.info("Channel '%s' reverted to predefined defaults.", key);
@@ -479,7 +599,7 @@ export function registerCrudRoutes(app: Express): void {
 
       affectedKeys: [key],
       data: { key },
-      message: "Channel '" + key + "' reverted to defaults." + revertHint
+      message: "Channel '" + key + "' reverted to defaults." + playlistHintForStored(clearedEntry)
     });
   }));
 
@@ -541,11 +661,11 @@ export function registerCrudRoutes(app: Express): void {
       }
     }
 
-    await mutateChannels((channels) => {
+    await mutateChannels((data) => {
 
       // The inline-edit endpoint writes scalar override fields that all align with ChannelDelta's nullable shape. Reuse the stored entry when present so
       // existing fields survive, otherwise start from an empty delta. mutateChannels() persists the resulting record either way.
-      const stored: ChannelDelta = channels[key] ?? {};
+      const stored: ChannelDelta = data.channels[key] ?? {};
       const delta = stored;
 
       switch(field) {
@@ -584,7 +704,7 @@ export function registerCrudRoutes(app: Express): void {
         }
       }
 
-      channels[key] = stored;
+      data.channels[key] = stored;
     });
 
     const fieldLabel = INLINE_EDIT_LABELS[field];

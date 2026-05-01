@@ -15,7 +15,7 @@
  */
 import type { ChannelDelta, ResolvedChannel } from "../types/index.js";
 import { PREDEFINED_SUFFIX, getServiceGroup, resolvePredefinedVariant } from "./services.js";
-import { getChannelEffectiveTags, sortTags } from "./userChannels.js";
+import { getChannelEffectiveTags, getEffectiveHdhrEnabled, sortTags } from "./userChannels.js";
 
 /**
  * Case-insensitive order-independent comparison of two tag arrays. Delegates ordering to sortTags so the case-insensitive locale-aware sort policy lives in
@@ -82,7 +82,7 @@ function channelScalar(channel: ResolvedChannel, field: FormScalarField): boolea
 
     case "hdhrEnabled": {
 
-      return channel.hdhrEnabled !== false;
+      return getEffectiveHdhrEnabled(channel);
     }
 
     default: {
