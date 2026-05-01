@@ -3,8 +3,8 @@
  * userConfig.ts: User configuration file management for PrismCast.
  */
 import type { Config, Nullable } from "../types/index.js";
+import { type Migration, createFileStore } from "./persistence.js";
 import type { CliOverrides } from "./index.js";
-import { createFileStore } from "./persistence.js";
 import { getConfigFilePath } from "./paths.js";
 import { getValidPresetIds } from "./presets.js";
 
@@ -732,7 +732,8 @@ export interface UserPathsConfig {
 }
 
 /**
- * User configuration with all fields optional. This is the structure of the config.json file.
+ * User configuration with all fields optional. This is the structure of the config.json file. The schemaVersion and migrationsApplied fields are managed by
+ * the file store framework's migration runner; consumers should treat them as opaque metadata.
  */
 export interface UserConfig {
 
@@ -746,9 +747,17 @@ export interface UserConfig {
   hdhr?: UserHdhrConfig;
   hls?: UserHLSConfig;
   logging?: UserLoggingConfig;
+
+  // Audit trail of schema migrations applied to this file, in order. Managed by the file store framework's migration runner.
+  migrationsApplied?: string[];
+
   paths?: UserPathsConfig;
   playback?: UserPlaybackConfig;
   recovery?: UserRecoveryConfig;
+
+  // Schema version. Managed by the file store framework's migration runner. Files predating this field are treated as version 1.
+  schemaVersion?: number;
+
   server?: UserServerConfig;
   streaming?: UserStreamingConfig;
 }
@@ -773,20 +782,89 @@ export interface UserConfigLoadResult {
  * All config modifications go through mutateConfig(), which prevents the class of bugs where a corrupt file gets silently overwritten with nearly-empty data.
  */
 
+/* Current schema version for config.json. Migrations are declared in configMigrations below; the framework runs them in order from the file's stored version
+ * up to this constant, stamps the new version after each, and records the audit trail in migrationsApplied.
+ *
+ * Version history:
+ *   1 - Original. Provider-themed channel field names ("enabledProviders", "precacheProviders") and "foxcom" service tag still present.
+ *   2 - Service-themed naming. Renames "enabledProviders" -> "enabledServices", "precacheProviders" -> "precacheServices", and "foxcom" -> "foxone" inside
+ *       the channels.enabledServices array. Companion to channels.json v3 which renames foxcom in channel keys and selections.
+ */
+const CURRENT_CONFIG_SCHEMA_VERSION = 2;
+
+/* Declarative schema migrations. The file store framework runs these in order from the file's stored schemaVersion up to CURRENT_CONFIG_SCHEMA_VERSION,
+ * stamping the new version and recording the description in migrationsApplied after each application. Apply functions mutate the data in place.
+ */
+const configMigrations: Record<number, Migration<UserConfig>> = {
+
+  2: {
+
+    apply: (data: UserConfig): void => {
+
+      // Cast to a permissive shape because the legacy provider-themed keys are not declared on UserChannelsConfig - they only exist on older on-disk files.
+      const channels = data.channels as Record<string, unknown> | undefined;
+
+      if(!channels) {
+
+        return;
+      }
+
+      // Rename enabledProviders -> enabledServices. If both are present (rare hand-edited case) the current name wins.
+      if(Array.isArray(channels.enabledProviders)) {
+
+        if(!Array.isArray(channels.enabledServices)) {
+
+          channels.enabledServices = channels.enabledProviders;
+        }
+
+        delete channels.enabledProviders;
+      }
+
+      // Rename precacheProviders -> precacheServices.
+      if(Array.isArray(channels.precacheProviders)) {
+
+        if(!Array.isArray(channels.precacheServices)) {
+
+          channels.precacheServices = channels.precacheProviders;
+        }
+
+        delete channels.precacheProviders;
+      }
+
+      // Rename "foxcom" -> "foxone" inside the enabledServices service-tag filter.
+      if(Array.isArray(channels.enabledServices)) {
+
+        channels.enabledServices = (channels.enabledServices as string[]).map((tag) => (tag === "foxcom") ? "foxone" : tag);
+      }
+    },
+    description: "Rename legacy provider-themed channel field names and foxcom service tag to foxone"
+  }
+};
+
 // Transactional store instance for config.json. The beforeWrite hook is the single chokepoint where the persisted shape is normalized: filterDefaults() runs on
-// every save so the file on disk contains only non-default values, regardless of which call site initiated the write.
+// every save so the file on disk contains only non-default values, regardless of which call site initiated the write. Schema migrations run automatically via
+// the file store framework's migration runner before the data reaches mergeConfiguration.
 const configStore = createFileStore<UserConfig>({
 
   beforeWrite: (data: UserConfig): UserConfig => filterDefaults(data),
-  defaultValue: (): UserConfig => ({}),
+  currentSchemaVersion: CURRENT_CONFIG_SCHEMA_VERSION,
+  defaultValue: (): UserConfig => ({ schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION }),
+  getSchemaVersion: (data: UserConfig): number => data.schemaVersion ?? 1,
   label: "configuration",
+  migrations: configMigrations,
   parse: (raw: string): UserConfig => JSON.parse(raw) as UserConfig,
-  path: getConfigFilePath
+  path: getConfigFilePath,
+  recordMigration: (data: UserConfig, description: string): void => {
+
+    data.migrationsApplied ??= [];
+    data.migrationsApplied.push(description);
+  },
+  setSchemaVersion: (data: UserConfig, version: number): void => { data.schemaVersion = version; }
 });
 
 /**
- * Reads the current configuration from disk without acquiring the serialization lock. Returns the parsed config with parse status. Use this for read-only
- * access (export endpoints, startup initialization). For modifications, use mutateConfig() instead.
+ * Reads the current configuration from disk without acquiring the serialization lock. Returns the parsed (and migrated) config with parse status. Use this for
+ * read-only access (export endpoints, startup initialization). For modifications, use mutateConfig() instead.
  * @returns The loaded configuration with parse status.
  */
 export async function readConfig(): Promise<UserConfigLoadResult> {
@@ -797,11 +875,10 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
 }
 
 /**
- * Serialized read-modify-write operation on config.json. The mutation function receives the current config and modifies it in place. The store handles
- * atomicity (temp file + rename), serialization (promise chain), corruption guard (throws on parse error), backup (.bak rotation), and filterDefaults
- * (beforeWrite hook).
+ * Serialized read-modify-write operation on config.json. The mutation function receives the current config (already migrated to the latest schema version) and
+ * modifies it in place. The store handles atomicity, serialization, corruption guard, backup, schema migration, and filterDefaults via the framework.
  * @param fn - Mutation function. Receives current config. Modify in place; return value is ignored.
- * @throws FileStoreParseError if config.json contains invalid JSON.
+ * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists.
  */
 export async function mutateConfig(fn: (current: UserConfig) => void): Promise<void> {
 
@@ -1079,23 +1156,16 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
     config.channels.disabledPredefined = [...userConfig.channels.disabledPredefined];
   }
 
-  // Accept both new field names and legacy field names for backward compatibility with existing config.json files.
-  const channelsRaw = userConfig.channels as Record<string, unknown> | undefined;
-
+  // The schema migration runner has already renamed any legacy provider-themed field names to their current service-themed equivalents before mergeConfiguration
+  // sees the data. Spread copies prevent shared references between the user config and runtime config.
   if(Array.isArray(userConfig.channels?.enabledServices)) {
 
     config.channels.enabledServices = [...userConfig.channels.enabledServices];
-  } else if(Array.isArray(channelsRaw?.enabledProviders)) {
-
-    config.channels.enabledServices = [...channelsRaw.enabledProviders as string[]];
   }
 
   if(Array.isArray(userConfig.channels?.precacheServices)) {
 
     config.channels.precacheServices = [...userConfig.channels.precacheServices];
-  } else if(Array.isArray(channelsRaw?.precacheProviders)) {
-
-    config.channels.precacheServices = [...channelsRaw.precacheProviders as string[]];
   }
 
   if(Array.isArray(userConfig.channels?.visibleColumns)) {
@@ -1560,6 +1630,18 @@ export function filterDefaults(config: UserConfig): UserConfig {
   if((typeof config.dvrHost === "string") && (config.dvrHost.length > 0)) {
 
     filtered.dvrHost = config.dvrHost;
+  }
+
+  // Preserve framework-managed metadata so the migration audit trail and schema version survive every write. Without these the allowlist-based filter would
+  // strip them on the very first save after a migration runs, undoing the version stamp.
+  if(typeof config.schemaVersion === "number") {
+
+    filtered.schemaVersion = config.schemaVersion;
+  }
+
+  if(Array.isArray(config.migrationsApplied) && (config.migrationsApplied.length > 0)) {
+
+    filtered.migrationsApplied = config.migrationsApplied;
   }
 
   // Remove any empty nested objects that resulted from filtering.

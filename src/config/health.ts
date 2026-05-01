@@ -2,13 +2,11 @@
  *
  * health.ts: Channel health and domain authentication state persistence for PrismCast.
  */
-import { LOG, stringifySorted } from "../utils/index.js";
 import { EventEmitter } from "node:events";
+import { LOG } from "../utils/index.js";
 import type { Nullable } from "../types/index.js";
-import fs from "node:fs";
+import { createFileStore } from "./persistence.js";
 import { getHealthFilePath } from "./paths.js";
-
-const { promises: fsPromises } = fs;
 
 /* This module tracks two kinds of observed state:
  *
@@ -46,6 +44,12 @@ interface HealthState {
 
   // Domain auth entries are just timestamps. The presence of a non-expired entry means "verified authenticated."
   domains: Record<string, number>;
+
+  // Audit trail of schema migrations applied to this file. Managed by the file store framework's migration runner.
+  migrationsApplied: string[];
+
+  // Schema version. Managed by the file store framework's migration runner. Files predating this field are treated as version 1.
+  schemaVersion: number;
 }
 
 /**
@@ -96,72 +100,113 @@ let flushTimer: Nullable<ReturnType<typeof setTimeout>> = null;
 
 // Persistence.
 
+/* Current schema version for health.json. No migrations are required today (the v1.5.0 absent-field guards moved into the parser already cover legacy reads),
+ * but the framework metadata is still maintained so future migrations can be added trivially.
+ */
+const CURRENT_HEALTH_SCHEMA_VERSION = 1;
+
+/* Transactional store for health.json. The parser tolerates the absence of either top-level data field so older files (and partial writes from prior versions
+ * predating both keys) load cleanly. The beforeWrite hook emits framework metadata alongside the data; data fields are emitted unconditionally since the
+ * runtime always populates them on every flush.
+ */
+const healthStore = createFileStore<HealthState>({
+
+  beforeWrite: (data: HealthState): unknown => {
+
+    const output: Record<string, unknown> = { channels: data.channels, domains: data.domains, schemaVersion: data.schemaVersion };
+
+    if(data.migrationsApplied.length > 0) {
+
+      output.migrationsApplied = data.migrationsApplied;
+    }
+
+    return output;
+  },
+  currentSchemaVersion: CURRENT_HEALTH_SCHEMA_VERSION,
+  defaultValue: (): HealthState => ({ channels: {}, domains: {}, migrationsApplied: [], schemaVersion: CURRENT_HEALTH_SCHEMA_VERSION }),
+  getSchemaVersion: (data: HealthState): number => data.schemaVersion,
+  label: "health state",
+  parse: (raw: string): HealthState => {
+
+    const parsed = JSON.parse(raw) as Partial<HealthState>;
+
+    let schemaVersion = 1;
+
+    if((typeof parsed.schemaVersion === "number") && Number.isFinite(parsed.schemaVersion) && (parsed.schemaVersion >= 1)) {
+
+      schemaVersion = Math.floor(parsed.schemaVersion);
+    }
+
+    const migrationsApplied: string[] = [];
+
+    if(Array.isArray(parsed.migrationsApplied)) {
+
+      for(const entry of parsed.migrationsApplied) {
+
+        if(typeof entry === "string") {
+
+          migrationsApplied.push(entry);
+        }
+      }
+    }
+
+    return {
+
+      channels: parsed.channels ?? {},
+      domains: parsed.domains ?? {},
+      migrationsApplied,
+      schemaVersion
+    };
+  },
+  path: getHealthFilePath,
+  setSchemaVersion: (data: HealthState, version: number): void => { data.schemaVersion = version; }
+});
+
 /**
- * Loads the health state from health.json into memory. Entries older than HEALTH_TTL are pruned during loading. Called once at startup from app.ts.
+ * Loads the health state from health.json into memory. Entries older than HEALTH_TTL are pruned during loading. Called once at startup from app.ts. Captures
+ * a versioned snapshot of the file before reading so a release-introduced regression has a guaranteed restore point.
  */
 export async function loadHealthState(): Promise<void> {
 
-  try {
+  const result = await healthStore.read();
 
-    const content = await fsPromises.readFile(getHealthFilePath(), "utf-8");
-    const state = JSON.parse(content) as HealthState;
+  channelHealth.clear();
+  domainAuth.clear();
 
-    channelHealth.clear();
-    domainAuth.clear();
+  for(const [ key, entry ] of Object.entries(result.data.channels)) {
 
-    // Load channel health entries, pruning stale ones. Runtime guard needed because the file may contain incomplete JSON.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if(state.channels) {
+    if(!isHealthExpired(entry.timestamp)) {
 
-      for(const [ key, entry ] of Object.entries(state.channels)) {
-
-        if(!isHealthExpired(entry.timestamp)) {
-
-          channelHealth.set(key, entry);
-        }
-      }
+      channelHealth.set(key, entry);
     }
+  }
 
-    // Load domain auth entries (timestamps), pruning stale ones. Runtime guard needed because the file may contain incomplete JSON.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if(state.domains) {
+  for(const [ key, timestamp ] of Object.entries(result.data.domains)) {
 
-      for(const [ key, timestamp ] of Object.entries(state.domains)) {
+    if(!isHealthExpired(timestamp)) {
 
-        if(!isHealthExpired(timestamp)) {
-
-          domainAuth.set(key, timestamp);
-        }
-      }
+      domainAuth.set(key, timestamp);
     }
+  }
 
-    const channelCount = channelHealth.size;
-    const domainCount = domainAuth.size;
+  if(result.recoveredFromBackup) {
 
-    if((channelCount > 0) || (domainCount > 0)) {
+    LOG.info("Health state was recovered from backup after a corrupt main file.");
+  }
 
-      LOG.info("Loaded health state: %d channel(s), %d domain(s).", channelCount, domainCount);
-    }
-  } catch(error) {
+  const channelCount = channelHealth.size;
+  const domainCount = domainAuth.size;
 
-    // File doesn't exist - this is normal on first run.
-    if((error as NodeJS.ErrnoException).code === "ENOENT") {
+  if((channelCount > 0) || (domainCount > 0)) {
 
-      return;
-    }
-
-    LOG.warn("Failed to load health state: %s. Starting with empty health data.", (error instanceof Error) ? error.message : String(error));
+    LOG.info("Loaded health state: %d channel(s), %d domain(s).", channelCount, domainCount);
   }
 }
 
-// Whether a write is currently in progress. When true, the debounce timer defers instead of starting a concurrent write. After the write completes, if a flush was
-// requested during the write, a new write is triggered immediately to capture the latest state.
-let writeInProgress = false;
-let flushPendingDuringWrite = false;
-
 /**
- * Writes the current in-memory health state to health.json. Debounced - multiple calls within FLUSH_DELAY are coalesced into a single write. If a write is already
- * in progress, the flush is deferred until the current write completes, then re-triggered to capture any state changes that occurred during the write.
+ * Writes the current in-memory health state to health.json via the transactional file store. Debounced - multiple calls within FLUSH_DELAY are coalesced into a
+ * single write. The store's serialization queue handles the case where a flush fires while a prior mutation is still in flight, so no in-module write-in-progress
+ * tracking is needed.
  */
 function flushHealthState(): void {
 
@@ -170,39 +215,18 @@ function flushHealthState(): void {
     clearTimeout(flushTimer);
   }
 
-  // If a write is in progress, mark that a flush was requested so it re-triggers after the write completes. This prevents overlapping writes to the same file.
-  if(writeInProgress) {
-
-    flushPendingDuringWrite = true;
-
-    return;
-  }
-
   flushTimer = setTimeout(() => {
 
     flushTimer = null;
-    writeInProgress = true;
 
-    const state: HealthState = {
+    void healthStore.mutate((state) => {
 
-      channels: Object.fromEntries(channelHealth),
-      domains: Object.fromEntries(domainAuth)
-    };
-
-    fsPromises.writeFile(getHealthFilePath(), stringifySorted(state) + "\n", "utf-8").catch((error: unknown) => {
+      // Replace the on-disk state with a fresh snapshot of the in-memory maps. Health writes always emit the full state - there is no per-key delta semantic.
+      state.channels = Object.fromEntries(channelHealth);
+      state.domains = Object.fromEntries(domainAuth);
+    }).catch((error: unknown) => {
 
       LOG.warn("Failed to write health state: %s.", (error instanceof Error) ? error.message : String(error));
-    }).finally(() => {
-
-      writeInProgress = false;
-
-      // If a flush was requested while the write was in progress, trigger it now to capture the latest state.
-      if(flushPendingDuringWrite) {
-
-        flushPendingDuringWrite = false;
-
-        flushHealthState();
-      }
     });
   }, FLUSH_DELAY);
 }

@@ -5,7 +5,7 @@
 import { DOMAIN_CONFIG, SITE_PROFILES, getBuiltinProfile, isProviderProfile } from "./sites.js";
 import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "../types/index.js";
 import { LOG, containsNonPrintable } from "../utils/index.js";
-import { createFileStore } from "./persistence.js";
+import { type Migration, createFileStore } from "./persistence.js";
 import { extractDomain } from "../utils/format.js";
 import { getProfilesFilePath } from "./paths.js";
 
@@ -137,21 +137,33 @@ export function getUserDomains(): Record<string, DomainConfig> {
   return { ...loadedUserDomains };
 }
 
-/* Transactional store for profiles.json. The store uses a compound type that carries both profiles and domain mappings. The parse function uses extractObjectMap()
- * to validate sub-objects. The beforeWrite hook conditionally includes/excludes top-level keys based on emptiness.
+/* Transactional store for profiles.json. The store uses a compound type that carries both profiles and domain mappings, plus schema metadata managed by the
+ * file store framework. The parse function uses extractObjectMap() to validate sub-objects. The beforeWrite hook conditionally includes/excludes top-level
+ * keys based on emptiness, and always emits the framework's schema metadata.
  */
 
+/* Current schema version for profiles.json. Migrations are declared in profilesMigrations below; the framework runs them in order from the file's stored
+ * version up to this constant, stamps the new version after each, and records the audit trail in migrationsApplied.
+ *
+ * Version history:
+ *   1 - Original. Profile flag "noVideo" still present on user profiles.
+ *   2 - Renames profile flag "noVideo" -> "staticCapture" via normalizeLegacyProfileFlags.
+ */
+const CURRENT_PROFILES_SCHEMA_VERSION = 2;
+
 /**
- * Compound data type for the profiles file store. Carries both profile definitions and domain mappings.
+ * Compound data type for the profiles file store. Carries profile definitions, domain mappings, and the framework-managed schema metadata.
  */
 interface ProfilesFileData {
 
   domains: Record<string, DomainConfig>;
+  migrationsApplied: string[];
   profiles: Record<string, SiteProfile>;
+  schemaVersion: number;
 }
 
 /**
- * Parses raw profiles.json content into the compound data type.
+ * Parses raw profiles.json content into the compound data type. Extracts profiles, domains, and framework metadata (schemaVersion, migrationsApplied).
  * @param raw - The raw JSON string from the file.
  * @returns The parsed compound data.
  */
@@ -159,21 +171,50 @@ function parseProfilesFile(raw: string): ProfilesFileData {
 
   const parsed = JSON.parse(raw) as Record<string, unknown>;
 
+  // Files predating the schemaVersion field are treated as version 1. The migration runner upgrades them to the current version.
+  let schemaVersion = 1;
+
+  if((typeof parsed.schemaVersion === "number") && Number.isFinite(parsed.schemaVersion) && (parsed.schemaVersion >= 1)) {
+
+    schemaVersion = Math.floor(parsed.schemaVersion);
+  }
+
+  const migrationsApplied: string[] = [];
+
+  if(Array.isArray(parsed.migrationsApplied)) {
+
+    for(const entry of parsed.migrationsApplied) {
+
+      if(typeof entry === "string") {
+
+        migrationsApplied.push(entry);
+      }
+    }
+  }
+
   return {
 
     domains: extractObjectMap<DomainConfig>(parsed.domains),
-    profiles: extractObjectMap<SiteProfile>(parsed.profiles)
+    migrationsApplied,
+    profiles: extractObjectMap<SiteProfile>(parsed.profiles),
+    schemaVersion
   };
 }
 
 /**
- * Prepares profiles data for writing to disk. Conditionally includes top-level keys only when they have entries.
+ * Prepares profiles data for writing to disk. Always emits the framework's schema metadata; conditionally includes profile and domain top-level keys only
+ * when they have entries.
  * @param data - The compound profiles data.
  * @returns The serializable output.
  */
 function prepareProfilesForWrite(data: ProfilesFileData): unknown {
 
-  const file: UserProfilesFile = {};
+  const file: UserProfilesFile & { migrationsApplied?: string[]; schemaVersion: number } = { schemaVersion: data.schemaVersion };
+
+  if(data.migrationsApplied.length > 0) {
+
+    file.migrationsApplied = data.migrationsApplied;
+  }
 
   if(Object.keys(data.domains).length > 0) {
 
@@ -188,14 +229,42 @@ function prepareProfilesForWrite(data: ProfilesFileData): unknown {
   return file;
 }
 
+/* Declarative schema migrations. The file store framework runs these in order from the file's stored schemaVersion up to CURRENT_PROFILES_SCHEMA_VERSION,
+ * stamping the new version and recording the description in migrationsApplied after each application. Apply functions mutate the data in place.
+ */
+const profilesMigrations: Record<number, Migration<ProfilesFileData>> = {
+
+  2: {
+
+    apply: (data: ProfilesFileData): void => {
+
+      // Rename legacy noVideo flag to staticCapture across all stored profiles. Service pack import has its own normalization at the import boundary; this
+      // migration handles the persisted file.
+      normalizeLegacyProfileFlags(data.profiles);
+    },
+    description: "Rename legacy noVideo profile flag to staticCapture"
+  }
+};
+
 // Transactional store instance for profiles.json.
 const profilesStore = createFileStore<ProfilesFileData>({
 
   beforeWrite: prepareProfilesForWrite,
-  defaultValue: (): ProfilesFileData => ({ domains: {}, profiles: {} }),
+  currentSchemaVersion: CURRENT_PROFILES_SCHEMA_VERSION,
+  defaultValue: (): ProfilesFileData => ({
+
+    domains: {},
+    migrationsApplied: [],
+    profiles: {},
+    schemaVersion: CURRENT_PROFILES_SCHEMA_VERSION
+  }),
+  getSchemaVersion: (data: ProfilesFileData): number => data.schemaVersion,
   label: "profiles",
+  migrations: profilesMigrations,
   parse: parseProfilesFile,
-  path: getProfilesFilePath
+  path: getProfilesFilePath,
+  recordMigration: (data: ProfilesFileData, description: string): void => { data.migrationsApplied.push(description); },
+  setSchemaVersion: (data: ProfilesFileData, version: number): void => { data.schemaVersion = version; }
 });
 
 /**
@@ -288,32 +357,14 @@ export async function deleteUserDomain(domain: string): Promise<void> {
  */
 export async function initializeUserProfiles(): Promise<void> {
 
+  // Read the file. Schema migrations (noVideo -> staticCapture rename) run automatically inside the file store framework via the declarative
+  // profilesMigrations registry; ensureMigrated (called by the release boot coordinator at startup) persists any upgrades to disk before this function runs.
   const result = await readProfiles();
 
   loadedUserProfiles = result.profiles;
   loadedUserDomains = result.domains;
   userProfilesParseError = result.parseError;
   userProfilesParseErrorMessage = result.parseErrorMessage;
-
-  // Normalize legacy profile field names at the persistence boundary. If any fields were renamed, persist the updated file so the migration only runs once.
-  // The save is wrapped in its own try/catch so a write failure (disk full, permission error, parse error) is logged as a migration warning rather than
-  // propagated to startup. The normalized in-memory profiles are used regardless...the migration is best-effort persistence.
-  if(normalizeLegacyProfileFlags(loadedUserProfiles)) {
-
-    try {
-
-      await mutateProfiles((data) => {
-
-        normalizeLegacyProfileFlags(data.profiles);
-      });
-
-      LOG.info("Migrated legacy profile flags in user profiles file.");
-    } catch(saveError) {
-
-      LOG.warn("Failed to persist migrated profile flags: %s. Migration will retry on next startup.",
-        (saveError instanceof Error) ? saveError.message : String(saveError));
-    }
-  }
 
   // Check for non-printable characters in loaded profile and domain string values. These warnings are informational - loaded data is not modified.
   for(const [ profileKey, profile ] of Object.entries(loadedUserProfiles)) {

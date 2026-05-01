@@ -8,6 +8,7 @@ import { LOG, clearPidFile, createMorganStream, formatError, formatTimestamp, ge
   readPidFile, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking, writePidFile } from "./utils/index.js";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.js";
+import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.js";
 import { getLogFilePath, getServerPidFilePath } from "./config/paths.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { loadResumeState, saveResumeState } from "./streaming/hlsResume.js";
@@ -28,6 +29,7 @@ import { initializeUserChannels } from "./config/userChannels.js";
 import { initializeUserProfiles } from "./config/userProfiles.js";
 import { loadHealthState } from "./config/health.js";
 import morgan from "morgan";
+import { runConsistencyProbeAtStartup } from "./config/consistencyProbe.js";
 import { setupRoutes } from "./routes/index.js";
 import { terminateStream } from "./streaming/lifecycle.js";
 import { validateProfiles } from "./config/profiles.js";
@@ -455,6 +457,21 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
     }
   }
 
+  // Release boot coordinator: snapshot every persistence-managed file before any reads or migrations run, then apply any pending schema migrations across all
+  // stores. Both operations are idempotent within a release (snapshots skip when the labeled copy already exists; ensureMigrated skips when the file is at the
+  // current schema version). Running them up front guarantees a guaranteed restore point exists for every file at the start of every release boot, even if a
+  // subsequent initialize* function or migration discovers a problem and aborts startup.
+  try {
+
+    await snapshotAllForRelease("pre-v" + getPackageVersion());
+    await ensureAllMigrated();
+  } catch(error) {
+
+    LOG.error("Failed during release boot coordinator: %s", formatError(error));
+
+    process.exit(1);
+  }
+
   // Initialize configuration from file and environment variables, then validate. CLI overrides are applied as the highest-priority merge pass. User profiles are
   // loaded after configuration validation but before profile validation, so that user-defined profiles and domain mappings are available for the validation pass.
   try {
@@ -529,6 +546,10 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Load persisted health state (channel health + domain auth) from health.json.
   await loadHealthState();
+
+  // Run the cross-store consistency probe now that every store is loaded. Validates foreign-key-style invariants spanning multiple stores (service selections,
+  // variant canonicalKey targets, domain profile mappings, service tag filter) and auto-fixes warnings where safe. Errors do not block startup.
+  await runConsistencyProbeAtStartup();
 
   // Load HLS resume state from the previous shutdown. This seeds sequence numbers so streams resume forward instead of resetting to 0.
   loadResumeState();
