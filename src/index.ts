@@ -6,10 +6,10 @@ import { CONFIG_METADATA, DEFAULTS, getNestedValue } from "./config/userConfig.j
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.js";
 import { canCleanupChrome, isGracefulShutdown, killStaleChrome } from "./browser/index.js";
 import { clearServerPid, startServer } from "./app.js";
+import { getDebugEnv, initializeDataDir } from "./config/paths.js";
 import { flushLogBufferSync } from "./utils/fileLogger.js";
 import { handleServiceCommand } from "./service/index.js";
 import { handleUpgradeCommand } from "./upgrade/index.js";
-import { initializeDataDir } from "./config/paths.js";
 import path from "node:path";
 
 /* These handlers catch unhandled promise rejections and uncaught exceptions to prevent the process from crashing. For a livestreaming server, process stability is
@@ -373,7 +373,7 @@ if(subcommand === "service") {
 
   // Enable debug logging before starting the server so debug messages during startup are captured. The PRISMCAST_DEBUG environment variable takes precedence over
   // the --debug CLI flag, allowing fine-grained category selection.
-  const debugEnv = process.env.PRISMCAST_DEBUG;
+  const debugEnv = getDebugEnv();
 
   if(debugEnv) {
 

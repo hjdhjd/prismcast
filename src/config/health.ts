@@ -117,7 +117,7 @@ const healthStore = createFileStore<HealthState>({
 
     if(data.migrationsApplied.length > 0) {
 
-      output.migrationsApplied = data.migrationsApplied;
+      output["migrationsApplied"] = data.migrationsApplied;
     }
 
     return output;

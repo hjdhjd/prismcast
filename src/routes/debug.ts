@@ -6,6 +6,7 @@ import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, init
 import type { Express, Request, Response } from "express";
 import { generateBaseStyles, generatePageWrapper } from "./ui.js";
 import { CONFIG } from "../config/index.js";
+import { getDebugEnv } from "../config/paths.js";
 import { mutateConfig } from "../config/userConfig.js";
 
 /* This module provides a hidden (undocumented) web page at /debug for runtime control of debug logging categories. The page renders all known categories as
@@ -244,7 +245,7 @@ function generateDebugBody(): string {
 
   // Environment variable override warning. When PRISMCAST_DEBUG is set, the env var takes precedence at startup. Changes from the UI are still saved to
   // config.json for when the env var is removed.
-  const debugEnv = process.env.PRISMCAST_DEBUG;
+  const debugEnv = getDebugEnv();
 
   if(debugEnv) {
 
@@ -378,7 +379,7 @@ export function setupDebugEndpoint(app: Express): void {
   app.post("/debug", async (req: Request, res: Response): Promise<void> => {
 
     const body = req.body as Record<string, unknown>;
-    const pattern = typeof body.pattern === "string" ? body.pattern.trim() : "";
+    const pattern = typeof body["pattern"] === "string" ? body["pattern"].trim() : "";
     const previousPattern = getCurrentPattern();
 
     // Apply the filter immediately at runtime.

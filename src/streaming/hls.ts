@@ -206,7 +206,7 @@ export async function ensureChannelStream(channelName: string, req: Request, res
       channelName,
       clientAddress,
       numericStreamId: pending.numericStreamId,
-      profileOverride: req.query.profile as string | undefined,
+      profileOverride: req.query["profile"] as string | undefined,
       streamIdStr: pending.streamIdStr,
       url: validation.channel.url
     }).catch((error: unknown) => {
@@ -387,7 +387,7 @@ export function handleHLSVariantPlaylist(req: Request, res: Response): void {
  */
 export async function handlePlayStream(req: Request, res: Response): Promise<void> {
 
-  const url = (req.query.url as string | undefined)?.trim();
+  const url = (req.query["url"] as string | undefined)?.trim();
 
   if(!url) {
 
@@ -396,10 +396,10 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const clickSelector = req.query.clickSelector as string | undefined;
-  const clickToPlay = req.query.clickToPlay === "true";
-  const profileOverride = req.query.profile as string | undefined;
-  const selector = req.query.selector as string | undefined;
+  const clickSelector = req.query["clickSelector"] as string | undefined;
+  const clickToPlay = req.query["clickToPlay"] === "true";
+  const profileOverride = req.query["profile"] as string | undefined;
+  const selector = req.query["selector"] as string | undefined;
 
   // Generate a deterministic synthetic key from the trimmed URL, profile, selector, clickToPlay, and clickSelector. Including these ensures that the same URL with
   // different options produces separate streams. The newline delimiter is safe since URLs cannot contain literal newlines.
@@ -1490,7 +1490,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
  */
 async function startHLSStream(channelName: string, url: string, req: Request, res: Response, channel?: ResolvedChannel): Promise<Nullable<number>> {
 
-  const profileOverride = req.query.profile as string | undefined;
+  const profileOverride = req.query["profile"] as string | undefined;
   const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
 
   try {

@@ -93,7 +93,7 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
       channelName,
       clientAddress: req.ip ?? req.socket.remoteAddress ?? null,
       mpegTsClient: true,
-      profileOverride: req.query.profile as string | undefined,
+      profileOverride: req.query["profile"] as string | undefined,
       url: validation.channel.url
     });
   } catch(error) {

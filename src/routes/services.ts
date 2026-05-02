@@ -335,7 +335,7 @@ export function setupServicesEndpoint(app: Express): void {
 
   app.get("/services/:slug/channels", async (req: Request, res: Response): Promise<void> => {
 
-    const slug = req.params.slug as string;
+    const slug = req.params["slug"] as string;
     const provider = getProviderBySlug(slug);
 
     if(!provider) {
@@ -349,8 +349,8 @@ export function setupServicesEndpoint(app: Express): void {
     // against fresh data. This also resets warm tuning state (watch URLs, GUIDs), but the discovery walk repopulates the unified cache before returning - any
     // subsequent tune resolves from the freshly populated cache as normal. If a discovery is already in flight, abort it first - clearing the cache while a
     // discovery is progressively populating it would corrupt its state.
-    const lineup = req.query.lineup === "true";
-    const refresh = req.query.refresh === "true";
+    const lineup = req.query["lineup"] === "true";
+    const refresh = req.query["refresh"] === "true";
 
     if(refresh) {
 

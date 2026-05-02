@@ -65,23 +65,23 @@ export function parseServicePack(data: unknown): ParseResult {
   const raw = data as Record<string, unknown>;
 
   // Validate required fields. Sanitize the pack name after the type check.
-  if((typeof raw.name !== "string") || (raw.name.trim() === "")) {
+  if((typeof raw["name"] !== "string") || (raw["name"].trim() === "")) {
 
     errors.push("Missing or empty 'name' field.");
   } else {
 
-    raw.name = sanitizeString(raw.name);
+    raw["name"] = sanitizeString(raw["name"]);
   }
 
-  if((typeof raw.version !== "number") || !Number.isInteger(raw.version)) {
+  if((typeof raw["version"] !== "number") || !Number.isInteger(raw["version"])) {
 
     errors.push("Missing or invalid 'version' field (must be an integer).");
-  } else if(raw.version > CURRENT_VERSION) {
+  } else if(raw["version"] > CURRENT_VERSION) {
 
-    errors.push("Unsupported version " + String(raw.version) + ". This version of PrismCast supports up to version " + String(CURRENT_VERSION) + ".");
+    errors.push("Unsupported version " + String(raw["version"]) + ". This version of PrismCast supports up to version " + String(CURRENT_VERSION) + ".");
   }
 
-  if(!raw.profiles || (typeof raw.profiles !== "object") || Array.isArray(raw.profiles) || (Object.keys(raw.profiles).length === 0)) {
+  if(!raw["profiles"] || (typeof raw["profiles"] !== "object") || Array.isArray(raw["profiles"]) || (Object.keys(raw["profiles"]).length === 0)) {
 
     errors.push("Missing or empty 'profiles' field (at least one profile is required).");
   }
@@ -93,14 +93,14 @@ export function parseServicePack(data: unknown): ParseResult {
   }
 
   // Normalize legacy profile field names before validation so that old service packs with renamed fields (e.g., noVideo -> staticCapture) pass validation cleanly.
-  const rawProfiles = raw.profiles as Record<string, SiteProfile>;
+  const rawProfiles = raw["profiles"] as Record<string, SiteProfile>;
 
   normalizeLegacyProfileFlags(rawProfiles);
 
   // Validate the profiles and domains using the shared validation pipeline.
   const validationResult: ProfilesValidationResult = validateImportedProfiles({
 
-    domains: raw.domains,
+    domains: raw["domains"],
     profiles: rawProfiles
   });
 
@@ -112,39 +112,39 @@ export function parseServicePack(data: unknown): ParseResult {
   // Validate channels if present using basic checks (full channel validation happens on import).
   const channels: ChannelMap = {};
 
-  if(raw.channels) {
+  if(raw["channels"]) {
 
-    if((typeof raw.channels !== "object") || Array.isArray(raw.channels)) {
+    if((typeof raw["channels"] !== "object") || Array.isArray(raw["channels"])) {
 
       errors.push("Invalid 'channels' field: expected an object.");
     } else {
 
       // Basic channel structure validation - detailed validation happens during importServicePack.
-      for(const [ key, value ] of Object.entries(raw.channels as Record<string, unknown>)) {
+      for(const [ key, value ] of Object.entries(raw["channels"] as Record<string, unknown>)) {
 
         if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
 
           const ch = value as Record<string, unknown>;
 
-          if((typeof ch.url === "string") && (typeof ch.name === "string")) {
+          if((typeof ch["url"] === "string") && (typeof ch["name"] === "string")) {
 
             // Sanitize channel string fields to strip non-printable characters before storing.
-            ch.name = sanitizeString(ch.name);
-            ch.url = sanitizeString(ch.url);
+            ch["name"] = sanitizeString(ch["name"]);
+            ch["url"] = sanitizeString(ch["url"]);
 
-            if(typeof ch.channelSelector === "string") {
+            if(typeof ch["channelSelector"] === "string") {
 
-              ch.channelSelector = sanitizeString(ch.channelSelector);
+              ch["channelSelector"] = sanitizeString(ch["channelSelector"]);
             }
 
-            if(typeof ch.stationId === "string") {
+            if(typeof ch["stationId"] === "string") {
 
-              ch.stationId = sanitizeString(ch.stationId);
+              ch["stationId"] = sanitizeString(ch["stationId"]);
             }
 
-            if(typeof ch.profile === "string") {
+            if(typeof ch["profile"] === "string") {
 
-              ch.profile = sanitizeString(ch.profile);
+              ch["profile"] = sanitizeString(ch["profile"]);
             }
 
             channels[key] = value as ChannelMap[string];
@@ -164,9 +164,9 @@ export function parseServicePack(data: unknown): ParseResult {
 
   const pack: ServicePack = {
 
-    name: raw.name as string,
+    name: raw["name"] as string,
     profiles: validationResult.profiles,
-    version: raw.version as number
+    version: raw["version"] as number
   };
 
   if(Object.keys(validationResult.domains).length > 0) {

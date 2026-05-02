@@ -995,9 +995,11 @@ export function collectServiceEnvironment(): Record<string, string> {
 
   // Always capture PATH so that FFmpeg and other tools can be found. Service managers like launchd use a minimal PATH by default (/usr/bin:/bin:/usr/sbin:/sbin)
   // which does not include Homebrew or other common tool locations.
-  if(process.env.PATH) {
+  const pathEnv = process.env["PATH"];
 
-    envVars.PATH = process.env.PATH;
+  if(pathEnv) {
+
+    envVars["PATH"] = pathEnv;
   }
 
   for(const key of getConfigurableEnvVarNames()) {

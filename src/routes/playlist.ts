@@ -246,10 +246,10 @@ export function setupPlaylistEndpoint(app: Express): void {
   app.get("/playlist", (req: Request, res: Response): void => {
 
     const baseUrl = resolveBaseUrl(req);
-    const serviceParam = typeof req.query.service === "string" ? req.query.service.trim() : undefined;
-    const tagParam = typeof req.query.tag === "string" ? req.query.tag.trim() : undefined;
-    const sortParam = typeof req.query.sort === "string" ? req.query.sort.trim() || undefined : undefined;
-    const directionParam = typeof req.query.direction === "string" ? req.query.direction.trim().toLowerCase() || undefined : undefined;
+    const serviceParam = typeof req.query["service"] === "string" ? req.query["service"].trim() : undefined;
+    const tagParam = typeof req.query["tag"] === "string" ? req.query["tag"].trim() : undefined;
+    const sortParam = typeof req.query["sort"] === "string" ? req.query["sort"].trim() || undefined : undefined;
+    const directionParam = typeof req.query["direction"] === "string" ? req.query["direction"].trim().toLowerCase() || undefined : undefined;
     let serviceFilter: IncludeExcludeFilter | undefined;
     let tagFilter: IncludeExcludeFilter | undefined;
 

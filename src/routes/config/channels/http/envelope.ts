@@ -70,35 +70,35 @@ export function sendSuccess(res: Response, payload: SuccessPayload = {}): void {
   // data keys that happen to collide with reserved names.
   const body: Record<string, unknown> = (payload.data !== undefined) ? { ...payload.data } : {};
 
-  body.success = true;
+  body["success"] = true;
 
   if(payload.message !== undefined) {
 
-    body.message = payload.playlistHint ? (payload.message + PLAYLIST_HINT) : payload.message;
+    body["message"] = payload.playlistHint ? (payload.message + PLAYLIST_HINT) : payload.message;
   }
 
   // Patch derivation: an explicit patch wins; otherwise compute from affectedKeys. An empty or absent affectedKeys array produces no patch since there's nothing
   // to update (`?.length` is undefined for absent, 0 for empty - both falsy).
   if(payload.patch !== undefined) {
 
-    body.patch = payload.patch;
+    body["patch"] = payload.patch;
   } else if(payload.affectedKeys?.length) {
 
-    body.patch = buildChannelTablePatch(payload.affectedKeys, getProfiles());
+    body["patch"] = buildChannelTablePatch(payload.affectedKeys, getProfiles());
   }
 
   // The tag UI bundle is attached verbatim to match the existing tag-endpoint contract the client expects.
   if(payload.tags) {
 
-    body.active = getActiveTagVocabulary();
-    body.filterContent = generateTagFilterContent();
-    body.modalBody = generateTagManagerBody();
-    body.registry = getTagRegistry();
+    body["active"] = getActiveTagVocabulary();
+    body["filterContent"] = generateTagFilterContent();
+    body["modalBody"] = generateTagManagerBody();
+    body["registry"] = getTagRegistry();
   }
 
   if(payload.serviceWarning !== undefined) {
 
-    body.serviceWarning = payload.serviceWarning;
+    body["serviceWarning"] = payload.serviceWarning;
   }
 
   res.json(body);

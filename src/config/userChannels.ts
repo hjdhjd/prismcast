@@ -213,14 +213,14 @@ function parseChannelsFile(raw: string): ChannelsFileData {
 
         const rawRegistry = value as Record<string, unknown>;
 
-        if(Array.isArray(rawRegistry.tags)) {
+        if(Array.isArray(rawRegistry["tags"])) {
 
-          tagRegistry.tags = rawRegistry.tags.filter((t): t is string => typeof t === "string").sort();
+          tagRegistry.tags = rawRegistry["tags"].filter((t): t is string => typeof t === "string").sort();
         }
 
-        if(Array.isArray(rawRegistry.deletedTags)) {
+        if(Array.isArray(rawRegistry["deletedTags"])) {
 
-          tagRegistry.deletedTags = rawRegistry.deletedTags.filter((t): t is string => typeof t === "string").sort();
+          tagRegistry.deletedTags = rawRegistry["deletedTags"].filter((t): t is string => typeof t === "string").sort();
         }
       }
     } else if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
@@ -241,7 +241,7 @@ function parseChannelsFile(raw: string): ChannelsFileData {
 
       if(!("service" in legacy)) {
 
-        legacy.service = legacy.provider;
+        legacy["service"] = legacy["provider"];
       }
 
       Reflect.deleteProperty(legacy, "provider");
@@ -687,17 +687,17 @@ function prepareChannelsForWrite(data: ChannelsFileData): unknown {
 
   if(data.migrationsApplied.length > 0) {
 
-    output.migrationsApplied = data.migrationsApplied;
+    output["migrationsApplied"] = data.migrationsApplied;
   }
 
   if(Object.keys(data.serviceSelections).length > 0) {
 
-    output.serviceSelections = data.serviceSelections;
+    output["serviceSelections"] = data.serviceSelections;
   }
 
   if((data.tagRegistry.tags.length > 0) || (data.tagRegistry.deletedTags.length > 0)) {
 
-    output.tagRegistry = data.tagRegistry;
+    output["tagRegistry"] = data.tagRegistry;
   }
 
   return output;
@@ -1996,7 +1996,7 @@ export async function transformChannelTags(
         // conventions: delta normalization for predefined channels (comparing against raw definitions), null-stripping for user channels.
         const existing = data.channels[entry.key] ?? {};
 
-        (existing as Record<string, unknown>).tags = (newTags.length > 0) ? newTags : null;
+        (existing as Record<string, unknown>)["tags"] = (newTags.length > 0) ? newTags : null;
         data.channels[entry.key] = existing;
         affectedKeys.push(entry.key);
       }
@@ -2651,14 +2651,14 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
     const channelData = value as Record<string, unknown>;
 
     // Validate required name field. Sanitize after type check to strip non-printable characters from imported data.
-    if((typeof channelData.name !== "string") || (channelData.name.trim() === "")) {
+    if((typeof channelData["name"] !== "string") || (channelData["name"].trim() === "")) {
 
       errors.push("Channel '" + key + "': name is required.");
 
       continue;
     }
 
-    const cleanName = sanitizeString(channelData.name);
+    const cleanName = sanitizeString(channelData["name"]);
 
     const nameError = validateChannelName(cleanName);
 
@@ -2670,14 +2670,14 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
     }
 
     // Validate required url field. Sanitize after type check.
-    if((typeof channelData.url !== "string") || (channelData.url.trim() === "")) {
+    if((typeof channelData["url"] !== "string") || (channelData["url"].trim() === "")) {
 
       errors.push("Channel '" + key + "': url is required.");
 
       continue;
     }
 
-    const cleanUrl = sanitizeString(channelData.url);
+    const cleanUrl = sanitizeString(channelData["url"]);
 
     const urlError = validateChannelUrl(cleanUrl);
 
@@ -2689,7 +2689,7 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
     }
 
     // Validate optional profile field. Sanitize after type check.
-    const profile = (typeof channelData.profile === "string") ? sanitizeString(channelData.profile) : undefined;
+    const profile = (typeof channelData["profile"] === "string") ? sanitizeString(channelData["profile"]) : undefined;
     const profileError = validateChannelProfile(profile, validProfiles);
 
     if(profileError) {
@@ -2712,20 +2712,20 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
     }
 
     // Include optional fields if present. Sanitize string values to strip non-printable characters.
-    if(typeof channelData.stationId === "string") {
+    if(typeof channelData["stationId"] === "string") {
 
-      channel.stationId = sanitizeString(channelData.stationId);
+      channel.stationId = sanitizeString(channelData["stationId"]);
     }
 
-    if(typeof channelData.channelSelector === "string") {
+    if(typeof channelData["channelSelector"] === "string") {
 
-      channel.channelSelector = sanitizeString(channelData.channelSelector);
+      channel.channelSelector = sanitizeString(channelData["channelSelector"]);
     }
 
     // Validate optional channelNumber field (range and type).
-    if(channelData.channelNumber !== undefined) {
+    if(channelData["channelNumber"] !== undefined) {
 
-      const num = Number(channelData.channelNumber);
+      const num = Number(channelData["channelNumber"]);
 
       if(!Number.isInteger(num) || (num < 1) || (num > 99999)) {
 
@@ -2738,9 +2738,9 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
     }
 
     // Validate optional tvgShift field (must be a finite number). Negative values are valid (e.g., a West Coast feed viewed from the East).
-    if(channelData.tvgShift !== undefined) {
+    if(channelData["tvgShift"] !== undefined) {
 
-      const shift = Number(channelData.tvgShift);
+      const shift = Number(channelData["tvgShift"]);
 
       if(!Number.isFinite(shift)) {
 

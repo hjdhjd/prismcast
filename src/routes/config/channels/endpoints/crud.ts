@@ -59,22 +59,22 @@ const INLINE_EDIT_LABELS: Record<InlineEditField, string> = {
  */
 function parseFormBody(body: Record<string, string | undefined>): { formValues: ChannelFormValues; tags: string[] } {
 
-  const channelNumberStr = sanitizeString(body.channelNumber ?? "");
+  const channelNumberStr = sanitizeString(body["channelNumber"] ?? "");
 
   const formValues: ChannelFormValues = {
 
     channelNumber: channelNumberStr ? parseInt(channelNumberStr, 10) : undefined,
-    channelSelector: sanitizeString(body.channelSelector ?? ""),
-    guideTitle: sanitizeString(body.guideTitle ?? ""),
-    hdhrEnabled: body.hdhrEnabled !== "false",
-    logoUrl: sanitizeString(body.logoUrl ?? ""),
-    name: sanitizeString(body.name ?? ""),
-    profile: sanitizeString(body.profile ?? ""),
-    stationId: sanitizeString(body.stationId ?? ""),
-    url: sanitizeString(body.url ?? "")
+    channelSelector: sanitizeString(body["channelSelector"] ?? ""),
+    guideTitle: sanitizeString(body["guideTitle"] ?? ""),
+    hdhrEnabled: body["hdhrEnabled"] !== "false",
+    logoUrl: sanitizeString(body["logoUrl"] ?? ""),
+    name: sanitizeString(body["name"] ?? ""),
+    profile: sanitizeString(body["profile"] ?? ""),
+    stationId: sanitizeString(body["stationId"] ?? ""),
+    url: sanitizeString(body["url"] ?? "")
   };
 
-  const tags = parseTagInput(sanitizeString(body.tags ?? ""));
+  const tags = parseTagInput(sanitizeString(body["tags"] ?? ""));
 
   return { formValues, tags };
 }
@@ -97,7 +97,7 @@ function validateFormValues(formValues: ChannelFormValues, key: string, isCreate
 
   if(channelNumberError) {
 
-    errors.channelNumber = channelNumberError;
+    errors["channelNumber"] = channelNumberError;
   }
 
   if(isCreate) {
@@ -106,7 +106,7 @@ function validateFormValues(formValues: ChannelFormValues, key: string, isCreate
 
     if(keyError) {
 
-      errors.key = keyError;
+      errors["key"] = keyError;
     }
   }
 
@@ -114,21 +114,21 @@ function validateFormValues(formValues: ChannelFormValues, key: string, isCreate
 
   if(nameError) {
 
-    errors.name = nameError;
+    errors["name"] = nameError;
   }
 
   const urlError = validateChannelUrl(formValues.url);
 
   if(urlError) {
 
-    errors.url = urlError;
+    errors["url"] = urlError;
   }
 
   const profileError = validateChannelProfile(formValues.profile, validProfiles);
 
   if(profileError) {
 
-    errors.profile = profileError;
+    errors["profile"] = profileError;
   }
 
   return errors;
@@ -407,7 +407,7 @@ export function registerCrudRoutes(app: Express): void {
   app.post("/config/channels", route("save channel", async (req: Request, res: Response) => {
 
     const body = req.body as Record<string, string | undefined>;
-    const key = body.key?.trim();
+    const key = body["key"]?.trim();
 
     if(!key) {
 

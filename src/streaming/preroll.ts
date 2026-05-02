@@ -612,7 +612,7 @@ export function setupPrerollRoutes(app: Express): void {
 
   app.get("/preroll/:codec/init.mp4", (req: Request, res: Response) => {
 
-    const codec = req.params.codec;
+    const codec = req.params["codec"];
     const variant = ((codec === "h264") || (codec === "hevc")) ? prerollVariants.get(codec) : undefined;
 
     if(!variant) {
@@ -631,7 +631,7 @@ export function setupPrerollRoutes(app: Express): void {
   // output. The init.mp4 exact route above takes priority over this catch-all for init segment requests.
   app.get("/preroll/:codec/:segment", (req: Request, res: Response) => {
 
-    const codec = req.params.codec;
+    const codec = req.params["codec"];
     const variant = ((codec === "h264") || (codec === "hevc")) ? prerollVariants.get(codec) : undefined;
 
     if(!variant) {
@@ -642,7 +642,7 @@ export function setupPrerollRoutes(app: Express): void {
     }
 
     // Extract the segment index from the filename (e.g., "segment5.m4s" -> 5).
-    const segmentParam = req.params.segment;
+    const segmentParam = req.params["segment"];
     const match = (typeof segmentParam === "string") ? /^segment(\d+)\.m4s$/.exec(segmentParam) : null;
 
     if(!match) {

@@ -509,7 +509,7 @@ export function setupProfileRoutes(app: Express): void {
 
     try {
 
-      const key = req.params.key as string;
+      const key = req.params["key"] as string;
 
       if(!key) {
 
@@ -544,7 +544,7 @@ export function setupProfileRoutes(app: Express): void {
     try {
 
       const rawData = req.body as Record<string, unknown>;
-      const skipChannels = rawData.skipChannels === true;
+      const skipChannels = rawData["skipChannels"] === true;
 
       // Parse and validate the service pack. The parseServicePack function ignores unknown keys like skipChannels.
       const parseResult = parseServicePack(rawData);
@@ -610,10 +610,10 @@ export function setupProfileRoutes(app: Express): void {
 
     try {
 
-      const profileParam = req.query.profile as string | undefined;
-      const includeDomains = req.query.domains !== "0";
-      const includeChannels = req.query.channels === "1";
-      const name = req.query.name as string | undefined;
+      const profileParam = req.query["profile"] as string | undefined;
+      const includeDomains = req.query["domains"] !== "0";
+      const includeChannels = req.query["channels"] === "1";
+      const name = req.query["name"] as string | undefined;
 
       if(!profileParam) {
 

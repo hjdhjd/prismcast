@@ -9,7 +9,7 @@ import { LOG, clearPidFile, createMorganStream, formatError, formatTimestamp, ge
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.js";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.js";
-import { getLogFilePath, getServerPidFilePath } from "./config/paths.js";
+import { getDebugEnv, getLogFilePath, getServerPidFilePath } from "./config/paths.js";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
 import { loadResumeState, saveResumeState } from "./streaming/hlsResume.js";
 import { startHdhrServer, stopHdhrServer } from "./hdhr/index.js";
@@ -511,7 +511,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // Log the debug filter status after the file logger is ready so the message is captured.
   if(isDebugLogging()) {
 
-    const debugEnv = process.env.PRISMCAST_DEBUG;
+    const debugEnv = getDebugEnv();
 
     if(debugEnv) {
 

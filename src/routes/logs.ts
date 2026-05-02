@@ -179,9 +179,9 @@ export function setupLogsEndpoint(app: Express): void {
   app.get("/logs", async (req: Request, res: Response): Promise<void> => {
 
     // Parse query parameters.
-    const linesParam = parseInt(req.query.lines as string, 10);
+    const linesParam = parseInt(req.query["lines"] as string, 10);
     const lines = (!isNaN(linesParam) && (linesParam > 0) && (linesParam <= 1000)) ? linesParam : 100;
-    const level = req.query.level as string | undefined;
+    const level = req.query["level"] as string | undefined;
 
     try {
 
@@ -217,7 +217,7 @@ export function setupLogsEndpoint(app: Express): void {
     res.flushHeaders();
 
     // Optional level filter from query parameter.
-    const levelFilter = req.query.level as string | undefined;
+    const levelFilter = req.query["level"] as string | undefined;
     const validLevels = [ "error", "info", "warn" ];
     const filterLevel = (levelFilter && validLevels.includes(levelFilter)) ? levelFilter : null;
 

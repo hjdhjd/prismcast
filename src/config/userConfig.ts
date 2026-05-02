@@ -810,31 +810,31 @@ const configMigrations: Record<number, Migration<UserConfig>> = {
       }
 
       // Rename enabledProviders -> enabledServices. If both are present (rare hand-edited case) the current name wins.
-      if(Array.isArray(channels.enabledProviders)) {
+      if(Array.isArray(channels["enabledProviders"])) {
 
-        if(!Array.isArray(channels.enabledServices)) {
+        if(!Array.isArray(channels["enabledServices"])) {
 
-          channels.enabledServices = channels.enabledProviders;
+          channels["enabledServices"] = channels["enabledProviders"];
         }
 
-        delete channels.enabledProviders;
+        delete channels["enabledProviders"];
       }
 
       // Rename precacheProviders -> precacheServices.
-      if(Array.isArray(channels.precacheProviders)) {
+      if(Array.isArray(channels["precacheProviders"])) {
 
-        if(!Array.isArray(channels.precacheServices)) {
+        if(!Array.isArray(channels["precacheServices"])) {
 
-          channels.precacheServices = channels.precacheProviders;
+          channels["precacheServices"] = channels["precacheProviders"];
         }
 
-        delete channels.precacheProviders;
+        delete channels["precacheProviders"];
       }
 
       // Rename "foxcom" -> "foxone" inside the enabledServices service-tag filter.
-      if(Array.isArray(channels.enabledServices)) {
+      if(Array.isArray(channels["enabledServices"])) {
 
-        channels.enabledServices = (channels.enabledServices as string[]).map((tag) => (tag === "foxcom") ? "foxone" : tag);
+        channels["enabledServices"] = (channels["enabledServices"] as string[]).map((tag) => (tag === "foxcom") ? "foxone" : tag);
       }
     },
     description: "Rename legacy provider-themed channel field names and foxcom service tag to foxone"
@@ -1629,19 +1629,19 @@ export function filterDefaults(config: UserConfig): UserConfig {
   // Preserve the auto-discovered DVR host across settings saves.
   if((typeof config.dvrHost === "string") && (config.dvrHost.length > 0)) {
 
-    filtered.dvrHost = config.dvrHost;
+    filtered["dvrHost"] = config.dvrHost;
   }
 
   // Preserve framework-managed metadata so the migration audit trail and schema version survive every write. Without these the allowlist-based filter would
   // strip them on the very first save after a migration runs, undoing the version stamp.
   if(typeof config.schemaVersion === "number") {
 
-    filtered.schemaVersion = config.schemaVersion;
+    filtered["schemaVersion"] = config.schemaVersion;
   }
 
   if(Array.isArray(config.migrationsApplied) && (config.migrationsApplied.length > 0)) {
 
-    filtered.migrationsApplied = config.migrationsApplied;
+    filtered["migrationsApplied"] = config.migrationsApplied;
   }
 
   // Remove any empty nested objects that resulted from filtering.

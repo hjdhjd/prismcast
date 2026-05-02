@@ -779,7 +779,7 @@ async function tryFastPathTune(page: Page, entry: Nullable<HuluChannelEntry>, ch
 
       const injected = await page.evaluate((u: string, e: string): boolean => {
 
-        const resolver = (window as unknown as Record<string, unknown>).__prismcastResolveDirectTune;
+        const resolver = (window as unknown as Record<string, unknown>)["__prismcastResolveDirectTune"];
 
         if(typeof resolver === "function") {
 
@@ -804,7 +804,7 @@ async function tryFastPathTune(page: Page, entry: Nullable<HuluChannelEntry>, ch
 
     const selfResolved = await page.evaluate((): boolean => {
 
-      const checker = (window as unknown as Record<string, unknown>).__prismcastIsDirectTuneResolved;
+      const checker = (window as unknown as Record<string, unknown>)["__prismcastIsDirectTuneResolved"];
 
       if(typeof checker === "function") {
 
@@ -851,7 +851,7 @@ async function releaseHeldPlaylist(page: Page): Promise<void> {
 
   await page.evaluate((): void => {
 
-    const release = (window as unknown as Record<string, unknown>).__prismcastReleasePlaylist;
+    const release = (window as unknown as Record<string, unknown>)["__prismcastReleasePlaylist"];
 
     if(typeof release === "function") {
 
@@ -1505,7 +1505,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       // UUID and EAB, the strategy calls this function via page.evaluate to feed both values into the interceptor. The held playlist request then resumes with the
       // swapped channel_id and content_eab_id. Returns true if the injection was accepted (directTunePromise not yet resolved), false if the Promise already
       // resolved (self-resolution from API data, 8s timeout, or a previous injection).
-      (window as unknown as Record<string, unknown>).__prismcastResolveDirectTune = (u: string, e: string): boolean => {
+      (window as unknown as Record<string, unknown>)["__prismcastResolveDirectTune"] = (u: string, e: string): boolean => {
 
         if(!directTuneResolve) {
 
@@ -1522,7 +1522,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       // Release endpoint for the guide grid strategy's click-path fallback. When the fast-path injection can't proceed (UUID or EAB not in unified cache),
       // the strategy calls this to unblock the held playlist request and revert to the click-based flow. Sets holdActive to false so the playlist handler follows
       // the affiliate capture path ([HULU-CACHE]) on subsequent requests from the play button click.
-      (window as unknown as Record<string, unknown>).__prismcastReleasePlaylist = (): void => {
+      (window as unknown as Record<string, unknown>)["__prismcastReleasePlaylist"] = (): void => {
 
         holdActive = false;
 
@@ -1536,7 +1536,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       // Query endpoint for the guide grid strategy to check if the interceptor has already resolved the direct tune. Returns true if the playlist was swapped
       // (self-resolution from API data, external injection, or warm cache). The guide grid checks this after finding the target channel - if the interceptor
       // already handled the tune, the on-now cell click is redundant and can be skipped.
-      (window as unknown as Record<string, unknown>).__prismcastIsDirectTuneResolved = (): boolean => directTuneResolved;
+      (window as unknown as Record<string, unknown>)["__prismcastIsDirectTuneResolved"] = (): boolean => directTuneResolved;
 
       // In-page EAB map built dynamically from listing API responses. On the first cold tune, cachedEabs is empty (no pre-computed data from Node.js), so this
       // map is the sole source of expansion data for details API requests. Populated asynchronously when the first listing response arrives.
@@ -1561,7 +1561,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
           void response.clone().json().then((data: Record<string, unknown>) => {
 
-            const channels = data.channels;
+            const channels = data["channels"];
 
             if(!Array.isArray(channels)) {
 
@@ -1573,18 +1573,18 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
             for(const channel of channels as Record<string, unknown>[]) {
 
-              if((typeof channel.id !== "string") || !Array.isArray(channel.programs)) {
+              if((typeof channel["id"] !== "string") || !Array.isArray(channel["programs"])) {
 
                 continue;
               }
 
-              for(const program of channel.programs as Record<string, unknown>[]) {
+              for(const program of channel["programs"] as Record<string, unknown>[]) {
 
-                if((typeof program.eab === "string") && (typeof program.airingStart === "string") && (typeof program.airingEnd === "string")) {
+                if((typeof program["eab"] === "string") && (typeof program["airingStart"] === "string") && (typeof program["airingEnd"] === "string")) {
 
-                  if((now >= new Date(program.airingStart).getTime()) && (now < new Date(program.airingEnd).getTime())) {
+                  if((now >= new Date(program["airingStart"]).getTime()) && (now < new Date(program["airingEnd"]).getTime())) {
 
-                    capturedCurrentEabs.set(channel.id, program.eab);
+                    capturedCurrentEabs.set(channel["id"], program["eab"]);
                     captured++;
 
                     break;
@@ -1640,7 +1640,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
           void response.clone().json().then((data: Record<string, unknown>) => {
 
-            const items = data.items;
+            const items = data["items"];
 
             if(!Array.isArray(items)) {
 
@@ -1649,15 +1649,15 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
             for(const item of items as Record<string, unknown>[]) {
 
-              const info = item.channel_info as Record<string, unknown> | undefined;
+              const info = item["channel_info"] as Record<string, unknown> | undefined;
 
-              if(info && (typeof info.name === "string") && (typeof info.id === "string")) {
+              if(info && (typeof info["name"] === "string") && (typeof info["id"] === "string")) {
 
-                const name = info.name.trim().toLowerCase().replace(/\s+/g, " ");
+                const name = info["name"].trim().toLowerCase().replace(/\s+/g, " ");
 
                 if(name === targetName) {
 
-                  uuid = info.id;
+                  uuid = info["id"];
 
                   // eslint-disable-next-line no-console
                   console.log("[HULU-DIAG] Details response: found UUID " + uuid + " for " + targetName + ".");
@@ -1739,16 +1739,16 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
               const listingObj = JSON.parse(listingBody) as Record<string, unknown>;
 
-              if(Array.isArray(listingObj.channels)) {
+              if(Array.isArray(listingObj["channels"])) {
 
-                const existing = new Set(listingObj.channels as string[]);
+                const existing = new Set(listingObj["channels"] as string[]);
 
                 for(const id of cachedUuids) {
 
                   existing.add(id);
                 }
 
-                listingObj.channels = [...existing];
+                listingObj["channels"] = [...existing];
 
                 const listingResponse = await fetchWithBody(input, init, JSON.stringify(listingObj));
 
@@ -1791,9 +1791,9 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
               const detailsObj = JSON.parse(detailsBody) as Record<string, unknown>;
 
-              if(Array.isArray(detailsObj.eabs)) {
+              if(Array.isArray(detailsObj["eabs"])) {
 
-                const existing = new Set(detailsObj.eabs as string[]);
+                const existing = new Set(detailsObj["eabs"] as string[]);
 
                 // Add pre-injected EABs from Node.js cache (available on warm tunes and subsequent cold tunes with partial cache data).
                 for(const id of cachedEabs) {
@@ -1807,7 +1807,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
                   existing.add(capturedEab);
                 }
 
-                detailsObj.eabs = [...existing];
+                detailsObj["eabs"] = [...existing];
 
                 const expandedResponse = await fetchWithBody(input, init, JSON.stringify(detailsObj));
 
@@ -1857,12 +1857,12 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
                   const bodyObj = JSON.parse(affiliateBody) as Record<string, unknown>;
 
-                  if((bodyObj.play_intent === "live") && (typeof bodyObj.channel_id === "string")) {
+                  if((bodyObj["play_intent"] === "live") && (typeof bodyObj["channel_id"] === "string")) {
 
                     if(initialPlaylistSeen) {
 
                       // eslint-disable-next-line no-console
-                      console.log("[HULU-CACHE] " + targetName + "=" + bodyObj.channel_id);
+                      console.log("[HULU-CACHE] " + targetName + "=" + bodyObj["channel_id"]);
                     }
 
                     initialPlaylistSeen = true;
@@ -1893,15 +1893,12 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
               const bodyObj = JSON.parse(bodyText) as Record<string, unknown>;
 
-              if(bodyObj.play_intent === "live") {
+              if(bodyObj["play_intent"] === "live") {
 
-                const originalChannelId = String(bodyObj.channel_id);
+                const originalChannelId = String(bodyObj["channel_id"]);
 
-                // eslint-disable-next-line camelcase
-                bodyObj.channel_id = uuid;
-
-                // eslint-disable-next-line camelcase
-                bodyObj.content_eab_id = eab;
+                bodyObj["channel_id"] = uuid;
+                bodyObj["content_eab_id"] = eab;
 
                 // eslint-disable-next-line no-console
                 console.log("[HULU-DIAG] Playlist swapped: channel_id " + originalChannelId + " -> " + uuid + ", eab -> " + eab);

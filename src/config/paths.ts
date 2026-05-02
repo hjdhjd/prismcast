@@ -28,7 +28,7 @@ let resolvedDataDir: string | undefined;
  */
 export function initializeDataDir(cliDataDir?: string): void {
 
-  const envDataDir = process.env.PRISMCAST_DATA_DIR;
+  const envDataDir = process.env["PRISMCAST_DATA_DIR"];
 
   if(cliDataDir) {
 
@@ -159,4 +159,14 @@ export function getExtensionDir(config: Config): string {
 export function getLogFilePath(config: Config): string {
 
   return config.paths.logFile ?? path.join(getDataDir(), "prismcast.log");
+}
+
+/**
+ * Returns the value of the PRISMCAST_DEBUG environment variable, if set. Centralizing this read keeps the index-signature access on process.env in one place and
+ * gives tests a single seam to stub.
+ * @returns The PRISMCAST_DEBUG value, or undefined when unset.
+ */
+export function getDebugEnv(): string | undefined {
+
+  return process.env["PRISMCAST_DEBUG"];
 }

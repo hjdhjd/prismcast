@@ -417,7 +417,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
         // __reactFiber$ returns the fiber directly.
         const value = (mountEl as unknown as Record<string, unknown>)[reactKey] as Nullable<Record<string, unknown>>;
         const fiberRoot: Nullable<Record<string, unknown>> =
-          (value && (typeof value.current === "object")) ? value.current as Record<string, unknown> : value ?? null;
+          (value && (typeof value["current"] === "object")) ? value["current"] as Record<string, unknown> : value ?? null;
 
         if(!fiberRoot) {
 
@@ -443,10 +443,10 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
 
           // Check for Redux store on pendingProps. React-Redux v7 attaches directly as pendingProps.store. React-Redux v8 uses React context, placing the
           // store at pendingProps.value.store on the context Provider fiber node.
-          const props = node.pendingProps as Record<string, unknown> | null;
-          const candidate = (props?.store ?? (props?.value as Record<string, unknown> | null)?.store) as Record<string, unknown> | null;
+          const props = node["pendingProps"] as Record<string, unknown> | null;
+          const candidate = (props?.["store"] ?? (props?.["value"] as Record<string, unknown> | null)?.["store"]) as Record<string, unknown> | null;
 
-          if(candidate && (typeof candidate.dispatch === "function") && (typeof candidate.getState === "function")) {
+          if(candidate && (typeof candidate["dispatch"] === "function") && (typeof candidate["getState"] === "function")) {
 
             store = candidate as unknown as StoreType;
 
@@ -454,14 +454,14 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
           }
 
           // Traverse fiber tree: child and sibling links.
-          if(node.child) {
+          if(node["child"]) {
 
-            queue.push(node.child as Record<string, unknown>);
+            queue.push(node["child"] as Record<string, unknown>);
           }
 
-          if(node.sibling) {
+          if(node["sibling"]) {
 
-            queue.push(node.sibling as Record<string, unknown>);
+            queue.push(node["sibling"] as Record<string, unknown>);
           }
         }
 
@@ -491,37 +491,37 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
       const state = cachedStore.getState();
       let channels: { callSign?: string; ccid?: string; channelName?: string; resourceId?: string }[] = [];
 
-      if(state.channels) {
+      if(state["channels"]) {
 
-        const channelsState = state.channels as Record<string, unknown>;
+        const channelsState = state["channels"] as Record<string, unknown>;
 
         // Primary path: channelArrays is the validated location for the channel lineup array.
-        if(Array.isArray(channelsState.channelArrays)) {
+        if(Array.isArray(channelsState["channelArrays"])) {
 
-          channels = channelsState.channelArrays as typeof channels;
-        } else if(Array.isArray(channelsState.lineup)) {
+          channels = channelsState["channelArrays"] as typeof channels;
+        } else if(Array.isArray(channelsState["lineup"])) {
 
-          channels = channelsState.lineup as typeof channels;
-        } else if(Array.isArray(channelsState.channels)) {
+          channels = channelsState["lineup"] as typeof channels;
+        } else if(Array.isArray(channelsState["channels"])) {
 
-          channels = channelsState.channels as typeof channels;
-        } else if(Array.isArray(channelsState.allChannels)) {
+          channels = channelsState["channels"] as typeof channels;
+        } else if(Array.isArray(channelsState["allChannels"])) {
 
-          channels = channelsState.allChannels as typeof channels;
+          channels = channelsState["allChannels"] as typeof channels;
         }
       }
 
       // Fallback: some app versions may use a dedicated channelLineup reducer.
-      if((channels.length === 0) && state.channelLineup) {
+      if((channels.length === 0) && state["channelLineup"]) {
 
-        const lineup = state.channelLineup as Record<string, unknown>;
+        const lineup = state["channelLineup"] as Record<string, unknown>;
 
-        if(Array.isArray(lineup.channelArrays)) {
+        if(Array.isArray(lineup["channelArrays"])) {
 
-          channels = lineup.channelArrays as typeof channels;
-        } else if(Array.isArray(lineup.channels)) {
+          channels = lineup["channelArrays"] as typeof channels;
+        } else if(Array.isArray(lineup["channels"])) {
 
-          channels = lineup.channels as typeof channels;
+          channels = lineup["channels"] as typeof channels;
         }
       }
 
@@ -659,9 +659,9 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
 
             const moduleExports = wreq(moduleId);
 
-            if(typeof moduleExports.playConsumable === "function") {
+            if(typeof moduleExports["playConsumable"] === "function") {
 
-              playConsumableFn = moduleExports.playConsumable as (payload: Record<string, unknown>) => void;
+              playConsumableFn = moduleExports["playConsumable"] as (payload: Record<string, unknown>) => void;
             } else {
 
               // Search all exports for a function whose source mentions playConsumable.

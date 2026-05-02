@@ -174,16 +174,16 @@ function parseProfilesFile(raw: string): ProfilesFileData {
   // Files predating the schemaVersion field are treated as version 1. The migration runner upgrades them to the current version.
   let schemaVersion = 1;
 
-  if((typeof parsed.schemaVersion === "number") && Number.isFinite(parsed.schemaVersion) && (parsed.schemaVersion >= 1)) {
+  if((typeof parsed["schemaVersion"] === "number") && Number.isFinite(parsed["schemaVersion"]) && (parsed["schemaVersion"] >= 1)) {
 
-    schemaVersion = Math.floor(parsed.schemaVersion);
+    schemaVersion = Math.floor(parsed["schemaVersion"]);
   }
 
   const migrationsApplied: string[] = [];
 
-  if(Array.isArray(parsed.migrationsApplied)) {
+  if(Array.isArray(parsed["migrationsApplied"])) {
 
-    for(const entry of parsed.migrationsApplied) {
+    for(const entry of parsed["migrationsApplied"]) {
 
       if(typeof entry === "string") {
 
@@ -194,9 +194,9 @@ function parseProfilesFile(raw: string): ProfilesFileData {
 
   return {
 
-    domains: extractObjectMap<DomainConfig>(parsed.domains),
+    domains: extractObjectMap<DomainConfig>(parsed["domains"]),
     migrationsApplied,
-    profiles: extractObjectMap<SiteProfile>(parsed.profiles),
+    profiles: extractObjectMap<SiteProfile>(parsed["profiles"]),
     schemaVersion
   };
 }

@@ -830,7 +830,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
         //    (VideoToolbox on macOS, VA-API on Linux, DXVA on Windows). When enabled, H.264 hardware encoding is always available.
         // 2. videoEncoding profile array - lists specific hardware-accelerated codec profiles (e.g., "H264 Main", "HEVC Main"). Populated on Linux/Windows
         //    via VA-API/DXVA but empty on macOS where VideoToolbox doesn't enumerate through this interface.
-        const videoEncodeEnabled = sysInfo.gpu.featureStatus?.video_encode === "enabled";
+        const videoEncodeEnabled = sysInfo.gpu.featureStatus?.["video_encode"] === "enabled";
         const h264FromProfiles = sysInfo.gpu.videoEncoding.some((e) => e.profile.startsWith("H264"));
         const hevcFromProfiles = sysInfo.gpu.videoEncoding.some((e) => e.profile.startsWith("HEVC"));
         const av1FromProfiles = sysInfo.gpu.videoEncoding.some((e) => e.profile.startsWith("AV1"));
@@ -866,7 +866,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
         setGpuCapabilities({ av1HardwareEncoding: av1Hardware, h264HardwareEncoding: h264Hardware, hevcHardwareEncoding: hevcHardware, renderer });
 
         LOG.debug("browser:lifecycle", "GPU detection: device=%s, renderer=%s, H.264=%s, HEVC=%s, AV1=%s, video_encode=%s, encoding profiles=%s.",
-          deviceName, renderer, h264Hardware, hevcHardware, av1Hardware, sysInfo.gpu.featureStatus?.video_encode ?? "unknown",
+          deviceName, renderer, h264Hardware, hevcHardware, av1Hardware, sysInfo.gpu.featureStatus?.["video_encode"] ?? "unknown",
           sysInfo.gpu.videoEncoding.map((e) => e.profile).join(", ") || "none");
 
       } finally {
