@@ -1,28 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * generators.ts: Platform-specific service file generators for PrismCast.
+ *
+ * Each generator factory is a pure orchestrator over a GeneratorIO. The default I/O wiring lives in generators.context.ts; production callers go through
+ * getServiceGenerator() which uses createDefaultGeneratorIO() under the hood. Tests construct GeneratorIO literals inline so install/uninstall/start/stop run
+ * against fakes that record subprocess invocations and file writes without spawning real launchctl/systemctl/powershell.exe.
  */
-import type { Platform, ServiceManager } from "../utils/platform.js";
-import { SERVICE_ID, SERVICE_NAME, getLogsDirectory, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getPrismCastWorkingDirectory, getServiceFileDirectory,
-  getServiceFilePath } from "../utils/platform.js";
-import { CONFIG_METADATA } from "../config/userConfig.js";
-import type { Nullable } from "../types/index.js";
-import { execFile as execFileCallback } from "node:child_process";
-import fs from "node:fs";
+import { type Platform, SERVICE_ID, SERVICE_NAME, type ServiceManager, getLogsDirectory, getNodeExecutablePath, getPrismCastEntryPoint,
+  getPrismCastWorkingDirectory } from "../utils/platform.ts";
+import { CONFIG_METADATA } from "../config/userConfig.ts";
+import type { Nullable } from "../types/index.ts";
+import { createDefaultGeneratorIO } from "./generators.context.ts";
 import path from "node:path";
-import { promisify } from "node:util";
-
-const { promises: fsPromises } = fs;
-
-/* Promisified execFile is used for every external tool invocation in this module. execFile (as opposed to exec) passes arguments directly to the OS spawn call,
- * bypassing the shell and eliminating every class of shell-quoting hazard. The Windows PowerShell invocations build a single -Command string inside a scriptblock
- * with single-quote-escaped positional args (see invokePowerShell); macOS and Linux pass each argument as its own array element.
- */
-const execFile = promisify(execFileCallback);
 
 /* These generators create platform-specific service definitions that allow PrismCast to run as a managed service. Each generator produces the appropriate
  * configuration format for its service manager (launchd plist for macOS, systemd unit for Linux, Task Scheduler task for Windows), and owns every file it writes
- * and every external call it makes.
+ * and every external call it makes through the injected GeneratorIO.
  *
  * The interface exposes a single install(definition) entry point. Callers build a ServiceDefinition from the platform helpers and hand it to the generator; the
  * generator decides how to realize it. This keeps the caller free of platform-specific file-count or file-format concerns, and lets each generator remain
@@ -38,6 +31,48 @@ const execFile = promisify(execFileCallback);
  * All external tool invocations are genuinely asynchronous (promisified execFile, fsPromises) so that install/start/stop/uninstall honor their Promise<void>
  * contracts and do not block the event loop during multi-second operations such as the Windows task-state poll.
  */
+
+/**
+ * The runtime I/O context each generator consumes. Models the entire boundary between generator orchestration logic and real subprocess + filesystem I/O.
+ * Production wires it through createDefaultGeneratorIO (in generators.context.ts); tests pass an IO literal whose execFile/mkdir/writeFile/etc. are fakes that
+ * record their inputs and return synthetic results.
+ *
+ * The platform field and getServiceFilePath/getServiceFileDirectory accessors are bundled here too so that generator selection and path resolution flow through
+ * the same injection point - tests can simulate any platform without touching process.platform or the data-dir helpers.
+ */
+export interface GeneratorIO {
+
+  // Async filesystem access check. Resolves on success; throws (any error) when the path is not accessible.
+  readonly access: (path: string) => Promise<void>;
+
+  // Subprocess runner. Resolves with stdout+stderr as utf8 strings on success; throws on non-zero exit. The thrown Error has stdout/stderr properties when the
+  // child wrote to those streams, mirroring the shape Node's promisified execFile produces so runAndSurfaceStderr can extract diagnostic detail.
+  readonly execFile: (file: string, args: string[]) => Promise<{ stderr: string; stdout: string }>;
+
+  // Synchronous filesystem existence check. Used by getServicePaths and detectStalePaths where the synchronous shape simplifies the path-comparison logic.
+  readonly existsSync: (path: string) => boolean;
+
+  // The detected platform. Drives generator selection and the format-specific branches of getServicePaths.
+  readonly getPlatform: () => Platform;
+
+  // The directory where the platform's service file is installed (~/Library/LaunchAgents on macOS, ~/.config/systemd/user on Linux, the data dir on Windows).
+  readonly getServiceFileDirectory: () => string;
+
+  // The absolute path to the platform's service file (.plist, .service, or .ps1).
+  readonly getServiceFilePath: () => string;
+
+  // Async directory creation with recursive: true semantics.
+  readonly mkdir: (path: string, options: { recursive: boolean }) => Promise<void>;
+
+  // Synchronous file read returning utf8 string content. Used by getServicePaths to parse the service file format.
+  readonly readFileSync: (path: string) => string;
+
+  // Async file/path removal with force: true semantics (no error when the path is missing).
+  readonly rm: (path: string, options: { force: boolean }) => Promise<void>;
+
+  // Async file write with utf8 encoding. Used by every generator's install method to write the platform-specific service file.
+  readonly writeFile: (path: string, content: string) => Promise<void>;
+}
 
 /**
  * Structured description of the service to install. Each generator consumes this and realizes it in whatever file(s) and registration calls its platform requires.
@@ -139,16 +174,17 @@ function sortedEnvEntries(envVars: Readonly<Record<string, string>>): [string, s
 }
 
 /**
- * Checks whether a file exists using the async fs API. Replaces fs.existsSync in async method bodies so the Promise<boolean> return type is backed by real I/O
- * rather than a synchronous call papered over with an eslint-disable comment.
+ * Checks whether a file exists using the async fs API via the supplied IO. Replaces fs.existsSync in async method bodies so the Promise<boolean> return type is
+ * backed by real I/O rather than a synchronous call papered over with an eslint-disable comment.
+ * @param io - The generator I/O context.
  * @param filePath - The absolute path to check.
  * @returns True if the file exists and is accessible, false otherwise.
  */
-async function fileExists(filePath: string): Promise<boolean> {
+async function fileExists(io: GeneratorIO, filePath: string): Promise<boolean> {
 
   try {
 
-    await fsPromises.access(filePath);
+    await io.access(filePath);
 
     return true;
   } catch {
@@ -165,9 +201,10 @@ async function fileExists(filePath: string): Promise<boolean> {
 
 /**
  * Creates a launchd service generator for macOS.
+ * @param io - The generator I/O context.
  * @returns A ServiceGenerator for launchd.
  */
-function createLaunchdGenerator(): ServiceGenerator {
+function createLaunchdGenerator(io: GeneratorIO): ServiceGenerator {
 
   /**
    * Builds the plist XML from a service definition.
@@ -223,37 +260,37 @@ function createLaunchdGenerator(): ServiceGenerator {
 
     async install(definition: ServiceDefinition): Promise<void> {
 
-      const installPath = getServiceFilePath();
-      const installDir = getServiceFileDirectory();
+      const installPath = io.getServiceFilePath();
+      const installDir = io.getServiceFileDirectory();
 
       // Ensure directories exist.
-      await fsPromises.mkdir(installDir, { recursive: true });
-      await fsPromises.mkdir(definition.logsDir, { recursive: true });
+      await io.mkdir(installDir, { recursive: true });
+      await io.mkdir(definition.logsDir, { recursive: true });
 
       // Write the plist.
-      await fsPromises.writeFile(installPath, generatePlist(definition), "utf8");
+      await io.writeFile(installPath, generatePlist(definition));
 
       // Load the service with launchctl. If load fails because the definition is already loaded (common on reinstall), unload first then reload.
       try {
 
-        await execFile("launchctl", [ "load", "-w", installPath ]);
+        await io.execFile("launchctl", [ "load", "-w", installPath ]);
       } catch {
 
         try {
 
-          await execFile("launchctl", [ "unload", installPath ]);
+          await io.execFile("launchctl", [ "unload", installPath ]);
         } catch {
 
           // Ignore unload errors.
         }
 
-        await runAndSurfaceStderr("launchctl load failed", async () => execFile("launchctl", [ "load", "-w", installPath ]));
+        await runAndSurfaceStderr("launchctl load failed", async () => io.execFile("launchctl", [ "load", "-w", installPath ]));
       }
     },
 
     async isInstalled(): Promise<boolean> {
 
-      return fileExists(getServiceFilePath());
+      return fileExists(io, io.getServiceFilePath());
     },
 
     async isRunning(): Promise<boolean> {
@@ -262,7 +299,7 @@ function createLaunchdGenerator(): ServiceGenerator {
 
         // launchctl list emits tab-separated rows: "PID\tStatus\tLabel". We find the row for this service and parse the PID from the first column. A PID of "-"
         // means the service is loaded but not actively running.
-        const { stdout } = await execFile("launchctl", ["list"]);
+        const { stdout } = await io.execFile("launchctl", ["list"]);
         const line = stdout.split("\n").find((row) => row.includes(SERVICE_ID));
 
         if(!line) {
@@ -285,42 +322,42 @@ function createLaunchdGenerator(): ServiceGenerator {
 
     async start(): Promise<void> {
 
-      const installPath = getServiceFilePath();
+      const installPath = io.getServiceFilePath();
 
       // Unload first to clear any stale loaded-but-not-running state. Without this, `launchctl load -w` is a no-op when the definition is already loaded (e.g.,
       // after a crash or upgrade with changed paths), and the cached stale definition is reused.
       try {
 
-        await execFile("launchctl", [ "unload", installPath ]);
+        await io.execFile("launchctl", [ "unload", installPath ]);
       } catch {
 
         // Ignore - may not be loaded.
       }
 
-      await runAndSurfaceStderr("launchctl load failed", async () => execFile("launchctl", [ "load", "-w", installPath ]));
-      await runAndSurfaceStderr("launchctl start failed", async () => execFile("launchctl", [ "start", SERVICE_ID ]));
+      await runAndSurfaceStderr("launchctl load failed", async () => io.execFile("launchctl", [ "load", "-w", installPath ]));
+      await runAndSurfaceStderr("launchctl start failed", async () => io.execFile("launchctl", [ "start", SERVICE_ID ]));
     },
 
     async stop(): Promise<void> {
 
-      await runAndSurfaceStderr("launchctl unload failed", async () => execFile("launchctl", [ "unload", getServiceFilePath() ]));
+      await runAndSurfaceStderr("launchctl unload failed", async () => io.execFile("launchctl", [ "unload", io.getServiceFilePath() ]));
     },
 
     async uninstall(): Promise<void> {
 
-      const installPath = getServiceFilePath();
+      const installPath = io.getServiceFilePath();
 
       // Unload the service first.
       try {
 
-        await execFile("launchctl", [ "unload", installPath ]);
+        await io.execFile("launchctl", [ "unload", installPath ]);
       } catch {
 
         // Ignore errors if the service was not loaded.
       }
 
       // Remove the plist file.
-      await fsPromises.rm(installPath, { force: true });
+      await io.rm(installPath, { force: true });
     }
   };
 }
@@ -336,9 +373,10 @@ function createLaunchdGenerator(): ServiceGenerator {
 
 /**
  * Creates a systemd service generator for Linux.
+ * @param io - The generator I/O context.
  * @returns A ServiceGenerator for systemd.
  */
-function createSystemdGenerator(): ServiceGenerator {
+function createSystemdGenerator(io: GeneratorIO): ServiceGenerator {
 
   /**
    * Builds the systemd unit file from a service definition.
@@ -372,40 +410,40 @@ function createSystemdGenerator(): ServiceGenerator {
 
     async install(definition: ServiceDefinition): Promise<void> {
 
-      const installPath = getServiceFilePath();
-      const installDir = getServiceFileDirectory();
+      const installPath = io.getServiceFilePath();
+      const installDir = io.getServiceFileDirectory();
 
       // Ensure directories exist.
-      await fsPromises.mkdir(installDir, { recursive: true });
-      await fsPromises.mkdir(definition.logsDir, { recursive: true });
+      await io.mkdir(installDir, { recursive: true });
+      await io.mkdir(definition.logsDir, { recursive: true });
 
       // Write the unit file.
-      await fsPromises.writeFile(installPath, generateUnit(definition), "utf8");
+      await io.writeFile(installPath, generateUnit(definition));
 
       // Reload systemd to pick up the new unit file.
       try {
 
-        await execFile("systemctl", [ "--user", "daemon-reload" ]);
+        await io.execFile("systemctl", [ "--user", "daemon-reload" ]);
       } catch {
 
         // Ignore if systemctl isn't available (shouldn't happen on systemd systems).
       }
 
       // Enable and start the service.
-      await runAndSurfaceStderr("systemctl enable failed", async () => execFile("systemctl", [ "--user", "enable", "prismcast.service" ]));
-      await runAndSurfaceStderr("systemctl start failed", async () => execFile("systemctl", [ "--user", "start", "prismcast.service" ]));
+      await runAndSurfaceStderr("systemctl enable failed", async () => io.execFile("systemctl", [ "--user", "enable", "prismcast.service" ]));
+      await runAndSurfaceStderr("systemctl start failed", async () => io.execFile("systemctl", [ "--user", "start", "prismcast.service" ]));
     },
 
     async isInstalled(): Promise<boolean> {
 
-      return fileExists(getServiceFilePath());
+      return fileExists(io, io.getServiceFilePath());
     },
 
     async isRunning(): Promise<boolean> {
 
       try {
 
-        const { stdout } = await execFile("systemctl", [ "--user", "is-active", "prismcast.service" ]);
+        const { stdout } = await io.execFile("systemctl", [ "--user", "is-active", "prismcast.service" ]);
 
         return stdout.trim() === "active";
       } catch {
@@ -420,22 +458,22 @@ function createSystemdGenerator(): ServiceGenerator {
 
     async start(): Promise<void> {
 
-      await runAndSurfaceStderr("systemctl start failed", async () => execFile("systemctl", [ "--user", "start", "prismcast.service" ]));
+      await runAndSurfaceStderr("systemctl start failed", async () => io.execFile("systemctl", [ "--user", "start", "prismcast.service" ]));
     },
 
     async stop(): Promise<void> {
 
-      await runAndSurfaceStderr("systemctl stop failed", async () => execFile("systemctl", [ "--user", "stop", "prismcast.service" ]));
+      await runAndSurfaceStderr("systemctl stop failed", async () => io.execFile("systemctl", [ "--user", "stop", "prismcast.service" ]));
     },
 
     async uninstall(): Promise<void> {
 
-      const installPath = getServiceFilePath();
+      const installPath = io.getServiceFilePath();
 
       // Stop and disable the service.
       try {
 
-        await execFile("systemctl", [ "--user", "stop", "prismcast.service" ]);
+        await io.execFile("systemctl", [ "--user", "stop", "prismcast.service" ]);
       } catch {
 
         // Ignore if not running.
@@ -443,19 +481,19 @@ function createSystemdGenerator(): ServiceGenerator {
 
       try {
 
-        await execFile("systemctl", [ "--user", "disable", "prismcast.service" ]);
+        await io.execFile("systemctl", [ "--user", "disable", "prismcast.service" ]);
       } catch {
 
         // Ignore if not enabled.
       }
 
       // Remove the unit file.
-      await fsPromises.rm(installPath, { force: true });
+      await io.rm(installPath, { force: true });
 
       // Reload systemd.
       try {
 
-        await execFile("systemctl", [ "--user", "daemon-reload" ]);
+        await io.execFile("systemctl", [ "--user", "daemon-reload" ]);
       } catch {
 
         // Ignore.
@@ -503,8 +541,8 @@ function powerShellLiteral(value: string): string {
 }
 
 /**
- * Invokes powershell.exe with a script block and a set of positional arguments. The scriptBody is expected to declare its inputs via a param() clause at the top;
- * each argument is serialized through powerShellLiteral() and appended to the command after the scriptblock, so PowerShell's own parser binds them to the declared
+ * Builds a PowerShell invocation as a function bound to the supplied IO. The scriptBody is expected to declare its inputs via a param() clause at the top; each
+ * argument is serialized through powerShellLiteral() and appended to the command after the scriptblock, so PowerShell's own parser binds them to the declared
  * parameters.
  *
  * The only escape surface in this path is the single-quote doubling performed by powerShellLiteral(). That one rule is total: inside a PowerShell single-quoted
@@ -514,16 +552,19 @@ function powerShellLiteral(value: string): string {
  *
  * On failure, any stderr text that PowerShell wrote (e.g., a cmdlet's error record) is folded into the thrown Error's message by runAndSurfaceStderr, and the
  * original Error is attached via the cause chain so programmatic consumers retain access to the structured failure details.
- * @param scriptBody - The PowerShell script body, including any param() declaration.
- * @param args - Positional arguments to pass to the script block.
+ * @param io - The generator I/O context.
+ * @returns A function that runs a PowerShell script body with the given positional arguments.
  */
-async function invokePowerShell(scriptBody: string, args: string[] = []): Promise<void> {
+function makePowerShellInvoker(io: GeneratorIO): (scriptBody: string, args?: string[]) => Promise<void> {
 
-  const quotedArgs = args.map((value) => powerShellLiteral(value)).join(" ");
-  const command = "& { " + scriptBody + " } " + quotedArgs;
+  return async (scriptBody: string, args: string[] = []): Promise<void> => {
 
-  await runAndSurfaceStderr("PowerShell invocation failed",
-    async () => execFile("powershell.exe", [ "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command ]));
+    const quotedArgs = args.map((value) => powerShellLiteral(value)).join(" ");
+    const command = "& { " + scriptBody + " } " + quotedArgs;
+
+    await runAndSurfaceStderr("PowerShell invocation failed",
+      async () => io.execFile("powershell.exe", [ "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command ]));
+  };
 }
 
 /* Script bodies for Task Scheduler operations. Each script is a self-contained PowerShell block that reads its inputs from positional parameters - never from string
@@ -616,11 +657,13 @@ const WINDOWS_IS_RUNNING_SCRIPT = [
 
 /**
  * Creates a Windows Task Scheduler generator.
+ * @param io - The generator I/O context.
  * @returns A ServiceGenerator for Windows Task Scheduler.
  */
-function createWindowsSchedulerGenerator(): ServiceGenerator {
+function createWindowsSchedulerGenerator(io: GeneratorIO): ServiceGenerator {
 
   const taskName = SERVICE_NAME;
+  const invokePowerShell = makePowerShellInvoker(io);
 
   /**
    * Generates the PowerShell launcher script (.ps1) that Task Scheduler will invoke at user logon. The launcher sets environment variables and spawns node via
@@ -695,25 +738,25 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
       path.join(installDir, "service-installed.marker")
     ];
 
-    await Promise.all(legacyFiles.map(async (filePath) => fsPromises.rm(filePath, { force: true })));
+    await Promise.all(legacyFiles.map(async (filePath) => io.rm(filePath, { force: true })));
   }
 
   return {
 
     async install(definition: ServiceDefinition): Promise<void> {
 
-      const launcherPath = getServiceFilePath();
-      const installDir = getServiceFileDirectory();
+      const launcherPath = io.getServiceFilePath();
+      const installDir = io.getServiceFileDirectory();
 
       // Ensure directories exist.
-      await fsPromises.mkdir(installDir, { recursive: true });
-      await fsPromises.mkdir(definition.logsDir, { recursive: true });
+      await io.mkdir(installDir, { recursive: true });
+      await io.mkdir(definition.logsDir, { recursive: true });
 
       // Remove legacy artifacts from pre-PowerShell versions so the data directory contains only the current launcher.
       await removeLegacyWindowsArtifacts(installDir);
 
       // Write the launcher .ps1 with a UTF-8 BOM for unambiguous PowerShell parsing across versions.
-      await fsPromises.writeFile(launcherPath, generateLauncher(definition), "utf8");
+      await io.writeFile(launcherPath, generateLauncher(definition));
 
       // Register (or replace) the scheduled task. -Force in the registration script handles reinstall.
       await invokePowerShell(WINDOWS_REGISTER_SCRIPT, [ taskName, launcherPath ]);
@@ -770,8 +813,8 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
 
     async uninstall(): Promise<void> {
 
-      const launcherPath = getServiceFilePath();
-      const installDir = getServiceFileDirectory();
+      const launcherPath = io.getServiceFilePath();
+      const installDir = io.getServiceFileDirectory();
 
       // Deregister the task. SilentlyContinue in the script makes this a no-op if the task was never registered.
       try {
@@ -783,7 +826,7 @@ function createWindowsSchedulerGenerator(): ServiceGenerator {
       }
 
       // Remove the launcher and any residual legacy artifacts.
-      await fsPromises.rm(launcherPath, { force: true });
+      await io.rm(launcherPath, { force: true });
       await removeLegacyWindowsArtifacts(installDir);
     }
   };
@@ -819,13 +862,14 @@ export interface StalePathResult {
 /**
  * Reads the existing service file and extracts the node binary and PrismCast entry point paths. Each platform has its own format: launchd plist XML, systemd unit
  * ExecStart line, or Windows PowerShell launcher with comment metadata.
+ * @param io - The generator I/O context. Defaults to createDefaultGeneratorIO() which wires real runtime I/O.
  * @returns The extracted paths, or null if the file does not exist or cannot be parsed.
  */
-export function getServicePaths(): Nullable<ServicePaths> {
+export function getServicePaths(io: GeneratorIO = createDefaultGeneratorIO()): Nullable<ServicePaths> {
 
-  const filePath = getServiceFilePath();
+  const filePath = io.getServiceFilePath();
 
-  if(!fs.existsSync(filePath)) {
+  if(!io.existsSync(filePath)) {
 
     return null;
   }
@@ -834,13 +878,13 @@ export function getServicePaths(): Nullable<ServicePaths> {
 
   try {
 
-    content = fs.readFileSync(filePath, "utf8");
+    content = io.readFileSync(filePath);
   } catch {
 
     return null;
   }
 
-  switch(getPlatform()) {
+  switch(io.getPlatform()) {
 
     // Launchd plist: the ProgramArguments array contains two <string> elements - the first is the node path, the second is the entry point. We slice to the section
     // after the ProgramArguments key, then take the first two string values via matchAll + iterator helpers (lazy, early-terminating, no intermediate arrays).
@@ -912,19 +956,20 @@ export function getServicePaths(): Nullable<ServicePaths> {
 /**
  * Checks whether the paths in the existing service file still exist on disk. This detects the common post-upgrade scenario where Homebrew or npm has moved the
  * installation to a new versioned directory and the old paths no longer resolve.
+ * @param io - The generator I/O context. Defaults to createDefaultGeneratorIO() which wires real runtime I/O.
  * @returns A StalePathResult indicating which paths are missing, or null if the service file does not exist or cannot be parsed.
  */
-export function detectStalePaths(): Nullable<StalePathResult> {
+export function detectStalePaths(io: GeneratorIO = createDefaultGeneratorIO()): Nullable<StalePathResult> {
 
-  const paths = getServicePaths();
+  const paths = getServicePaths(io);
 
   if(!paths) {
 
     return null;
   }
 
-  const nodeStale = !fs.existsSync(paths.nodePath);
-  const entryStale = !fs.existsSync(paths.entryPoint);
+  const nodeStale = !io.existsSync(paths.nodePath);
+  const entryStale = !io.existsSync(paths.entryPoint);
 
   return {
 
@@ -936,25 +981,26 @@ export function detectStalePaths(): Nullable<StalePathResult> {
 
 /**
  * Returns the service generator for the current platform.
+ * @param io - The generator I/O context. Defaults to createDefaultGeneratorIO() which wires real runtime I/O.
  * @returns The appropriate ServiceGenerator, or null if the platform is not supported.
  */
-export function getServiceGenerator(): Nullable<ServiceGenerator> {
+export function getServiceGenerator(io: GeneratorIO = createDefaultGeneratorIO()): Nullable<ServiceGenerator> {
 
-  switch(getPlatform()) {
+  switch(io.getPlatform()) {
 
     case "darwin": {
 
-      return createLaunchdGenerator();
+      return createLaunchdGenerator(io);
     }
 
     case "linux": {
 
-      return createSystemdGenerator();
+      return createSystemdGenerator(io);
     }
 
     case "windows": {
 
-      return createWindowsSchedulerGenerator();
+      return createWindowsSchedulerGenerator(io);
     }
 
     default: {

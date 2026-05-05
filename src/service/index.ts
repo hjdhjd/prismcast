@@ -2,5 +2,5 @@
  *
  * index.ts: Service module exports for PrismCast.
  */
-export * from "./commands.js";
-export * from "./generators.js";
+export * from "./commands.ts";
+export * from "./generators.ts";
