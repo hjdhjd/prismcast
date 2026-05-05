@@ -3,31 +3,32 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Frame, Page } from "puppeteer-core";
-import { LOG, delay, extractDomain, formatError, registerAbortController, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.js";
-import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.js";
-import type { RecoveryMetrics, TabReplacementResult } from "./recovery.js";
-import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
-import { getNextStreamId, getStreamCount } from "./registry.js";
-import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.js";
-import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.js";
-import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.js";
-import { CONFIG } from "../config/index.js";
-import type { FFmpegProcess } from "../utils/index.js";
-import type { ManifestInterceptorHandle } from "../browser/manifestInterceptor.js";
-import type { MonitorStreamInfo } from "./monitor.js";
+import { LOG, delay, extractDomain, formatError, registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg,
+  startTimer } from "../utils/index.ts";
+import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
+import type { RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
+import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.ts";
+import { getNextStreamId, getStreamCount } from "./registry.ts";
+import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.ts";
+import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
+import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
+import { CONFIG } from "../config/index.ts";
+import type { FFmpegProcess } from "../utils/index.ts";
+import type { ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
+import type { MonitorStreamInfo } from "./monitor.ts";
 import type { Readable } from "node:stream";
-import { chromeFetch } from "../utils/index.js";
-import { getCachedEncryption } from "../native/probe.js";
-import { getCaptureMimeType } from "./codec.js";
-import { getDomainConfig } from "../config/sites.js";
-import { getEffectiveViewport } from "../config/presets.js";
-import { getServiceDisplayName } from "../config/services.js";
-import { installManifestInterceptor } from "../browser/manifestInterceptor.js";
-import { isChannelSelectionProfile } from "../types/index.js";
-import { monitorPlaybackHealth } from "./monitor.js";
-import { mutateChannels } from "../config/userChannels.js";
+import { chromeFetch } from "../utils/index.ts";
+import { getCachedEncryption } from "../native/probe.ts";
+import { getCaptureMimeType } from "./codec.ts";
+import { getDomainConfig } from "../config/sites.ts";
+import { getEffectiveViewport } from "../config/presets.ts";
+import { getServiceDisplayName } from "../config/services.ts";
+import { installManifestInterceptor } from "../browser/manifestInterceptor.ts";
+import { isChannelSelectionProfile } from "../types/index.ts";
+import { monitorPlaybackHealth } from "./monitor.ts";
+import { mutateChannels } from "../config/userChannels.ts";
 import { pipeline } from "node:stream/promises";
-import { resizeAndMinimizeWindow } from "../browser/cdp.js";
+import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
 
 /* This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
  *
@@ -520,10 +521,14 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     // Store the raw capture stream. This must be destroyed before closing the page.
     rawCaptureStream = stream;
 
-    // For FFmpeg mode, spawn FFmpeg to transcode the Matroska stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC.
+    // For FFmpeg mode, spawn FFmpeg to transcode the Matroska stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC. The resolved binary
+    // path comes from the production-cached resolver - first call probes; subsequent calls return the memoized result. Falls back to "ffmpeg" so spawn() defers
+    // to PATH lookup if the resolver couldn't find a path (matching the previous behavior; the spawn will then fail with ENOENT if PATH is also empty).
     if(useFFmpeg) {
 
-      const ffmpeg = spawnFFmpeg(CONFIG.streaming.audioBitsPerSecond, (error) => {
+      const ffmpegBin = (await resolveFFmpegPath()) ?? "ffmpeg";
+
+      const ffmpeg = spawnFFmpeg(ffmpegBin, CONFIG.streaming.audioBitsPerSecond, (error) => {
 
         LOG.error("FFmpeg process error: %s.", formatError(error));
 
