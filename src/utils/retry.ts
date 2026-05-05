@@ -1,10 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * retry.ts: Retry logic with exponential backoff for PrismCast.
+ * retry.ts: Retry logic with exponential backoff for PrismCast. Time-dependent operations route through a Clock (see clock.ts) so tests can deterministically
+ * control sleeps and timeout races without depending on real-time delays - the function's nested raceWithTimeout/Promise.race/finally/await delay chain is
+ * exactly the shape Node's synchronous mock.timers.tick cannot drain.
  */
-import { delay, raceWithTimeout } from "./delay.js";
-import { formatError, isSessionClosedError } from "./errors.js";
-import { LOG } from "./logger.js";
+import { type Clock, realClock } from "./clock.ts";
+import { formatError, isSessionClosedError } from "./errors.ts";
+import { LOG } from "./logger.ts";
 
 /* The retry system provides resilient operation execution with exponential backoff and jitter. When operations fail due to transient issues like network hiccups or
  * slow page loads, the system automatically retries with increasing delays. The exponential backoff prevents overwhelming struggling services, while jitter prevents
@@ -18,6 +20,11 @@ export interface RetryOptions<T> {
 
   // Maximum jitter added to the backoff delay in milliseconds. Prevents synchronized retries across concurrent operations. Default: 1000ms.
   backoffJitter?: number;
+
+  // The clock used for sleeps between attempts and for the per-attempt timeout race. Defaults to realClock which delegates to delay()/raceWithTimeout() from
+  // delay.ts. Tests inject a fake clock so backoff sleeps resolve instantly and timeout races have deterministic outcomes - the production code path is
+  // unchanged.
+  clock?: Clock;
 
   // Human-readable description for logging purposes.
   description: string;
@@ -52,7 +59,7 @@ export interface RetryOptions<T> {
  */
 export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | undefined> {
 
-  const { backoffJitter = 1000, description, earlySuccessCheck, maxAttempts, maxBackoffDelay = 3000, operation, shouldAbort, timeoutMs } = options;
+  const { backoffJitter = 1000, clock = realClock, description, earlySuccessCheck, maxAttempts, maxBackoffDelay = 3000, operation, shouldAbort, timeoutMs } = options;
 
   let lastError: unknown = null;
 
@@ -72,7 +79,7 @@ export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | u
     try {
 
       // eslint-disable-next-line no-await-in-loop
-      return await raceWithTimeout(operation(), timeoutMs);
+      return await clock.raceWithTimeout(operation(), timeoutMs);
     } catch(error) {
 
       lastError = error;
@@ -114,7 +121,7 @@ export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | u
         const jitter = Math.random() * backoffJitter;
 
         // eslint-disable-next-line no-await-in-loop
-        await delay(baseDelay + jitter);
+        await clock.sleep(baseDelay + jitter);
       }
     }
   }

@@ -1,11 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * hlsSegments.ts: HLS segment storage functions for PrismCast.
+ * hlsSegments.ts: HLS segment storage functions for PrismCast. The wait-for-readiness helpers (waitForPlaylist, waitForInitSegment) route their timeout race
+ * through the Clock port (see utils/clock.ts) so tests can deterministically simulate "promise resolves before timeout" vs "timeout fires before promise"
+ * without depending on real timers - the race is exactly the pattern Node's synchronous mock.timers.tick cannot drive reliably.
  */
-import { LOG, raceWithTimeout } from "../utils/index.js";
-import { CONFIG } from "../config/index.js";
-import type { StreamRegistryEntry } from "./registry.js";
-import { getStream } from "./registry.js";
+import { type Clock, LOG, realClock } from "../utils/index.ts";
+import { CONFIG } from "../config/index.ts";
+import type { StreamRegistryEntry } from "./registry.ts";
+import { getStream } from "./registry.ts";
 
 /* This module provides functions for storing and retrieving HLS segments, playlists, and init segments. All data is stored in the stream registry's HLSState, which is
  * the single source of truth for stream data. Key responsibilities:
@@ -331,22 +333,24 @@ export function getPlaylist(streamId: number): string | undefined {
  * Waits for the first playlist to be available for a stream.
  * @param streamId - The numeric stream ID.
  * @param timeout - Maximum time to wait in milliseconds.
+ * @param clock - Clock used for the timeout race. Defaults to realClock; tests inject a fake to drive the race deterministically.
  * @returns True if playlist is ready, false if timeout or stream not found.
  */
-export async function waitForPlaylist(streamId: number, timeout: number): Promise<boolean> {
+export async function waitForPlaylist(streamId: number, timeout: number, clock: Clock = realClock): Promise<boolean> {
 
-  return waitForReady(streamId, async (stream) => stream.hls.playlistReady, timeout);
+  return waitForReady(streamId, async (stream) => stream.hls.playlistReady, timeout, clock);
 }
 
 /**
  * Waits for the first init segment to be available for a stream. Used by MPEG-TS consumers to wait for codec configuration before starting their FFmpeg remuxer.
  * @param streamId - The numeric stream ID.
  * @param timeout - Maximum time to wait in milliseconds.
+ * @param clock - Clock used for the timeout race. Defaults to realClock; tests inject a fake to drive the race deterministically.
  * @returns True if init segment is ready, false if timeout or stream not found.
  */
-export async function waitForInitSegment(streamId: number, timeout: number): Promise<boolean> {
+export async function waitForInitSegment(streamId: number, timeout: number, clock: Clock = realClock): Promise<boolean> {
 
-  return waitForReady(streamId, async (stream) => stream.hls.initSegmentReady, timeout);
+  return waitForReady(streamId, async (stream) => stream.hls.initSegmentReady, timeout, clock);
 }
 
 // Internal Helpers.
@@ -357,9 +361,10 @@ export async function waitForInitSegment(streamId: number, timeout: number): Pro
  * @param streamId - The numeric stream ID.
  * @param getPromise - Accessor that extracts the readiness promise from the stream's HLS state.
  * @param timeout - Maximum time to wait in milliseconds.
+ * @param clock - Clock providing the timeout race; the public wrappers thread their own clock through.
  * @returns True if ready before timeout, false otherwise.
  */
-async function waitForReady(streamId: number, getPromise: (stream: StreamRegistryEntry) => Promise<void>, timeout: number): Promise<boolean> {
+async function waitForReady(streamId: number, getPromise: (stream: StreamRegistryEntry) => Promise<void>, timeout: number, clock: Clock): Promise<boolean> {
 
   const stream = getStream(streamId);
 
@@ -368,5 +373,5 @@ async function waitForReady(streamId: number, getPromise: (stream: StreamRegistr
     return false;
   }
 
-  return raceWithTimeout(getPromise(stream).then(() => true), timeout).catch(() => false);
+  return clock.raceWithTimeout(getPromise(stream).then(() => true), timeout).catch(() => false);
 }
