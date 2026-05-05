@@ -2,12 +2,12 @@
  *
  * userProfiles.ts: User profile and domain mapping persistence for PrismCast.
  */
-import { DOMAIN_CONFIG, SITE_PROFILES, getBuiltinProfile, isProviderProfile } from "./sites.js";
-import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "../types/index.js";
-import { LOG, containsNonPrintable } from "../utils/index.js";
-import { type Migration, createFileStore } from "./persistence.js";
-import { extractDomain } from "../utils/format.js";
-import { getProfilesFilePath } from "./paths.js";
+import { DOMAIN_CONFIG, SITE_PROFILES, getBuiltinProfile, isProviderProfile } from "./sites.ts";
+import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "../types/index.ts";
+import { LOG, containsNonPrintable } from "../utils/index.ts";
+import { type Migration, createFileStore } from "./persistence.ts";
+import { extractDomain } from "../utils/format.ts";
+import { getProfilesFilePath } from "./paths.ts";
 
 /* PrismCast allows users to define custom site profiles and domain mappings in profiles.json inside the data directory. User profiles extend built-in profiles and
  * are merged at runtime, with user domain mappings taking precedence over built-in mappings for domain conflicts. This module handles persistence, validation, and
@@ -281,7 +281,8 @@ export async function readProfiles(): Promise<UserProfilesLoadResult> {
     domains: result.data.domains,
     parseError: result.parseError,
     parseErrorMessage: result.parseErrorMessage,
-    profiles: result.data.profiles
+    profiles: result.data.profiles,
+    recoveredFromBackup: result.recoveredFromBackup
   };
 }
 
@@ -365,6 +366,11 @@ export async function initializeUserProfiles(): Promise<void> {
   loadedUserDomains = result.domains;
   userProfilesParseError = result.parseError;
   userProfilesParseErrorMessage = result.parseErrorMessage;
+
+  if(result.recoveredFromBackup) {
+
+    LOG.info("User profiles were recovered from backup after a corrupt main file.");
+  }
 
   // Check for non-printable characters in loaded profile and domain string values. These warnings are informational - loaded data is not modified.
   for(const [ profileKey, profile ] of Object.entries(loadedUserProfiles)) {

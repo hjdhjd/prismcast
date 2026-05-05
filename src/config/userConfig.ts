@@ -2,11 +2,12 @@
  *
  * userConfig.ts: User configuration file management for PrismCast.
  */
-import type { Config, Nullable } from "../types/index.js";
-import { type Migration, createFileStore } from "./persistence.js";
-import type { CliOverrides } from "./index.js";
-import { getConfigFilePath } from "./paths.js";
-import { getValidPresetIds } from "./presets.js";
+import type { Config, Nullable } from "../types/index.ts";
+import { type Migration, createFileStore } from "./persistence.ts";
+import type { CliOverrides } from "./index.ts";
+import { LOG } from "../utils/index.ts";
+import { getConfigFilePath } from "./paths.ts";
+import { getValidPresetIds } from "./presets.ts";
 
 /* PrismCast stores user configuration in config.json inside the data directory (default: ~/.prismcast). This file allows users to customize settings without using
  * environment variables or CLI flags. The configuration system uses a layered approach with the following priority (highest to lowest):
@@ -121,6 +122,20 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       listItemsKey: "providerModules",
       path: "channels.precacheServices",
       type: "checkboxList"
+    }
+  ],
+
+  channelsDvr: [
+    {
+
+      description: "TCP port for the user's Channels DVR API. PrismCast polls Channels DVR over HTTP for show-info, device-mapping discovery, and pretune " +
+        "scheduling. Defaults to 8089, which is the canonical Channels DVR port. Override only when the user has changed the DVR's listen port from its default.",
+      envVar: "CHANNELS_DVR_PORT",
+      label: "Channels DVR Port",
+      max: 65535,
+      min: 1,
+      path: "channelsDvr.port",
+      type: "port"
     }
   ],
 
@@ -723,6 +738,15 @@ export interface UserHdhrConfig {
 }
 
 /**
+ * Partial Channels DVR connection configuration for user config file.
+ */
+export interface UserChannelsDvrConfig {
+
+  host?: string;
+  port?: number;
+}
+
+/**
  * Partial paths configuration for user config file.
  */
 export interface UserPathsConfig {
@@ -739,11 +763,7 @@ export interface UserConfig {
 
   browser?: UserBrowserConfig;
   channels?: UserChannelsConfig;
-
-  // Auto-discovered Channels DVR host address. Persisted so the pretune module can begin polling immediately on startup without waiting for the first stream to
-  // trigger host discovery. Updated automatically when showInfo.ts discovers or rediscovers the DVR host from client addresses.
-  dvrHost?: string;
-
+  channelsDvr?: UserChannelsDvrConfig;
   hdhr?: UserHdhrConfig;
   hls?: UserHLSConfig;
   logging?: UserLoggingConfig;
@@ -775,6 +795,10 @@ export interface UserConfigLoadResult {
 
   // Error message if parseError is true.
   parseErrorMessage?: string;
+
+  // True when the main file failed to parse and a usable copy was successfully recovered from the .bak rotation. Mirrors the framework's read-result flag
+  // (FileStoreReadResult.recoveredFromBackup) so callers can surface a UI banner or log a recovery event without reaching into the framework's compound result.
+  recoveredFromBackup: boolean;
 }
 
 /* The config file path is resolved via the centralized paths module (config/paths.ts). The data directory is initialized at startup before config loading.
@@ -789,8 +813,10 @@ export interface UserConfigLoadResult {
  *   1 - Original. Provider-themed channel field names ("enabledProviders", "precacheProviders") and "foxcom" service tag still present.
  *   2 - Service-themed naming. Renames "enabledProviders" -> "enabledServices", "precacheProviders" -> "precacheServices", and "foxcom" -> "foxone" inside
  *       the channels.enabledServices array. Companion to channels.json v3 which renames foxcom in channel keys and selections.
+ *   3 - DVR connection namespace. Moves the top-level `dvrHost` field into `channelsDvr.host`, splitting any legacy `host:port` value so the host portion
+ *       lands at `channelsDvr.host` (host-only) and the port portion lands at `channelsDvr.port` only when the user has not already customized the port.
  */
-const CURRENT_CONFIG_SCHEMA_VERSION = 2;
+const CURRENT_CONFIG_SCHEMA_VERSION = 3;
 
 /* Declarative schema migrations. The file store framework runs these in order from the file's stored schemaVersion up to CURRENT_CONFIG_SCHEMA_VERSION,
  * stamping the new version and recording the description in migrationsApplied after each application. Apply functions mutate the data in place.
@@ -799,47 +825,137 @@ const configMigrations: Record<number, Migration<UserConfig>> = {
 
   2: {
 
-    apply: (data: UserConfig): void => {
-
-      // Cast to a permissive shape because the legacy provider-themed keys are not declared on UserChannelsConfig - they only exist on older on-disk files.
-      const channels = data.channels as Record<string, unknown> | undefined;
-
-      if(!channels) {
-
-        return;
-      }
-
-      // Rename enabledProviders -> enabledServices. If both are present (rare hand-edited case) the current name wins.
-      if(Array.isArray(channels["enabledProviders"])) {
-
-        if(!Array.isArray(channels["enabledServices"])) {
-
-          channels["enabledServices"] = channels["enabledProviders"];
-        }
-
-        delete channels["enabledProviders"];
-      }
-
-      // Rename precacheProviders -> precacheServices.
-      if(Array.isArray(channels["precacheProviders"])) {
-
-        if(!Array.isArray(channels["precacheServices"])) {
-
-          channels["precacheServices"] = channels["precacheProviders"];
-        }
-
-        delete channels["precacheProviders"];
-      }
-
-      // Rename "foxcom" -> "foxone" inside the enabledServices service-tag filter.
-      if(Array.isArray(channels["enabledServices"])) {
-
-        channels["enabledServices"] = (channels["enabledServices"] as string[]).map((tag) => (tag === "foxcom") ? "foxone" : tag);
-      }
-    },
+    apply: applyChannelsProviderRenameMigration,
     description: "Rename legacy provider-themed channel field names and foxcom service tag to foxone"
+  },
+
+  3: {
+
+    apply: applyDvrHostNamespaceMigration,
+    description: "Move dvrHost into channelsDvr.host (split legacy host:port format)"
   }
 };
+
+/**
+ * Renames the legacy provider-themed channel fields to their current service-themed names: `enabledProviders` -> `enabledServices`,
+ * `precacheProviders` -> `precacheServices`, and the `"foxcom"` tag -> `"foxone"` inside `enabledServices`. When both legacy and current names coexist on disk
+ * (a rare hand-edited collision), the current name wins and the legacy key is deleted - operator intent on the new name takes precedence over the auto-rename.
+ *
+ * Behavioral contract: this is a pure transformation on the on-disk shape. Configs without a `channels` block are left untouched (early return); configs that
+ * already have the v2 shape (no legacy keys present) are unchanged at the field level (idempotent), though the foxcom-to-foxone map runs unconditionally over
+ * the present `enabledServices` array because that operation is itself a no-op for already-migrated tags.
+ *
+ * Exported for unit-test coverage of the rename cases (each rename, collision wins, foxcom remap, no-channels early return). Production callers reach this
+ * only through the schema migration runner, never directly.
+ *
+ * @param data - The pre-migration UserConfig data, mutated in place.
+ */
+export function applyChannelsProviderRenameMigration(data: UserConfig): void {
+
+  // Cast to a permissive shape because the legacy provider-themed keys are not declared on UserChannelsConfig - they only exist on older on-disk files.
+  const channels = data.channels as Record<string, unknown> | undefined;
+
+  if(!channels) {
+
+    return;
+  }
+
+  // Rename enabledProviders -> enabledServices. If both are present (rare hand-edited case) the current name wins.
+  if(Array.isArray(channels["enabledProviders"])) {
+
+    if(!Array.isArray(channels["enabledServices"])) {
+
+      channels["enabledServices"] = channels["enabledProviders"];
+    }
+
+    delete channels["enabledProviders"];
+  }
+
+  // Rename precacheProviders -> precacheServices.
+  if(Array.isArray(channels["precacheProviders"])) {
+
+    if(!Array.isArray(channels["precacheServices"])) {
+
+      channels["precacheServices"] = channels["precacheProviders"];
+    }
+
+    delete channels["precacheProviders"];
+  }
+
+  // Rename "foxcom" -> "foxone" inside the enabledServices service-tag filter.
+  if(Array.isArray(channels["enabledServices"])) {
+
+    channels["enabledServices"] = (channels["enabledServices"] as string[]).map((tag) => (tag === "foxcom") ? "foxone" : tag);
+  }
+}
+
+/**
+ * Splits a legacy `dvrHost` value into the new `channelsDvr.host` / `channelsDvr.port` namespace. The host portion is host-only by invariant; legacy values
+ * carrying an embedded port (e.g., `192.168.1.5:8089`) are split so the host lands at `channelsDvr.host` and the port lands at `channelsDvr.port` IFF the
+ * user has not already customized the port. When both an embedded port and an explicit user-set port exist, the explicit port wins (a warning is logged) and
+ * the embedded port is discarded - the user's deliberate choice takes precedence over implicit legacy data.
+ *
+ * Splits at the LAST colon so bracket-wrapped IPv6 forms like `[::1]:8089` survive (the production setDvrHost invariant rejects bare-colon values, but disk
+ * files may carry hand-edited content the framework cannot vet). When the trailing portion does not parse as a valid port number (1..65535), the entire input
+ * is treated as a host-only value rather than fabricating a bogus port.
+ *
+ * Exported for unit-test coverage of the splitting cases (host-only, host+default-port, host+non-default-port collision). Production callers reach this only
+ * through the schema migration runner, never directly.
+ *
+ * @param data - The pre-migration UserConfig data, mutated in place.
+ */
+export function applyDvrHostNamespaceMigration(data: UserConfig): void {
+
+  // The legacy field is not declared on the current UserConfig; we read it through a permissive cast to access the on-disk pre-migration shape. After migration
+  // the field is deleted so it cannot leak into the post-migration write path.
+  const legacy = data as { dvrHost?: unknown };
+  const dvrHost = legacy.dvrHost;
+
+  if(typeof dvrHost !== "string") {
+
+    return;
+  }
+
+  let host = dvrHost;
+  let embeddedPort: number | undefined;
+
+  // Split at the last colon so bracket-wrapped IPv6 (e.g., [::1]:8089) survives. If the trailing portion does not parse as a valid TCP port, treat the whole
+  // input as host-only - avoid fabricating a port from a malformed string.
+  const colonIdx = dvrHost.lastIndexOf(":");
+
+  if(colonIdx >= 0) {
+
+    const tail = dvrHost.slice(colonIdx + 1);
+    const parsed = Number(tail);
+
+    if(Number.isInteger(parsed) && (parsed >= 1) && (parsed <= 65535)) {
+
+      host = dvrHost.slice(0, colonIdx);
+      embeddedPort = parsed;
+    }
+  }
+
+  data.channelsDvr ??= {};
+  data.channelsDvr.host = host;
+
+  // Migrate the embedded port only when the user has not customized the port already. A user-set port reflects an explicit choice that overrides whatever the
+  // legacy host:port string encoded - prefer the explicit value and log the conflict so it is auditable.
+  if(embeddedPort !== undefined) {
+
+    const userPort = data.channelsDvr.port;
+
+    if(userPort === undefined) {
+
+      data.channelsDvr.port = embeddedPort;
+    } else if(userPort !== embeddedPort) {
+
+      LOG.warn("Schema migration v3: legacy dvrHost \"%s\" carried embedded port %d but channelsDvr.port is already set to %d. " +
+        "Keeping the explicit port; embedded port discarded.", dvrHost, embeddedPort, userPort);
+    }
+  }
+
+  delete legacy.dvrHost;
+}
 
 // Transactional store instance for config.json. The beforeWrite hook is the single chokepoint where the persisted shape is normalized: filterDefaults() runs on
 // every save so the file on disk contains only non-default values, regardless of which call site initiated the write. Schema migrations run automatically via
@@ -871,7 +987,13 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
 
   const result = await configStore.read();
 
-  return { config: result.data, parseError: result.parseError, parseErrorMessage: result.parseErrorMessage };
+  return {
+
+    config: result.data,
+    parseError: result.parseError,
+    parseErrorMessage: result.parseErrorMessage,
+    recoveredFromBackup: result.recoveredFromBackup
+  };
 }
 
 /**
@@ -935,6 +1057,12 @@ export const DEFAULTS: Config = {
     precacheServices: [],
     setupCompleted: false,
     visibleColumns: []
+  },
+
+  channelsDvr: {
+
+    host: "",
+    port: 8089
   },
 
   hdhr: {
@@ -1144,58 +1272,21 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
     }
   }
 
-  /* Array and auto-generated string fields require explicit handling here because the standard CONFIG_METADATA loop above assigns by reference. These blocks
-   * apply defensive spread copies to prevent shared references between the user config and runtime config. Fields not in CONFIG_METADATA (disabledPredefined,
-   * enabledServices) also need their own POST /config carry-forward logic since they are managed by separate endpoints. The precacheServices field is in
-   * CONFIG_METADATA (as a checkboxList) so the standard loop handles it, but the spread copy here still provides the defensive guarantee.
-   *
-   * When adding a new field here, also add corresponding preservation logic in filterDefaults() below.
+  /* Hydrate fields that live outside CONFIG_METADATA (auto-discovery results like channelsDvr.host, separately-managed lists like channels.disabledPredefined,
+   * the persisted debug filter pattern) and array fields whose CONFIG_METADATA hydration would alias the parsed UserConfig blob into runtime CONFIG. The
+   * registry pairs each path with a predicate (ignored when undefined) and an optional defensive-copy hook. Adding a new field here is one HYDRATED_FIELDS
+   * entry; the drift-check test in userConfig.merge.test.ts asserts that PRESERVED_FIELDS partitions exactly into HYDRATED_FIELDS plus PERSISTENCE_ONLY_FIELDS,
+   * so a future preservation entry cannot be added without an explicit hydration classification. See the section comment above HYDRATED_FIELDS for the full
+   * design intent.
    */
-  if(Array.isArray(userConfig.channels?.disabledPredefined)) {
+  for(const field of HYDRATED_FIELDS) {
 
-    config.channels.disabledPredefined = [...userConfig.channels.disabledPredefined];
-  }
+    const userValue = getNestedValue(userConfig, field.path);
 
-  // The schema migration runner has already renamed any legacy provider-themed field names to their current service-themed equivalents before mergeConfiguration
-  // sees the data. Spread copies prevent shared references between the user config and runtime config.
-  if(Array.isArray(userConfig.channels?.enabledServices)) {
+    if(field.shouldHydrate(userValue, undefined)) {
 
-    config.channels.enabledServices = [...userConfig.channels.enabledServices];
-  }
-
-  if(Array.isArray(userConfig.channels?.precacheServices)) {
-
-    config.channels.precacheServices = [...userConfig.channels.precacheServices];
-  }
-
-  if(Array.isArray(userConfig.channels?.visibleColumns)) {
-
-    config.channels.visibleColumns = [...userConfig.channels.visibleColumns];
-  }
-
-  if(Array.isArray(userConfig.streaming?.captureCodecs)) {
-
-    config.streaming.captureCodecs = [...userConfig.streaming.captureCodecs];
-  }
-
-  if((typeof userConfig.channels?.channelSortField === "string") && (userConfig.channels.channelSortField.length > 0)) {
-
-    config.channels.channelSortField = userConfig.channels.channelSortField as Config["channels"]["channelSortField"];
-  }
-
-  if((typeof userConfig.channels?.channelSortDirection === "string") && (userConfig.channels.channelSortDirection.length > 0)) {
-
-    config.channels.channelSortDirection = userConfig.channels.channelSortDirection as Config["channels"]["channelSortDirection"];
-  }
-
-  if((typeof userConfig.hdhr?.deviceId === "string") && (userConfig.hdhr.deviceId.length > 0)) {
-
-    config.hdhr.deviceId = userConfig.hdhr.deviceId;
-  }
-
-  if((typeof userConfig.logging?.debugFilter === "string") && (userConfig.logging.debugFilter.length > 0)) {
-
-    config.logging.debugFilter = userConfig.logging.debugFilter;
+      setNestedValue(config as unknown as Record<string, unknown>, field.path, field.copy ? field.copy(userValue) : userValue);
+    }
   }
 
   // Apply environment variable overrides.
@@ -1333,6 +1424,7 @@ const SETTINGS_TAB_SECTIONS: { displayName: string; id: string; paths: string[] 
  */
 const ADVANCED_SECTION_META: { category: string; displayName: string }[] = [
 
+  { category: "channelsDvr", displayName: "Channels DVR" },
   { category: "hls", displayName: "HLS" },
   { category: "logging", displayName: "Logging" },
   { category: "paths", displayName: "Paths" },
@@ -1524,6 +1616,160 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
   return String(primitive) === String(defaultPrimitive);
 }
 
+// Settings preservation registry.
+
+/* The CONFIG_METADATA-driven loop in filterDefaults() handles the typical case: a setting appears in CONFIG_METADATA, the loop picks it up, the loop strips
+ * values equal to the default. Outside that case we need an explicit allowlist for two distinct reasons:
+ *
+ *   1. Fields that live outside CONFIG_METADATA entirely (channelsDvr.host populated by showInfo.persistDvrHost(); schemaVersion / migrationsApplied owned by
+ *      the file-store framework's migration runner). The metadata loop never sees them, so without this allowlist they would be stripped on the next save.
+ *
+ *   2. Array-shaped fields whose CONFIG_METADATA loop comparison via isEqualToDefault() uses String() coercion, which is fast for inequality detection but
+ *      produces false positives for arrays containing commas in their elements. The explicit blocks also guarantee non-empty arrays survive even where the
+ *      stringified comparison would not.
+ *
+ * The registry pairs each preserved path with a predicate that decides whether the value at that path is meaningful enough to survive. The predicates are
+ * named for their intent (isNonEmptyArray, differsFromSortedArrayDefault, ...) so the registry reads as a declarative table; filterDefaults() consumes it via
+ * a single uniform loop. Adding a new preserved field is one line in PRESERVED_FIELDS, not a new inline block in the function body - and Suite 17 in
+ * test/e2e/routes/settings-preservation.test.ts iterates the registry directly so a new entry is automatically covered by the parameterized preservation
+ * sweep without a sibling test edit.
+ *
+ * Read-side counterpart: HYDRATED_FIELDS (further below) is the symmetric registry consumed by mergeConfiguration() to bring persisted values back into
+ * runtime CONFIG on boot. The two sets together with PERSISTENCE_ONLY_FIELDS partition every preserved path into "hydrates to runtime" or "persistence-only
+ * metadata" - a drift-check test (userConfig.merge.test.ts) asserts the partition is exact so a future preservation entry cannot be added without an explicit
+ * read-side classification.
+ */
+
+/**
+ * Predicate signature for the settings-preservation registry. Each predicate decides whether a particular field's value is meaningful enough to survive the
+ * filter pass. The signature accepts both the field's value and its DEFAULTS counterpart so predicates that compare against a default (sort field, capture
+ * codecs) and predicates that ignore the default (non-empty array / non-empty string checks) share the same call site - filterDefaults() looks up DEFAULTS
+ * once per entry and passes both, leaving the predicate free to use whichever it needs.
+ */
+type PreservePredicate = (value: unknown, defaultValue: unknown) => boolean;
+
+// Predicate: any array, including empty. Used by HYDRATED_FIELDS to mirror the historical mergeConfiguration() inline-block behavior of unconditionally
+// hydrating any array-typed value present on disk; downstream validateConfiguration() normalizes empty-array edge cases (e.g., captureCodecs forces h264).
+const isArrayValue: PreservePredicate = (value: unknown): boolean => Array.isArray(value);
+
+// Predicate: any non-empty array. Used for fields where the user's empty-array state coincides with the default-empty-array state (disabledPredefined,
+// enabledServices, precacheServices, visibleColumns, migrationsApplied). The defaultValue argument is intentionally unused.
+const isNonEmptyArray: PreservePredicate = (value: unknown): boolean => Array.isArray(value) && (value.length > 0);
+
+// Predicate: any non-empty string. Used for fields whose default is the empty string and whose presence-on-disk should follow the same rule (hdhr.deviceId,
+// logging.debugFilter, channelsDvr.host).
+const isNonEmptyString: PreservePredicate = (value: unknown): boolean => (typeof value === "string") && (value.length > 0);
+
+// Predicate: any number. Used for schemaVersion - the framework-managed integer that any non-undefined value must round-trip through filterDefaults.
+// Mirrors the original `typeof === "number"` check exactly (NaN passes; Number.isFinite() would tighten the contract and is reserved for a separate change).
+const isNumber: PreservePredicate = (value: unknown): boolean => typeof value === "number";
+
+// Predicate: a string that differs from the default by simple equality. Used for channelSortField / channelSortDirection - both have meaningful default
+// values ("name", "asc") that should be stripped on save while any other valid string is preserved.
+const differsFromStringDefault: PreservePredicate = (value: unknown, defaultValue: unknown): boolean => (typeof value === "string") && (value !== defaultValue);
+
+// Predicate: an array whose contents differ from the default by SORTED-element comparison. Used for streaming.captureCodecs - the default ["h264", "hevc"]
+// reordered by the user (["hevc", "h264"]) is semantically the same configuration and should not write to disk; only a different SET of codecs counts as a
+// customization worth preserving.
+const differsFromSortedArrayDefault: PreservePredicate = (value: unknown, defaultValue: unknown): boolean => {
+
+  return Array.isArray(value) && Array.isArray(defaultValue) && (JSON.stringify(value.toSorted()) !== JSON.stringify(defaultValue.toSorted()));
+};
+
+/**
+ * One entry in the explicit settings-preservation allowlist. Pairs a config path with the predicate that decides whether the value at that path is
+ * meaningful enough to survive a save. Tests parameterize over this registry to assert preservation for every entry without duplicating the field list, so
+ * adding a new preserved field is one line here AND zero lines in the test sweep.
+ */
+export interface PreservedField {
+
+  // Dot-separated path into the UserConfig shape (e.g., "channels.enabledServices", "schemaVersion").
+  readonly path: string;
+
+  // Predicate that decides whether the value at `path` is non-default-equivalent and should be preserved into the filtered output.
+  readonly shouldPreserve: PreservePredicate;
+}
+
+/**
+ * Allowlist of config paths that filterDefaults() preserves outside the CONFIG_METADATA-driven loop. See the section comment above for the two distinct
+ * reasons a path lives here rather than in CONFIG_METADATA. The list is alphabetized by path so a future maintainer can locate any entry by paging through
+ * the registry; ordering does not affect runtime semantics because each entry's preserve check is independent.
+ */
+export const PRESERVED_FIELDS: readonly PreservedField[] = [
+
+  { path: "channels.channelSortDirection", shouldPreserve: differsFromStringDefault },
+  { path: "channels.channelSortField", shouldPreserve: differsFromStringDefault },
+  { path: "channels.disabledPredefined", shouldPreserve: isNonEmptyArray },
+  { path: "channels.enabledServices", shouldPreserve: isNonEmptyArray },
+  { path: "channels.precacheServices", shouldPreserve: isNonEmptyArray },
+  { path: "channels.visibleColumns", shouldPreserve: isNonEmptyArray },
+  { path: "channelsDvr.host", shouldPreserve: isNonEmptyString },
+  { path: "hdhr.deviceId", shouldPreserve: isNonEmptyString },
+  { path: "logging.debugFilter", shouldPreserve: isNonEmptyString },
+  { path: "migrationsApplied", shouldPreserve: isNonEmptyArray },
+  { path: "schemaVersion", shouldPreserve: isNumber },
+  { path: "streaming.captureCodecs", shouldPreserve: differsFromSortedArrayDefault }
+];
+
+/**
+ * One entry in the boot-time hydration registry. Pairs a config path with the predicate that decides whether the value at that path should be brought into the
+ * runtime CONFIG, plus an optional copy hook for fields that need a defensive copy (arrays use `[...value]` to prevent shared-reference aliasing between the
+ * persisted UserConfig blob and the runtime Config). The hydration registry is the read-side counterpart to PRESERVED_FIELDS - PRESERVED_FIELDS keeps a value
+ * from being stripped on save; HYDRATED_FIELDS brings the same value back into runtime CONFIG on the next boot.
+ */
+export interface HydratedField {
+
+  // Optional defensive-copy hook applied to the disk value before assignment. Used for arrays so the runtime config does not share a reference with the parsed
+  // UserConfig blob (which would let a runtime mutation leak back into the on-disk shape and vice versa). Omitted for primitives where shared-reference aliasing
+  // is structurally impossible.
+  readonly copy?: (value: unknown) => unknown;
+
+  // Dot-separated path into the UserConfig shape (e.g., "channels.enabledServices", "channelsDvr.host"). Must also be a valid path on the runtime Config.
+  readonly path: string;
+
+  // Predicate that decides whether the value at `path` is meaningful enough to hydrate into the runtime CONFIG.
+  readonly shouldHydrate: PreservePredicate;
+}
+
+// Defensive spread copy for array fields. Pulled out as a const so the registry below reads as a declarative table.
+const spreadArray = (value: unknown): unknown => [...(value as unknown[])];
+
+/**
+ * Allowlist of config paths that mergeConfiguration() hydrates from the persisted UserConfig into the runtime CONFIG outside the CONFIG_METADATA-driven loop.
+ * Each entry corresponds to a PRESERVED_FIELDS entry that lives on the runtime Config type (the persistence-only entries schemaVersion / migrationsApplied are
+ * declared in PERSISTENCE_ONLY_FIELDS instead). The list is alphabetized by path; ordering does not affect runtime semantics. A drift-check test in
+ * userConfig.merge.test.ts asserts that PRESERVED_FIELDS partitions exactly into HYDRATED_FIELDS plus PERSISTENCE_ONLY_FIELDS, so a future preservation entry
+ * cannot be added without explicitly classifying it as runtime-hydrated or persistence-only.
+ */
+export const HYDRATED_FIELDS: readonly HydratedField[] = [
+
+  { path: "channels.channelSortDirection", shouldHydrate: isNonEmptyString },
+  { path: "channels.channelSortField", shouldHydrate: isNonEmptyString },
+  { copy: spreadArray, path: "channels.disabledPredefined", shouldHydrate: isArrayValue },
+  { copy: spreadArray, path: "channels.enabledServices", shouldHydrate: isArrayValue },
+  { copy: spreadArray, path: "channels.precacheServices", shouldHydrate: isArrayValue },
+  { copy: spreadArray, path: "channels.visibleColumns", shouldHydrate: isArrayValue },
+  { path: "channelsDvr.host", shouldHydrate: isNonEmptyString },
+  { path: "hdhr.deviceId", shouldHydrate: isNonEmptyString },
+  { path: "logging.debugFilter", shouldHydrate: isNonEmptyString },
+  { copy: spreadArray, path: "streaming.captureCodecs", shouldHydrate: isArrayValue }
+];
+
+/**
+ * Allowlist of PRESERVED_FIELDS entries that exist only on the persisted UserConfig shape and have NO runtime CONFIG counterpart. These are framework-managed
+ * file-store metadata - the schema-migration runner owns schemaVersion (so the file-store framework can decide whether migrations have run) and migrationsApplied
+ * (the audit trail of which migrations have applied). Neither belongs in runtime CONFIG; both must round-trip through filterDefaults so saves do not strip them.
+ *
+ * The drift-check test consumes this constant to assert that every PRESERVED_FIELDS entry is classified as either runtime-hydrated (HYDRATED_FIELDS) or
+ * persistence-only (here), and that the two sets are disjoint. Adding a new PRESERVED_FIELDS entry without classifying it here or in HYDRATED_FIELDS fails the
+ * drift check at test time, surfacing the architectural intent that every preserved field has a declared destination.
+ */
+export const PERSISTENCE_ONLY_FIELDS: readonly string[] = [
+
+  "migrationsApplied",
+  "schemaVersion"
+];
+
 /**
  * Filters a user configuration object to remove values that match the defaults. This produces a minimal config file containing only the settings the user has actually
  * customized. Empty nested objects are also removed.
@@ -1557,91 +1803,17 @@ export function filterDefaults(config: UserConfig): UserConfig {
     }
   }
 
-  /* Counterpart to the array handling in mergeConfiguration() above. Array fields need explicit preservation here because the standard loop's isEqualToDefault()
-   * uses String() comparison, which works for inequality detection but can produce false positives for arrays with comma-containing strings. The explicit blocks
-   * also ensure non-empty arrays survive the diff even when the standard loop would skip them.
-   */
-  const configChannelsDisabled = getNestedValue(config, "channels.disabledPredefined") as string[] | undefined;
+  // Apply the explicit preservation registry. Each entry is consulted with its current value plus the default-at-path; the predicate decides whether to
+  // write through. See PRESERVED_FIELDS above for the entries and their rationale.
+  for(const field of PRESERVED_FIELDS) {
 
-  if(Array.isArray(configChannelsDisabled) && (configChannelsDisabled.length > 0)) {
+    const value = getNestedValue(config, field.path);
+    const defaultValue = getNestedValue(DEFAULTS, field.path);
 
-    setNestedValue(filtered, "channels.disabledPredefined", configChannelsDisabled);
-  }
+    if(field.shouldPreserve(value, defaultValue)) {
 
-  const configEnabledServices = getNestedValue(config, "channels.enabledServices") as string[] | undefined;
-
-  if(Array.isArray(configEnabledServices) && (configEnabledServices.length > 0)) {
-
-    setNestedValue(filtered, "channels.enabledServices", configEnabledServices);
-  }
-
-  const configPrecacheServices = getNestedValue(config, "channels.precacheServices") as string[] | undefined;
-
-  if(Array.isArray(configPrecacheServices) && (configPrecacheServices.length > 0)) {
-
-    setNestedValue(filtered, "channels.precacheServices", configPrecacheServices);
-  }
-
-  const configVisibleColumns = getNestedValue(config, "channels.visibleColumns") as string[] | undefined;
-
-  if(Array.isArray(configVisibleColumns) && (configVisibleColumns.length > 0)) {
-
-    setNestedValue(filtered, "channels.visibleColumns", configVisibleColumns);
-  }
-
-  // Preserve captureCodecs when it differs from the default. The default includes all recognized codecs, so a shorter list means the user has disabled one.
-  const configCaptureCodecs = getNestedValue(config, "streaming.captureCodecs") as string[] | undefined;
-  const defaultCaptureCodecs = getNestedValue(DEFAULTS, "streaming.captureCodecs") as string[];
-
-  if(Array.isArray(configCaptureCodecs) && (JSON.stringify(configCaptureCodecs.toSorted()) !== JSON.stringify(defaultCaptureCodecs.toSorted()))) {
-
-    setNestedValue(filtered, "streaming.captureCodecs", configCaptureCodecs);
-  }
-
-  const configSortField = getNestedValue(config, "channels.channelSortField") as string | undefined;
-
-  if((typeof configSortField === "string") && (configSortField !== "name")) {
-
-    setNestedValue(filtered, "channels.channelSortField", configSortField);
-  }
-
-  const configSortDirection = getNestedValue(config, "channels.channelSortDirection") as string | undefined;
-
-  if((typeof configSortDirection === "string") && (configSortDirection !== "asc")) {
-
-    setNestedValue(filtered, "channels.channelSortDirection", configSortDirection);
-  }
-
-  const configDeviceId = getNestedValue(config, "hdhr.deviceId") as string | undefined;
-
-  if((typeof configDeviceId === "string") && (configDeviceId.length > 0)) {
-
-    setNestedValue(filtered, "hdhr.deviceId", configDeviceId);
-  }
-
-  const configDebugFilter = getNestedValue(config, "logging.debugFilter") as string | undefined;
-
-  if((typeof configDebugFilter === "string") && (configDebugFilter.length > 0)) {
-
-    setNestedValue(filtered, "logging.debugFilter", configDebugFilter);
-  }
-
-  // Preserve the auto-discovered DVR host across settings saves.
-  if((typeof config.dvrHost === "string") && (config.dvrHost.length > 0)) {
-
-    filtered["dvrHost"] = config.dvrHost;
-  }
-
-  // Preserve framework-managed metadata so the migration audit trail and schema version survive every write. Without these the allowlist-based filter would
-  // strip them on the very first save after a migration runs, undoing the version stamp.
-  if(typeof config.schemaVersion === "number") {
-
-    filtered["schemaVersion"] = config.schemaVersion;
-  }
-
-  if(Array.isArray(config.migrationsApplied) && (config.migrationsApplied.length > 0)) {
-
-    filtered["migrationsApplied"] = config.migrationsApplied;
+      setNestedValue(filtered, field.path, value);
+    }
   }
 
   // Remove any empty nested objects that resulted from filtering.

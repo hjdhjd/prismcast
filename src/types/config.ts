@@ -2,7 +2,7 @@
  *
  * config.ts: Application configuration type definitions for PrismCast.
  */
-import type { ChannelSortField, Nullable, SortDirection } from "./shared.js";
+import type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";
 
 /* These interfaces define the structure of the application configuration. The Config interface is the root configuration object, with nested interfaces for each
  * functional area. All configuration values are loaded from environment variables with sensible defaults. The configuration is validated at startup to catch
@@ -187,6 +187,31 @@ export interface ChannelsConfig {
 }
 
 /**
+ * Connection settings for the user's external Channels DVR server. PrismCast talks to Channels DVR over HTTP for show-info polling, device-mapping discovery,
+ * and pretune scheduling.
+ *
+ * Host is auto-discovered at runtime from client request IPs by `showInfo.ts`. It is intentionally NOT in `CONFIG_METADATA` and is not exposed as a settings
+ * UI field - users do not configure it directly. The host invariant: host-only, never `host:port`. Port lives at `channelsDvr.port` exclusively.
+ *
+ * Port is user-configurable via `CONFIG_METADATA` because Channels DVR's port is user-configurable per their docs and a non-default port would otherwise be
+ * unreachable from PrismCast.
+ *
+ * Single-instance shape today. Multi-DVR support, if/when added in a future release, migrates this to `{ instances: ChannelsDvrInstance[] }` via the
+ * schema-migration framework. Don't proliferate patterns that fight the eventual array shape - keep all DVR-targeted code consuming this single canonical
+ * config location.
+ */
+export interface ChannelsDvrConfig {
+
+  // Auto-discovered Channels DVR hostname or IP. Empty string means "not yet discovered." Populated by `showInfo.setDvrHost()` when a matching M3U device is
+  // found on a candidate host. Host-only - never includes a port. Future maintainers: do NOT add this to `CONFIG_METADATA`; auto-discovery owns the value.
+  host: string;
+
+  // TCP port for the user's Channels DVR API. Default 8089 (the canonical Channels DVR port). Override when the user has changed the DVR's listen port from
+  // its default.
+  port: number;
+}
+
+/**
  * HDHomeRun emulation configuration. When enabled, PrismCast runs a separate HTTP server that emulates the HDHomeRun API, allowing Plex to discover and use
  * PrismCast as a virtual tuner for live TV and DVR recording. The emulated device appears in Plex's tuner setup and serves PrismCast's HLS streams directly.
  */
@@ -312,6 +337,9 @@ export interface Config {
 
   // Channel enable/disable configuration.
   channels: ChannelsConfig;
+
+  // Connection settings for the user's external Channels DVR server.
+  channelsDvr: ChannelsDvrConfig;
 
   // HDHomeRun emulation configuration for Plex integration.
   hdhr: HdhrConfig;

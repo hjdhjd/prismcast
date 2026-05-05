@@ -2,13 +2,14 @@
  *
  * showInfo.ts: Channels DVR API integration for show name and channel logo lookup.
  */
-import { LOG, formatError } from "../utils/index.js";
+import { LOG, formatError } from "../utils/index.ts";
 import { clearChannelLogos, getAllChannels, getChannelListing, getChannelLogo, getChannelStationId, setChannelLogo,
-  setChannelLogos } from "../config/userChannels.js";
-import { mutateConfig, readConfig } from "../config/userConfig.js";
-import type { Nullable } from "../types/index.js";
-import { emitChannelUpdate } from "./statusEmitter.js";
-import { getAllStreams } from "./registry.js";
+  setChannelLogos } from "../config/userChannels.ts";
+import { mutateConfig, readConfig } from "../config/userConfig.ts";
+import { CONFIG } from "../config/index.ts";
+import type { Nullable } from "../types/index.ts";
+import { emitChannelUpdate } from "./statusEmitter.ts";
+import { getAllStreams } from "./registry.ts";
 
 /* This module integrates with the Channels DVR API for two purposes: show name lookup and channel logo population.
  *
@@ -47,9 +48,6 @@ import { getAllStreams } from "./registry.js";
  */
 
 // Constants.
-
-// Default Channels DVR port.
-const CHANNELS_DVR_PORT = 8089;
 
 // How often to poll for show info (30 seconds).
 const POLL_INTERVAL_MS = 30000;
@@ -207,9 +205,22 @@ export function getDvrHost(): Nullable<string> {
 
 /**
  * Sets the DVR host address and persists it to the config file if it changed. Called by the discovery loop when a matching M3U device is found on a host.
- * @param host - The DVR server hostname or IP address.
+ *
+ * Invariant: the host MUST be host-only - never `host:port`. The port lives at `CONFIG.channelsDvr.port` exclusively. Inputs containing a colon are rejected
+ * with a debug log rather than silently stripped, because a colon-bearing host indicates a caller-side bug (auto-discovery should be feeding IPs, not
+ * `IP:port` strings) and silent stripping would mask it. The schema migration to `channelsDvr.host` splits any legacy `host:port` value at read time, so this
+ * function only sees host-only inputs in the steady state.
+ *
+ * @param host - The DVR server hostname or IP address. Must NOT include a port.
  */
 export function setDvrHost(host: string): void {
+
+  if(host.includes(":")) {
+
+    LOG.debug("streaming:showinfo", "setDvrHost rejected colon-bearing input %s; host must be host-only, port lives at CONFIG.channelsDvr.port.", host);
+
+    return;
+  }
 
   if(lastKnownDvrHost === host) {
 
@@ -621,7 +632,7 @@ async function getGuideShowNames(host: string): Promise<Map<string, string>> {
  */
 export async function fetchFromDvr<T>(host: string, path: string): Promise<T[]> {
 
-  const url = "http://" + host + ":" + String(CHANNELS_DVR_PORT) + path;
+  const url = "http://" + host + ":" + String(CONFIG.channelsDvr.port) + path;
 
   try {
 
@@ -665,10 +676,11 @@ async function loadPersistedDvrHost(): Promise<void> {
   try {
 
     const result = await readConfig();
+    const persistedHost = result.config.channelsDvr?.host;
 
-    if(!result.parseError && result.config.dvrHost) {
+    if(!result.parseError && persistedHost) {
 
-      lastKnownDvrHost = result.config.dvrHost;
+      lastKnownDvrHost = persistedHost;
 
       LOG.debug("streaming:showinfo", "Loaded persisted DVR host: %s.", lastKnownDvrHost);
 
@@ -691,7 +703,8 @@ async function persistDvrHost(host: string): Promise<void> {
 
     await mutateConfig((config) => {
 
-      config.dvrHost = host;
+      config.channelsDvr ??= {};
+      config.channelsDvr.host = host;
     });
   } catch(error) {
 

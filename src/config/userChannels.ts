@@ -2,18 +2,18 @@
  *
  * userChannels.ts: User channel file management for PrismCast.
  */
-import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "../types/index.js";
+import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "../types/index.ts";
 import type { Channel, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelSortField, CustomizableField, ResolvedChannel, ResolvedChannelMap,
-  SortDirection, StoredChannel, StoredChannelMap } from "../types/index.js";
-import { FileStoreParseError, type Migration, type ValidationIssue, createFileStore } from "./persistence.js";
-import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.js";
-import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.js";
+  SortDirection, StoredChannel, StoredChannelMap } from "../types/index.ts";
+import { FileStoreParseError, type Migration, type ValidationIssue, createFileStore } from "./persistence.ts";
+import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.ts";
+import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.ts";
 import { buildServiceGroups, getAllServiceTags, getResolvedChannel, isChannelAvailableByService, isServiceVariant,
-  resolveServiceKey, setEnabledServices, setServiceSelections } from "./services.js";
-import { CONFIG } from "./index.js";
+  resolveServiceKey, setEnabledServices, setServiceSelections } from "./services.ts";
+import { CONFIG } from "./index.ts";
 import fs from "node:fs";
-import { getChannelsFilePath } from "./paths.js";
-import { mutateConfig } from "./userConfig.js";
+import { getChannelsFilePath } from "./paths.ts";
+import { mutateConfig } from "./userConfig.ts";
 
 const { promises: fsPromises } = fs;
 
@@ -70,6 +70,10 @@ export interface UserChannelsLoadResult {
 
   // Error message if parseError is true.
   parseErrorMessage?: string;
+
+  // True when the main file failed to parse and a usable copy was successfully recovered from the .bak rotation. Mirrors the framework's read-result flag
+  // (FileStoreReadResult.recoveredFromBackup) so callers can surface a UI banner or log a recovery event without reaching into the framework's compound result.
+  recoveredFromBackup: boolean;
 
   // Service selections loaded from the file (canonical key -> service variant key).
   serviceSelections: Record<string, string>;
@@ -868,6 +872,7 @@ export async function readChannels(): Promise<UserChannelsLoadResult> {
     channels: result.data.channels,
     parseError: result.parseError,
     parseErrorMessage: result.parseErrorMessage,
+    recoveredFromBackup: result.recoveredFromBackup,
     serviceSelections: result.data.serviceSelections,
     tagRegistry: result.data.tagRegistry
   };
@@ -1184,6 +1189,11 @@ export async function initializeUserChannels(): Promise<void> {
   loadedTagRegistry = result.tagRegistry;
   userChannelsParseError = result.parseError;
   userChannelsParseErrorMessage = result.parseErrorMessage;
+
+  if(result.recoveredFromBackup) {
+
+    LOG.info("Channels were recovered from backup after a corrupt main file.");
+  }
 
   // Load service selections so prepareChannelsForWrite captures them on subsequent writes.
   setServiceSelections(result.serviceSelections);
