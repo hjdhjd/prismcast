@@ -2,5 +2,5 @@
  *
  * index.ts: Upgrade module exports for PrismCast.
  */
-export * from "./commands.js";
-export * from "./detection.js";
+export * from "./commands.ts";
+export * from "./detection.ts";

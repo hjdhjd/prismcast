@@ -1,0 +1,35 @@
+/* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
+ *
+ * detection.context.ts: The default adapter that produces a DetectionContext from real runtime I/O. The detection logic in detection.ts is a pure function over
+ * a DetectionContext; this file is the only place in the upgrade module that reads import.meta.url, calls execSync, or touches the filesystem. Tests bypass this
+ * file entirely by constructing DetectionContext literals inline.
+ */
+import type { DetectionContext } from "./detection.ts";
+import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { isRunningInContainer } from "../utils/platform.ts";
+import url from "node:url";
+
+/**
+ * Builds the default DetectionContext from real runtime I/O.
+ * @returns A DetectionContext populated from the live process.
+ */
+export function createDefaultDetectionContext(): DetectionContext {
+
+  return {
+
+    currentFile: url.fileURLToPath(import.meta.url),
+    fileExists: existsSync,
+    isContainer: isRunningInContainer(),
+    runCommand: (cmd: string): string | null => {
+
+      try {
+
+        return execSync(cmd, { encoding: "utf-8", timeout: 5000 }).trim();
+      } catch {
+
+        return null;
+      }
+    }
+  };
+}

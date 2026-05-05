@@ -1,263 +1,251 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * commands.ts: Upgrade command handlers for PrismCast CLI.
+ * commands.ts: Upgrade command handler for the PrismCast CLI.
+ *
+ * handleUpgradeCommand is a pure orchestrator over an UpgradeContext. The context bundles install detection, registry version lookup, the subprocess runner,
+ * stdout/stderr writers, process exit, and the service-mode probe; production wires all of them through createDefaultUpgradeContext (in commands.context.ts),
+ * tests pass a context literal. The decision logic - help dispatch, --check vs --force vs default flow, "already up to date" gating, post-upgrade restart - is
+ * fully testable without touching the real network, real subprocesses, or process state.
  */
-import { fetchLatestVersion, getPackageVersion, isVersionLessThan, normalizeVersion } from "../utils/version.js";
-import { print, printError } from "../utils/cliOutput.js";
-import type { InstallInfo } from "./detection.js";
-import type { Nullable } from "../types/index.js";
-import { detectInstallMethod } from "./detection.js";
-import { execSync } from "node:child_process";
-import { isRunningAsService } from "../utils/platform.js";
-
-/* These handlers implement the `prismcast upgrade` subcommand for detecting the installation method, checking for updates, and executing the appropriate upgrade
- * command. The pattern mirrors the service subcommand handlers in service/commands.ts.
- */
+import type { InstallInfo, NonUpgradeableInstallInfo } from "./detection.ts";
+import { getPackageVersion, isVersionLessThan, normalizeVersion } from "../utils/version.ts";
+import type { Nullable } from "../types/index.ts";
+import { createDefaultUpgradeContext } from "./commands.context.ts";
 
 /**
- * Formats the display name for an installation method.
- * @param info - The installation info to format.
- * @returns A human-readable name for the install method.
+ * Result of running an upgrade command. The success flag distinguishes ran-without-error from threw-or-exited-non-zero; the runner does not surface the actual
+ * error because execSync's stderr is inherited to the user's terminal directly.
  */
-function formatMethodName(info: InstallInfo): string {
+export interface UpgradeResult {
 
-  switch(info.method) {
-
-    case "docker": {
-
-      return "Docker";
-    }
-
-    case "homebrew": {
-
-      return "Homebrew";
-    }
-
-    case "npm-global": {
-
-      return "npm (global)";
-    }
-
-    case "npm-local": {
-
-      return "npm (local)";
-    }
-
-    default: {
-
-      return "Unknown";
-    }
-  }
+  // True when the command exited 0; false on any non-zero exit, throw, or timeout.
+  readonly success: boolean;
 }
+
+/**
+ * The runtime context handleUpgradeCommand consumes. Each field models one capability the command needs - detection, version lookup, subprocess execution,
+ * stdout/stderr output, process termination, and a service-mode probe. Decision logic is a pure function of this shape; production wires it through
+ * createDefaultUpgradeContext (in commands.context.ts), tests pass a context literal.
+ */
+export interface UpgradeContext {
+
+  // Detects the install method. Defaults to detectInstallMethod() with the default DetectionContext.
+  readonly detect: () => InstallInfo;
+
+  // Process termination. Used by the post-upgrade restart path. Typed as never because process.exit does not return.
+  readonly exit: (code: number) => never;
+
+  // Fetches the latest published version from the npm registry. Returns null on network failure or registry error.
+  readonly fetchLatestVersion: () => Promise<string | null>;
+
+  // Whether the process is running under a service manager (launchd, systemd, Windows service). Affects the post-upgrade flow - service mode exits cleanly so
+  // the manager restarts the process; manual mode prints "please restart" instructions instead.
+  readonly isService: boolean;
+
+  // Subprocess runner that executes the upgrade command. The implementation inherits the user's terminal so they see npm/brew output live; the result captures
+  // only the outcome (success or failure), not stdout/stderr.
+  readonly runUpgradeCommand: (cmd: string, options: { cwd?: string }) => UpgradeResult;
+
+  // stderr writer.
+  readonly stderr: (line: string) => void;
+
+  // stdout writer.
+  readonly stdout: (line: string) => void;
+}
+
+/* The upgrade subcommand handles `prismcast upgrade [--check] [--force] [-h|--help]`. Detection picks the install method, the registry lookup checks for a
+ * newer version, and the runner executes the per-method upgrade command (or prints manual instructions for non-upgradeable methods).
+ */
 
 /**
  * Prints usage information for the upgrade subcommand.
+ * @param ctx - The upgrade context (used for stdout output).
  */
-function printUpgradeUsage(): void {
+function printUpgradeUsage(ctx: UpgradeContext): void {
 
-  print("Usage: prismcast upgrade [options]");
-  print("");
-  print("Upgrade PrismCast to the latest version.");
-  print("");
-  print("Options:");
-  print("  --check             Show upgrade information without upgrading");
-  print("  --force             Upgrade even if already up to date");
-  print("  -h, --help          Show this help message");
+  ctx.stdout("Usage: prismcast upgrade [options]");
+  ctx.stdout("");
+  ctx.stdout("Upgrade PrismCast to the latest version.");
+  ctx.stdout("");
+  ctx.stdout("Options:");
+  ctx.stdout("  --check             Show upgrade information without upgrading");
+  ctx.stdout("  --force             Upgrade even if already up to date");
+  ctx.stdout("  -h, --help          Show this help message");
 }
 
 /**
- * Prints the upgrade check summary (shared between --check mode and the pre-upgrade display).
+ * Prints the upgrade summary table (shared between --check mode and the pre-upgrade display).
+ * @param ctx - The upgrade context (used for stdout output).
  * @param info - The detected installation info.
  * @param currentVersion - The currently running version.
  * @param latestVersion - The latest available version, or null if unknown.
  */
-function printUpgradeInfo(info: InstallInfo, currentVersion: string, latestVersion: Nullable<string>): void {
+function printUpgradeInfo(ctx: UpgradeContext, info: InstallInfo, currentVersion: string, latestVersion: Nullable<string>): void {
 
-  print("PrismCast Upgrade Check");
-  print("\u2500".repeat(40));
-  print("Current version: v" + currentVersion);
+  ctx.stdout("PrismCast Upgrade Check");
+  ctx.stdout("─".repeat(40));
+  ctx.stdout("Current version: v" + currentVersion);
 
   if(latestVersion) {
 
-    print("Latest version:  v" + latestVersion);
+    ctx.stdout("Latest version:  v" + latestVersion);
   } else {
 
-    print("Latest version:  (unable to check)");
+    ctx.stdout("Latest version:  (unable to check)");
   }
 
-  print("Install method:  " + formatMethodName(info));
+  ctx.stdout("Install method:  " + info.displayName);
 
   if(info.upgradeable) {
 
-    print("Upgrade command: " + info.upgradeCommand);
+    ctx.stdout("Upgrade command: " + info.upgradeCommand);
   }
 }
 
 /**
- * Handles the --check flag: prints upgrade information and exits.
+ * Prints the full report for a non-upgradeable install method - the summary table, a blank line, the strategy's manual upgrade message, and the indented
+ * command. Single source of truth for "this is what the user sees when we cannot upgrade in-place," shared between the --check flow and the main upgrade flow.
+ * The parameter type is the narrow NonUpgradeableInstallInfo variant; callers narrow via the discriminated union before invoking, so manualUpgradeMessage is
+ * always in scope.
+ * @param ctx - The upgrade context (used for stdout output).
+ * @param info - The detected non-upgradeable installation info.
+ * @param currentVersion - The currently running version.
+ * @param latestVersion - The latest available version, or null if unknown.
+ */
+function printNonUpgradeableSummary(ctx: UpgradeContext, info: NonUpgradeableInstallInfo, currentVersion: string, latestVersion: Nullable<string>): void {
+
+  printUpgradeInfo(ctx, info, currentVersion, latestVersion);
+  ctx.stdout("");
+
+  for(const line of info.manualUpgradeMessage) {
+
+    ctx.stdout(line);
+  }
+
+  ctx.stdout("  " + info.upgradeCommand);
+}
+
+/**
+ * Handles the --check flag: prints upgrade information and exits with 0.
+ * @param ctx - The upgrade context.
  * @param info - The detected installation info.
  * @param currentVersion - The currently running version.
  * @param latestVersion - The latest available version, or null if unknown.
- * @returns Exit code (0 for success).
+ * @returns Exit code (0).
  */
-function handleCheck(info: InstallInfo, currentVersion: string, latestVersion: Nullable<string>): number {
-
-  printUpgradeInfo(info, currentVersion, latestVersion);
-  print("");
+function handleCheck(ctx: UpgradeContext, info: InstallInfo, currentVersion: string, latestVersion: Nullable<string>): number {
 
   if(!info.upgradeable) {
 
-    // Docker or unknown: show manual instructions using the command from detection.
-    if(info.method === "docker") {
-
-      print("To upgrade, pull the latest image and recreate the container:");
-      print("  " + info.upgradeCommand);
-    } else {
-
-      print("Unable to detect installation method. Please upgrade manually:");
-      print("  " + info.upgradeCommand);
-    }
+    printNonUpgradeableSummary(ctx, info, currentVersion, latestVersion);
 
     return 0;
   }
 
+  printUpgradeInfo(ctx, info, currentVersion, latestVersion);
+  ctx.stdout("");
+
   if(!latestVersion) {
 
-    print("Run 'prismcast upgrade --force' to upgrade without a version check.");
+    ctx.stdout("Run 'prismcast upgrade --force' to upgrade without a version check.");
   } else if(!isVersionLessThan(currentVersion, latestVersion)) {
 
-    print("PrismCast v" + currentVersion + " is already the latest version.");
+    ctx.stdout("PrismCast v" + currentVersion + " is already the latest version.");
   } else {
 
-    print("Run 'prismcast upgrade' to upgrade.");
+    ctx.stdout("Run 'prismcast upgrade' to upgrade.");
   }
 
   return 0;
 }
 
 /**
- * Executes the upgrade command for the detected installation method.
- * @param info - The detected installation info.
- * @returns True if the upgrade command succeeded, false otherwise.
- */
-function executeUpgrade(info: InstallInfo): boolean {
-
-  try {
-
-    // For npm-local, run the install from the project directory that contains the dependency.
-    const options: { cwd?: string; encoding: BufferEncoding; stdio: "inherit" } = { encoding: "utf-8", stdio: "inherit" };
-
-    if((info.method === "npm-local") && info.packageDir) {
-
-      options.cwd = info.packageDir;
-    }
-
-    execSync(info.upgradeCommand, options);
-
-    return true;
-  } catch {
-
-    return false;
-  }
-}
-
-/**
- * Main handler for the `upgrade` subcommand. Parses arguments and executes the appropriate upgrade logic.
+ * Main handler for the `upgrade` subcommand. Parses arguments and orchestrates the appropriate upgrade flow through the UpgradeContext. Pure function of
+ * UpgradeContext modulo the help/usage paths that just write to stdout - no detection, registry, subprocess, or process state is touched outside the context's
+ * methods.
  * @param args - Arguments after 'upgrade' (e.g., ['--check', '--force']).
+ * @param ctx - The upgrade context. Defaults to createDefaultUpgradeContext() which wires real runtime I/O.
  * @returns Exit code (0 for success, 1 for error).
  */
-export async function handleUpgradeCommand(args: string[]): Promise<number> {
+export async function handleUpgradeCommand(args: readonly string[], ctx: UpgradeContext = createDefaultUpgradeContext()): Promise<number> {
 
-  // Parse flags.
   const showHelp = args.includes("--help") || args.includes("-h") || args.includes("help");
   const checkOnly = args.includes("--check");
   const force = args.includes("--force");
 
   if(showHelp) {
 
-    printUpgradeUsage();
+    printUpgradeUsage(ctx);
 
     return 0;
   }
 
-  // Detect installation method.
-  const info = detectInstallMethod();
+  const info = ctx.detect();
   const currentVersion = normalizeVersion(getPackageVersion());
+  const latestVersion = await ctx.fetchLatestVersion();
 
-  // Fetch the latest version from npm.
-  const latestVersion = await fetchLatestVersion();
-
-  // Handle --check mode.
   if(checkOnly) {
 
-    return handleCheck(info, currentVersion, latestVersion);
+    return handleCheck(ctx, info, currentVersion, latestVersion);
   }
 
-  // If the installation is not upgradeable (Docker or unknown), print instructions and exit.
+  // Non-upgradeable methods (docker, unknown): delegate to the shared summary helper, which is the SSOT for the version-table-plus-manual-instructions report.
+  // The InstallInfo union narrows on `!info.upgradeable` to expose manualUpgradeMessage; the consumer never switches on info.method.
   if(!info.upgradeable) {
 
-    printUpgradeInfo(info, currentVersion, latestVersion);
-    print("");
-
-    if(info.method === "docker") {
-
-      print("Docker containers cannot be upgraded in-place.");
-      print("To upgrade, pull the latest image and recreate the container:");
-      print("  " + info.upgradeCommand);
-    } else {
-
-      print("Unable to detect installation method. Please upgrade manually:");
-      print("  " + info.upgradeCommand);
-    }
+    printNonUpgradeableSummary(ctx, info, currentVersion, latestVersion);
 
     return 0;
   }
 
-  // Check if already up to date (skip with --force or if version check failed).
+  // Already-current short-circuit: skip when --force is set or when we could not check the registry. Without --force, an indeterminate version check is fatal
+  // because we should not blindly run npm install when we can not see whether it would do anything.
   if(!force && latestVersion && !isVersionLessThan(currentVersion, latestVersion)) {
 
-    print("PrismCast v" + currentVersion + " is already the latest version.");
-    print("Use --force to upgrade anyway.");
+    ctx.stdout("PrismCast v" + currentVersion + " is already the latest version.");
+    ctx.stdout("Use --force to upgrade anyway.");
 
     return 0;
   }
 
-  // If we couldn't check the latest version and --force wasn't specified, warn the user.
   if(!force && !latestVersion) {
 
-    printError("Unable to check for updates. Run with --force to upgrade anyway.");
+    ctx.stderr("Unable to check for updates. Run with --force to upgrade anyway.");
 
     return 1;
   }
 
-  // Show what we're about to do.
-  print("Upgrading PrismCast...");
-  print("Install method: " + formatMethodName(info));
-  print("Running: " + info.upgradeCommand);
-  print("");
+  // Pre-upgrade announcement so the user knows what is about to run.
+  ctx.stdout("Upgrading PrismCast...");
+  ctx.stdout("Install method: " + info.displayName);
+  ctx.stdout("Running: " + info.upgradeCommand);
+  ctx.stdout("");
 
-  // Execute the upgrade.
-  if(!executeUpgrade(info)) {
+  // Execute the upgrade. packageDir is set only by the npm-local strategy (it is the lone field in ResolvableFields and only npm-local declares a resolver),
+  // so reading it directly is sufficient - the runner uses it as cwd when present and falls back to process.cwd() when absent.
+  const result = ctx.runUpgradeCommand(info.upgradeCommand, { cwd: info.packageDir });
 
-    printError("");
-    printError("Upgrade failed. Check the output above for details.");
+  if(!result.success) {
+
+    ctx.stderr("");
+    ctx.stderr("Upgrade failed. Check the output above for details.");
 
     return 1;
   }
 
-  print("");
-  print("Upgrade complete.");
+  ctx.stdout("");
+  ctx.stdout("Upgrade complete.");
 
-  // Handle restart: if running as a service, the service manager will restart PrismCast when we exit.
-  if(isRunningAsService()) {
+  // Service-managed processes restart automatically when we exit; manual installs need a user-driven restart.
+  if(ctx.isService) {
 
-    print("Restarting PrismCast via service manager...");
+    ctx.stdout("Restarting PrismCast via service manager...");
 
-    process.exit(0);
-  } else {
-
-    print("Please restart PrismCast manually to use the new version.");
+    ctx.exit(0);
   }
+
+  ctx.stdout("Please restart PrismCast manually to use the new version.");
 
   return 0;
 }
+
