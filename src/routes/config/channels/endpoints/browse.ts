@@ -7,14 +7,14 @@
  * applied atomically.
  */
 import type { Express, Request, Response } from "express";
-import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.js";
+import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.ts";
 import { type UserChannel, disablePredefinedChannels, enablePredefinedChannels, isPredefinedChannel, mutateChannels,
-  validateChannelUrl } from "../../../../config/userChannels.js";
-import { getServiceTagForChannel, resolveServiceKey } from "../../../../config/services.js";
-import { sendSuccess, sendValidationError } from "../http/envelope.js";
-import { PREDEFINED_CHANNELS } from "../../../../channels/index.js";
-import { buildServiceFilterWarning } from "../http/serviceWarning.js";
-import { route } from "../http/handler.js";
+  validateChannelUrl } from "../../../../config/userChannels.ts";
+import { getServiceTagForChannel, resolveServiceKey } from "../../../../config/services.ts";
+import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
+import { buildServiceFilterWarning } from "../http/serviceWarning.ts";
+import { route } from "../http/handler.ts";
 
 interface ModifyEntry {
 

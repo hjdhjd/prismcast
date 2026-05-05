@@ -3,9 +3,10 @@
  * auth.ts: Authentication routes for PrismCast channel login.
  */
 import type { Express, Request, Response } from "express";
-import { endLoginMode, getLoginStatus, startLoginMode } from "../browser/index.js";
-import { getResolvedChannel, resolveServiceKey } from "../config/services.js";
-import { getDomainConfig } from "../config/sites.js";
+import { endLoginMode, getLoginStatus, startLoginMode } from "../browser/index.ts";
+import { getResolvedChannel, resolveServiceKey } from "../config/services.ts";
+import { sendConflictError, sendNotFoundError, sendSuccess, sendValidationError } from "./config/http/envelope.ts";
+import { getDomainConfig } from "../config/sites.ts";
 
 /* These routes manage the login workflow for TV provider authentication. Many streaming channels require users to authenticate with their TV provider (cable,
  * satellite, or streaming service) before content can be accessed.
@@ -31,21 +32,6 @@ interface LoginRequest {
 
   // The URL to navigate to for login. Either channel or url must be provided.
   url?: string;
-}
-
-/**
- * Response body for login operations.
- */
-interface LoginResponse {
-
-  // Error message if success is false.
-  error?: string;
-
-  // Human-readable message.
-  message?: string;
-
-  // Whether the operation succeeded.
-  success: boolean;
 }
 
 /**
@@ -78,9 +64,7 @@ export function setupAuthEndpoint(app: Express): void {
 
       if(!channel) {
 
-        const response: LoginResponse = { error: "Channel not found.", success: false };
-
-        res.status(404).json(response);
+        sendNotFoundError(res, "Channel not found.");
 
         return;
       }
@@ -93,9 +77,7 @@ export function setupAuthEndpoint(app: Express): void {
 
     if(!url) {
 
-      const response: LoginResponse = { error: "Either channel or url must be provided.", success: false };
-
-      res.status(400).json(response);
+      sendValidationError(res, "Either channel or url must be provided.");
 
       return;
     }
@@ -113,14 +95,10 @@ export function setupAuthEndpoint(app: Express): void {
 
     if(result.success) {
 
-      const response: LoginResponse = { message: "Login mode started. Complete authentication in the browser window.", success: true };
-
-      res.json(response);
+      sendSuccess(res, { message: "Login mode started. Complete authentication in the browser window." });
     } else {
 
-      const response: LoginResponse = { error: result.error, success: false };
-
-      res.status(409).json(response);
+      sendConflictError(res, result.error ?? "Login mode could not be started.");
     }
   });
 
@@ -133,9 +111,7 @@ export function setupAuthEndpoint(app: Express): void {
 
     await endLoginMode();
 
-    const response: LoginResponse = { message: "Login mode ended.", success: true };
-
-    res.json(response);
+    sendSuccess(res, { message: "Login mode ended." });
   });
 
   /**

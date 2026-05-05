@@ -2,24 +2,24 @@
  *
  * table.ts: Channel table rendering for the PrismCast configuration interface.
  */
-import type { ChannelListingEntry, CustomizableField } from "../../../types/index.js";
+import type { ChannelListingEntry, CustomizableField } from "../../../types/index.ts";
 import { ICON_BOLT, ICON_COPY, ICON_DELETE, ICON_DISABLE, ICON_EDIT, ICON_ENABLE, ICON_FILTER, ICON_HEALTH, ICON_LINK, ICON_LOGIN, ICON_MANAGE,
-  ICON_REVERT, ICON_TRANSFER } from "../../icons.js";
+  ICON_REVERT, ICON_TRANSFER } from "../../icons.ts";
 import { compareChannelSort, getAllServiceTags, getAuthDomainForChannel, getChannelServiceLabel, getChannelServiceTags, getChannelSortKey,
   getEnabledServices, getPredefinedDomainMap, getServiceGroup, hasMultipleServices, isChannelAvailableByService, isServiceTagEnabled,
-  resolvePredefinedVariant, resolveServiceKey } from "../../../config/services.js";
-import { escapeHtml, formatTimeAgo } from "../../../utils/index.js";
+  resolvePredefinedVariant, resolveServiceKey } from "../../../config/services.ts";
+import { escapeHtml, formatTimeAgo } from "../../../utils/index.ts";
 import { getActiveTagVocabulary, getChannelCustomizations, getChannelEffectiveTags, getChannelListing, getChannelLogo, getChannelsParseErrorMessage,
   getEffectiveHdhrEnabled, getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel,
-  isPredefinedChannelDisabled, isUserChannel, isVisibleChannel, tagsMatch } from "../../../config/userChannels.js";
-import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.js";
-import { getChannelHealth, getDomainAuth } from "../../../config/health.js";
-import { getProfileForChannel, getProfiles } from "../../../config/profiles.js";
-import { CONFIG } from "../../../config/index.js";
-import { PREDEFINED_CHANNELS } from "../../../channels/index.js";
-import type { ProfileInfo } from "../../../config/profiles.js";
-import { categorizeProfiles } from "../index.js";
-import { generateWizardModal } from "../../components.js";
+  isPredefinedChannelDisabled, isUserChannel, isVisibleChannel, tagsMatch } from "../../../config/userChannels.ts";
+import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.ts";
+import { getChannelHealth, getDomainAuth } from "../../../config/health.ts";
+import { getProfileForChannel, getProfiles } from "../../../config/profiles.ts";
+import { CONFIG } from "../../../config/index.ts";
+import { PREDEFINED_CHANNELS } from "../../../channels/index.ts";
+import type { ProfileInfo } from "../../../config/profiles.ts";
+import { categorizeProfiles } from "../index.ts";
+import { generateWizardModal } from "../../components.ts";
 
 /**
  * Generates an annotated service display span. The client-side page-load script processes these elements via serviceIconHtml, rendering the appropriate

@@ -6,12 +6,12 @@
  * state mutation and persistence lives in the config layer.
  */
 import type { Express, Request, Response } from "express";
-import { VALID_OPTIONAL_COLUMNS, buildChannelTableState } from "../table.js";
-import { markSetupCompleted, mutateChannelDisplayPrefs } from "../../../../config/userChannels.js";
-import { sendSuccess, sendValidationError } from "../http/envelope.js";
-import type { ChannelSortField } from "../../../../types/index.js";
-import { VALID_SORT_FIELDS } from "../../../../config/services.js";
-import { route } from "../http/handler.js";
+import { VALID_OPTIONAL_COLUMNS, buildChannelTableState } from "../table.ts";
+import { markSetupCompleted, mutateChannelDisplayPrefs } from "../../../../config/userChannels.ts";
+import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import type { ChannelSortField } from "../../../../types/index.ts";
+import { VALID_SORT_FIELDS } from "../../../../config/services.ts";
+import { route } from "../http/handler.ts";
 
 /**
  * Registers the display-preferences and setup-completed endpoints on the Express application.

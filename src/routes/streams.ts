@@ -3,14 +3,15 @@
  * streams.ts: Stream management routes for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { getAllStreams, getStream, getStreamCount, getStreamMemoryUsage } from "../streaming/registry.js";
-import { getStatusSnapshot, getStreamStatus, subscribeToStatus } from "../streaming/statusEmitter.js";
-import { CONFIG } from "../config/index.js";
-import type { ClientTypeCount } from "../streaming/clients.js";
-import type { Nullable } from "../types/index.js";
-import type { StreamHealthStatus } from "../streaming/statusEmitter.js";
-import { emitCurrentSystemStatus } from "../browser/index.js";
-import { terminateStream } from "../streaming/lifecycle.js";
+import { getAllStreams, getStream, getStreamCount, getStreamMemoryUsage } from "../streaming/registry.ts";
+import { getStatusSnapshot, getStreamStatus, subscribeToStatus } from "../streaming/statusEmitter.ts";
+import { sendNotFoundError, sendSuccess, sendValidationError } from "./config/http/envelope.ts";
+import { CONFIG } from "../config/index.ts";
+import type { ClientTypeCount } from "../streaming/clients.ts";
+import type { Nullable } from "../types/index.ts";
+import type { StreamHealthStatus } from "../streaming/statusEmitter.ts";
+import { emitCurrentSystemStatus } from "../browser/index.ts";
+import { terminateStream } from "../streaming/lifecycle.ts";
 
 /* The streams endpoint provides visibility into active streams and allows operators to terminate streams via the API. This is useful for debugging and for
  * integrations that need to manage stream lifecycle.
@@ -80,7 +81,7 @@ export function setupStreamsEndpoint(app: Express): void {
 
     if(isNaN(streamIdParam)) {
 
-      res.status(400).json({ error: "Invalid stream ID." });
+      sendValidationError(res, "Invalid stream ID.");
 
       return;
     }
@@ -89,7 +90,7 @@ export function setupStreamsEndpoint(app: Express): void {
 
     if(!streamInfo) {
 
-      res.status(404).json({ error: "Stream not found." });
+      sendNotFoundError(res, "Stream not found.");
 
       return;
     }
@@ -97,7 +98,7 @@ export function setupStreamsEndpoint(app: Express): void {
     terminateStream(streamIdParam, streamInfo.info.storeKey, "API request");
     void emitCurrentSystemStatus();
 
-    res.json({ message: "Stream terminated.", streamId: streamIdParam });
+    sendSuccess(res, { data: { streamId: streamIdParam }, message: "Stream terminated." });
   });
 
   /* The /streams/status endpoint provides real-time stream and system status via Server-Sent Events. Connected clients receive an initial snapshot of all streams

@@ -6,7 +6,7 @@
  * so the user needs to reload it to see downstream changes. Centralizing the field list and the hint text here ensures every call site agrees on what "relevant"
  * means and what prose to append.
  */
-import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.js";
+import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.ts";
 
 /* Fields that appear in the generated M3U playlist and affect Channels DVR's view of the channel. When any of these change, we append PLAYLIST_HINT so the
  * user knows to reload the playlist in Channels DVR for the change to take effect. The `satisfies` constraint ensures every entry is a real ResolvedChannel

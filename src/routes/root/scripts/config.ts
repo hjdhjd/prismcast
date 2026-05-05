@@ -2,8 +2,8 @@
  *
  * config.ts: Client-side JavaScript generator for the PrismCast configuration subtab.
  */
-import { VIDEO_QUALITY_PRESETS } from "../../../config/presets.js";
-import { isRunningAsService } from "../../../utils/index.js";
+import { VIDEO_QUALITY_PRESETS } from "../../../config/presets.ts";
+import { isRunningAsService } from "../../../utils/index.ts";
 
 export function generateConfigSubtabScript(): string {
 
@@ -242,7 +242,7 @@ export function generateConfigSubtabScript(): string {
     "      } else if(result.success) {",
     "        showToast('Upgrade complete. Please restart PrismCast manually.', 'success', 8000);",
     "      } else {",
-    "        showToast('Upgrade failed: ' + result.message, 'error');",
+    "        showToast('Upgrade failed: ' + result.error, 'error');",
     "      }",
     "    } catch(err) {",
     "      showToast('Upgrade failed: ' + err.message, 'error');",

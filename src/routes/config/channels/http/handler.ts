@@ -8,7 +8,7 @@
  * the wrapper deal with unexpected failures.
  */
 import type { Request, RequestHandler, Response } from "express";
-import { sendErrorResponse } from "./envelope.js";
+import { sendErrorResponse } from "../../http/envelope.ts";
 
 /**
  * Wraps an endpoint handler with uniform error handling. The returned RequestHandler awaits the handler's (possibly sync) completion and catches any exception,

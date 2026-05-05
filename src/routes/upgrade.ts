@@ -3,9 +3,10 @@
  * upgrade.ts: Upgrade endpoints for PrismCast web UI.
  */
 import type { Express, Request, Response } from "express";
-import { LOG, fetchLatestVersion, formatError, getPackageVersion, isRunningAsService, isVersionLessThan, normalizeVersion } from "../utils/index.js";
-import { closeBrowser } from "../browser/index.js";
-import { detectInstallMethod } from "../upgrade/detection.js";
+import { LOG, fetchLatestVersion, getPackageVersion, isRunningAsService, isVersionLessThan, normalizeVersion } from "../utils/index.ts";
+import { sendErrorResponse, sendSuccess, sendValidationError } from "./config/http/envelope.ts";
+import { closeBrowser } from "../browser/index.ts";
+import { detectInstallMethod } from "../upgrade/detection.ts";
 import { exec as execCallback } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -42,8 +43,7 @@ export function setupUpgradeEndpoint(app: Express): void {
       });
     } catch(error) {
 
-      LOG.error("Failed to get upgrade info: %s.", formatError(error));
-      res.status(500).json({ message: "Failed to get upgrade info: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "get upgrade info");
     }
   });
 
@@ -57,7 +57,7 @@ export function setupUpgradeEndpoint(app: Express): void {
 
       if(!info.upgradeable) {
 
-        res.json({ message: "This installation method does not support in-place upgrades.", success: false, willRestart: false });
+        sendValidationError(res, "This installation method does not support in-place upgrades.");
 
         return;
       }
@@ -76,7 +76,7 @@ export function setupUpgradeEndpoint(app: Express): void {
 
       const willRestart = isRunningAsService();
 
-      res.json({ message: "Upgrade complete.", success: true, willRestart });
+      sendSuccess(res, { data: { willRestart }, message: "Upgrade complete." });
 
       // If running as a service, exit after a short delay so the service manager restarts us with the new version.
       if(willRestart) {
@@ -90,8 +90,7 @@ export function setupUpgradeEndpoint(app: Express): void {
       }
     } catch(error) {
 
-      LOG.error("Upgrade failed: %s.", formatError(error));
-      res.status(500).json({ message: "Upgrade failed: " + formatError(error), success: false, willRestart: false });
+      sendErrorResponse(res, error, "upgrade");
     }
   });
 }

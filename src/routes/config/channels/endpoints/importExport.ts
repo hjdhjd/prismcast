@@ -5,15 +5,15 @@
  * Export produces a JSON snapshot of user channels with deltas resolved to full definitions (backward compatibility for the import validator that requires url).
  * Import JSON replaces all user channels atomically. Import M3U parses an M3U playlist, validates each entry, and applies a skip/replace conflict policy.
  */
-import type { Channel, StoredChannelMap } from "../../../../types/index.js";
+import type { Channel, StoredChannelMap } from "../../../../types/index.ts";
 import type { Express, Request, Response } from "express";
-import { LOG, generateChannelKey, parseM3U, sanitizeString, stringifySorted } from "../../../../utils/index.js";
+import { LOG, generateChannelKey, parseM3U, sanitizeString, stringifySorted } from "../../../../utils/index.ts";
 import { type UserChannel, getChannelListing, getUserChannels, mutateChannels, resolveStoredChannel, validateChannelName, validateChannelUrl,
-  validateImportedChannels } from "../../../../config/userChannels.js";
-import { sendSuccess, sendValidationError } from "../http/envelope.js";
-import { buildChannelTablePatch } from "../table.js";
-import { getProfiles } from "../../../../config/profiles.js";
-import { route } from "../http/handler.js";
+  validateImportedChannels } from "../../../../config/userChannels.ts";
+import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import { buildChannelTablePatch } from "../table.ts";
+import { getProfiles } from "../../../../config/profiles.ts";
+import { route } from "../http/handler.ts";
 
 type ConflictMode = "replace" | "skip";
 
@@ -54,15 +54,12 @@ export function registerImportExportRoutes(app: Express): void {
       return;
     }
 
-    // Replace all existing user channels. Clear the current map, then assign the imported entries.
-    await mutateChannels((channels) => {
+    // Replace the channels map outright. Reassigning preserves the surrounding metadata fields (migrationsApplied, schemaVersion, serviceSelections,
+    // tagRegistry) - mutating those was the original defect that broke imports at runtime by leaving data.channels undefined for the framework's post-mutate
+    // normalize step.
+    await mutateChannels((data) => {
 
-      for(const key of Object.keys(channels)) {
-
-        Reflect.deleteProperty(channels, key);
-      }
-
-      Object.assign(channels, validationResult.channels);
+      data.channels = { ...validationResult.channels };
     });
 
     const channelCount = Object.keys(validationResult.channels).length;

@@ -2,19 +2,20 @@
  *
  * services.ts: Service profile UI and route handlers for the PrismCast configuration interface.
  */
-import type { DomainConfig, SiteProfile } from "../../types/index.js";
+import type { DomainConfig, SiteProfile } from "../../types/index.ts";
 import type { Express, Request, Response } from "express";
-import { ICON_ADD, ICON_DELETE, ICON_EDIT, ICON_EXPORT, ICON_IMPORT } from "../icons.js";
-import { LOG, escapeHtml, formatError, sanitizeString, stringifySorted } from "../../utils/index.js";
+import { ICON_ADD, ICON_DELETE, ICON_EDIT, ICON_EXPORT, ICON_IMPORT } from "../icons.ts";
+import { LOG, escapeHtml, sanitizeString, stringifySorted } from "../../utils/index.ts";
 import { deleteUserProfile, getUserDomains, getUserProfiles, mutateProfiles, validateDomain, validateProfile,
-  validateProfileKey } from "../../config/userProfiles.js";
-import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.js";
-import { exportServicePack, importServicePack, parseServicePack } from "../../config/servicePacks.js";
-import { getChannelListing, validateChannelUrl } from "../../config/userChannels.js";
-import type { ProfileInfo } from "../../config/profiles.js";
-import { categorizeProfiles } from "./index.js";
-import { generateWizardModal } from "../components.js";
-import { getProfiles } from "../../config/profiles.js";
+  validateProfileKey } from "../../config/userProfiles.ts";
+import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.ts";
+import { exportServicePack, importServicePack, parseServicePack } from "../../config/servicePacks.ts";
+import { getChannelListing, validateChannelUrl } from "../../config/userChannels.ts";
+import { sendErrorResponse, sendNotFoundError, sendSuccess, sendValidationError } from "./http/envelope.ts";
+import type { ProfileInfo } from "../../config/profiles.ts";
+import { categorizeProfiles } from "./index.ts";
+import { generateWizardModal } from "../components.ts";
+import { getProfiles } from "../../config/profiles.ts";
 
 /**
  * Counts channels per user profile key by scanning the channel listing. Returns a record mapping profile key to channel count.
@@ -346,11 +347,10 @@ export function setupProfileRoutes(app: Express): void {
         };
       });
 
-      res.json({ domains, profiles: profileList, success: true });
+      sendSuccess(res, { data: { domains, profiles: profileList } });
     } catch(error) {
 
-      LOG.error("Failed to list profiles: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to list profiles: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "list profiles");
     }
   });
 
@@ -372,7 +372,7 @@ export function setupProfileRoutes(app: Express): void {
       // Validate key.
       if(!key) {
 
-        res.status(400).json({ error: "Profile key is required.", success: false });
+        sendValidationError(res, "Profile key is required.");
 
         return;
       }
@@ -380,7 +380,7 @@ export function setupProfileRoutes(app: Express): void {
       // Validate profile object.
       if(!profile || (typeof profile !== "object")) {
 
-        res.status(400).json({ error: "Profile definition is required.", success: false });
+        sendValidationError(res, "Profile definition is required.");
 
         return;
       }
@@ -432,7 +432,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(keyError) {
 
-        res.status(400).json({ error: keyError, success: false });
+        sendValidationError(res, keyError);
 
         return;
       }
@@ -442,7 +442,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(profileErrors.length > 0) {
 
-        res.status(400).json({ error: profileErrors.join(" "), success: false });
+        sendValidationError(res, profileErrors.join(" "));
 
         return;
       }
@@ -463,44 +463,45 @@ export function setupProfileRoutes(app: Express): void {
 
         if(domainErrors.length > 0) {
 
-          res.status(400).json({ error: domainErrors.join(" "), success: false });
+          sendValidationError(res, domainErrors.join(" "));
 
           return;
         }
       }
 
-      // Save the profile and domain mappings. When updating an existing profile, remove stale domain mappings that pointed to this profile before applying the new
-      // ones. This handles the case where a user changes domain mappings on edit - without this cleanup, old domain entries would persist alongside the new ones.
-      const existingDomains = getUserDomains();
-      const mergedProfiles = { ...existingProfiles, [key]: profile };
-      const cleanedDomains: Record<string, DomainConfig> = {};
-
-      for(const [ domain, config ] of Object.entries(existingDomains)) {
-
-        if(config.profile !== key) {
-
-          cleanedDomains[domain] = config;
-        }
-      }
-
-      const mergedDomains = { ...cleanedDomains, ...(domainMappings ?? {}) };
-
+      // Save the profile and domain mappings. The read-modify-write happens inside the mutator callback so the merge applies against the latest serialized
+      // state under the per-store queue's lock - concurrent POSTs to different keys each see the other's writes and both land on disk. When updating an existing
+      // profile, stale domain mappings that pointed to it are stripped first so the new mappings replace them cleanly rather than coexisting.
       await mutateProfiles((data) => {
 
-        data.profiles = mergedProfiles;
-        data.domains = mergedDomains;
+        for(const [ domain, config ] of Object.entries(data.domains)) {
+
+          if(config.profile === key) {
+
+            Reflect.deleteProperty(data.domains, domain);
+          }
+        }
+
+        data.profiles[key] = profile;
+
+        if(domainMappings) {
+
+          Object.assign(data.domains, domainMappings);
+        }
       });
 
       const actionLabel = isNew ? "created" : "updated";
 
       LOG.info("User profile '%s' %s.", key, actionLabel);
 
-      res.json({ key, message: "Profile '" + key + "' " + actionLabel + " successfully.", panelHtml: generateCustomProfilesPanel(),
-        success: true });
+      sendSuccess(res, {
+
+        data: { key, panelHtml: generateCustomProfilesPanel() },
+        message: "Profile '" + key + "' " + actionLabel + " successfully."
+      });
     } catch(error) {
 
-      LOG.error("Failed to save profile: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to save profile: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "save profile");
     }
   });
 
@@ -513,7 +514,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!key) {
 
-        res.status(400).json({ error: "Profile key is required.", success: false });
+        sendValidationError(res, "Profile key is required.");
 
         return;
       }
@@ -523,18 +524,21 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!(key in userProfiles)) {
 
-        res.status(404).json({ error: "Profile '" + key + "' not found.", success: false });
+        sendNotFoundError(res, "Profile '" + key + "' not found.");
 
         return;
       }
 
       await deleteUserProfile(key);
 
-      res.json({ key, message: "Profile '" + key + "' deleted successfully.", panelHtml: generateCustomProfilesPanel(), success: true });
+      sendSuccess(res, {
+
+        data: { key, panelHtml: generateCustomProfilesPanel() },
+        message: "Profile '" + key + "' deleted successfully."
+      });
     } catch(error) {
 
-      LOG.error("Failed to delete profile: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to delete profile: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "delete profile");
     }
   });
 
@@ -551,7 +555,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!parseResult.pack) {
 
-        res.status(400).json({ error: "Validation errors:\n" + parseResult.errors.join("\n"), success: false });
+        sendValidationError(res, "Validation errors:\n" + parseResult.errors.join("\n"));
 
         return;
       }
@@ -561,7 +565,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!importResult.success) {
 
-        res.status(400).json({ error: "Import failed:\n" + importResult.errors.join("\n"), success: false });
+        sendValidationError(res, "Import failed:\n" + importResult.errors.join("\n"));
 
         return;
       }
@@ -596,12 +600,14 @@ export function setupProfileRoutes(app: Express): void {
         }
       }
 
-      res.json({ message: summary, panelHtml: generateCustomProfilesPanel(), success: true, summary: importResult,
-        warnings: importResult.errors });
+      sendSuccess(res, {
+
+        data: { panelHtml: generateCustomProfilesPanel(), summary: importResult, warnings: importResult.errors },
+        message: summary
+      });
     } catch(error) {
 
-      LOG.error("Failed to import service pack: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to import service pack: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "import service pack");
     }
   });
 
@@ -617,7 +623,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!profileParam) {
 
-        res.status(400).json({ error: "Profile key is required (use ?profile=key).", success: false });
+        sendValidationError(res, "Profile key is required (use ?profile=key).");
 
         return;
       }
@@ -627,7 +633,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(profileKeys.length === 0) {
 
-        res.status(400).json({ error: "No valid profile keys provided.", success: false });
+        sendValidationError(res, "No valid profile keys provided.");
 
         return;
       }
@@ -636,7 +642,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!pack) {
 
-        res.status(404).json({ error: "None of the requested profiles were found.", success: false });
+        sendNotFoundError(res, "None of the requested profiles were found.");
 
         return;
       }
@@ -649,8 +655,7 @@ export function setupProfileRoutes(app: Express): void {
       res.send(stringifySorted(pack) + "\n");
     } catch(error) {
 
-      LOG.error("Failed to export service pack: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to export service pack: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "export service pack");
     }
   });
 
@@ -664,7 +669,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!url) {
 
-        res.status(400).json({ error: "URL is required.", success: false });
+        sendValidationError(res, "URL is required.");
 
         return;
       }
@@ -674,7 +679,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(urlError) {
 
-        res.status(400).json({ error: urlError, success: false });
+        sendValidationError(res, urlError);
 
         return;
       }
@@ -683,16 +688,15 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!result.success) {
 
-        res.status(400).json({ error: result.error ?? "Failed to start test.", success: false });
+        sendValidationError(res, result.error ?? "Failed to start test.");
 
         return;
       }
 
-      res.json({ message: "Test page opened. The browser window should be visible.", success: true });
+      sendSuccess(res, { message: "Test page opened. The browser window should be visible." });
     } catch(error) {
 
-      LOG.error("Failed to start test flow: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to start test: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "start test");
     }
   });
 
@@ -706,7 +710,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!selectors || (typeof selectors !== "object")) {
 
-        res.status(400).json({ error: "Selectors object is required.", success: false });
+        sendValidationError(res, "Selectors object is required.");
 
         return;
       }
@@ -715,7 +719,7 @@ export function setupProfileRoutes(app: Express): void {
 
       if(!page) {
 
-        res.status(400).json({ error: "No active test page. Start a test first.", success: false });
+        sendValidationError(res, "No active test page. Start a test first.");
 
         return;
       }
@@ -746,11 +750,10 @@ export function setupProfileRoutes(app: Express): void {
         results[name] = { count: Math.max(count, 0), valid: count >= 0 };
       }
 
-      res.json({ results, success: true });
+      sendSuccess(res, { data: { results } });
     } catch(error) {
 
-      LOG.error("Failed to check selectors: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to check selectors: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "check selectors");
     }
   });
 
@@ -761,11 +764,10 @@ export function setupProfileRoutes(app: Express): void {
 
       await endLoginMode();
 
-      res.json({ message: "Test flow ended.", panelHtml: generateCustomProfilesPanel(), success: true });
+      sendSuccess(res, { data: { panelHtml: generateCustomProfilesPanel() }, message: "Test flow ended." });
     } catch(error) {
 
-      LOG.error("Failed to end test flow: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to end test: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "end test");
     }
   });
 }

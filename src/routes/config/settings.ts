@@ -2,18 +2,19 @@
  *
  * settings.ts: Settings UI and route handlers for the PrismCast configuration interface.
  */
-import type { AdvancedSection, SettingMetadata, UserConfig } from "../../config/userConfig.js";
-import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from "../../config/index.js";
+import type { AdvancedSection, SettingMetadata, UserConfig } from "../../config/userConfig.ts";
+import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from "../../config/index.ts";
 import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault, mutateConfig, readConfig,
-  setNestedValue } from "../../config/userConfig.js";
+  setNestedValue } from "../../config/userConfig.ts";
 import type { Express, Request, Response } from "express";
-import { LOG, escapeHtml, formatError, isRunningAsService, stringifySorted } from "../../utils/index.js";
-import type { Nullable } from "../../types/index.js";
-import { getConfigFilePath } from "../../config/paths.js";
-import { getGpuCapabilities } from "../../browser/display.js";
-import { getPresetOptionsWithDegradation } from "../../config/presets.js";
-import { getProviderModuleInfo } from "../../browser/channelSelection.js";
-import { scheduleServerRestart } from "./index.js";
+import { LOG, escapeHtml, isRunningAsService, stringifySorted } from "../../utils/index.ts";
+import { sendErrorResponse, sendFormErrors, sendSuccess, sendValidationError } from "./http/envelope.ts";
+import type { Nullable } from "../../types/index.ts";
+import { getConfigFilePath } from "../../config/paths.ts";
+import { getGpuCapabilities } from "../../browser/display.ts";
+import { getPresetOptionsWithDegradation } from "../../config/presets.ts";
+import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
+import { scheduleServerRestart } from "./index.ts";
 
 /* The checkboxList setting type renders a grid of checkboxes backed by a hidden JSON array input. Each checkboxList field specifies a listItemsKey that identifies
  * which item provider to use. The registry maps keys to functions that return the list of items to render. Keeping the registry in the routes layer (not the config
@@ -1056,14 +1057,15 @@ export function setupSettingsRoutes(app: Express): void {
       // If there are validation errors, return them as JSON.
       if(Object.keys(validationErrors).length > 0) {
 
-        res.status(400).json({ errors: validationErrors, success: false });
+        sendFormErrors(res, validationErrors);
 
         return;
       }
 
       // Merge form values into the existing config via mutateConfig. The settings form only manages CONFIG_METADATA fields, but config.json also stores fields
-      // managed by separate endpoints (disabledPredefined, enabledServices, visibleColumns, setupCompleted, channelSortField, channelSortDirection, dvrHost,
-      // hdhr.deviceId, etc.). Merging form values into the existing config preserves all non-form fields automatically - no carry-forward list to maintain.
+      // managed by separate endpoints (disabledPredefined, enabledServices, visibleColumns, setupCompleted, channelSortField, channelSortDirection,
+      // channelsDvr.host, hdhr.deviceId, etc.). Merging form values into the existing config preserves all non-form fields automatically - no carry-forward
+      // list to maintain.
       await mutateConfig((existing) => {
 
         mergeConfigValues(existing, newConfig);
@@ -1072,18 +1074,19 @@ export function setupSettingsRoutes(app: Express): void {
       // Schedule restart after response is sent and return success response with restart info.
       const restartResult = scheduleServerRestart("to apply configuration changes");
 
-      res.json({
+      sendSuccess(res, {
 
-        activeStreams: restartResult.activeStreams,
-        deferred: restartResult.deferred,
-        message: restartResult.message,
-        success: true,
-        willRestart: restartResult.willRestart
+        data: {
+
+          activeStreams: restartResult.activeStreams,
+          deferred: restartResult.deferred,
+          willRestart: restartResult.willRestart
+        },
+        message: restartResult.message
       });
     } catch(error) {
 
-      LOG.error("Failed to save configuration: %s.", formatError(error));
-      res.status(500).json({ message: "Failed to save configuration: " + formatError(error), success: false });
+      sendErrorResponse(res, error, "save configuration");
     }
   });
 
@@ -1099,8 +1102,7 @@ export function setupSettingsRoutes(app: Express): void {
       res.send(stringifySorted(result.config) + "\n");
     } catch(error) {
 
-      LOG.error("Failed to export configuration: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to export configuration: " + formatError(error) });
+      sendErrorResponse(res, error, "export configuration");
     }
   });
 
@@ -1115,7 +1117,7 @@ export function setupSettingsRoutes(app: Express): void {
       // Basic validation - ensure it's an object.
       if((typeof rawConfig !== "object") || (rawConfig === null) || Array.isArray(rawConfig)) {
 
-        res.status(400).json({ error: "Invalid configuration format: expected an object." });
+        sendValidationError(res, "Invalid configuration format: expected an object.");
 
         return;
       }
@@ -1175,13 +1177,13 @@ export function setupSettingsRoutes(app: Express): void {
 
       if(validationErrors.length > 0) {
 
-        res.status(400).json({ error: "Validation errors:\n" + validationErrors.join("\n") });
+        sendValidationError(res, "Validation errors:\n" + validationErrors.join("\n"));
 
         return;
       }
 
       // Import replaces the user settings layer and preserves the system state layer. CONFIG_METADATA is the SSOT for which fields are user settings
-      // (port, timeouts, quality preset, etc.) vs system state (dvrHost, deviceId, disabledPredefined, enabledServices, etc.). Clearing all
+      // (port, timeouts, quality preset, etc.) vs system state (channelsDvr.host, deviceId, disabledPredefined, enabledServices, etc.). Clearing all
       // CONFIG_METADATA-tracked paths before merging ensures that settings not present in the import file revert to defaults rather than surviving
       // from the previous config. System state fields are untouched because they're not in CONFIG_METADATA.
       await mutateConfig((existing) => {
@@ -1214,18 +1216,19 @@ export function setupSettingsRoutes(app: Express): void {
       // Schedule restart after response is sent and return success response with restart info.
       const restartResult = scheduleServerRestart("after configuration import");
 
-      res.json({
+      sendSuccess(res, {
 
-        activeStreams: restartResult.activeStreams,
-        deferred: restartResult.deferred,
-        message: restartResult.message,
-        success: true,
-        willRestart: restartResult.willRestart
+        data: {
+
+          activeStreams: restartResult.activeStreams,
+          deferred: restartResult.deferred,
+          willRestart: restartResult.willRestart
+        },
+        message: restartResult.message
       });
     } catch(error) {
 
-      LOG.error("Failed to import configuration: %s.", formatError(error));
-      res.status(500).json({ error: "Failed to import configuration: " + formatError(error) });
+      sendErrorResponse(res, error, "import configuration");
     }
   });
 
@@ -1234,14 +1237,14 @@ export function setupSettingsRoutes(app: Express): void {
 
     if(!isRunningAsService()) {
 
-      res.status(400).json({ message: "Cannot restart: not running as a service.", success: false });
+      sendValidationError(res, "Cannot restart: not running as a service.");
 
       return;
     }
 
     LOG.info("Forced restart requested via API.");
 
-    res.json({ message: "Server is restarting...", success: true });
+    sendSuccess(res, { message: "Server is restarting..." });
 
     // Close the browser first to avoid orphan Chrome processes.
     setTimeout(() => {

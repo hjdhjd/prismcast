@@ -6,13 +6,13 @@
  * snapshot semantics so a bulk action targets exactly what the user sees in the table.
  */
 import type { Express, Request, Response } from "express";
-import { VALID_SORT_FIELDS, compareChannelSort } from "../../../../config/services.js";
+import { VALID_SORT_FIELDS, compareChannelSort } from "../../../../config/services.ts";
 import { applyChannelDelta, getEffectiveHdhrEnabled, getVisibleChannels, isInVocabulary, isVisibleChannel, mutateChannels, tagsMatch,
-  transformChannelTags } from "../../../../config/userChannels.js";
-import { sendError, sendSuccess, sendValidationError } from "../http/envelope.js";
-import type { ChannelSortField } from "../../../../types/index.js";
-import { LOG } from "../../../../utils/index.js";
-import { route } from "../http/handler.js";
+  transformChannelTags } from "../../../../config/userChannels.ts";
+import { sendError, sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import type { ChannelSortField } from "../../../../types/index.ts";
+import { LOG } from "../../../../utils/index.ts";
+import { route } from "../http/handler.ts";
 
 /**
  * Registers the bulk channel-operation endpoints on the Express application.

@@ -2,15 +2,15 @@
  *
  * index.ts: Configuration endpoint coordinator for PrismCast.
  */
-import { LOG, isRunningAsService } from "../../utils/index.js";
+import { LOG, isRunningAsService } from "../../utils/index.ts";
 import type { Express } from "express";
-import type { ProfileCategory } from "../../types/index.js";
-import type { ProfileInfo } from "../../config/profiles.js";
-import { closeBrowser } from "../../browser/index.js";
-import { getStreamCount } from "../../streaming/registry.js";
-import { setupChannelRoutes } from "./channels/index.js";
-import { setupProfileRoutes } from "./services.js";
-import { setupSettingsRoutes } from "./settings.js";
+import type { ProfileCategory } from "../../types/index.ts";
+import type { ProfileInfo } from "../../config/profiles.ts";
+import { closeBrowser } from "../../browser/index.ts";
+import { getStreamCount } from "../../streaming/registry.ts";
+import { setupChannelRoutes } from "./channels/index.ts";
+import { setupProfileRoutes } from "./services.ts";
+import { setupSettingsRoutes } from "./settings.ts";
 
 /**
  * Result of scheduling a server restart.
@@ -120,8 +120,8 @@ export function setupConfigEndpoint(app: Express): void {
 
 // Barrel re-exports for external consumers.
 
-export type { ChannelRowHtml } from "./channels/index.js";
-export { OPTIONAL_COLUMNS, generateChannelRowHtml, generateChannelsPanel, generateServiceFilterToolbar } from "./channels/index.js";
+export type { ChannelRowHtml } from "./channels/index.ts";
+export { OPTIONAL_COLUMNS, generateChannelRowHtml, generateChannelsPanel, generateServiceFilterToolbar } from "./channels/index.ts";
 export { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent,
-  hasEnvOverrides } from "./settings.js";
-export { generateCustomProfilesPanel, generateProfileWizardModal } from "./services.js";
+  hasEnvOverrides } from "./settings.ts";
+export { generateCustomProfilesPanel, generateProfileWizardModal } from "./services.ts";

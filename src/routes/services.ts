@@ -2,15 +2,16 @@
  *
  * services.ts: Service channel discovery route for PrismCast.
  */
-import type { DiscoveredChannel, ProviderModule } from "../types/index.js";
+import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
 import type { Express, Request, Response } from "express";
-import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.js";
+import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.ts";
 import { getChannelServiceLabel, getResolvedChannel, getServiceGroup, getServiceTagForChannel, isServiceTagEnabled,
-  resolveServiceKey } from "../config/services.js";
-import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.js";
-import { getProviderBySlug, normalizeChannelName } from "../browser/channelSelection.js";
-import { CONFIG } from "../config/index.js";
-import { LOG } from "../utils/index.js";
+  resolveServiceKey } from "../config/services.ts";
+import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.ts";
+import { getProviderBySlug, normalizeChannelName } from "../browser/channelSelection.ts";
+import { sendError, sendNotFoundError } from "./config/http/envelope.ts";
+import { CONFIG } from "../config/index.ts";
+import { LOG } from "../utils/index.ts";
 import type { Page } from "puppeteer-core";
 
 /* The services endpoint exposes channel discovery for each registered service. A GET request to /services/:slug/channels creates a temporary browser page,
@@ -51,8 +52,10 @@ function sendDiscoveryError(res: Response, label: string, error: unknown): void 
 
   const message = (error instanceof Error) ? error.message : String(error);
 
+  // Channel discovery failures are warnings rather than errors because they typically reflect provider DOM drift, network blips, or transient site outages
+  // (recoverable by retry) rather than server-side faults. The envelope helper normalizes the response shape; the LOG.warn level is preserved deliberately.
   LOG.warn("Channel discovery failed for %s: %s.", label, message);
-  res.status(500).json({ error: "Channel discovery failed: " + message + "." });
+  sendError(res, 500, { error: "Channel discovery failed: " + message + "." });
 }
 
 /**
@@ -340,7 +343,7 @@ export function setupServicesEndpoint(app: Express): void {
 
     if(!provider) {
 
-      res.status(404).json({ error: "Unknown service: " + slug + "." });
+      sendNotFoundError(res, "Unknown service: " + slug + ".");
 
       return;
     }

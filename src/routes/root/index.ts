@@ -3,13 +3,14 @@
  * index.ts: Landing page route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { checkForUpdates, getChangelogItems, getPackageVersion, getVersionInfo } from "../../utils/index.js";
+import { checkForUpdates, getChangelogItems, getPackageVersion, getVersionInfo } from "../../utils/index.ts";
 import { generateApiReferenceContent, generateChannelsTabContent, generateConfigContent, generateHelpContent, generateLogsContent,
-  generateOverviewContent } from "./content.js";
-import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "../ui.js";
-import { generateChannelsSubtabScript, generateConfigSubtabScript, generateSharedUtilitiesScript, generateStatusScript } from "./scripts/index.js";
-import { generateLandingPageStyles } from "./styles.js";
-import { resolveBaseUrl } from "../playlist.js";
+  generateOverviewContent } from "./content.ts";
+import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "../ui.ts";
+import { generateChannelsSubtabScript, generateConfigSubtabScript, generateSharedUtilitiesScript, generateStatusScript } from "./scripts/index.ts";
+import { generateLandingPageStyles } from "./styles.ts";
+import { resolveBaseUrl } from "../playlist.ts";
+import { sendSuccess } from "../config/http/envelope.ts";
 
 /* The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface with six sections:
  *
@@ -114,12 +115,7 @@ export function setupRootEndpoint(app: Express): void {
 
     const versionInfo = getVersionInfo(currentVersion);
 
-    res.json({
-
-      currentVersion,
-      latestVersion: versionInfo.latestVersion,
-      updateAvailable: versionInfo.updateAvailable
-    });
+    sendSuccess(res, { data: { currentVersion, latestVersion: versionInfo.latestVersion, updateAvailable: versionInfo.updateAvailable } });
   });
 
   // Changelog fetch endpoint. Returns changelog items for the appropriate version (latest if update available, otherwise current). Falls back to current version's

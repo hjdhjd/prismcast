@@ -7,11 +7,11 @@
  */
 import type { Express, Request, Response } from "express";
 import { getActiveTagVocabulary, getPredefinedChannel, getTagRegistry, isInVocabulary, setTagRegistry, tagsMatch,
-  transformChannelTags } from "../../../../config/userChannels.js";
-import { sendConflictError, sendError, sendNotFoundError, sendSuccess, sendValidationError } from "../http/envelope.js";
-import { LOG } from "../../../../utils/index.js";
-import { PREDEFINED_TAGS } from "../../../../channels/index.js";
-import { route } from "../http/handler.js";
+  transformChannelTags } from "../../../../config/userChannels.ts";
+import { sendConflictError, sendError, sendNotFoundError, sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import { LOG } from "../../../../utils/index.ts";
+import { PREDEFINED_TAGS } from "../../../../channels/index.ts";
+import { route } from "../http/handler.ts";
 
 // Pattern for valid tag names: must start and end with alphanumeric, may contain letters, numbers, spaces, and hyphens in between. Enforced on create and rename.
 const TAG_NAME_PATTERN = /^[a-zA-Z0-9]([a-zA-Z0-9 -]*[a-zA-Z0-9])?$/;

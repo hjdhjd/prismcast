@@ -8,10 +8,10 @@
  */
 import type { Express, Request, Response } from "express";
 import { disablePredefinedChannels, enablePredefinedChannels, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannels,
-  isPredefinedChannel } from "../../../../config/userChannels.js";
-import { sendSuccess, sendValidationError } from "../http/envelope.js";
-import { LOG } from "../../../../utils/index.js";
-import { route } from "../http/handler.js";
+  isPredefinedChannel } from "../../../../config/userChannels.ts";
+import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import { LOG } from "../../../../utils/index.ts";
+import { route } from "../http/handler.ts";
 
 type BulkScope = "all" | "east" | "pacific";
 

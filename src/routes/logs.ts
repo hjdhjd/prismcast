@@ -3,11 +3,12 @@
  * logs.ts: Log viewing endpoint for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { isConsoleLogging, subscribeToLogs } from "../utils/index.js";
-import { CONFIG } from "../config/index.js";
-import type { Nullable } from "../types/index.js";
+import { isConsoleLogging, subscribeToLogs } from "../utils/index.ts";
+import { CONFIG } from "../config/index.ts";
+import type { Nullable } from "../types/index.ts";
 import fs from "node:fs";
-import { getLogFilePath } from "../config/paths.js";
+import { getLogFilePath } from "../config/paths.ts";
+import { sendErrorResponse } from "./config/http/envelope.ts";
 
 const { promises: fsPromises } = fs;
 
@@ -187,17 +188,17 @@ export function setupLogsEndpoint(app: Express): void {
 
       const logsResponse = await readLogEntries(lines, level);
 
+      // GET /logs success path is a data response, not an envelope - the client (loadLogs in routes/root/content.ts) consumes `data.mode` and `data.entries`
+      // directly. We deliberately do not wrap with sendSuccess here, since adding `success: true` would change the response contract from "data shape" to
+      // "envelope shape" on a read-only endpoint without any consumer needing the marker. The error path below DOES carry the envelope marker because that is
+      // the disambiguator clients (and the cross-tree drift sweep at test/e2e/routes/error-envelope.test.ts) use to detect failure responses across the surface.
       res.json(logsResponse);
-    } catch(error) {
+    } catch {
 
-      res.status(500).json({
-
-        entries: [],
-        error: "Failed to read log file.",
-        filtered: 0,
-        mode: "file",
-        total: 0
-      });
+      // We ship the failure response with the same field shape the success path uses (entries/filtered/mode/total) plus the canonical envelope marker so the
+      // log viewer can render an empty state without branching on response shape. The polymorphic sendErrorResponse rich-payload form attaches `success: false`
+      // and ships at 500 verbatim.
+      sendErrorResponse(res, { entries: [], error: "Failed to read log file.", filtered: 0, mode: "file", total: 0 }, 500);
     }
   });
 

@@ -7,14 +7,14 @@
  * review.
  */
 import type { Express } from "express";
-import { registerBrowseRoutes } from "./endpoints/browse.js";
-import { registerBulkRoutes } from "./endpoints/bulk.js";
-import { registerCrudRoutes } from "./endpoints/crud.js";
-import { registerImportExportRoutes } from "./endpoints/importExport.js";
-import { registerPredefinedRoutes } from "./endpoints/predefined.js";
-import { registerPrefsRoutes } from "./endpoints/prefs.js";
-import { registerServiceRoutes } from "./endpoints/service.js";
-import { registerTagRoutes } from "./endpoints/tags.js";
+import { registerBrowseRoutes } from "./endpoints/browse.ts";
+import { registerBulkRoutes } from "./endpoints/bulk.ts";
+import { registerCrudRoutes } from "./endpoints/crud.ts";
+import { registerImportExportRoutes } from "./endpoints/importExport.ts";
+import { registerPredefinedRoutes } from "./endpoints/predefined.ts";
+import { registerPrefsRoutes } from "./endpoints/prefs.ts";
+import { registerServiceRoutes } from "./endpoints/service.ts";
+import { registerTagRoutes } from "./endpoints/tags.ts";
 
 /**
  * Installs all channel-configuration route handlers on the Express application.

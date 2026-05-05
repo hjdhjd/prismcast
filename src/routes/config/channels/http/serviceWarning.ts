@@ -6,8 +6,8 @@
  * warning payload tells the client to show a toast with a one-click enable action. Both the browse endpoint (bulk add) and the CRUD endpoint (single add) use this
  * helper so the warning policy is defined exactly once.
  */
-import { getEnabledServices, getServiceDisplayName, isServiceTagEnabled } from "../../../../config/services.js";
-import { getDomainConfig } from "../../../../config/sites.js";
+import { getEnabledServices, getServiceDisplayName, isServiceTagEnabled } from "../../../../config/services.ts";
+import { getDomainConfig } from "../../../../config/sites.ts";
 
 /**
  * Builds a service filter warning payload when a URL's service tag is not in the active filter. Returns undefined when no filter is active, the URL resolves to

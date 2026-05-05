@@ -12,22 +12,22 @@
  *   POST   /config/channels/:key/revert      - Revert a predefined channel override to defaults.
  *   PATCH  /config/channels/:key             - Partial update (inline cell edits: channelNumber, stationId, hdhrEnabled, tags).
  */
-import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS } from "../../../../types/index.js";
-import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.js";
+import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS } from "../../../../types/index.ts";
+import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.ts";
 import type { Express, Request, Response } from "express";
-import { LOG, sanitizeString } from "../../../../utils/index.js";
+import { LOG, sanitizeString } from "../../../../utils/index.ts";
 import { type UserChannel, clearChannelOverrides, getPredefinedChannel, isPredefinedChannel, isUserChannel, mutateChannels, parseTagInput, sortTags,
-  validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl } from "../../../../config/userChannels.js";
-import { channelMatches, computePredefinedDelta, findMatchingVariant } from "../../../../config/channelForm.js";
-import { getResolvedChannel, resolveServiceKey } from "../../../../config/services.js";
-import { playlistHintForChange, playlistHintForDelta, playlistHintForStored } from "../http/playlistHint.js";
-import { sendFormErrors, sendSuccess, sendValidationError } from "../http/envelope.js";
-import type { ChannelFormValues } from "../../../../config/channelForm.js";
-import { PREDEFINED_CHANNELS } from "../../../../channels/index.js";
-import { buildServiceFilterWarning } from "../http/serviceWarning.js";
-import { getProfiles } from "../../../../config/profiles.js";
-import { route } from "../http/handler.js";
-import { updateChannelLogo } from "../../../../streaming/showInfo.js";
+  validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl } from "../../../../config/userChannels.ts";
+import { channelMatches, computePredefinedDelta, findMatchingVariant } from "../../../../config/channelForm.ts";
+import { getResolvedChannel, resolveServiceKey } from "../../../../config/services.ts";
+import { playlistHintForChange, playlistHintForDelta, playlistHintForStored } from "../http/playlistHint.ts";
+import { sendFormErrors, sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import type { ChannelFormValues } from "../../../../config/channelForm.ts";
+import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
+import { buildServiceFilterWarning } from "../http/serviceWarning.ts";
+import { getProfiles } from "../../../../config/profiles.ts";
+import { route } from "../http/handler.ts";
+import { updateChannelLogo } from "../../../../streaming/showInfo.ts";
 
 /* Single source of truth for fields that PATCH /config/channels/:key accepts. The tuple is the one place an inline-editable field is declared; the InlineEditBody
  * shape and INLINE_EDIT_LABELS record both derive from it. Adding a new inline-editable field is a single-line change to the tuple plus a label entry. The

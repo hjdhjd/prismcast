@@ -7,13 +7,13 @@
  */
 import type { Express, Request, Response } from "express";
 import { getAllServiceTags, getCanonicalKey, getChannelServiceLabel, getEnabledServices, getResolvedChannel, getServiceGroup, getServiceSelection,
-  getServiceTagForChannel, mutateEnabledServices, mutateServiceSelections, setServiceSelection } from "../../../../config/services.js";
-import { sendSuccess, sendValidationError } from "../http/envelope.js";
-import { LOG } from "../../../../utils/index.js";
-import type { Nullable } from "../../../../types/index.js";
-import { buildChannelTableState } from "../table.js";
-import { getChannelListing } from "../../../../config/userChannels.js";
-import { route } from "../http/handler.js";
+  getServiceTagForChannel, mutateEnabledServices, mutateServiceSelections, setServiceSelection } from "../../../../config/services.ts";
+import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import { LOG } from "../../../../utils/index.ts";
+import type { Nullable } from "../../../../types/index.ts";
+import { buildChannelTableState } from "../table.ts";
+import { getChannelListing } from "../../../../config/userChannels.ts";
+import { route } from "../http/handler.ts";
 
 /**
  * Registers the service-selection and service-filter endpoints on the Express application.
