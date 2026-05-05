@@ -1,0 +1,300 @@
+/* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
+ *
+ * profile-management.test.ts: Integration coverage for the profile/domain HTTP route handlers in src/routes/config/services.ts. Phase 1's profiles.test.ts
+ * drives mutateProfiles directly - this suite exercises the wire-level surface that the UI actually hits, end-to-end through Express. The route handlers are
+ * the concentrated entry point for every user-facing profile and domain change; a 4afa8a0-equivalent regression in any of them (POST that wholesale-replaces
+ * profile state instead of merging, DELETE that orphans domain mappings) would slip past Phase 1's per-mutator coverage entirely.
+ *
+ * What's pinned:
+ *
+ *   1. POST /config/profiles creates a profile and its domain mappings together as one transaction - both land on disk in the right shape, and the domain's
+ *      `profile` reference points at the just-created key (no orphan domain entries).
+ *   2. POST /config/profiles is a per-key partial update - posting an update to one profile leaves the other profiles' on-disk bytes byte-identical. This is
+ *      the cross-profile analog of cross-store-isolation (which pinned the cross-FILE invariant; this suite pins the cross-PROFILE invariant inside one file).
+ *   3. DELETE /config/profiles/:key cascades to every domain mapping that referenced that profile - no orphan domain entries remain, and other profiles'
+ *      domain mappings are untouched.
+ *   4. POST /config/profiles with an invalid profile body produces a 400 envelope and zero on-disk state mutation - profiles.json is byte-identical pre/post.
+ *   5. Concurrent POSTs to two distinct profile keys both succeed and both land on disk - the per-store mutator queue serializes the writes correctly without
+ *      either losing the other's update.
+ *
+ * Why bootApp instead of calling mutateProfiles directly: every route handler ships its own validation, sanitization, and merge logic ahead of the mutator
+ * call, and those layers ARE under test. Calling the mutator directly would exercise the persistence layer but skip the HTTP-side logic that the UI depends
+ * on. Cross-profile isolation, validation rejection, and the delete cascade are all behaviors that live in the route handler, not the persistence layer.
+ *
+ * Why we use a non-built-in domain ("myservice.example.test"): src/config/userProfiles.ts validateDomain rejects domains that collide with the built-in
+ * DOMAIN_CONFIG map. Picking a fictitious .example.test hostname keeps the test self-contained and avoids coupling test fidelity to the built-in catalog.
+ */
+import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
+import { mutateProfiles } from "../../../src/config/userProfiles.ts";
+import { readFile } from "node:fs/promises";
+
+/**
+ * Builds the JSON body for a POST /config/profiles request. The route handler expects `{ key, profile, domains? }`; this helper centralizes the shape so each
+ * test focuses on the values being exercised rather than re-asserting the request shape on every call. fullscreenApi is the canonical built-in base profile
+ * for "extends" since it's the simplest user-extensible base in src/config/sites.ts.
+ * @param key - User profile key.
+ * @param description - Profile description.
+ * @param domains - Optional domain mappings keyed by hostname.
+ * @returns The JSON-stringifiable request body.
+ */
+function makePostBody(key: string, description: string, domains?: Record<string, { profile?: string; service?: string; serviceTag?: string }>): unknown {
+
+  return {
+
+    domains,
+    key,
+    profile: { description, extends: "fullscreenApi", summary: description }
+  };
+}
+
+describe("POST /config/profiles - create and update", () => {
+
+  test("a POST that includes both a profile and a domain mapping creates them together in one transaction", async () => {
+
+    /* The wizard's "Save" button ships a single POST carrying the new profile AND every domain mapping the user assigned to it. The route handler must save
+     * both atomically so the UI never sees an intermediate state where the profile exists but its domain mappings don't (or vice versa). Without this, a UI
+     * refresh between sub-saves would surface a half-built profile to the operator. The integration assertion is that profiles.json - on disk after the POST -
+     * carries both the new profile entry under the right key and the new domain entry pointing at that key.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const body = makePostBody("integration-test", "integration test profile", {
+
+      "myservice.example.test": { profile: "integration-test", service: "MyService", serviceTag: "myservice" }
+    });
+
+    const response = await fetch(urlFor("/config/profiles"), {
+
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "POST /config/profiles must succeed; body: " + (await response.clone().text()).slice(0, 200));
+
+    // Disk-side assertion: profiles.json carries both the new profile and the new domain mapping. We narrow the unknown into the documented on-disk shape
+    // (profiles.ts persistence layer emits { profiles: ..., domains: ..., schemaVersion, migrationsApplied? } via prepareProfilesForWrite).
+    const persisted = await readPersistedJson(ctx, "profiles.json") as { profiles?: Record<string, unknown>; domains?: Record<string, unknown> };
+
+    assert.equal(typeof persisted.profiles, "object", "profiles.json must persist a profiles map");
+    assert.ok(persisted.profiles && ("integration-test" in persisted.profiles), "the new profile must be present under its key");
+
+    assert.equal(typeof persisted.domains, "object", "profiles.json must persist a domains map");
+    assert.ok(persisted.domains && ("myservice.example.test" in persisted.domains), "the new domain mapping must be present under its hostname");
+
+    const domainEntry = (persisted.domains as Record<string, { profile?: string }>)["myservice.example.test"];
+
+    assert.equal(domainEntry?.profile, "integration-test", "the domain mapping's profile reference must point at the just-created profile key");
+  });
+
+  test("a POST update to one profile leaves all other profile entries byte-identical on disk", async () => {
+
+    /* The cross-profile isolation invariant. The wizard's edit flow loads one profile, lets the user mutate it, and POSTs the result. The route handler
+     * cleans up stale domain mappings for the targeted profile (services.ts:478-485) and merges the new profile entry into the existing profiles map
+     * (services.ts:475 - `mergedProfiles = { ...existingProfiles, [key]: profile }`). A regression that wholesale-replaced profile state - that re-emitted
+     * the profiles map without copying every untouched entry - is precisely the 4afa8a0 class for the profiles surface.
+     *
+     * We seed three profiles (a, b, c), capture the full profiles.json bytes, POST an edit to profile-b, and assert that profile-a's and profile-c's per-key
+     * JSON projections (via stringifySorted-equivalent JSON.stringify with sorted keys) are byte-identical pre/post. We compare per-entry rather than full-file
+     * because the targeted entry's bytes change and the metadata (schemaVersion ordering) may shift if the file's overall key set changes.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    // Seed three distinct profiles via the production mutator (skipping the route layer; the test is about isolation under route-driven update, not initial
+    // creation - the seed shape just needs to be on disk).
+    await mutateProfiles((data) => {
+
+      data.profiles["profile-a"] = { description: "A", extends: "fullscreenApi", summary: "A summary" };
+      data.profiles["profile-b"] = { description: "B", extends: "fullscreenApi", summary: "B summary" };
+      data.profiles["profile-c"] = { description: "C", extends: "fullscreenApi", summary: "C summary" };
+    });
+
+    // Capture pre-update bytes for each non-targeted entry. JSON.stringify with a sorted-key replacer matches what the persistence layer produces, so this
+    // projection is the same one the file store uses end-to-end.
+    const persistedBefore = await readPersistedJson(ctx, "profiles.json") as { profiles: Record<string, unknown> };
+    const profileABefore = JSON.stringify(persistedBefore.profiles["profile-a"]);
+    const profileCBefore = JSON.stringify(persistedBefore.profiles["profile-c"]);
+
+    const { urlFor } = await bootApp(ctx);
+
+    // Post an update to profile-b only.
+    const response = await fetch(urlFor("/config/profiles"), {
+
+      body: JSON.stringify(makePostBody("profile-b", "B updated", undefined)),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "POST update to profile-b must succeed; body: " + (await response.clone().text()).slice(0, 200));
+
+    // Per-entry assertion: profile-a and profile-c are byte-identical pre/post. profile-b's bytes have changed (the description was rewritten); the assertion
+    // is exclusively on the untouched entries.
+    const persistedAfter = await readPersistedJson(ctx, "profiles.json") as { profiles: Record<string, unknown> };
+
+    assert.equal(JSON.stringify(persistedAfter.profiles["profile-a"]), profileABefore,
+      "profile-a's on-disk projection must be byte-identical after a POST update targeting only profile-b");
+    assert.equal(JSON.stringify(persistedAfter.profiles["profile-c"]), profileCBefore,
+      "profile-c's on-disk projection must be byte-identical after a POST update targeting only profile-b");
+
+    // Sanity: profile-b's description did get updated (proves the POST took effect at all - so the byte-identity check above is meaningful).
+    const profileB = persistedAfter.profiles["profile-b"] as { description?: string };
+
+    assert.equal(profileB.description, "B updated", "profile-b's description must reflect the POST update");
+  });
+});
+
+describe("DELETE /config/profiles/:key - cascade", () => {
+
+  test("DELETE removes every domain mapping that referenced the deleted profile while leaving unrelated mappings untouched", async () => {
+
+    /* The cascade contract. deleteUserProfile (userProfiles.ts:320) removes the profile entry and walks the domains map removing every entry whose `profile`
+     * field references the deleted key. A regression that skipped the cascade would orphan domain entries pointing at a non-existent profile - those
+     * entries would surface in the wizard's domain list with a broken reference and silently fail to resolve at request time.
+     *
+     * Setup: seed two profiles (target, bystander), each with two domain mappings (4 mappings total). DELETE the target profile. Assert: target profile gone,
+     * its 2 domains gone, bystander profile and its 2 domains byte-identical pre/post.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["target"] = { description: "target", extends: "fullscreenApi", summary: "target" };
+      data.profiles["bystander"] = { description: "bystander", extends: "fullscreenApi", summary: "bystander" };
+
+      data.domains["target-1.example.test"] = { profile: "target" };
+      data.domains["target-2.example.test"] = { profile: "target" };
+      data.domains["bystander-1.example.test"] = { profile: "bystander" };
+      data.domains["bystander-2.example.test"] = { profile: "bystander" };
+    });
+
+    const persistedBefore = await readPersistedJson(ctx, "profiles.json") as { domains: Record<string, unknown> };
+    const bystander1Before = JSON.stringify(persistedBefore.domains["bystander-1.example.test"]);
+    const bystander2Before = JSON.stringify(persistedBefore.domains["bystander-2.example.test"]);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config/profiles/target"), { method: "DELETE" });
+
+    assert.equal(response.status, 200, "DELETE must succeed; body: " + (await response.clone().text()).slice(0, 200));
+
+    const persistedAfter = await readPersistedJson(ctx, "profiles.json") as { profiles?: Record<string, unknown>; domains?: Record<string, unknown> };
+
+    // Profile gone.
+    assert.equal((persistedAfter.profiles && ("target" in persistedAfter.profiles)) ?? false, false, "the target profile must be removed from disk");
+    assert.equal((persistedAfter.profiles && ("bystander" in persistedAfter.profiles)) ?? false, true, "the bystander profile must remain on disk");
+
+    // Cascade: both target-* domain mappings gone.
+    const domainsAfter = persistedAfter.domains ?? {};
+
+    assert.equal("target-1.example.test" in domainsAfter, false, "target-1 domain mapping must be cascaded away");
+    assert.equal("target-2.example.test" in domainsAfter, false, "target-2 domain mapping must be cascaded away");
+
+    // Bystander mappings byte-identical pre/post.
+    assert.equal(JSON.stringify(domainsAfter["bystander-1.example.test"]), bystander1Before,
+      "bystander-1 domain mapping must be byte-identical pre/post a DELETE targeting an unrelated profile");
+    assert.equal(JSON.stringify(domainsAfter["bystander-2.example.test"]), bystander2Before,
+      "bystander-2 domain mapping must be byte-identical pre/post a DELETE targeting an unrelated profile");
+  });
+});
+
+describe("POST /config/profiles - validation rejection", () => {
+
+  test("a POST with an invalid profile body returns a 400 envelope and writes nothing to disk", async () => {
+
+    /* Validation rejections must be transactional in the disk sense: a 400 response must mean profiles.json is byte-identical pre/post. The route handler at
+     * services.ts:441 calls validateProfile and short-circuits with status 400 when errors come back. A regression that bypassed the early return (or
+     * partial-saved before validating) would corrupt state on every malformed POST.
+     *
+     * Validation trip: extends="" - userProfiles.ts:455 rejects "extends is required". The same code path also rejects unknown extends targets, non-generic
+     * strategies, and unrecognized flags; the assertion below documents the envelope shape, not the specific error string.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    // Seed one profile so profiles.json has on-disk content; the byte-identity check is meaningful only against non-empty state.
+    await mutateProfiles((data) => {
+
+      data.profiles["seed"] = { description: "seed", extends: "fullscreenApi", summary: "seed" };
+    });
+
+    const beforeBytes = await readFile(ctx.dataDir + "/profiles.json", "utf-8");
+
+    const { urlFor } = await bootApp(ctx);
+
+    // Invalid profile: extends is missing/empty. The route handler must surface a 400 with an error message and write nothing.
+    const response = await fetch(urlFor("/config/profiles"), {
+
+      body: JSON.stringify({ key: "bad-profile", profile: { description: "no extends" } }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 400, "an invalid profile body must produce a 400 status");
+
+    const responseBody = await response.json() as { success?: boolean; error?: string };
+
+    assert.equal(responseBody.success, false, "the response envelope must carry success: false on validation failure");
+    assert.equal(typeof responseBody.error, "string", "the response envelope must carry a string error message on validation failure");
+
+    // Disk-side: profiles.json bytes are unchanged.
+    const afterBytes = await readFile(ctx.dataDir + "/profiles.json", "utf-8");
+
+    assert.equal(afterBytes, beforeBytes, "profiles.json must be byte-identical after a 400-rejected POST - validation rejection means zero state mutation");
+  });
+});
+
+describe("POST /config/profiles - per-store mutator queue under contention", () => {
+
+  test("concurrent POSTs to different keys both land on disk - the route handler does its read-modify-write inside the mutator callback", async () => {
+
+    /* The serialized RMW contract. The route handler at services.ts:475-491 does its merge inside the mutateProfiles callback so each write applies against the
+     * latest serialized state under the per-store queue's lock. Two concurrent POSTs to different keys serialize correctly: the first mutator writes profile A,
+     * the second's callback then sees profiles = { A: ... } as its starting state and adds B alongside it. Both keys land on disk; neither overwrites the other.
+     *
+     * This pins the architectural invariant: any read-modify-write against profiles.json must happen inside the mutator's callback. A regression that lifts the
+     * read out of the callback - even partially, e.g., by capturing a snapshot of `data.profiles` before mutating - reintroduces the lost-update bug because the
+     * snapshot freezes a baseline that may already be stale by the time the mutate function returns. Pinned here so any such regression fails loud immediately.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const [ responseA, responseB ] = await Promise.all([
+
+      fetch(urlFor("/config/profiles"), {
+
+        body: JSON.stringify(makePostBody("concurrent-a", "concurrent A", undefined)),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }),
+      fetch(urlFor("/config/profiles"), {
+
+        body: JSON.stringify(makePostBody("concurrent-b", "concurrent B", undefined)),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      })
+    ]);
+
+    assert.equal(responseA.status, 200, "concurrent POST A must succeed; body: " + (await responseA.clone().text()).slice(0, 200));
+    assert.equal(responseB.status, 200, "concurrent POST B must succeed; body: " + (await responseB.clone().text()).slice(0, 200));
+
+    const persisted = await readPersistedJson(ctx, "profiles.json") as { profiles?: Record<string, unknown> };
+    const profilesMap = persisted.profiles ?? {};
+
+    assert.ok("concurrent-a" in profilesMap, "concurrent-a must be present on disk after the parallel POSTs settle");
+    assert.ok("concurrent-b" in profilesMap, "concurrent-b must be present on disk after the parallel POSTs settle");
+  });
+});
