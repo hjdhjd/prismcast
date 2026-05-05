@@ -2,7 +2,7 @@
  *
  * mp4Parser.ts: Low-level MP4 box parsing for PrismCast.
  */
-import type { Nullable } from "../types/index.js";
+import type { Nullable } from "../types/index.ts";
 
 /* MP4 files consist of a sequence of "boxes" (also called "atoms"). Each box has a simple structure:
  *
@@ -929,6 +929,128 @@ export interface MoovCodecConfig {
 }
 
 /**
+ * Reads an MPEG-4 ES_Descriptor variable-length size field at the given offset. The encoding is continuation-bit based: each byte contributes 7 bits of size
+ * value, and a high bit (0x80) means another byte follows. Returns the accumulated length and the offset where the descriptor's payload starts (one past the
+ * last size byte). When the encoding runs off the end of the buffer (malformed input), returns length: 0 and payloadStart at the cursor's last position so
+ * callers naturally produce an empty payload.
+ * @param buffer - The buffer containing the descriptor.
+ * @param offset - The offset of the first size byte (i.e., one past the tag byte).
+ * @returns The decoded length and the payload start offset.
+ */
+export function readDescriptorSize(buffer: Buffer, offset: number): { length: number; payloadStart: number } {
+
+  let length = 0;
+  let cursor = offset;
+
+  // Continuation-bit walk: at most a few iterations in practice (sizes rarely need more than 1-2 bytes), but the loop is bounded by buffer.length so a
+  // malformed input cannot loop forever.
+  while(cursor < buffer.length) {
+
+    const byte = buffer[cursor] ?? 0;
+
+    cursor++;
+    length = (length << 7) | (byte & 0x7F);
+
+    if((byte & 0x80) === 0) {
+
+      return { length, payloadStart: cursor };
+    }
+  }
+
+  // Ran past the buffer end without a terminating byte. Treat as malformed and return zero length so the caller sees an empty payload.
+  return { length: 0, payloadStart: cursor };
+}
+
+/**
+ * Walks an MPEG-4 ES_Descriptor tree to find the first descriptor with the given tag, returning its payload as a Buffer view. The walker recurses INTO known
+ * container descriptors (ES_Descriptor 0x03, DecoderConfigDescriptor 0x04) by skipping their tag-specific fixed-size header fields and continuing the search
+ * inside the remaining payload; for non-container or unknown tags it skips past the entire payload to advance to the next sibling. This is the structural
+ * counterpart to a naive byte-scan-for-tag, which would produce false matches when a target tag value appears inside another descriptor's payload bytes (e.g.,
+ * inside DecoderConfigDescriptor's bitrate fields, or as a length-encoding byte).
+ *
+ * Container header sizes:
+ * - ES_Descriptor (0x03): 2 bytes ES_ID + 1 byte flags + (optional dependsOn_ES_ID, URL string, OCR_ES_Id depending on flag bits in byte 2).
+ * - DecoderConfigDescriptor (0x04): 1 byte objectTypeIndication + 1 byte stream/up/reserved + 3 bytes bufferSizeDB + 4 bytes maxBitrate + 4 bytes avgBitrate
+ *   = 13 bytes.
+ *
+ * @param buffer - The descriptor tree to search (e.g., the esds payload after the box header and version/flags).
+ * @param targetTag - The descriptor tag to find (e.g., 0x05 for DecoderSpecificInfo).
+ * @returns The matched descriptor's payload as a Buffer view, or null if not found.
+ */
+export function findDescriptor(buffer: Buffer, targetTag: number): Nullable<Buffer> {
+
+  let offset = 0;
+
+  while(offset < buffer.length) {
+
+    const tag = buffer[offset];
+
+    if(tag === undefined) {
+
+      return null;
+    }
+
+    const { length, payloadStart } = readDescriptorSize(buffer, offset + 1);
+    const payload = buffer.subarray(payloadStart, payloadStart + length);
+
+    if(tag === targetTag) {
+
+      return payload;
+    }
+
+    // ES_Descriptor (0x03) is a container. Compute the offset of nested descriptors by skipping the fixed header (ES_ID + flags) and any optional fields the
+    // flag byte signals. The flag byte is at payload offset 2; bits 7/6/5 are streamDependenceFlag, URL_Flag, OCRstreamFlag.
+    if(tag === 0x03) {
+
+      let innerOffset = 3;
+      const flags = payload[2] ?? 0;
+
+      if((flags & 0x80) !== 0) {
+
+        // streamDependenceFlag: a 16-bit dependsOn_ES_ID follows the flag byte.
+        innerOffset += 2;
+      }
+
+      if((flags & 0x40) !== 0) {
+
+        // URL_Flag: a 1-byte URLlength followed by URLlength bytes of URL text.
+        const urlLength = payload[innerOffset] ?? 0;
+
+        innerOffset += 1 + urlLength;
+      }
+
+      if((flags & 0x20) !== 0) {
+
+        // OCRstreamFlag: a 16-bit OCR_ES_Id.
+        innerOffset += 2;
+      }
+
+      const found = findDescriptor(payload.subarray(innerOffset), targetTag);
+
+      if(found) {
+
+        return found;
+      }
+    } else if(tag === 0x04) {
+
+      // DecoderConfigDescriptor (0x04) is a container. Skip the 13-byte fixed header (objectTypeIndication + stream/up/reserved + bufferSizeDB + maxBitrate +
+      // avgBitrate) and recurse into the remaining payload.
+      const found = findDescriptor(payload.subarray(13), targetTag);
+
+      if(found) {
+
+        return found;
+      }
+    }
+
+    // Advance past this descriptor (its tag + its size encoding + its full payload).
+    offset = payloadStart + length;
+  }
+
+  return null;
+}
+
+/**
  * Extracts video and audio codec configuration from a moov box. Walks the box tree to find the avcC box (inside moov > trak > mdia > minf > stbl > stsd > avc1) for
  * video and the esds box (inside moov > trak > mdia > minf > stbl > stsd > mp4a) for audio.
  *
@@ -1056,37 +1178,25 @@ export function parseMoovCodecConfig(moovData: Buffer): MoovCodecConfig {
                   if((esdsType === "esds") && (esdsSize >= 12)) {
 
                     // Parse the esds descriptor chain to find AudioSpecificConfig. The esds box after the FullBox header (version + flags = 4 bytes) contains an
-                    // ES_Descriptor. We scan for the DecoderSpecificInfo tag (0x05) which contains the AudioSpecificConfig. The AudioSpecificConfig's first 5 bits
-                    // are the object type, and the next 4 bits are the sample rate index.
+                    // ES_Descriptor (tag 0x03) whose nested DecoderConfigDescriptor (tag 0x04) wraps the DecoderSpecificInfo (tag 0x05). findDescriptor walks the
+                    // ES_Descriptor tree structurally - it does NOT byte-scan for 0x05, which would produce false matches when 0x05 appears inside another
+                    // descriptor's payload (e.g., as a length byte or inside DecoderConfigDescriptor's bitrate fields). The DecoderSpecificInfo's payload is the
+                    // AudioSpecificConfig: byte0's high 5 bits are objectType, byte0's low 3 bits plus byte1's high 1 bit are sampleRateIndex.
                     const esdsPayload = esdsData.subarray(esdsOffset + 12, esdsOffset + esdsSize);
+                    const dsi = findDescriptor(esdsPayload, 0x05);
 
-                    for(let i = 0; i < esdsPayload.length - 2; i++) {
+                    if(dsi && (dsi.length >= 2)) {
 
-                      if(esdsPayload[i] === 0x05) {
+                      const byte0 = dsi[0];
+                      const byte1 = dsi[1];
 
-                        // Tag 0x05 = DecoderSpecificInfo. Skip the tag byte and the size byte(s). Size encoding: if byte < 0x80, it's the size. Otherwise,
-                        // extended size (we handle only single-byte sizes for simplicity).
-                        let sizeOffset = i + 1;
+                      if((byte0 !== undefined) && (byte1 !== undefined)) {
 
-                        while((sizeOffset < esdsPayload.length) && ((esdsPayload[sizeOffset] ?? 0) >= 0x80)) {
+                        audio = {
 
-                          sizeOffset++;
-                        }
-
-                        const configStart = sizeOffset + 1;
-                        const byte0 = esdsPayload[configStart];
-                        const byte1 = esdsPayload[configStart + 1];
-
-                        if((byte0 !== undefined) && (byte1 !== undefined)) {
-
-                          audio = {
-
-                            objectType: (byte0 >> 3) & 0x1F,
-                            sampleRateIndex: ((byte0 & 0x07) << 1) | ((byte1 >> 7) & 0x01)
-                          };
-                        }
-
-                        break;
+                          objectType: (byte0 >> 3) & 0x1F,
+                          sampleRateIndex: ((byte0 & 0x07) << 1) | ((byte1 >> 7) & 0x01)
+                        };
                       }
                     }
                   }
