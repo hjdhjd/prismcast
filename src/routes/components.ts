@@ -2,7 +2,7 @@
  *
  * components.ts: Reusable UI components for PrismCast web pages.
  */
-import { escapeHtml } from "../utils/index.js";
+import { escapeHtml } from "../utils/index.ts";
 
 /* This module provides reusable HTML component generators for consistent UI across PrismCast. Each component returns an HTML string that can be included in page
  * generation. Components use CSS custom properties from theme.ts for styling, ensuring automatic dark mode support.

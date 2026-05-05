@@ -2,15 +2,15 @@
  *
  * index.ts: HDHomeRun emulation server for PrismCast.
  */
-import { generateDeviceId, validateDeviceId } from "./deviceId.js";
-import { CONFIG } from "../config/index.js";
-import { LOG } from "../utils/index.js";
-import type { Nullable } from "../types/index.js";
+import { generateDeviceId, validateDeviceId } from "./deviceId.ts";
+import { CONFIG } from "../config/index.ts";
+import { LOG } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
 import type { Server } from "node:http";
 import express from "express";
-import { formatError } from "../utils/errors.js";
-import { mutateConfig } from "../config/userConfig.js";
-import { setupHdhrEndpoints } from "./discover.js";
+import { formatError } from "../utils/errors.ts";
+import { mutateConfig } from "../config/userConfig.ts";
+import { setupHdhrEndpoints } from "./discover.ts";
 
 /* When HDHomeRun emulation is enabled, PrismCast runs a separate Express server that responds to HDHomeRun API requests from Plex. This server is intentionally
  * lightweight - it only serves device discovery and lineup metadata. All actual video streaming flows through PrismCast's main HTTP server via the HLS URLs in

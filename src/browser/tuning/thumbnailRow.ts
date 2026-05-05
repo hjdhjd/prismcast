@@ -2,11 +2,11 @@
  *
  * thumbnailRow.ts: Thumbnail row channel selection strategy.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
-import { resolveMatchSelector, scrollAndClick } from "./shared.js";
-import { CONFIG } from "../../config/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.ts";
+import { resolveMatchSelector, scrollAndClick } from "./shared.ts";
+import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { evaluateWithAbort } from "../../utils/index.js";
+import { evaluateWithAbort } from "../../utils/index.ts";
 
 /**
  * Thumbnail row strategy: finds a channel element using the profile's matchSelector (defaults to image URL matching), then clicks an adjacent clickable element on

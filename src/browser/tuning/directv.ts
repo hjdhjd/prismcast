@@ -2,10 +2,10 @@
  *
  * directv.ts: DirecTV Stream channel selection via webpack injection for direct tuning, with logo click fallback.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
-import { LOG, delay, formatError } from "../../utils/index.js";
-import { logAvailableChannels, normalizeChannelName } from "./shared.js";
-import { CONFIG } from "../../config/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
+import { LOG, delay, formatError } from "../../utils/index.ts";
+import { logAvailableChannels, normalizeChannelName } from "./shared.ts";
+import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
 
 // Unified channel cache entry combining discovery metadata and tuning identifiers. Populated from the Redux store's channel lineup emitted via the

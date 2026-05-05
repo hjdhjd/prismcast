@@ -2,10 +2,10 @@
  *
  * servicePacks.ts: Service pack import/export logic for PrismCast.
  */
-import type { ChannelMap, DomainConfig, ProfilesValidationResult, ServicePack, SiteProfile } from "../types/index.js";
-import { getChannelListing, mutateChannels } from "./userChannels.js";
-import { getUserDomains, getUserProfiles, mutateProfiles, normalizeLegacyProfileFlags, validateImportedProfiles } from "./userProfiles.js";
-import { sanitizeString } from "../utils/index.js";
+import type { ChannelMap, DomainConfig, ProfilesValidationResult, ServicePack, SiteProfile } from "../types/index.ts";
+import { getChannelListing, mutateChannels } from "./userChannels.ts";
+import { getUserDomains, getUserProfiles, mutateProfiles, normalizeLegacyProfileFlags, validateImportedProfiles } from "./userProfiles.ts";
+import { sanitizeString } from "../utils/index.ts";
 
 /* Service packs bundle a profile, domain mapping(s), and optionally channels into a single JSON file for distribution. On import, the contents are validated
  * and split into profiles.json and channels.json. On export, a user profile and its associated domain mappings and channels are packaged for sharing.

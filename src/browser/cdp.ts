@@ -3,11 +3,11 @@
  * cdp.ts: Chrome DevTools Protocol helpers for PrismCast.
  */
 import type { CDPSession, Page } from "puppeteer-core";
-import { LOG, evaluateWithAbort, formatError } from "../utils/index.js";
-import type { Nullable, UiSize } from "../types/index.js";
-import { CONFIG } from "../config/index.js";
-import { getBrowserChrome } from "./display.js";
-import { getEffectiveViewport } from "../config/presets.js";
+import { LOG, evaluateWithAbort, formatError } from "../utils/index.ts";
+import type { Nullable, UiSize } from "../types/index.ts";
+import { CONFIG } from "../config/index.ts";
+import { getBrowserChrome } from "./display.ts";
+import { getEffectiveViewport } from "../config/presets.ts";
 
 /* The Chrome DevTools Protocol (CDP) provides low-level access to Chrome's internal state and capabilities. While Puppeteer abstracts most common operations, some
  * features require direct CDP access:

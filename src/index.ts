@@ -2,14 +2,14 @@
  *
  * index.ts: Entry point for PrismCast.
  */
-import { CONFIG_METADATA, DEFAULTS, getNestedValue } from "./config/userConfig.js";
-import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.js";
-import { canCleanupChrome, isGracefulShutdown, killStaleChrome } from "./browser/index.js";
-import { clearServerPid, startServer } from "./app.js";
-import { getDebugEnv, initializeDataDir } from "./config/paths.js";
-import { flushLogBufferSync } from "./utils/fileLogger.js";
-import { handleServiceCommand } from "./service/index.js";
-import { handleUpgradeCommand } from "./upgrade/index.js";
+import { CONFIG_METADATA, DEFAULTS, getNestedValue } from "./config/userConfig.ts";
+import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.ts";
+import { canCleanupChrome, isGracefulShutdown, killStaleChrome } from "./browser/index.ts";
+import { clearServerPid, startServer } from "./app.ts";
+import { getDebugEnv, initializeDataDir } from "./config/paths.ts";
+import { flushLogBufferSync } from "./utils/fileLogger.ts";
+import { handleServiceCommand } from "./service/index.ts";
+import { handleUpgradeCommand } from "./upgrade/index.ts";
 import path from "node:path";
 
 /* These handlers catch unhandled promise rejections and uncaught exceptions to prevent the process from crashing. For a livestreaming server, process stability is

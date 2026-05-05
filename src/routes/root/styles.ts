@@ -2,7 +2,7 @@
  *
  * styles.ts: Landing page CSS generator for PrismCast.
  */
-import { OPTIONAL_COLUMNS } from "../config/index.js";
+import { OPTIONAL_COLUMNS } from "../config/index.ts";
 
 /**
  * Generates additional CSS styles specific to the landing page. Uses CSS custom properties for theme support.

@@ -3,8 +3,8 @@
  * evaluate.ts: Puppeteer evaluate wrapper with abort and timeout support.
  */
 import type { Frame, Page } from "puppeteer-core";
-import { getStreamId } from "./streamContext.js";
-import { raceWithTimeout } from "./delay.js";
+import { getStreamId } from "./streamContext.ts";
+import { raceWithTimeout } from "./delay.ts";
 
 /* This module provides a wrapper around Puppeteer's page.evaluate() and frame.evaluate() that adds two critical safety mechanisms:
  *

@@ -4,7 +4,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { dirname, join } from "node:path";
-import type { Nullable } from "../types/index.js";
+import type { Nullable } from "../types/index.ts";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 

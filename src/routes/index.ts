@@ -3,22 +3,22 @@
  * index.ts: Route aggregator for PrismCast.
  */
 import type { Express } from "express";
-import { setupAssetEndpoints } from "./assets.js";
-import { setupAuthEndpoint } from "./auth.js";
-import { setupChannelsEndpoint } from "./channels.js";
-import { setupConfigEndpoint } from "./config/index.js";
-import { setupDebugEndpoint } from "./debug.js";
-import { setupHLSRoutes } from "./hls.js";
-import { setupHealthEndpoint } from "./health.js";
-import { setupLogsEndpoint } from "./logs.js";
-import { setupMpegTsRoutes } from "./mpegts.js";
-import { setupPlayEndpoint } from "./play.js";
-import { setupPlaylistEndpoint } from "./playlist.js";
-import { setupPrerollRoutes } from "../streaming/preroll.js";
-import { setupRootEndpoint } from "./root/index.js";
-import { setupServicesEndpoint } from "./services.js";
-import { setupStreamsEndpoint } from "./streams.js";
-import { setupUpgradeEndpoint } from "./upgrade.js";
+import { setupAssetEndpoints } from "./assets.ts";
+import { setupAuthEndpoint } from "./auth.ts";
+import { setupChannelsEndpoint } from "./channels.ts";
+import { setupConfigEndpoint } from "./config/index.ts";
+import { setupDebugEndpoint } from "./debug.ts";
+import { setupHLSRoutes } from "./hls.ts";
+import { setupHealthEndpoint } from "./health.ts";
+import { setupLogsEndpoint } from "./logs.ts";
+import { setupMpegTsRoutes } from "./mpegts.ts";
+import { setupPlayEndpoint } from "./play.ts";
+import { setupPlaylistEndpoint } from "./playlist.ts";
+import { setupPrerollRoutes } from "../streaming/preroll.ts";
+import { setupRootEndpoint } from "./root/index.ts";
+import { setupServicesEndpoint } from "./services.ts";
+import { setupStreamsEndpoint } from "./streams.ts";
+import { setupUpgradeEndpoint } from "./upgrade.ts";
 
 /* This module aggregates all route setup functions and provides a single function to configure all HTTP endpoints on the Express application.
  */

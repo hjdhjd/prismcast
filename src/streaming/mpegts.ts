@@ -2,17 +2,17 @@
  *
  * mpegts.ts: MPEG-TS streaming handler for PrismCast.
  */
-import { LOG, formatError, spawnMpegTsRemuxer } from "../utils/index.js";
+import { LOG, formatError, resolveFFmpegPath, spawnMpegTsRemuxer } from "../utils/index.ts";
 import type { Request, Response } from "express";
-import { getStream, updateLastAccess } from "./registry.js";
-import { initializeStream, sendValidationError, validateChannel } from "./hls.js";
-import { registerClient, unregisterClient } from "./clients.js";
-import { CONFIG } from "../config/index.js";
-import type { Nullable } from "../types/index.js";
-import type { StreamRegistryEntry } from "./registry.js";
-import { StreamSetupError } from "./setup.js";
-import { getChannelStreamId } from "./lifecycle.js";
-import { waitForInitSegment } from "./hlsSegments.js";
+import { getStream, updateLastAccess } from "./registry.ts";
+import { initializeStream, sendValidationError, validateChannel } from "./hls.ts";
+import { registerClient, unregisterClient } from "./clients.ts";
+import { CONFIG } from "../config/index.ts";
+import type { Nullable } from "../types/index.ts";
+import type { StreamRegistryEntry } from "./registry.ts";
+import { StreamSetupError } from "./setup.ts";
+import { getChannelStreamId } from "./lifecycle.ts";
+import { waitForInitSegment } from "./hlsSegments.ts";
 
 /* This module provides a continuous MPEG-TS byte stream for HDHomeRun-compatible clients (such as Plex) that expect raw MPEG-TS when tuning a channel. Two delivery
  * modes are supported:
@@ -220,7 +220,10 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
 
   const streamLog = LOG.withStreamId(stream.streamIdStr);
 
-  const remuxer = spawnMpegTsRemuxer((error) => {
+  // Resolved FFmpeg binary path. Falls back to "ffmpeg" so spawn() defers to PATH lookup if the resolver couldn't find one (matching previous behavior; the
+  // spawn will then fail with ENOENT if PATH is also empty).
+  const ffmpegBin = (await resolveFFmpegPath()) ?? "ffmpeg";
+  const remuxer = spawnMpegTsRemuxer(ffmpegBin, (error) => {
 
     streamLog.debug("streaming:mpegts", "MPEG-TS remuxer error: %s.", formatError(error));
     cleanup();

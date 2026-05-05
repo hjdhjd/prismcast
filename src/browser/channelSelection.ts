@@ -2,24 +2,24 @@
  *
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.js";
-import { LOG, delay, evaluateWithAbort, formatError } from "../utils/index.js";
-import { getDomainConfig, registerProviderModuleProfile } from "../config/sites.js";
-import { CONFIG } from "../config/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
+import { LOG, delay, evaluateWithAbort, formatError } from "../utils/index.ts";
+import { getDomainConfig, registerProviderModuleProfile } from "../config/sites.ts";
+import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { coxProvider } from "./tuning/cox.js";
-import { directvProvider } from "./tuning/directv.js";
-import { foxProvider } from "./tuning/fox.js";
-import { hboProvider } from "./tuning/hbo.js";
-import { huluProvider } from "./tuning/hulu.js";
-import { isChannelSelectionProfile } from "../types/index.js";
-import { resolveMatchSelector } from "./tuning/shared.js";
-import { slingProvider } from "./tuning/sling.js";
-import { spectrumProvider } from "./tuning/spectrum.js";
-import { thumbnailRowStrategy } from "./tuning/thumbnailRow.js";
-import { tileClickStrategy } from "./tuning/tileClick.js";
-import { xfinityProvider } from "./tuning/xfinity.js";
-import { yttvProvider } from "./tuning/youtubeTv.js";
+import { coxProvider } from "./tuning/cox.ts";
+import { directvProvider } from "./tuning/directv.ts";
+import { foxProvider } from "./tuning/fox.ts";
+import { hboProvider } from "./tuning/hbo.ts";
+import { huluProvider } from "./tuning/hulu.ts";
+import { isChannelSelectionProfile } from "../types/index.ts";
+import { resolveMatchSelector } from "./tuning/shared.ts";
+import { slingProvider } from "./tuning/sling.ts";
+import { spectrumProvider } from "./tuning/spectrum.ts";
+import { thumbnailRowStrategy } from "./tuning/thumbnailRow.ts";
+import { tileClickStrategy } from "./tuning/tileClick.ts";
+import { xfinityProvider } from "./tuning/xfinity.ts";
+import { yttvProvider } from "./tuning/youtubeTv.ts";
 
 /* Multi-channel streaming sites (like USA Network) present multiple channels on a single page, with a program guide for each channel. Users must select which
  * channel they want to watch by clicking on a show in the guide. This module coordinates the dispatch to per-provider strategy functions in the tuning/ directory.
@@ -234,7 +234,7 @@ export function getCachedProviderChannels(): { entries: { label: string; station
 
 // Re-export shared tuning utilities so external callers that import from channelSelection.ts continue to work. The implementations live in tuning/shared.ts to
 // break the circular import between the coordinator (which imports tuning modules) and tuning modules (which need these utilities).
-export { logAvailableChannels, normalizeChannelName, resolveMatchSelector, scrollAndClick } from "./tuning/shared.js";
+export { logAvailableChannels, normalizeChannelName, resolveMatchSelector, scrollAndClick } from "./tuning/shared.ts";
 
 /**
  * Options that callers may supply to selectChannel(). All fields are optional; omitting them preserves the historical no-op call signature.

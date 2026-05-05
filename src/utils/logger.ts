@@ -3,13 +3,13 @@
  * logger.ts: Logging utilities with color-coded output for PrismCast.
  */
 import { format, styleText } from "node:util";
-import { getStreamId, resolveContextShowName } from "./streamContext.js";
-import { initDebugFilter, isAnyDebugEnabled, isCategoryEnabled } from "./debugFilter.js";
-import type { LogColor } from "./fileLogger.js";
-import type { LogEntry } from "./logEmitter.js";
-import { emitLogEntry } from "./logEmitter.js";
-import { formatTimestamp } from "./format.js";
-import { writeLogEntry } from "./fileLogger.js";
+import { getStreamId, resolveContextShowName } from "./streamContext.ts";
+import { initDebugFilter, isAnyDebugEnabled, isCategoryEnabled } from "./debugFilter.ts";
+import type { LogColor } from "./fileLogger.ts";
+import type { LogEntry } from "./logEmitter.ts";
+import { emitLogEntry } from "./logEmitter.ts";
+import { formatTimestamp } from "./format.ts";
+import { writeLogEntry } from "./fileLogger.ts";
 
 /* Terminal color choices for log output. Warnings appear in yellow and errors in red, making it easy to spot issues when scanning log output. Coloring is delegated
  * to node:util.styleText so the SGR sequences are managed by the platform rather than hand-written escape codes.

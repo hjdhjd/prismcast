@@ -3,7 +3,7 @@
  * mpegts.ts: MPEG-TS streaming routes for PrismCast.
  */
 import type { Express } from "express";
-import { handleMpegTsStream } from "../streaming/mpegts.js";
+import { handleMpegTsStream } from "../streaming/mpegts.ts";
 
 /* This module registers the HTTP route for MPEG-TS streaming:
  *

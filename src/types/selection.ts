@@ -2,9 +2,9 @@
  *
  * selection.ts: Channel selection, provider module, and tuning type definitions for PrismCast.
  */
-import type { ChannelSelectionStrategy, ResolvedSiteProfile, SiteProfile } from "./profiles.js";
+import type { ChannelSelectionStrategy, ResolvedSiteProfile, SiteProfile } from "./profiles.ts";
 import type { Frame, Page } from "puppeteer-core";
-import type { Nullable } from "./shared.js";
+import type { Nullable } from "./shared.ts";
 
 // Narrowed profile type for strategy functions. When selectChannel() validates that channelSelector is non-null, it narrows the profile to this type so
 // strategy functions receive a guaranteed non-null channelSelector without needing non-null assertions.

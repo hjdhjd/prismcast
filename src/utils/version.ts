@@ -2,10 +2,10 @@
  *
  * version.ts: Version checking and update notification utilities.
  */
-import { LOG } from "./logger.js";
-import type { Nullable } from "../types/index.js";
+import { LOG } from "./logger.ts";
+import type { Nullable } from "../types/index.ts";
 import { fileURLToPath } from "node:url";
-import { formatError } from "./errors.js";
+import { formatError } from "./errors.ts";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 

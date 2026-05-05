@@ -2,7 +2,7 @@
  *
  * ui.ts: Shared UI components and utilities for PrismCast web pages.
  */
-import { generateThemeStyles } from "./theme.js";
+import { generateThemeStyles } from "./theme.ts";
 
 /* This module provides reusable UI components used across PrismCast web pages. It ensures consistent styling and behavior between the landing page and
  * configuration page by extracting common CSS and JavaScript patterns. All styles use CSS custom properties from theme.ts for automatic dark mode support.
@@ -10,8 +10,8 @@ import { generateThemeStyles } from "./theme.js";
 
 // Re-export components for convenience.
 export { generateAlert, generateBadge, generateButton, generatePanelHeader, generateSection, generateSelect, generateSimpleAlert,
-  generateStatusIndicator, generateTextInput } from "./components.js";
-export type { AlertType, BadgeVariant, ButtonOptions, ButtonSize, ButtonVariant, SelectOption, SelectOptions, TextInputOptions } from "./components.js";
+  generateStatusIndicator, generateTextInput } from "./components.ts";
+export type { AlertType, BadgeVariant, ButtonOptions, ButtonSize, ButtonVariant, SelectOption, SelectOptions, TextInputOptions } from "./components.ts";
 
 /**
  * Options for configuring the tab script behavior.

@@ -2,41 +2,42 @@
  *
  * app.ts: Express application builder for PrismCast.
  */
-import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.js";
+import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.ts";
 import type { Express, NextFunction, Request, Response } from "express";
 import { LOG, clearPidFile, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, isProcessRunning,
-  readPidFile, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking, writePidFile } from "./utils/index.js";
+  readPidFile, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking, writePidFile } from "./utils/index.ts";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
-  startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.js";
-import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.js";
-import { getDebugEnv, getLogFilePath, getServerPidFilePath } from "./config/paths.js";
-import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.js";
-import { loadResumeState, saveResumeState } from "./streaming/hlsResume.js";
-import { startHdhrServer, stopHdhrServer } from "./hdhr/index.js";
-import { startPretunePolling, stopPretunePolling } from "./streaming/pretune.js";
-import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.js";
-import type { CliOverrides } from "./config/index.js";
-import type { Nullable } from "./types/index.js";
-import type { ParsedArgs } from "./index.js";
-import type { ResumeStreamData } from "./streaming/hlsResume.js";
+  startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.ts";
+import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
+import { getDebugEnv, getLogFilePath, getServerPidFilePath } from "./config/paths.ts";
+import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.ts";
+import { loadResumeState, saveResumeState } from "./streaming/hlsResume.ts";
+import { startHdhrServer, stopHdhrServer } from "./hdhr/index.ts";
+import { startPretunePolling, stopPretunePolling } from "./streaming/pretune.ts";
+import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.ts";
+import type { CliOverrides } from "./config/index.ts";
+import type { Nullable } from "./types/index.ts";
+import type { ParsedArgs } from "./index.ts";
+import type { ResumeStreamData } from "./streaming/hlsResume.ts";
 import type { Server } from "node:http";
-import { cleanupIdleStreams } from "./streaming/hls.js";
+import { cleanupIdleStreams } from "./streaming/hls.ts";
 import compression from "compression";
 import express from "express";
-import { generatePreroll } from "./streaming/preroll.js";
-import { getAllStreams } from "./streaming/registry.js";
-import { initializeUserChannels } from "./config/userChannels.js";
-import { initializeUserProfiles } from "./config/userProfiles.js";
-import { loadHealthState } from "./config/health.js";
+import { generatePreroll } from "./streaming/preroll.ts";
+import { getAllStreams } from "./streaming/registry.ts";
+import { initializeUserChannels } from "./config/userChannels.ts";
+import { initializeUserProfiles } from "./config/userProfiles.ts";
+import { loadHealthState } from "./config/health.ts";
 import morgan from "morgan";
-import { runConsistencyProbeAtStartup } from "./config/consistencyProbe.js";
-import { setupRoutes } from "./routes/index.js";
-import { terminateStream } from "./streaming/lifecycle.js";
-import { validateProfiles } from "./config/profiles.js";
-import { verifyCaptureSystem } from "./streaming/setup.js";
+import { runConsistencyProbeAtStartup } from "./config/consistencyProbe.ts";
+import { setupRoutes } from "./routes/index.ts";
+import { terminateStream } from "./streaming/lifecycle.ts";
+import { validateProfiles } from "./config/profiles.ts";
+import { verifyCaptureSystem } from "./streaming/setup.ts";
 
-/* The logging mode is set at startup based on the --console CLI flag. When console logging is enabled, timestamps are added via console-stamp and output goes to
- * stdout/stderr. When file logging is used (the default), output goes to the configured log file (default: prismcast.log in the data directory).
+/* The logging mode is set at startup based on the --console CLI flag. When console logging is enabled, the four standard console methods are wrapped to prepend a
+ * formatTimestamp() prefix so console output matches the file logger's timestamp format. When file logging is used (the default), output goes to the configured
+ * log file (default: prismcast.log in the data directory).
  */
 
 // Track whether console logging is enabled, set during startServer().

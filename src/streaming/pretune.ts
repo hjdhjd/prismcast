@@ -2,13 +2,13 @@
  *
  * pretune.ts: Predictive channel pretuning from Channels DVR schedule.
  */
-import { LOG, delay, formatError } from "../utils/index.js";
-import { fetchFromDvr, getDeviceMappings, getDvrHost } from "./showInfo.js";
-import { getChannelStreamId, terminateStream } from "./lifecycle.js";
-import { initializeStream, validateChannel } from "./hls.js";
-import type { Nullable } from "../types/index.js";
-import { emitCurrentSystemStatus } from "../browser/index.js";
-import { getStream } from "./registry.js";
+import { LOG, delay, formatError } from "../utils/index.ts";
+import { fetchFromDvr, getDeviceMappings, getDvrHost } from "./showInfo.ts";
+import { getChannelStreamId, terminateStream } from "./lifecycle.ts";
+import { initializeStream, validateChannel } from "./hls.ts";
+import type { Nullable } from "../types/index.ts";
+import { emitCurrentSystemStatus } from "../browser/index.ts";
+import { getStream } from "./registry.ts";
 
 /* This module polls the Channels DVR schedule API to discover upcoming recordings and pretunes channels 30 seconds before they start. When the DVR requests the
  * stream, it's already live with buffered segments - achieving near-instant tuning instead of 3-7 second cold starts.

@@ -13,9 +13,9 @@
  * discoverable. This file imports from both userChannels.ts and services.ts but is not imported by either, so adding new comparisons here never creates a circular
  * dependency.
  */
-import type { ChannelDelta, ResolvedChannel } from "../types/index.js";
-import { PREDEFINED_SUFFIX, getServiceGroup, resolvePredefinedVariant } from "./services.js";
-import { getChannelEffectiveTags, getEffectiveHdhrEnabled, sortTags } from "./userChannels.js";
+import type { ChannelDelta, ResolvedChannel } from "../types/index.ts";
+import { PREDEFINED_SUFFIX, getServiceGroup, resolvePredefinedVariant } from "./services.ts";
+import { getChannelEffectiveTags, getEffectiveHdhrEnabled, sortTags } from "./userChannels.ts";
 
 /**
  * Case-insensitive order-independent comparison of two tag arrays. Delegates ordering to sortTags so the case-insensitive locale-aware sort policy lives in

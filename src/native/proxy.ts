@@ -2,19 +2,19 @@
  *
  * proxy.ts: Native HLS proxy - manifest polling, segment fetching, and playlist generation.
  */
-import { LOG, chromeFetch, startTimer } from "../utils/index.js";
-import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.js";
-import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.js";
-import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.js";
+import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
+import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.ts";
+import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.ts";
+import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.ts";
 import type { CDPSession } from "puppeteer-core";
-import { CONFIG } from "../config/index.js";
-import type { CaptureCodec } from "../streaming/codec.js";
-import type { Nullable } from "../types/index.js";
-import type { PlaylistSegmentEntry } from "../streaming/playlistBuilder.js";
-import { buildPlaylist } from "../streaming/playlistBuilder.js";
-import { getStream } from "../streaming/registry.js";
-import { removeManifestInterceptor } from "../browser/manifestInterceptor.js";
-import { resolveUrl } from "./probe.js";
+import { CONFIG } from "../config/index.ts";
+import type { CaptureCodec } from "../streaming/codec.ts";
+import type { Nullable } from "../types/index.ts";
+import type { PlaylistSegmentEntry } from "../streaming/playlistBuilder.ts";
+import { buildPlaylist } from "../streaming/playlistBuilder.ts";
+import { getStream } from "../streaming/registry.ts";
+import { removeManifestInterceptor } from "../browser/manifestInterceptor.ts";
+import { resolveUrl } from "./probe.ts";
 
 /* This module implements the native HLS proxy that replaces Chrome screen capture for viable streams. It polls the service's variant manifest at regular intervals,
  * detects new segments by tracking #EXT-X-MEDIA-SEQUENCE, fetches each segment (optionally decrypting AES-128), stores them in the existing HLS segment system, and

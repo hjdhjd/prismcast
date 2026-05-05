@@ -2,8 +2,8 @@
  *
  * profiles.ts: Site profile, channel selection config, and service pack type definitions for PrismCast.
  */
-import type { ChannelMap } from "./channels.js";
-import type { Nullable } from "./shared.js";
+import type { ChannelMap } from "./channels.ts";
+import type { Nullable } from "./shared.ts";
 
 /* For multi-channel streaming sites (like USA Network), we need to interact with the site's channel selector UI to switch to the desired channel. The channel
  * selection system uses a strategy pattern to support different site implementations. Each strategy encapsulates the logic for finding and clicking the correct
@@ -323,6 +323,10 @@ export interface UserProfilesLoadResult {
 
   // User-defined site profiles (empty object if file doesn't exist or parse error).
   profiles: Record<string, SiteProfile>;
+
+  // True when the main file failed to parse and a usable copy was successfully recovered from the .bak rotation. Mirrors the framework's read-result flag
+  // (FileStoreReadResult.recoveredFromBackup) so callers can surface a UI banner or log a recovery event without reaching into the framework's compound result.
+  recoveredFromBackup: boolean;
 }
 
 /**

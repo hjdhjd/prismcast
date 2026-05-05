@@ -2,7 +2,7 @@
  *
  * streaming.ts: Stream session and playback state type definitions for PrismCast.
  */
-import type { Nullable } from "./shared.js";
+import type { Nullable } from "./shared.ts";
 
 /**
  * All recognized capture codec identifiers. H.264 is the universal baseline; additional codecs require GPU hardware encoding. This array is the single definition

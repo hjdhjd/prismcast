@@ -3,10 +3,10 @@
  * discover.ts: HDHomeRun discovery and lineup endpoints for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { CONFIG } from "../config/index.js";
-import { buildChannelMap } from "./channelMap.js";
-import { getAllStreams } from "../streaming/registry.js";
-import { getPackageVersion } from "../utils/index.js";
+import { CONFIG } from "../config/index.ts";
+import { buildChannelMap } from "./channelMap.ts";
+import { getAllStreams } from "../streaming/registry.ts";
+import { getPackageVersion } from "../utils/index.ts";
 
 /* These endpoints implement the HDHomeRun HTTP API that Plex and other clients use to identify, configure, and monitor tuners. Plex does not auto-detect emulated
  * tuners on non-standard ports - users must manually enter the address (IP:port) in Plex's DVR setup. The core discovery endpoints are device.xml (UPnP device

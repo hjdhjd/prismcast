@@ -2,11 +2,11 @@
  *
  * precaching.ts: Service channel lineup precaching for PrismCast.
  */
-import { LOG, extractDomain, formatError, startTimer } from "../utils/index.js";
-import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.js";
-import { CONFIG } from "../config/index.js";
-import { getProviderBySlug } from "./channelSelection.js";
-import { markDomainAuth } from "../config/health.js";
+import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
+import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.ts";
+import { CONFIG } from "../config/index.ts";
+import { getProviderBySlug } from "./channelSelection.ts";
+import { markDomainAuth } from "../config/health.ts";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
  * sequentially - discovery opens a browser page and navigates to a heavy SPA, so running all services concurrently would stress CPU and GPU on resource-constrained

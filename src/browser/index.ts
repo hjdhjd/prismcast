@@ -3,25 +3,25 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { type GpuCapabilities, getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.js";
-import { LOG, cancellableTimeout, clearPidFile, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer, writePidFile } from "../utils/index.js";
-import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.js";
-import { getAllStreams, getStreamCount } from "../streaming/registry.js";
-import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.js";
-import { getEffectivePreset, getPresetViewport } from "../config/presets.js";
+import { type GpuCapabilities, getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.ts";
+import { LOG, cancellableTimeout, clearPidFile, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer, writePidFile } from "../utils/index.ts";
+import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
+import { getAllStreams, getStreamCount } from "../streaming/registry.ts";
+import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.ts";
+import { getEffectivePreset, getPresetViewport } from "../config/presets.ts";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
-import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.js";
-import { CONFIG } from "../config/index.js";
-import type { Nullable } from "../types/index.js";
-import type { SystemStatus } from "../streaming/statusEmitter.js";
-import { clearChannelSelectionCaches } from "./channelSelection.js";
-import { emitSystemStatusChanged } from "../streaming/statusEmitter.js";
+import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.ts";
+import { CONFIG } from "../config/index.ts";
+import type { Nullable } from "../types/index.ts";
+import type { SystemStatus } from "../streaming/statusEmitter.ts";
+import { clearChannelSelectionCaches } from "./channelSelection.ts";
+import { emitSystemStatusChanged } from "../streaming/statusEmitter.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
-import { setChromeUserAgent } from "../utils/index.js";
-import { startPrecaching } from "./precaching.js";
-import { terminateStream } from "../streaming/lifecycle.js";
+import { setChromeUserAgent } from "../utils/index.ts";
+import { startPrecaching } from "./precaching.ts";
+import { terminateStream } from "../streaming/lifecycle.ts";
 
 const { promises: fsPromises } = fs;
 
@@ -134,7 +134,7 @@ const potentiallyStalePages = new Map<string, number>();
 // Login mode management. State and functions live in login.ts; re-exported here so existing consumers don't need import path changes. clearLoginState,
 // isLoginModeActive, and setBrowserAccessors are imported above; the first two for internal use, setBrowserAccessors for one-time initialization below.
 export { clearLoginState, isLoginModeActive };
-export { type LoginStatus, endLoginMode, getLoginPage, getLoginStatus, startLoginMode } from "./login.js";
+export { type LoginStatus, endLoginMode, getLoginPage, getLoginStatus, startLoginMode } from "./login.ts";
 
 // Inject browser accessors into the login module. This breaks the circular dependency (login needs getBrowserInstance/minimizeBrowserWindow, index needs login
 // functions) using the same setter/getter pattern as setChromeUserAgent in chromeFetch.ts. Function declarations are hoisted, so both accessors are available here.

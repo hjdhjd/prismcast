@@ -2,8 +2,8 @@
  *
  * index.ts: Channel definitions for PrismCast.
  */
-import type { CanonicalChannel, ChannelDefinition, ChannelMap, ServiceVariant, VariantChannel } from "../types/index.js";
-import { CHANNEL_BINDING_KEYS } from "../types/index.js";
+import type { CanonicalChannel, ChannelDefinition, ChannelMap, ServiceVariant, VariantChannel } from "../types/index.ts";
+import { CHANNEL_BINDING_KEYS } from "../types/index.ts";
 
 // Predefined tag vocabulary. These tags ship with PrismCast and are assigned to predefined channel definitions below. Users can delete predefined tags from
 // their registry (they're tracked in channels.json deletedTags) and create their own tags. The runtime vocabulary is: (PREDEFINED_TAGS - deletedTags) + userTags.

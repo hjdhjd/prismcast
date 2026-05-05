@@ -2,12 +2,12 @@
  *
  * debug.ts: Debug logging configuration endpoint for PrismCast.
  */
-import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, initDebugFilter, isCategoryEnabled } from "../utils/index.js";
+import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, initDebugFilter, isCategoryEnabled } from "../utils/index.ts";
 import type { Express, Request, Response } from "express";
-import { generateBaseStyles, generatePageWrapper } from "./ui.js";
-import { CONFIG } from "../config/index.js";
-import { getDebugEnv } from "../config/paths.js";
-import { mutateConfig } from "../config/userConfig.js";
+import { generateBaseStyles, generatePageWrapper } from "./ui.ts";
+import { CONFIG } from "../config/index.ts";
+import { getDebugEnv } from "../config/paths.ts";
+import { mutateConfig } from "../config/userConfig.ts";
 
 /* This module provides a hidden (undocumented) web page at /debug for runtime control of debug logging categories. The page renders all known categories as
  * hierarchical checkboxes grouped by namespace prefix. Toggling a parent group enables or disables all children. Changes are applied immediately via POST without

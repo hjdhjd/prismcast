@@ -2,15 +2,15 @@
  *
  * preroll.ts: Preroll generation and compositor for immediate HLS response during stream startup.
  */
-import { type CaptureCodec, getEffectiveCaptureCodec } from "./codec.js";
+import { type CaptureCodec, getEffectiveCaptureCodec } from "./codec.ts";
 import type { Express, Request, Response } from "express";
-import { LOG, getBundledFFmpegPath } from "../utils/index.js";
-import { createMP4BoxParser, offsetMoofTimestamps, parseMoovTrackInfo } from "./mp4Parser.js";
-import { CONFIG } from "../config/index.js";
-import type { Nullable } from "../types/index.js";
-import type { PlaylistSegmentEntry } from "./playlistBuilder.js";
-import { buildPlaylist } from "./playlistBuilder.js";
-import { getEffectiveViewport } from "../config/presets.js";
+import { LOG, getBundledFFmpegPath } from "../utils/index.ts";
+import { createMP4BoxParser, offsetMoofTimestamps, parseMoovTrackInfo } from "./mp4Parser.ts";
+import { CONFIG } from "../config/index.ts";
+import type { Nullable } from "../types/index.ts";
+import type { PlaylistSegmentEntry } from "./playlistBuilder.ts";
+import { buildPlaylist } from "./playlistBuilder.ts";
+import { getEffectiveViewport } from "../config/presets.ts";
 import { spawn } from "node:child_process";
 
 /* When a client requests an HLS playlist for a channel that is still starting up, PrismCast returns a startup playlist immediately to prevent HTTP timeouts. Channels

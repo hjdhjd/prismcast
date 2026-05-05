@@ -3,8 +3,8 @@
  * manifestInterceptor.ts: CDP Network domain listener for intercepting HLS manifest URLs.
  */
 import type { CDPSession, Page } from "puppeteer-core";
-import { LOG, chromeFetch, startTimer } from "../utils/index.js";
-import type { Nullable } from "../types/index.js";
+import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
 
 /* This module installs a Chrome DevTools Protocol (CDP) listener on the Network domain to capture HLS manifest URLs as the browser's video player fetches them. The
  * listener is shared by two consumers:

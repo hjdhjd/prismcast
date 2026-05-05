@@ -2,27 +2,27 @@
  *
  * monitor.ts: Playback health monitoring for PrismCast.
  */
-import type { CircuitBreakerState, RecoveryMetrics, TabReplacementResult } from "./recovery.js";
-import { EvaluateTimeoutError, LOG, capitalize, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext, startTimer } from "../utils/index.js";
+import type { CircuitBreakerState, RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
+import { EvaluateTimeoutError, LOG, capitalize, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
-import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.js";
+import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
 import { RECOVERY_METHODS, checkCircuitBreaker, createRecoveryMetrics, formatIssueType, formatRecoveryDuration, getIssueCategory, getIssueDescription,
-  getRecoveryMethod, recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker } from "./recovery.js";
-import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.js";
+  getRecoveryMethod, recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker } from "./recovery.ts";
+import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.ts";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
-  validateVideoElement, verifyFullscreen } from "../browser/video.js";
-import { getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.js";
-import { CONFIG } from "../config/index.js";
-import type { StreamRegistryEntry } from "./registry.js";
-import { clearProbeCache } from "../native/probe.js";
-import { emitStreamHealthChanged } from "./statusEmitter.js";
-import { getChannelLogo } from "../config/userChannels.js";
-import { getClientSummary } from "./clients.js";
-import { getEffectiveViewport } from "../config/presets.js";
-import { getProviderBySlug } from "../browser/channelSelection.js";
-import { getShowName } from "./showInfo.js";
-import { refreshNativeManifest } from "../native/index.js";
-import { resizeAndMinimizeWindow } from "../browser/cdp.js";
+  validateVideoElement, verifyFullscreen } from "../browser/video.ts";
+import { getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.ts";
+import { CONFIG } from "../config/index.ts";
+import type { StreamRegistryEntry } from "./registry.ts";
+import { clearProbeCache } from "../native/probe.ts";
+import { emitStreamHealthChanged } from "./statusEmitter.ts";
+import { getChannelLogo } from "../config/userChannels.ts";
+import { getClientSummary } from "./clients.ts";
+import { getEffectiveViewport } from "../config/presets.ts";
+import { getProviderBySlug } from "../browser/channelSelection.ts";
+import { getShowName } from "./showInfo.ts";
+import { refreshNativeManifest } from "../native/index.ts";
+import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
 
 /* Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor
  * watches for these failures and attempts recovery. This is essential for unattended DVR recording where the user cannot manually intervene.

@@ -2,9 +2,9 @@
  *
  * shared.ts: Shared utilities for channel selection tuning strategies.
  */
-import type { ChannelSelectionProfile, ClickTarget } from "../../types/index.js";
-import { LOG, delay } from "../../utils/index.js";
-import { CHANNELS } from "../../channels/index.js";
+import type { ChannelSelectionProfile, ClickTarget } from "../../types/index.ts";
+import { LOG, delay } from "../../utils/index.ts";
+import { CHANNELS } from "../../channels/index.ts";
 import type { Page } from "puppeteer-core";
 
 /* These utility functions are used by multiple tuning strategy files (hulu, sling, fox, etc.) and the channel selection coordinator. They live in this shared module

@@ -2,8 +2,8 @@
  *
  * decrypt.ts: AES-128 key fetching and segment decryption for native HLS streaming.
  */
-import { LOG, chromeFetch } from "../utils/index.js";
-import type { Nullable } from "../types/index.js";
+import { LOG, chromeFetch } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
 import { createDecipheriv } from "node:crypto";
 
 /* AES-128-CBC decryption for HLS segments. The HLS spec defines AES-128 encryption where each segment is encrypted with a 16-byte key using AES-128-CBC mode. The

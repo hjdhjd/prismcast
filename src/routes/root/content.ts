@@ -2,11 +2,11 @@
  *
  * content.ts: Tab content HTML generators for the PrismCast landing page.
  */
-import { escapeHtml, isRunningAsService } from "../../utils/index.js";
+import { escapeHtml, isRunningAsService } from "../../utils/index.ts";
 import { generateAdvancedTabContent, generateChannelsPanel, generateCustomProfilesPanel, generateProfileWizardModal, generateSettingsFormFooter,
-  generateSettingsTabContent, hasEnvOverrides } from "../config/index.js";
-import { getProviderModuleInfo } from "../../browser/channelSelection.js";
-import { getUITabs } from "../../config/userConfig.js";
+  generateSettingsTabContent, hasEnvOverrides } from "../config/index.ts";
+import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
+import { getUITabs } from "../../config/userConfig.ts";
 
 /**
  * Generates the active streams table for the Overview tab.

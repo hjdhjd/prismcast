@@ -2,18 +2,18 @@
  *
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
-import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.js";
-import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.js";
-import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.js";
-import { CONFIG } from "../config/index.js";
-import type { CaptureCodec } from "./codec.js";
-import { LOG } from "../utils/index.js";
-import type { MP4Box } from "./mp4Parser.js";
-import type { Nullable } from "../types/index.js";
-import type { PlaylistSegmentEntry } from "./playlistBuilder.js";
+import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.ts";
+import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.ts";
+import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.ts";
+import { CONFIG } from "../config/index.ts";
+import type { CaptureCodec } from "./codec.ts";
+import { LOG } from "../utils/index.ts";
+import type { MP4Box } from "./mp4Parser.ts";
+import type { Nullable } from "../types/index.ts";
+import type { PlaylistSegmentEntry } from "./playlistBuilder.ts";
 import type { Readable } from "node:stream";
-import { buildPlaylist } from "./playlistBuilder.js";
-import { getStream } from "./registry.js";
+import { buildPlaylist } from "./playlistBuilder.ts";
+import { getStream } from "./registry.ts";
 
 /* This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is: (1) receive MP4 data from puppeteer-stream (H.264 + AAC from
  * either native capture or FFmpeg transcoding), (2) parse MP4 box structure to identify ftyp + moov (initialization segment) and moof + mdat pairs (media fragments),

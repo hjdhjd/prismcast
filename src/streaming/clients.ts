@@ -2,7 +2,7 @@
  *
  * clients.ts: Client tracking for PrismCast streams.
  */
-import { getStream } from "./registry.js";
+import { getStream } from "./registry.ts";
 
 /* This module tracks which clients are connected to each stream by protocol (HLS or MPEG-TS). MPEG-TS clients have persistent connections and are registered on
  * connect, unregistered on disconnect. HLS clients are stateless - each playlist request refreshes a TTL-based entry that expires after 30 seconds of inactivity. The

@@ -2,7 +2,7 @@
  *
  * display.ts: Display dimension detection and caching for PrismCast.
  */
-import type { Nullable } from "../types/index.js";
+import type { Nullable } from "../types/index.ts";
 
 /* This module provides a simple cache for display and GPU capabilities detected during browser initialization. Three sets of values are cached:
  *

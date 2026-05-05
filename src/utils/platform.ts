@@ -2,9 +2,9 @@
  *
  * platform.ts: Platform detection and service-related utilities for PrismCast.
  */
-import type { Nullable } from "../types/index.js";
+import type { Nullable } from "../types/index.ts";
 import fs from "node:fs";
-import { getDataDir } from "../config/paths.js";
+import { getDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
 import url from "node:url";

@@ -2,7 +2,7 @@
  *
  * hls.ts: HLS streaming routes for PrismCast.
  */
-import { handleHLSPlaylist, handleHLSSegment, handleHLSVariantPlaylist } from "../streaming/hls.js";
+import { handleHLSPlaylist, handleHLSSegment, handleHLSVariantPlaylist } from "../streaming/hls.ts";
 import type { Express } from "express";
 
 /* This module registers the HTTP routes for HLS streaming:

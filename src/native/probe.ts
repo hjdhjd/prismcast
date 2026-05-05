@@ -2,8 +2,8 @@
  *
  * probe.ts: DRM probe for HLS manifest encryption classification.
  */
-import { LOG, chromeFetch, startTimer } from "../utils/index.js";
-import type { Nullable } from "../types/index.js";
+import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
 
 /* This module fetches an HLS master manifest, selects the highest-bandwidth variant, and inspects its #EXT-X-KEY tags to classify the encryption type. The result
  * determines whether PrismCast can consume the stream natively (clear or AES-128) or must fall back to screen capture (Widevine, FairPlay, or other DRM).

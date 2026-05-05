@@ -2,12 +2,12 @@
  *
  * index.ts: Configuration management for PrismCast.
  */
-import type { Config, Nullable } from "../types/index.js";
-import { DEFAULTS, mergeConfiguration, readConfig } from "./userConfig.js";
-import { LOG, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.js";
-import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.js";
-import { getChromeDataDir, getConfigFilePath } from "./paths.js";
-import { RECOGNIZED_CODECS } from "../types/index.js";
+import type { Config, Nullable } from "../types/index.ts";
+import { DEFAULTS, mergeConfiguration, readConfig } from "./userConfig.ts";
+import { LOG, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.ts";
+import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.ts";
+import { getChromeDataDir, getConfigFilePath } from "./paths.ts";
+import { RECOGNIZED_CODECS } from "../types/index.ts";
 import path from "node:path";
 
 /* The CONFIG object centralizes all tunable parameters for the application. Configuration uses a layered approach with the following priority (highest to lowest):
@@ -66,6 +66,11 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides): Prom
 
   configParseError = result.parseError;
   configParseErrorMessage = result.parseErrorMessage;
+
+  if(result.recoveredFromBackup) {
+
+    LOG.info("Configuration was recovered from backup after a corrupt main file.");
+  }
 
   // Merge defaults, user config, environment variables, and CLI overrides.
   CONFIG = mergeConfiguration(result.config, cliOverrides);

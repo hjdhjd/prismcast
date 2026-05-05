@@ -2,7 +2,7 @@
  *
  * index.ts: Barrel re-export for client-side JavaScript generators.
  */
-export { generateChannelsSubtabScript } from "./channels.js";
-export { generateConfigSubtabScript } from "./config.js";
-export { generateSharedUtilitiesScript } from "./shared.js";
-export { generateStatusScript } from "./status.js";
+export { generateChannelsSubtabScript } from "./channels.ts";
+export { generateConfigSubtabScript } from "./config.ts";
+export { generateSharedUtilitiesScript } from "./shared.ts";
+export { generateStatusScript } from "./status.ts";

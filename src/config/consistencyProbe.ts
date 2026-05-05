@@ -15,14 +15,14 @@
  *
  * Adding a new check is a single function returning ConsistencyIssue[]; collectConsistencyIssues fans out to every check in parallel.
  */
-import { getAllServiceTags, mutateEnabledServices } from "./services.js";
-import { CONFIG } from "./index.js";
-import type { Channel } from "../types/index.js";
-import { LOG } from "../utils/index.js";
-import { PREDEFINED_CHANNELS } from "../channels/index.js";
-import { getBuiltinProfile } from "./sites.js";
-import { getStoredUserChannels } from "./userChannels.js";
-import { getUserDomains } from "./userProfiles.js";
+import { getAllServiceTags, mutateEnabledServices } from "./services.ts";
+import { CONFIG } from "./index.ts";
+import type { Channel } from "../types/index.ts";
+import { LOG } from "../utils/index.ts";
+import { PREDEFINED_CHANNELS } from "../channels/index.ts";
+import { getBuiltinProfile } from "./sites.ts";
+import { getStoredUserChannels } from "./userChannels.ts";
+import { getUserDomains } from "./userProfiles.ts";
 
 /**
  * A single consistency issue detected by the probe. Each carries enough metadata for the probe runner to log uniformly and apply auto-fixes when present.

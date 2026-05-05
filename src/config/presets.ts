@@ -2,8 +2,8 @@
  *
  * presets.ts: Quality presets for PrismCast configuration.
  */
-import type { Config, Nullable } from "../types/index.js";
-import { getMaxSupportedViewport } from "../browser/display.js";
+import type { Config, Nullable } from "../types/index.ts";
+import { getMaxSupportedViewport } from "../browser/display.ts";
 
 /* Presets define video quality profiles that determine capture resolution (viewport) and provide default values for bitrate and frame rate. The selected preset is
  * stored in configuration and determines the viewport dimensions at runtime.

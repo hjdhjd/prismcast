@@ -2,10 +2,10 @@
  *
  * tileClick.ts: Tile click channel selection strategy for multi-channel live TV sites.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.js";
-import { LOG, evaluateWithAbort } from "../../utils/index.js";
-import { resolveMatchSelector, scrollAndClick } from "./shared.js";
-import { CONFIG } from "../../config/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, ClickTarget, Nullable } from "../../types/index.ts";
+import { LOG, evaluateWithAbort } from "../../utils/index.ts";
+import { resolveMatchSelector, scrollAndClick } from "./shared.ts";
+import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
 
 // Maximum number of play button click attempts before giving up. The first click sometimes misses due to coordinate shifts from SPA animations or overlay

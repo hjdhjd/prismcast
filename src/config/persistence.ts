@@ -16,9 +16,9 @@
  * (optionally) an integrity validator. The framework wires the rest. Adding a new store is a one-line registration in createFileStore; adding a new migration
  * is a one-line entry in the store's migration map.
  */
-import { LOG, stringifySorted } from "../utils/index.js";
+import { LOG, stringifySorted } from "../utils/index.ts";
 import fs from "node:fs";
-import { getDataDir } from "./paths.js";
+import { getDataDir } from "./paths.ts";
 import path from "node:path";
 
 const { promises: fsPromises } = fs;

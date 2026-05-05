@@ -3,7 +3,7 @@
  * channels.ts: Channel listing route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { getChannelListing } from "../config/userChannels.js";
+import { getChannelListing } from "../config/userChannels.ts";
 
 /* The channels endpoint provides a JSON representation of all available channels (predefined + user-defined). This gives programmatic access to the full channel
  * list with source and enabled metadata, complementing the M3U playlist endpoint which only includes enabled channels in playlist format.

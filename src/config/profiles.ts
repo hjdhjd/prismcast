@@ -3,12 +3,12 @@
  * profiles.ts: Site profile resolution and validation for PrismCast.
  */
 import { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, getBuiltinProfile, getDomainConfig,
-  getRegisteredProviderModuleProfiles } from "./sites.js";
-import type { DomainConfig, ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
-import { getUserDomains, getUserProfiles, validateDomain, validateProfile } from "./userProfiles.js";
-import { CHANNELS } from "../channels/index.js";
-import { LOG } from "../utils/index.js";
-import { extractDomain } from "../utils/index.js";
+  getRegisteredProviderModuleProfiles } from "./sites.ts";
+import type { DomainConfig, ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.ts";
+import { getUserDomains, getUserProfiles, validateDomain, validateProfile } from "./userProfiles.ts";
+import { CHANNELS } from "../channels/index.ts";
+import { LOG } from "../utils/index.ts";
+import { extractDomain } from "../utils/index.ts";
 
 // Re-export site data so existing consumers can import from either module.
 export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, getBuiltinProfile, getDomainConfig };

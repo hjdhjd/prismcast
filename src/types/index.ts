@@ -3,16 +3,16 @@
  * index.ts: Barrel re-export for PrismCast type definitions.
  */
 export type { BrowserConfig, CaptureMode, ChannelsConfig, Config, HdhrConfig, HLSConfig, LoggingConfig, PathsConfig, PlaybackConfig, RecoveryConfig,
-  ServerConfig, StreamingConfig } from "./config.js";
+  ServerConfig, StreamingConfig } from "./config.ts";
 export type { CanonicalChannel, Channel, ChannelDefinition, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelServiceBinding,
-  CustomizableField, ResolvedChannel, ResolvedChannelMap, ServiceGroup, ServiceVariant, StoredChannel, StoredChannelMap, VariantChannel } from "./channels.js";
-export { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "./channels.js";
+  CustomizableField, ResolvedChannel, ResolvedChannelMap, ServiceGroup, ServiceVariant, StoredChannel, StoredChannelMap, VariantChannel } from "./channels.ts";
+export { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "./channels.ts";
 export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, ProfileCategory, ProfileResolutionResult, ProfilesValidationResult,
-  ResolvedSiteProfile, ServicePack, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "./profiles.js";
+  ResolvedSiteProfile, ServicePack, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "./profiles.ts";
 export type { CategoryResolution, CategoryResolutionConfig, CategoryResolutionFailure, CategoryResolutionSuccess, ChannelSelectionProfile, ChannelSelectorResult,
-  ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule, TuneResult, UiSize } from "./selection.js";
-export type { ChannelSortField, Nullable, SortDirection } from "./shared.js";
+  ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule, TuneResult, UiSize } from "./selection.ts";
+export type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";
 export type { CaptureCodec, HealthStatus, StreamListItem, StreamListResponse, StreamingMode, UrlValidationResult, VideoSelectorType,
-  VideoState } from "./streaming.js";
-export { RECOGNIZED_CODECS } from "./streaming.js";
-export { isChannelSelectionProfile } from "./selection.js";
+  VideoState } from "./streaming.ts";
+export { RECOGNIZED_CODECS } from "./streaming.ts";
+export { isChannelSelectionProfile } from "./selection.ts";

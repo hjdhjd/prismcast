@@ -3,7 +3,7 @@
  * play.ts: Ad-hoc URL streaming route for PrismCast.
  */
 import type { Express } from "express";
-import { handlePlayStream } from "../streaming/hls.js";
+import { handlePlayStream } from "../streaming/hls.ts";
 
 /* This module registers the HTTP route for ad-hoc URL streaming:
  *

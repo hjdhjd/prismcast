@@ -2,7 +2,7 @@
  *
  * channelMap.ts: Channel key to channel number mapping for HDHomeRun emulation.
  */
-import { getAllChannels, getEffectiveHdhrEnabled } from "../config/userChannels.js";
+import { getAllChannels, getEffectiveHdhrEnabled } from "../config/userChannels.ts";
 
 /* HDHomeRun devices use numeric channel numbers (GuideNumber) for each channel. Plex requires these for EPG (electronic program guide) matching. PrismCast uses
  * string keys (e.g., "cnn", "nbc") for channels, so we need a mapping layer.

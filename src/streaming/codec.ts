@@ -2,12 +2,12 @@
  *
  * codec.ts: Capture codec selection for PrismCast.
  */
-import { CONFIG } from "../config/index.js";
-import type { CaptureCodec } from "../types/index.js";
-import { getGpuCapabilities } from "../browser/display.js";
+import { CONFIG } from "../config/index.ts";
+import type { CaptureCodec } from "../types/index.ts";
+import { getGpuCapabilities } from "../browser/display.ts";
 
 // Re-export the CaptureCodec type so existing consumers can import from either module.
-export type { CaptureCodec } from "../types/index.js";
+export type { CaptureCodec } from "../types/index.ts";
 
 /* This module is the single source of truth for capture codec behavior. Every component that needs to know which video codec to use for capture - MIME type
  * selection, preroll generation, status display - calls getEffectiveCaptureCodec() rather than checking GPU capabilities directly. The decision encapsulates three

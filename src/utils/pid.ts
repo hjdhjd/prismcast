@@ -2,7 +2,7 @@
  *
  * pid.ts: Cross-platform PID file management and process checking utilities.
  */
-import type { Nullable } from "../types/index.js";
+import type { Nullable } from "../types/index.ts";
 import fs from "node:fs";
 
 /* PID files provide a lightweight mechanism for tracking running processes across restarts and crashes. Each PID file stores a single process ID as a plain text

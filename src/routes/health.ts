@@ -3,13 +3,13 @@
  * health.ts: Health check route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { getAllStreams, getStreamCount, getTotalSegmentMemory } from "../streaming/registry.js";
-import { getBrowserPages, getChromeVersion, isBrowserConnected } from "../browser/index.js";
-import { getPackageVersion, isFFmpegAvailable } from "../utils/index.js";
-import { CONFIG } from "../config/index.js";
-import type { ClientType } from "../streaming/clients.js";
-import type { HealthStatus } from "../types/index.js";
-import { getClientSummary } from "../streaming/clients.js";
+import { getAllStreams, getStreamCount, getTotalSegmentMemory } from "../streaming/registry.ts";
+import { getBrowserPages, getChromeVersion, isBrowserConnected } from "../browser/index.ts";
+import { getPackageVersion, isFFmpegAvailable } from "../utils/index.ts";
+import { CONFIG } from "../config/index.ts";
+import type { ClientType } from "../streaming/clients.ts";
+import type { HealthStatus } from "../types/index.ts";
+import { getClientSummary } from "../streaming/clients.ts";
 
 /* The health endpoint provides detailed metrics about the application status including browser connection, memory usage, and active stream counts. This is useful
  * for monitoring and alerting systems. Returns HTTP 503 when unhealthy to allow load balancers and monitoring systems to detect problems via status code.

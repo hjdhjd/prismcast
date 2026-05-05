@@ -2,11 +2,11 @@
  *
  * spectrum.ts: Spectrum TV guide grid channel selection strategy.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
-import { LOG, evaluateWithAbort, formatError } from "../../utils/index.js";
-import { CONFIG } from "../../config/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
+import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
+import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { logAvailableChannels } from "./shared.js";
+import { logAvailableChannels } from "./shared.ts";
 
 // Base URL for Spectrum TV watch page navigation.
 const SPECTRUM_BASE_URL = "https://watch.spectrum.net";

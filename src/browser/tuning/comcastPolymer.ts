@@ -2,11 +2,11 @@
  *
  * comcastPolymer.ts: Shared Comcast Polymer SPA factory for providers built on the TV-APP platform (Xfinity Stream, Cox Contour TV).
  */
-import type { ChannelSelectionProfile, ChannelSelectionStrategy, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
-import { LOG, delay, formatError } from "../../utils/index.js";
-import { CONFIG } from "../../config/index.js";
+import type { ChannelSelectionProfile, ChannelSelectionStrategy, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
+import { LOG, delay, formatError } from "../../utils/index.ts";
+import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { logAvailableChannels } from "./shared.js";
+import { logAvailableChannels } from "./shared.ts";
 
 /* Comcast's Polymer SPA (`TV-APP`) manages channel playback via an internal `channelMap` object. The `channelMap.channels` property is populated from the channelmap
  * API during page load and contains the complete channel lineup. Calling `_watchChannelEventHandler(null, { channel })` on the `TV-APP` element switches channels

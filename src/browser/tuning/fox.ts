@@ -2,11 +2,11 @@
  *
  * fox.ts: Fox.com guide grid channel selection strategy.
  */
-import type { CategoryResolution, ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
-import { LOG, evaluateWithAbort, formatError } from "../../utils/index.js";
-import { CONFIG } from "../../config/index.js";
+import type { CategoryResolution, ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
+import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
+import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { logAvailableChannels } from "./shared.js";
+import { logAvailableChannels } from "./shared.ts";
 
 // Raw channel info extracted from each GuideChannelContainer during discovery. The stationCode comes from the button title (e.g., "FOXD2C", "FNC"), the internalCode
 // from the first data-content-impression-id prefix (e.g., the local affiliate call sign or internal station identifier), and locked from the presence of a lock-icon

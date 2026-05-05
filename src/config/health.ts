@@ -3,10 +3,10 @@
  * health.ts: Channel health and domain authentication state persistence for PrismCast.
  */
 import { EventEmitter } from "node:events";
-import { LOG } from "../utils/index.js";
-import type { Nullable } from "../types/index.js";
-import { createFileStore } from "./persistence.js";
-import { getHealthFilePath } from "./paths.js";
+import { LOG } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
+import { createFileStore } from "./persistence.ts";
+import { getHealthFilePath } from "./paths.ts";
 
 /* This module tracks two kinds of observed state:
  *

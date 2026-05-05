@@ -2,8 +2,8 @@
  *
  * cox.ts: Cox Contour TV provider module. Thin wrapper over the shared Comcast Polymer SPA factory in comcastPolymer.ts.
  */
-import type { ProviderModule } from "../../types/index.js";
-import { createComcastPolymerProvider } from "./comcastPolymer.js";
+import type { ProviderModule } from "../../types/index.ts";
+import { createComcastPolymerProvider } from "./comcastPolymer.ts";
 
 export const coxProvider: ProviderModule = createComcastPolymerProvider({
 

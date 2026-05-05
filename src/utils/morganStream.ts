@@ -3,9 +3,9 @@
  * morganStream.ts: Morgan logging stream adapter for PrismCast.
  */
 import type { StreamOptions } from "morgan";
-import { formatTimestamp } from "./format.js";
-import { isConsoleLogging } from "./logger.js";
-import { writeLogEntry } from "./fileLogger.js";
+import { formatTimestamp } from "./format.ts";
+import { isConsoleLogging } from "./logger.ts";
+import { writeLogEntry } from "./fileLogger.ts";
 
 /* Morgan HTTP request logger needs a writable stream to output log entries. By default, Morgan writes to stdout. This adapter routes Morgan output to either the
  * console or the file logger based on the current logging mode, ensuring HTTP request logs follow the same path as application logs.

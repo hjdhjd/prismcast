@@ -2,11 +2,11 @@
  *
  * statusEmitter.ts: Event emitter for real-time stream and system status via SSE.
  */
-import type { HealthEvent, HealthSnapshot } from "../config/health.js";
-import type { Nullable, StreamingMode } from "../types/index.js";
-import { getHealthSnapshot, subscribeToHealth } from "../config/health.js";
-import { CONFIG } from "../config/index.js";
-import type { ClientTypeCount } from "./clients.js";
+import type { HealthEvent, HealthSnapshot } from "../config/health.ts";
+import type { Nullable, StreamingMode } from "../types/index.ts";
+import { getHealthSnapshot, subscribeToHealth } from "../config/health.ts";
+import { CONFIG } from "../config/index.ts";
+import type { ClientTypeCount } from "./clients.ts";
 import { EventEmitter } from "node:events";
 
 /* These interfaces define the structure of status updates sent to SSE clients. StreamStatus contains per-stream health information, while SystemStatus contains

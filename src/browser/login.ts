@@ -3,9 +3,9 @@
  * login.ts: Login mode management for PrismCast.
  */
 import type { Browser, Page } from "puppeteer-core";
-import { LOG, formatError } from "../utils/index.js";
-import type { Nullable } from "../types/index.js";
-import { unminimizeWindow } from "./cdp.js";
+import { LOG, formatError } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
+import { unminimizeWindow } from "./cdp.ts";
 
 /* Login mode allows users to authenticate with TV providers directly from the PrismCast web UI. When login mode is active:
  *

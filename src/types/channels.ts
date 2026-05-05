@@ -2,7 +2,7 @@
  *
  * channels.ts: Channel type definitions and the identity/service-binding partition for PrismCast.
  */
-import type { Nullable } from "./shared.js";
+import type { Nullable } from "./shared.ts";
 
 /* The channel data model is partitioned into two orthogonal concerns:
  *

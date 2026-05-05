@@ -2,15 +2,15 @@
  *
  * registry.ts: Stream tracking for PrismCast.
  */
-import type { Nullable, ResolvedSiteProfile, StreamingMode } from "../types/index.js";
-import type { CaptureCodec } from "./codec.js";
+import type { Nullable, ResolvedSiteProfile, StreamingMode } from "../types/index.ts";
+import type { CaptureCodec } from "./codec.ts";
 import { EventEmitter } from "node:events";
-import type { FFmpegProcess } from "../utils/index.js";
-import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
-import type { NativeProxy } from "../native/proxy.js";
+import type { FFmpegProcess } from "../utils/index.ts";
+import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
+import type { NativeProxy } from "../native/proxy.ts";
 import type { Page } from "puppeteer-core";
 import type { Readable } from "node:stream";
-import type { RecoveryMetrics } from "./recovery.js";
+import type { RecoveryMetrics } from "./recovery.ts";
 
 /* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser
  * state, HLS segment storage, and the segmenter reference. This consolidation prevents data desync issues that could occur with separate Maps for each concern. The

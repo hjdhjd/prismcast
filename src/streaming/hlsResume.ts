@@ -2,12 +2,12 @@
  *
  * hlsResume.ts: HLS sequence number persistence across restarts.
  */
-import { LOG, formatDuration, formatError, stringifySorted } from "../utils/index.js";
-import { CONFIG } from "../config/index.js";
-import type { Nullable } from "../types/index.js";
+import { LOG, formatDuration, formatError, stringifySorted } from "../utils/index.ts";
+import { CONFIG } from "../config/index.ts";
+import type { Nullable } from "../types/index.ts";
 import fs from "node:fs";
-import { getResolvedChannel } from "../config/services.js";
-import { getResumeFilePath } from "../config/paths.js";
+import { getResolvedChannel } from "../config/services.ts";
+import { getResumeFilePath } from "../config/paths.ts";
 
 /* When PrismCast restarts mid-recording, HLS media sequences reset to 0. Channels DVR detects "Playlist reset to a lower sequence" and produces unpredictable
  * timestamps in the recording. This module persists final sequence numbers at shutdown and seeds from them on restart so sequences always move forward.

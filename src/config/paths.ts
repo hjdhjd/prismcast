@@ -2,7 +2,7 @@
  *
  * paths.ts: Centralized filesystem path resolution for PrismCast.
  */
-import type { Config } from "../types/index.js";
+import type { Config } from "../types/index.ts";
 import os from "node:os";
 import path from "node:path";
 

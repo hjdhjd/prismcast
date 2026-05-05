@@ -2,7 +2,7 @@
  *
  * chromeFetch.ts: Chrome User-Agent aware fetch wrapper for external HTTP requests.
  */
-import type { Nullable } from "../types/index.js";
+import type { Nullable } from "../types/index.ts";
 
 /* When PrismCast fetches manifests, segments, decryption keys, and other resources from service CDNs, the requests should appear to originate from the same Chrome
  * browser that is rendering the page. This module stores the Chrome User-Agent string (captured at browser launch) and provides a drop-in fetch() wrapper that

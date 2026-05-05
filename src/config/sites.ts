@@ -2,9 +2,9 @@
  *
  * sites.ts: Site profile definitions and domain-to-profile mappings for PrismCast.
  */
-import type { DomainConfig, ResolvedSiteProfile, SiteProfile } from "../types/index.js";
-import { extractDomain } from "../utils/index.js";
-import { getUserDomains } from "./userProfiles.js";
+import type { DomainConfig, ResolvedSiteProfile, SiteProfile } from "../types/index.ts";
+import { extractDomain } from "../utils/index.ts";
+import { getUserDomains } from "./userProfiles.ts";
 
 /* Streaming sites implement their video players in wildly different ways. Some use standard HTML5 video with keyboard shortcuts, others embed players in iframes,
  * and many have unique quirks like auto-muting or requiring specific fullscreen methods. Rather than scattering site-specific conditionals throughout the streaming

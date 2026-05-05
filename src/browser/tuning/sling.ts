@@ -2,10 +2,10 @@
  *
  * sling.ts: Sling TV guide grid channel selection strategy with binary search and row caching.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
-import { LOG, chromeFetch, delay, formatError } from "../../utils/index.js";
-import { logAvailableChannels, normalizeChannelName } from "./shared.js";
-import { CONFIG } from "../../config/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
+import { LOG, chromeFetch, delay, formatError } from "../../utils/index.ts";
+import { logAvailableChannels, normalizeChannelName } from "./shared.ts";
+import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
 
 // Sling TV guide grid row index cache. Maps normalized channel names (from data-testid="channel-{NAME}" attributes) to their row indices extracted from the

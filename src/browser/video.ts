@@ -2,11 +2,11 @@
  *
  * video.ts: Video context and playback handling for PrismCast.
  */
-import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError, startTimer } from "../utils/index.js";
+import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
-import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.js";
-import { invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.js";
-import { CONFIG } from "../config/index.js";
+import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.ts";
+import { invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
+import { CONFIG } from "../config/index.ts";
 
 /* These functions manage the video element lifecycle for streaming capture. The key challenges we solve:
  *

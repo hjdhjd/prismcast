@@ -2,10 +2,10 @@
  *
  * hulu.ts: Hulu Live TV channel selection with fetch interception for direct tuning, guide grid fallback with binary search, position-based inference, and row caching.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.js";
-import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.js";
-import { logAvailableChannels, normalizeChannelName, scrollAndClick } from "./shared.js";
-import { CONFIG } from "../../config/index.js";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
+import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
+import { logAvailableChannels, normalizeChannelName, scrollAndClick } from "./shared.ts";
+import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
 
 // Unified channel cache entry combining discovery metadata, tuning data, and guide grid scroll positions. Populated from two sources: (1) details and listing API

@@ -2,17 +2,17 @@
  *
  * index.ts: Coordinator for native HLS streaming - manifest interception, DRM probe, and proxy lifecycle.
  */
-import { LOG, formatError, startTimer } from "../utils/index.js";
-import { clearProbeCache, probeManifest } from "./probe.js";
-import { installManifestInterceptor, removeManifestInterceptor } from "../browser/manifestInterceptor.js";
-import type { CaptureCodec } from "../streaming/codec.js";
-import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.js";
-import type { NativeProxy } from "./proxy.js";
-import type { Nullable } from "../types/index.js";
+import { LOG, formatError, startTimer } from "../utils/index.ts";
+import { clearProbeCache, probeManifest } from "./probe.ts";
+import { installManifestInterceptor, removeManifestInterceptor } from "../browser/manifestInterceptor.ts";
+import type { CaptureCodec } from "../streaming/codec.ts";
+import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
+import type { NativeProxy } from "./proxy.ts";
+import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
-import type { ProbeResult } from "./probe.js";
-import { createNativeProxy } from "./proxy.js";
-import { fetchDecryptionKey } from "./decrypt.js";
+import type { ProbeResult } from "./probe.ts";
+import { createNativeProxy } from "./proxy.ts";
+import { fetchDecryptionKey } from "./decrypt.ts";
 
 /* This module orchestrates the native streaming decision. After the browser navigates to a channel and video playback begins, we check whether the service's HLS
  * stream can be consumed directly in Node (bypassing screen capture). The decision flow is:

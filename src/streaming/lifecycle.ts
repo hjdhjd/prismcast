@@ -2,18 +2,18 @@
  *
  * lifecycle.ts: Stream lifecycle management for PrismCast.
  */
-import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.js";
-import { LOG, formatDuration, formatError, getAbortController, unregisterAbortController } from "../utils/index.js";
-import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.js";
-import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recovery.js";
-import { getStream, unregisterStream } from "./registry.js";
-import type { Nullable } from "../types/index.js";
+import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.ts";
+import { LOG, formatDuration, formatError, getAbortController, unregisterAbortController } from "../utils/index.ts";
+import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.ts";
+import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recovery.ts";
+import { getStream, unregisterStream } from "./registry.ts";
+import type { Nullable } from "../types/index.ts";
 import type { Readable } from "node:stream";
-import type { RecoveryMetrics } from "./recovery.js";
-import { clearClients } from "./clients.js";
-import { clearShowName } from "./showInfo.js";
-import { emitStreamRemoved } from "./statusEmitter.js";
-import { isGracefulShutdown } from "../browser/index.js";
+import type { RecoveryMetrics } from "./recovery.ts";
+import { clearClients } from "./clients.ts";
+import { clearShowName } from "./showInfo.ts";
+import { emitStreamRemoved } from "./statusEmitter.ts";
+import { isGracefulShutdown } from "../browser/index.ts";
 
 /* This module provides the authoritative stream termination logic. All code paths that need to terminate a stream should call terminateStream() from this module. This
  * ensures consistent cleanup behavior including:

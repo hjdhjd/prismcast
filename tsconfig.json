@@ -1,12 +1,41 @@
 {
   "compilerOptions": {
 
+    "allowImportingTsExtensions": true,
+    "allowSyntheticDefaultImports": true,
+    "declaration": true,
+    "erasableSyntaxOnly": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+
+    "lib": [
+
+      "DOM",
+      "ES2024",
+      "ESNext.Array",
+      "ESNext.Collection",
+      "ESNext.Iterator"
+    ],
+
+    "module": "nodenext",
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
     "noUncheckedIndexedAccess": true,
-    "outDir": "dist",
-    "rootDir": "src"
+    "noUncheckedSideEffectImports": true,
+    "rewriteRelativeImportExtensions": true,
+    "strict": true,
+    "stripInternal": true,
+    "target": "ES2024",
+    "useDefineForClassFields": true,
+    "verbatimModuleSyntax": true,
+
+    "outDir": "dist"
   },
 
   "exclude": [ "dist", "node_modules" ],
   "extends": "./node_modules/homebridge-plugin-utils/build/tsconfig.json",
-  "include": [ "eslint.config.mjs", "src" ]
+  "include": [ "eslint.config.mjs", "src", "test" ]
 }

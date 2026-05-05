@@ -2,15 +2,15 @@
  *
  * services.ts: Service group management for multi-service channels.
  */
-import type { Channel, ChannelMap, ChannelSortField, ResolvedChannel, ServiceGroup, SortDirection } from "../types/index.js";
-import { DOMAIN_CONFIG, getDomainConfig } from "./sites.js";
-import { LOG, extractDomain } from "../utils/index.js";
-import { getChannelEffectiveTags, getEffectiveHdhrEnabled, mutateChannels, pickIdentity } from "./userChannels.js";
-import { CONFIG } from "./index.js";
-import { PREDEFINED_CHANNELS } from "../channels/index.js";
-import { getProfileForChannel } from "./profiles.js";
-import { getUserDomains } from "./userProfiles.js";
-import { mutateConfig } from "./userConfig.js";
+import type { Channel, ChannelMap, ChannelSortField, ResolvedChannel, ServiceGroup, SortDirection } from "../types/index.ts";
+import { DOMAIN_CONFIG, getDomainConfig } from "./sites.ts";
+import { LOG, extractDomain } from "../utils/index.ts";
+import { getChannelEffectiveTags, getEffectiveHdhrEnabled, mutateChannels, pickIdentity } from "./userChannels.ts";
+import { CONFIG } from "./index.ts";
+import { PREDEFINED_CHANNELS } from "../channels/index.ts";
+import { getProfileForChannel } from "./profiles.ts";
+import { getUserDomains } from "./userProfiles.ts";
+import { mutateConfig } from "./userConfig.ts";
 
 /* Service groups allow multiple streaming services to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *

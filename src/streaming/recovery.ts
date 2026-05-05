@@ -3,8 +3,8 @@
  * recovery.ts: Recovery types, constants, metrics tracking, circuit breaker, and issue classification for PrismCast.
  */
 import type { Frame, Page } from "puppeteer-core";
-import type { Nullable, VideoState } from "../types/index.js";
-import { CONFIG } from "../config/index.js";
+import type { Nullable, VideoState } from "../types/index.ts";
+import { CONFIG } from "../config/index.ts";
 
 /* Recovery metrics are tracked throughout each stream's lifetime. The playback health monitor accumulates these counters during recovery attempts, and the
  * termination handler includes them in the stream-end log for analytics and troubleshooting.
