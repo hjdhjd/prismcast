@@ -79,25 +79,26 @@ describe("generateStatusScript", () => {
   test("declares helper formatters for duration, bytes, time, time-ago, and last-issue", () => {
 
     // The helpers all reuse module-scope maps (clientTypeLabels, nativeResolutionLabels, rowTints, healthLabels). Their presence locks the public surface that
-    // the SSE handlers depend on.
+    // the SSE handlers depend on. Patterns are loose on the parameter close-paren because Node's strip-types replaces TypeScript annotations with whitespace,
+    // so the emitted-script source has padding between the parameter name and ")".
     const script = generateStatusScript();
 
-    assert.match(script, /function formatDuration\(seconds\)/);
-    assert.match(script, /function formatBytes\(bytes\)/);
-    assert.match(script, /function formatTime\(isoString\)/);
-    assert.match(script, /function formatTimeAgo\(ts\)/);
-    assert.match(script, /function formatLastIssue\(s\)/);
-    assert.match(script, /function formatAutoRecovery\(s\)/);
-    assert.match(script, /function formatClients\(s\)/);
+    assert.match(script, /function formatDuration\(seconds\b/);
+    assert.match(script, /function formatBytes\(bytes\b/);
+    assert.match(script, /function formatTime\(isoString\b/);
+    assert.match(script, /function formatTimeAgo\(ts\b/);
+    assert.match(script, /function formatLastIssue\(s\b/);
+    assert.match(script, /function formatAutoRecovery\(s\b/);
+    assert.match(script, /function formatClients\(s\b/);
   });
 
   test("declares the recovering-level label resolver with all four documented levels", () => {
 
     // getRecoveringLabel is the level-based mapping for in-progress recovery. The four documented escalation levels are 1, 2, 3, and 4+. We confirm each case
-    // arm is present in source.
+    // arm is present in source. The parameter regex is loose to tolerate the type-annotation-to-whitespace substitution Node's strip-types performs.
     const script = generateStatusScript();
 
-    assert.match(script, /function getRecoveringLabel\(level\)/);
+    assert.match(script, /function getRecoveringLabel\(level\b/);
     assert.match(script, /case 1:/);
     assert.match(script, /case 2:/);
     assert.match(script, /case 3:/);
@@ -107,12 +108,13 @@ describe("generateStatusScript", () => {
   test("exposes the popover toggle, copy URL helper, and restart status callback on window", () => {
 
     // toggleStreamPopover is wired to the header button onclick. copyOverviewPlaylistUrl is invoked from the Quick Start copy button. updateRestartDialogStatus
-    // is referenced by the streamRemoved handler to advance a deferred restart.
+    // is referenced by the streamRemoved handler to advance a deferred restart -- post-refactor, via ctx.externals.updateRestartDialogStatus?.() rather than
+    // the original `if(typeof updateRestartDialogStatus === "function")` guard. The optional-chain expression encodes the same "call only if present" semantics.
     const script = generateStatusScript();
 
     assert.match(script, /window\.toggleStreamPopover\s*=/);
     assert.match(script, /window\.copyOverviewPlaylistUrl\s*=/);
-    assert.match(script, /typeof updateRestartDialogStatus/);
+    assert.match(script, /externals\.updateRestartDialogStatus\?\.\(\)/);
   });
 
   test("registers the staleness watchdog at 45-second intervals for SSE reconnect", () => {
@@ -147,9 +149,11 @@ describe("generateStatusScript", () => {
   test("starts the 1-second duration update interval at the bottom of the script", () => {
 
     // updateDurations is invoked every second to refresh on-screen stream durations. The setInterval call is required for the live counter to advance.
+    // Post-refactor the call passes the context explicitly via an arrow trampoline (setInterval(() => updateDurations(ctx), 1000)) instead of a bare reference,
+    // because the extracted handler takes ctx rather than reading from module-scope state.
     const script = generateStatusScript();
 
-    assert.match(script, /setInterval\(updateDurations,\s*1000\)/);
+    assert.match(script, /setInterval\(\(\) => updateDurations\(ctx\),\s*1000\)/);
   });
 
   test("returns identical output across calls (pure derivation)", () => {
