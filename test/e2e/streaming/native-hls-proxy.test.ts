@@ -29,10 +29,12 @@ import { bootStubServer, createIntegrationContext, initializePersistence } from 
 import { createCipheriv, randomBytes } from "node:crypto";
 import { getStream, registerStream, unregisterStream } from "../../../src/streaming/registry.ts";
 import type { CDPSession } from "puppeteer-core";
+import type { Clock } from "../../../src/utils/clock.ts";
 import type { NativeProxy } from "../../../src/native/proxy.ts";
 import assert from "node:assert/strict";
 import { createNativeProxy } from "../../../src/native/proxy.ts";
 import { deriveIvFromSequence } from "../../../src/native/decrypt.ts";
+import { makeFakeClock } from "../../../src/utils/clock.helpers.ts";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
 
 /* makeFakeCdpSession returns the smallest object that satisfies removeManifestInterceptor's call surface (removeAllListeners, send, detach). The proxy stores
@@ -363,12 +365,16 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
   test("stop() halts the polling loop so no further upstream traffic flows after termination", async () => {
 
-    /* The shutdown contract: stop() flips the stopped flag, cancels the pending pollTimer, and detaches the CDP session. After stop() returns, no further
-     * fetch should hit the upstream stub. A regression that left the polling loop running would surface as continued upstream load on a stream the operator
-     * believed was terminated - with bandwidth and rate-limit consequences in production.
+    /* The shutdown contract: stop() flips the stopped flag and detaches the CDP session. After stop() returns, no further fetch should hit the upstream stub.
+     * A regression that left the polling loop running would surface as continued upstream load on a stream the operator believed was terminated - with
+     * bandwidth and rate-limit consequences in production.
      *
-     * We observe upstream traffic via a request counter on the stub. After capturing the count immediately after stop(), we wait long enough for at least
-     * one would-have-fired poll cycle to elapse if the loop were still running (MANIFEST_BACKOFF_BASE + headroom), then assert the count is unchanged.
+     * Architecture under test. The proxy's polling cadence routes through the Clock port (utils/clock.ts) so the test injects a fake clock whose sleep returns
+     * a controllable promise. The first poll fires immediately on start(); the awaiter created by schedulePoll then awaits clock.sleep(MANIFEST_BACKOFF_BASE)
+     * - in this test, that promise stays pending until the test releases it. The test calls stop(), then releases the held sleep, then drains microtasks. The
+     * awaiter wakes, sees lifecycle.stopped === true, and exits without issuing a second fetch. The invariant pinned: zero upstream requests after stop()
+     * regardless of whether the in-flight sleep ever resolves. The 4-second wall-clock wait that previously protected this assertion is gone; the test now
+     * proves the negative deterministically via the injection seam.
      */
     await using ctx = await createIntegrationContext();
 
@@ -397,6 +403,24 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
       app.get("/seg0.ts", (_req, res) => { res.type("video/mp2t").send(randomBytes(128)); });
     });
 
+    // Build a fake clock whose sleep returns a promise the test holds open. The post-first-poll awaiter inside schedulePoll is the only consumer of
+    // clock.sleep here; we capture its resolver so the test can release the sleep deterministically after asserting the invariant.
+    const sleepResolvers: (() => void)[] = [];
+    const sleepDurations: number[] = [];
+
+    const clock: Clock = makeFakeClock({
+
+      sleep: async (ms: number): Promise<void> => {
+
+        sleepDurations.push(ms);
+
+        return new Promise<void>((resolve) => {
+
+          sleepResolvers.push(resolve);
+        });
+      }
+    }).clock;
+
     const entry = makeRegistryEntry({ channelName: "stub-stop" });
 
     registerStream(entry);
@@ -407,6 +431,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
       audioVariantUrl: null,
       cdpSession: makeFakeCdpSession(),
       channelName: "stub-stop",
+      clock,
       encryption: "clear",
       keyUrl: null,
       onError: (): void => undefined,
@@ -420,16 +445,32 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     activeProxy = proxy;
     proxy.start();
 
-    await waitFor(() => manifestRequestCount >= 1, 5_000, "first manifest poll completes");
+    // Wait for the first poll to land AND the post-poll awaiter to enter clock.sleep. Both are observable: manifestRequestCount goes to 1 when the first
+    // fetch completes; sleepDurations is populated when the awaiter calls clock.sleep with the next-poll backoff. Combining the two asserts the proxy is
+    // sitting in the exact state we want to test against - one fetch issued, one sleep pending.
+    await waitFor(() => (manifestRequestCount >= 1) && (sleepDurations.length >= 1), 5_000, "first manifest poll lands and the next-poll sleep is queued");
 
     proxy.stop();
 
     const countAtStop = manifestRequestCount;
 
-    // MANIFEST_BACKOFF_BASE in production is 3000ms. We wait 4000ms - long enough for at least one would-have-fired poll cycle if the loop were still alive.
-    await new Promise<void>((resolve) => { setTimeout(resolve, 4_000); });
+    // Release every queued sleep resolver. With lifecycle.stopped === true, the post-sleep guard in schedulePoll's awaiter must short-circuit and skip the
+    // next pollManifest call. If the guard regressed, releasing the sleep would issue a second fetch and the assertion below would fail.
+    for(const resolve of sleepResolvers) {
 
-    assert.equal(manifestRequestCount, countAtStop, "no further manifest polls should hit the stub after stop()");
+      resolve();
+    }
+
+    // Drain microtasks so the released awaiter runs to completion. Eight rounds of Promise.resolve() is enough to flush any plausible async chain in the
+    // schedulePoll closure.
+    for(let i = 0; i < 8; i++) {
+
+      // eslint-disable-next-line no-await-in-loop -- the loop semantically IS the sequential drain.
+      await Promise.resolve();
+    }
+
+    assert.equal(manifestRequestCount, countAtStop, "no further manifest polls should hit the stub after stop() even when the in-flight sleep resolves");
     assert.equal(proxy.isStopped(), true, "the proxy reports itself as stopped");
+    assert.equal(sleepDurations[0], 3_000, "the next-poll sleep used MANIFEST_BACKOFF_BASE on a successful first poll");
   });
 });
