@@ -48,7 +48,7 @@ export function assertNoUnhandledRejections(emitter: EventEmitter = process): ()
  * Polls a synchronous predicate, yielding to the microtask queue between attempts, until it returns a non-undefined value or the iteration budget is exhausted.
  * Use this when a test needs to wait for a value that becomes available across promise chains (e.g., async event listeners that update shared state) without
  * introducing real-time delays. The default budget is 100 iterations, which is more than enough for any code path that resolves within a finite microtask
- * chain. Tests that need to wait on real timers should use mock.timers.tickAsync(), not this helper.
+ * chain. Tests that need to wait on real timers should use mock.timers.tick() (after enabling timer mocking via mock.timers.enable()), not this helper.
  * @param predicate - Function returning the awaited value, or undefined when not yet available.
  * @param options - Optional iteration budget override.
  * @returns The first non-undefined value the predicate returns.
