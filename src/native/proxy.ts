@@ -2,7 +2,7 @@
  *
  * proxy.ts: Native HLS proxy - manifest polling, segment fetching, and playlist generation.
  */
-import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
+import { type Clock, LOG, chromeFetch, realClock, startTimer } from "../utils/index.ts";
 import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.ts";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.ts";
 import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.ts";
@@ -57,6 +57,11 @@ export interface NativeProxyOptions {
 
   // The channel name for logging.
   channelName: string;
+
+  // Optional clock for the polling cadence sleep. Defaults to realClock; tests inject a fake clock so the manifest poll loop's backoff resolves on demand
+  // rather than via real timers. This mirrors the same default-arg port pattern used by retry.ts, timing.ts, and hlsSegments.ts - the production code path
+  // is unchanged when callers omit it.
+  clock?: Clock;
 
   // Encryption type classified by the probe.
   encryption: "aes128" | "clear";
@@ -253,7 +258,6 @@ interface ProxyLifecycleState {
   errorThresholdReached: boolean;
   firstPollComplete: boolean;
   manifestBackoffMs: number;
-  pollTimer: ReturnType<typeof setTimeout> | null;
   readinessSignaled: boolean;
   stopped: boolean;
   tokenRefreshTimer: ReturnType<typeof setTimeout> | null;
@@ -950,7 +954,7 @@ function buildCompositePlaylist(options: CompositePlaylistOptions): string {
  */
 export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
-  const { channelName, encryption, keyUrl, onError, streamId } = options;
+  const { channelName, clock = realClock, encryption, keyUrl, onError, streamId } = options;
   const hasAudio = options.audioVariantUrl !== null;
   let activeCdpSession: CDPSession = options.cdpSession;
 
@@ -971,7 +975,6 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     errorThresholdReached: false,
     firstPollComplete: false,
     manifestBackoffMs: MANIFEST_BACKOFF_BASE,
-    pollTimer: null,
     readinessSignaled: false,
     stopped: false,
     tokenRefreshTimer: null
@@ -1527,7 +1530,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   }
 
   /**
-   * Schedules the next manifest poll after a delay.
+   * Schedules the next manifest poll after a delay. The sleep is awaited through the injected Clock port (defaulting to realClock) so tests can virtualize the
+   * polling cadence without depending on real timers. Cancellation semantics: stop() flips lifecycle.stopped, and the post-sleep guard catches that flip before
+   * issuing the next poll. The in-flight sleep itself is not cancelled - in production a stopped proxy lingers for at most one MANIFEST_BACKOFF_BASE before the
+   * awaiter wakes and exits cleanly. This is the same shape as retryOperation in utils/retry.ts which already adopted the Clock port for the same reason.
    *
    * @param delayMs - Delay in milliseconds before the next poll.
    */
@@ -1538,10 +1544,17 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       return;
     }
 
-    lifecycle.pollTimer = setTimeout(() => {
+    void (async (): Promise<void> => {
+
+      await clock.sleep(delayMs);
+
+      if(lifecycle.stopped) {
+
+        return;
+      }
 
       void pollManifest();
-    }, delayMs);
+    })();
   }
 
   return {
@@ -1583,11 +1596,8 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       lifecycle.stopped = true;
 
-      if(lifecycle.pollTimer) {
-
-        clearTimeout(lifecycle.pollTimer);
-        lifecycle.pollTimer = null;
-      }
+      // The polling cadence sleep is owned by schedulePoll's awaiter and is not cancelled here - the awaiter checks lifecycle.stopped after clock.sleep resolves
+      // and exits before issuing the next poll. See schedulePoll's docblock for the cancellation contract.
 
       // Cancel the pending token refresh timer to prevent fire-after-termination. Without this, the timer fires on a stopped proxy and attempts to navigate a
       // potentially closed or reused page.
