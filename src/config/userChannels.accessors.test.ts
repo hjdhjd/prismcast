@@ -1,0 +1,205 @@
+/* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
+ *
+ * userChannels.accessors.test.ts: Direct unit tests for the read-accessor cluster - small predicates and pure value lookups whose contracts are stable enough to
+ * be locked in at the unit level. The accessors split into two coverage tiers:
+ *
+ *   1. Pure-relative-to-compile-time-data: tagsMatch, getEffectiveHdhrEnabled, isPredefinedChannel, getEastCanonicalKey. These read only static module imports
+ *      (PREDEFINED_CHANNELS) or their argument, so they are safe to unit-test directly without any module initialization.
+ *
+ *   2. Runtime-state-dependent: isUserChannel (loadedUserChannels), isPredefinedChannelDisabled (CONFIG.channels.disabledPredefined), isInVocabulary and
+ *      getChannelEffectiveTags (loadedTagRegistry via getActiveTagVocabulary), isChannelAvailable (getAllChannels merge result). These depend on state populated
+ *      by initializeUserChannels and the broader CONFIG bootstrap. Bringing that up cleanly in a unit test would re-implement the bootstrap; the existing pattern
+ *      in this directory keeps unit tests on pure helpers and routes integration coverage through HTTP-endpoint tests where the full system is already wired
+ *      up. The tier-2 accessors are exercised there transitively.
+ *
+ * The tests below cover tier 1 exhaustively. tier 2 is documented at each function's describe block as a deliberate transitive-coverage decision.
+ */
+import { describe, test } from "node:test";
+import { getEastCanonicalKey, getEffectiveHdhrEnabled, isPredefinedChannel, tagsMatch } from "./userChannels.ts";
+import type { ResolvedChannel } from "../types/index.ts";
+import assert from "node:assert/strict";
+
+describe("tagsMatch", () => {
+
+  test("returns true for identical case", () => {
+
+    assert.equal(tagsMatch("Sports", "Sports"), true);
+  });
+
+  test("returns true for differing case (the entire reason this helper exists)", () => {
+
+    // The single-source-of-truth for case-insensitive tag identity. Every tag comparison in the system routes through this so we can change the policy in one
+    // place if the user-facing rules ever shift (e.g., to Unicode locale-aware folding).
+    assert.equal(tagsMatch("Sports", "SPORTS"), true);
+    assert.equal(tagsMatch("Sports", "sports"), true);
+    assert.equal(tagsMatch("sPoRtS", "SpOrTs"), true);
+  });
+
+  test("returns false for different tag values", () => {
+
+    assert.equal(tagsMatch("Sports", "News"), false);
+  });
+
+  test("returns false for different lengths even when one is a prefix of the other", () => {
+
+    // Documents that this is identity, not prefix-match. A future refactor that confused the two would be caught here.
+    assert.equal(tagsMatch("Sport", "Sports"), false);
+  });
+
+  test("treats empty strings as equal to themselves and unequal to anything else", () => {
+
+    assert.equal(tagsMatch("", ""), true);
+    assert.equal(tagsMatch("", "Sports"), false);
+  });
+
+  test("treats whitespace as significant (tag values are not auto-trimmed)", () => {
+
+    // The trimming policy lives at the input boundary (parseTagInput); tagsMatch is a pure comparator and never normalizes whitespace itself.
+    assert.equal(tagsMatch("Sports", "Sports "), false);
+    assert.equal(tagsMatch(" Sports", "Sports "), false);
+  });
+});
+
+describe("getEffectiveHdhrEnabled", () => {
+
+  /* Sparse-storage convention: absent or true => included in the HDHR lineup; only an explicit false excludes. The function is the single source of truth for
+   * that convention. Tests pin the boundary between "false" (the only excluding value) and every other valid value or shape.
+   */
+
+  test("returns true when hdhrEnabled is absent (the typical predefined-channel shape)", () => {
+
+    const channel = { name: "ABC", url: "https://abc.com" } as ResolvedChannel;
+
+    assert.equal(getEffectiveHdhrEnabled(channel), true);
+  });
+
+  test("returns true when hdhrEnabled is explicitly true", () => {
+
+    const channel = { hdhrEnabled: true, name: "ABC", url: "https://abc.com" } as ResolvedChannel;
+
+    assert.equal(getEffectiveHdhrEnabled(channel), true);
+  });
+
+  test("returns false ONLY when hdhrEnabled is explicitly false", () => {
+
+    const channel = { hdhrEnabled: false, name: "ABC", url: "https://abc.com" } as ResolvedChannel;
+
+    assert.equal(getEffectiveHdhrEnabled(channel), false);
+  });
+
+  test("returns true when hdhrEnabled is undefined (sparse-storage equivalence with absent)", () => {
+
+    // undefined and absent are equivalent under the sparse-storage convention; both flow through the !== false comparison the same way.
+    const channel = { hdhrEnabled: undefined, name: "ABC", url: "https://abc.com" } as ResolvedChannel;
+
+    assert.equal(getEffectiveHdhrEnabled(channel), true);
+  });
+});
+
+describe("isPredefinedChannel", () => {
+
+  /* Reads the static PREDEFINED_CHANNELS map (compile-time module import). Safe to call without any runtime initialization. Tests use real predefined keys to
+   * verify both canonical entries and programmatically-generated variant entries are recognized.
+   */
+
+  test("returns true for a real canonical predefined key", () => {
+
+    // abc is a real canonical entry in PREDEFINED_CHANNELS.
+    assert.equal(isPredefinedChannel("abc"), true);
+  });
+
+  test("returns true for a real Pacific canonical predefined key", () => {
+
+    // bravop is a Pacific feed canonical, programmatically generated by generatePacificDefinitions but present in the flattened map.
+    assert.equal(isPredefinedChannel("bravop"), true);
+  });
+
+  test("returns true for a real variant predefined key", () => {
+
+    // abc-hulu is a service-variant entry built by buildVariantEntry; it lives in PREDEFINED_CHANNELS alongside its canonical.
+    assert.equal(isPredefinedChannel("abc-hulu"), true);
+  });
+
+  test("returns false for an unknown key", () => {
+
+    assert.equal(isPredefinedChannel("nonexistent-channel-key"), false);
+  });
+
+  test("returns false for an empty string", () => {
+
+    // Boundary: empty string is not a key in PREDEFINED_CHANNELS. The function does not special-case this; the `in` operator returns false naturally.
+    assert.equal(isPredefinedChannel(""), false);
+  });
+
+  test("is case-sensitive ('ABC' is not a predefined key, only 'abc' is)", () => {
+
+    // Channel keys are lowercase by validation rule; the static map mirrors that. A case-insensitive match would be a bug.
+    assert.equal(isPredefinedChannel("ABC"), false);
+  });
+});
+
+describe("getEastCanonicalKey", () => {
+
+  /* The Pacific-feed naming convention: a key that ends with "p" and whose base (key minus the trailing "p") is itself a predefined canonical resolves to the
+   * base key. Used for logo/brand-metadata fallback when the Pacific feed inherits visual identity from its East counterpart.
+   */
+
+  test("returns the east canonical when the key is a real Pacific predefined", () => {
+
+    // bravop -> bravo is a real pairing in the predefined catalog.
+    assert.equal(getEastCanonicalKey("bravop"), "bravo");
+  });
+
+  test("returns the east canonical for tbsp -> tbs", () => {
+
+    assert.equal(getEastCanonicalKey("tbsp"), "tbs");
+  });
+
+  test("returns the east canonical for tntp -> tnt", () => {
+
+    assert.equal(getEastCanonicalKey("tntp"), "tnt");
+  });
+
+  test("returns undefined for a key that doesn't end with 'p'", () => {
+
+    // The first guard is a structural check; if the key doesn't end in "p" we return undefined before consulting the predefined map.
+    assert.equal(getEastCanonicalKey("abc"), undefined);
+  });
+
+  test("returns undefined when the key ends with 'p' but the base isn't predefined", () => {
+
+    // "foop" ends in "p" so the suffix guard passes; "foo" is not in PREDEFINED_CHANNELS so the lookup returns undefined.
+    assert.equal(getEastCanonicalKey("foop"), undefined);
+  });
+
+  test("returns undefined for the literal 'p' (single character, base is empty string)", () => {
+
+    // Edge case: stripping the trailing "p" from "p" yields the empty string, which is not predefined - returns undefined.
+    assert.equal(getEastCanonicalKey("p"), undefined);
+  });
+
+  test("returns undefined for an empty string (no trailing 'p')", () => {
+
+    assert.equal(getEastCanonicalKey(""), undefined);
+  });
+
+  test("does NOT recursively resolve nested 'p' suffixes (only one strip)", () => {
+
+    // Documents that the function strips exactly one trailing "p" and asks once. A key like "abcpp" would strip to "abcp", and only resolve if "abcp" is itself
+    // predefined. There is no recursive descent.
+    assert.equal(getEastCanonicalKey("abcpp"), undefined, "abcp is not in the predefined catalog so abcpp does not resolve");
+  });
+});
+
+/* Runtime-state-dependent accessors deliberately not unit-tested here. Coverage for these flows transitively from HTTP-endpoint integration tests (channels CRUD,
+ * tag management, playlist generation) where module state is already populated by the boot sequence:
+ *
+ *   - isUserChannel: covered by routes/config/channels/endpoints/crud.test.ts via duplicate-key rejection paths.
+ *   - isPredefinedChannelDisabled: covered by routes/config/channels/endpoints/predefined.test.ts via toggle/bulk-toggle endpoints.
+ *   - isInVocabulary, getChannelEffectiveTags, getActiveTagVocabulary: covered by routes/config/channels/endpoints/tags.test.ts via tag-vocabulary endpoints.
+ *   - isChannelAvailable: covered by streaming/lifecycle and route-handler tests that resolve channel keys for stream startup.
+ *
+ * Adding a unit-level state-bring-up here would re-implement the boot pipeline (CONFIG load, persistence framework, service-group construction). The cost
+ * exceeds the benefit since each function is a one-or-two-line predicate whose contract is enforced by the integration tests. If a tier-2 accessor grows in
+ * complexity (more branches, derived state, multi-step logic), revisit this decision and extract a pure variant that can be tested in isolation.
+ */
