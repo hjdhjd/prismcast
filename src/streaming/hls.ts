@@ -2,34 +2,34 @@
  *
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
-import { type CaptureCodec, getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.js";
-import type { HLSState, StreamRegistryEntry } from "./registry.js";
-import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.js";
-import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.js";
+import { type CaptureCodec, getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
+import type { HLSState, StreamRegistryEntry } from "./registry.ts";
+import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.ts";
+import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
-import { StreamSetupError, type StreamSetupResult, createPageWithCapture, generateStreamId, setupStream } from "./setup.js";
-import { createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.js";
-import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.js";
-import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.js";
-import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.js";
-import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.js";
-import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../config/userChannels.js";
-import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.js";
-import { getAuthDomainForChannel, getResolvedChannel, getServiceTagForChannel, resolveServiceKey } from "../config/services.js";
-import { getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.js";
-import { markChannelFailure, markChannelSuccess } from "../config/health.js";
-import { CONFIG } from "../config/index.js";
-import type { FMP4SegmenterResult } from "./fmp4Segmenter.js";
-import type { TabReplacementHandlerFactory } from "./setup.js";
-import type { TabReplacementResult } from "./recovery.js";
-import { attemptNativeStreaming } from "../native/index.js";
-import { clearProbeCache } from "../native/probe.js";
-import { createFMP4Segmenter } from "./fmp4Segmenter.js";
+import { StreamSetupError, type StreamSetupResult, createPageWithCapture, generateStreamId, setupStream } from "./setup.ts";
+import { createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
+import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
+import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.ts";
+import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.ts";
+import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.ts";
+import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../config/userChannels.ts";
+import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.ts";
+import { getAuthDomainForChannel, getResolvedChannel, getServiceTagForChannel, isChannelAvailableByService, resolveServiceKey } from "../config/services.ts";
+import { getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.ts";
+import { markChannelFailure, markChannelSuccess } from "../config/health.ts";
+import { CONFIG } from "../config/index.ts";
+import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
+import type { TabReplacementHandlerFactory } from "./setup.ts";
+import type { TabReplacementResult } from "./recovery.ts";
+import { attemptNativeStreaming } from "../native/index.ts";
+import { clearProbeCache } from "../native/probe.ts";
+import { createFMP4Segmenter } from "./fmp4Segmenter.ts";
 import { createHash } from "node:crypto";
-import { getProviderBySlug } from "../browser/channelSelection.js";
-import { registerClient } from "./clients.js";
-import { suppressPageAudio } from "../browser/video.js";
-import { triggerShowNameUpdate } from "./showInfo.js";
+import { getProviderBySlug } from "../browser/channelSelection.ts";
+import { registerClient } from "./clients.ts";
+import { suppressPageAudio } from "../browser/video.ts";
+import { triggerShowNameUpdate } from "./showInfo.ts";
 
 /* This module handles HLS (HTTP Live Streaming) output using fMP4 (fragmented MP4) segments. HLS mode uses MP4/AAC capture from puppeteer-stream, which is then
  * segmented natively without any external dependencies. The stream initialization flow has three phases:
@@ -109,6 +109,17 @@ export function validateChannel(channelName: string): ValidateChannelResult {
   if(!effectiveChannel) {
 
     return { body: "Channel not found.", statusCode: 404, valid: false };
+  }
+
+  // Enforce the user's active service filter at the streaming boundary. A channel whose every variant tag is excluded by enabledServices is structurally hidden
+  // from the M3U playlist (built from getVisibleChannels), from the HDHomeRun lineup (iterates getAllChannels which filters through the same predicate), and
+  // from getAllChannels itself. Letting a stream request through here would diverge from those views: capture a browser tab for a service the user explicitly
+  // excluded, increment recovery budget on that service, and surface confusing logs for a channel the user cannot see. The predicate takes the canonical key
+  // (channelName here is the URL-supplied canonical, not the post-resolveServiceKey variant) and is the single source of truth for service-filter visibility -
+  // the same predicate already used by getVisibleChannels, the channel table renderer, and the bulk-action allowlist builders.
+  if(!isChannelAvailableByService(channelName)) {
+
+    return { body: "Channel not available.", statusCode: 404, valid: false };
   }
 
   // Block new stream requests while login mode is active. This prevents the browser from being disrupted during authentication.
