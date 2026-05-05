@@ -2,12 +2,14 @@
  *
  * playlist.ts: M3U playlist route for PrismCast.
  */
-import type { ChannelSortField, SortDirection } from "../types/index.js";
+import type { ChannelSortField, SortDirection } from "../types/index.ts";
 import type { Express, Request, Response } from "express";
-import { VALID_SORT_FIELDS, compareChannelSort, getAllServiceTags, getServiceTagForChannel, resolveServiceKey } from "../config/services.js";
-import { getActiveTagVocabulary, getAllChannels, getChannelEffectiveTags, tagsMatch } from "../config/userChannels.js";
-import { CONFIG } from "../config/index.js";
-import { getProfileForChannel } from "../config/profiles.js";
+import { VALID_SORT_FIELDS, compareChannelSort, getAllServiceTags, getServiceTagForChannel, resolveServiceKey } from "../config/services.ts";
+import { getActiveTagVocabulary, getAllChannels, getChannelEffectiveTags, tagsMatch } from "../config/userChannels.ts";
+import { CONFIG } from "../config/index.ts";
+import { escapeM3uAttribute } from "../utils/m3u.ts";
+import { getProfileForChannel } from "../config/profiles.ts";
+import { sendValidationError } from "./config/http/envelope.ts";
 
 /* The playlist endpoint generates an M3U playlist in Channels DVR format. The playlist includes all available channels (both video player and static capture) with
  * their stream URLs dynamically constructed from the request host header so the playlist works regardless of how the server is accessed.
@@ -191,11 +193,14 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
 
     // Build the EXTINF line with required channel-id attribute and tvg-name for the friendly display name. Include channel-number when the user has specified one,
     // tvc-guide-stationid for Gracenote guide data when a stationId is defined, tvg-shift for EPG time offset, tvg-logo for custom channel logos, and group-title
-    // for organizational tags (semicolon-delimited for IPTV middleware compatibility).
+    // for organizational tags (semicolon-delimited for IPTV middleware compatibility). Every user-controlled attribute value flows through escapeM3uAttribute so
+    // an embedded double-quote, backslash, or line break cannot terminate the attribute early or break the EXTINF line. Structurally server-controlled values
+    // (the channel key, numeric channelNumber and tvgShift, and the fixed placeholders constant) skip the helper because validation guarantees they cannot carry
+    // those characters.
     const channelNumberAttr = channel.channelNumber ? " channel-number=\"" + String(channel.channelNumber) + "\"" : "";
-    const groupTitleAttr = (effectiveTags.length > 0) ? " group-title=\"" + effectiveTags.join(";") + "\"" : "";
-    const logoAttr = channel.logoUrl ? " tvg-logo=\"" + channel.logoUrl + "\"" : "";
-    const stationIdAttr = channel.stationId ? " tvc-guide-stationid=\"" + channel.stationId + "\"" : "";
+    const groupTitleAttr = (effectiveTags.length > 0) ? " group-title=\"" + escapeM3uAttribute(effectiveTags.join(";")) + "\"" : "";
+    const logoAttr = channel.logoUrl ? " tvg-logo=\"" + escapeM3uAttribute(channel.logoUrl) + "\"" : "";
+    const stationIdAttr = channel.stationId ? " tvc-guide-stationid=\"" + escapeM3uAttribute(channel.stationId) + "\"" : "";
     const tvgShiftAttr = (channel.tvgShift !== undefined) ? " tvg-shift=\"" + String(channel.tvgShift) + "\"" : "";
 
     // For channels without EPG data, emit tvc-guide-tags so Channels DVR's Automatic Channels can filter on them. Static page channels also get
@@ -207,7 +212,7 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
 
       if(effectiveTags.length > 0) {
 
-        tvcTagsAttr = " tvc-guide-tags=\"" + effectiveTags.join(", ") + "\"";
+        tvcTagsAttr = " tvc-guide-tags=\"" + escapeM3uAttribute(effectiveTags.join(", ")) + "\"";
       }
 
       const { profile } = getProfileForChannel(channel);
@@ -218,9 +223,13 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
       }
     }
 
-    const attrs = "#EXTINF:-1 channel-id=\"" + name + "\"" + channelNumberAttr + groupTitleAttr + logoAttr + " tvg-name=\"" + displayName + "\"" + stationIdAttr +
-      tvcPlaceholdersAttr + tvcTagsAttr + tvgShiftAttr;
-    const extinfLine = attrs + "," + displayName;
+    // The channel-id value is the iteration key (validated to /^[a-z0-9-]+$/ at the input boundary), so it cannot carry the structural characters that
+    // escapeM3uAttribute exists to neutralize. We embed it directly. The comma-suffix display name is M3U's terminator-by-end-of-line position rather than a
+    // quoted attribute, so backslash and double-quote are legal there and pass through verbatim - users see the original characters in their guide; only literal
+    // CR/LF (which would split the EXTINF across multiple lines) gets collapsed to a single space.
+    const attrs = "#EXTINF:-1 channel-id=\"" + name + "\"" + channelNumberAttr + groupTitleAttr + logoAttr + " tvg-name=\"" + escapeM3uAttribute(displayName) +
+      "\"" + stationIdAttr + tvcPlaceholdersAttr + tvcTagsAttr + tvgShiftAttr;
+    const extinfLine = attrs + "," + displayName.replace(/[\r\n]+/g, " ");
 
     lines.push(extinfLine);
     lines.push(streamUrl);
@@ -260,7 +269,7 @@ export function setupPlaylistEndpoint(app: Express): void {
 
       if("error" in result) {
 
-        res.status(400).json({ error: result.error, validTags: result.validTags });
+        sendValidationError(res, { error: result.error, validTags: result.validTags });
 
         return;
       }
@@ -275,7 +284,7 @@ export function setupPlaylistEndpoint(app: Express): void {
 
       if("error" in result) {
 
-        res.status(400).json({ error: result.error, validTags: result.validTags });
+        sendValidationError(res, { error: result.error, validTags: result.validTags });
 
         return;
       }
@@ -286,7 +295,7 @@ export function setupPlaylistEndpoint(app: Express): void {
     // Validate the sort field if specified.
     if(sortParam && !VALID_SORT_FIELDS.has(sortParam as ChannelSortField)) {
 
-      res.status(400).json({ error: "Invalid sort field: " + sortParam + ".", validFields: [...VALID_SORT_FIELDS].toSorted() });
+      sendValidationError(res, { error: "Invalid sort field: " + sortParam + ".", validFields: [...VALID_SORT_FIELDS].toSorted() });
 
       return;
     }
@@ -294,7 +303,7 @@ export function setupPlaylistEndpoint(app: Express): void {
     // Validate the sort direction if specified.
     if(directionParam && !VALID_SORT_DIRECTIONS.has(directionParam as SortDirection)) {
 
-      res.status(400).json({ error: "Invalid sort direction: " + directionParam + ".", validDirections: [...VALID_SORT_DIRECTIONS] });
+      sendValidationError(res, { error: "Invalid sort direction: " + directionParam + ".", validDirections: [...VALID_SORT_DIRECTIONS] });
 
       return;
     }

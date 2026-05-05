@@ -2,7 +2,7 @@
  *
  * m3u.ts: M3U playlist parsing utilities for PrismCast.
  */
-import type { Nullable } from "../types/index.js";
+import type { Nullable } from "../types/index.ts";
 
 /* This module provides utilities for parsing M3U playlist files and extracting channel information. The parser handles extended M3U format with #EXTINF tags and extracts
  * relevant attributes like tvg-name, tvg-id, and tvc-guide-stationid.
@@ -15,6 +15,25 @@ import type { Nullable } from "../types/index.js";
 
 // Maximum length for generated channel keys.
 const MAX_KEY_LENGTH = 50;
+
+/**
+ * Escapes a string for safe inclusion as an M3U quoted attribute value (the `value` portion of `attribute="value"`). RFC 8216 section 4.2 forbids the
+ * double-quote character (the attribute terminator) and bare line feed / carriage return inside a quoted-string and defines no escape sequence; the de-facto
+ * extended-M3U convention used by VLC, IPTV-Org tooling, and downstream consumers is backslash-escaping. We backslash-escape the structural characters and
+ * replace literal CR/LF with a single space - there is no portable escape sequence for line breaks inside a quoted-string, and dropping the line break entirely
+ * would silently glue adjacent words together while leaving the attribute syntactically valid. Apply this helper at every M3U attribute write site that flows
+ * user-controlled content; structurally server-controlled values (validated channel keys, numeric fields, fixed literals) do not need it but pass through
+ * unchanged when wrapped, so prefer wrapping for uniformity.
+ *
+ * Order matters: the backslash replacement runs first so the backslashes we introduce when escaping double-quote do not get re-escaped by a second pass.
+ *
+ * @param value - The raw string to escape.
+ * @returns A string safe to embed between the surrounding double-quotes of an M3U attribute value.
+ */
+export function escapeM3uAttribute(value: string): string {
+
+  return value.replace(/[\r\n]+/g, " ").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
 
 /**
  * Represents a channel parsed from an M3U playlist.
@@ -97,7 +116,7 @@ function extractName(line: string): Nullable<string> {
     return tvgName.trim();
   }
 
-  // Fall back to comma suffix (the part after the last comma in #EXTINF line). Format: #EXTINF:-1 attributes,Display Name
+  // Fall back to comma suffix (the part after the last comma in #EXTINF line). Format: "#EXTINF:-1 attributes,Display Name".
   const commaIndex = line.lastIndexOf(",");
 
   if(commaIndex !== -1) {
