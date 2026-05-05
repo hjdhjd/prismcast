@@ -2,10 +2,10 @@
  *
  * fileLogger.ts: File-based logging with automatic size-based rotation for PrismCast.
  */
-import type { Nullable } from "../types/index.js";
-import { formatTimestamp } from "./format.js";
+import type { Nullable } from "../types/index.ts";
+import { formatTimestamp } from "./format.ts";
 import fs from "node:fs";
-import { isAnyDebugEnabled } from "./debugFilter.js";
+import { isAnyDebugEnabled } from "./debugFilter.ts";
 import path from "node:path";
 import { styleText } from "node:util";
 
@@ -272,7 +272,51 @@ async function checkAndTrimFile(): Promise<void> {
 }
 
 /**
- * Trims the log file to half the maximum size, keeping only complete lines. The most recent logs are preserved.
+ * Pure trim logic: given the current log file content and the configured maximum size, returns the trimmed content (keeping complete lines from the file's tail)
+ * or null when no trim is needed (file is already at or below half maxSize). Extracted from trimLogFile so the cut-at-newline algorithm is testable in isolation
+ * without orchestrating real filesystem I/O - the surrounding read/write/rename chain is small enough to be exercised at the integration level.
+ *
+ * Algorithm: target half of maxSize as the post-trim file size, cut from (content.length - targetSize), then advance to the next newline so the trimmed file
+ * begins on a complete line. If no newline exists past the cut, the cut position is taken as-is (the trim still drops earlier content even if the kept tail is
+ * a single fragment line).
+ *
+ * @param content - The current log file content as a UTF-8 string.
+ * @param maxSize - The configured maximum log file size in bytes.
+ * @returns The trimmed content, or null when no trim is needed.
+ */
+export function computeTrimmedLogContent(content: string, maxSize: number): Nullable<string> {
+
+  // Calculate target size (half of max).
+  const targetSize = Math.floor(maxSize / 2);
+
+  // We want to keep the END of the file (most recent logs). Find where to cut.
+  const cutPosition = content.length - targetSize;
+
+  if(cutPosition <= 0) {
+
+    // File is smaller than target, no trimming needed.
+    return null;
+  }
+
+  // Find the next newline after the cut position to keep complete lines.
+  let lineStart = content.indexOf("\n", cutPosition);
+
+  if(lineStart === -1) {
+
+    // No newline found after cut position, keep from cut position.
+    lineStart = cutPosition;
+  } else {
+
+    // Start after the newline.
+    lineStart += 1;
+  }
+
+  return content.substring(lineStart);
+}
+
+/**
+ * Trims the log file to half the maximum size, keeping only complete lines. The most recent logs are preserved. Pure cut logic lives in
+ * computeTrimmedLogContent; this function is the I/O orchestration shell around it.
  */
 async function trimLogFile(): Promise<void> {
 
@@ -284,33 +328,12 @@ async function trimLogFile(): Promise<void> {
   try {
 
     const content = await fsPromises.readFile(logFilePath, "utf-8");
+    const trimmedContent = computeTrimmedLogContent(content, maxLogSize);
 
-    // Calculate target size (half of max).
-    const targetSize = Math.floor(maxLogSize / 2);
+    if(trimmedContent === null) {
 
-    // We want to keep the END of the file (most recent logs). Find where to cut.
-    const cutPosition = content.length - targetSize;
-
-    if(cutPosition <= 0) {
-
-      // File is smaller than target, no trimming needed.
       return;
     }
-
-    // Find the next newline after the cut position to keep complete lines.
-    let lineStart = content.indexOf("\n", cutPosition);
-
-    if(lineStart === -1) {
-
-      // No newline found after cut position, keep from cut position.
-      lineStart = cutPosition;
-    } else {
-
-      // Start after the newline.
-      lineStart += 1;
-    }
-
-    const trimmedContent = content.substring(lineStart);
 
     // Write to temp file, then rename (atomic replace).
     const tempPath = logFilePath + ".tmp";
@@ -349,5 +372,13 @@ export function shutdownFileLogger(): void {
   // Flush remaining buffer synchronously.
   flushLogBufferSync();
 
+  // Reset all module state so a subsequent initializeFileLogger() starts from a clean slate. The disabled-on-write-error flag in particular must not survive
+  // shutdown - if a prior run hit a write failure and entered the 60-second retry window, that window should not silently drop writes from the next run.
   isInitialized = false;
+  isDisabled = false;
+  disabledAt = 0;
+  writeBuffer = [];
+  approximateSize = 0;
+  writeCount = 0;
+  logFilePath = null;
 }
