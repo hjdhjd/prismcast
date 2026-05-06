@@ -112,12 +112,12 @@ export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | u
       }
 
       // If we reach here, we're going to retry (or fail after max attempts). Now log the warning since there's an actual issue to report.
-      LOG.warn("Attempt %s failed for %s: %s", attempt, description, formatError(error));
+      LOG.warn("Attempt %s failed for %s: %s.", attempt, description, formatError(error));
 
       // Between retry attempts, wait with exponential backoff plus random jitter.
       if(attempt < maxAttempts) {
 
-        const baseDelay = Math.min(1000 * Math.pow(2, attempt - 1), maxBackoffDelay);
+        const baseDelay = Math.min(1000 * (2 ** (attempt - 1)), maxBackoffDelay);
         const jitter = Math.random() * backoffJitter;
 
         // eslint-disable-next-line no-await-in-loop

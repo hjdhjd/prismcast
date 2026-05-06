@@ -33,6 +33,7 @@ import type { Clock } from "../../../src/utils/clock.ts";
 import type { NativeProxy } from "../../../src/native/proxy.ts";
 import assert from "node:assert/strict";
 import { createNativeProxy } from "../../../src/native/proxy.ts";
+import { delay } from "../../../src/utils/delay.ts";
 import { deriveIvFromSequence } from "../../../src/native/decrypt.ts";
 import { makeFakeClock } from "../../../src/utils/clock.helpers.ts";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
@@ -80,7 +81,7 @@ async function waitFor(predicate: () => boolean, timeoutMs: number, label: strin
     }
 
     // eslint-disable-next-line no-await-in-loop -- the loop semantically IS the polling drain.
-    await new Promise<void>((resolve) => { setTimeout(resolve, 25); });
+    await delay(25);
   }
 
   throw new Error("waitFor timeout (" + String(timeoutMs) + "ms): " + label);

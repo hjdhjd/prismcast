@@ -248,7 +248,7 @@ describe("status.handlers: HANDLER_CONSTANTS registry", () => {
     const entry = handlers.HANDLER_CONSTANTS.find((c) => c.name === "healthLabels");
     const value = entry?.value as Record<string, string>;
 
-    assert.ok(!Object.prototype.hasOwnProperty.call(value, "recovering"),
+    assert.ok(!Object.hasOwn(value, "recovering"),
       "healthLabels must NOT carry a 'recovering' key - getRecoveringLabel owns that dispatch");
   });
 
@@ -1613,9 +1613,9 @@ describe("status.handlers: handleStreamRemoved (SSE handler)", () => {
 
       handlers.handleStreamRemoved({ id: "gone" }, harness.ctx);
 
-      assert.ok(!Object.prototype.hasOwnProperty.call(harness.ctx.state.streamData, "gone"),
+      assert.ok(!Object.hasOwn(harness.ctx.state.streamData, "gone"),
         "streamData entry must be deleted");
-      assert.ok(!Object.prototype.hasOwnProperty.call(harness.ctx.state.expandedStreams, "gone"),
+      assert.ok(!Object.hasOwn(harness.ctx.state.expandedStreams, "gone"),
         "expandedStreams entry must be deleted to avoid stale-id ghosts");
       assert.equal(harness.ctx.state.expandedStreams["stay"], true, "unrelated entries must remain untouched");
     })();
@@ -1655,7 +1655,7 @@ describe("status.handlers: handleStreamRemoved (SSE handler)", () => {
       // Must not throw.
       handlers.handleStreamRemoved({ id: "x" }, harness.ctx);
 
-      assert.ok(!Object.prototype.hasOwnProperty.call(harness.ctx.state.streamData, "x"));
+      assert.ok(!Object.hasOwn(harness.ctx.state.streamData, "x"));
     })();
   });
 });

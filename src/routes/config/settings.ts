@@ -521,8 +521,8 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     const inputType = (setting.type === "float") ? "number" : (((setting.type === "integer") || (setting.type === "port")) ? "number" : "text");
 
     // Calculate step for arrow key increments. Auto-derived from min/displayDivisor: when the min in display units is between 0 and 1 (exclusive), use it as the
-    // step (e.g., 500ms -> 0.5s step); otherwise step is 1 whole display unit. This gives meaningful arrow increments and constrains input to a sensible value grid
-    // (e.g., 0.5, 1.0, 1.5, ... for half-second steps) rather than the old 1/displayDivisor approach which produced unusably small increments.
+    // step (e.g., 500ms -> 0.5s step); otherwise step is 1 whole display unit. This gives meaningful arrow increments and constrains input to a sensible value
+    // grid (e.g., 0.5, 1.0, 1.5, ... for half-second steps).
     let step = "1";
 
     if(setting.displayDivisor && (setting.min !== undefined)) {

@@ -34,6 +34,7 @@ import type { AddressInfo, Server } from "node:net";
 import { getDataDir, initializeDataDir } from "../../src/config/paths.ts";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { Express } from "express";
+import { delay } from "../../src/utils/delay.ts";
 import { ensureAllMigrated } from "../../src/config/persistence.ts";
 import express from "express";
 import { formatError } from "../../src/utils/errors.ts";
@@ -322,7 +323,7 @@ export async function bootApp(ctx: IntegrationContext): Promise<BootedApp> {
 export async function waitForHealthFlush(): Promise<void> {
 
   // Health module's debounce is 2000ms (FLUSH_DELAY in src/config/health.ts). 2500ms gives the debounce plus the file-store write a comfortable margin.
-  await new Promise<void>((resolve) => { setTimeout(resolve, 2500); });
+  await delay(2500);
 }
 
 /**

@@ -2,7 +2,7 @@
  *
  * index.ts: Coordinator for native HLS streaming - manifest interception, DRM probe, and proxy lifecycle.
  */
-import { LOG, formatError, startTimer } from "../utils/index.ts";
+import { LOG, delay, formatError, startTimer } from "../utils/index.ts";
 import { clearProbeCache, probeManifest } from "./probe.ts";
 import { installManifestInterceptor, removeManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
@@ -125,13 +125,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   try {
 
-    interception = await Promise.race([
-      interceptionPromise,
-      new Promise<null>((resolve) => {
-
-        setTimeout(() => { resolve(null); }, INTERCEPTION_AWAIT_TIMEOUT);
-      })
-    ]);
+    interception = await Promise.race([ interceptionPromise, delay(INTERCEPTION_AWAIT_TIMEOUT).then(() => null) ]);
   } catch(error) {
 
     LOG.debug("native:coordinator", "Manifest interception error for %s: %s.", channelName, formatError(error));

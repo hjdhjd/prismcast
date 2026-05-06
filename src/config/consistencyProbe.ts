@@ -54,8 +54,8 @@ function checkServiceTagFilter(): ConsistencyIssue[] {
   }
 
   const knownTags = new Set(getAllServiceTags().map((tag) => tag.tag));
-  const enabled = CONFIG.channels.enabledServices;
-  const invalid = enabled.filter((tag) => !knownTags.has(tag));
+  const enabledSet = new Set(CONFIG.channels.enabledServices);
+  const invalid = [...enabledSet.difference(knownTags)];
 
   if(invalid.length === 0) {
 
@@ -66,10 +66,8 @@ function checkServiceTagFilter(): ConsistencyIssue[] {
 
     autoFix: async (): Promise<void> => {
 
-      const valid = enabled.filter((tag) => knownTags.has(tag));
-
       // mutateEnabledServices persists the cleaned list to config.json and updates the in-memory cache atomically.
-      await mutateEnabledServices(valid);
+      await mutateEnabledServices([...enabledSet.intersection(knownTags)]);
     },
     category: "unknown-service-tag",
     description: "Service filter contains unrecognized tag(s): " + invalid.join(", "),

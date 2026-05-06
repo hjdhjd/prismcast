@@ -427,7 +427,7 @@ describe("channels.ts: window.saveProfile", () => {
 
     const body = JSON.parse(calls[0]!.body ?? "{}") as { profile: { channelSelection?: unknown } };
 
-    assert.equal(Object.prototype.hasOwnProperty.call(body.profile, "channelSelection"), false,
+    assert.equal(Object.hasOwn(body.profile, "channelSelection"), false,
       "strategy === 'none' must NOT attach channelSelection to the profile body");
   });
 

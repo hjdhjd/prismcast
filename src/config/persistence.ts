@@ -74,7 +74,7 @@ export interface MigrationResult {
 }
 
 /**
- * A single integrity issue detected by a store's validator. Surfaced via logging and (in a future hardening pass) potentially as a hard failure.
+ * A single integrity issue detected by a store's validator. Surfaced via logging; the write proceeds regardless of severity.
  */
 export interface ValidationIssue {
 
@@ -84,8 +84,8 @@ export interface ValidationIssue {
   // Human-readable description of what went wrong.
   description: string;
 
-  // "warning" issues are logged but do not block the write. "error" issues are logged at error level; promotion to throwing is a future hardening step once
-  // we have observation time and tests proving no legitimate paths trip them.
+  // "warning" issues are logged but do not block the write. "error" issues are logged at error level but also do not block the write - the integrity check
+  // is non-blocking by design.
   severity: "warning" | "error";
 }
 
@@ -315,8 +315,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   }
 
   /**
-   * Routes ValidationIssues to the log. Warnings log at warn level; errors log at error level. Future hardening can promote errors to throws once we have
-   * observation time confirming no legitimate paths trip them.
+   * Routes ValidationIssues to the log. Warnings log at warn level; errors log at error level. Both are logged without throwing.
    */
   function handleValidationIssues(issues: ValidationIssue[]): void {
 
@@ -616,7 +615,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     // Apply the caller's mutation. Callbacks modify data in place.
     fn(result.data);
 
-    // Run the validator if one is configured. Issues are logged; the write proceeds. Promotion to throwing is a future hardening step.
+    // Run the validator if one is configured. Issues are logged without aborting the write.
     if(options.validate && prevState) {
 
       handleValidationIssues(options.validate(prevState, result.data));
@@ -672,8 +671,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     // any disk- or filesystem-level corruption that happened between writeFile and now. On a verification failure the main file is structurally suspect, so
     // restore from .bak (which still holds the prior good state) and throw - the caller's expectation that the write succeeded was wrong.
     //
-    // The readback may hit page cache rather than physical disk on most platforms, so this check does NOT prove durability (that's what fsync is for in a
-    // future hardening pass). It does prove integrity: what we asked the OS to write equals what the OS now reports as the file's contents.
+    // The readback may hit page cache rather than physical disk on most platforms, so this check does NOT prove durability - that requires fsync. It does
+    // prove integrity: what we asked the OS to write equals what the OS now reports as the file's contents.
     let written: string;
 
     try {
@@ -702,7 +701,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
       throw new Error("Post-write integrity check failed for " + options.label + " (" + filePath + "): on-disk content does not match the intended write.");
     }
 
-    LOG.info("Saved %s to %s.", options.label, filePath);
+    LOG.debug("persistence:write", "Saved %s to %s.", options.label, filePath);
   }
 
   /**

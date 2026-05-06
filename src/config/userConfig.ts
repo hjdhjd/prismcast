@@ -1235,10 +1235,7 @@ export function setNestedValue(obj: Record<string, unknown>, settingPath: string
 
   for(const part of parts.slice(0, -1)) {
 
-    if(current[part] === undefined) {
-
-      current[part] = {};
-    }
+    current[part] ??= {};
 
     current = current[part] as Record<string, unknown>;
   }
@@ -1522,24 +1519,14 @@ export function getAdvancedSections(): AdvancedSection[] {
   // Get all paths that belong in Advanced (not in Settings).
   const advancedPaths = getAllSettingPaths().filter((p) => !settingsTabPaths.includes(p));
 
-  // Group by category (first path segment).
-  const byCategory = new Map<string, SettingMetadata[]>();
+  // Pair every advanced path with its resolved setting and category prefix, then drop entries whose category is empty or whose setting lookup failed. The
+  // surviving pairs feed Map.groupBy below for the actual grouping.
+  const settingsByPath = advancedPaths
+    .map((path) => ({ category: path.split(".")[0] ?? "", setting: getSettingByPath(path) }))
+    .filter((entry): entry is { category: string; setting: SettingMetadata } => Boolean(entry.category && entry.setting));
 
-  for(const path of advancedPaths) {
-
-    const [category] = path.split(".");
-    const setting = getSettingByPath(path);
-
-    if(setting && category) {
-
-      if(!byCategory.has(category)) {
-
-        byCategory.set(category, []);
-      }
-
-      byCategory.get(category)?.push(setting);
-    }
-  }
+  // Group by category (first path segment) using the standard ESNext.Collection grouper.
+  const byCategory = Map.groupBy(settingsByPath, (entry) => entry.category);
 
   // Return sections in the defined order with display names.
   return ADVANCED_SECTION_META
@@ -1548,7 +1535,7 @@ export function getAdvancedSections(): AdvancedSection[] {
 
       displayName: meta.displayName,
       id: meta.category,
-      settings: byCategory.get(meta.category) ?? []
+      settings: byCategory.get(meta.category)?.map((entry) => entry.setting) ?? []
     }));
 }
 
@@ -1661,7 +1648,7 @@ const isNonEmptyArray: PreservePredicate = (value: unknown): boolean => Array.is
 const isNonEmptyString: PreservePredicate = (value: unknown): boolean => (typeof value === "string") && (value.length > 0);
 
 // Predicate: any number. Used for schemaVersion - the framework-managed integer that any non-undefined value must round-trip through filterDefaults.
-// Mirrors the original `typeof === "number"` check exactly (NaN passes; Number.isFinite() would tighten the contract and is reserved for a separate change).
+// Predicate: any number including NaN. Number.isFinite() would tighten the contract if NaN must be rejected.
 const isNumber: PreservePredicate = (value: unknown): boolean => typeof value === "number";
 
 // Predicate: a string that differs from the default by simple equality. Used for channelSortField / channelSortDirection - both have meaningful default

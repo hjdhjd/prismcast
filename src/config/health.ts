@@ -199,7 +199,7 @@ export async function loadHealthState(): Promise<void> {
 
   if((channelCount > 0) || (domainCount > 0)) {
 
-    LOG.info("Loaded health state: %d channel(s), %d domain(s).", channelCount, domainCount);
+    LOG.info("Loaded health state for %d channels and %d domains.", channelCount, domainCount);
   }
 }
 

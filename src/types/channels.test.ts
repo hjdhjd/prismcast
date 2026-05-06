@@ -34,7 +34,7 @@ describe("CHANNEL_IDENTITY_KEYS", () => {
   test("is sorted alphabetically", () => {
 
     // Alphabetical order is the convention across this file's arrays. A non-sorted array hints that a contributor added an entry in the wrong place.
-    const sorted = [...CHANNEL_IDENTITY_KEYS].sort();
+    const sorted = CHANNEL_IDENTITY_KEYS.toSorted();
 
     assert.deepEqual([...CHANNEL_IDENTITY_KEYS], sorted, "identity keys should be in alphabetical order");
   });
@@ -67,7 +67,7 @@ describe("CHANNEL_BINDING_KEYS", () => {
 
   test("is sorted alphabetically", () => {
 
-    const sorted = [...CHANNEL_BINDING_KEYS].sort();
+    const sorted = CHANNEL_BINDING_KEYS.toSorted();
 
     assert.deepEqual([...CHANNEL_BINDING_KEYS], sorted, "binding keys should be in alphabetical order");
   });

@@ -25,6 +25,7 @@
     "noPropertyAccessFromIndexSignature": true,
     "noUncheckedIndexedAccess": true,
     "noUncheckedSideEffectImports": true,
+    "resolveJsonModule": true,
     "rewriteRelativeImportExtensions": true,
     "strict": true,
     "stripInternal": true,

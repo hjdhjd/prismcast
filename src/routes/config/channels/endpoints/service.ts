@@ -21,7 +21,7 @@ import { route } from "../http/handler.ts";
  */
 export function registerServiceRoutes(app: Express): void {
 
-  // PUT /config/channels/:key/service - Update service selection for a multi-service channel. Replaces the legacy POST /config/service endpoint.
+  // PUT /config/channels/:key/service - Update service selection for a multi-service channel.
   app.put("/config/channels/:key/service", route("update service", async (req: Request, res: Response) => {
 
     const params = req.params as { key?: string };
@@ -160,8 +160,7 @@ export function registerServiceRoutes(app: Express): void {
       }
     }
 
-    // Single atomic write for all selection changes. Eliminates the prior set-then-save pattern that produced one disk write per call but visited module
-    // state N times before persisting.
+    // Single atomic write for all selection changes.
     if(Object.keys(updates).length > 0) {
 
       await mutateServiceSelections(updates);

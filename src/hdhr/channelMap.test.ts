@@ -87,7 +87,7 @@ describe("buildChannelMap", () => {
     // the resulting number-sorted output equals the key-sorted input. Locking this guards against accidental sort-key changes (e.g., switching to name).
     const map = buildChannelMap();
     const keys = map.map((e) => e.key);
-    const sortedKeys = [...keys].sort((a, b) => a.localeCompare(b));
+    const sortedKeys = keys.toSorted((a, b) => a.localeCompare(b));
 
     assert.deepEqual(keys, sortedKeys, "keys appear in alphabetical order");
   });

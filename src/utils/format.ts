@@ -142,7 +142,7 @@ export function stringifySorted(data: unknown, indent = 2): string {
 
     if(value && (typeof value === "object") && !Array.isArray(value)) {
 
-      return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)));
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).toSorted(([a], [b]) => a.localeCompare(b)));
     }
 
     return value;

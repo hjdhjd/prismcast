@@ -326,7 +326,7 @@ export function setupProfileRoutes(app: Express): void {
       const profileChannelCounts = countChannelsByProfile(new Set(Object.keys(profiles)));
 
       // Build a summary for each profile including its domain mappings and channel count.
-      const profileList = Object.entries(profiles).sort(([a], [b]) => a.localeCompare(b)).map(([ key, profile ]) => {
+      const profileList = Object.entries(profiles).toSorted(([a], [b]) => a.localeCompare(b)).map(([ key, profile ]) => {
 
         // Find domains that reference this profile.
         const profileDomains = Object.entries(domains).filter(([ , config ]) => (config.profile === key)).map(([ domain, config ]) => ({

@@ -186,6 +186,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "native:probe", description: "DRM probe: variant count, bandwidths, encryption classification, key accessibility, cache hit/miss." },
   { category: "native:proxy", description: "Manifest polling, segment fetch/store, playlist generation, segment rotation, key rotation." },
   { category: "native:token", description: "Token refresh: expiry parsed, timer scheduled, refresh triggered, manifest acquired." },
+  { category: "persistence:write", description: "File store writes: per-mutation save to disk after successful atomic temp+rename and integrity check." },
   { category: "precache", description: "Channel lineup precaching: deferred runs, service filter skips." },
   { category: "recovery:context", description: "Video context: frame detachment, re-search." },
   { category: "recovery:general", description: "General recovery: browser re-minimize, monitor abort." },

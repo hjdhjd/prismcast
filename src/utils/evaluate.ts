@@ -14,8 +14,8 @@ import { raceWithTimeout } from "./delay.ts";
  * 2. Timeout: A configurable timeout (default 15 seconds) provides a safety net for evaluate calls that hang. This catches cases where the browser is unresponsive but
  *    the stream hasn't been explicitly terminated yet.
  *
- * The wrapper automatically retrieves the abort signal from the stream registry using the stream context from AsyncLocalStorage. If no stream context is available
- * (e.g., during browser initialization), it falls back to timeout-only behavior.
+ * The wrapper automatically retrieves the abort signal from this module's local AbortController map using the stream context from AsyncLocalStorage. If no
+ * stream context is available (e.g., during browser initialization), it falls back to timeout-only behavior.
  *
  * When aborting or timing out, the underlying CDP call is still pending in Puppeteer - we just stop waiting for it locally. We attach a no-op .catch() to the
  * evaluate promise to suppress unhandled rejection warnings when the CDP call eventually completes or times out.
@@ -141,21 +141,16 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
   // If we have an abort signal, add a third racer that rejects when the abort fires.
   if(signal) {
 
-    const abortPromise = new Promise<never>((_, reject) => {
+    const { promise: abortPromise, reject: rejectAbort } = Promise.withResolvers<never>();
 
-      // Check if already aborted (race condition protection).
-      if(signal.aborted) {
+    // Check if already aborted (race condition protection).
+    if(signal.aborted) {
 
-        reject(new EvaluateAbortError());
+      rejectAbort(new EvaluateAbortError());
+    } else {
 
-        return;
-      }
-
-      signal.addEventListener("abort", () => {
-
-        reject(new EvaluateAbortError());
-      }, { once: true });
-    });
+      signal.addEventListener("abort", () => { rejectAbort(new EvaluateAbortError()); }, { once: true });
+    }
 
     return Promise.race([ timeoutRace, abortPromise ]);
   }

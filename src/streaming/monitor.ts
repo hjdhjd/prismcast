@@ -76,30 +76,6 @@ interface PageNavigationRecoveryResult {
 }
 
 /**
- * Monitors video playback health and attempts escalating recovery when issues are detected. This function runs on an interval, checking video state and triggering
- * increasingly aggressive recovery actions when playback stalls, pauses, or errors occur.
- *
- * The monitor includes a circuit breaker that terminates the stream after a configurable number of consecutive failures within a time window. This prevents endless
- * recovery attempts on fundamentally broken streams.
- *
- * Tab replacement recovery: When the browser tab becomes unresponsive (3+ consecutive evaluate timeouts), the monitor triggers tab replacement via the
- * onTabReplacement callback. This closes the hung tab, creates a fresh one with new capture, and continues the stream. This is more reliable than page.goto-based
- * recovery because a hung tab may not respond to navigation commands.
- *
- * The returned cleanup function should be called when the stream ends to stop monitoring and release resources.
- *
- * @param page - The Puppeteer page object.
- * @param context - The frame or page containing the video element.
- * @param profile - The site profile for behavior configuration.
- * @param url - The URL of the stream, needed for page reload recovery.
- * @param streamId - A concise identifier for the stream, used in log messages.
- * @param streamInfo - Stream metadata for status updates.
- * @param onCircuitBreak - Callback function called when circuit breaker trips.
- * @param onTabReplacement - Optional callback for tab replacement recovery. When provided and 3+ consecutive timeouts occur, this is called to replace the hung tab.
- *                           If null/undefined, tab replacement is not available and timeouts will eventually trip the circuit breaker.
- * @returns A cleanup function to stop the monitor.
- */
-/**
  * Stream info passed to the monitor for status updates.
  */
 export interface MonitorStreamInfo {
@@ -167,6 +143,30 @@ interface SegmentState {
   wasInTinyState: boolean;
 }
 
+/**
+ * Monitors video playback health and attempts escalating recovery when issues are detected. This function runs on an interval, checking video state and triggering
+ * increasingly aggressive recovery actions when playback stalls, pauses, or errors occur.
+ *
+ * The monitor includes a circuit breaker that terminates the stream after a configurable number of consecutive failures within a time window. This prevents endless
+ * recovery attempts on fundamentally broken streams.
+ *
+ * Tab replacement recovery: When the browser tab becomes unresponsive (3+ consecutive evaluate timeouts), the monitor triggers tab replacement via the
+ * onTabReplacement callback. This closes the hung tab, creates a fresh one with new capture, and continues the stream. This is more reliable than page.goto-based
+ * recovery because a hung tab may not respond to navigation commands.
+ *
+ * The returned cleanup function should be called when the stream ends to stop monitoring and release resources.
+ *
+ * @param page - The Puppeteer page object.
+ * @param context - The frame or page containing the video element.
+ * @param profile - The site profile for behavior configuration.
+ * @param url - The URL of the stream, needed for page reload recovery.
+ * @param streamId - A concise identifier for the stream, used in log messages.
+ * @param streamInfo - Stream metadata for status updates.
+ * @param onCircuitBreak - Callback function called when circuit breaker trips.
+ * @param onTabReplacement - Optional callback for tab replacement recovery. When provided and 3+ consecutive timeouts occur, this is called to replace the hung tab.
+ *                           If null/undefined, tab replacement is not available and timeouts will eventually trip the circuit breaker.
+ * @returns A cleanup function to stop the monitor.
+ */
 export function monitorPlaybackHealth(
   page: Page,
   context: Frame | Page,

@@ -400,7 +400,7 @@ export async function initializeUserProfiles(): Promise<void> {
 
   if((profileCount > 0) || (domainCount > 0)) {
 
-    LOG.info("Loaded %d user profile(s) and %d domain mapping(s).", profileCount, domainCount);
+    LOG.info("Loaded %d user profiles and %d domain mappings.", profileCount, domainCount);
   }
 }
 

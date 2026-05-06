@@ -101,10 +101,9 @@ export function getCanonical(key: string): CanonicalChannel {
     throw new Error("getCanonical: no predefined channel with key '" + key + "'.");
   }
 
-  // canonicalKey is structurally absent on CanonicalChannel (typed as `never`) and required on VariantChannel; reading through a generic Record bypasses the
-  // type-narrowing that would otherwise make this check appear tautological. The double-cast through `unknown` is necessary because the union types do not
-  // include an index signature.
-  if((channel as unknown as Record<string, unknown>)["canonicalKey"] !== undefined) {
+  // canonicalKey is structurally absent on CanonicalChannel (typed as `never`) and required on VariantChannel. Object.hasOwn returns boolean without trying
+  // to index into the typed union, so it sidesteps the narrowing that would otherwise make this check appear tautological.
+  if(Object.hasOwn(channel, "canonicalKey")) {
 
     throw new Error("getCanonical: key '" + key + "' resolves to a variant, not a canonical.");
   }

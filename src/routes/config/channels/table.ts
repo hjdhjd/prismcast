@@ -413,15 +413,6 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
 }
 
 /**
- * Generates HTML for the advanced fields section (station ID, channel selector, and channel number).
- * @param idPrefix - Prefix for element IDs ("add" or "edit").
- * @param stationIdValue - Current station ID value.
- * @param channelSelectorValue - Current channel selector value.
- * @param channelNumberValue - Current channel number value.
- * @param showHints - Whether to show hint text.
- * @returns Array of HTML strings for the advanced fields section.
- */
-/**
  * Options for the advanced fields section of the channel add/edit form.
  */
 interface AdvancedFieldOptions {
@@ -439,7 +430,7 @@ interface AdvancedFieldOptions {
 
   // Reset values for each field. Each entry is the stringified default value the form embeds into the data-default attribute on the input - resetValueFor in
   // the caller handles all stringification (boolean -> "true"/"false", arrays -> comma-joined). Required when customizedFields contains the field; ignored
-  // otherwise. Uniform `string | undefined` shape across every field (including hdhrEnabled and tags, which previously had distinct types).
+  // otherwise. Uniform `string | undefined` shape across every field, including hdhrEnabled and tags.
   defaults?: {
 
     channelNumber?: string;
@@ -470,6 +461,12 @@ interface AdvancedFieldOptions {
   tagsValue?: string;
 }
 
+/**
+ * Generates HTML for the advanced fields section (station ID, channel selector, channel number, guide title, logo URL, HDHomeRun toggle, tags).
+ * @param idPrefix - Prefix for element IDs ("add" or "edit").
+ * @param options - Field values, defaults, and customization metadata. See AdvancedFieldOptions.
+ * @returns Array of HTML strings for the advanced fields section.
+ */
 function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions = {}): string[] {
 
   const { channelNumberValue = "", channelSelectorValue = "", guideTitleValue = "", hdhrEnabled = true, logoUrlValue = "", showHints = true,
@@ -1113,8 +1110,8 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
   // For override channels, fetch the customization provenance once. The accessor returns which fields the user has explicitly customized (across canonical and
   // active-variant stored entries) and the per-field reset value (looked up from the appropriate predefined entry, with variant-inheritance fallback). This is
-  // the single source of truth for the modified-field treatment - it produces no false positives when service variants are resolved (the legacy value-comparison
-  // approach incorrectly flagged variant-resolved fields as customized just because the resolved value differed from the canonical predefined value).
+  // the single source of truth for the modified-field treatment - it produces no false positives when service variants are resolved, because storage provenance,
+  // not value comparison, drives the determination.
   //
   // For non-override channels (predefined-only or pure user-defined), the customization concept does not apply: predefined-only channels have no user
   // customizations to mark, and pure user channels have no predefined baseline to compare against. Both paths skip the accessor and pass undefined defaults.

@@ -36,12 +36,12 @@ export function generateStatusScript(): string {
   // schedulers, handlers, trampolines).
   const handlerSources = HANDLER_FUNCTIONS.map((fn) => fn.toString()).join("\n\n");
 
-  // Section 3: the IIFE. Wires the runtime side -- constructs the state and externals, opens the EventSource, dispatches events, attaches window.* trampolines,
+  // Section 3: the IIFE. Wires the runtime side - constructs the state and externals, opens the EventSource, dispatches events, attaches window.* trampolines,
   // starts the timers. The handler-side state mutations all go through the ctx that is built here. The shared sibling-script values (channelDisplayHtml,
-  // channelTable, copyToClipboard, dropdowns) are referenced as bare identifiers, matching the existing client-side idiom -- shared.ts assigns them via
+  // channelTable, copyToClipboard, dropdowns) are referenced as bare identifiers, matching the existing client-side idiom - shared.ts assigns them via
   // window.X = ... before this script loads, and bare identifiers in non-strict script-tag scope resolve through the global object. updateRestartDialogStatus
-  // is wrapped in a typeof guard inside a getter because the original script's defensive pattern allowed for the chance that config.ts had not yet exposed it
-  // by the time a streamRemoved event arrives; preserving the guard preserves that safety.
+  // is wrapped in a typeof guard inside a getter because config.ts loads after status.ts; a streamRemoved event arriving before config.ts has registered the
+  // callback must not throw.
   const iife = [
 
     "(function() {",

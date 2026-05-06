@@ -5,18 +5,18 @@
  * The architecture is ports-and-adapters with the same shape used across upgrade/, service/, utils/ffmpeg.ts, and utils/clock.ts. Every formatter, renderer, DOM
  * mutator, SSE event handler, and lifecycle helper that the status display needs is defined here as a free-standing TypeScript function over a HandlerContext.
  *
- *   - HandlerContext (this file)        -- the runtime-input port; the document, the mutable client state, and the window.*-resolved externals
- *   - ClientState (this file)           -- the mutable record of streamData / systemData / expandedStreams / staleness counters / rAF gates
- *   - ClientExternals (this file)       -- the readonly handle to sibling-script window.* APIs (channelTable, dropdowns, copyToClipboard, etc.)
- *   - HANDLER_CONSTANTS (this file)     -- the registry of script-side constants (health color CSS vars, label maps, row tints) emitted into the script body
- *   - HANDLER_FUNCTIONS (this file)     -- the registry of pure functions whose .toString() output is concatenated into the emitted script body
- *   - generateStatusScript (status.ts)  -- the boundary; the only place that builds strings, that wires window.*, and that constructs the EventSource
+ *   - HandlerContext (this file) - the runtime-input port; the document, the mutable client state, and the window.*-resolved externals
+ *   - ClientState (this file) - the mutable record of streamData / systemData / expandedStreams / staleness counters / rAF gates
+ *   - ClientExternals (this file) - the readonly handle to sibling-script window.* APIs (channelTable, dropdowns, copyToClipboard, etc.)
+ *   - HANDLER_CONSTANTS (this file) - the registry of script-side constants (health color CSS vars, label maps, row tints) emitted into the script body
+ *   - HANDLER_FUNCTIONS (this file) - the registry of pure functions whose .toString() output is concatenated into the emitted script body
+ *   - generateStatusScript (status.ts) - the boundary; the only place that builds strings, that wires window.*, and that constructs the EventSource
  *
- * Why this file exists. status.ts used to interleave handler logic with string-concatenation glue, which made the SSE behavior testable only by running the
- * emitted script in a synthetic DOM (with the EventSource gap that happy-dom v20 does not implement). Splitting the logic out turns every handler into a free
- * function that tests import and call directly with synthetic context literals. The IIFE shell stays a thin glue layer; the test surface is the handler module.
+ * Why this file exists. Free-standing handler functions are directly importable and callable from Node tests with synthetic context literals, which avoids the
+ * happy-dom EventSource gap that would otherwise force every SSE behavior test to run inside a synthetic DOM. The IIFE shell in status.ts is a thin glue layer;
+ * the test surface is this handler module.
  *
- * Single source of truth. Every function defined here is consumed twice -- once by Node tests that import and call it directly, and once by the browser via
+ * Single source of truth. Every function defined here is consumed twice - once by Node tests that import and call it directly, and once by the browser via
  * Function.prototype.toString() concatenation in generateStatusScript(). The TypeScript function IS the source; there is no parallel hand-mirrored implementation
  * to drift away from it. The constraint this places on function bodies is that they may reference only their parameters, browser globals (document, JSON, Date,
  * Math, URL, Object, Number, requestAnimationFrame, setInterval, EventSource, window, CustomEvent), or sibling functions that are also emitted. No imports, no
@@ -25,7 +25,7 @@
  */
 
 /**
- * The shape of a single stream as carried over the SSE wire and stored in the client state. This is the script-side projection -- only the fields the renderers
+ * The shape of a single stream as carried over the SSE wire and stored in the client state. This is the script-side projection - only the fields the renderers
  * and handlers actually read are declared. The server-side StreamListItem and statusEmitter payloads are richer; the script consumes a subset.
  */
 export interface StreamSummary {
@@ -103,8 +103,8 @@ export interface HealthSnapshot {
 }
 
 /**
- * Mutable client state. The IIFE shell constructs one of these at startup; every handler reads and writes it via ctx.state. Direct field mutation matches how
- * the original IIFE worked -- wrapping it in mutation methods would be over-engineering.
+ * Mutable client state. The IIFE shell constructs one of these at startup; every handler reads and writes it via ctx.state. Handlers mutate ctx.state fields
+ * directly; mutation methods would add no value over field assignment.
  */
 export interface ClientState {
 
@@ -132,7 +132,7 @@ export interface ClientExternals {
 
 /**
  * The runtime-input port every handler consumes. document is the DOM; state is the mutable record; externals are the sibling-script window.* APIs. Decision
- * logic is a pure function of this shape -- production wires it inside the IIFE (constructed by generateStatusScript), tests pass a context literal.
+ * logic is a pure function of this shape - production wires it inside the IIFE (constructed by generateStatusScript), tests pass a context literal.
  */
 export interface HandlerContext {
 
@@ -530,8 +530,8 @@ function buildStreamPopoverContent(menu: Element, ctx: HandlerContext): void {
 
   for(const s of Object.values(ctx.state.streamData)) {
 
-    // The fallback chain uses || (not ??) so empty-string channel/serviceName values fall through to getDomain. This matches the original script's behavior;
-    // the server may emit an empty string when the channel is not yet identified.
+    // The fallback chain uses || (not ??) so empty-string channel/serviceName values fall through to getDomain. The server may emit an empty string when the
+    // channel is not yet identified.
     const color = healthColorVars[s.health] ?? "var(--text-muted)";
     const name = (s.channel ?? "") || (s.serviceName ?? "") || getDomain(s.url);
     const dur = Math.floor((now - new Date(s.startTime).getTime()) / 1000);
@@ -574,7 +574,7 @@ function updateStreamPopover(ctx: HandlerContext): void {
 // Render scheduling. The DOM-writing render functions funnel through requestAnimationFrame gates so multiple SSE events arriving within the same frame produce a
 // single DOM write instead of redundant back-to-back rebuilds that destroy and recreate image elements.
 
-// Schedule a full-table render on the next animation frame. Idempotent within a frame -- repeated calls collapse into one render.
+// Schedule a full-table render on the next animation frame. Idempotent within a frame - repeated calls collapse into one render.
 function scheduleTableRender(ctx: HandlerContext): void {
 
   if(!ctx.state.tableRenderPending) {
@@ -780,7 +780,7 @@ function updateDurations(ctx: HandlerContext): void {
   schedulePopoverRender(ctx);
 }
 
-// Update the per-channel health icon in the Channels tab. Domain match check guards against stale events from a prior service binding -- the login button carries
+// Update the per-channel health icon in the Channels tab. Domain match check guards against stale events from a prior service binding - the login button carries
 // a data-auth-domain attribute that must agree with the event's domain (when supplied) for the update to apply.
 function updateChannelHealth(channelKey: string, status: "failed" | "success", timestamp: number, domain: string | undefined, ctx: HandlerContext): void {
 
@@ -822,7 +822,7 @@ function updateChannelHealth(channelKey: string, status: "failed" | "success", t
 }
 
 // Mark every login button bound to the given domain as verified, with a "Verified {time-ago}" tooltip. Called for successful health events and for snapshot
-// domain entries. Array.from converts the NodeList to a real array so for...of works without requiring DOM.Iterable in the lib config.
+// domain entries.
 function updateDomainAuth(domain: string, timestamp: number, ctx: HandlerContext): void {
 
   const buttons = ctx.document.querySelectorAll<HTMLElement>(".btn-icon-login[data-auth-domain=\"" + domain + "\"]");
@@ -881,13 +881,12 @@ function handleStreamAdded(data: StreamSummary, ctx: HandlerContext): void {
 }
 
 // streamRemoved handler. Drops the stream from streamData and expandedStreams, re-renders, and invokes the deferred-restart callback if config.ts has registered
-// one. The optional ?.() form replaces the original `if(typeof updateRestartDialogStatus === "function")` guard.
+// one. The optional ?.() form is used because the callback may not be registered yet when this handler fires.
 function handleStreamRemoved(data: StreamRemovedPayload, ctx: HandlerContext): void {
 
   // The dynamic-delete lint rule fires because TS cannot statically verify the key exists. Here the key is a stream id that may or may not be present in the
-  // record, so the delete is intentionally tolerant -- preserving the original script's behavior. eslint-disable on these two lines is the right call; the
-  // alternatives (Map<string, T>, Record<string, T | undefined>) would either change the on-the-wire data shape or leave dead "undefined" entries that
-  // Object.values would still iterate.
+  // record, so the delete is intentionally tolerant. eslint-disable on these two lines is the right call; the alternatives (Map<string, T>,
+  // Record<string, T | undefined>) would either change the on-the-wire data shape or leave dead "undefined" entries that Object.values would still iterate.
   // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
   delete ctx.state.streamData[data.id];
   // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
@@ -1002,7 +1001,7 @@ function copyOverviewPlaylistUrl(ctx: HandlerContext): void {
 }
 
 // visibilitychange handler. When the page returns from being hidden for more than 30 seconds, reconnect the SSE stream and re-activate the current tab so the
-// logs stream reconnects naturally through its existing tabactivated listener. The reconnect callback is supplied by the IIFE -- it owns the EventSource
+// logs stream reconnects naturally through its existing tabactivated listener. The reconnect callback is supplied by the IIFE - it owns the EventSource
 // instance.
 function handleVisibilityChange(ctx: HandlerContext, reconnect: () => void): void {
 
@@ -1088,7 +1087,7 @@ function initIPadTooltips(ctx: HandlerContext): void {
 
 /**
  * The narrowly-typed function shape consumers of HANDLER_FUNCTIONS see. `(...args: never[]) => unknown` is the TS-idiomatic "any function" type that does not
- * fall back to the unsafe Function global -- it is contravariant on parameters so it accepts any specific signature, and unknown on return so callers narrow at
+ * fall back to the unsafe Function global - it is contravariant on parameters so it accepts any specific signature, and unknown on return so callers narrow at
  * the use site. The registry consumer (status.ts:generateStatusScript) only ever calls .toString() on each entry, so any function-shape works.
  */
 type EmittableFn = (...args: never[]) => unknown;
@@ -1141,7 +1140,8 @@ export const HANDLER_FUNCTIONS: readonly EmittableFn[] = [
   initIPadTooltips
 ];
 
-// Test surface. Each function is exported so status.handlers.test.ts (and the next session's DOM-runtime tier) can import and call them directly.
+// Test surface. Each function is exported so status.handlers.test.ts and the DOM-runtime suite at test/e2e/dom-runtime/status-handlers-runtime.test.ts can
+// import and call them directly.
 export {
 
   applyHealthSnapshot,

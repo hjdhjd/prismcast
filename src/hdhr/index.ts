@@ -71,18 +71,11 @@ export async function startHdhrServer(): Promise<void> {
   // Start listening on the configured port. Handle EADDRINUSE gracefully.
   try {
 
-    hdhrServer = await new Promise<Server>((resolve, reject) => {
+    const { promise, resolve, reject } = Promise.withResolvers<Server>();
+    const server = app.listen(CONFIG.hdhr.port, CONFIG.server.host, (): void => { resolve(server); });
 
-      const server = app.listen(CONFIG.hdhr.port, CONFIG.server.host, (): void => {
-
-        resolve(server);
-      });
-
-      server.on("error", (error: NodeJS.ErrnoException): void => {
-
-        reject(error);
-      });
-    });
+    server.on("error", (error: NodeJS.ErrnoException): void => { reject(error); });
+    hdhrServer = await promise;
 
     LOG.info("HDHomeRun emulation is now listening on %s:%s (DeviceID: %s).", CONFIG.server.host, CONFIG.hdhr.port, CONFIG.hdhr.deviceId.toUpperCase());
   } catch(error) {

@@ -9,7 +9,7 @@
  *   - narrowing.helpers.ts    firstOf, nthOf
  *   - exec.helpers.ts         FakeExecFileResult, FakeExecFile, bufferOrStringToString, makeExecFileError, execFileFromMap, execFileAlwaysSucceeds
  *   - cleanup.helpers.ts      closePuppeteerStreamWss, closePuppeteerStreamWssOnIdle
- *   - parity.helpers.ts       assertSameShape (factory parity check)
+ *   - parity.helpers.ts       assertSameShape, declareKeysOf (factory parity checks)
  *
  * Tests can import from this barrel for the common case, or from a specific submodule when they want to advertise the narrower dependency. Both styles work
  * because the barrel re-exports verbatim.

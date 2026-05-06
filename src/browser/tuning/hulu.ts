@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * hulu.ts: Hulu Live TV channel selection with fetch interception for direct tuning, guide grid fallback with binary search, position-based inference, and row caching.
+ * hulu.ts: Hulu Live TV channel selection. Fetch interception for direct tuning, with guide grid fallback (binary search, position-based inference, row caching).
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
@@ -1477,12 +1477,22 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
       // Promise that resolves when both UUID and EAB are available for the playlist swap. On warm cache, resolves immediately (both injected at install time).
       // On cold cache, resolves when the in-page listing and details API response parsers have captured both values. The playlist handler awaits this Promise
-      // to hold the request until the target channel's data is ready.
+      // to hold the request until the target channel's data is ready. We use Promise.withResolvers() (Chrome 119+) for the deferred case so the resolver-extraction
+      // pattern matches inPageTimeout below rather than the older "new Promise(executor) + outer-scope variable" pattern.
       let directTuneResolve: Nullable<() => void> = null;
+      let directTunePromise: Promise<void>;
 
-      const directTunePromise = (uuid && eab) ?
-        Promise.resolve() :
-        new Promise<void>((resolve) => { directTuneResolve = resolve; });
+      if(uuid && eab) {
+
+        directTunePromise = Promise.resolve();
+      } else {
+
+        // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+        const deferred = Promise.withResolvers<void>();
+
+        directTunePromise = deferred.promise;
+        directTuneResolve = deferred.resolve;
+      }
 
       // Tracks whether the direct tune has been successfully resolved (UUID+EAB available and playlist swap in progress). Set by tryResolveDirectTune when both
       // values are captured from API responses or injected externally. Warm cache starts resolved. Used by __prismcastIsDirectTuneResolved to let the guide grid
@@ -1499,6 +1509,18 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
           directTuneResolve();
           directTuneResolve = null;
         }
+      }
+
+      // Returns a Promise that resolves after the given delay. Used as the timeout side of Promise.race against a deferred Promise. Defined in-page because
+      // node:timers/promises is not reachable from browser context, but Promise.withResolvers (Chrome 119+) is.
+      async function inPageTimeout(ms: number): Promise<void> {
+
+        // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+        const { promise, resolve } = Promise.withResolvers<void>();
+
+        setTimeout(resolve, ms);
+
+        return promise;
       }
 
       // Injection endpoint for the guide grid strategy's fast-path tune. After binary search identifies the target channel and the unified cache provides the
@@ -1546,12 +1568,9 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
       // timeout) before expanding, so even the very first details request gets expanded with listing-derived EABs. The listing response typically arrives
       // ~200-600ms after the request fires, adding minimal latency to the details response - and the details API is not on the critical path for the channel
       // grid that binary search needs (it only provides program info for the mini-guide overlay).
-      let listingCapturedResolve: Nullable<() => void> = null;
-
-      const listingCapturedPromise = new Promise<void>((resolve) => {
-
-        listingCapturedResolve = resolve;
-      });
+      // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+      const { promise: listingCapturedPromise, resolve: signalListingCaptured } = Promise.withResolvers<void>();
+      let listingCaptureSignaled = false;
 
       // Fire-and-forget: parses a listing API response to build the in-page EAB map. For each channel, finds the currently-airing program by comparing airing
       // times against the current time, mirroring the server-side findCurrentEabFromPrograms() logic. Called on all listing return paths (expanded and passthrough).
@@ -1613,10 +1632,10 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
             }
 
             // Signal that listing data is available. Any details request awaiting listingCapturedPromise will now proceed with expansion.
-            if(listingCapturedResolve) {
+            if(!listingCaptureSignaled) {
 
-              listingCapturedResolve();
-              listingCapturedResolve = null;
+              signalListingCaptured();
+              listingCaptureSignaled = true;
             }
           }).catch(() => { /* Intentional no-op. */ });
         } catch {
@@ -1780,7 +1799,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
           // never arrives, the details request proceeds without expansion (same behavior as before).
           if((capturedCurrentEabs.size === 0) && (cachedEabs.length === 0)) {
 
-            await Promise.race([ listingCapturedPromise, new Promise<void>((resolve) => { setTimeout(resolve, 2000); }) ]);
+            await Promise.race([ listingCapturedPromise, inPageTimeout(2000) ]);
           }
 
           const detailsBody = await getBodyText(input, init);
@@ -1839,7 +1858,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
           // through with affiliate UUID capture for the click fallback.
           if(holdActive) {
 
-            await Promise.race([ directTunePromise, new Promise<void>((resolve) => { setTimeout(resolve, 8000); }) ]);
+            await Promise.race([ directTunePromise, inPageTimeout(8000) ]);
           }
 
           if(!uuid || !eab) {

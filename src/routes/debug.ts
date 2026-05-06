@@ -182,7 +182,7 @@ function generateDebugScript(): string {
     "  if(raw === '') { for(var i = 0; i < all.length; i++) { all[i].checked = false; } }",
     "  else {",
     "    var rawParts = raw.split(',').map(function(p) { return p.trim(); }).filter(function(p) { return p.length > 0; });",
-    "    var hasWildcard = rawParts.indexOf('*') !== -1;",
+    "    var hasWildcard = rawParts.includes('*');",
     "    var includes = rawParts.filter(function(p) { return p !== '*' && p[0] !== '-'; });",
     "    var excludes = rawParts.filter(function(p) { return p[0] === '-'; }).map(function(p) { return p.substring(1); });",
     "    for(var i = 0; i < all.length; i++) {",

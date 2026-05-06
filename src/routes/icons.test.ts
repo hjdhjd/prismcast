@@ -49,8 +49,8 @@ describe("icons module exports", () => {
 
     // Negative test: catches stray exports that slip in without being added to EXPECTED_ICON_NAMES. We compare the keys in the module namespace against the
     // expected list to enforce the closed-set property.
-    const actualNames = Object.keys(icons).sort();
-    const expectedSorted = [...EXPECTED_ICON_NAMES].sort();
+    const actualNames = Object.keys(icons).toSorted();
+    const expectedSorted = EXPECTED_ICON_NAMES.toSorted();
 
     assert.deepEqual(actualNames, expectedSorted, "module exports should match EXPECTED_ICON_NAMES exactly");
   });

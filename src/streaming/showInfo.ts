@@ -636,16 +636,11 @@ export async function fetchFromDvr<T>(host: string, path: string): Promise<T[]> 
 
   try {
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => { controller.abort(); }, API_TIMEOUT_MS);
-
     const response = await fetch(url, {
 
       headers: { "Accept": "application/json" },
-      signal: controller.signal
+      signal: AbortSignal.timeout(API_TIMEOUT_MS)
     });
-
-    clearTimeout(timeoutId);
 
     if(!response.ok) {
 

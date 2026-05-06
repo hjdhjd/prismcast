@@ -399,7 +399,7 @@ export function getProfiles(): ProfileInfo[] {
   const result: ProfileInfo[] = [];
 
   // Add built-in profiles. Iterate entries so each profile reference is fully-typed (keys from Object.keys would force a Record lookup per iteration).
-  for(const [ name, profile ] of Object.entries(SITE_PROFILES).sort(([a], [b]) => a.localeCompare(b))) {
+  for(const [ name, profile ] of Object.entries(SITE_PROFILES).toSorted(([a], [b]) => a.localeCompare(b))) {
 
     result.push({
 
@@ -414,7 +414,7 @@ export function getProfiles(): ProfileInfo[] {
   // Add user-defined profiles. User profiles default to the "custom" category unless they explicitly specify a different category.
   const userProfiles = getUserProfiles();
 
-  for(const [ name, profile ] of Object.entries(userProfiles).sort(([a], [b]) => a.localeCompare(b))) {
+  for(const [ name, profile ] of Object.entries(userProfiles).toSorted(([a], [b]) => a.localeCompare(b))) {
 
     result.push({
 

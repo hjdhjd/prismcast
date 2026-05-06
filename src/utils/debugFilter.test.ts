@@ -261,7 +261,7 @@ describe("DEBUG_CATEGORIES", () => {
     // The module's design comment states "Sorted alphabetically by category" - the /debug UI groups by parent prefix and renders a deterministic checkbox list
     // in registry order. Lock the contract so a future out-of-order entry surfaces as a test failure rather than a UI surprise.
     const categories = DEBUG_CATEGORIES.map((entry) => entry.category);
-    const sorted = [...categories].sort();
+    const sorted = categories.toSorted();
 
     assert.deepEqual(categories, sorted, "registry must be sorted alphabetically by category");
   });

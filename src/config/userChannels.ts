@@ -773,15 +773,14 @@ const channelsMigrations: Record<number, Migration<ChannelsFileData>> = {
 /**
  * Pre-write integrity validator for the channels store. Detects two classes of suspicious mutations:
  *
- *   1. Identity-field loss: a stored channel's identity field went from set to undefined without canonical fallback (the H1 check). Catches code that
+ *   1. Identity-field loss: a stored channel's identity field went from set to undefined without canonical fallback. Catches code that
  *      accidentally drops user-authored channel data while normalizing or transforming entries.
  *   2. Metadata wholesale clear: a top-level metadata collection (serviceSelections, tagRegistry.tags, tagRegistry.deletedTags) went from non-empty to empty
  *      in a single mutation. Catches code that accidentally drops the entire collection (the original bug class - if a future writer or fn regression empties
  *      one of these, this guard logs loudly even though the change is structurally allowed).
  *
- * Both checks are log-only - issues surface as warnings without blocking the write. Promotion to throwing is a future hardening step once observation
- * confirms no legitimate paths trip them. Genuine wholesale clears (operator clears all selections via UI) are the rare false-positive case here; in practice
- * those happen via per-entry mutations rather than a single empty assignment.
+ * Both checks are log-only - issues surface as warnings without blocking the write. Genuine wholesale clears (operator clears all selections via UI) are the
+ * rare false-positive case here; in practice those happen via per-entry mutations rather than a single empty assignment.
  * @param prev - Pre-mutation snapshot of the file data.
  * @param next - Post-mutation, post-normalize file data.
  * @returns Issues found, or empty array.
@@ -892,8 +891,7 @@ export async function readChannels(): Promise<UserChannelsLoadResult> {
  *   - value -> undefined / missing  WHERE the canonical (for variants and predefined-overrides) does not provide the same value
  *
  * Variant inheritance is honored: stripping a stored field that matches the canonical's value is delta minimization, not data loss, and is allowed. The check
- * is currently log-only - it surfaces suspicious patterns for review without blocking legitimate code paths. After a release of observation it can be
- * promoted to a hard failure (throw) once any false positives in legitimate code have been weeded out.
+ * is non-blocking: it surfaces suspicious patterns for operator review without aborting legitimate code paths.
  * @param before - The channels map captured immediately after parse, before the caller's mutation ran.
  * @param after - The channels map after the caller's mutation and delta normalization.
  * @returns A list of "key.field" strings naming each detected silent drop. Empty list means no losses.
@@ -1244,8 +1242,9 @@ export async function initializeUserChannels(): Promise<void> {
   if(configuredServices.length > 0) {
 
     const knownTags = new Set(getAllServiceTags().map((t) => t.tag));
-    const validTags = configuredServices.filter((tag) => knownTags.has(tag));
-    const invalidTags = configuredServices.filter((tag) => !knownTags.has(tag));
+    const configuredSet = new Set(configuredServices);
+    const validTags = [...configuredSet.intersection(knownTags)];
+    const invalidTags = [...configuredSet.difference(knownTags)];
 
     if(invalidTags.length > 0) {
 

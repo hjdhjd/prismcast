@@ -3,8 +3,8 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Frame, Page } from "puppeteer-core";
-import { LOG, delay, extractDomain, formatError, registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg,
-  startTimer } from "../utils/index.ts";
+import { LOG, delay, extractDomain, formatError, raceWithTimeout, registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext,
+  spawnFFmpeg, startTimer } from "../utils/index.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
 import type { RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
 import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.ts";
@@ -190,9 +190,9 @@ export class StreamSetupError extends Error {
   public readonly statusCode: number;
   public readonly userMessage: string;
 
-  constructor(message: string, statusCode: number, userMessage: string) {
+  constructor(message: string, statusCode: number, userMessage: string, options?: ErrorOptions) {
 
-    super(message);
+    super(message, options);
 
     this.name = "StreamSetupError";
     this.statusCode = statusCode;
@@ -467,16 +467,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     // caller's error handling deal with it. This prevents a single stuck getStream() from blocking all future captures indefinitely.
     try {
 
-      await Promise.race([
-        previousCapture,
-        new Promise<never>((_, reject) => {
-
-          setTimeout(() => {
-
-            reject(new Error("Capture queue wait timed out."));
-          }, CONFIG.streaming.navigationTimeout);
-        })
-      ]);
+      await raceWithTimeout(previousCapture, CONFIG.streaming.navigationTimeout, new Error("Capture queue wait timed out."));
     } catch(error) {
 
       // Release our queue position so subsequent captures aren't blocked by our failure.
@@ -508,15 +499,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     // warnings; the actual error handling happens in the catch block below.
     void streamPromise.then(() => { releaseCaptureOnce(); }, () => { /* Suppress unhandled rejection; actual error handling is in the catch block below. */ });
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-
-      setTimeout(() => {
-
-        reject(new Error("Stream initialization timed out."));
-      }, CONFIG.streaming.navigationTimeout);
-    });
-
-    const stream = await Promise.race([ streamPromise, timeoutPromise ]);
+    const stream = await raceWithTimeout(streamPromise, CONFIG.streaming.navigationTimeout, new Error("Stream initialization timed out."));
 
     // Store the raw capture stream. This must be destroyed before closing the page.
     rawCaptureStream = stream;
@@ -668,16 +651,11 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       // pathological hangs if multiple internal timeouts chain sequentially.
       const PLAYBACK_INIT_TIMEOUT = 45000;
 
-      const tuneResult = await Promise.race([
+      const tuneResult = await raceWithTimeout(
         initializePlayback(page, profile, { persistResolution: options.persistResolution, skipChannelSelection: usedDirectUrl }),
-        new Promise<never>((_, reject) => {
-
-          setTimeout(() => {
-
-            reject(new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms."));
-          }, PLAYBACK_INIT_TIMEOUT);
-        })
-      ]);
+        PLAYBACK_INIT_TIMEOUT,
+        new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms.")
+      );
 
       strategyDirectTune = tuneResult.directTune ?? false;
       context = tuneResult.context;
@@ -723,7 +701,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // snapshot an incorrect scaling state during the minimize transition, causing the captured content to appear zoomed into the top-left corner.
   if(options.tabReplacement && !profile.staticCapture) {
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    await delay(500);
   }
 
   // Resize and minimize window.
@@ -962,7 +940,9 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
       // createPageWithCapture handles its own cleanup on failure (closes page, kills FFmpeg).
       const errorMessage = formatError(error);
-      const isBenign = errorMessage.toLowerCase().includes("abort") || errorMessage.toLowerCase().includes("session closed");
+      const lowerMessage = errorMessage.toLowerCase();
+      const benignPatterns = [ "abort", "session closed" ];
+      const isBenign = benignPatterns.some((pattern) => lowerMessage.includes(pattern));
 
       if(!isBenign) {
 
@@ -974,7 +954,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       const captureErrorPatterns = [ "Cannot capture", "timed out", "Capture queue" ];
       const isCaptureError = captureErrorPatterns.some((pattern) => errorMessage.includes(pattern));
 
-      throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.");
+      throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.", { cause: error });
     }
 
     const { captureStream, context, directTune, ffmpegProcess, manifestInterception, page, rawCaptureStream } = captureResult;
@@ -1211,16 +1191,7 @@ async function attemptCaptureProbe(timeout: number): Promise<Nullable<string>> {
       }
     } as unknown as Parameters<typeof getStream>[1];
 
-    const stream = await Promise.race([
-      getStream(page, streamOptions),
-      new Promise<never>((_, reject) => {
-
-        setTimeout(() => {
-
-          reject(new Error("Capture probe timed out."));
-        }, timeout);
-      })
-    ]);
+    const stream = await raceWithTimeout(getStream(page, streamOptions), timeout, new Error("Capture probe timed out."));
 
     // Capture succeeded - the system is functional. Destroy the stream before closing the page to ensure chrome.tabCapture releases the capture cleanly.
     const readable = stream as unknown as Readable;

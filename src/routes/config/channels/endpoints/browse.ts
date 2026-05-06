@@ -105,8 +105,7 @@ export function registerBrowseRoutes(app: Express): void {
     let switched = 0;
 
     // Process all entries inside a single transactional mutation. Both channel changes and service-selection changes go through data.* directly so the entire
-    // batch lands as one atomic write. This eliminates the prior set-then-save pattern (sync setServiceSelection followed by saveServiceSelections) and the
-    // associated "did anything change?" tracking - the framework persists exactly what the fn produced.
+    // batch lands as one atomic write - the framework persists exactly what the fn produced.
     await mutateChannels((data) => {
 
       const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(data.channels) ]);

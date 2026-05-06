@@ -8,10 +8,9 @@
  * 2. How does the submission differ from the predefined base? (Delta computation for storing user overrides.)
  * 3. Do the submitted values match any sibling service variant? (Used to implicit-revert a customized channel back to a variant definition.)
  *
- * These decisions previously lived inline in the POST /config/channels handler, tangled with request parsing and response construction. Keeping them here - in a
- * dedicated module that the route handlers delegate to - lets the handlers read as thin adapters while the comparison logic stays testable, typed, and
- * discoverable. This file imports from both userChannels.ts and services.ts but is not imported by either, so adding new comparisons here never creates a circular
- * dependency.
+ * These decisions are kept here - in a dedicated module that the route handlers delegate to - so the handlers read as thin adapters while the comparison logic
+ * stays testable, typed, and discoverable. This file imports from both userChannels.ts and services.ts but is not imported by either, so adding new comparisons
+ * here never creates a circular dependency.
  */
 import type { ChannelDelta, ResolvedChannel } from "../types/index.ts";
 import { PREDEFINED_SUFFIX, getServiceGroup, resolvePredefinedVariant } from "./services.ts";

@@ -2,6 +2,7 @@
  *
  * delay.ts: Async delay and timeout utilities for PrismCast.
  */
+import { setTimeout as nodeSleep } from "node:timers/promises";
 
 /**
  * A cancellable timeout that can be used with Promise.race. The promise resolves to false when the timeout fires, and cancel() clears the timer to prevent it
@@ -15,19 +16,14 @@ export interface CancellableTimeout {
 
 /**
  * Creates a cancellable timeout for use with Promise.race. Returns a promise that resolves to false after the specified delay, and a cancel function that clears
- * the timer. This avoids the split declaration-then-assignment pattern that requires definite assignment assertions when managing timer IDs alongside
- * Promise.race.
+ * the timer so it does not hold an event loop reference after the race is won by another promise.
  * @param ms - The timeout duration in milliseconds.
  * @returns An object with the timeout promise and a cancel function.
  */
 export function cancellableTimeout(ms: number): CancellableTimeout {
 
-  let timer: ReturnType<typeof setTimeout>;
-
-  const promise = new Promise<false>((resolve) => {
-
-    timer = setTimeout(() => { resolve(false); }, ms);
-  });
+  const { promise, resolve } = Promise.withResolvers<false>();
+  const timer = setTimeout(() => { resolve(false); }, ms);
 
   return { cancel: (): void => { clearTimeout(timer); }, promise };
 }
@@ -45,28 +41,21 @@ export function cancellableTimeout(ms: number): CancellableTimeout {
  */
 export async function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutError?: Error): Promise<T> {
 
-  let timer: ReturnType<typeof setTimeout>;
+  const { promise: timeoutPromise, reject: signalTimeout } = Promise.withResolvers<never>();
+  const timer = setTimeout(() => {
 
-  const timeoutPromise = new Promise<never>((_, reject) => {
-
-    timer = setTimeout(() => {
-
-      reject(timeoutError ?? new Error("Operation timed out after " + String(timeoutMs) + "ms."));
-    }, timeoutMs);
-  });
+    signalTimeout(timeoutError ?? new Error("Operation timed out after " + String(timeoutMs) + "ms."));
+  }, timeoutMs);
 
   return Promise.race([ promise, timeoutPromise ]).finally(() => { clearTimeout(timer); });
 }
 
 /**
- * Creates a promise that resolves after the specified delay. This is a convenience wrapper around setTimeout that allows using async/await syntax for delays.
+ * Creates a promise that resolves after the specified delay. Wraps node:timers/promises.setTimeout so the codebase has a single canonical "sleep" name.
  * @param ms - The delay duration in milliseconds.
  * @returns A promise that resolves after the specified delay.
  */
 export async function delay(ms: number): Promise<void> {
 
-  return new Promise<void>((resolve) => {
-
-    setTimeout(resolve, ms);
-  });
+  await nodeSleep(ms);
 }

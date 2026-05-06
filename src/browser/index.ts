@@ -4,7 +4,8 @@
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
 import { type GpuCapabilities, getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.ts";
-import { LOG, cancellableTimeout, clearPidFile, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer, writePidFile } from "../utils/index.ts";
+import { LOG, cancellableTimeout, clearPidFile, delay, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer,
+  writePidFile } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount } from "../streaming/registry.ts";
 import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.ts";
@@ -34,7 +35,7 @@ const { promises: fsPromises } = fs;
  * - dataDir: The filesystem location for persistent data (Chrome profile, extension files). Resolved via config/paths.ts, which is created on startup if it doesn't
  *   exist.
  *
- * Stream tracking and ID generation have been moved to streaming/registry.ts for unified stream management across all output types (HLS, MPEG-TS, etc.).
+ * Stream tracking and ID generation live in streaming/registry.ts for unified stream management across all output types (HLS, MPEG-TS, etc.).
  */
 
 // The shared browser instance used by all streaming sessions. Created on first stream request or during warmup. Set to null when the browser is not running or
@@ -641,15 +642,6 @@ async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
 }
 
 /**
- * Detects the maximum supported viewport dimensions based on the user's display. This function measures the available screen space and subtracts browser chrome to
- * determine the largest viewport we can use for video capture.
- *
- * The detection uses a temporary page (or existing page if available) to evaluate screen dimensions via JavaScript. The result is cached in the display module for
- * use by the preset system when determining effective viewport.
- * @param browser - The browser instance to use for detection.
- */
-
-/**
  * Formats the GPU capabilities into a human-readable suffix for the "Chrome ready" log line. The renderer string is already cleaned (ANGLE wrapper and Metal
  * prefix stripped) at detection time, so this function uses it directly and appends hardware-accelerated codec names in brackets when available.
  * @param gpu - The detected GPU capabilities.
@@ -679,6 +671,14 @@ function formatGpuSuffix(gpu: GpuCapabilities): string {
   return " (software rendering)";
 }
 
+/**
+ * Detects the maximum supported viewport dimensions based on the user's display. This function measures the available screen space and subtracts browser chrome to
+ * determine the largest viewport we can use for video capture.
+ *
+ * The detection uses a temporary page (or existing page if available) to evaluate screen dimensions via JavaScript. The result is cached in the display module for
+ * use by the preset system when determining effective viewport.
+ * @param browser - The browser instance to use for detection.
+ */
 async function detectDisplayDimensions(browser: Browser): Promise<void> {
 
   let tempPage: Nullable<Page> = null;
@@ -735,7 +735,7 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
           dimensions.chromeWidth, dimensions.chromeHeight, attempt + 1);
 
         // eslint-disable-next-line no-await-in-loop
-        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        await delay(100);
       }
     }
 
@@ -1264,10 +1264,9 @@ export async function closeBrowser(): Promise<void> {
 
     // Listen for the exit event before sending the signal. The event fires after the OS reaps the process, so there is no zombie window. Resolves to true so
     // Promise.race can distinguish exit from timeout.
-    const exitPromise = new Promise<true>((resolve) => {
+    const { promise: exitPromise, resolve: signalExit } = Promise.withResolvers<true>();
 
-      chromeProcess.on("exit", () => { resolve(true); });
-    });
+    chromeProcess.on("exit", () => { signalExit(true); });
 
     chromeProcess.kill("SIGTERM");
 

@@ -55,8 +55,7 @@ export function registerImportExportRoutes(app: Express): void {
     }
 
     // Replace the channels map outright. Reassigning preserves the surrounding metadata fields (migrationsApplied, schemaVersion, serviceSelections,
-    // tagRegistry) - mutating those was the original defect that broke imports at runtime by leaving data.channels undefined for the framework's post-mutate
-    // normalize step.
+    // tagRegistry); the framework's post-mutate normalize step requires data.channels to remain defined.
     await mutateChannels((data) => {
 
       data.channels = { ...validationResult.channels };

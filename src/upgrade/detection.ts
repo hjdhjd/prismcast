@@ -5,14 +5,14 @@
  * The architecture is ports-and-adapters with a strategy registry whose entries are the single source of truth for everything PrismCast knows about its
  * installation methods - including the InstallMethod type, which is derived from the registry rather than declared in parallel with it.
  *
- *   - DetectionContext (this file)                             -- the runtime-input port; what every strategy needs to make its decision
- *   - ResolvableFields (this file)                             -- the narrow set of InstallInfo fields a strategy's resolver may compute (today: packageDir)
- *   - InstallStrategy<M> (this file)                           -- a discriminated union over `upgradeable`; non-upgradeable variants carry manualUpgradeMessage
- *   - INSTALL_STRATEGIES (this file)                           -- the registry; the SSOT for what install methods PrismCast recognizes, in priority order
- *   - RegisteredMethod, InstallMethod (derived)                -- the literal-union types produced from the registry; cannot drift from the strategies
- *   - InstallInfo (this file)                                  -- the dispatcher's output; mirrors the strategy union so non-upgradeable infos carry the message
- *   - detectInstallMethod (this file)                          -- the dispatcher; a fold over the registry that builds the right InstallInfo variant
- *   - createDefaultDetectionContext (detection.context)        -- the adapter; the only place that reads import.meta.url, runs subprocesses, or touches the FS
+ *   - DetectionContext (this file) - the runtime-input port; what every strategy needs to make its decision
+ *   - ResolvableFields (this file) - the narrow set of InstallInfo fields a strategy's resolver may compute (today: packageDir)
+ *   - InstallStrategy<M> (this file) - a discriminated union over `upgradeable`; non-upgradeable variants carry manualUpgradeMessage
+ *   - INSTALL_STRATEGIES (this file) - the registry; the SSOT for what install methods PrismCast recognizes, in priority order
+ *   - RegisteredMethod, InstallMethod (derived) - the literal-union types produced from the registry; cannot drift from the strategies
+ *   - InstallInfo (this file) - the dispatcher's output; mirrors the strategy union so non-upgradeable infos carry the message
+ *   - detectInstallMethod (this file) - the dispatcher; a fold over the registry that builds the right InstallInfo variant
+ *   - createDefaultDetectionContext (detection.context) - the adapter; the only place that reads import.meta.url, runs subprocesses, or touches the FS
  *
  * Adding a new install method is appending one record to INSTALL_STRATEGIES. The InstallMethod type updates automatically. The dispatcher and the adapter never
  * change. Tests construct DetectionContext literals inline; production calls detectInstallMethod() with no arguments and the default-argument wires through to

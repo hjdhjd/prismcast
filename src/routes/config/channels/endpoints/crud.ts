@@ -2,8 +2,8 @@
  *
  * crud.ts: RESTful CRUD endpoints for individual channel records.
  *
- * Five endpoints split from the legacy action-dispatched POST /config/channels. Each handler is a thin adapter: parse the typed body, delegate decisions to the
- * channelForm domain helpers, write through mutateChannels, respond with an envelope patch.
+ * Each handler is a thin adapter: parse the typed body, delegate decisions to the channelForm domain helpers, write through mutateChannels, respond with an
+ * envelope patch.
  *
  * Endpoints:
  *   POST   /config/channels                  - Create a new user channel.

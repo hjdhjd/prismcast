@@ -12,6 +12,7 @@ import type { PlaylistSegmentEntry } from "./playlistBuilder.ts";
 import { buildPlaylist } from "./playlistBuilder.ts";
 import { getEffectiveViewport } from "../config/presets.ts";
 import { spawn } from "node:child_process";
+import { buffer as streamToBuffer } from "node:stream/consumers";
 
 /* When a client requests an HLS playlist for a channel that is still starting up, PrismCast returns a startup playlist immediately to prevent HTTP timeouts. Channels
  * DVR requires at least one segment in the playlist - an empty playlist is rejected with "Playlist had no segments." This module generates PREROLL_TOTAL_DURATION
@@ -271,43 +272,38 @@ async function generateVariant(ffmpegBin: string, codec: CaptureCodec, videoArgs
  */
 async function spawnAndCollect(ffmpegBin: string, args: string[]): Promise<Buffer> {
 
-  return new Promise((resolve, reject) => {
+  const ffmpeg = spawn(ffmpegBin, args, { stdio: [ "ignore", "pipe", "pipe" ] });
 
-    const chunks: Buffer[] = [];
-    const ffmpeg = spawn(ffmpegBin, args, { stdio: [ "ignore", "pipe", "pipe" ] });
+  ffmpeg.stderr.on("data", (data: Buffer) => {
 
-    ffmpeg.stdout.on("data", (chunk: Buffer) => {
+    const message = data.toString().trim();
 
-      chunks.push(chunk);
-    });
+    if(message.length > 0) {
 
-    ffmpeg.stderr.on("data", (data: Buffer) => {
-
-      const message = data.toString().trim();
-
-      if(message.length > 0) {
-
-        LOG.debug("streaming:preroll", "FFmpeg: %s", message);
-      }
-    });
-
-    ffmpeg.on("error", (error) => {
-
-      reject(error);
-    });
-
-    ffmpeg.on("exit", (code) => {
-
-      if(code !== 0) {
-
-        reject(new Error("FFmpeg exited with code " + String(code) + "."));
-
-        return;
-      }
-
-      resolve(Buffer.concat(chunks));
-    });
+      LOG.debug("streaming:preroll", "FFmpeg: %s", message);
+    }
   });
+
+  // Race stdout-collection against the process exit. streamToBuffer resolves when stdout closes; the exit listener pins the success/failure of the spawn itself.
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+  const { promise: exitPromise, resolve: signalExit, reject: signalExitFailure } = Promise.withResolvers<void>();
+
+  ffmpeg.on("error", signalExitFailure);
+  ffmpeg.on("exit", (code) => {
+
+    if(code === 0) {
+
+      signalExit();
+
+      return;
+    }
+
+    signalExitFailure(new Error("FFmpeg exited with code " + String(code) + "."));
+  });
+
+  const [output] = await Promise.all([ streamToBuffer(ffmpeg.stdout), exitPromise ]);
+
+  return output;
 }
 
 /**

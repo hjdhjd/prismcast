@@ -195,7 +195,7 @@ describe("setupChannelsEndpoint - GET /channels", () => {
     const res = await fetch(urlFor("/channels"));
     const body = await res.json() as ChannelsResponse;
     const keys = body.channels.map((c) => c.key);
-    const sorted = [...keys].sort((a, b) => a.localeCompare(b));
+    const sorted = keys.toSorted((a, b) => a.localeCompare(b));
 
     assert.deepEqual(keys, sorted, "channels should be alphabetically ordered by key");
   });

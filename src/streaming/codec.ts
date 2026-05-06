@@ -29,7 +29,6 @@ const CAPTURE_MIME_TYPES: Record<CaptureCodec, string> = {
 const CODEC_PRIORITY: { capability: "av1HardwareEncoding" | "hevcHardwareEncoding"; codec: CaptureCodec }[] = [
 
   { capability: "hevcHardwareEncoding", codec: "hevc" }
-  // Future: { capability: "av1HardwareEncoding", codec: "av1" }
 ];
 
 /**

@@ -33,7 +33,7 @@ describe("assertNoUnhandledRejections", () => {
     assert.throws(cleanup, /Unhandled rejection during test/, "cleanup should report the captured rejection");
   });
 
-  test("the thrown error preserves the rejection reason as cause", () => {
+  test("the thrown error surfaces every rejection reason via AggregateError.errors", () => {
 
     const emitter = new EventEmitter();
     const cleanup = assertNoUnhandledRejections(emitter);
@@ -47,21 +47,33 @@ describe("assertNoUnhandledRejections", () => {
       assert.fail("cleanup should have thrown");
     } catch(err) {
 
-      assert.ok(err instanceof Error, "thrown value should be an Error");
-      assert.equal(err.cause, reason, "thrown error's cause should be the original rejection reason");
+      assert.ok(err instanceof AggregateError, "thrown value should be an AggregateError");
+      assert.deepEqual(err.errors, [reason], "AggregateError.errors should contain every captured rejection reason");
     }
   });
 
-  test("reports the count when multiple rejections occurred", () => {
+  test("reports every captured reason via AggregateError.errors when multiple rejections occurred", () => {
 
     const emitter = new EventEmitter();
     const cleanup = assertNoUnhandledRejections(emitter);
+    const first = new Error("first");
+    const second = new Error("second");
+    const third = new Error("third");
 
-    emitter.emit("unhandledRejection", new Error("first"), Promise.resolve());
-    emitter.emit("unhandledRejection", new Error("second"), Promise.resolve());
-    emitter.emit("unhandledRejection", new Error("third"), Promise.resolve());
+    emitter.emit("unhandledRejection", first, Promise.resolve());
+    emitter.emit("unhandledRejection", second, Promise.resolve());
+    emitter.emit("unhandledRejection", third, Promise.resolve());
 
-    assert.throws(cleanup, /3 total/, "error message should mention all three captured rejections");
+    try {
+
+      cleanup();
+      assert.fail("cleanup should have thrown");
+    } catch(err) {
+
+      assert.ok(err instanceof AggregateError, "thrown value should be an AggregateError");
+      assert.match(err.message, /3 total/, "message should mention all three captured rejections");
+      assert.deepEqual(err.errors, [ first, second, third ], "errors should preserve every captured reason in capture order");
+    }
   });
 
   test("does NOT throw when the cleanup is invoked before any rejection drains", () => {

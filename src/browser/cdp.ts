@@ -3,7 +3,7 @@
  * cdp.ts: Chrome DevTools Protocol helpers for PrismCast.
  */
 import type { CDPSession, Page } from "puppeteer-core";
-import { LOG, evaluateWithAbort, formatError } from "../utils/index.ts";
+import { LOG, delay, evaluateWithAbort, formatError } from "../utils/index.ts";
 import type { Nullable, UiSize } from "../types/index.ts";
 import { CONFIG } from "../config/index.ts";
 import { getBrowserChrome } from "./display.ts";
@@ -180,7 +180,7 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
           attempt + 1, targetWidth, targetHeight, result.bounds.width ?? 0, result.bounds.height ?? 0);
 
         // eslint-disable-next-line no-await-in-loop
-        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        await delay(100);
       } else {
 
         LOG.warn("Window resize failed after %s attempts: expected %s\u00d7%s, got %s\u00d7%s.",
@@ -193,7 +193,7 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
 
     // Brief delay to allow Chrome's window manager to finish processing the resize before minimizing. Without this delay, the minimize can be ignored when
     // the window is being significantly resized (e.g., during preset degradation from 1080p to 720p).
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    await delay(100);
 
     await session.send("Browser.setWindowBounds", {
 

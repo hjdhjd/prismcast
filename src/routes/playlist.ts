@@ -71,11 +71,12 @@ function parseIncludeExcludeFilter(param: string, entityName: string,
 
   // Validate all values against the known set. Tokens are already lowercased, so normalize known values for case-insensitive comparison.
   const knownSet = new Set(knownValues.map((v) => v.toLowerCase()));
-  const unknownTags = filterTags.filter((tag) => !knownSet.has(tag));
+  const filterSet = new Set(filterTags);
+  const unknownTags = [...filterSet.difference(knownSet)];
 
   if(unknownTags.length > 0) {
 
-    return { error: "Unknown " + entityName + "(s): " + unknownTags.join(", ") + ".", validTags: knownValues.sort() };
+    return { error: "Unknown " + entityName + "(s): " + unknownTags.join(", ") + ".", validTags: knownValues.toSorted() };
   }
 
   return { filter: { exclude: isExclude, tags: filterTags } };

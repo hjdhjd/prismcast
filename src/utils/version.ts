@@ -4,42 +4,20 @@
  */
 import { LOG } from "./logger.ts";
 import type { Nullable } from "../types/index.ts";
-import { fileURLToPath } from "node:url";
 import { formatError } from "./errors.ts";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import packageJson from "../../package.json" with { type: "json" };
 
 // Package name for npm registry lookups.
 const NPM_PACKAGE_NAME = "prismcast";
 
-// Cached package version.
-let cachedPackageVersion: Nullable<string> = null;
-
 /**
- * Gets the current package version from package.json.
+ * Gets the current package version from package.json. Resolved at module load via the JSON import attribute, so the value is structurally guaranteed and the
+ * lookup is a constant-time field read.
  * @returns The current version string (e.g., "1.0.7").
  */
 export function getPackageVersion(): string {
 
-  if(cachedPackageVersion) {
-
-    return cachedPackageVersion;
-  }
-
-  try {
-
-    // Resolve the path to package.json relative to this file. This file is in src/utils/ or dist/utils/, and package.json is in the project root.
-    const currentDir = fileURLToPath(new URL(".", import.meta.url));
-    const packagePath = resolve(currentDir, "../../package.json");
-    const packageJson = JSON.parse(readFileSync(packagePath, "utf-8")) as { version: string };
-
-    cachedPackageVersion = packageJson.version;
-
-    return cachedPackageVersion;
-  } catch {
-
-    return "0.0.0";
-  }
+  return packageJson.version;
 }
 
 // GitHub raw URL for fetching changelog.
@@ -106,7 +84,7 @@ export async function fetchLatestVersion(): Promise<Nullable<string>> {
 
   try {
 
-    const response = await fetch("https://registry.npmjs.org/" + NPM_PACKAGE_NAME);
+    const response = await fetch("https://registry.npmjs.org/" + NPM_PACKAGE_NAME, { signal: AbortSignal.timeout(5000) });
 
     if(!response.ok) {
 
@@ -133,7 +111,7 @@ async function fetchChangelogContent(): Promise<Nullable<string>> {
 
   try {
 
-    const response = await fetch(CHANGELOG_URL);
+    const response = await fetch(CHANGELOG_URL, { signal: AbortSignal.timeout(5000) });
 
     if(!response.ok) {
 

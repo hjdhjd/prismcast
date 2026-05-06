@@ -34,12 +34,12 @@ export function assertNoUnhandledRejections(emitter: EventEmitter = process): ()
 
     if(captured.length > 0) {
 
-      // Construct a single error that carries the first rejection's reason as its cause, so the failure stack points at the rejection's origin and not at the
-      // assertion frame. Subsequent rejections are summarized in the message.
-      const first = captured[0];
-      const summary = "Unhandled rejection during test (" + String(captured.length) + " total): " + String(first?.reason);
+      // Surface every captured rejection via AggregateError.errors so every stack is inspectable, not just the first. The summary message keeps the [N total]
+      // form so the top-level failure line stays scannable for operators; per-rejection reasons live on errors[] in capture order.
+      const reasons = captured.map((c) => c.reason);
+      const summary = "Unhandled rejection during test (" + String(captured.length) + " total): " + String(reasons[0]);
 
-      throw new Error(summary, { cause: first?.reason });
+      throw new AggregateError(reasons, summary);
     }
   };
 }

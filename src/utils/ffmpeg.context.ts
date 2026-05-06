@@ -18,23 +18,13 @@ import { spawn } from "node:child_process";
  */
 async function checkFFmpegAtPath(pathToCheck: string): Promise<boolean> {
 
-  return new Promise((resolve) => {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const ffmpeg = spawn(pathToCheck, ["-version"], { stdio: [ "ignore", "ignore", "ignore" ] });
 
-    const ffmpeg = spawn(pathToCheck, ["-version"], {
+  ffmpeg.on("error", () => { resolve(false); });
+  ffmpeg.on("exit", (code) => { resolve(code === 0); });
 
-      stdio: [ "ignore", "ignore", "ignore" ]
-    });
-
-    ffmpeg.on("error", () => {
-
-      resolve(false);
-    });
-
-    ffmpeg.on("exit", (code) => {
-
-      resolve(code === 0);
-    });
-  });
+  return promise;
 }
 
 /**

@@ -2,7 +2,7 @@
  *
  * video.ts: Video context and playback handling for PrismCast.
  */
-import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError, startTimer } from "../utils/index.ts";
+import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError, raceWithTimeout, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.ts";
 import { invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
@@ -26,10 +26,9 @@ import { CONFIG } from "../config/index.ts";
  *    Object.defineProperty to intercept and ignore attempts to change these values.
  *
  * 6. Recovery escalation: When playback stalls, we use increasingly aggressive recovery techniques:
- *    - Level 1: Basic play/unmute - just call play() and ensure audio is on.
- *    - Level 2: Seek to live edge - jump to the end of the seekable range for live streams.
- *    - Level 3: Reload source - reset video.src and call load() to reinitialize the player.
- *    - Level 4: Full page navigation (handled in monitor.ts, not here).
+ *    - Level 1: Basic play/unmute, fullscreen reapply - call play(), ensure audio is on, and reapply CSS-based fullscreen styling and dimensions.
+ *    - Level 2: Reload source - reset video.src to empty, call load(), restore the original src, and let the player reinitialize.
+ *    - Level 3: Full page navigation (handled in monitor.ts, not here).
  *
  * The video selector system uses a string type identifier ("selectReadyVideo" or "selectFirstVideo") that's passed to page.evaluate() and interpreted in the
  * browser context. This avoids using eval() while still allowing dynamic video selection behavior.
@@ -1063,16 +1062,8 @@ export async function ensureFullscreen(
 
     try {
 
-      await Promise.race([
-        runFullscreenSequence(page, context, profile, selectorType, true),
-        new Promise<never>((_, reject) => {
-
-          setTimeout(() => {
-
-            reject(new Error("Fullscreen queue entry timed out."));
-          }, FULLSCREEN_QUEUE_TIMEOUT);
-        })
-      ]);
+      await raceWithTimeout(runFullscreenSequence(page, context, profile, selectorType, true), FULLSCREEN_QUEUE_TIMEOUT,
+        new Error("Fullscreen queue entry timed out."));
     } catch(error) {
 
       LOG.warn("Fullscreen queue entry failed: %s", formatError(error));

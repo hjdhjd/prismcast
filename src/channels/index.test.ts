@@ -41,7 +41,7 @@ describe("PREDEFINED_TAGS", () => {
   test("is sorted alphabetically (case-sensitive ASCII)", () => {
 
     // Boundary: confirms via comparison rather than literal so that the alphabetical contract is checked independently of the literal contents above.
-    const sorted = [...PREDEFINED_TAGS].sort();
+    const sorted = PREDEFINED_TAGS.toSorted();
 
     assert.deepEqual([...PREDEFINED_TAGS], sorted);
   });

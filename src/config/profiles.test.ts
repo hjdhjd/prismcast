@@ -199,7 +199,7 @@ describe("getProfiles", () => {
 
     const profiles = getProfiles();
     const names = profiles.map((p) => p.name);
-    const sorted = [...names].sort((a, b) => a.localeCompare(b));
+    const sorted = names.toSorted((a, b) => a.localeCompare(b));
 
     assert.deepEqual(names, sorted, "names are alphabetically sorted");
   });

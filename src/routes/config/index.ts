@@ -107,8 +107,8 @@ export function categorizeProfiles(profiles: readonly ProfileInfo[]): Record<Pro
 }
 
 /**
- * Configures the configuration endpoints. The GET /config endpoint has been removed - configuration is now accessed via hash navigation on the main page
- * (e.g., /#config/server). Channels are accessed via /#channels. POST endpoints remain for form submission handling.
+ * Configures the configuration endpoints. The configuration UI is rendered on the main page and accessed via hash navigation (/#config/<section>, /#channels);
+ * this function mounts the data endpoints under /config that the client-side scripts call - settings, channels, and profiles routes.
  * @param app - The Express application.
  */
 export function setupConfigEndpoint(app: Express): void {
