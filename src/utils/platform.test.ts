@@ -6,7 +6,7 @@
  */
 import { SERVICE_ID, SERVICE_NAME, getDataDirectory, getLogsDirectory, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getPrismCastWorkingDirectory,
   getServiceFileDirectory, getServiceFilePath, getServiceManager, isRunningAsService, isRunningInContainer, serviceFileExists } from "./platform.ts";
-import { afterEach, before, beforeEach, describe, test } from "node:test";
+import { afterEach, before, beforeEach, describe, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
@@ -160,25 +160,63 @@ describe("isRunningInContainer", () => {
     assert.equal(isRunningInContainer(), true);
   });
 
-  test("falls back to checking /.dockerenv when env var is not '1'", () => {
+  test("returns true via the /.dockerenv fallback when the env var is unset and the marker file exists", async () => {
 
-    // Negative test: when the env var is unset, the function attempts to stat /.dockerenv. On a typical macOS dev machine that file does not exist, so the
-    // function returns false. We don't try to forge it - we lock the boolean shape.
+    // The fallback branch calls fs.existsSync("/.dockerenv"). We can't (and shouldn't) create that file on the host - it's a Docker convention - but the
+    // platform module captures fs via `import fs from "node:fs"`, so mock.method on the fs default-export's existsSync property substitutes the probe at
+    // runtime. The mock is reverted in afterEach via mock.reset.
+    delete process.env["PRISMCAST_CONTAINER"];
+
+    const fs = await import("node:fs");
+    const existsCalls: string[] = [];
+
+    mock.method(fs.default, "existsSync", (p: string): boolean => {
+
+      existsCalls.push(p);
+
+      return p === "/.dockerenv";
+    });
+
+    try {
+
+      assert.equal(isRunningInContainer(), true, "/.dockerenv fallback returns true");
+      assert.ok(existsCalls.includes("/.dockerenv"), "the marker path was probed via existsSync");
+    } finally {
+
+      mock.reset();
+    }
+  });
+
+  test("returns false when /.dockerenv probe throws (catch path absorbs filesystem errors)", async () => {
+
+    // Boundary: the try/catch around fs.existsSync absorbs any error from the probe (permission denied, EIO on a degraded filesystem, etc.) and treats it as
+    // "not in a container."
+    delete process.env["PRISMCAST_CONTAINER"];
+
+    const fs = await import("node:fs");
+
+    mock.method(fs.default, "existsSync", (): boolean => { throw new Error("synthetic fs failure"); });
+
+    try {
+
+      assert.equal(isRunningInContainer(), false, "throwing existsSync -> caller sees false");
+    } finally {
+
+      mock.reset();
+    }
+  });
+
+  test("returns false when the env var is unset and /.dockerenv is absent (default-host case)", () => {
+
+    // Without the mock, on a typical dev host, /.dockerenv does not exist. The function returns false. This pins the behavior that survives even when no
+    // mocking is in play - and complements the mocked tests above which lock the explicit branches.
     delete process.env["PRISMCAST_CONTAINER"];
 
     const result = isRunningInContainer();
 
-    assert.equal(typeof result, "boolean", "returns a boolean");
-  });
-
-  test("returns false when env var is the empty string and /.dockerenv is absent", () => {
-
-    process.env["PRISMCAST_CONTAINER"] = "";
-
-    // We cannot guarantee /.dockerenv state, but in development environments it should be absent. Skip the strict assertion if we happen to be in a container.
-    const result = isRunningInContainer();
-
-    assert.equal(typeof result, "boolean");
+    // On a CI host that happens to be containerized, the result is true; on dev machines it is false. We can't pin the exact value without knowing the host,
+    // so we lock the structural contract: returns a boolean and does not throw.
+    assert.equal(typeof result, "boolean", "returns a boolean even on hosts without /.dockerenv");
   });
 });
 

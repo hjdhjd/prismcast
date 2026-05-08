@@ -4,6 +4,7 @@
  * realClock - that it exposes the three methods at the right shapes and delegates to the underlying delay()/raceWithTimeout()/performance.now() in ways the
  * consumers (retry.ts and any future caller) can rely on.
  */
+import { delay, raceWithTimeout } from "./delay.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { realClock } from "./clock.ts";
@@ -64,6 +65,20 @@ describe("realClock", () => {
       () => realClock.raceWithTimeout(new Promise<string>(() => { /* never resolves */ }), 1),
       /timed out after 1ms/
     );
+  });
+
+  test("realClock.raceWithTimeout is the same reference as raceWithTimeout from delay.ts (SSOT delegation)", () => {
+
+    // The realClock literal pulls raceWithTimeout from delay.ts as a reference, not a wrapper. Locking reference identity protects against a future refactor
+    // that inlines the implementation here and silently shadows the delay.ts SSOT - that would survive existing behavior tests but introduce a divergence
+    // between the two paths (direct delay.ts users vs. clock injection users).
+    assert.equal(realClock.raceWithTimeout, raceWithTimeout, "delegation by reference, not by wrapper");
+  });
+
+  test("realClock.sleep is the same reference as delay from delay.ts (SSOT delegation)", () => {
+
+    // Symmetric with the raceWithTimeout case. realClock.sleep must be the delay function itself, not a re-implementation that could drift.
+    assert.equal(realClock.sleep, delay, "delegation by reference, not by wrapper");
   });
 
   test("raceWithTimeout() throws the supplied custom error when one is provided", async () => {

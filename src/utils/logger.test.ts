@@ -389,4 +389,40 @@ describe("LOG console mode output", () => {
     assert.equal(errorCalls.length, 1);
     assert.equal(logCalls.length, 0);
   });
+
+  test("warn-level output in console mode embeds the SGR escape sequence (styleText was actually applied)", () => {
+
+    // The console-mode branch wraps the message in styleText(color, ...) when color is non-null. The previous tests verified the routing (warn->console.warn,
+    // error->console.error) but never asserted that the message string actually contained the SGR escape introduced by styleText. A regression that swapped
+    // styleText for plain string passing would still route to the right console method but emit uncolored output - this test catches that.
+    LOG.warn("colorized");
+
+    const captured = typeof warnCalls[0]?.[0] === "string" ? warnCalls[0][0] : "";
+
+    // styleText wraps the message in an ANSI SGR escape sequence (ESC + open-bracket + code + m + payload + ESC + open-bracket + 39m). The two-character
+    // ESC-and-open-bracket sequence is the introducer every styleText output emits regardless of color choice; we use String.includes for the substring check
+    // rather than a regex literal so the control character does not need to appear inline.
+    assert.equal(captured.includes("\u001b["), true, "styled output carries the SGR escape sequence introduced by styleText");
+  });
+
+  test("error-level output in console mode is also styled (red path)", () => {
+
+    // Symmetric with the warn case - error messages route through the same styleText branch with color="red".
+    LOG.error("colorized error");
+
+    const captured = typeof errorCalls[0]?.[0] === "string" ? errorCalls[0][0] : "";
+
+    assert.equal(captured.includes("\u001b["), true, "error output carries the SGR escape sequence");
+  });
+
+  test("info-level output in console mode is NOT styled (color=null path)", () => {
+
+    // The info color is null, which takes the unstyled branch (line 166: consoleMethod(logMessage)). We assert the absence of the SGR sequence so a future
+    // change that accidentally styled info messages surfaces here.
+    LOG.info("plain info");
+
+    const captured = typeof logCalls[0]?.[0] === "string" ? logCalls[0][0] : "";
+
+    assert.equal(captured.includes("\u001b["), false, "info output is plain (color=null skips styleText)");
+  });
 });

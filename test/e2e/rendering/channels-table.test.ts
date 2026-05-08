@@ -116,3 +116,105 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
     assert.equal(result.editRow, "", "editRow should be empty for a missing key");
   });
 });
+
+describe("generateChannelRowHtml - data-default reset-button contract for customized override fields", () => {
+
+  /* The channel edit form emits per-field `data-default` attributes that the client-side resetSetting / resetAllToDefaults handlers read to restore the
+   * predefined value when the operator clicks the per-field reset button. The wire format is:
+   *
+   *   - String fields (channelNumber, guideTitle, logoUrl, stationId, channelSelector): data-default="<predefined-value>" (HTML-escaped).
+   *   - Tags array: data-default="News, Sports" (comma-space-joined, matching the form's hidden-input representation).
+   *   - hdhrEnabled boolean: data-default="true" or data-default="false" (pre-stringified strings, NOT JS booleans).
+   *
+   * The DOM-runtime suite covers the CLIENT side of the contract via synthesized fixture inputs. The accessor tier covers `getChannelCustomizations` /
+   * `computeResetValue` directly. Neither tier covers the channel-edit-form output END-TO-END: this test fills that gap by rendering the actual edit form via
+   * generateChannelRowHtml against a customized override and asserting the literal data-default attribute values appear on the right inputs.
+   */
+
+  test("emits data-default with the predefined defaults for every customized field on an override channel", async () => {
+
+    // The "abc" canonical has predefined name="ABC", tags=["Local"], no channelNumber, no stationId, no channelSelector at canonical level (selectors live on
+    // service variants). We customize channelNumber, guideTitle, logoUrl, tags, and hdhrEnabled, then assert that the edit form emits data-default attributes
+    // with the predefined values (including the empty string for fields that have no predefined default but are still customized).
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateChannels((data) => {
+
+      data.channels["abc"] = {
+
+        channelNumber: 7,
+        guideTitle: "Custom ABC",
+        hdhrEnabled: false,
+        logoUrl: "https://example.test/logo.png",
+        tags: [ "News", "Sports" ]
+      };
+    });
+
+    const { editRow } = generateChannelRowHtml("abc", getProfiles());
+
+    // Tags hidden input carries data-default="" because the predefined default is ["Local"], joined by ", " becomes "Local". Verify the comma-join contract.
+    assert.match(editRow, /name="tags"[^>]*data-default="Local"/,
+      "tags field carries data-default with the predefined tags joined by comma-space");
+
+    // hdhrEnabled checkbox: predefined default is implicit true (channels default to enabled in the lineup). After customization to false, data-default emits
+    // the pre-stringified literal "true" - NOT the boolean true (which would render as data-default="true" anyway, but the contract is the string).
+    assert.match(editRow, /id="edit-abc-hdhrEnabled"[^>]*data-default="true"/,
+      "hdhrEnabled checkbox carries data-default=\"true\" (string, matching the resetValueFor stringification)");
+
+    // channelNumber field: predefined has no channelNumber, so the data-default is the empty string (computeResetValue maps undefined/null to "").
+    assert.match(editRow, /name="channelNumber"[^>]*data-default=""/,
+      "channelNumber field carries data-default=\"\" when the predefined had no value");
+
+    // guideTitle field: similarly defaults to empty string.
+    assert.match(editRow, /name="guideTitle"[^>]*data-default=""/,
+      "guideTitle field carries data-default=\"\" when the predefined had no value");
+
+    // logoUrl field: similarly defaults to empty string.
+    assert.match(editRow, /name="logoUrl"[^>]*data-default=""/,
+      "logoUrl field carries data-default=\"\" when the predefined had no value");
+  });
+
+  test("does NOT emit data-default attributes on a non-customized predefined channel (predefined-only path skips defaults)", async () => {
+
+    // Negative test: when the channel has no override (predefined-only), generateChannelRowHtml passes defaults: undefined to generateAdvancedFields, and the
+    // helpers skip the data-default attribute entirely (line 123 in table.ts: `(options.defaultValue !== undefined) ? ... : ""`).
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    const { editRow } = generateChannelRowHtml("abc", getProfiles());
+
+    // The hdhr checkbox row should not carry data-default when the channel is not an override.
+    const hdhrLine = editRow.split("\n").find((line) => line.includes("id=\"edit-abc-hdhrEnabled\""));
+
+    assert.ok(hdhrLine, "hdhrEnabled row was rendered");
+    assert.equal(hdhrLine.includes("data-default"), false, "no data-default attribute on hdhrEnabled when not customized");
+  });
+
+  test("HTML-escapes the data-default value to defend against quote injection from logoUrl", async () => {
+
+    // Boundary: a customized logoUrl with embedded quotes or HTML-special characters would, if not escaped, break out of the data-default attribute. The
+    // escapeHtml call at line 123 is the defense; we exercise it by setting a logoUrl that contains an embedded '&' character which must surface as &amp;.
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    // Set a customization first so the data-default attribute is emitted. The predefined logoUrl is undefined, so resetValueFor returns ""; we inspect the
+    // modified field's data-default carrying the empty default and the value attribute carrying the customized URL with its escaped & marker.
+    await mutateChannels((data) => {
+
+      data.channels["abc"] = { logoUrl: "https://example.test/logo.png?id=1&type=logo" };
+    });
+
+    const { editRow } = generateChannelRowHtml("abc", getProfiles());
+
+    // The current value (the customization) is in the value attribute, and a literal & must appear as &amp; in the rendered HTML.
+    assert.match(editRow, /value="https:\/\/example\.test\/logo\.png\?id=1&amp;type=logo"/,
+      "ampersand in customized logoUrl is HTML-escaped to &amp; in the value attribute");
+  });
+});

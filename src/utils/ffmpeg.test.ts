@@ -223,6 +223,26 @@ describe("probeFFmpegPath", () => {
     assert.equal(await probeFFmpegPath(context), bundledPath);
   });
 
+  test("falls through to bare 'ffmpeg' when bundled path exists on disk but its probe fails", async () => {
+
+    // Priority-fallthrough boundary: the bundled probe is the second-to-last candidate. If it exists but the probe rejects (binary present but corrupt or
+    // wrong-arch), the resolver must fall through to the bare "ffmpeg" probe rather than returning the failed bundled path.
+    const bundledPath = "/opt/bundled/ffmpeg";
+    const { context, probeCalls } = makeFFmpegContext({
+
+      bundledPath,
+      existsSet: new Set([bundledPath]),
+      platform: "linux",
+      probeResults: new Map([
+        [ bundledPath, false ],
+        [ "ffmpeg", true ]
+      ])
+    });
+
+    assert.equal(await probeFFmpegPath(context), "ffmpeg", "fell through past failed bundled probe to bare ffmpeg");
+    assert.deepEqual(probeCalls, [ bundledPath, "ffmpeg" ], "bundled probed first, then bare ffmpeg");
+  });
+
   test("falls through to the system PATH when nothing else matches", async () => {
 
     // Last resort: try probing "ffmpeg" as a bare command. If the OS PATH has a usable FFmpeg, we get back the literal string "ffmpeg".

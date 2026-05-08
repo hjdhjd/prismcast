@@ -121,6 +121,33 @@ describe("chromeFetch", () => {
     assert.equal(headers.get("User-Agent"), "CallerUA", "caller's UA preserved over the configured Chrome UA");
   });
 
+  test("respects a caller-supplied lowercase 'user-agent' header (case-insensitive lookup)", async () => {
+
+    // Boundary: HTTP header names are case-insensitive per RFC 7230, and the Headers constructor normalizes them. The has("User-Agent") check must therefore
+    // match a caller-supplied "user-agent" key. A regression that compared via plain object key lookup would inject ChromeUA over the caller's lowercase UA -
+    // this test catches that.
+    setChromeUserAgent("ChromeUA");
+
+    await chromeFetch("https://example.test/path", { headers: { "user-agent": "LowercaseCallerUA" } });
+
+    const headers = lastInit?.headers as Headers;
+
+    assert.equal(headers.get("User-Agent"), "LowercaseCallerUA", "lowercase caller UA preserved (Headers.has is case-insensitive)");
+  });
+
+  test("respects a caller-supplied mixed-case 'USER-AGENT' header", async () => {
+
+    // Symmetric: an all-caps or other unusual casing must also be recognized as a user-supplied UA and not be overwritten. The Headers constructor is the
+    // single normalization point.
+    setChromeUserAgent("ChromeUA");
+
+    await chromeFetch("https://example.test/path", { headers: { "USER-AGENT": "AllCapsCallerUA" } });
+
+    const headers = lastInit?.headers as Headers;
+
+    assert.equal(headers.get("User-Agent"), "AllCapsCallerUA", "mixed-case caller UA preserved");
+  });
+
   test("merges caller-supplied non-UA headers with the injected UA", async () => {
 
     setChromeUserAgent("ChromeUA");

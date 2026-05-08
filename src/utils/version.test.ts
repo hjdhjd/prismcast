@@ -5,7 +5,7 @@
  * fire. getPackageVersion reads the project package.json from disk; we lock its return shape (a non-empty version string).
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { fetchLatestVersion, getChangelogItems, getPackageVersion, getVersionInfo, isVersionLessThan, normalizeVersion, startUpdateChecking,
+import { checkForUpdates, fetchLatestVersion, getChangelogItems, getPackageVersion, getVersionInfo, isVersionLessThan, normalizeVersion, startUpdateChecking,
   stopUpdateChecking } from "./version.ts";
 import assert from "node:assert/strict";
 
@@ -168,11 +168,16 @@ describe("fetchLatestVersion", () => {
 
 describe("getVersionInfo", () => {
 
-  test("reports updateAvailable=true when current is less than the cached latest", async () => {
+  afterEach(() => {
 
-    // We seed the cache via fetchLatestVersion + checkForUpdates because cachedLatestVersion is module-scope and not exported. The test is self-contained:
-    // stub fetch to return a known 'latest', check, then read getVersionInfo.
-    mock.method(globalThis, "fetch", async (url: string | URL) => {
+    mock.reset();
+  });
+
+  test("reports updateAvailable=true when current is less than the cached latest (after checkForUpdates seeded the cache)", async () => {
+
+    // checkForUpdates is the function that writes cachedLatestVersion. Calling it with force=true bypasses the debounce so the test is deterministic regardless
+    // of any prior call in the suite. After the seed, getVersionInfo should report updateAvailable=true and latestVersion=9.9.9 against current=0.0.1.
+    mock.method(globalThis, "fetch", async (url: string | URL): Promise<Response> => {
 
       const u = String(url);
 
@@ -184,18 +189,32 @@ describe("getVersionInfo", () => {
       return new Response("", { status: 404 });
     });
 
-    const latest = await fetchLatestVersion();
+    await checkForUpdates("0.0.1", true);
 
-    assert.equal(latest, "9.9.9", "fetch stub returned the seeded latest");
-
-    // getVersionInfo reads the module-cache. After fetchLatestVersion, the cache is not populated yet (only checkForUpdates writes it). We exercise the function
-    // shape regardless of whether the cache is hit.
     const info = getVersionInfo("0.0.1");
 
-    assert.equal(typeof info.updateAvailable, "boolean");
-    assert.ok((info.latestVersion === null) || (typeof info.latestVersion === "string"));
+    assert.equal(info.latestVersion, "9.9.9", "cache seeded with the fetched latest");
+    assert.equal(info.updateAvailable, true, "updateAvailable=true when current < cached latest");
+  });
 
-    mock.reset();
+  test("reports updateAvailable=false when current >= cached latest", async () => {
+
+    // Negative test: same seeding flow but the current version is at or above the cached latest. The flag must be false.
+    mock.method(globalThis, "fetch", async (url: string | URL): Promise<Response> => {
+
+      if(String(url).includes("registry.npmjs.org")) {
+
+        return new Response(JSON.stringify({ "dist-tags": { latest: "1.0.0" } }), { status: 200 });
+      }
+
+      return new Response("", { status: 404 });
+    });
+
+    await checkForUpdates("1.0.0", true);
+
+    const info = getVersionInfo("1.0.0");
+
+    assert.equal(info.updateAvailable, false, "no update when current matches latest");
   });
 });
 
@@ -293,5 +312,170 @@ describe("getChangelogItems", () => {
     const result = await getChangelogItems("v8.8.8");
 
     assert.deepEqual(result, ["Item one."]);
+  });
+
+  test("uses the cached changelog on a second call for the same version (phase-1 fast path)", async () => {
+
+    // The phase-1 fast path checks cachedChangelog first and returns without fetching when the version's entry is found. We seed via the first call, then assert
+    // the second call reuses the cache by counting fetch invocations - it should stay at 1, not 2.
+    const fakeChangelog = "## 6.6.6 (2025-02-10)\n\n* Cached item.\n";
+    let fetchCalls = 0;
+
+    mock.method(globalThis, "fetch", async () => {
+
+      fetchCalls += 1;
+
+      return new Response(fakeChangelog, { status: 200 });
+    });
+
+    const first = await getChangelogItems("6.6.6");
+
+    assert.deepEqual(first, ["Cached item."], "first call returned the parsed entry");
+    assert.equal(fetchCalls, 1, "first call hit the network");
+
+    const second = await getChangelogItems("6.6.6");
+
+    assert.deepEqual(second, ["Cached item."], "second call returned the same entry");
+    assert.equal(fetchCalls, 1, "second call did NOT fetch - phase-1 cache hit");
+  });
+});
+
+describe("checkForUpdates", () => {
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("debounces consecutive calls within UPDATE_CHECK_DEBOUNCE (second call is a no-op when force is omitted)", async () => {
+
+    // The debounce window is 60s. Two checkForUpdates calls back-to-back within that window should result in exactly one fetch - the second collapses into the
+    // debounce skip path. Without force, the window guard fires on the second call and short-circuits before any network traffic.
+    let fetchCalls = 0;
+
+    mock.method(globalThis, "fetch", async () => {
+
+      fetchCalls += 1;
+
+      return new Response(JSON.stringify({ "dist-tags": { latest: "5.5.5" } }), { status: 200 });
+    });
+
+    // Force the first call so the debounce window starts from a known state (not contaminated by prior tests).
+    await checkForUpdates("1.0.0", true);
+
+    const callsAfterFirst = fetchCalls;
+
+    // Second call without force, immediately after - the debounce guard at line 162 should fire.
+    await checkForUpdates("1.0.0", false);
+
+    assert.equal(fetchCalls, callsAfterFirst, "second call without force was debounced (no additional fetch)");
+  });
+
+  test("force=true bypasses the debounce window (second call fetches again)", async () => {
+
+    // Symmetric: force=true skips the debounce and re-fetches even within the window.
+    let fetchCalls = 0;
+
+    mock.method(globalThis, "fetch", async () => {
+
+      fetchCalls += 1;
+
+      return new Response(JSON.stringify({ "dist-tags": { latest: "5.5.6" } }), { status: 200 });
+    });
+
+    await checkForUpdates("1.0.0", true);
+    const callsAfterFirst = fetchCalls;
+
+    await checkForUpdates("1.0.0", true);
+
+    assert.ok(fetchCalls > callsAfterFirst, "force=true triggered a second fetch within the debounce window");
+  });
+
+  test("logs 'Update available' on the first call where a newer version is detected (isNewUpdate flag)", async () => {
+
+    // The isNewUpdate flag is true when (previousLatest !== latest) && (current < latest). On the second call where latest changes (or first ever where there's
+    // a newer version), the flag fires the LOG.info call. We capture LOG output via the SSE log emitter, not by stubbing LOG itself - the emitter is the
+    // observable channel the rest of the codebase already uses.
+    const { subscribeToLogs } = await import("./logEmitter.ts");
+    const captured: { level: string; message: string }[] = [];
+    const unsubscribe = subscribeToLogs((entry) => { captured.push({ level: entry.level, message: entry.message }); });
+
+    try {
+
+      mock.method(globalThis, "fetch", async (url: string | URL): Promise<Response> => {
+
+        if(String(url).includes("registry.npmjs.org")) {
+
+          return new Response(JSON.stringify({ "dist-tags": { latest: "99.99.99" } }), { status: 200 });
+        }
+
+        // Changelog refresh path: when isNewUpdate fires, fetchChangelogContent is called. Return an empty body; the test doesn't assert on the changelog itself.
+        return new Response("", { status: 200 });
+      });
+
+      // First-with-this-latest call: previousLatest is null (or whatever), latest is "99.99.99", current "1.0.0" < latest -> isNewUpdate=true -> log fires.
+      await checkForUpdates("1.0.0", true);
+
+      const updateLogged = captured.some((entry) => entry.message.includes("Update available"));
+
+      assert.equal(updateLogged, true, "Update available log emitted on first detection");
+    } finally {
+
+      unsubscribe();
+    }
+  });
+});
+
+describe("extractVersionChangelog regex boundaries (via getChangelogItems)", () => {
+
+  /* extractVersionChangelog is a private function; we exercise it indirectly through getChangelogItems. The regex anchors that matter:
+   *
+   *   - The (?![^]) end-of-string sentinel terminates the non-greedy capture at file end (no following ## header).
+   *   - Dots in the version number are escaped via replaceAll(".", "\\.") so "1.0.8" doesn't match "1Z0Z8".
+   *   - The (?=^## \d|...) lookahead stops the capture at the next "## N" header.
+   */
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("extracts only the requested entry when two adjacent entries share a name prefix", async () => {
+
+    // Boundary: a changelog with adjacent entries "## 4.4.4" and "## 4.4.5". A naive non-greedy regex without the right lookahead would either extract too
+    // much or too little. We assert the requested entry's items are returned without bleed-through from the next entry.
+    const changelog = "## 4.4.5 (2025-04-01)\n\n* Newer item.\n\n## 4.4.4 (2025-03-01)\n\n* Older item.\n";
+
+    mock.method(globalThis, "fetch", async () => new Response(changelog, { status: 200 }));
+
+    const result = await getChangelogItems("4.4.5");
+
+    assert.deepEqual(result, ["Newer item."], "only the 4.4.5 items captured, not 4.4.4");
+  });
+
+  test("returns null when the version header has no bullet items underneath", async () => {
+
+    // Boundary: a version section can exist with no bullets (rare but possible if a release was tagged but the entry wasn't filled out). parseChangelogItems
+    // returns null when no lines start with '*'.
+    const changelog = "## 3.3.3 (2025-01-01)\n\nThis release contains no bullet items.\n";
+
+    mock.method(globalThis, "fetch", async () => new Response(changelog, { status: 200 }));
+
+    const result = await getChangelogItems("3.3.3");
+
+    assert.equal(result, null, "no bullets -> null");
+  });
+
+  test("escapes literal dots in the version number so 1.0.8 does not match arbitrary characters", async () => {
+
+    // Negative test: if dots weren't escaped, "1.0.8" would match "1X0X8" via the regex's `.` metacharacter. Constructing a changelog with a header like
+    // "## 1X0X8" (impossible in practice but a useful negative input) - the lookup must NOT extract anything because the literal-dot match fails.
+    const changelog = "## 1X0X8 (2025-05-01)\n\n* Should not match.\n";
+
+    mock.method(globalThis, "fetch", async () => new Response(changelog, { status: 200 }));
+
+    const result = await getChangelogItems("1.0.8");
+
+    assert.equal(result, null, "literal dots are required - regex did not match the metacharacter-style header");
   });
 });

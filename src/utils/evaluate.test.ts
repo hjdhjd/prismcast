@@ -215,6 +215,33 @@ describe("evaluateWithAbort with stream context", () => {
     });
   });
 
+  test("rejects with EvaluateAbortError when abort fires synchronously during the inner evaluate (race-window guard)", async () => {
+
+    // The implementation has TWO abort checks: one before the listener registration (line 123) and one after (line 147). The race-window guard at line 147
+    // catches the case where abort fires between the early check and the listener registration. We exercise it by having the fake's evaluate call abort
+    // synchronously while the wrapper is still constructing the listener, so the abort lands in that narrow synchronous window.
+    const controller = new AbortController();
+
+    registerAbortController("ctx-stream", controller);
+
+    await runWithStreamContext({ streamId: "ctx-stream" }, async () => {
+
+      const page = makeFakePage(() => {
+
+        // Fire abort during the synchronous evaluate callback - this happens AFTER the early-return check at line 123 but BEFORE the listener registration
+        // at line 152. The second `if(signal.aborted)` check at line 147 is the one that catches this case.
+        controller.abort();
+
+        return new Promise(() => { /* hangs */ });
+      });
+
+      await assert.rejects(
+        () => evaluateWithAbort(page, () => "v", undefined, 5_000),
+        (err: Error) => err instanceof EvaluateAbortError
+      );
+    });
+  });
+
   test("falls back to timeout-only when no abort controller is registered for the stream", async () => {
 
     // Boundary: a stream context exists but its controller was never registered (e.g., before the controller is wired up). The wrapper must still apply the

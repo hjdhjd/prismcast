@@ -60,16 +60,43 @@ describe("createMorganStream", () => {
     assert.doesNotMatch(message, /\n/, "no embedded newline in the console output");
   });
 
-  test("does NOT call console.log when console logging is disabled (file-logger branch)", () => {
+  test("routes to the file logger with the trimmed payload when console logging is disabled", async () => {
 
-    // Negative test: when file-logging mode is active, the adapter calls writeLogEntry instead. The file logger is uninitialized in the test environment so the
-    // call is a no-op, but it must not route to console.log.
-    setConsoleLogging(false);
-    const stream = createMorganStream();
+    // The file-logging branch must reach writeLogEntry, which appends to the active log file. The previous test only verified the negative ("did not call
+    // console.log"), which passes even if the writeLogEntry call is silently dropped because the file logger is uninitialized. Here we initialize the file
+    // logger against a temp dir, drive the morgan stream, flush, and inspect the on-disk content - that asserts the round-trip from morgan stream to file.
+    const { flushLogBuffer, initializeFileLogger, shutdownFileLogger } = await import("./fileLogger.ts");
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
 
-    stream.write("GET / 200\n");
+    const dir = await mkdtemp(join(tmpdir(), "prismcast-morgan-test-"));
 
-    assert.equal(logCalls.length, 0, "console.log not called in file-logging mode");
+    try {
+
+      const logPath = join(dir, "morgan.log");
+
+      await initializeFileLogger(logPath, 1_000_000);
+      setConsoleLogging(false);
+
+      const stream = createMorganStream();
+
+      stream.write("GET /api/items 200 12ms\n");
+      await flushLogBuffer();
+
+      const content = await readFile(logPath, "utf-8");
+
+      assert.match(content, /GET \/api\/items 200 12ms/, "morgan payload reached the log file via writeLogEntry");
+
+      // The trim contract: the trailing newline morgan added must not appear in the file logger's output as a doubled separator. The file logger appends its
+      // own "\n" at line termination, so the persisted entry should end with exactly one newline after the payload.
+      assert.doesNotMatch(content, /12ms\s*\n\s*\n/, "no double newline (trim removed morgan's trailing newline before writeLogEntry appended its own)");
+      assert.equal(logCalls.length, 0, "console.log not called in file-logging mode");
+    } finally {
+
+      shutdownFileLogger();
+      await rm(dir, { force: true, recursive: true });
+    }
   });
 
   test("does not throw when called with the empty string in file-logging mode", () => {

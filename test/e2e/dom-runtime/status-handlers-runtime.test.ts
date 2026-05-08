@@ -2190,3 +2190,82 @@ describe("status.handlers: render schedulers (rAF gates)", () => {
     }
   });
 });
+
+describe("status.handlers - module export inventory", () => {
+
+  /* The export {} block at the bottom of status.handlers.ts is the documented test surface - DOM-runtime suite imports it via `import * as handlers`, the
+   * production-emitted script consumes the same functions via Function.prototype.toString() in HANDLER_FUNCTIONS, and a regression that adds an export without
+   * adding it to either consumer would silently leak into the public surface. We pin the export set the same way icons.test.ts pins the icon list - a closed
+   * set test that fails when an identifier is added or removed.
+   */
+
+  // The full set of value exports - functions and constants. TypeScript-only types and interfaces (StreamSummary, HandlerContext, etc.) are erased at runtime
+  // and do not appear in the namespace object's keys, so the list below is exclusively the runtime-observable surface.
+  const EXPECTED_EXPORTS: readonly string[] = [
+    "HANDLER_CONSTANTS",
+    "HANDLER_FUNCTIONS",
+    "applyHealthSnapshot",
+    "buildStreamPopoverContent",
+    "copyOverviewPlaylistUrl",
+    "createInitialState",
+    "formatAutoRecovery",
+    "formatBytes",
+    "formatClients",
+    "formatDuration",
+    "formatLastIssue",
+    "formatTime",
+    "formatTimeAgo",
+    "getDomain",
+    "getHealthBadge",
+    "getRecoveringLabel",
+    "handleChannelUpdate",
+    "handleHealthChanged",
+    "handleSnapshot",
+    "handleSseError",
+    "handleStreamAdded",
+    "handleStreamHealthChanged",
+    "handleStreamRemoved",
+    "handleSystemStatusChanged",
+    "handleVisibilityChange",
+    "initIPadTooltips",
+    "renderDetailCodec",
+    "renderDetailStarted",
+    "renderHealthCellContent",
+    "renderStreamsTable",
+    "schedulePopoverRender",
+    "scheduleTableRender",
+    "toggleStreamDetails",
+    "toggleStreamPopover",
+    "updateChannelHealth",
+    "updateDomainAuth",
+    "updateDurations",
+    "updateStreamPopover",
+    "updateStreamRow",
+    "updateSystemStatus"
+  ];
+
+  test("module exports exactly the documented surface (no unexpected additions, no missing entries)", () => {
+
+    // Object.keys on the namespace import gives the value-export keys in source order. We sort both lists for a deterministic comparison; the closed-set check
+    // forces every new export to be added to EXPECTED_EXPORTS so the test surface stays explicit.
+    const actualKeys = Object.keys(handlers).toSorted();
+    const expectedSorted = [...EXPECTED_EXPORTS].toSorted();
+
+    assert.deepEqual(actualKeys, expectedSorted, "module exports should match the EXPECTED_EXPORTS list exactly");
+  });
+
+  test("HANDLER_FUNCTIONS includes every emittable function the production script body needs", () => {
+
+    // The HANDLER_FUNCTIONS array drives the emitted script body in generateStatusScript. Every function that needs to ship to the browser must be in this
+    // array - missing one means the runtime breaks at the call site. We lock the count against EXPECTED_EXPORTS to catch a drop. Functions that are
+    // browser-side only (formatters, renderers, handlers, mutators, trampolines, schedulers) total 36 entries; HANDLER_CONSTANTS, applyHealthSnapshot, and
+    // createInitialState are NOT emitted (createInitialState is called only by status.ts at IIFE start).
+    assert.ok(handlers.HANDLER_FUNCTIONS.length > 30, "HANDLER_FUNCTIONS contains the documented script-body functions");
+
+    for(const fn of handlers.HANDLER_FUNCTIONS) {
+
+      assert.equal(typeof fn, "function", "every HANDLER_FUNCTIONS entry is a function");
+      assert.ok(fn.name.length > 0, "every HANDLER_FUNCTIONS entry has a non-empty name (Function.prototype.toString relies on it)");
+    }
+  });
+});

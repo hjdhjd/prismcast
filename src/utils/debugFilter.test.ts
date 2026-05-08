@@ -223,6 +223,26 @@ describe("getCurrentPattern", () => {
 
     assert.equal(pattern.split(",").length, 3, "three include entries comma-joined");
   });
+
+  test("emits parts in the documented order: wildcard -> excludes (insertion order) -> includes (insertion order)", () => {
+
+    // The reconstruction order is structural: wildcard first, then excludes, then includes. Both Set iteration order and the implementation's loop preserve
+    // insertion order. We pin the exact reconstructed string for a known input so a future reorder (or accidental swap of the loops) surfaces here.
+    initDebugFilter("*,-streaming:ffmpeg,tuning:hulu");
+
+    assert.equal(getCurrentPattern(), "*,-streaming:ffmpeg,tuning:hulu",
+      "reconstructed string preserves wildcard-first, then excludes, then includes ordering");
+  });
+
+  test("preserves multi-entry insertion order within each segment", () => {
+
+    // Boundary: two excludes and two includes should land in their original relative order. If the implementation switched to Set's sometimes-non-insertion
+    // order (it doesn't, but a refactor could) this test would fail.
+    initDebugFilter("*,-recovery:nav,-streaming:hls,tuning:fox,recovery:tab");
+
+    assert.equal(getCurrentPattern(), "*,-recovery:nav,-streaming:hls,tuning:fox,recovery:tab",
+      "exclude order and include order both preserved");
+  });
 });
 
 describe("DEBUG_CATEGORIES", () => {
