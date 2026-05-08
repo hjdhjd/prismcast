@@ -8,6 +8,7 @@ import type { CliOverrides } from "./index.ts";
 import { LOG } from "../utils/index.ts";
 import { getConfigFilePath } from "./paths.ts";
 import { getValidPresetIds } from "./presets.ts";
+import { isDeepStrictEqual } from "node:util";
 
 /* PrismCast stores user configuration in config.json inside the data directory (default: ~/.prismcast). This file allows users to customize settings without using
  * environment variables or CLI flags. The configuration system uses a layered approach with the following priority (highest to lowest):
@@ -1660,7 +1661,7 @@ const differsFromStringDefault: PreservePredicate = (value: unknown, defaultValu
 // customization worth preserving.
 const differsFromSortedArrayDefault: PreservePredicate = (value: unknown, defaultValue: unknown): boolean => {
 
-  return Array.isArray(value) && Array.isArray(defaultValue) && (JSON.stringify(value.toSorted()) !== JSON.stringify(defaultValue.toSorted()));
+  return Array.isArray(value) && Array.isArray(defaultValue) && !isDeepStrictEqual(value.toSorted(), defaultValue.toSorted());
 };
 
 /**
@@ -1767,10 +1768,24 @@ export function filterDefaults(config: UserConfig): UserConfig {
 
   const filtered: Record<string, unknown> = {};
 
-  // Iterate over all known settings and check if the value differs from the default.
+  // Build the set of paths owned by PRESERVED_FIELDS so the metadata-driven loop can skip them. The PRESERVED_FIELDS predicate is the sole arbiter for those
+  // paths because String() coercion in isEqualToDefault produces false positives for array-shaped values (e.g., a reordered captureCodecs list coerces to a
+  // different comma-joined string than the default and would survive the loop, even when the predicate would correctly classify it as default-equal).
+  // Skipping the loop for those paths and letting the predicate decide is the only way to make the predicate authoritative without restructuring either
+  // registry. Paths in PRESERVED_FIELDS that are NOT in CONFIG_METADATA (channelsDvr.host, hdhr.deviceId, etc.) are unaffected - the loop never visited them
+  // before either.
+  const preservedPaths = new Set(PRESERVED_FIELDS.map((field) => field.path));
+
+  // Iterate over all known settings and check if the value differs from the default. Paths managed by PRESERVED_FIELDS are skipped here so the predicate below
+  // has unilateral control over their inclusion.
   for(const settings of Object.values(CONFIG_METADATA)) {
 
     for(const setting of settings) {
+
+      if(preservedPaths.has(setting.path)) {
+
+        continue;
+      }
 
       const value = getNestedValue(config, setting.path);
 

@@ -249,4 +249,18 @@ describe("v2 channels provider->service rename migration", () => {
 
     assert.equal(data.channels, undefined, "no channels block is fabricated");
   });
+
+  test("a hand-edited array-shape channels block is tolerated (no throw, no spurious mutation)", () => {
+
+    /* Defensive contract for the cast at the top of the function: the type system declares data.channels as UserChannelsConfig | undefined, but disk files
+     * may carry hand-edited content the framework cannot vet. If a user pasted `"channels": []` (a valid JSON array but a wrong shape), the cast through
+     * Record<string, unknown> | undefined still succeeds and the per-key Array.isArray guards skip every legacy field because none of them exist as numeric
+     * indices on the array. The migration must complete without throwing and must not mutate the array. Pinning this prevents a regression that adds an
+     * unguarded property write to the array (which JS would silently accept, corrupting the on-disk shape further).
+     */
+    const data = { channels: [] } as unknown as UserConfig;
+
+    assert.doesNotThrow(() => { applyChannelsProviderRenameMigration(data); }, "array-shape channels must not throw");
+    assert.deepEqual(data.channels, [], "array-shape channels untouched after the migration runs");
+  });
 });

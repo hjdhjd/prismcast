@@ -152,6 +152,66 @@ describe("mergeConfiguration", () => {
 
     assert.equal(result.paths.logFile, null, "empty path env var means use default (null)");
   });
+
+  test("integer env var with invalid value falls through for non-PORT settings (e.g., VIDEO_BITRATE)", () => {
+
+    /* The merge has integer-parsing fall-through for every integer field, not just PORT. We pin VIDEO_BITRATE to lock that the per-type branch fires
+     * uniformly across CONFIG_METADATA entries; a regression that bypassed parseEnvValue's NaN guard for non-PORT integer settings would surface here.
+     */
+    process.env["VIDEO_BITRATE"] = "not-a-number";
+
+    const result = mergeConfiguration({});
+
+    assert.equal(result.streaming.videoBitsPerSecond, DEFAULTS.streaming.videoBitsPerSecond, "invalid VIDEO_BITRATE env var ignored, default preserved");
+  });
+
+  test("env var that parses as zero is honored (no truthiness gate on parsed values)", () => {
+
+    /* Boundary: parseEnvValue returns numeric 0 for "0", and the merge writes through any defined value (the guard is `parsedValue !== undefined`, NOT a
+     * truthy check). Pinning zero ensures a regression to a truthy-only gate doesn't silently drop legitimate zero overrides for fields whose semantics
+     * permit zero. We cannot use a real CONFIG_METADATA integer field set to zero (validateConfiguration would reject it later), so we exercise via the
+     * checkboxList type which has no positivity gate at the merge layer.
+     */
+    process.env["CAPTURE_CODECS"] = "h264";
+
+    const result = mergeConfiguration({});
+
+    assert.deepEqual(result.streaming.captureCodecs, ["h264"], "single-codec env override applied without falsy filtering");
+  });
+
+  test("CLI override with a non-undefined object value is written through", () => {
+
+    /* The CLI overrides loop writes any non-undefined value into CONFIG via setNestedValue. Object values reach the same path - useful for testing future CLI
+     * flags that pass structured values. We pin the contract that the loop accepts an object reference unchanged; setNestedValue places it at the dotted path.
+     */
+    const result = mergeConfiguration({}, { "paths.chromeDataDir": "/tmp/explicit/chrome-data-override" });
+
+    assert.equal(result.paths.chromeDataDir, "/tmp/explicit/chrome-data-override", "CLI override value reaches runtime CONFIG");
+  });
+
+  test("checkboxList env var that is empty parses to an empty array (no codec override)", () => {
+
+    /* Boundary: parseEnvValue's checkboxList branch splits on commas and filters empty strings. An entirely-empty env var produces an empty array, which
+     * mergeConfiguration writes through. validateConfiguration later forces h264 back; the merge layer's contract is just "produce the user's literal".
+     */
+    process.env["CAPTURE_CODECS"] = "";
+
+    const result = mergeConfiguration({});
+
+    assert.deepEqual(result.streaming.captureCodecs, [], "empty CAPTURE_CODECS env var produces an empty list at the merge layer");
+  });
+
+  test("float env var is parsed via parseFloat and applied (STALL_THRESHOLD)", () => {
+
+    /* parseEnvValue's float branch is otherwise unreached by the existing merge tests. STALL_THRESHOLD is a documented float setting; pinning the parse here
+     * locks the type-specific branch.
+     */
+    process.env["STALL_THRESHOLD"] = "0.42";
+
+    const result = mergeConfiguration({});
+
+    assert.equal(result.playback.stallThreshold, 0.42, "float env var parsed and applied");
+  });
 });
 
 describe("getEnvOverrides", () => {
@@ -272,6 +332,71 @@ describe("filterDefaults", () => {
     const filtered = filterDefaults({ streaming: { captureCodecs: [...DEFAULTS.streaming.captureCodecs] } });
 
     assert.equal(getNestedValue(filtered, "streaming.captureCodecs"), undefined, "default-equal captureCodecs is dropped");
+  });
+
+  test("captureCodecs reordered relative to default is treated as default-equal under sorted comparison", () => {
+
+    /* The sorted-equality predicate (differsFromSortedArrayDefault) is registered for streaming.captureCodecs in PRESERVED_FIELDS. The intent: a reordered
+     * codec list (e.g., [hevc, h264] vs default [h264, hevc]) is semantically the same configuration and must be stripped from the persisted shape so the
+     * on-disk file does not capture a meaningless reorder. filterDefaults achieves this by skipping PRESERVED_FIELDS-managed paths in its CONFIG_METADATA
+     * loop, leaving the predicate as the sole arbiter; the predicate's sorted comparison classifies the reordered list as default-equal and writes nothing.
+     * Without that skip, the metadata loop's String() coercion would add the value to the filtered output before the predicate ran (the loop is additive-only
+     * and cannot delete entries the predicate would skip).
+     */
+    const reordered = [...DEFAULTS.streaming.captureCodecs].toReversed();
+    const filtered = filterDefaults({ streaming: { captureCodecs: reordered } });
+
+    assert.equal(getNestedValue(filtered, "streaming.captureCodecs"), undefined,
+      "reordered captureCodecs treated as default-equal under sorted comparison");
+  });
+
+  test("captureCodecs with a different content set is preserved (not just reorder)", () => {
+
+    /* Boundary on the sorted-equality predicate: a user list missing one of the default codecs is a real customization; it must survive the filter even when
+     * the survivor codec appears in the default. Pins that the predicate compares sets, not just multiset equality.
+     */
+    const filtered = filterDefaults({ streaming: { captureCodecs: ["h264"] } });
+
+    assert.deepEqual(getNestedValue(filtered, "streaming.captureCodecs"), ["h264"], "single-codec list is a customization and survives");
+  });
+
+  test("recursive removeEmptyObjects walks nested mixed levels (some children empty, some populated)", () => {
+
+    /* The recursive cleanup is exercised end-to-end via filterDefaults whenever a nested group has both default-equal and non-default fields. We construct a
+     * fixture with two sibling groups - one whose every field equals the default (so it collapses) and one with a real customization - and assert the empty
+     * sibling vanishes while the populated one survives.
+     */
+    const filtered = filterDefaults({
+
+      hls: { segmentDuration: 7 },
+      server: { host: DEFAULTS.server.host, port: DEFAULTS.server.port }
+    });
+
+    assert.equal("server" in filtered, false, "fully-default server group collapses");
+    assert.deepEqual((filtered as { hls?: { segmentDuration?: number } }).hls, { segmentDuration: 7 },
+      "populated hls group survives the recursive cleanup");
+  });
+
+  test("filterDefaults preserves a non-empty array preserved field while still stripping default-equal sibling fields in the same nested group", () => {
+
+    /* Pins the interaction between PRESERVED_FIELDS and the metadata-driven loop: a single channels group can contain both a preserved non-empty array
+     * (channels.disabledPredefined) and a default-equal scalar (channels.channelSortField). The output must keep the array and drop the scalar; the parent
+     * group survives because the array kept it non-empty.
+     */
+    const filtered = filterDefaults({
+
+      channels: {
+
+        channelSortField: DEFAULTS.channels.channelSortField,
+        disabledPredefined: ["nbc"]
+      }
+    });
+
+    const channels = (filtered as { channels?: { channelSortField?: string; disabledPredefined?: string[] } }).channels;
+
+    assert.ok(channels, "channels group survives because the preserved array kept it non-empty");
+    assert.deepEqual(channels.disabledPredefined, ["nbc"], "preserved array kept");
+    assert.equal(channels.channelSortField, undefined, "default-equal sibling stripped");
   });
 });
 

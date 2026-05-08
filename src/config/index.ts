@@ -133,19 +133,7 @@ export function validatePositiveInt(name: string, value: number, min?: number, m
     return [ name, " must be a positive integer, got: ", String(value) ].join("");
   }
 
-  // Check minimum bound if specified.
-  if((min !== undefined) && (value < min)) {
-
-    return [ name, " must be at least ", String(min), ", got: ", String(value) ].join("");
-  }
-
-  // Check maximum bound if specified.
-  if((max !== undefined) && (value > max)) {
-
-    return [ name, " must be at most ", String(max), ", got: ", String(value) ].join("");
-  }
-
-  return null;
+  return checkBounds(name, value, min, max);
 }
 
 /**
@@ -164,13 +152,25 @@ export function validatePositiveNumber(name: string, value: number, min?: number
     return [ name, " must be a positive number, got: ", String(value) ].join("");
   }
 
-  // Check minimum bound if specified.
+  return checkBounds(name, value, min, max);
+}
+
+/**
+ * Shared min/max bound check used by validatePositiveInt and validatePositiveNumber after their first-guard predicate has accepted the value. Both validators
+ * share identical bound-error message shape, so the check lives in one place to prevent drift.
+ * @param name - The configuration name for error messages.
+ * @param value - The value to bound-check.
+ * @param min - Optional minimum allowed value (inclusive).
+ * @param max - Optional maximum allowed value (inclusive).
+ * @returns Error message if out of range, null if within bounds.
+ */
+function checkBounds(name: string, value: number, min: number | undefined, max: number | undefined): Nullable<string> {
+
   if((min !== undefined) && (value < min)) {
 
     return [ name, " must be at least ", String(min), ", got: ", String(value) ].join("");
   }
 
-  // Check maximum bound if specified.
   if((max !== undefined) && (value > max)) {
 
     return [ name, " must be at most ", String(max), ", got: ", String(value) ].join("");

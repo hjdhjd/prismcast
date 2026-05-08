@@ -197,6 +197,65 @@ describe("parseServicePack", () => {
     assert.equal(channels["non-object"], undefined, "non-object value dropped");
   });
 
+  test("rejects an array-shape channels value with the explicit 'expected an object' error", () => {
+
+    /* Boundary: the channels validator at servicePacks.ts:117 explicitly rejects arrays via Array.isArray, not just non-object values. A pack with an array
+     * for the channels field must surface the named error rather than silently iterate a numeric-keyed shape.
+     */
+    const result = parseServicePack({
+
+      channels: [],
+      name: "test",
+      profiles: {
+
+        p: { extends: "fullscreenApi" }
+      },
+      version: 1
+    });
+
+    assert.match(result.errors.join(" "), /Invalid 'channels' field/, "array-shape channels rejected with the named error");
+  });
+
+  test("sanitizes non-printable characters in channel string fields before storing", () => {
+
+    /* The sanitization gate at servicePacks.ts:135-148 strips non-printable characters from string fields before adding the channel to the pack. Pinning the
+     * gate explicitly catches a regression where a refactor stops calling sanitizeString on a particular field; without this assertion only the name/url path
+     * is exercised, leaving channelSelector / stationId / profile untested. We construct each test value with String.fromCharCode so non-printable bytes are
+     * literal in the source rather than invisible characters in editor buffers.
+     */
+    const NUL = String.fromCharCode(0);
+    const SOH = String.fromCharCode(1);
+    const result = parseServicePack({
+
+      channels: {
+
+        "sanitized-ch": {
+
+          channelSelector: "ABC" + NUL + "DEF",
+          name: "Sanitized" + SOH + "Channel",
+          profile: "full" + NUL + "screenApi",
+          stationId: "12" + SOH + "345",
+          url: "https://example.com" + NUL + "/live"
+        }
+      },
+      name: "test",
+      profiles: {
+
+        p: { extends: "fullscreenApi" }
+      },
+      version: 1
+    });
+
+    const channel: { channelSelector?: string; name?: string; profile?: string; stationId?: string; url?: string } = result.pack?.channels?.["sanitized-ch"] ?? {};
+
+    assert.ok(result.pack, "pack returned without errors");
+    assert.equal((channel.name ?? "").includes(SOH), false, "non-printable stripped from name");
+    assert.equal((channel.url ?? "").includes(NUL), false, "non-printable stripped from url");
+    assert.equal((channel.channelSelector ?? "").includes(NUL), false, "non-printable stripped from channelSelector");
+    assert.equal((channel.stationId ?? "").includes(SOH), false, "non-printable stripped from stationId");
+    assert.equal((channel.profile ?? "").includes(NUL), false, "non-printable stripped from profile");
+  });
+
   test("propagates profile validation errors from validateImportedProfiles", () => {
 
     const result = parseServicePack({

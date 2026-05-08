@@ -1,14 +1,20 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * index.test.ts: Unit tests for the CONFIG validation layer. The merge layer (mergeConfiguration) is exercised in userConfig.test.ts; here we focus on the
- * validation gate (validatePositiveInt, validatePositiveNumber, validateConfiguration) and the per-CONFIG-clone behavior of getDefaults. Tests that mutate
- * CONFIG save and restore the prior state in afterEach so they remain independent of any other suite that touches CONFIG.
+ * validation gate (validatePositiveInt, validatePositiveNumber, validateConfiguration), the per-CONFIG-clone behavior of getDefaults, the parse-error
+ * accessor surface, and the displayConfiguration log-output branches. Tests that mutate CONFIG save and restore the prior state in afterEach so they remain
+ * independent of any other suite that touches CONFIG.
  */
-import { CONFIG, getDefaults, validateConfiguration, validatePositiveInt, validatePositiveNumber } from "./index.ts";
-import { afterEach, beforeEach, describe, test } from "node:test";
+import { CONFIG, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration, validatePositiveInt,
+  validatePositiveNumber } from "./index.ts";
+import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import type { Config } from "../types/index.ts";
 import { DEFAULTS } from "./userConfig.ts";
+import { LOG } from "../utils/index.ts";
 import assert from "node:assert/strict";
+import { initializeDataDir } from "./paths.ts";
+import os from "node:os";
+import { setMaxSupportedViewport } from "../browser/display.ts";
 
 describe("validatePositiveInt", () => {
 
@@ -57,6 +63,26 @@ describe("validatePositiveInt", () => {
     assert.match(validatePositiveInt("X", 101, 1, 100) ?? "", /at most 100/);
   });
 
+  test("max-only bound (min undefined) accepts a value within range and rejects values above max", () => {
+
+    /* Pins the asymmetric checkBounds path where only the max bound is supplied. The first guard (min === undefined) takes the early-return branch; the second
+     * guard (max defined) is the active gate. validatePositiveInt with explicit undefined min and a numeric max is the canonical way to reach this path through
+     * the public surface, so checkBounds stays private without test-only seams.
+     */
+    assert.equal(validatePositiveInt("X", 5, undefined, 10), null, "value below max-only bound is valid");
+    assert.match(validatePositiveInt("X", 11, undefined, 10) ?? "", /at most 10/, "value above max-only bound is rejected");
+  });
+
+  test("both bounds undefined returns null after the positive-integer gate (no bound check fires)", () => {
+
+    /* Pins the both-undefined branch of checkBounds: when neither min nor max is supplied, the helper's two guards both fall through and it returns null. The
+     * public-surface call validatePositiveInt("X", value) reaches this branch only after the positive-integer gate accepts the value, so we pass a valid value
+     * to isolate the bound-check behavior from the gate's behavior.
+     */
+    assert.equal(validatePositiveInt("X", 1), null, "valid integer with no bounds returns null (boundary value 1)");
+    assert.equal(validatePositiveInt("X", Number.MAX_SAFE_INTEGER), null, "valid integer with no bounds returns null (large value)");
+  });
+
   test("error message includes the invalid value", () => {
 
     const err = validatePositiveInt("PORT", -7);
@@ -97,6 +123,14 @@ describe("validatePositiveNumber", () => {
 
     assert.equal(validatePositiveNumber("X", 5, 0.01, 5), null);
     assert.match(validatePositiveNumber("X", 5.1, 0.01, 5) ?? "", /at most/);
+  });
+
+  test("max-only bound rejects values above max even when min is undefined", () => {
+
+    /* Mirror of the validatePositiveInt max-only test - same checkBounds path, exercised through the float-tolerant validator instead of the integer one.
+     */
+    assert.equal(validatePositiveNumber("X", 0.5, undefined, 1), null, "value below max-only bound is valid");
+    assert.match(validatePositiveNumber("X", 1.5, undefined, 1) ?? "", /at most 1/, "value above max-only bound is rejected");
   });
 });
 
@@ -197,9 +231,30 @@ describe("validateConfiguration", () => {
 
   test("forces captureMode to ffmpeg even when set to native (Chrome bug guard)", () => {
 
-    CONFIG.streaming.captureMode = "native";
-    validateConfiguration();
-    assert.equal(CONFIG.streaming.captureMode, "ffmpeg");
+    /* The contract has two halves: the value mutation AND the operator-visible warning. A regression that silently swapped the value without logging would
+     * leave operators wondering why their explicit "native" choice was ignored, so we pin both sides. Spying on LOG.warn rather than capturing every log line
+     * keeps the assertion narrow - only the captureMode warning needs to fire here, not the unrelated DEFAULTS warnings other validation branches might emit.
+     */
+    const warn = mock.method(LOG, "warn", () => undefined);
+
+    try {
+
+      CONFIG.streaming.captureMode = "native";
+      validateConfiguration();
+      assert.equal(CONFIG.streaming.captureMode, "ffmpeg");
+
+      const captureModeWarning = warn.mock.calls.some((call) => {
+
+        const message = call.arguments[0];
+
+        return (typeof message === "string") && message.includes("Forcing FFmpeg capture mode");
+      });
+
+      assert.equal(captureModeWarning, true, "validateConfiguration must LOG.warn when forcing the captureMode mutation");
+    } finally {
+
+      warn.mock.restore();
+    }
   });
 
   test("rejects non-absolute chromeDataDir override", () => {
@@ -246,5 +301,91 @@ describe("validateConfiguration", () => {
     CONFIG.server.host = "127.0.0.1";
 
     assert.doesNotThrow(() => { validateConfiguration(); });
+  });
+});
+
+describe("displayConfiguration", () => {
+
+  /* The function emits multiple LOG.info lines plus a conditional LOG.warn for preset degradation. We capture every log call by spying on the LOG methods, then
+   * assert on call counts and message content. The spies are restored in afterEach so other suites are unaffected.
+   *
+   * Display state from getMaxSupportedViewport() is module-level cache state (browser/display.ts). To keep the suite from leaking a small viewport into other
+   * tests, every test that mutates it restores a large viewport at the end so subsequent runs see "no degradation" by default.
+   */
+  let infoSpy: ReturnType<typeof mock.method>;
+  let warnSpy: ReturnType<typeof mock.method>;
+
+  beforeEach(() => {
+
+    /* displayConfiguration calls getConfigFilePath() and getChromeDataDir() which both require initializeDataDir() to have been called. We point at an
+     * os.tmpdir() so we never accidentally read or write the real ~/.prismcast directory; the function is read-only against the data dir (it only formats
+     * paths into log strings) so no cleanup is needed.
+     */
+    initializeDataDir(os.tmpdir());
+    infoSpy = mock.method(LOG, "info", () => undefined);
+    warnSpy = mock.method(LOG, "warn", () => undefined);
+  });
+
+  afterEach(() => {
+
+    infoSpy.mock.restore();
+    warnSpy.mock.restore();
+
+    // Restore a generous viewport so subsequent suites do not see the small one a degradation test may have left behind. 8K width covers every preset.
+    setMaxSupportedViewport(7680, 4320);
+  });
+
+  test("emits informational lines covering port, preset, capture, and HDHR state without warnings when display is large", () => {
+
+    /* Happy path: a large viewport means no degradation, so the warn branch must NOT fire. We do not lock specific message strings (they are operator
+     * formatting) but we do verify the function emits the documented information categories - any future refactor that drops a line will fail this test.
+     */
+    setMaxSupportedViewport(7680, 4320);
+
+    displayConfiguration();
+
+    const messages = infoSpy.mock.calls.map((call) => String(call.arguments[0]));
+
+    assert.ok(messages.some((m) => m.includes("Server port")), "server port line must be emitted");
+    assert.ok(messages.some((m) => m.includes("Quality preset")), "quality preset line must be emitted");
+    assert.ok(messages.some((m) => m.includes("Capture codecs")), "capture codecs line must be emitted");
+    assert.ok(messages.some((m) => m.includes("HDHomeRun emulation")), "HDHR line must be emitted");
+    assert.equal(warnSpy.mock.calls.length, 0, "no degradation warning when the display fits the configured preset");
+  });
+
+  test("emits a degradation warning when the display cannot fit the configured preset", () => {
+
+    /* Force the degraded branch by setting an absurdly small viewport. The configured preset (DEFAULTS.streaming.qualityPreset = 720p-high) requires a viewport
+     * larger than 320x180, so getEffectivePreset will degrade and displayConfiguration's conditional must fire LOG.warn with the display-supports message.
+     */
+    setMaxSupportedViewport(320, 180);
+
+    displayConfiguration();
+
+    assert.equal(warnSpy.mock.calls.length, 1, "one warn line for the degradation");
+
+    const messageArg = warnSpy.mock.calls[0]?.arguments[0];
+    const message = (typeof messageArg === "string") ? messageArg : "";
+
+    assert.match(message, /Display supports maximum/, "warn message names the display-driven degradation");
+  });
+});
+
+describe("configParseError exported state", () => {
+
+  /* The two `let` exports (configParseError, configParseErrorMessage) are reassigned by initializeConfiguration on every load. Tests that reach
+   * initializeConfiguration would leak into this assertion, so we only pin the type contract here - the values themselves are produced by the persistence
+   * layer and covered through the integration tier where load failures are exercised end-to-end.
+   */
+  test("module exports the parse-error pair with the documented types", () => {
+
+    assert.equal(typeof configParseError, "boolean", "configParseError is a boolean (default false)");
+
+    /* configParseErrorMessage is exported as string | undefined; we pin the runtime shape via typeof. The compile-time check is sufficient on its own, but
+     * runtime assertion documents the public contract for readers of this test.
+     */
+    const messageType = typeof configParseErrorMessage;
+
+    assert.equal((messageType === "string") || (messageType === "undefined"), true, "configParseErrorMessage is string or undefined at runtime");
   });
 });

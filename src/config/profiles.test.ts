@@ -185,11 +185,85 @@ describe("getProfileForChannel", () => {
     assert.ok(typeof result.profileName === "string", "resolution returns a profileName string");
   });
 
+  test("explicit-profile fallback flips profileName when channel needs no selector and the concise domain has a different profile", () => {
+
+    /* Positive case for the channel-selection fallback at profiles.ts:190-199. The audit's recommended fixture (watch.sling.com, slingLive) doesn't apply at
+     * unit-test scope because slingLive is a provider profile registered only when browser/channelSelection.ts loads. We use an in-process equivalent: the
+     * channel asks for apiMultiVideo (a built-in general profile with strategy="tileClick") but provides no channelSelector and a URL whose concise domain
+     * (cnbc.com) maps to fullscreenApi - a profile that does not require channel selection. The fallback fires and the profileName flips from apiMultiVideo
+     * to fullscreenApi.
+     */
+    const result = getProfileForChannel({ profile: "apiMultiVideo", url: "https://www.cnbc.com/livestream/" });
+
+    assert.equal(result.profileName, "fullscreenApi", "channel-level fallback flipped to the concise-domain profile when the original required a selector");
+  });
+
+  test("explicit profile + URL re-applies domain properties idempotently (no double-merge surprise)", () => {
+
+    /* The comment in mergeDomainProperties' re-application call says "For the URL-based path above, getProfileForUrl() already merges these - the re-application
+     * here is idempotent. For the explicit-profile path, this fills the gap." We pin the gap-fill: an explicit profile with a URL whose domain carries a
+     * dismissSelector must surface that dismissSelector in the resolved profile even though the profile itself didn't declare one.
+     */
+    const result = getProfileForChannel({ profile: "fullscreenApi", url: "https://www.c-span.org/live/" });
+
+    /* c-span.org's DomainConfig declares a dismissSelector. The explicit fullscreenApi path does not invoke getProfileForUrl, so the dismissSelector arrives
+     * via mergeDomainProperties' re-application step. Pin: it is present.
+     */
+    assert.match(result.profile.dismissSelector ?? "", /SkipButton/, "domain dismissSelector merged onto an explicitly-set profile");
+  });
+
+  test("channel-level dismissSelector override wins over the domain-level value", () => {
+
+    /* The channel-level merge at profiles.ts:216-219 happens after the domain-level merge, so a channel that declares dismissSelector overrides whatever the
+     * domain provided. Pinning this lets a regression that reordered the merges (or dropped the channel-level one entirely) surface here.
+     */
+    const result = getProfileForChannel({
+
+      dismissSelector: "#channel-specific-skip-button",
+      url: "https://www.c-span.org/live/"
+    });
+
+    assert.equal(result.profile.dismissSelector, "#channel-specific-skip-button",
+      "channel-level dismissSelector wins over c-span.org's domain-level SkipButton selector");
+  });
+
   test("merges scrollToBottom override into channelSelection without disturbing other fields", () => {
 
     const result = getProfileForChannel({ channelSelector: "ABC", profile: "fullscreenApi", scrollToBottom: true, url: "https://example.com" });
 
     assert.equal(result.profile.channelSelection.scrollToBottom, true);
+  });
+
+  test("merges scrollSelector channel override into the resolved channelSelection", () => {
+
+    /* Companion to the scrollToBottom test - same merge-loop code path, different field. Pins that scrollSelector specifically reaches the resolved profile,
+     * not just scrollToBottom.
+     */
+    const result = getProfileForChannel({ channelSelector: "ABC", profile: "fullscreenApi", scrollSelector: ".my-scroller", url: "https://example.com" });
+
+    assert.equal(result.profile.channelSelection.scrollSelector, ".my-scroller");
+  });
+
+  test("merges scrollTarget channel override into the resolved channelSelection", () => {
+
+    const result = getProfileForChannel({ channelSelector: "ABC", profile: "fullscreenApi", scrollTarget: "host", url: "https://example.com" });
+
+    assert.equal(result.profile.channelSelection.scrollTarget, "host");
+  });
+
+  test("does NOT touch channelSelection when no scroll override is supplied (gate boundary)", () => {
+
+    /* The merge loop only runs when at least one scroll key is present on the channel. Pinning this prevents a regression where the loop unconditionally
+     * builds a partial scrollOverrides object and overwrites the resolved profile's channelSelection with an empty extension.
+     */
+    const baseline = getProfileForChannel({ channelSelector: "ABC", profile: "fullscreenApi", url: "https://example.com" });
+    const withoutScroll = getProfileForChannel({ channelSelector: "DEF", profile: "fullscreenApi", url: "https://example.com" });
+
+    /* The two resolutions differ only in channelSelector (which IS overridden); the channelSelection sub-object should retain the same shape, with no
+     * scrollOverrides-injected fields appearing on either.
+     */
+    assert.deepEqual(Object.keys(baseline.profile.channelSelection).toSorted(), Object.keys(withoutScroll.profile.channelSelection).toSorted(),
+      "the channelSelection key set is unchanged when no scroll override is supplied");
   });
 });
 

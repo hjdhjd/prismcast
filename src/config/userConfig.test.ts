@@ -38,6 +38,23 @@ describe("DEFAULTS", () => {
     assert.equal(DEFAULTS.hdhr.enabled, true);
   });
 
+  test("declares the load-bearing recovery and HLS defaults that downstream invariants depend on", () => {
+
+    /* Pinning these explicitly catches a regression where a release upgrade silently changes a numeric tuning constant. The ones called out here are the
+     * defaults consumed by recovery/monitor.ts and streaming/hls.ts; their behavior depends on the specific values rather than just "any positive number".
+     */
+    assert.equal(DEFAULTS.recovery.maxBackoffDelay, 3000, "recovery backoff cap aligns with the documented 3-second ceiling");
+    assert.equal(DEFAULTS.recovery.backoffJitter, 1000, "backoff jitter range is ±1 second");
+    assert.equal(DEFAULTS.recovery.stalePageGracePeriod, 30000, "stale-page grace period is 30 seconds");
+    assert.equal(DEFAULTS.hls.idleTimeout, 30000, "HLS idle timeout matches the 30-second teardown window");
+    assert.equal(DEFAULTS.hls.maxSegments, 10, "HLS rolling-window default is 10 segments");
+    assert.equal(DEFAULTS.hls.segmentDuration, 2, "HLS segment duration default is 2 seconds");
+    assert.equal(DEFAULTS.browser.executablePath, null, "Chrome path defaults to null (autodetect)");
+    assert.equal(DEFAULTS.paths.chromeDataDir, null, "chromeDataDir override defaults to null");
+    assert.equal(DEFAULTS.paths.logFile, null, "logFile override defaults to null");
+    assert.equal(DEFAULTS.channels.setupCompleted, false, "first-run wizard flag defaults to false");
+  });
+
   test("array fields are arrays (not undefined or other types)", () => {
 
     assert.ok(Array.isArray(DEFAULTS.channels.disabledPredefined));
@@ -153,6 +170,19 @@ describe("setNestedValue", () => {
     setNestedValue(obj, "a", 2);
     assert.equal(obj["a"], 2);
   });
+
+  test("throws TypeError when an intermediate segment is a non-object primitive (strict-mode boxing fails)", () => {
+
+    /* Boundary: setNestedValue traverses via `current[part] ??= {}`, which keeps any defined non-nullish intermediate. When that intermediate is a primitive
+     * (a string here), `??=` is a no-op (the string is already truthy) and the subsequent `(current as Record<string, unknown>)[part]` cast tries to set a
+     * property on the boxed primitive. Strict mode (which ESM source files run under) refuses the assignment with TypeError. Pinning the throw documents the
+     * actual contract and protects against a regression that would silently swallow the assignment on a non-strict primitive boxing path.
+     */
+    const obj: Record<string, unknown> = { a: "primitive" };
+
+    assert.throws(() => { setNestedValue(obj, "a.b", 2); }, /Cannot create property/);
+    assert.equal(obj["a"], "primitive", "intermediate value untouched after the throw");
+  });
 });
 
 describe("isEqualToDefault", () => {
@@ -210,6 +240,17 @@ describe("getSettingByPath", () => {
 
     assert.equal(getSettingByPath("not.a.real.path"), undefined);
   });
+
+  test("looks up a setting in a non-server category by dotted path", () => {
+
+    /* Pins that the lookup walks every category, not just the first. Picking hls.segmentDuration covers a category beyond the server group and the
+     * configuration metadata loop runs through every entry until match.
+     */
+    const result = getSettingByPath("hls.segmentDuration");
+
+    assert.ok(result);
+    assert.equal(result.envVar, "HLS_SEGMENT_DURATION");
+  });
 });
 
 describe("getSettingsTabSections", () => {
@@ -228,6 +269,23 @@ describe("getSettingsTabSections", () => {
 
     assert.ok(server);
     assert.ok(server.settings.some((s) => s.path === "server.port"));
+  });
+
+  test("orphan paths in SETTINGS_TAB_SECTIONS are silently filtered (defensive)", () => {
+
+    /* The contract documented in the source comment: a path in SETTINGS_TAB_SECTIONS that does not resolve to a CONFIG_METADATA entry is dropped during
+     * derivation rather than throwing. Verified indirectly by confirming each returned setting has a matching path - any entry whose getSettingByPath
+     * returned undefined would have been filtered out, and we observe no holes. This pins the silent-filter contract.
+     */
+    const sections = getSettingsTabSections();
+
+    for(const section of sections) {
+
+      for(const setting of section.settings) {
+
+        assert.ok((typeof setting.path === "string") && (setting.path.length > 0), "every surviving setting has a defined dotted path");
+      }
+    }
   });
 });
 

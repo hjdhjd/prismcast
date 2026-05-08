@@ -51,6 +51,22 @@ describe("normalizeLegacyProfileFlags", () => {
 
     assert.equal(changed, false);
   });
+
+  test("renames noVideo to staticCapture even when the legacy value is false (rename is value-independent)", () => {
+
+    /* The contract documented at the top of normalizeLegacyProfileFlags: it ports values verbatim regardless of truthiness. A user who explicitly disabled the
+     * legacy flag (noVideo: false) must still see the rename, because their disabled state is a real configuration choice that should survive the rename.
+     */
+    const profiles: Record<string, SiteProfile> = {
+
+      myProfile: { extends: "fullscreenApi", noVideo: false } as unknown as SiteProfile
+    };
+    const changed = normalizeLegacyProfileFlags(profiles);
+
+    assert.equal(changed, true, "function reports the rename happened even with a falsy legacy value");
+    assert.equal((profiles["myProfile"] as Record<string, unknown>)["staticCapture"], false, "false value carried over verbatim");
+    assert.equal("noVideo" in profiles["myProfile"]!, false, "legacy field removed");
+  });
 });
 
 describe("validateProfileKey", () => {
@@ -96,6 +112,15 @@ describe("validateProfileKey", () => {
 
     assert.match(validateProfileKey("keyboardFullscreen", false) ?? "", /conflicts with a built-in/);
     assert.match(validateProfileKey("fullscreenApi", false) ?? "", /conflicts with a built-in/);
+  });
+
+  test("isNew=true returns undefined for a non-colliding key (no duplicate among loaded user profiles in unit-test state)", () => {
+
+    /* The isNew=true branch checks loadedUserProfiles for a duplicate key. In unit tests no user profiles are loaded, so any non-built-in non-colliding key
+     * returns undefined. This pins the contract that the check fires (it does not fall through to the built-in check) and that isNew=true produces a clean
+     * result for the empty-state. The duplicate-among-user-profiles branch requires module state that only the integration tier provides.
+     */
+    assert.equal(validateProfileKey("brand-new-user-key", true), undefined);
   });
 });
 
@@ -220,6 +245,22 @@ describe("validateProfile", () => {
 
     assert.equal(errors.length, 0);
   });
+
+  test("accepts a strategy from STRATEGIES_REQUIRING_MATCH_SELECTOR when matchSelector is supplied (combination boundary)", () => {
+
+    /* Pins the four-way intersection: strategy is recognized AND generic AND requires-match-selector AND the selector is supplied. The existing tests cover
+     * three of the four branches in isolation; this combination test verifies the happy intersection so a regression that demands match-selector even when
+     * present surfaces here.
+     */
+    const profile: SiteProfile = {
+
+      channelSelection: { matchSelector: ".my-tile", strategy: "tileClick" },
+      extends: "fullscreenApi"
+    };
+    const errors = validateProfile("test", profile);
+
+    assert.equal(errors.length, 0, "tileClick + matchSelector is the happy intersection");
+  });
 });
 
 describe("validateDomain", () => {
@@ -314,6 +355,50 @@ describe("validateDomain", () => {
 
     assert.ok(errors.some((e) => e.includes("videoTimeout must be a positive integer")));
   });
+
+  test("rejects an empty dismissSelector string when the field is supplied", () => {
+
+    /* The validator accepts a missing dismissSelector but rejects an explicit empty string. Pins the asymmetry so a future refactor that flipped to "any
+     * string is fine" loses no signal here.
+     */
+    const errors = validateDomain("custom-site.example", { dismissSelector: "" }, new Set());
+
+    assert.ok(errors.some((e) => e.includes("dismissSelector must be a non-empty string")));
+  });
+
+  test("rejects a non-string dismissSelector (defensive against hand-edited JSON)", () => {
+
+    const errors = validateDomain("custom-site.example", { dismissSelector: 42 as unknown as string }, new Set());
+
+    assert.ok(errors.some((e) => e.includes("dismissSelector must be a non-empty string")));
+  });
+
+  test("rejects a negative videoTimeout (boundary on the positivity check)", () => {
+
+    /* Companion to the non-integer rejection: the validator also rejects zero and negative integer values. We test -1 to lock the lower bound; positive
+     * integers and the existing non-integer rejection cover the rest of the space.
+     */
+    const errors = validateDomain("custom-site.example", { videoTimeout: -1 }, new Set());
+
+    assert.ok(errors.some((e) => e.includes("videoTimeout must be a positive integer")));
+  });
+
+  test("rejects Infinity for maxContinuousPlayback (Number.isFinite gate)", () => {
+
+    /* The validator's Number.isFinite gate rejects Infinity and NaN explicitly, beyond the typeof === number check. Pins the gate so a refactor that loosened
+     * to typeof-only would surface here.
+     */
+    const errors = validateDomain("custom-site.example", { maxContinuousPlayback: Number.POSITIVE_INFINITY }, new Set());
+
+    assert.ok(errors.some((e) => e.includes("maxContinuousPlayback must be a positive number")));
+  });
+
+  test("rejects Infinity for videoTimeout (Number.isFinite gate)", () => {
+
+    const errors = validateDomain("custom-site.example", { videoTimeout: Number.POSITIVE_INFINITY }, new Set());
+
+    assert.ok(errors.some((e) => e.includes("videoTimeout must be a positive integer")));
+  });
 });
 
 describe("validateImportedProfiles", () => {
@@ -387,6 +472,30 @@ describe("validateImportedProfiles", () => {
 
     assert.equal(result.valid, false);
   });
+
+  test("a domain referencing a profile from the same import batch resolves to that profile", () => {
+
+    /* The cross-reference invariant: the import builds an availableProfiles set that includes built-in profiles + profiles validated earlier in this batch +
+     * existing user profiles. A domain mapping that references a profile validated within the SAME batch must resolve cleanly without "non-existent profile"
+     * errors. Pins that the in-batch resolution actually fires (a regression that built availableProfiles only from built-ins would fail here).
+     */
+    const result = validateImportedProfiles({
+
+
+      domains: {
+
+        "custom-cross-ref.example": { profile: "newCustomProfile" }
+      },
+      profiles: {
+
+        newCustomProfile: { extends: "fullscreenApi" }
+      }
+    });
+
+    assert.equal(result.valid, true, "domain referencing a same-batch profile is valid");
+    assert.ok(result.profiles["newCustomProfile"], "profile included in result");
+    assert.ok(result.domains["custom-cross-ref.example"], "domain included in result");
+  });
 });
 
 describe("getUserProfiles", () => {
@@ -398,6 +507,20 @@ describe("getUserProfiles", () => {
 
     assert.notEqual(a, b, "two calls return distinct references");
   });
+
+  test("mutating the returned record (adding a key) does not affect a subsequent call's result", () => {
+
+    /* Pins the shallow-copy contract: callers can mutate the returned record freely without affecting module state. Adding a key on the first snapshot must
+     * not surface in the second snapshot. A regression to a returned-by-reference implementation would fail here.
+     */
+    const a = getUserProfiles();
+
+    (a as Record<string, unknown>)["__test-injected-key"] = { extends: "fullscreenApi" };
+
+    const b = getUserProfiles();
+
+    assert.equal("__test-injected-key" in b, false, "second snapshot does not see the injected key");
+  });
 });
 
 describe("getUserDomains", () => {
@@ -408,6 +531,17 @@ describe("getUserDomains", () => {
     const b = getUserDomains();
 
     assert.notEqual(a, b);
+  });
+
+  test("mutating the returned record (adding a domain) does not affect a subsequent call's result", () => {
+
+    const a = getUserDomains();
+
+    (a as Record<string, unknown>)["injected.example"] = { profile: "fullscreenApi" };
+
+    const b = getUserDomains();
+
+    assert.equal("injected.example" in b, false, "second snapshot does not see the injected domain");
   });
 });
 

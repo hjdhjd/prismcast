@@ -32,6 +32,7 @@
  */
 import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import { exportServicePack, importServicePack } from "../../../src/config/servicePacks.ts";
 import assert from "node:assert/strict";
 import { mutateChannels } from "../../../src/config/userChannels.ts";
 import { mutateProfiles } from "../../../src/config/userProfiles.ts";
@@ -324,5 +325,130 @@ describe("service pack export - determinism", () => {
     assert.equal(secondResponse.status, 200, "second export must succeed");
 
     assert.equal(firstBody, secondBody, "two consecutive exports of the same profile must produce byte-identical bodies - stringifySorted determinism contract");
+  });
+});
+
+describe("importServicePack and exportServicePack - direct orchestrator coverage", () => {
+
+  /* The roundtrip suite above drives import/export through the HTTP routes. Here we exercise the orchestrator functions directly so the coverage protocol's
+   * "every public API line is exercised" axis is closed for the orchestrator surface as well as for the route surface. The audit's S4-C7 / S4-C8 finding
+   * called out that importServicePack's options.skipChannels and "no channels" branches plus exportServicePack's matchedProfiles loop, includeDomains filter,
+   * includeChannels filter, and hdhrEnabled stripping all have no direct coverage; this block lands the missing assertions.
+   */
+  test("exportServicePack happy path: matched profiles, included domains, included channels, and hdhrEnabled stripped", async () => {
+
+    /* Seeds a profile-domain-channel triple and exports with everything included. Asserts: (a) the matched profile is in the result, (b) the domain referencing
+     * it is included, (c) the channel referencing it is included, and (d) the channel's hdhrEnabled flag is stripped from the exported body since it's a local
+     * deployment preference. The seed sets hdhrEnabled to a non-default value so the strip is observable.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { channelKey, domainKey, profileKey } = await seedFixture();
+
+    /* Override the seeded channel to carry hdhrEnabled=false so the strip is observable in the exported result. Channel definitions in the production catalog
+     * default to hdhrEnabled=true; the seed function adds the channel as a user channel so we mutate it directly here.
+     */
+    await mutateChannels((data) => {
+
+      const ch = data.channels[channelKey];
+
+      if(ch) {
+
+        (ch as { hdhrEnabled?: boolean }).hdhrEnabled = false;
+      }
+    });
+
+    const pack = exportServicePack([profileKey], { includeChannels: true, includeDomains: true });
+
+    assert.ok(pack, "exportServicePack returns a pack when profile exists in user catalog");
+    assert.ok(pack.profiles[profileKey], "matched profile included");
+    assert.ok(pack.domains?.[domainKey], "domain referencing matched profile included");
+    const exportedChannel = pack.channels?.[channelKey];
+
+    assert.ok(exportedChannel, "channel referencing matched profile included");
+    assert.equal((exportedChannel as { hdhrEnabled?: boolean }).hdhrEnabled, undefined,
+      "hdhrEnabled stripped from exported channel - local deployment preference, not service configuration");
+  });
+
+  test("exportServicePack with includeDomains=false omits the domains section", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { profileKey } = await seedFixture();
+
+    const pack = exportServicePack([profileKey], { includeDomains: false });
+
+    assert.ok(pack, "pack returned");
+    assert.equal(pack.domains, undefined, "domains section omitted when includeDomains=false");
+  });
+
+  test("exportServicePack without includeChannels omits the channels section", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { profileKey } = await seedFixture();
+
+    /* includeChannels defaults to false (only true when explicitly requested). The seeded fixture has channels referencing the profile, but they must not
+     * appear in the export when includeChannels is omitted.
+     */
+    const pack = exportServicePack([profileKey]);
+
+    assert.ok(pack);
+    assert.equal(pack.channels, undefined, "channels section omitted when includeChannels is not explicitly true");
+  });
+
+  test("importServicePack with options.skipChannels=true imports profiles but skips channels", async () => {
+
+    /* The skipChannels branch lets a caller import a pack's profiles and domains while leaving channels untouched. This is used by the UI when the user wants
+     * to bring in a friend's profiles without taking their channel customizations. Pin: profilesAdded > 0, channelsAdded === 0, success === true.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const summary = await importServicePack({
+
+      channels: {
+
+        "skipped-channel": { name: "Should Not Land", url: "https://skipped.example.test/" }
+      },
+      domains: { "imported-skip-test.example": { profile: "skip-test-profile" } },
+      name: "skip-channels-pack",
+      profiles: { "skip-test-profile": { extends: "fullscreenApi" } },
+      version: 1
+    }, { skipChannels: true });
+
+    assert.equal(summary.success, true, "primary import succeeded");
+    assert.equal(summary.profilesAdded, 1, "profile imported");
+    assert.equal(summary.channelsAdded, 0, "channel import skipped per options.skipChannels");
+    assert.deepEqual(summary.errors, [], "no errors on the skip path");
+  });
+
+  test("importServicePack with no channels in the pack succeeds without invoking the channels mutator", async () => {
+
+    /* The no-channels branch: a pack carrying only profiles + domains must complete successfully without entering the mutateChannels block at all. We assert
+     * channelsAdded === 0 and the absence of channel-import warnings, which indicates the branch was taken (rather than entering the block and finding the
+     * channels map empty).
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const summary = await importServicePack({
+
+      name: "profiles-only-pack",
+      profiles: { "profiles-only": { extends: "fullscreenApi" } },
+      version: 1
+    });
+
+    assert.equal(summary.success, true);
+    assert.equal(summary.channelsAdded, 0, "no channels added when pack has none");
+    assert.deepEqual(summary.errors, [], "no warnings when channels are absent");
   });
 });

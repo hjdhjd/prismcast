@@ -186,37 +186,50 @@ describe("scheduleServerRestart", () => {
     assert.equal(typeof result.willRestart, "boolean");
   });
 
-  test("schedules a setTimeout when running as a service with no active streams", () => {
+  test("schedules a setTimeout with delay >= 500ms when running as a service with no active streams", () => {
 
-    // The service-immediate path schedules a 500ms setTimeout that closes the browser and exits. We mock setTimeout, capture the registration, and
-    // verify the delay value without ever firing the callback (which would call process.exit).
-    mock.timers.enable({ apis: ["setTimeout"] });
+    /* Direct assertion on the contract: setTimeout was invoked exactly once, and its delay argument was at least 500ms. We spy on globalThis.setTimeout
+     * with a no-op stub so the callback never fires (which would otherwise call process.exit). The previous assert.ok(true) shape would have passed even if
+     * a regression caused scheduleServerRestart to skip the setTimeout entirely; the introspection below catches that mode.
+     */
     process.env["PRISMCAST_SERVICE"] = "1";
 
-    scheduleServerRestart("for unit test");
+    const setTimeoutSpy = mock.method(globalThis, "setTimeout", () => 0 as unknown as NodeJS.Timeout);
 
-    // The mock timers track scheduled timers; we tick by less than the delay to verify nothing fires early, then leave the rest of the timer queue
-    // alone (the afterEach reset clears it).
-    mock.timers.tick(499);
-    // No assertion on side effects: closeBrowser is not invoked yet at this tick. The fact that we get here without process.exit being triggered
-    // implicitly proves the timer was scheduled at >= 500ms.
-    assert.ok(true, "setTimeout was scheduled with delay >= 500ms");
+    try {
+
+      scheduleServerRestart("for unit test");
+
+      assert.equal(setTimeoutSpy.mock.callCount(), 1, "setTimeout invoked exactly once on the service-immediate branch");
+
+      const delay = setTimeoutSpy.mock.calls[0]?.arguments[1];
+
+      assert.equal(typeof delay, "number", "delay argument is a number");
+      assert.ok((delay ?? 0) >= 500, "scheduled delay is at least 500ms");
+    } finally {
+
+      setTimeoutSpy.mock.restore();
+    }
   });
 
   test("does not schedule a setTimeout on the manual-restart path", () => {
 
-    // Boundary: when not running as a service, the function returns immediately without scheduling any timer. We verify by ticking a generous amount
-    // and confirming no exit was triggered (we are still alive in the test). This is a structural guarantee, not just an absence of side effects -
-    // the manual path explicitly returns before the setTimeout call.
-    mock.timers.enable({ apis: ["setTimeout"] });
+    /* Boundary: when not running as a service, the function returns immediately without scheduling any timer. The previous assertion ("we are still alive")
+     * would survive a refactor that scheduled an irrelevant timer in the manual branch. We pin the contract directly via setTimeout call count.
+     */
     Reflect.deleteProperty(process.env, "PRISMCAST_SERVICE");
 
-    scheduleServerRestart("for unit test");
+    const setTimeoutSpy = mock.method(globalThis, "setTimeout", () => 0 as unknown as NodeJS.Timeout);
 
-    // Fast-forward past any plausible scheduled delay; the manual path scheduled nothing, so this is a no-op.
-    mock.timers.tick(10_000);
+    try {
 
-    assert.ok(true, "no exit scheduled on manual path");
+      scheduleServerRestart("for unit test");
+
+      assert.equal(setTimeoutSpy.mock.callCount(), 0, "manual-restart branch must not schedule any timer");
+    } finally {
+
+      setTimeoutSpy.mock.restore();
+    }
   });
 
   test("the reason string is opaque to the return shape (does not appear in the user-facing message)", () => {

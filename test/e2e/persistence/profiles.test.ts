@@ -8,10 +8,12 @@
  * through the file store framework's serialization, the schema migration runner, and the readback verification - any layer breaking the round-trip would
  * silently corrupt user-authored profiles, and operators would only notice via a missing profile in the dropdown.
  */
-import { createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
-import { deleteUserProfile, getUserDomains, getUserProfiles, initializeUserProfiles, mutateProfiles } from "../../../src/config/userProfiles.ts";
+import { createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
+import { deleteUserProfile, getProfilesParseErrorMessage, getUserDomains, getUserProfiles, hasProfilesParseError, initializeUserProfiles,
+  mutateProfiles } from "../../../src/config/userProfiles.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
 
 describe("user profiles persistence", () => {
 
@@ -101,5 +103,33 @@ describe("user profiles persistence", () => {
     assert.ok("profile-a" in profiles, "profile-a survives");
     assert.ok("profile-b" in profiles, "profile-b survives");
     assert.ok("profile-c" in profiles, "profile-c survives");
+  });
+
+  test("hasProfilesParseError and getProfilesParseErrorMessage surface a corrupt profiles.json after init", async () => {
+
+    /* The accessor surface for the file-store framework's "loud, recoverable, never silent" parse-error contract. When profiles.json is unparseable AND the
+     * .bak rotation has nothing usable, initializeUserProfiles loads defaults and stamps the parse-error flag plus an operator-facing message. Web UI banners
+     * read these accessors to surface the failure.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    /* Corrupt the on-disk profiles.json directly. The integration harness's framework already initialized the data dir; we overwrite the live file with
+     * non-JSON content and re-initialize the user-profiles loader to drive the parse-error path.
+     */
+    await writeFile(pathInDataDir(ctx, "profiles.json"), "this-is-not-valid-json", "utf-8");
+    await initializeUserProfiles();
+
+    assert.equal(hasProfilesParseError(), true, "parse-error flag set after a corrupt file load");
+
+    const message = getProfilesParseErrorMessage();
+
+    assert.ok(message, "parse-error message populated after a corrupt file load");
+    assert.equal(typeof message, "string", "message is a string for UI display");
+
+    /* Reset module state for subsequent tests by overwriting the file with valid empty JSON and re-initializing. The accessors should return cleanly. */
+    await writeFile(pathInDataDir(ctx, "profiles.json"), JSON.stringify({ schemaVersion: 2 }), "utf-8");
+    await initializeUserProfiles();
   });
 });
