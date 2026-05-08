@@ -4,6 +4,7 @@
  */
 import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
+import { inferMediaCodec } from "./codecInference.ts";
 
 /* This module probes an intercepted HLS playlist URL and produces a fully described MediaFeed - the canonical input to the native proxy. The HLS spec defines
  * exactly two playlist kinds, and this module normalizes both to the same shape so downstream code does not branch on which kind arrived:
@@ -151,15 +152,16 @@ export function clearProbeCache(channelName: string): void {
 }
 
 /**
- * Probes an HLS master manifest to determine encryption type and select the best variant. The probe cache is checked for DRM channels only - if a previous probe
- * classified the channel as DRM, we return the cached result immediately since the caller will bail out regardless of URLs. For viable channels (clear or aes128),
- * we always run the full probe because the variant URL and key URL contain auth tokens that expire between browser sessions.
+ * Probes an HLS playlist URL and returns a fully described MediaFeed. The input may be either a master playlist or a media playlist; classifyHlsPlaylist()
+ * decides at runtime and the resolver dispatches accordingly. The probe cache is checked for DRM channels only - if a previous probe classified the channel as
+ * DRM, we return the cached result immediately since the caller will bail out regardless of URLs. For viable channels (clear or aes128), we always run the full
+ * probe because the variant URL and key URL contain auth tokens that expire between browser sessions.
  *
- * @param masterUrl - The master manifest URL (contains auth tokens from the browser's original request).
+ * @param playlistUrl - The HLS playlist URL (master or media; contains auth tokens from the browser's original request).
  * @param channelName - The channel name for cache lookup.
- * @returns The probe result, or null if probing fails.
+ * @returns The MediaFeed, or null if probing fails.
  */
-export async function probeManifest(masterUrl: string, channelName: string): Promise<Nullable<MediaFeed>> {
+export async function probeManifest(playlistUrl: string, channelName: string): Promise<Nullable<MediaFeed>> {
 
   // Short-circuit for DRM channels only. The cached DRM classification is stable within the TTL window (services rarely change DRM type), and the caller returns
   // null immediately on DRM without using any URLs. For clear/aes128 channels, we must re-probe to get fresh variant and key URLs with current auth tokens.
@@ -176,52 +178,37 @@ export async function probeManifest(masterUrl: string, channelName: string): Pro
 
   try {
 
-    // Fetch the master manifest.
-    const masterBody = await fetchManifestText(masterUrl);
+    // Fetch the playlist body once and let classifyHlsPlaylist() decide which branch to take. The interceptor has already done a similar classification at the
+    // network-observer layer, but we re-classify here because (a) the body can change between the interceptor's read and ours when the master URL serves a
+    // live, mutating playlist, and (b) probeManifest() is also invoked directly by the token-refresh path which has no interceptor classification to inherit.
+    const body = await fetchManifestText(playlistUrl);
 
-    if(!masterBody) {
+    if(!body) {
 
-      LOG.debug("native:probe", "Failed to fetch master manifest for %s.", channelName);
-
-      return null;
-    }
-
-    // Parse variant streams and select the highest bandwidth.
-    const bestVariant = selectBestVariant(masterBody, masterUrl);
-
-    if(!bestVariant) {
-
-      LOG.debug("native:probe", "No variant streams found in master manifest for %s.", channelName);
+      LOG.debug("native:probe", "Failed to fetch playlist for %s.", channelName);
 
       return null;
     }
 
-    LOG.debug("native:probe", "Best variant selected for %s: %s.", channelName, bestVariant.url.slice(0, 120));
+    const kind = classifyHlsPlaylist(body);
+    const resolved = (kind === "master") ? await resolveMasterPlaylist(body, playlistUrl) :
+      (kind === "media") ? await resolveMediaPlaylist(body, playlistUrl) :
+        null;
 
-    // Check for a separate audio rendition in the master manifest.
-    const audioVariantUrl = parseAudioRendition(masterBody, masterUrl);
+    if(!resolved) {
 
-    if(audioVariantUrl) {
-
-      LOG.debug("native:probe", "Separate audio rendition found for %s: %s.", channelName, audioVariantUrl.slice(0, 120));
-    }
-
-    // Fetch the variant manifest.
-    const variantBody = await fetchManifestText(bestVariant.url);
-
-    if(!variantBody) {
-
-      LOG.debug("native:probe", "Failed to fetch variant manifest for %s.", channelName);
+      LOG.debug("native:probe", "Could not resolve %s playlist for %s.", kind, channelName);
 
       return null;
     }
 
-    // Classify encryption.
-    const result = await classifyEncryption(variantBody, bestVariant, audioVariantUrl, channelName);
+    // Classify encryption from the media body. This branch is identical for master-derived and media-only feeds because #EXT-X-KEY tags live on the media
+    // playlist regardless of which playlist kind originally arrived.
+    const result = await classifyEncryption(resolved, channelName);
 
     probeCache.set(channelName, { encryption: result.encryption, timestamp: Date.now() });
 
-    LOG.debug("native:probe", "Probe completed for %s in %sms: %s.", channelName, elapsed(), result.encryption);
+    LOG.debug("native:probe", "Probe completed for %s in %sms: %s (%s).", channelName, elapsed(), result.encryption, kind);
 
     return result;
   } catch(error) {
@@ -261,7 +248,114 @@ async function fetchManifestText(url: string): Promise<Nullable<string>> {
 }
 
 /**
- * Metadata for the selected variant from the master manifest.
+ * Resolved media-feed metadata produced by the master-playlist or media-playlist resolver. This is the single shape that classifyEncryption() consumes - the
+ * encryption classifier does not branch on which playlist kind originally arrived, so neither does its input. The resolver is also responsible for filling in
+ * codec/resolution/bandwidth from whatever signal its branch can read (master playlist's #EXT-X-STREAM-INF for the master branch, first-segment inference for
+ * the media branch).
+ */
+interface ResolvedMedia {
+
+  // URL of the separate audio rendition playlist when the master declares one via #EXT-X-MEDIA:TYPE=AUDIO. Always null for media-only feeds because audio
+  // renditions are a master-playlist-level concept.
+  audioVariantUrl: Nullable<string>;
+
+  // Declared bandwidth in bits per second from the master's BANDWIDTH attribute. Zero for media-only feeds because the playlist itself carries no bandwidth
+  // declaration.
+  bandwidth: number;
+
+  // Human-readable video codec label (e.g., "H264", "HEVC"), or null when neither the master's CODECS attribute nor first-segment inference produced a label.
+  codec: Nullable<string>;
+
+  // The media playlist body. classifyEncryption() walks this for #EXT-X-KEY tags; for master-derived feeds this is the chosen variant's body, for media-only
+  // feeds this is the input playlist itself.
+  mediaBody: string;
+
+  // The media playlist URL. The proxy polls this URL on its segment-fetch cycle.
+  mediaUrl: string;
+
+  // Video resolution (e.g., "1920x1080") from the master's RESOLUTION attribute. Always null for media-only feeds because TS PMT does not carry resolution and
+  // SPS-level inference is out of scope; recovering it would require parsing the SPS NALU inside a video access unit.
+  resolution: Nullable<string>;
+}
+
+/**
+ * Resolves a master playlist into a ResolvedMedia by selecting the highest-bandwidth variant, finding the optional separate-audio rendition, and fetching the
+ * chosen variant body.
+ *
+ * @param masterBody - The master manifest text.
+ * @param masterUrl - The master manifest URL for resolving relative variant URLs.
+ * @returns The resolved media feed metadata, or null when the master cannot be resolved.
+ */
+async function resolveMasterPlaylist(masterBody: string, masterUrl: string): Promise<Nullable<ResolvedMedia>> {
+
+  // Parse variant streams and select the highest bandwidth.
+  const bestVariant = selectBestVariant(masterBody, masterUrl);
+
+  if(!bestVariant) {
+
+    LOG.debug("native:probe", "No variant streams found in master manifest.");
+
+    return null;
+  }
+
+  LOG.debug("native:probe", "Best variant selected: %s.", bestVariant.url.slice(0, 120));
+
+  // Check for a separate audio rendition in the master manifest.
+  const audioVariantUrl = parseAudioRendition(masterBody, masterUrl);
+
+  if(audioVariantUrl) {
+
+    LOG.debug("native:probe", "Separate audio rendition found: %s.", audioVariantUrl.slice(0, 120));
+  }
+
+  // Fetch the chosen variant manifest. The variant is what classifyEncryption() will inspect for #EXT-X-KEY tags and what the proxy will poll for segments.
+  const variantBody = await fetchManifestText(bestVariant.url);
+
+  if(!variantBody) {
+
+    LOG.debug("native:probe", "Failed to fetch variant manifest for %s.", bestVariant.url);
+
+    return null;
+  }
+
+  return {
+
+    audioVariantUrl,
+    bandwidth: bestVariant.bandwidth,
+    codec: bestVariant.codec,
+    mediaBody: variantBody,
+    mediaUrl: bestVariant.url,
+    resolution: bestVariant.resolution
+  };
+}
+
+/**
+ * Resolves a media playlist into a ResolvedMedia. The input URL is itself the media feed - there is no master to traverse - so the resolver wraps the body and
+ * URL verbatim, infers the codec from the first segment via codecInference.ts, and returns. Resolution stays null because TS PMT does not carry resolution and
+ * SPS-level inference is out of scope.
+ *
+ * @param mediaBody - The media playlist text.
+ * @param mediaUrl - The media playlist URL (the proxy will poll this).
+ * @returns The resolved media feed metadata.
+ */
+async function resolveMediaPlaylist(mediaBody: string, mediaUrl: string): Promise<ResolvedMedia> {
+
+  // Best-effort codec inference. Returns codec=null on any failure (no segment, fetch error, unrecognized format) so the rest of the pipeline continues unimpaired.
+  const inferred = await inferMediaCodec({ baseUrl: mediaUrl, playlistBody: mediaBody });
+
+  return {
+
+    audioVariantUrl: null,
+    bandwidth: 0,
+    codec: inferred.codec,
+    mediaBody,
+    mediaUrl,
+    resolution: null
+  };
+}
+
+/**
+ * Metadata for the selected variant from the master manifest. Internal to resolveMasterPlaylist().
  */
 interface VariantSelection {
 
@@ -355,18 +449,16 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
 }
 
 /**
- * Classifies the encryption type of a variant manifest by parsing its #EXT-X-KEY tags.
+ * Classifies the encryption type of a media playlist by parsing its #EXT-X-KEY tags. Operates uniformly on master-derived and media-only ResolvedMedia inputs
+ * because #EXT-X-KEY tags are a media-playlist-level concept regardless of whether a master playlist sat above the media.
  *
- * @param variantBody - The variant manifest content.
- * @param variant - The selected variant metadata (URL, bandwidth, resolution).
- * @param audioVariantUrl - The audio rendition URL, or null when audio is muxed.
+ * @param resolved - The resolved media feed metadata.
  * @param channelName - The channel name for logging.
- * @returns The probe result with the classified encryption type.
+ * @returns The MediaFeed with the classified encryption type and (when applicable) the AES-128 key URL.
  */
-async function classifyEncryption(variantBody: string, variant: VariantSelection, audioVariantUrl: Nullable<string>,
-  channelName: string): Promise<MediaFeed> {
+async function classifyEncryption(resolved: ResolvedMedia, channelName: string): Promise<MediaFeed> {
 
-  const lines = variantBody.split("\n");
+  const lines = resolved.mediaBody.split("\n");
   let encryption: EncryptionType = "clear";
   let keyUrl: Nullable<string> = null;
 
@@ -400,7 +492,7 @@ async function classifyEncryption(variantBody: string, variant: VariantSelection
         break;
       }
 
-      const rawKeyUrl = resolveUrl(uri, variant.url);
+      const rawKeyUrl = resolveUrl(uri, resolved.mediaUrl);
 
       // Test that the key is accessible and is exactly 16 bytes.
       // eslint-disable-next-line no-await-in-loop
@@ -426,7 +518,16 @@ async function classifyEncryption(variantBody: string, variant: VariantSelection
     break;
   }
 
-  return { audioVariantUrl, bandwidth: variant.bandwidth, bestVariantUrl: variant.url, codec: variant.codec, encryption, keyUrl, resolution: variant.resolution };
+  return {
+
+    audioVariantUrl: resolved.audioVariantUrl,
+    bandwidth: resolved.bandwidth,
+    bestVariantUrl: resolved.mediaUrl,
+    codec: resolved.codec,
+    encryption,
+    keyUrl,
+    resolution: resolved.resolution
+  };
 }
 
 /**

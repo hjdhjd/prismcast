@@ -536,3 +536,132 @@ describe("probeManifest", () => {
     assert.equal(getCachedEncryption("probe-channel"), "clear", "clear classification populated in cache");
   });
 });
+
+describe("probeManifest: media-only playlists", () => {
+
+  beforeEach(() => {
+
+    clearProbeCache("media-only-channel");
+  });
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("classifies a clear media-only playlist and surfaces the input URL as the variant", async () => {
+
+    // Happy path: a single-level media playlist (#EXTINF only, no #EXT-X-STREAM-INF) is the second of the two HLS playlist kinds. The probe must accept it,
+    // produce a MediaFeed with bestVariantUrl == the input URL (the proxy will poll this URL), and classify the encryption from #EXT-X-KEY tags in the body.
+    // This is the issue #34 exemplar: an unencrypted Angelcam-shaped media playlist.
+    const playlistUrl = "https://cdn.test/media-only.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXT-X-MEDIA-SEQUENCE:0",
+      "#EXTINF:6,",
+      "seg0.ts"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      // The codec inference path will attempt to fetch the first segment. Returning a 404 here is fine - codec defaults to null on segment fetch failure and the
+      // probe still succeeds with the rest of the MediaFeed populated.
+      "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "media-only-channel");
+
+    assert.ok(result, "media-only probe resolved");
+    assert.equal(result.encryption, "clear", "no #EXT-X-KEY -> clear");
+    assert.equal(result.bestVariantUrl, playlistUrl, "input URL becomes the variant URL");
+    assert.equal(result.audioVariantUrl, null, "no separate audio rendition for media-only feeds");
+    assert.equal(result.bandwidth, 0, "no master metadata -> bandwidth 0");
+    assert.equal(result.resolution, null, "no master metadata -> resolution null");
+  });
+
+  test("classifies a media-only playlist with AES-128 encryption and an accessible key", async () => {
+
+    // Boundary: AES-128 key tags live on the media playlist regardless of which playlist kind originally arrived. A media-only feed with an accessible key must
+    // classify as aes128 and surface the resolved key URL so the proxy can decrypt segments.
+    const playlistUrl = "https://cdn.test/media-aes.m3u8";
+    const keyUrl = "https://cdn.test/media-aes.key";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"",
+      "#EXTINF:6,",
+      "seg0.ts"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      [keyUrl]: () => new Response(Buffer.alloc(16), { status: 200 }),
+      "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "media-only-channel");
+
+    assert.ok(result, "media-only AES-128 probe resolved");
+    assert.equal(result.encryption, "aes128", "AES-128 classification");
+    assert.equal(result.keyUrl, keyUrl, "resolved key URL surfaces");
+    assert.equal(result.bestVariantUrl, playlistUrl, "input URL becomes the variant URL");
+  });
+
+  test("classifies a media-only playlist with a relative key URI by resolving against the playlist URL", async () => {
+
+    // Boundary: relative #EXT-X-KEY URIs must be resolved against the playlist URL itself for media-only feeds, not against any (nonexistent) master URL.
+    const playlistUrl = "https://cdn.test/path/media-aes.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-KEY:METHOD=AES-128,URI=\"keys/segment.key\"",
+      "#EXTINF:6,",
+      "seg0.ts"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      "https://cdn.test/path/keys/segment.key": () => new Response(Buffer.alloc(16), { status: 200 }),
+      "https://cdn.test/path/seg0.ts": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "media-only-channel");
+
+    assert.equal(result?.keyUrl, "https://cdn.test/path/keys/segment.key", "relative key URL resolved against playlist URL");
+  });
+
+  test("returns null when the response body is not a recognizable HLS playlist", async () => {
+
+    // Negative test: a body that classifies as "unknown" (no master signal, no media signal) must surface null so the caller falls back to capture mode without
+    // attempting to feed garbage into the proxy.
+    const playlistUrl = "https://cdn.test/garbage.m3u8";
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response("<html>not a playlist</html>", { status: 200 })
+    });
+
+    assert.equal(await probeManifest(playlistUrl, "media-only-channel"), null);
+  });
+
+  test("populates the cache with 'clear' after a successful media-only probe", async () => {
+
+    // Cache population for media-only feeds mirrors the master-derived path - the encryption classification is cached so subsequent setups can short-circuit
+    // for known-DRM channels (not relevant here, but the contract is the same regardless of which branch produced the classification).
+    const playlistUrl = "https://cdn.test/cache-media-only.m3u8";
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg.ts\n", { status: 200 }),
+      "https://cdn.test/seg.ts": () => new Response("not found", { status: 404 })
+    });
+
+    await probeManifest(playlistUrl, "media-only-channel");
+
+    assert.equal(getCachedEncryption("media-only-channel"), "clear", "clear classification cached for media-only path");
+  });
+});

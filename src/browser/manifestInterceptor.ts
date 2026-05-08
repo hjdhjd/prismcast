@@ -4,20 +4,25 @@
  */
 import type { CDPSession, Page } from "puppeteer-core";
 import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
+import type { HlsPlaylistKind } from "../native/probe.ts";
 import type { Nullable } from "../types/index.ts";
 import { classifyHlsPlaylist } from "../native/probe.ts";
 
 /* This module installs a Chrome DevTools Protocol (CDP) listener on the Network domain to capture HLS manifest URLs as the browser's video player fetches them. The
  * listener is shared by two consumers:
  *
- * - Native HLS streaming: captures the master manifest URL during stream startup and hands the CDP session off to the proxy for subsequent token-refresh tunes.
- *   See installManifestInterceptor() and the consumers in src/native/.
+ * - Native HLS streaming: captures the playlist URL during stream startup and hands the CDP session off to the proxy for subsequent token-refresh tunes. See
+ *   installManifestInterceptor() and the consumers in src/native/. This consumer accepts both master and media playlists; the probe normalizes either kind into a
+ *   MediaFeed so downstream code does not branch on which kind arrived.
  * - Tune verification: confirms that the channel a strategy clicked actually loaded by matching the resulting manifest URL against an expected predicate (e.g.,
- *   call sign in the path). See awaitMatchingManifest() and the consumer in src/browser/tuning/fox.ts.
+ *   call sign in the path). See awaitMatchingManifest() and the consumer in src/browser/tuning/fox.ts. This consumer expects master playlists only because tune
+ *   verification is a multi-channel concept that does not apply to direct-tune media-only sources.
  *
- * Both APIs share the underlying CDP observer that filters .m3u8 URLs and verifies the body is a master manifest. The master/media classification is delegated
- * to classifyHlsPlaylist() in src/native/probe.ts so the decision lives in exactly one place. We use a direct fetch rather than CDP's Network.getResponseBody
- * because Chrome's network cache can evict response bodies before we read them, causing spurious "No data found for resource" failures.
+ * Both APIs share the underlying CDP observer that filters .m3u8 URLs, fetches the body, and asks classifyHlsPlaylist() for the playlist kind; the kind is
+ * forwarded to consumers so each can apply its own kind-specific filter without re-reading the body. Classification lives in exactly one place
+ * (src/native/probe.ts) so the master/media decision cannot drift between the interceptor's transport-layer gate and the probe's resolution-layer dispatch.
+ * We use a direct fetch rather than CDP's Network.getResponseBody because Chrome's network cache can evict response bodies before we read them, causing
+ * spurious "No data found for resource" failures.
  *
  * For multi-channel sites, the video player may load manifests for channels other than the one requested. installManifestInterceptor tracks both the first and
  * latest master manifest URLs to handle two distinct tuning patterns. The pattern is selected by the directTune flag passed to finalize():
@@ -47,14 +52,59 @@ const VERIFICATION_TIMEOUT = 8000;
 const MANIFEST_BODY_FETCH_TIMEOUT = 5000;
 
 /**
- * Result of manifest interception containing the CDP session for reuse during token refresh and the master manifest URL.
+ * Captured-URL state used by selectInterceptedManifest() to choose the playlist URL appropriate for a given resolution mode. Modeled as a plain record so the
+ * selection logic is testable in isolation from the CDP listener that maintains the underlying state.
+ */
+export interface InterceptedManifestState {
+
+  // True when the resolution should pick the first URL captured (direct tune); false when it should pick the latest URL captured (guide tune).
+  directTune: boolean;
+
+  // The first observed master playlist URL, or null when no master playlist arrived during the interception window.
+  firstMasterUrl: Nullable<string>;
+
+  // The first observed media playlist URL, or null when no media playlist arrived during the interception window.
+  firstMediaUrl: Nullable<string>;
+
+  // The most recently observed master playlist URL, or null when no master playlist arrived during the interception window.
+  latestMasterUrl: Nullable<string>;
+
+  // The most recently observed media playlist URL, or null when no media playlist arrived during the interception window.
+  latestMediaUrl: Nullable<string>;
+}
+
+/**
+ * Selects the playlist URL appropriate for a given resolution mode from the per-kind first/latest state captured by the manifest observer. Master URLs always
+ * outrank media URLs when both kinds were observed because masters declare richer metadata (variant bandwidth, resolution, separate audio renditions). Within
+ * the chosen kind, direct tunes pick the first URL and guide tunes pick the latest URL. Returns null when no qualifying URL is available.
+ *
+ * Pure function exported for unit testing; the closure inside installManifestInterceptor() consumes it through the same shape.
+ *
+ * @param state - The captured-URL state at resolution time.
+ * @returns The selected URL, or null when no URL matches the resolution mode.
+ */
+export function selectInterceptedManifest(state: InterceptedManifestState): Nullable<string> {
+
+  if(state.directTune) {
+
+    return state.firstMasterUrl ?? state.firstMediaUrl;
+  }
+
+  return state.latestMasterUrl ?? state.latestMediaUrl;
+}
+
+/**
+ * Result of manifest interception containing the CDP session for reuse during token refresh and the playlist URL the probe will consume. The URL may be either
+ * a master or a media playlist; the probe normalizes both kinds into a MediaFeed so downstream code does not branch.
  */
 export interface ManifestInterceptionResult {
 
   // The CDP session used for interception. Passed to the native proxy for lifecycle management - the proxy cleans it up on stop() and hands it off during token refresh.
   cdpSession: CDPSession;
 
-  // The master manifest URL intercepted from the browser's network requests. For direct tunes, the first manifest captured; for guide tunes, the most recent.
+  // The HLS playlist URL intercepted from the browser's network requests. For direct tunes, the first qualifying URL captured; for guide tunes, the most recent.
+  // Master playlists take precedence over media playlists when both have arrived during the interception window because master playlists declare additional
+  // metadata (variant bandwidth, resolution, separate audio renditions) that improves the resulting MediaFeed.
   masterManifestUrl: string;
 }
 
@@ -73,10 +123,10 @@ export interface ManifestInterceptorHandle {
 }
 
 /**
- * Internal handle returned by startMasterManifestObserver. Encapsulates the CDP session, the per-master callback registration, and the cleanup function. Both
- * public APIs (installManifestInterceptor and awaitMatchingManifest) build on top of this.
+ * Internal handle returned by startManifestObserver. Encapsulates the CDP session, the per-playlist callback registration, and the cleanup function. Both public
+ * APIs (installManifestInterceptor and awaitMatchingManifest) build on top of this.
  */
-interface MasterManifestObserver {
+interface ManifestObserver {
 
   // The CDP session running the listener.
   cdpSession: CDPSession;
@@ -87,18 +137,19 @@ interface MasterManifestObserver {
 }
 
 /**
- * Installs a CDP Network.responseReceived listener that calls onMaster() for every master manifest URL observed. The listener filters to .m3u8 URLs, fetches the
- * body, and asks classifyHlsPlaylist() whether it is a master playlist; only confirmed masters fire the callback. Media playlists and unrecognized bodies are
- * skipped. The current consumers - native HLS startup and tune verification - both expect master playlists, and centralizing the classification here keeps the
- * master-only filter in one place.
+ * Installs a CDP Network.responseReceived listener that calls onPlaylist() for every recognized HLS playlist URL observed. The listener filters to .m3u8 URLs,
+ * fetches the body, and asks classifyHlsPlaylist() for the playlist kind; recognized kinds (master, media) fire the callback with the kind label, while
+ * unrecognized bodies are skipped. Consumers apply their own kind-specific filtering on top of the callback - installManifestInterceptor accepts both kinds
+ * with master priority, while awaitMatchingManifest accepts master only.
  *
  * Returns null when the page is closed or the CDP session cannot be created. The caller is responsible for calling dispose() to clean up.
  * @param page - The Puppeteer page to monitor.
- * @param onMaster - Callback invoked for each verified master manifest URL.
+ * @param onPlaylist - Callback invoked for each verified HLS playlist URL together with its kind.
  * @param logCategory - Debug log category for this observer's lifecycle messages.
  * @returns The observer handle, or null if installation failed.
  */
-async function startMasterManifestObserver(page: Page, onMaster: (url: string) => void, logCategory: string): Promise<Nullable<MasterManifestObserver>> {
+async function startManifestObserver(page: Page, onPlaylist: (url: string, kind: HlsPlaylistKind) => void,
+  logCategory: string): Promise<Nullable<ManifestObserver>> {
 
   if(page.isClosed()) {
 
@@ -167,17 +218,19 @@ async function startMasterManifestObserver(page: Page, onMaster: (url: string) =
 
       const body = await response.text();
 
-      // Delegate the master/media decision to the canonical classifier. Both consumers of onMaster (installManifestInterceptor and awaitMatchingManifest) maintain
-      // their own resolved-flag guard, so a callback that arrives after dispose is harmless - the downstream resolve is idempotent.
+      // Delegate the master/media decision to the canonical classifier. Recognized kinds (master, media) are forwarded to the callback together with the kind
+      // label; consumers apply their own filter. Both consumers of onPlaylist maintain their own resolved-flag guard, so a callback that arrives after dispose
+      // is harmless - the downstream resolve is idempotent.
       const kind = classifyHlsPlaylist(body);
 
-      if(kind === "master") {
+      if(kind === "unknown") {
 
-        onMaster(url);
-      } else {
+        LOG.debug(logCategory, "Skipping .m3u8 classified as unknown (no recognizable HLS directives).");
 
-        LOG.debug(logCategory, "Skipping .m3u8 classified as %s.", kind);
+        return;
       }
+
+      onPlaylist(url, kind);
     } catch(error) {
 
       LOG.debug(logCategory, "Could not fetch .m3u8 body: %s.", String(error));
@@ -209,16 +262,19 @@ async function startMasterManifestObserver(page: Page, onMaster: (url: string) =
 }
 
 /**
- * Installs a long-lived CDP listener that tracks the first and latest master HLS manifest URLs observed on the given page. The returned handle provides a
- * finalize(directTune) callback - when called, the interceptor resolves with whichever manifest is appropriate for the tune type:
+ * Installs a long-lived CDP listener that tracks observed HLS playlist URLs on the given page. Both master and media playlists are accepted; the listener tracks
+ * first/latest URLs separately per kind so master-based and media-only sites both work without separate code paths. Master playlists take precedence over media
+ * playlists when both have arrived during the interception window because masters carry richer metadata (variant bandwidth, resolution, separate audio
+ * renditions) that improves the resulting MediaFeed. The returned handle provides a finalize(directTune) callback - when called, the interceptor resolves with
+ * whichever URL is appropriate for the tune type:
  *
  * - directTune=true: resolves immediately (or after the settle delay if no manifest has arrived yet) with the first manifest captured. Used by sites where the
- *   navigated URL itself selects the channel and the player loads its manifest before the click handler returns.
+ *   navigated URL itself selects the channel and the player loads its manifest before the click handler returns. Master-first URL preferred over media-first.
  * - directTune=false: resolves after the settle delay with the latest manifest captured. Used by guide-based sites where the channel-switch click triggers a new
- *   manifest fetch that may arrive milliseconds after the click handler returns.
+ *   manifest fetch that may arrive milliseconds after the click handler returns. Master-latest URL preferred over media-latest.
  *
- * On timeout (finalize never called), the listener resolves with the latest manifest captured so far, or null if none arrived. The CDP session is preserved in
- * the result and ownership transfers to the caller; callers must call removeManifestInterceptor() when done.
+ * On timeout (finalize never called), the listener resolves with the latest captured URL using the same master-priority rule, or null if none arrived. The CDP
+ * session is preserved in the result and ownership transfers to the caller; callers must call removeManifestInterceptor() when done.
  * @param page - The Puppeteer page to monitor.
  * @param timeout - Maximum time in milliseconds to wait for a manifest. Acts as a safety net if finalize() is never called.
  * @returns The interceptor handle, or null if the CDP session could not be created.
@@ -227,29 +283,50 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
 
   const elapsed = startTimer();
 
-  // Track both the first and most recently observed master manifest URLs. For direct-navigation sites (directTune=true), the first manifest is the correct one - the
-  // player loaded it for the navigated URL. Background prefetches for other channels may arrive later and must not overwrite the selection. For guide-based sites
-  // (directTune=false), the last manifest is correct - the guide click triggers a new manifest fetch that replaces whatever the player initially loaded.
-  let firstManifestUrl: Nullable<string> = null;
-  let latestManifestUrl: Nullable<string> = null;
+  // Track first/latest URLs separately per playlist kind. Master URLs take precedence at selection time because masters carry richer metadata. For direct
+  // tunes, the first URL of the higher-priority kind wins; for guide tunes, the latest URL of the higher-priority kind wins. Without separate per-kind
+  // tracking, a master-based site whose player happens to also load a media playlist for a different channel would risk picking the wrong one.
+  let firstMasterUrl: Nullable<string> = null;
+  let latestMasterUrl: Nullable<string> = null;
+  let firstMediaUrl: Nullable<string> = null;
+  let latestMediaUrl: Nullable<string> = null;
   let resolved = false;
   let manifestCount = 0;
 
   const { promise, resolve } = Promise.withResolvers<Nullable<ManifestInterceptionResult>>();
 
-  const observer = await startMasterManifestObserver(page, (url: string): void => {
+  const observer = await startManifestObserver(page, (url: string, kind: HlsPlaylistKind): void => {
 
     manifestCount++;
-    firstManifestUrl ??= url;
-    latestManifestUrl = url;
 
-    LOG.debug("native:intercept", "Master manifest captured (#%s) in %sms: %s.", manifestCount, elapsed(), url.slice(0, 120));
+    if(kind === "master") {
+
+      firstMasterUrl ??= url;
+      latestMasterUrl = url;
+    } else if(kind === "media") {
+
+      firstMediaUrl ??= url;
+      latestMediaUrl = url;
+    }
+
+    LOG.debug("native:intercept", "%s playlist captured (#%s) in %sms: %s.", kind, manifestCount, elapsed(), url.slice(0, 120));
   }, "native:intercept");
 
   if(!observer) {
 
     return null;
   }
+
+  // Selects the URL appropriate for the resolution mode by delegating to the pure selectInterceptedManifest() helper. Closure variables are passed by value so
+  // the helper does not depend on shared mutable state.
+  const selectUrl = (directTune: boolean): Nullable<string> => selectInterceptedManifest({
+
+    directTune,
+    firstMasterUrl,
+    firstMediaUrl,
+    latestMasterUrl,
+    latestMediaUrl
+  });
 
   // Timeout guard. If finalize() is never called (defensive), resolve with whatever we have after the timeout.
   const timer = setTimeout(() => {
@@ -261,21 +338,24 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
 
     resolved = true;
 
-    if(latestManifestUrl) {
+    // The timeout path mirrors the latest-URL semantics of a guide tune; if no finalize() ever arrived we err on the side of the most recent capture.
+    const selected = selectUrl(false);
+
+    if(selected) {
 
       LOG.debug("native:intercept", "Manifest interception timed out after %sms. Resolving with latest URL (%s captured).", elapsed(), manifestCount);
       observer.dispose(true);
-      resolve({ cdpSession: observer.cdpSession, masterManifestUrl: latestManifestUrl });
+      resolve({ cdpSession: observer.cdpSession, masterManifestUrl: selected });
     } else {
 
-      LOG.debug("native:intercept", "Manifest interception timed out after %sms. No master manifest captured.", elapsed());
+      LOG.debug("native:intercept", "Manifest interception timed out after %sms. No HLS playlist captured.", elapsed());
       observer.dispose(false);
       resolve(null);
     }
   }, timeout);
 
   // Finalize function exposed on the returned handle. Called by the stream setup code after channel selection is complete. The resolution strategy depends on
-  // two factors: whether a manifest has already been captured, and whether the tune is direct or guide-based.
+  // two factors: whether a qualifying manifest has already been captured, and whether the tune is direct or guide-based.
   //
   // - Manifest captured + direct tune: resolve immediately (A&E, most TVE sites - manifest arrived during page load).
   // - Manifest captured + guide tune: wait FINALIZE_SETTLE_DELAY (Fox guide, Hulu - a newer manifest from the channel switch may still arrive).
@@ -287,8 +367,7 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
       return;
     }
 
-    // Helper that resolves the promise with the current state. For direct tunes, the first manifest is the correct one (loaded for the navigated URL - background
-    // prefetches for other channels may have overwritten latestManifestUrl). For guide tunes, the last manifest is correct (from the channel switch click).
+    // Helper that resolves the promise with the current state. The selectUrl helper applies the master-first priority and the directTune first/latest semantics.
     const resolveNow = (): void => {
 
       if(resolved) {
@@ -299,30 +378,30 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
       resolved = true;
       clearTimeout(timer);
 
-      const selectedUrl = directTune ? firstManifestUrl : latestManifestUrl;
+      const selectedUrl = selectUrl(directTune);
 
       if(selectedUrl) {
 
-        LOG.debug("native:intercept", "Interception finalized in %sms with %s manifest(s). Using %s: %s.", elapsed(), manifestCount,
+        LOG.debug("native:intercept", "Interception finalized in %sms with %s playlist capture(s). Using %s: %s.", elapsed(), manifestCount,
           directTune ? "first" : "latest", selectedUrl.slice(0, 120));
         observer.dispose(true);
         resolve({ cdpSession: observer.cdpSession, masterManifestUrl: selectedUrl });
       } else {
 
-        LOG.debug("native:intercept", "Interception finalized in %sms but no master manifest was captured.", elapsed());
+        LOG.debug("native:intercept", "Interception finalized in %sms but no HLS playlist was captured.", elapsed());
         observer.dispose(false);
         resolve(null);
       }
     };
 
-    if(directTune && firstManifestUrl) {
+    // For direct tunes, resolve immediately if a master URL has already arrived. We do not short-circuit on a media-only first URL because a master may still
+    // be in flight - waiting the settle delay gives master priority a chance to take effect. Once the settle elapses we resolve with whichever URL ranks
+    // highest under selectUrl.
+    if(directTune && firstMasterUrl) {
 
-      // Direct tune with manifest already captured: resolve immediately with zero delay. The first manifest arrived during page load and is the correct one.
       resolveNow();
     } else {
 
-      // Either no manifest captured yet (some services fetch the manifest after the video element appears) or a guide-based tune where the channel switch
-      // may produce a newer manifest. Wait briefly for in-flight responses.
       setTimeout(resolveNow, FINALIZE_SETTLE_DELAY);
     }
   };
@@ -350,9 +429,19 @@ export async function awaitMatchingManifest(page: Page, predicate: (url: string)
 
   const { promise, resolve } = Promise.withResolvers<Nullable<string>>();
 
-  const observer = await startMasterManifestObserver(page, (url: string): void => {
+  // Tune verification is a multi-channel concept that only applies to master playlists - direct-tune media-only sources do not run a guide-click verification
+  // step because the page navigation itself selects the channel. We reject media playlists at the consumer level rather than asking the observer to filter so
+  // the observer keeps a single canonical contract (forward all recognized HLS playlists with their kind).
+  const observer = await startManifestObserver(page, (url: string, kind: HlsPlaylistKind): void => {
 
     if(resolved) {
+
+      return;
+    }
+
+    if(kind !== "master") {
+
+      LOG.debug("native:intercept", "Tune verification ignoring non-master playlist (%s).", kind);
 
       return;
     }
