@@ -147,19 +147,23 @@ export interface MakeReqResInput {
 /**
  * The shape returned by makeReqRes. The req and res are typed as Express's Request and Response - tests cast to those interfaces at the boundary so route
  * handler signatures bind without complaint. The mock.fn spies expose their .mock.calls history so tests can inspect captured arguments. The set covers the
- * Response surface that production handlers in this codebase actually call: status, json, send, sendStatus, end, flushHeaders, write, setHeader.
+ * Response surface that production handlers in this codebase actually call: status, json, send, sendStatus, end, flushHeaders, write, setHeader. The req-side
+ * `on` spy records every (event, listener) registration so handlers that wire `req.on("close", fn)` for cleanup can be driven from the test by calling
+ * `triggerReqEvent("close")`.
  */
 export interface MakeReqResResult {
 
   end: ReturnType<typeof mock.fn>;
   flushHeaders: ReturnType<typeof mock.fn>;
   json: ReturnType<typeof mock.fn>;
+  on: ReturnType<typeof mock.fn>;
   req: Request;
   res: Response;
   send: ReturnType<typeof mock.fn>;
   sendStatus: ReturnType<typeof mock.fn>;
   setHeader: ReturnType<typeof mock.fn>;
   status: ReturnType<typeof mock.fn>;
+  triggerReqEvent: (event: string, ...args: unknown[]) => number;
   write: ReturnType<typeof mock.fn>;
 }
 
@@ -195,18 +199,44 @@ export function makeReqRes(input: MakeReqResInput = {}): MakeReqResResult {
 
   Object.assign(res, { end, flushHeaders, json, send, sendStatus, setHeader, status, write });
 
+  // The on() spy captures every (event, listener) pair so tests can drive synthetic events like req.on("close", ...) - production handlers register a close
+  // listener for cancellation cleanup, and the test boundary needs a way to invoke it. We keep the registration table inside the closure so it lives alongside
+  // the spy itself, and expose triggerReqEvent() on the result to invoke every captured listener for a given event name.
+  const reqListeners = new Map<string, ((...args: unknown[]) => void)[]>();
+  const on = mock.fn((event: string, listener: (...args: unknown[]) => void): unknown => {
+
+    const existing = reqListeners.get(event) ?? [];
+
+    existing.push(listener);
+    reqListeners.set(event, existing);
+
+    return req;
+  });
+
   const req = {
 
     body: input.body ?? {},
     get: (name: string): string | undefined => headers[name.toLowerCase()],
     headers,
     ip,
-    on: (): undefined => undefined,
+    on,
     params: input.params ?? {},
     protocol: input.protocol ?? "http",
     query: input.query ?? {},
     socket: { remoteAddress: ip }
   } as unknown as Request;
 
-  return { end, flushHeaders, json, req, res, send, sendStatus, setHeader, status, write };
+  function triggerReqEvent(event: string, ...args: unknown[]): number {
+
+    const listeners = reqListeners.get(event) ?? [];
+
+    for(const listener of listeners) {
+
+      listener(...args);
+    }
+
+    return listeners.length;
+  }
+
+  return { end, flushHeaders, json, on, req, res, send, sendStatus, setHeader, status, triggerReqEvent, write };
 }

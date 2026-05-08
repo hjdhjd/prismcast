@@ -6,9 +6,13 @@
  * SSE handshake (initial snapshot + heartbeat header set). Streams cannot be created in a unit test - that path is covered by e2e tests.
  */
 import type { AddressInfo, Server } from "node:net";
-import { after, before, describe, test } from "node:test";
+import type { Express, Request, Response } from "express";
+import { after, before, describe, mock, test } from "node:test";
+import { makeExpressStub, makeReqRes } from "./express.helpers.ts";
+import type { RouteCapture } from "./express.helpers.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../testing.helpers.ts";
+import { emitChannelUpdate } from "../streaming/statusEmitter.ts";
 import express from "express";
 import { setupStreamsEndpoint } from "./streams.ts";
 
@@ -217,6 +221,139 @@ describe("setupStreamsEndpoint - GET /streams/status (SSE handshake)", () => {
     } finally {
 
       controller.abort();
+    }
+  });
+});
+
+// The direct-handler suite below registers /streams/status against a stub Express app so we can drive the captured handler against synthetic req/res pairs.
+// This pins the named-event forwarding contract (subsequent live events from subscribeToStatus reach the wire as `event: <name>\ndata: <json>\n\n`) and the
+// close-cleanup invariant (post-close emits do not reach the wire AND the heartbeat stops). The named-event forwarding is what no tier currently observes
+// beyond the initial snapshot frame - a regression that swapped subscribeToStatus for a no-op would still pass the existing fetch-based suite.
+function findStreamsStatusHandler(): RouteCapture {
+
+  const stub = makeExpressStub();
+
+  setupStreamsEndpoint(stub.app as Express);
+
+  const route = stub.routes.find((r) => (r.method === "get") && (r.path === "/streams/status"));
+
+  if(!route) {
+
+    throw new Error("setupStreamsEndpoint did not register GET /streams/status");
+  }
+
+  return route;
+}
+
+function invokeStreamsStatusHandler(route: RouteCapture, req: Request, res: Response): void {
+
+  (route.handler as (req: Request, res: Response) => void)(req, res);
+}
+
+describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)", () => {
+
+  test("forwards a named status event through sse.sendEvent(eventType, data) - 'event: <name>' line followed by 'data: <json>' line", () => {
+
+    // Pins streams.ts:117 - subscribeToStatus forwards each named event (channelUpdate, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged,
+    // healthChanged) to sse.sendEvent(eventType, data). The existing fetch-based suite asserts only the initial snapshot frame; nothing observes that subsequent
+    // live events reach the wire with their named eventType. We use emitChannelUpdate as the driver because it is exported and accepts a free-form payload (the
+    // other emit*() functions require constructing full StreamStatus / SystemStatus shapes that are orthogonal to the routing contract under test here).
+    const route = findStreamsStatusHandler();
+    const { req, res, triggerReqEvent, write } = makeReqRes();
+
+    invokeStreamsStatusHandler(route, req, res);
+
+    // The handler synchronously emits the initial "snapshot" frame (one event line + one data line) before subscribing. Reset the spy so we only observe writes
+    // from the live event under test.
+    write.mock.resetCalls();
+
+    const payload = { rows: [{ key: "abc", showName: "ESPN" }] };
+
+    emitChannelUpdate(payload);
+
+    assert.equal(write.mock.callCount(), 2, "named event produces two writes (event line + data line)");
+    assert.deepEqual(write.mock.calls[0]?.arguments, ["event: channelUpdate\n"]);
+    assert.deepEqual(write.mock.calls[1]?.arguments, ["data: " + JSON.stringify(payload) + "\n\n"]);
+
+    // Cleanup so the test does not leave a listener bound on the shared statusEmitter.
+    triggerReqEvent("close");
+  });
+
+  test("emits the initial 'snapshot' frame at install time before subscribing to live events", () => {
+
+    // Pins streams.ts:114 - the route writes the snapshot frame BEFORE the subscribeToStatus call, so connecting clients always have current state on first
+    // read. We assert the first two writes match the snapshot shape: "event: snapshot\n" then "data: {...}\n\n".
+    const route = findStreamsStatusHandler();
+    const { req, res, triggerReqEvent, write } = makeReqRes();
+
+    invokeStreamsStatusHandler(route, req, res);
+
+    assert.ok(write.mock.callCount() >= 2, "snapshot writes both event and data lines");
+    assert.deepEqual(write.mock.calls[0]?.arguments, ["event: snapshot\n"]);
+
+    const dataWrite = write.mock.calls[1]?.arguments[0] as string;
+
+    assert.match(dataWrite, /^data: \{/, "second write is the JSON data line");
+    assert.match(dataWrite, /\n\n$/, "data line terminates with the SSE frame separator");
+
+    triggerReqEvent("close");
+  });
+
+  test("req.on('close') handler unsubscribes from the status emitter - post-close emits do not reach the wire", () => {
+
+    // Pins streams.ts:119-123 - the close handler must run unsubscribe(). After invoking the close handler synthetically, an emitted status event must NOT
+    // trigger a res.write. This is the observable invariant: a regression that dropped unsubscribe() would leak the listener and continue forwarding to a
+    // disconnected response.
+    const route = findStreamsStatusHandler();
+    const { req, res, triggerReqEvent, write } = makeReqRes();
+
+    invokeStreamsStatusHandler(route, req, res);
+
+    write.mock.resetCalls();
+
+    // Confirm the listener IS wired (sanity: an emit before close reaches the wire).
+    emitChannelUpdate({ probe: "before-close" });
+    assert.ok(write.mock.callCount() > 0, "pre-close emit reaches the wire");
+
+    const writesBeforeClose = write.mock.callCount();
+    const fired = triggerReqEvent("close");
+
+    assert.equal(fired, 1, "exactly one close listener was registered");
+
+    // Post-close: the listener must be gone, so the next emit does NOT reach res.write.
+    emitChannelUpdate({ probe: "after-close" });
+    assert.equal(write.mock.callCount(), writesBeforeClose, "post-close emit must NOT reach the wire (unsubscribe ran)");
+  });
+
+  test("req.on('close') handler clears the heartbeat - subsequent ticks do not produce writes", () => {
+
+    // Pins streams.ts:119-123 - the close handler must run sse.close(), which clears the heartbeat interval. We use mock.timers to drive the interval
+    // deterministically: confirm one tick fires before close, then call the close handler and confirm subsequent ticks produce no writes.
+    mock.timers.enable({ apis: ["setInterval"] });
+
+    try {
+
+      const route = findStreamsStatusHandler();
+      const { req, res, triggerReqEvent, write } = makeReqRes();
+
+      invokeStreamsStatusHandler(route, req, res);
+
+      // The snapshot writes happened synchronously at install. Reset so we only observe the heartbeat.
+      write.mock.resetCalls();
+
+      // The heartbeat fires every 30s; confirm it ticks before close.
+      mock.timers.tick(30_000);
+      assert.equal(write.mock.callCount(), 1, "heartbeat fires while connection is open");
+      assert.deepEqual(write.mock.calls[0]?.arguments, ["event: heartbeat\ndata: \n\n"]);
+
+      triggerReqEvent("close");
+
+      // Advance another full interval - no further writes.
+      mock.timers.tick(30_000);
+      assert.equal(write.mock.callCount(), 1, "no heartbeat after close()");
+    } finally {
+
+      mock.timers.reset();
     }
   });
 });

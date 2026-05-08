@@ -11,6 +11,7 @@ import type { ClientTypeCount } from "../streaming/clients.ts";
 import type { Nullable } from "../types/index.ts";
 import type { StreamHealthStatus } from "../streaming/statusEmitter.ts";
 import { emitCurrentSystemStatus } from "../browser/index.ts";
+import { installSseStream } from "./sse.ts";
 import { terminateStream } from "../streaming/lifecycle.ts";
 
 /* The streams endpoint provides visibility into active streams and allows operators to terminate streams via the API. This is useful for debugging and for
@@ -107,37 +108,17 @@ export function setupStreamsEndpoint(app: Express): void {
 
   app.get("/streams/status", (req: Request, res: Response): void => {
 
-    // Set SSE headers. The Content-Type must be text/event-stream for the browser to recognize this as an SSE connection.
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("Content-Type", "text/event-stream");
-
-    // Disable response buffering to ensure events are sent immediately.
-    res.flushHeaders();
+    const sse = installSseStream(res);
 
     // Send the initial snapshot so clients have current state.
-    const snapshot = getStatusSnapshot();
+    sse.sendEvent("snapshot", getStatusSnapshot());
 
-    res.write("event: snapshot\n");
-    res.write("data: " + JSON.stringify(snapshot) + "\n\n");
+    // Subscribe to status events and forward them to the client; the heartbeat is owned by installSseStream.
+    const unsubscribe = subscribeToStatus((eventType, data) => { sse.sendEvent(eventType, data); });
 
-    // Subscribe to status events and forward them to the client.
-    const unsubscribe = subscribeToStatus((eventType, data) => {
-
-      res.write("event: " + eventType + "\n");
-      res.write("data: " + JSON.stringify(data) + "\n\n");
-    });
-
-    // Send a named heartbeat event every 30 seconds to keep the connection alive through proxies and allow clients to detect staleness.
-    const heartbeatInterval = setInterval(() => {
-
-      res.write("event: heartbeat\ndata: \n\n");
-    }, 30000);
-
-    // Clean up when the client disconnects.
     req.on("close", () => {
 
-      clearInterval(heartbeatInterval);
+      sse.close();
       unsubscribe();
     });
   });

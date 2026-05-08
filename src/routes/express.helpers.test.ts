@@ -301,15 +301,68 @@ describe("makeReqRes", () => {
     assert.equal(b.status.mock.callCount(), 0, "second pair's status spy is independent");
   });
 
-  test("req carries an .on listener registration that is a no-op (so tests don't crash on req.on)", () => {
+  test("req.on records the listener so tests don't crash and can drive synthetic events later", () => {
 
-    // Some handlers register req.on("close") for cancellation cleanup. The fake's req.on is a no-op so handler code that calls it doesn't crash; tests that
-    // need to drive close events register their own listeners on a real Server instead.
-    const { req } = makeReqRes();
+    // Some handlers register req.on("close") for cancellation cleanup. The fake's req.on records the registration in a map keyed by event name; the call must
+    // not throw, and the spy captures the (event, listener) arguments so tests can introspect via .mock.calls and drive the listener via triggerReqEvent.
+    const { on, req } = makeReqRes();
 
     assert.doesNotThrow(() => {
 
       (req as unknown as { on: (event: string, fn: () => void) => void }).on("close", () => undefined);
     });
+
+    assert.equal(on.mock.callCount(), 1, "on() spy should record the registration");
+
+    const firstCall = on.mock.calls[0];
+
+    assert.ok(firstCall, "first call should be present after callCount() === 1");
+    assert.equal(firstCall.arguments[0], "close", "first argument is the event name");
+    assert.equal(typeof firstCall.arguments[1], "function", "second argument is the listener");
+  });
+
+  test("triggerReqEvent invokes every captured listener for the named event and returns the count", () => {
+
+    // The harness mirrors EventEmitter.emit() semantics for the captured listener table: every listener registered for the event runs in registration order, and
+    // the helper returns the number of listeners that fired. Tests use this to drive synthetic close events and assert post-cleanup state.
+    const { req, triggerReqEvent } = makeReqRes();
+    const fired: string[] = [];
+
+    (req as unknown as { on: (event: string, fn: () => void) => void }).on("close", () => fired.push("a"));
+    (req as unknown as { on: (event: string, fn: () => void) => void }).on("close", () => fired.push("b"));
+    (req as unknown as { on: (event: string, fn: () => void) => void }).on("aborted", () => fired.push("c"));
+
+    const closeCount = triggerReqEvent("close");
+
+    assert.equal(closeCount, 2, "triggerReqEvent returns the number of listeners that fired");
+    assert.deepEqual(fired, [ "a", "b" ], "every close listener fires in registration order");
+
+    const abortedCount = triggerReqEvent("aborted");
+
+    assert.equal(abortedCount, 1, "the aborted listener fires independently of close listeners");
+    assert.deepEqual(fired, [ "a", "b", "c" ]);
+  });
+
+  test("triggerReqEvent returns zero and does not throw when the event has no listeners", () => {
+
+    // Defensive: tests may invoke triggerReqEvent for an event the handler under test never registered (e.g., the handler skipped the close binding for a fast
+    // path). The helper must return 0 cleanly so the test can assert that no listeners ran.
+    const { triggerReqEvent } = makeReqRes();
+
+    assert.equal(triggerReqEvent("close"), 0);
+  });
+
+  test("triggerReqEvent forwards extra arguments to the listeners", () => {
+
+    // Some events carry payload arguments (e.g., "error" with the Error instance). The helper threads variadic args through to every captured listener.
+    const { req, triggerReqEvent } = makeReqRes();
+    const seen: unknown[] = [];
+
+    (req as unknown as { on: (event: string, fn: (err: Error, code: number) => void) => void })
+      .on("custom", (err, code) => { seen.push(err.message, code); });
+
+    triggerReqEvent("custom", new Error("boom"), 42);
+
+    assert.deepEqual(seen, [ "boom", 42 ]);
   });
 });

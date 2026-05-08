@@ -8,6 +8,7 @@ import { CONFIG } from "../config/index.ts";
 import type { Nullable } from "../types/index.ts";
 import fs from "node:fs";
 import { getLogFilePath } from "../config/paths.ts";
+import { installSseStream } from "./sse.ts";
 import { sendErrorResponse } from "./config/http/envelope.ts";
 
 const { promises: fsPromises } = fs;
@@ -208,45 +209,27 @@ export function setupLogsEndpoint(app: Express): void {
 
   app.get("/logs/stream", (req: Request, res: Response): void => {
 
-    // Set SSE headers. The Content-Type must be text/event-stream for the browser to recognize this as an SSE connection. Cache-Control prevents proxies from buffering
-    // the stream, and Connection: keep-alive ensures the connection stays open.
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("Content-Type", "text/event-stream");
-
-    // Disable response buffering to ensure events are sent immediately.
-    res.flushHeaders();
+    const sse = installSseStream(res);
 
     // Optional level filter from query parameter.
     const levelFilter = req.query["level"] as string | undefined;
     const validLevels = [ "error", "info", "warn" ];
     const filterLevel = (levelFilter && validLevels.includes(levelFilter)) ? levelFilter : null;
 
-    // Subscribe to log entries and send them as SSE events.
+    // Subscribe to log entries and forward them as unnamed SSE data events; the heartbeat is owned by installSseStream.
     const unsubscribe = subscribeToLogs((entry) => {
 
-      // Apply level filter if specified.
       if(filterLevel && (entry.level !== filterLevel)) {
 
         return;
       }
 
-      // Format the entry as an SSE event. Each event consists of "data:" lines followed by a blank line.
-      const eventData = JSON.stringify(entry);
-
-      res.write("data: " + eventData + "\n\n");
+      sse.sendEvent(null, entry);
     });
 
-    // Send a named heartbeat event every 30 seconds to keep the connection alive through proxies and allow clients to detect staleness.
-    const heartbeatInterval = setInterval(() => {
-
-      res.write("event: heartbeat\ndata: \n\n");
-    }, 30000);
-
-    // Clean up when the client disconnects.
     req.on("close", () => {
 
-      clearInterval(heartbeatInterval);
+      sse.close();
       unsubscribe();
     });
   });

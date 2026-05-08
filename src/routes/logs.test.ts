@@ -7,9 +7,12 @@
  * subscription wiring here.
  */
 import type { AddressInfo, Server } from "node:net";
-import { after, before, describe, test } from "node:test";
+import type { Express, Request, Response } from "express";
+import { after, before, describe, mock, test } from "node:test";
+import { emitLogEntry, setConsoleLogging, subscribeToLogs } from "../utils/index.ts";
+import { makeExpressStub, makeReqRes } from "./express.helpers.ts";
 import { mkdtemp, rm } from "node:fs/promises";
-import { setConsoleLogging, subscribeToLogs } from "../utils/index.ts";
+import type { RouteCapture } from "./express.helpers.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../testing.helpers.ts";
 import express from "express";
@@ -224,7 +227,8 @@ describe("setupLogsEndpoint - GET /logs/stream (SSE handshake)", () => {
     // We open the stream, then synthesize a log entry by calling subscribeToLogs directly is the wrong approach (it observes - it doesn't emit). The route
     // subscribes via subscribeToLogs which the production logger fires when logging happens. We use a tighter contract test: confirm subscribeToLogs returns
     // an unsubscribe function (the route relies on it for cleanup on client disconnect). This locks the integration shape without requiring us to drive a real
-    // log emission from a co-located fixture.
+    // log emission from a co-located fixture. The wire-byte forwarding contract (and null-eventType prefix-skip behavior) is pinned by the direct-handler suite
+    // below, which can drive emitLogEntry deterministically and read res.write spy calls back.
     const unsubscribe = subscribeToLogs(() => {
 
       // Intentional no-op: we only assert that subscribe returns a callable unsubscribe.
@@ -259,6 +263,169 @@ describe("setupLogsEndpoint - GET /logs/stream (SSE handshake)", () => {
     } finally {
 
       invalidController.abort();
+    }
+  });
+});
+
+// The direct-handler suite below registers the /logs/stream handler against a stub Express app so we can drive the captured handler against synthetic req/res
+// pairs. This pins the wire-byte forwarding contract (null-eventType produces only a `data:` line, no `event:` prefix), the level-filter short-circuit branch
+// (entries of the wrong level never reach res.write), and the close-cleanup invariant (post-close emits do not reach the wire AND the heartbeat stops). Each
+// test extracts the route fresh because setupLogsEndpoint is the only public surface that wires the handler into our stub.
+function findLogsStreamHandler(): RouteCapture {
+
+  const stub = makeExpressStub();
+
+  setupLogsEndpoint(stub.app as Express);
+
+  const route = stub.routes.find((r) => (r.method === "get") && (r.path === "/logs/stream"));
+
+  if(!route) {
+
+    throw new Error("setupLogsEndpoint did not register GET /logs/stream");
+  }
+
+  return route;
+}
+
+// Convenience: drive the captured handler against the supplied req/res with the right Express types. The handler itself is sync (it returns void after wiring
+// the subscribe), so no await is needed.
+function invokeLogsStreamHandler(route: RouteCapture, req: Request, res: Response): void {
+
+  (route.handler as (req: Request, res: Response) => void)(req, res);
+}
+
+describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () => {
+
+  test("forwards a log entry through sse.sendEvent(null, entry) - data line only, no 'event:' prefix", () => {
+
+    // Pins logs.ts:227 - subscribeToLogs forwards entries via sse.sendEvent(null, entry). The null-eventType branch in installSseStream skips the event line and
+    // writes only `data: <json>\n\n`. Without this assertion, a regression that switched to a named eventType (or wrapped the entry in an envelope) would not be
+    // caught at any tier.
+    const route = findLogsStreamHandler();
+    const { req, res, triggerReqEvent, write } = makeReqRes();
+
+    invokeLogsStreamHandler(route, req, res);
+
+    // Reset the spy AFTER install so we only observe writes triggered by the log emit, not the heartbeat install path (the heartbeat does not fire here because
+    // we have not enabled mock.timers; it lives on the real interval clock and never ticks during the test).
+    write.mock.resetCalls();
+
+    emitLogEntry({ level: "info", message: "hello", timestamp: "2026/05/06 16:00:00.000" });
+
+    assert.equal(write.mock.callCount(), 1, "one write per emitted entry");
+
+    const written = write.mock.calls[0]?.arguments[0] as string;
+
+    assert.ok(!written.startsWith("event:"), "null eventType must not write an 'event:' prefix");
+    assert.equal(written, "data: " + JSON.stringify({ level: "info", message: "hello", timestamp: "2026/05/06 16:00:00.000" }) + "\n\n");
+
+    // Cleanup: invoke the close handler so the route unsubscribes from the shared logEmitter and does not leak listeners across tests.
+    triggerReqEvent("close");
+  });
+
+  test("level filter short-circuits non-matching entries - only matching entries reach res.write", () => {
+
+    // Pins logs.ts:222 - filterLevel skips entries whose level does not match. The existing fetch-based test only checked that ?level=error did not produce an
+    // error response; it never confirmed that a non-error entry is actually filtered out. This test drives the level=error filter, emits one info entry
+    // (must be skipped) and one error entry (must reach the wire), and asserts the filter shape directly.
+    const route = findLogsStreamHandler();
+    const { req, res, triggerReqEvent, write } = makeReqRes({ query: { level: "error" } });
+
+    invokeLogsStreamHandler(route, req, res);
+
+    write.mock.resetCalls();
+
+    // Wrong level - must be filtered out.
+    emitLogEntry({ level: "info", message: "noise", timestamp: "2026/05/06 16:00:00.000" });
+    assert.equal(write.mock.callCount(), 0, "info-level entry must be filtered out when filter=error");
+
+    // Right level - must reach the wire.
+    emitLogEntry({ level: "error", message: "boom", timestamp: "2026/05/06 16:00:01.000" });
+    assert.equal(write.mock.callCount(), 1, "error-level entry must pass the filter");
+
+    const written = write.mock.calls[0]?.arguments[0] as string;
+
+    assert.match(written, /"level":"error"/);
+    assert.match(written, /"message":"boom"/);
+
+    // Cleanup so the test does not leave a listener bound on the shared logEmitter.
+    triggerReqEvent("close");
+  });
+
+  test("invalid level query parameter is silently ignored - all entries reach the wire (no filter applied)", () => {
+
+    // Boundary: the route validates the level query param against [error, info, warn]. Anything else is treated as no filter (filterLevel = null), so every
+    // emitted entry forwards. Pinning this prevents a regression where the validator throws or 400s on unknown values.
+    const route = findLogsStreamHandler();
+    const { req, res, triggerReqEvent, write } = makeReqRes({ query: { level: "BOGUS" } });
+
+    invokeLogsStreamHandler(route, req, res);
+
+    write.mock.resetCalls();
+
+    emitLogEntry({ level: "info", message: "info entry", timestamp: "2026/05/06 16:00:00.000" });
+    emitLogEntry({ level: "warn", message: "warn entry", timestamp: "2026/05/06 16:00:01.000" });
+    emitLogEntry({ level: "error", message: "error entry", timestamp: "2026/05/06 16:00:02.000" });
+
+    assert.equal(write.mock.callCount(), 3, "all three entries pass through when filter is invalid (no filter)");
+
+    triggerReqEvent("close");
+  });
+
+  test("req.on('close') handler unsubscribes from the log emitter - post-close emits do not reach the wire", () => {
+
+    // Pins logs.ts:230-234 - the close handler must run unsubscribe(). After invoking the close handler synthetically, an emitted log entry must NOT trigger a
+    // res.write. This is the observable invariant: a regression that dropped the unsubscribe() call would leak the listener and continue forwarding to a
+    // disconnected response, eventually causing memory growth and write errors.
+    const route = findLogsStreamHandler();
+    const { req, res, triggerReqEvent, write } = makeReqRes();
+
+    invokeLogsStreamHandler(route, req, res);
+
+    write.mock.resetCalls();
+
+    // Confirm the listener IS wired (sanity: an emit before close reaches the wire).
+    emitLogEntry({ level: "info", message: "before close", timestamp: "2026/05/06 16:00:00.000" });
+    assert.equal(write.mock.callCount(), 1, "pre-close emit reaches the wire");
+
+    // Invoke the close listener captured by the on-spy. The route registers exactly one close listener.
+    const fired = triggerReqEvent("close");
+
+    assert.equal(fired, 1, "exactly one close listener was registered");
+
+    // Post-close: the listener must be gone, so the next emit does NOT reach res.write.
+    emitLogEntry({ level: "info", message: "after close", timestamp: "2026/05/06 16:00:01.000" });
+    assert.equal(write.mock.callCount(), 1, "post-close emit must NOT reach the wire (unsubscribe ran)");
+  });
+
+  test("req.on('close') handler clears the heartbeat - subsequent ticks do not produce writes", () => {
+
+    // Pins logs.ts:230-234 - the close handler must run sse.close(), which clears the heartbeat interval. Without this, a regression that dropped sse.close()
+    // would leak the heartbeat past disconnect. We use mock.timers to drive the interval deterministically: confirm one tick fires before close, then call the
+    // close handler and confirm subsequent ticks produce no writes.
+    mock.timers.enable({ apis: ["setInterval"] });
+
+    try {
+
+      const route = findLogsStreamHandler();
+      const { req, res, triggerReqEvent, write } = makeReqRes();
+
+      invokeLogsStreamHandler(route, req, res);
+
+      // The heartbeat fires every 30s; confirm it ticks before close.
+      mock.timers.tick(30_000);
+      assert.equal(write.mock.callCount(), 1, "heartbeat fires while connection is open");
+      assert.deepEqual(write.mock.calls[0]?.arguments, ["event: heartbeat\ndata: \n\n"]);
+
+      // Invoke the close handler.
+      triggerReqEvent("close");
+
+      // Advance another full interval - no further writes.
+      mock.timers.tick(30_000);
+      assert.equal(write.mock.callCount(), 1, "no heartbeat after close()");
+    } finally {
+
+      mock.timers.reset();
     }
   });
 });
