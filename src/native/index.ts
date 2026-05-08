@@ -13,6 +13,7 @@ import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import { createNativeProxy } from "./proxy.ts";
 import { fetchDecryptionKey } from "./decrypt.ts";
+import { parseTokenExpiry } from "./tokenExpiry.ts";
 
 /* This module orchestrates the native streaming decision. After the browser navigates to a channel and video playback begins, we check whether the service's HLS
  * stream can be consumed directly in Node (bypassing screen capture). The decision flow is:
@@ -253,43 +254,6 @@ interface TokenRefreshOptions {
   proxy: NativeProxy;
   streamIdStr: string;
   url: string;
-}
-
-/**
- * Parses token expiration from an HLS manifest or variant URL. Common patterns include `exp=N`, `hdnea=...~exp=N~...`, path-style `/exp=N~`, and `hdnts=exp%3DN`.
- * Returns the expiration timestamp in milliseconds, or null if no expiration is found.
- *
- * @param url - The URL to parse for token expiration.
- * @returns The expiration timestamp in milliseconds, or null.
- */
-function parseTokenExpiry(url: string): Nullable<number> {
-
-  // Each pattern captures a 10-13 digit expiration timestamp from a different token format. The patterns are tried in order; the first match wins.
-  const expiryPatterns = [
-    // Plain query parameter: exp=N.
-    /[?&]exp=(\d{10,13})/,
-    // Akamai token in query parameter: hdnea=...~exp=N~...
-    /~exp=(\d{10,13})~/,
-    // Akamai token in URL path: /exp=N~acl=...
-    /\/exp=(\d{10,13})~/,
-    // URL-encoded hdnts parameter: exp%3DN.
-    /exp%3D(\d{10,13})/
-  ];
-
-  for(const pattern of expiryPatterns) {
-
-    const match = pattern.exec(url);
-
-    if(match) {
-
-      const value = Number(match[1]);
-
-      // If the value is 10 digits, it's seconds; if 13, it's milliseconds.
-      return value < 1e12 ? value * 1000 : value;
-    }
-  }
-
-  return null;
 }
 
 /**
