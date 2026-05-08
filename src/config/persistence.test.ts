@@ -1,44 +1,20 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * persistence.test.ts: Unit tests for the transactional file store framework. The framework is the SSOT for atomic writes, serialized mutations, declarative
+ * persistence.test.ts: Core unit tests for the transactional file store framework. The framework is the SSOT for atomic writes, serialized mutations, declarative
  * schema migrations, post-write integrity verification, and snapshot management - every config file (channels, config, profiles, health) goes through it.
- * Tests construct ad-hoc stores against tmp-scoped paths so they exercise the full I/O pipeline without affecting any production-data file.
+ *
+ * This file owns the framework's CORE behaviors - error class, construction validation, read happy paths, mutate happy paths, queue serialization. Three
+ * sibling files (persistence.snapshots.test.ts, persistence.integrity.test.ts, persistence.migrations.test.ts) own the snapshot system, the integrity-and-
+ * recovery branches, and the migration runner respectively. The split is by concern, not alphabet, so each file's title corresponds directly to a section of
+ * the framework's contract.
  */
-import { type FileStore, FileStoreParseError, type Migration, type ValidationIssue, createFileStore } from "./persistence.ts";
+import { FileStoreParseError, createFileStore } from "./persistence.ts";
 import { describe, test } from "node:test";
 import { readFile, writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
-import { initializeDataDir } from "./paths.ts";
+import { makeStore } from "./persistence.helpers.ts";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
-
-// makeStore builds a FileStore in the supplied data dir. Tests pass a unique filename per test so concurrent stores don't collide on the global registry.
-function makeStore<T>(dir: string, filename: string, options: {
-  currentSchemaVersion?: number;
-  defaultValue?: () => T;
-  migrations?: Record<number, Migration<T>>;
-  parse?: (raw: string) => T;
-  validate?: (prev: T, next: T) => ValidationIssue[];
-} = {}): FileStore<T> {
-
-  // Make sure the data dir is set so persistence.ts can call getDataDir() during the first write.
-  initializeDataDir(dir);
-
-  return createFileStore<T>({
-
-    currentSchemaVersion: options.currentSchemaVersion,
-    defaultValue: options.defaultValue ?? ((): T => ({} as T)),
-    getSchemaVersion: options.currentSchemaVersion ? ((data: T): number => (data as { schemaVersion?: number }).schemaVersion ?? 1) : undefined,
-    label: "test-" + filename,
-    migrations: options.migrations,
-    parse: options.parse ?? ((raw: string): T => JSON.parse(raw) as T),
-    path: (): string => path.join(dir, filename),
-    setSchemaVersion: options.currentSchemaVersion ?
-      ((data: T, version: number): void => { (data as { schemaVersion?: number }).schemaVersion = version; }) :
-      undefined,
-    validate: options.validate
-  });
-}
 
 describe("FileStoreParseError", () => {
 
@@ -58,6 +34,31 @@ describe("FileStoreParseError", () => {
 
     assert.ok(err instanceof Error);
   });
+
+  test("the name override survives a throw/catch round-trip and remains queryable on the caught instance", () => {
+
+    /* Route handlers catch FileStoreParseError specifically to return HTTP 400 rather than 500 - they rely on the .name override (rather than instanceof) when
+     * the error has crossed a serialization boundary or has been wrapped in another error's `cause` chain. We pin both: catching the thrown error reads name
+     * correctly, and a synthetic AggregateError that wraps it via cause leaves the inner name intact for inspection.
+     */
+    const original = new FileStoreParseError("channels", "/tmp/x.json", "boom");
+
+    try {
+
+      throw original;
+    } catch(caught) {
+
+      assert.ok(caught instanceof FileStoreParseError, "caught instance is structurally a FileStoreParseError");
+      assert.equal((caught).name, "FileStoreParseError", ".name override visible after catch");
+    }
+
+    // Wrap via cause to mimic the route-handler pattern where a higher-level error reports the parse error as its underlying cause. The inner instance keeps
+    // its overridden name, even though the outer Error's name is the default "Error".
+    const wrapper = new Error("higher-level failure", { cause: original });
+
+    assert.equal((wrapper.cause as Error).name, "FileStoreParseError", ".name preserved through cause-chain wrapping");
+    assert.equal(wrapper.name, "Error", "wrapper carries its own name; the override is scoped to the inner instance");
+  });
 });
 
 describe("createFileStore - construction validation", () => {
@@ -75,7 +76,7 @@ describe("createFileStore - construction validation", () => {
   });
 });
 
-describe("FileStore.read", () => {
+describe("FileStore.read - core paths", () => {
 
   test("returns the default value when the file does not exist (first run)", async () => {
 
@@ -146,81 +147,9 @@ describe("FileStore.read", () => {
       assert.ok(result.parseErrorMessage, "parseErrorMessage populated");
     });
   });
-
-  test("runs migrations in memory and returns the upgraded data", async () => {
-
-    await withTempDir(async (dir) => {
-
-      // File is at v1; current is v2 with one migration that adds a field.
-      await writeFile(path.join(dir, "migrate.json"), JSON.stringify({ schemaVersion: 1 }));
-
-      const migrations: Record<number, Migration<{ migratedField?: string; schemaVersion?: number }>> = {
-
-        2: {
-
-          apply: (data): void => { data.migratedField = "applied"; },
-          description: "add migratedField"
-        }
-      };
-      const store = makeStore<{ migratedField?: string; schemaVersion?: number }>(dir, "migrate.json", {
-
-        currentSchemaVersion: 2,
-        defaultValue: () => ({ schemaVersion: 2 }),
-        migrations
-      });
-      const result = await store.read();
-
-      assert.equal(result.data.migratedField, "applied");
-      assert.equal(result.data.schemaVersion, 2);
-      assert.equal(result.migrationResult.fromVersion, 1);
-      assert.equal(result.migrationResult.toVersion, 2);
-      assert.deepEqual(result.migrationResult.applied, ["add migratedField"]);
-    });
-  });
-
-  test("throws when the migrations map has a gap (programmer error)", async () => {
-
-    await withTempDir(async (dir) => {
-
-      await writeFile(path.join(dir, "gap.json"), JSON.stringify({ schemaVersion: 1 }));
-
-      const migrations: Record<number, Migration<{ schemaVersion?: number }>> = {
-
-        // No v2 migration; v3 declared. The runner walks 2,3,... and surfaces the missing v2.
-        3: { apply: () => undefined, description: "v3" }
-      };
-      const store = makeStore<{ schemaVersion?: number }>(dir, "gap.json", {
-
-        currentSchemaVersion: 3,
-        defaultValue: () => ({ schemaVersion: 3 }),
-        migrations
-      });
-
-      await assert.rejects(() => store.read(), /missing a migration to schema version 2/);
-    });
-  });
-
-  test("forward-compatible read: file with newer version logs and proceeds without migrations", async () => {
-
-    await withTempDir(async (dir) => {
-
-      await writeFile(path.join(dir, "newer.json"), JSON.stringify({ futureField: "x", schemaVersion: 99 }));
-
-      const store = makeStore<{ futureField?: string; schemaVersion?: number }>(dir, "newer.json", {
-
-        currentSchemaVersion: 1,
-        defaultValue: () => ({ schemaVersion: 1 })
-      });
-      const result = await store.read();
-
-      assert.equal(result.data.schemaVersion, 99, "newer version preserved");
-      assert.equal(result.data.futureField, "x");
-      assert.deepEqual(result.migrationResult.applied, [], "no migrations applied");
-    });
-  });
 });
 
-describe("FileStore.mutate", () => {
+describe("FileStore.mutate - core paths", () => {
 
   test("performs an atomic write (temp + rename) with stringifySorted output", async () => {
 
@@ -333,28 +262,60 @@ describe("FileStore.mutate", () => {
     });
   });
 
-  test("calls the validator with prev and next state and surfaces issues via log", async () => {
+  test("queue continuity holds under rapid concurrent mutations where every other one rejects", async () => {
 
+    /* The "subsequent succeeds after one throws" test pins continuity at low cadence. The queue's promise-chain reference is `queue = operation.catch(() => {})`
+     * - a single empty catch installed once per dispatch. A regression that broke the chain reference (e.g., dropping the catch, replacing with the original
+     * promise rather than the swallowed one, or short-circuiting on the first rejection) would surface only under a burst where multiple rejections interleave
+     * with successes - the low-cadence test would still pass.
+     *
+     * We fire 10 concurrent mutations: even-indexed ones throw, odd-indexed ones write a unique value. Even-indexed promises must reject; odd-indexed promises
+     * must resolve and produce a final on-disk state equal to the last odd value written. A regression that broke the queue would surface as an unhandled
+     * rejection, an uncaught throw from a later odd-indexed call, or a missing tail value on disk.
+     */
     await withTempDir(async (dir) => {
 
-      let captured: { next: { value: number } | null; prev: { value: number } | null } = { next: null, prev: null };
+      const store = makeStore<{ value: number }>(dir, "burst.json", {
 
-      const store = makeStore<{ value: number }>(dir, "validator.json", {
-
-        defaultValue: () => ({ value: 0 }),
-        validate: (prev, next): ValidationIssue[] => {
-
-          captured = { next: { ...next }, prev: { ...prev } };
-
-          return [];
-        }
+        defaultValue: () => ({ value: 0 })
       });
 
-      await store.mutate((data) => { data.value = 1; });
-      await store.mutate((data) => { data.value = 2; });
+      const promises = [];
+      const expectedFinalValue = 9;
 
-      assert.equal(captured.prev?.value, 1, "validator received prev state");
-      assert.equal(captured.next?.value, 2, "validator received next state");
+      for(let i = 0; i < 10; i++) {
+
+        if((i % 2) === 0) {
+
+          promises.push(store.mutate(() => {
+
+            throw new Error("burst-reject-" + String(i));
+          }));
+        } else {
+
+          promises.push(store.mutate((data) => { data.value = i; }));
+        }
+      }
+
+      // Use Promise.allSettled so we can inspect every outcome rather than short-circuiting on the first rejection.
+      const results = await Promise.allSettled(promises);
+
+      for(let i = 0; i < 10; i++) {
+
+        if((i % 2) === 0) {
+
+          assert.equal(results[i]?.status, "rejected", "even-indexed mutation #" + String(i) + " must reject");
+        } else {
+
+          assert.equal(results[i]?.status, "fulfilled", "odd-indexed mutation #" + String(i) + " must resolve - queue chain remains intact across rejections");
+        }
+      }
+
+      // The serialization guarantee says queued mutations apply in dispatch order. The last successful mutation set value=9, so the on-disk state must reflect
+      // that - any earlier queue break would freeze value at an earlier number.
+      const written = JSON.parse(await readFile(path.join(dir, "burst.json"), "utf-8")) as { value: number };
+
+      assert.equal(written.value, expectedFinalValue, "final on-disk value reflects the last successful mutation - queue chain intact end-to-end");
     });
   });
 
@@ -374,120 +335,6 @@ describe("FileStore.mutate", () => {
       const parsed = JSON.parse(written) as { value: number };
 
       assert.equal(parsed.value, 7, "post-write readback contract: file content matches what we wrote");
-    });
-  });
-});
-
-describe("FileStore.snapshot", () => {
-
-  test("creates a labeled copy in a snapshots/ subdirectory", async () => {
-
-    await withTempDir(async (dir) => {
-
-      const store = makeStore<{ value: number }>(dir, "snap-test.json", {
-
-        defaultValue: () => ({ value: 0 })
-      });
-
-      await store.mutate((data) => { data.value = 1; });
-      await store.snapshot("v1.0.0");
-
-      const snapPath = path.join(dir, "snapshots", "snap-test.json.v1.0.0");
-      const content = await readFile(snapPath, "utf-8");
-      const parsed = JSON.parse(content) as { value: number };
-
-      assert.equal(parsed.value, 1, "snapshot reflects the file's state at snapshot time");
-    });
-  });
-
-  test("is idempotent on the same label (second call is a no-op)", async () => {
-
-    await withTempDir(async (dir) => {
-
-      const store = makeStore<{ value: number }>(dir, "idempotent.json", {
-
-        defaultValue: () => ({ value: 0 })
-      });
-
-      await store.mutate((data) => { data.value = 1; });
-      await store.snapshot("v1");
-
-      // Mutate to a new value; second snapshot with the same label must NOT overwrite the existing snapshot.
-      await store.mutate((data) => { data.value = 2; });
-      await store.snapshot("v1");
-
-      const snapPath = path.join(dir, "snapshots", "idempotent.json.v1");
-      const content = JSON.parse(await readFile(snapPath, "utf-8")) as { value: number };
-
-      assert.equal(content.value, 1, "idempotent: first snapshot's value is preserved");
-    });
-  });
-
-  test("silently no-ops when the source file does not exist (first run before any write)", async () => {
-
-    await withTempDir(async (dir) => {
-
-      const store = makeStore<{ value: number }>(dir, "no-source.json", {
-
-        defaultValue: () => ({ value: 0 })
-      });
-
-      // No mutate called; file does not exist.
-      await assert.doesNotReject(() => store.snapshot("v1"), "snapshot of non-existent file must not throw");
-    });
-  });
-});
-
-describe("FileStore.ensureMigrated", () => {
-
-  test("returns empty migration result when file is already at current schema version", async () => {
-
-    await withTempDir(async (dir) => {
-
-      await writeFile(path.join(dir, "ok.json"), JSON.stringify({ schemaVersion: 1, value: 1 }));
-
-      const store = makeStore<{ schemaVersion?: number; value: number }>(dir, "ok.json", {
-
-        currentSchemaVersion: 1,
-        defaultValue: () => ({ schemaVersion: 1, value: 0 })
-      });
-
-      const result = await store.ensureMigrated();
-
-      assert.deepEqual(result.applied, [], "no migrations applied since already current");
-    });
-  });
-
-  test("persists migration upgrade when file was at older version", async () => {
-
-    await withTempDir(async (dir) => {
-
-      await writeFile(path.join(dir, "upgrade.json"), JSON.stringify({ schemaVersion: 1 }));
-
-      const migrations: Record<number, Migration<{ schemaVersion?: number; upgraded?: boolean }>> = {
-
-        2: {
-
-          apply: (data): void => { data.upgraded = true; },
-          description: "v2 upgrade"
-        }
-      };
-      const store = makeStore<{ schemaVersion?: number; upgraded?: boolean }>(dir, "upgrade.json", {
-
-        currentSchemaVersion: 2,
-        defaultValue: () => ({ schemaVersion: 2 }),
-        migrations
-      });
-
-      const result = await store.ensureMigrated();
-
-      assert.deepEqual(result.applied, ["v2 upgrade"]);
-
-      // Re-read the file from disk to confirm the upgrade was persisted.
-      const written = JSON.parse(await readFile(path.join(dir, "upgrade.json"), "utf-8")) as { schemaVersion?: number; upgraded?: boolean };
-
-      assert.equal(written.schemaVersion, 2, "upgraded version persisted");
-      assert.equal(written.upgraded, true, "migration body persisted");
     });
   });
 });

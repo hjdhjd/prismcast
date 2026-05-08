@@ -15,17 +15,67 @@
  * Each persisted file (channels, config, profiles, health) declares its data shape, default value, parser, current schema version, ordered migration list, and
  * (optionally) an integrity validator. The framework wires the rest. Adding a new store is a one-line registration in createFileStore; adding a new migration
  * is a one-line entry in the store's migration map.
+ *
+ * The framework is backend-agnostic by construction: every operation it performs (atomic temp+rename, backup copy, snapshot copy, post-write readback) is
+ * expressible against any durable store that offers stat/read/write/copy/rename/unlink with a path namespace. The abstraction surface is StorageBackend below;
+ * the default fs-backed adapter lives in persistence.context.ts. Production stores get the default backend implicitly via the createFileStore default parameter.
  */
 import { LOG, stringifySorted } from "../utils/index.ts";
-import fs from "node:fs";
+import { createDefaultStorageBackend } from "./persistence.context.ts";
 import { getDataDir } from "./paths.ts";
 import path from "node:path";
-
-const { promises: fsPromises } = fs;
 
 // Maximum number of snapshots retained per file. Snapshots are pruned by mtime - the SNAPSHOT_RETENTION most recently created are kept and the rest are
 // deleted. The retention window balances forensic value (older snapshots become schema-incompatible with current code) against disk and directory clutter.
 const SNAPSHOT_RETENTION = 5;
+
+/**
+ * Storage backend abstraction. The framework operates on any durable store that exposes the operations below over a path namespace - the default backend lives
+ * in persistence.context.ts and wires real-filesystem I/O via node:fs/promises, but the surface is intentionally narrow so alternative backends (for example, an
+ * in-memory backend used during tests, or a future object-store backend) can plug in without modifying the framework.
+ *
+ * Error contract: when a path is missing, throw a NodeJS.ErrnoException with `code: "ENOENT"` so the framework's existing branch detection (the read() ENOENT
+ * fast path, the doMutate ENOENT-tolerant backup copy, the snapshot ENOENT-tolerant source) continues to behave identically. All other failures (permission
+ * denied, I/O error, etc.) propagate as Error or NodeJS.ErrnoException with their native code so the framework's error logging surfaces accurate diagnostics.
+ *
+ * Encoding: every text operation is UTF-8 by contract. Backends do not accept other encodings - JSON is what the framework writes, and JSON is text.
+ */
+export interface StorageBackend {
+
+  // Throws when the path does not exist. Used by snapshot() to detect idempotent no-ops.
+  readonly access: (path: string) => Promise<void>;
+
+  // Copies source to destination. Overwrites destination when it exists. ENOENT thrown when source is missing.
+  readonly copyFile: (source: string, destination: string) => Promise<void>;
+
+  // Creates a directory at the given path, recursively creating parent directories. Idempotent on existing directories. The framework only ever calls this with
+  // recursive semantics, so the surface bakes recursive in rather than exposing an options bag.
+  readonly mkdir: (path: string) => Promise<void>;
+
+  // Lists the names (basename, not full path) of every entry in the given directory. ENOENT when the directory does not exist.
+  readonly readdir: (path: string) => Promise<string[]>;
+
+  // Returns the file's content as a UTF-8 string. ENOENT when missing.
+  readonly readFile: (path: string) => Promise<string>;
+
+  // Atomically renames source to destination. The framework relies on filesystem-level atomicity (POSIX rename, NTFS MoveFileEx) - alternative backends must
+  // provide an equivalent guarantee or risk partial-write windows the framework's integrity check will catch but cannot prevent.
+  readonly rename: (source: string, destination: string) => Promise<void>;
+
+  // Returns the file's modification time in millisecond resolution. The framework only uses mtimeMs (for snapshot pruning by recency) so the surface is narrow.
+  readonly stat: (path: string) => Promise<{ mtimeMs: number }>;
+
+  // Removes the file at the given path. ENOENT when missing.
+  readonly unlink: (path: string) => Promise<void>;
+
+  // Writes UTF-8 content to the file, replacing any prior content. Atomicity is achieved by writing to a .tmp companion and then renaming - the framework owns
+  // the choreography rather than relying on writeFile to be atomic.
+  readonly writeFile: (path: string, content: string) => Promise<void>;
+}
+
+// Shared default backend. Stateless wrappers around node:fs/promises - safe to share across every store in the process. Tests pass options.backend explicitly to
+// substitute alternative backends (e.g., an in-memory backend with failure injection); production paths use this default implicitly.
+const defaultStorageBackend = createDefaultStorageBackend();
 
 // Types.
 
@@ -114,6 +164,10 @@ export interface FileStoreReadResult<T> {
  * @template T - The in-memory data type that callers mutate.
  */
 export interface FileStoreOptions<T> {
+
+  // Storage backend abstraction. When omitted, the framework uses the shared default backend that wires node:fs/promises - the production wiring. Alternative
+  // backends (in-memory, fault-injecting, future object-store) can be supplied per-store for tests or specialized stores without changing the framework code.
+  backend?: StorageBackend;
 
   /* Transform applied before serialization. Returns the serializable form, which may differ from T (e.g., channels inject metadata keys not in StoredChannelMap).
    * If omitted, the data is serialized as-is.
@@ -255,6 +309,9 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   // Lazy data directory creation. The directory is created once on the first write, then skipped for subsequent writes.
   let dataDirEnsured = false;
 
+  // Resolve the backend: the caller may inject an alternative implementation; production stores get the shared default.
+  const backend: StorageBackend = options.backend ?? defaultStorageBackend;
+
   // Validate the migration configuration at construction time so misconfigurations surface immediately rather than during the first migration attempt.
   if(options.migrations) {
 
@@ -351,7 +408,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     try {
 
-      bakContent = await fsPromises.readFile(bakPath, "utf-8");
+      bakContent = await backend.readFile(bakPath);
     } catch {
 
       return null;
@@ -373,8 +430,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     try {
 
-      await fsPromises.writeFile(tmpPath, bakContent, "utf-8");
-      await fsPromises.rename(tmpPath, filePath);
+      await backend.writeFile(tmpPath, bakContent);
+      await backend.rename(tmpPath, filePath);
     } catch(restoreError) {
 
       LOG.warn("Recovered %s data from backup but failed to restore the main file: %s.", options.label,
@@ -382,7 +439,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
       try {
 
-        await fsPromises.unlink(tmpPath);
+        await backend.unlink(tmpPath);
       } catch {
 
         // Cleanup is best-effort.
@@ -406,7 +463,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     try {
 
-      const content = await fsPromises.readFile(filePath, "utf-8");
+      const content = await backend.readFile(filePath);
 
       try {
 
@@ -483,7 +540,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     try {
 
-      entries = await fsPromises.readdir(snapshotDir);
+      entries = await backend.readdir(snapshotDir);
     } catch {
 
       // Directory does not exist or is unreadable - nothing to prune.
@@ -506,7 +563,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
       try {
 
-        const stat = await fsPromises.stat(fullPath);
+        const stat = await backend.stat(fullPath);
 
         return { mtime: stat.mtimeMs, path: fullPath };
       } catch {
@@ -523,7 +580,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
       try {
 
-        await fsPromises.unlink(old.path);
+        await backend.unlink(old.path);
 
         LOG.info("Pruned old snapshot %s.", old.path);
       } catch(error) {
@@ -550,7 +607,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     // skip, so the snapshot reflects the file's state at first-boot of that release.
     try {
 
-      await fsPromises.access(snapshotPath);
+      await backend.access(snapshotPath);
 
       return;
     } catch {
@@ -561,7 +618,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     // Ensure the snapshots subdirectory exists. Best-effort: if mkdir fails the copyFile below surfaces the real error.
     try {
 
-      await fsPromises.mkdir(snapshotDir, { recursive: true });
+      await backend.mkdir(snapshotDir);
     } catch {
 
       // Best-effort; the copyFile call below will surface the underlying problem.
@@ -569,7 +626,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     try {
 
-      await fsPromises.copyFile(filePath, snapshotPath);
+      await backend.copyFile(filePath, snapshotPath);
 
       LOG.info("Created snapshot of %s at %s.", options.label, snapshotPath);
     } catch(error) {
@@ -628,7 +685,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     // Ensure the data directory exists on the first write.
     if(!dataDirEnsured) {
 
-      await fsPromises.mkdir(getDataDir(), { recursive: true });
+      await backend.mkdir(getDataDir());
       dataDirEnsured = true;
     }
 
@@ -637,7 +694,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     try {
 
-      await fsPromises.copyFile(filePath, bakPath);
+      await backend.copyFile(filePath, bakPath);
     } catch(backupError) {
 
       if((backupError as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -651,14 +708,14 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     try {
 
-      await fsPromises.writeFile(tmpPath, content, "utf-8");
-      await fsPromises.rename(tmpPath, filePath);
+      await backend.writeFile(tmpPath, content);
+      await backend.rename(tmpPath, filePath);
     } catch(writeError) {
 
       // Attempt cleanup of the temp file on failure.
       try {
 
-        await fsPromises.unlink(tmpPath);
+        await backend.unlink(tmpPath);
       } catch {
 
         // Cleanup is best-effort.
@@ -677,7 +734,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     try {
 
-      written = await fsPromises.readFile(filePath, "utf-8");
+      written = await backend.readFile(filePath);
     } catch(readbackError) {
 
       LOG.error("Post-write readback failed for %s: %s.", filePath, (readbackError instanceof Error) ? readbackError.message : String(readbackError));
