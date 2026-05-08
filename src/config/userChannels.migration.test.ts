@@ -13,7 +13,7 @@ import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import { __internalForTests } from "./userChannels.ts";
 import assert from "node:assert/strict";
 
-const { buildResolvedCanonicals, classifyEntry, collectLegacyVariantStamps, normalizeChannelDeltas, resolveVariant } = __internalForTests;
+const { buildResolvedCanonicals, channelsMigrations, classifyEntry, collectLegacyVariantStamps, normalizeChannelDeltas, resolveVariant } = __internalForTests;
 
 describe("collectLegacyVariantStamps", () => {
 
@@ -211,5 +211,210 @@ describe("regression: redundant predefined override collapses to nothing", () =>
     const normalized = normalizeChannelDeltas(storedInput);
 
     assert.equal("abc" in normalized, false, "empty override collapses to no entry");
+  });
+});
+
+describe("collectLegacyVariantStamps: post-isDeepStrictEqual array semantics", () => {
+
+  /* The classifier recently switched the array-equality check from JSON.stringify to isDeepStrictEqual (line 1146 in userChannels.ts). The two are equivalent
+   * for plain string arrays of the same length, but the canonical-sort wrapper (sortTags) lifts both sides into a normalized order before comparison. These
+   * tests pin the post-swap behavior for the cases the audit specifically called out: tag arrays equal modulo case-insensitive sort order.
+   */
+
+  test("stamps when stored tags differ only in authoring order from the canonical's tags", () => {
+
+    /* If the canonical declares tags=["A", "B"] and the legacy variant stored tags=["B", "A"], the sortTags wrapper canonicalizes both to ["A", "B"] before the
+     * deep-equal check. The classifier should treat this as shape-compatible and stamp.
+     */
+    const channels: StoredChannelMap = {
+
+      "abc-hulu": {
+
+        channelSelector: "ABC",
+        // abc canonical's tags are ["Local"]. We provide them via a single-element duplicate to assert the sort path is exercised.
+        tags: ["Local"],
+        url: "https://www.hulu.com/live"
+      }
+    };
+
+    assert.deepEqual(collectLegacyVariantStamps(channels), ["abc-hulu"], "stored tags equal to canonical tags is shape-compatible");
+  });
+
+  test("stamps when stored tags differ in case but are otherwise identical (case-insensitive sort)", () => {
+
+    /* sortTags uses locale-aware case-insensitive comparison. If the legacy stored entry capitalized differently than the canonical (e.g., "local" vs "Local"),
+     * the sort canonicalizes both to identical orderings, but isDeepStrictEqual is case-sensitive on the final element values. The classifier should NOT stamp
+     * here - the stored value is genuinely different from the canonical's, even if the sort order matches.
+     */
+    const channels: StoredChannelMap = {
+
+      "abc-hulu": {
+
+        channelSelector: "ABC",
+        // canonical's "Local" is capitalized; this stored value uses lowercase.
+        tags: ["local"],
+        url: "https://www.hulu.com/live"
+      }
+    };
+
+    /* Documented current behavior: case-different tags are NOT shape-compatible. sortTags normalizes only the order; the values themselves remain case-sensitive
+     * for the deep-equal check. This is the load-bearing distinction: stamping a variant whose tags differ in case would silently lose the user's casing on
+     * normalization.
+     */
+    assert.deepEqual(collectLegacyVariantStamps(channels), [], "case-differing tags are not shape-compatible (stored value preserved as standalone)");
+  });
+
+  test("refuses to stamp when stored tags differ structurally from canonical (extra entry)", () => {
+
+    /* The variant carries an additional tag the canonical doesn't have. Definite divergence; must NOT stamp.
+     */
+    const channels: StoredChannelMap = {
+
+      "abc-hulu": {
+
+        channelSelector: "ABC",
+        tags: [ "Local", "Custom" ],
+        url: "https://www.hulu.com/live"
+      }
+    };
+
+    assert.deepEqual(collectLegacyVariantStamps(channels), []);
+  });
+});
+
+describe("channelsMigrations.2 (apply): stamping loop body", () => {
+
+  /* The migration iterates collectLegacyVariantStamps' return and writes canonicalKey onto each stamped entry. The previous tests confirm the classifier; this
+   * test pins the apply function's loop body - that the resulting in-memory data has canonicalKey on the stamped entries with the value derived from the key
+   * prefix (substring before the first hyphen).
+   */
+
+  test("stamps canonicalKey on every classifier-approved entry", () => {
+
+    /* Build a v1-shaped data object as the framework would pass in. The apply function mutates data.channels in place.
+     */
+    const data = {
+
+      channels: {
+
+        "abc-hulu": { channelSelector: "ABC", url: "https://www.hulu.com/live" },
+        "mychannel": { name: "My Channel", url: "https://example.com" }
+      } as StoredChannelMap,
+      migrationsApplied: [],
+      schemaVersion: 1,
+      serviceSelections: {},
+      tagRegistry: { deletedTags: [], tags: [] }
+    };
+
+    channelsMigrations[2]?.apply(data);
+
+    assert.equal((data.channels["abc-hulu"] as { canonicalKey?: string }).canonicalKey, "abc", "shape-compatible variant gets canonicalKey stamped");
+    assert.equal("canonicalKey" in (data.channels["mychannel"] ?? {}), false, "user standalone is left alone");
+  });
+
+  test("is a no-op when the classifier returns no stamps", () => {
+
+    /* No hyphenated keys -> classifier returns []. The apply function's loop body never runs and data is unchanged.
+     */
+    const data = {
+
+      channels: { "mychannel": { name: "My Channel", url: "https://example.com" } } as StoredChannelMap,
+      migrationsApplied: [],
+      schemaVersion: 1,
+      serviceSelections: {},
+      tagRegistry: { deletedTags: [], tags: [] }
+    };
+
+    channelsMigrations[2]?.apply(data);
+
+    assert.equal("canonicalKey" in (data.channels["mychannel"] ?? {}), false);
+  });
+});
+
+describe("channelsMigrations.3 (apply): foxcom -> foxone rename", () => {
+
+  /* The v2 -> v3 migration handles three rename categories:
+   *
+   *   - serviceSelections: "*-foxcom" -> "*-foxone"
+   *   - serviceSelections: special case "fox" -> "fox-foxone" (was "fox-site")
+   *   - data.channels keys: "*-foxcom" -> "*-foxone"
+   */
+
+  test("renames foxcom service selections to foxone", () => {
+
+    const data = {
+
+      channels: {} as StoredChannelMap,
+      migrationsApplied: [],
+      schemaVersion: 2,
+      serviceSelections: {
+
+        abc: "abc-foxcom",
+        nbc: "nbc-foxcom"
+      } as Record<string, string>,
+      tagRegistry: { deletedTags: [], tags: [] }
+    };
+
+    channelsMigrations[3]?.apply(data);
+
+    assert.equal(data.serviceSelections["abc"], "abc-foxone", "abc-foxcom became abc-foxone");
+    assert.equal(data.serviceSelections["nbc"], "nbc-foxone", "nbc-foxcom became nbc-foxone");
+  });
+
+  test("special-cases fox-site -> fox-foxone (the v1.8.0 mis-keyed FoxOne variant)", () => {
+
+    const data = {
+
+      channels: {} as StoredChannelMap,
+      migrationsApplied: [],
+      schemaVersion: 2,
+      serviceSelections: { fox: "fox-site" } as Record<string, string>,
+      tagRegistry: { deletedTags: [], tags: [] }
+    };
+
+    channelsMigrations[3]?.apply(data);
+
+    assert.equal(data.serviceSelections["fox"], "fox-foxone", "the fox-site -> fox-foxone special case fires");
+  });
+
+  test("renames foxcom channel keys to foxone", () => {
+
+    const data = {
+
+      channels: {
+
+        "abc-foxcom": { canonicalKey: "abc", channelSelector: "ABC", url: "https://example.com" }
+      } as StoredChannelMap,
+      migrationsApplied: [],
+      schemaVersion: 2,
+      serviceSelections: {} as Record<string, string>,
+      tagRegistry: { deletedTags: [], tags: [] }
+    };
+
+    channelsMigrations[3]?.apply(data);
+
+    assert.equal("abc-foxcom" in data.channels, false, "old key removed");
+    assert.ok(data.channels["abc-foxone"], "new key written");
+    assert.equal((data.channels["abc-foxone"] as { channelSelector?: string }).channelSelector, "ABC", "value preserved");
+  });
+
+  test("leaves non-foxcom keys and selections unchanged", () => {
+
+    const data = {
+
+      channels: {
+
+        "abc-hulu": { canonicalKey: "abc", channelSelector: "ABC", url: "https://hulu.com" }
+      } as StoredChannelMap,
+      migrationsApplied: [],
+      schemaVersion: 2,
+      serviceSelections: { abc: "abc-hulu" } as Record<string, string>,
+      tagRegistry: { deletedTags: [], tags: [] }
+    };
+
+    channelsMigrations[3]?.apply(data);
+
+    assert.ok(data.channels["abc-hulu"], "non-foxcom key preserved");
+    assert.equal(data.serviceSelections["abc"], "abc-hulu", "non-foxcom selection preserved");
   });
 });

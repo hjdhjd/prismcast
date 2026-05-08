@@ -10,9 +10,9 @@
  */
 import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import { getChannelCustomizations, mutateChannels } from "../../../src/config/userChannels.ts";
 import assert from "node:assert/strict";
-import { getChannelCustomizations } from "../../../src/config/userChannels.ts";
-import { mutateChannels } from "../../../src/config/userChannels.ts";
+import { setServiceSelection } from "../../../src/config/services.ts";
 
 describe("getChannelCustomizations - provenance reporting", () => {
 
@@ -94,5 +94,87 @@ describe("getChannelCustomizations - provenance reporting", () => {
 
     assert.equal(customizations.customizations.size, 0, "no customizations for a non-existent key");
     assert.equal(customizations.activeVariantKey, undefined, "no active variant for a non-existent key");
+  });
+
+  test("Pass 2 (variant-stored): a binding override on the active variant reports as variant-stored with activeVariantKey set", async () => {
+
+    /* When a non-canonical service is active and the user has stored a binding override on the variant entry, getChannelCustomizations reports the override
+     * with storedIn="variant" and exposes activeVariantKey. This is the Pass 2 path that the audit calls out as untested.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    /* Set a service selection to switch active variant from canonical (abc) to abc-hulu, then write a stored binding override on abc-hulu.
+     */
+    await setServiceSelection("abc", "abc-hulu");
+
+    await mutateChannels((data) => {
+
+      data.channels["abc-hulu"] = { canonicalKey: "abc", channelSelector: "ABC-CUSTOM" };
+    });
+
+    const customizations = getChannelCustomizations("abc");
+
+    assert.equal(customizations.activeVariantKey, "abc-hulu", "active variant matches the service selection");
+
+    const channelSelectorEntry = customizations.customizations.get("channelSelector");
+
+    assert.ok(channelSelectorEntry, "channelSelector should be in the customizations map (Pass 2)");
+    assert.equal(channelSelectorEntry.storedIn, "variant", "binding override on active variant reports storedIn='variant'");
+  });
+
+  test("Pass 2 silently drops identity fields encountered on a variant-stored entry (allowed-fields gate)", async () => {
+
+    /* The recordCustomizations helper restricts variant-pass walks via getAllowedFieldsForShape, which forbids identity fields on variants. If a stored variant
+     * entry carries identity (e.g., legacy data), Pass 2 must NOT surface it as a customization. This pins the field-gate branch.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await setServiceSelection("abc", "abc-hulu");
+
+    /* Write a stored variant entry with both binding (channelSelector, allowed) and identity (name, NOT allowed on variants). Pass 2 should surface only the
+     * binding field.
+     */
+    await mutateChannels((data) => {
+
+      data.channels["abc-hulu"] = { canonicalKey: "abc", channelSelector: "ABC-CUSTOM", name: "Should Be Dropped" };
+    });
+
+    const customizations = getChannelCustomizations("abc");
+
+    assert.ok(customizations.customizations.has("channelSelector"), "binding field surfaces");
+    assert.equal(customizations.customizations.has("name"), false, "identity field on variant entry is silently dropped");
+  });
+
+  test("Pass 2 variant-stored override wins over Pass 1 canonical-stored override on the same field name (last-overlay-wins matches resolution)", async () => {
+
+    /* If the same field name is set on both canonical and variant entries, the variant overlay applies last during resolution. The customizations accessor
+     * mirrors that: Pass 2 entries overwrite Pass 1 entries on the same key. This pins the order-of-overlay rule for the customization map.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await setServiceSelection("abc", "abc-hulu");
+
+    await mutateChannels((data) => {
+
+      // Pass 1: a canonical-stored binding override (channelSelector). normally this would route to a variant via the form router, but a stored entry can carry
+      // it directly via direct mutation. The point is to seed both layers with the same field name to force the precedence test.
+      data.channels["abc"] = { channelSelector: "FROM-CANONICAL" };
+      data.channels["abc-hulu"] = { canonicalKey: "abc", channelSelector: "FROM-VARIANT" };
+    });
+
+    const customizations = getChannelCustomizations("abc");
+    const entry = customizations.customizations.get("channelSelector");
+
+    assert.ok(entry, "channelSelector is in the customizations map");
+    assert.equal(entry.storedIn, "variant", "Pass 2 (variant) wins over Pass 1 (canonical) on the same field name");
   });
 });

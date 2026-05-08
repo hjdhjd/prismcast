@@ -98,6 +98,19 @@ describe("channelMatches", () => {
     assert.equal(channelMatches(channel, form, [ "A", "B", "C" ]), false, "longer tags array");
   });
 
+  test("tags of equal length but different content do not match (post-isDeepStrictEqual semantics)", () => {
+
+    /* The recently-changed isDeepStrictEqual switch on the tags equality check produces order-independent comparison via sortTags; pinning the equal-length
+     * but distinct-content case prevents a regression where the deep-equal call accidentally compares unsorted arrays (which would produce false negatives
+     * for reordered tags) or compares sorted-by-different-keys arrays (false positives for reordered-but-different-content tags).
+     */
+    const channel = makeChannel({ name: "ABC", tags: [ "Local", "News" ], url: "https://abc.com" });
+    const form = makeForm({ name: "ABC", url: "https://abc.com" });
+
+    assert.equal(channelMatches(channel, form, [ "Local", "Sports" ]), false, "swapping one tag for a different value of the same length does not match");
+    assert.equal(channelMatches(channel, form, [ "Movies", "Kids" ]), false, "swapping every tag for different values of the same length does not match");
+  });
+
   test("returns false when url differs", () => {
 
     const channel = makeChannel({ name: "ABC", url: "https://abc.com" });

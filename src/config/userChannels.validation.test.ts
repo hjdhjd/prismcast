@@ -11,7 +11,8 @@
  * routes/config/channels/endpoints/crud.test.ts where the full module is already wired up. The pure branches are exhaustively covered here.
  */
 import { describe, test } from "node:test";
-import { validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl } from "./userChannels.ts";
+import { validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl,
+  validateImportedChannels } from "./userChannels.ts";
 import assert from "node:assert/strict";
 
 describe("validateChannelUrl", () => {
@@ -328,5 +329,251 @@ describe("validateChannelNumber - pure branches (excludeKey-irrelevant when valu
     // parseInt("1.5", 10) returns 1, which is in range. Document the current behavior: the validator only inspects the integer part. A future tightening to
     // reject decimals should update this test rather than silently break imports.
     assert.equal(validateChannelNumber("1.5", "any-key"), undefined, "parseInt truncates - documented");
+  });
+});
+
+describe("validateImportedChannels", () => {
+
+  /* The import-path validator is the single gate that strangers' JSON has to pass before becoming user channel data. It enforces every shape rule so a hand-
+   * crafted or programmatically-generated import never leaves the channels store in a malformed state. Coverage focuses on each rejection branch: structural
+   * type checks, required-field presence, sanitization round-trips, optional-field type rules, and cross-entry uniqueness for channelNumber.
+   */
+
+  const validProfiles = [ "default", "fox", "hulu" ];
+
+  test("rejects a non-object input (array)", () => {
+
+    const result = validateImportedChannels([], validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.deepEqual(result.errors, ["Invalid format: expected an object with channel definitions."]);
+    assert.deepEqual(result.channels, {});
+  });
+
+  test("rejects a non-object input (string)", () => {
+
+    const result = validateImportedChannels("not an object", validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /Invalid format/);
+  });
+
+  test("rejects a null input", () => {
+
+    const result = validateImportedChannels(null, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /Invalid format/);
+  });
+
+  test("accepts an empty object (no channels imported, valid)", () => {
+
+    /* Boundary case: an empty import is structurally valid and produces no channels. This is the no-op import.
+     */
+    const result = validateImportedChannels({}, validProfiles);
+
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.channels, {});
+    assert.deepEqual(result.errors, []);
+  });
+
+  test("rejects a channel with an invalid key", () => {
+
+    const result = validateImportedChannels({ "INVALID KEY!": { name: "X", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /INVALID KEY!.*lowercase/);
+    assert.equal(Object.keys(result.channels).length, 0, "invalid-key entries are not added to channels");
+  });
+
+  test("rejects a channel whose value is not an object", () => {
+
+    const result = validateImportedChannels({ "valid-key": "not an object" }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /valid-key.*expected an object/);
+  });
+
+  test("rejects a channel whose value is an array", () => {
+
+    const result = validateImportedChannels({ "valid-key": [] }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /valid-key.*expected an object/);
+  });
+
+  test("rejects a channel without a name field", () => {
+
+    const result = validateImportedChannels({ "valid-key": { url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /name is required/);
+  });
+
+  test("rejects a channel with a non-string name", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: 42, url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /name is required/);
+  });
+
+  test("rejects a channel with an empty-trimmed name", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: "   ", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /name is required/);
+  });
+
+  test("rejects a channel without a url field", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: "X" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /url is required/);
+  });
+
+  test("rejects a channel with an invalid URL protocol", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: "X", url: "ftp://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /must use http or https/);
+  });
+
+  test("rejects a channel with an unknown profile", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: "X", profile: "notreal", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /Unknown profile: notreal/);
+  });
+
+  test("accepts a channel with a known profile", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: "X", profile: "hulu", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, true);
+    assert.equal(result.channels["valid-key"]?.profile, "hulu");
+  });
+
+  test("accepts a channel without a profile (autodetect)", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: "X", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, true);
+    assert.equal(result.channels["valid-key"]?.profile, undefined);
+  });
+
+  test("captures optional stationId when present and string-typed", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: "X", stationId: "12345", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, true);
+    assert.equal((result.channels["valid-key"] as { stationId?: string }).stationId, "12345");
+  });
+
+  test("ignores a non-string stationId without raising an error", () => {
+
+    /* The validator's stationId branch is `typeof === "string"` - non-string values are silently skipped (the field is optional). Documented current behavior;
+     * importing { stationId: 12345 } does NOT fail the validation, but the field is dropped.
+     */
+    const result = validateImportedChannels({ "valid-key": { name: "X", stationId: 12345, url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, true);
+    assert.equal("stationId" in (result.channels["valid-key"] ?? {}), false);
+  });
+
+  test("captures optional channelSelector when present and string-typed", () => {
+
+    const result = validateImportedChannels({ "valid-key": { channelSelector: "ABC", name: "X", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, true);
+    assert.equal((result.channels["valid-key"] as { channelSelector?: string }).channelSelector, "ABC");
+  });
+
+  test("rejects a channelNumber outside the 1-99999 range", () => {
+
+    const result = validateImportedChannels({ "valid-key": { channelNumber: 100000, name: "X", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /channelNumber must be an integer between 1 and 99999/);
+  });
+
+  test("rejects a non-integer channelNumber", () => {
+
+    const result = validateImportedChannels({ "valid-key": { channelNumber: 7.5, name: "X", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /channelNumber must be an integer/);
+  });
+
+  test("captures a valid integer channelNumber", () => {
+
+    const result = validateImportedChannels({ "valid-key": { channelNumber: 7, name: "X", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, true);
+    assert.equal((result.channels["valid-key"] as { channelNumber?: number }).channelNumber, 7);
+  });
+
+  test("rejects a non-finite tvgShift (Infinity)", () => {
+
+    const result = validateImportedChannels({ "valid-key": { name: "X", tvgShift: Infinity, url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.match(result.errors[0] ?? "", /tvgShift must be a finite number/);
+  });
+
+  test("accepts a negative finite tvgShift (West Coast feed offset case)", () => {
+
+    /* Negative tvgShift is valid: the user is shifting an earlier feed back to the current zone. The validator must not reject negatives.
+     */
+    const result = validateImportedChannels({ "valid-key": { name: "X", tvgShift: -3, url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, true);
+    assert.equal((result.channels["valid-key"] as { tvgShift?: number }).tvgShift, -3);
+  });
+
+  test("rejects duplicate channelNumber across imported channels", () => {
+
+    const result = validateImportedChannels({
+
+      "first": { channelNumber: 7, name: "First", url: "https://a.example.com" },
+      "second": { channelNumber: 7, name: "Second", url: "https://b.example.com" }
+    }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("channelNumber 7 is already used")));
+  });
+
+  test("reports each error per channel and continues validating subsequent entries", () => {
+
+    /* The validator does not bail at the first error - it accumulates all errors and reports them together so the operator can fix them in one pass. We seed
+     * two distinct errors and assert both surface.
+     */
+    const result = validateImportedChannels({
+
+      "first": { url: "https://a.example.com" }, // missing name
+      "second": { name: "Second", url: "ftp://b.example.com" } // bad protocol
+    }, validProfiles);
+
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("first") && e.includes("name is required")));
+    assert.ok(result.errors.some((e) => e.includes("second") && e.includes("must use http or https")));
+  });
+
+  test("sanitizes string fields (strips non-printable characters)", () => {
+
+    /* Sanitization is the post-type-check step that strips control characters from imported strings. We use a string with an embedded null character to confirm
+     * the sanitize call is applied.
+     */
+    const result = validateImportedChannels({ "valid-key": { name: "X\x00Y", url: "https://example.com" } }, validProfiles);
+
+    assert.equal(result.valid, true);
+    /* The sanitize helper normalizes non-printable to nothing or whitespace; we just assert the null byte didn't survive verbatim. The exact behavior is the
+     * sanitize helper's contract, not this validator's, so we don't pin the post-sanitize string shape.
+     */
+    assert.equal((result.channels["valid-key"] as { name?: string }).name?.includes("\x00"), false);
   });
 });

@@ -15,6 +15,7 @@
 import type { ChannelDelta, ResolvedChannel } from "../types/index.ts";
 import { PREDEFINED_SUFFIX, getServiceGroup, resolvePredefinedVariant } from "./services.ts";
 import { getChannelEffectiveTags, getEffectiveHdhrEnabled, sortTags } from "./userChannels.ts";
+import { isDeepStrictEqual } from "node:util";
 
 /**
  * Case-insensitive order-independent comparison of two tag arrays. Delegates ordering to sortTags so the case-insensitive locale-aware sort policy lives in
@@ -30,7 +31,7 @@ function tagsEqual(a: readonly string[], b: readonly string[]): boolean {
     return false;
   }
 
-  return JSON.stringify(sortTags(a)) === JSON.stringify(sortTags(b));
+  return isDeepStrictEqual(sortTags(a), sortTags(b));
 }
 
 /**

@@ -8,12 +8,12 @@
  * The unit tier covers the resolver functions in isolation; this suite verifies the full end-to-end flow: set selection -> resolve -> identity preserved,
  * binding updated.
  */
-import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
+import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
+import { clearChannelOverrides, getAllChannels, mutateChannels } from "../../../src/config/userChannels.ts";
 import { describe, test } from "node:test";
-import { getAllChannels, mutateChannels } from "../../../src/config/userChannels.ts";
+import { getServiceSelections, mutateServiceSelections, setServiceSelection } from "../../../src/config/services.ts";
 import { PREDEFINED_CHANNELS } from "../../../src/channels/index.ts";
 import assert from "node:assert/strict";
-import { setServiceSelection } from "../../../src/config/services.ts";
 
 describe("variant resolution invariants", () => {
 
@@ -171,5 +171,229 @@ describe("default canonical resolution for multi-service predefined channels", (
     assert.ok(amcThrillersYttv, "amcthrillers-yttv variant must exist");
     assert.equal(amcThrillersYttv.canonicalKey, "amcthrillers");
     assert.equal(amcThrillersYttv.url, "https://tv.youtube.com/live", "the non-canonical yttv variant carries the yttv URL on the variant entry");
+  });
+});
+
+describe("setServiceSelection: persistence and delete branch", () => {
+
+  /* The mutator routes through mutateChannels and writes to channels.json. The canonical-equals-service-key branch deletes the entry from serviceSelections
+   * rather than storing a redundant key->same-key mapping. We assert the on-disk shape directly via readPersistedJson.
+   */
+
+  test("setting a non-canonical variant persists the selection to channels.json", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await setServiceSelection("abc", "abc-hulu");
+
+    const persisted = await readPersistedJson(ctx, "channels.json") as { serviceSelections?: Record<string, string> };
+
+    assert.deepEqual(persisted.serviceSelections, { abc: "abc-hulu" }, "variant selection persisted to disk");
+  });
+
+  test("setting selection to the canonical key DELETES the entry from serviceSelections (no redundant mapping)", async () => {
+
+    /* The canonical-equals-service-key delete branch (services.ts line 923). When the user selects the canonical service explicitly, the function removes the
+     * selection rather than storing a redundant key->key entry. Confirm the on-disk entry disappears.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await setServiceSelection("abc", "abc-hulu");
+
+    /* Confirm the prerequisite (entry on disk) before exercising the delete.
+     */
+    const before = await readPersistedJson(ctx, "channels.json") as { serviceSelections?: Record<string, string> };
+
+    assert.deepEqual(before.serviceSelections, { abc: "abc-hulu" });
+
+    await setServiceSelection("abc", "abc");
+
+    const after = await readPersistedJson(ctx, "channels.json") as { serviceSelections?: Record<string, string> };
+
+    /* The serviceSelections key is omitted from the on-disk shape entirely once empty (per prepareChannelsForWrite's conditional emit).
+     */
+    assert.equal(after.serviceSelections, undefined, "empty serviceSelections is not emitted to disk");
+  });
+
+  test("post-write cache hydration: getServiceSelections reflects the persisted state immediately after the mutate", async () => {
+
+    /* The audit's specific concern about S3-I1 / S3-I2 - that the post-write cache hydration is not asserted anywhere. Pin it: after setServiceSelection
+     * resolves, the in-memory getServiceSelections() returns the just-written state, demonstrating the cache was hydrated as part of the mutate.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await setServiceSelection("abc", "abc-hulu");
+
+    assert.deepEqual(getServiceSelections(), { abc: "abc-hulu" }, "in-memory cache reflects the persisted write");
+  });
+});
+
+describe("mutateServiceSelections: bulk variant", () => {
+
+  test("applies multiple selection changes in a single atomic write", async () => {
+
+    /* The bulk variant (services.ts:946-955) is documented to coalesce N changes into one write. We exercise it with two distinct canonical channels and
+     * verify both selections land on disk.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateServiceSelections({ abc: "abc-hulu", nbc: "nbc-yttv" });
+
+    const persisted = await readPersistedJson(ctx, "channels.json") as { serviceSelections?: Record<string, string> };
+
+    assert.deepEqual(persisted.serviceSelections, { abc: "abc-hulu", nbc: "nbc-yttv" });
+  });
+
+  test("mixed delete/set entries: entries equal to canonical key are removed; non-canonical entries are stored", async () => {
+
+    /* The bulk variant honors the same canonical-equals-service-key delete convention as the single mutator. We seed two prior selections, then run a bulk
+     * update that deletes one (selection === canonical) and updates the other.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateServiceSelections({ abc: "abc-hulu", nbc: "nbc-yttv" });
+
+    /* Bulk update: delete abc (selection equals canonical) and update nbc to a different variant.
+     */
+    await mutateServiceSelections({ abc: "abc", nbc: "nbc-sling" });
+
+    const persisted = await readPersistedJson(ctx, "channels.json") as { serviceSelections?: Record<string, string> };
+
+    assert.deepEqual(persisted.serviceSelections, { nbc: "nbc-sling" }, "abc removed via canonical-equals-key; nbc updated to new variant");
+  });
+});
+
+describe("clearChannelOverrides: dual-delete with canonical-precedence return", () => {
+
+  /* The helper deletes both the canonical and the active variant entries in one mutateChannels call. The returned StoredChannel preserves canonical-takes-
+   * precedence semantics so callers can compute downstream effects (e.g., playlist reload hint).
+   */
+
+  test("returns the canonical entry when it exists; deletes both canonical and active variant", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await setServiceSelection("abc", "abc-hulu");
+
+    /* Seed canonical + variant entries directly via mutateChannels so we have something to delete.
+     */
+    let returned: unknown;
+
+    await mutateChannels((data) => {
+
+      data.channels["abc"] = { channelNumber: 7 };
+      data.channels["abc-hulu"] = { canonicalKey: "abc", channelSelector: "ABC-CUSTOM" };
+    });
+
+    await mutateChannels((data) => {
+
+      returned = clearChannelOverrides(data.channels, "abc");
+    });
+
+    /* Canonical takes precedence in the returned entry: even though both entries existed, the returned value is the canonical (channelNumber=7), not the variant.
+     */
+    assert.deepEqual(returned, { channelNumber: 7 });
+
+    const persisted = await readPersistedJson(ctx, "channels.json") as Record<string, unknown>;
+
+    assert.equal("abc" in persisted, false, "canonical entry deleted");
+    assert.equal("abc-hulu" in persisted, false, "active variant entry deleted");
+  });
+
+  test("returns the variant entry when canonical is absent (variant-only fallback)", async () => {
+
+    /* Variant-only revert case: the user has no canonical-stored override but does have a variant override. clearChannelOverrides falls back to returning the
+     * variant entry so callers still see a non-undefined result.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await setServiceSelection("abc", "abc-hulu");
+
+    let returned: unknown;
+
+    await mutateChannels((data) => {
+
+      data.channels["abc-hulu"] = { canonicalKey: "abc", channelSelector: "ABC-VARIANT-ONLY" };
+    });
+
+    await mutateChannels((data) => {
+
+      returned = clearChannelOverrides(data.channels, "abc");
+    });
+
+    assert.equal((returned as { channelSelector?: string }).channelSelector, "ABC-VARIANT-ONLY", "variant entry returned when canonical is absent");
+  });
+
+  test("returns undefined when neither canonical nor active variant exists", async () => {
+
+    /* No prior overrides for the channel. The helper still runs the deletes (they're no-ops via Reflect.deleteProperty) and returns undefined.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    let returned: unknown = "unset";
+
+    await mutateChannels((data) => {
+
+      returned = clearChannelOverrides(data.channels, "abc");
+    });
+
+    assert.equal(returned, undefined);
+  });
+});
+
+describe("mutateEnabledServices: post-write cache hydration", () => {
+
+  /* The audit's S3-I1 concern: lines 303-304 (cache hydration after the file write) are not asserted anywhere. We pin it via service-filter HTTP route plus
+   * a subsequent in-memory check.
+   */
+
+  test("after mutateEnabledServices via the service-filter route, getEnabledServices reflects the new value", async () => {
+
+    /* Mutate via the public route, then assert the in-memory cache reads back the new state. If the post-write hydration on lines 303-304 regressed, the cache
+     * would lag behind disk and this assertion would fail.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+    const response = await fetch(urlFor("/config/service-filter"), {
+
+      body: JSON.stringify({ enabledServices: [ "hulu", "yttv" ] }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "service-filter update should succeed");
+
+    /* In-memory cache: getEnabledServices imported from services.ts reads the same module-state cache that mutateEnabledServices hydrates.
+     */
+    const { getEnabledServices } = await import("../../../src/config/services.ts");
+
+    assert.deepEqual(getEnabledServices().toSorted(), [ "hulu", "yttv" ].toSorted(), "cache reflects the persisted state");
   });
 });

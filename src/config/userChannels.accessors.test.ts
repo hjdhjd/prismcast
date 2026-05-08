@@ -14,10 +14,12 @@
  *
  * The tests below cover tier 1 exhaustively. tier 2 is documented at each function's describe block as a deliberate transitive-coverage decision.
  */
+import type { ChannelListingEntry, ResolvedChannel } from "../types/index.ts";
 import { describe, test } from "node:test";
-import { getEastCanonicalKey, getEffectiveHdhrEnabled, isPredefinedChannel, tagsMatch } from "./userChannels.ts";
-import type { ResolvedChannel } from "../types/index.ts";
+import { getChannelsParseErrorMessage, getEastCanonicalKey, getEffectiveHdhrEnabled, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel,
+  isVisibleChannel, tagsMatch } from "./userChannels.ts";
 import assert from "node:assert/strict";
+import { makeChannel } from "./userChannels.helpers.ts";
 
 describe("tagsMatch", () => {
 
@@ -188,6 +190,91 @@ describe("getEastCanonicalKey", () => {
     // Documents that the function strips exactly one trailing "p" and asks once. A key like "abcpp" would strip to "abcp", and only resolve if "abcp" is itself
     // predefined. There is no recursive descent.
     assert.equal(getEastCanonicalKey("abcpp"), undefined, "abcp is not in the predefined catalog so abcpp does not resolve");
+  });
+});
+
+describe("isVisibleChannel", () => {
+
+  /* Pure predicate over a ChannelListingEntry: visible iff enabled AND availableByService. Single source of truth for what "visible" means across bulk
+   * operations, the playlist, and the merged channel map.
+   */
+
+  function makeEntry(overrides: Partial<ChannelListingEntry> = {}): ChannelListingEntry {
+
+    return { availableByService: true, channel: makeChannel(), enabled: true, key: "test", source: "user", ...overrides };
+  }
+
+  test("returns true when both enabled and availableByService are true", () => {
+
+    assert.equal(isVisibleChannel(makeEntry()), true);
+  });
+
+  test("returns false when enabled is false (operator-disabled predefined)", () => {
+
+    assert.equal(isVisibleChannel(makeEntry({ enabled: false })), false);
+  });
+
+  test("returns false when availableByService is false (filtered out by service filter)", () => {
+
+    assert.equal(isVisibleChannel(makeEntry({ availableByService: false })), false);
+  });
+
+  test("returns false when both are false", () => {
+
+    assert.equal(isVisibleChannel(makeEntry({ availableByService: false, enabled: false })), false);
+  });
+});
+
+describe("hasChannelsParseError / getChannelsParseErrorMessage / getUserChannelsFilePath", () => {
+
+  /* Accessor wrappers exposing module-level state. Without runtime initialization, the parse-error flag is the default false / undefined and the file path
+   * resolves via the paths module to whatever default is in effect. Tests pin contract shape rather than specific values.
+   */
+
+  test("hasChannelsParseError returns a boolean", () => {
+
+    /* The flag's contract is boolean; the value depends on whether initializeUserChannels has run with a parseable file. Asserting type-only keeps the test
+     * unit-shaped without depending on bring-up state.
+     */
+    assert.equal(typeof hasChannelsParseError(), "boolean");
+  });
+
+  test("getChannelsParseErrorMessage returns string-or-undefined matching the parse-error flag", () => {
+
+    /* Contract: when hasChannelsParseError() is false, getChannelsParseErrorMessage() returns undefined. When true, it returns a string. Pinning the relationship
+     * between the two getters captures the invariant without depending on a specific value.
+     */
+    const message = getChannelsParseErrorMessage();
+    const hasError = hasChannelsParseError();
+
+    if(hasError) {
+
+      assert.equal(typeof message, "string");
+    } else {
+
+      assert.equal(message, undefined);
+    }
+  });
+
+  test("getUserChannelsFilePath delegates to the paths module (throws when data dir not initialized; resolves when initialized)", () => {
+
+    /* The wrapper delegates to getChannelsFilePath in the paths module. Without a prior initializeDataDir call the resolver throws "Data directory not
+     * initialized". We pin the throw-or-resolve contract: either the call resolves to a non-empty string (when run under an integration harness that initialized
+     * the dir) or it throws. Both are valid documented states for this thin wrapper. Document the structural delegation here without taking on the bring-up cost
+     * of paths.ts initialization just to assert a wrapped getter.
+     */
+    try {
+
+      const path = getUserChannelsFilePath();
+
+      assert.equal(typeof path, "string");
+      assert.ok(path.length > 0, "path must be non-empty when data dir is initialized");
+    } catch(error) {
+
+      /* The expected error from getDataDir() before initializeDataDir() runs. Pinning the message anchors the contract.
+       */
+      assert.match((error as Error).message, /Data directory not initialized/, "delegates to paths.getDataDir which throws this exact message pre-init");
+    }
   });
 });
 

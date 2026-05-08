@@ -13,6 +13,7 @@ import { buildServiceGroups, getAllServiceTags, getResolvedChannel, isChannelAva
 import { CONFIG } from "./index.ts";
 import fs from "node:fs";
 import { getChannelsFilePath } from "./paths.ts";
+import { isDeepStrictEqual } from "node:util";
 import { mutateConfig } from "./userConfig.ts";
 
 const { promises: fsPromises } = fs;
@@ -331,7 +332,7 @@ function normalizeEntryAgainstBase(stored: StoredChannel, base: Channel): Stored
       const left = canonical ? sortTags(value as string[]) : value;
       const right = canonical ? sortTags((baseValue ?? []) as string[]) : baseValue;
 
-      if(JSON.stringify(left) === JSON.stringify(right)) {
+      if(isDeepStrictEqual(left, right)) {
 
         continue;
       }
@@ -939,7 +940,7 @@ function detectIdentityFieldLoss(before: StoredChannelMap, after: StoredChannelM
       if(canonicalValue !== undefined) {
 
         const sameValue = (Array.isArray(beforeValue) && Array.isArray(canonicalValue)) ?
-          (JSON.stringify(beforeValue) === JSON.stringify(canonicalValue)) :
+          isDeepStrictEqual(beforeValue, canonicalValue) :
           (beforeValue === canonicalValue);
 
         if(sameValue) {
@@ -1142,10 +1143,7 @@ function collectLegacyVariantStamps(channels: StoredChannelMap): string[] {
 
       if(Array.isArray(storedValue) && Array.isArray(canonicalValue)) {
 
-        const left = JSON.stringify(sortTags(storedValue as string[]));
-        const right = JSON.stringify(sortTags(canonicalValue as string[]));
-
-        if(left !== right) {
+        if(!isDeepStrictEqual(sortTags(storedValue as string[]), sortTags(canonicalValue as string[]))) {
 
           shapeCompatible = false;
 
@@ -1346,11 +1344,28 @@ export function pickIdentity(channel: ResolvedChannel): ChannelIdentity {
  */
 function overlayDelta(base: ResolvedChannel, stored: StoredChannel): ResolvedChannel {
 
+  return applyOverlayKernel(base, stored, { allowedFields: DELTA_ALLOWED_FIELDS, passThroughOthers: true });
+}
+
+/**
+ * Shared overlay kernel used by overlayDelta and overlayVariantBinding. Walks the stored entry's fields and applies them to a clone of base under three rules:
+ * fields in allowedFields apply with delta semantics (null clears, undefined skips, value overrides); non-allowed fields either pass through (delta) or are
+ * silently dropped (variant overlay) per passThroughOthers; canonicalKey is always allowed regardless of the gate so resolved variants retain their relationship
+ * metadata. The kernel exists to keep the two overlays from drifting - identical control flow lived in both call sites before this consolidation.
+ * @param base - The base channel to clone and overlay onto.
+ * @param stored - The stored entry whose fields override the base.
+ * @param options - allowedFields selects which fields apply with delta semantics; passThroughOthers controls whether non-allowed fields flow through or are
+ *   dropped. canonicalKey is always passed through.
+ * @returns A new ResolvedChannel with overlay applied.
+ */
+function applyOverlayKernel(base: ResolvedChannel, stored: StoredChannel,
+  options: { allowedFields: ReadonlySet<string>; passThroughOthers: boolean }): ResolvedChannel {
+
   const resolved: ResolvedChannel = { ...base };
 
   for(const [ field, value ] of Object.entries(stored)) {
 
-    if(DELTA_ALLOWED_FIELDS.has(field)) {
+    if(options.allowedFields.has(field)) {
 
       if(value === null) {
 
@@ -1365,15 +1380,15 @@ function overlayDelta(base: ResolvedChannel, stored: StoredChannel): ResolvedCha
       continue;
     }
 
-    // Non-delta fields (e.g., canonicalKey) pass through from the stored entry so the resolved channel carries its relationship metadata. Undefined values are
-    // skipped because they have no effect and would only overwrite a defined field on the base with undefined.
-    if(value !== undefined) {
+    // Non-allowed fields: pass through under delta semantics, or always pass canonicalKey as relationship metadata. Undefined values skipped per the
+    // standard "undefined inherits" rule.
+    if((options.passThroughOthers || (field === "canonicalKey")) && (value !== undefined)) {
 
       (resolved as unknown as Record<string, unknown>)[field] = value;
     }
   }
 
-  // Defensive copy of reference-type fields to break shared references with the base. The delta overlay above may have replaced tags entirely (if the stored
+  // Defensive copy of reference-type fields to break shared references with the base. The overlay above may have replaced tags entirely (if the stored
   // entry included a tags array), but when no delta is present for tags, the spread leaves the base's array reference on the resolved object.
   resolved.tags &&= resolved.tags.slice();
 
@@ -1396,41 +1411,7 @@ function overlayDelta(base: ResolvedChannel, stored: StoredChannel): ResolvedCha
  */
 function overlayVariantBinding(base: ResolvedChannel, stored: StoredChannel): ResolvedChannel {
 
-  const resolved: ResolvedChannel = { ...base };
-
-  for(const [ field, value ] of Object.entries(stored)) {
-
-    // canonicalKey is relationship metadata, not a category-classified field; pass it through so the resolved entry retains its variant identification.
-    if(field === "canonicalKey") {
-
-      if(value !== undefined) {
-
-        (resolved as unknown as Record<string, unknown>)[field] = value;
-      }
-
-      continue;
-    }
-
-    // Variant overlay applies binding fields only. Identity fields encountered here (legacy data, hand edits, future migrations) are silently dropped per
-    // the architectural principle - the canonical's identity is the single source of truth for the channel.
-    if(!VARIANT_OVERLAY_ALLOWED_FIELDS.has(field)) {
-
-      continue;
-    }
-
-    if(value === null) {
-
-      Reflect.deleteProperty(resolved, field);
-    } else if(value !== undefined) {
-
-      (resolved as unknown as Record<string, unknown>)[field] = value;
-    }
-  }
-
-  // Defensive copy of reference-type fields to break shared references with the base.
-  resolved.tags &&= resolved.tags.slice();
-
-  return resolved;
+  return applyOverlayKernel(base, stored, { allowedFields: VARIANT_OVERLAY_ALLOWED_FIELDS, passThroughOthers: false });
 }
 
 /**
@@ -1996,7 +1977,7 @@ export async function transformChannelTags(
         // directly - a raw .sort() on entry.channel.tags would rearrange the predefined array in process memory.
         const newTags = sortTags(transform(currentTags));
 
-        if(JSON.stringify(newTags) === JSON.stringify(sortTags(currentTags))) {
+        if(isDeepStrictEqual(newTags, sortTags(currentTags))) {
 
           continue;
         }
@@ -2327,6 +2308,11 @@ export async function mutateChannelDisplayPrefs(prefs: {
 /**
  * Marks the first-run Service Setup wizard as completed. Writes the flag to runtime CONFIG and persists to config.json in one call - the operation is a single
  * one-way transition (setupCompleted goes from false/absent to true once, never back), so splitting into set+save would be ceremony without benefit.
+ *
+ * Persistence note: setupCompleted is intentionally absent from CONFIG_METADATA and PRESERVED_FIELDS in userConfig.ts, so filterDefaults strips it from the
+ * on-disk shape during the write below. This is by design - the flag is observably derived from "has the user configured any services or channels" and
+ * initializeUserChannels() re-infers it at startup from that observable state. The mutateConfig call here is a no-op on the file but keeps the runtime
+ * mutation pathway uniform with every other CONFIG.channels writer; the flag survives across restarts via inference, not persistence.
  */
 export async function markSetupCompleted(): Promise<void> {
 
@@ -2826,12 +2812,23 @@ export function parseTagInput(raw: string): string[] {
  */
 export const __internalForTests = {
 
+  applyOverlayKernel,
   buildResolvedCanonicals,
+  channelsMigrations,
   classifyEntry,
   collectLegacyVariantStamps,
+  detectIdentityFieldLoss,
+  filterToDeltaSurface,
+  getAllowedFieldsForShape,
+  getMergedChannelMap,
   normalizeChannelDeltas,
   normalizeEntryAgainstBase,
   overlayDelta,
+  overlayVariantBinding,
+  parseChannelsFile,
+  prepareChannelsForWrite,
   resolveVariant,
-  stripNulls
+  stripNulls,
+  validateChannelsIntegrity,
+  warnDanglingCanonical
 };
