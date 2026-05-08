@@ -89,16 +89,16 @@ describe("buildChannelTableState", () => {
 
     const state = buildChannelTableState();
 
-    assert.ok(state.counts);
+    assert.ok(state.counts, "channel-table state should carry a counts object");
     assert.equal(typeof state.counts.disabled, "number");
     assert.equal(typeof state.counts.enabled, "number");
     assert.equal(typeof state.counts.predefined, "number");
     assert.equal(typeof state.counts.total, "number");
     assert.equal(typeof state.counts.user, "number");
-    assert.ok(state.scopeCounts);
-    assert.ok(state.scopeCounts.all);
-    assert.ok(state.scopeCounts.east);
-    assert.ok(state.scopeCounts.pacific);
+    assert.ok(state.scopeCounts, "channel-table state should carry a scopeCounts object");
+    assert.ok(state.scopeCounts.all, "scopeCounts.all should be present");
+    assert.ok(state.scopeCounts.east, "scopeCounts.east should be present");
+    assert.ok(state.scopeCounts.pacific, "scopeCounts.pacific should be present");
   });
 
   test("counts.total equals counts.predefined + counts.user (every entry is one or the other)", () => {
@@ -146,10 +146,10 @@ describe("buildChannelTablePatch", () => {
 
     const patch = buildChannelTablePatch([], []);
 
-    assert.ok(patch.counts);
-    assert.ok(patch.hdhrCounts);
+    assert.ok(patch.counts, "channel-table patch should carry a counts object");
+    assert.ok(patch.hdhrCounts, "channel-table patch should carry an hdhrCounts object");
     assert.deepEqual(patch.rows, []);
-    assert.ok(patch.scopeCounts);
+    assert.ok(patch.scopeCounts, "channel-table patch should carry a scopeCounts object");
   });
 
   test("emits a 'remove' row entry for a key that does not exist in the listing", () => {

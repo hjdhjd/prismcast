@@ -214,7 +214,7 @@ describe("POST /config/service-filter", () => {
 
     const patch = body["patch"] as Record<string, unknown>;
 
-    assert.ok(patch);
+    assert.ok(patch, "service-bulk-restore success response should include a patch object");
     assert.deepEqual(patch["rows"], [], "counts-only patch (rows empty)");
   });
 

@@ -399,7 +399,7 @@ describe("importServicePack and exportServicePack - direct orchestrator coverage
      */
     const pack = exportServicePack([profileKey]);
 
-    assert.ok(pack);
+    assert.ok(pack, "exportServicePack should return a pack for a known profile key");
     assert.equal(pack.channels, undefined, "channels section omitted when includeChannels is not explicitly true");
   });
 

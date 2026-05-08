@@ -505,7 +505,7 @@ describe("config.ts: window.submitSettingsForm", () => {
 
     const toast = ctx.document.querySelector("#toast-container .toast");
 
-    assert.ok(toast);
+    assert.ok(toast, "submit failure should attach a toast to #toast-container");
     assert.match(toast.textContent, /Failed to save configuration: Network down\./);
   });
 
@@ -526,7 +526,7 @@ describe("config.ts: window.submitSettingsForm", () => {
 
     const toast = ctx.document.querySelector("#toast-container .toast");
 
-    assert.ok(toast);
+    assert.ok(toast, "submit success without willRestart should attach a toast to #toast-container");
     assert.match(toast.textContent, /Configuration saved\./);
   });
 
@@ -641,7 +641,7 @@ describe("config.ts: window.exportConfig / exportChannels", () => {
 
     const toast = ctx.document.querySelector("#toast-container .toast");
 
-    assert.ok(toast);
+    assert.ok(toast, "export failure should attach a toast to #toast-container");
     assert.match(toast.textContent, /Failed to export configuration: Disk full\./);
   });
 });

@@ -8,6 +8,7 @@
 import { buildChannelMap, getChannelKeyByNumber } from "./channelMap.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { firstOf } from "../testing.helpers.ts";
 import { getAllChannels } from "../config/userChannels.ts";
 
 // AUTO_ASSIGN_START is a private constant in channelMap.ts. The tests duplicate the value here rather than re-export it because the constant defines the
@@ -160,9 +161,8 @@ describe("getChannelKeyByNumber", () => {
 
     // Round-trip: pick the first map entry, look up by its number, expect its key.
     const map = buildChannelMap();
-    const first = map[0];
+    const first = firstOf(map, "buildChannelMap returns at least one entry");
 
-    assert.ok(first, "map has at least one entry");
     assert.equal(getChannelKeyByNumber(first.number), first.key);
   });
 

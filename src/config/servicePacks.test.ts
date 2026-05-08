@@ -84,7 +84,7 @@ describe("parseServicePack", () => {
     const result = parseServicePack({ name: "test", profiles: { p: { extends: "fullscreenApi" } }, version: 1 });
 
     assert.deepEqual(result.errors, []);
-    assert.ok(result.pack);
+    assert.ok(result.pack, "parseServicePack should return a pack on the success path");
     assert.equal(result.pack.name, "test");
     assert.equal(result.pack.version, 1);
     assert.ok(result.pack.profiles["p"]);

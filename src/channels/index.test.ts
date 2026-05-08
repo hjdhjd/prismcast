@@ -272,7 +272,7 @@ describe("canonical resolution rules", () => {
     // channels. Confirmed against animal whose source pacificStationId is "68785".
     const animal = CHANNELS["animal"] as CanonicalChannel | undefined;
 
-    assert.ok(animal);
+    assert.ok(animal, "animal canonical entry should exist in CHANNELS");
     assert.equal(animal.pacificStationId, "68785");
   });
 
@@ -282,7 +282,7 @@ describe("canonical resolution rules", () => {
     // no pacificStationId.
     const abcNews = CHANNELS["abcnews"] as CanonicalChannel | undefined;
 
-    assert.ok(abcNews);
+    assert.ok(abcNews, "abcnews canonical entry should exist in CHANNELS");
     assert.equal(abcNews.pacificStationId, undefined);
   });
 
@@ -321,7 +321,7 @@ describe("Pacific auto-generation: Step 1 (generate from pacificStationId)", () 
     // Step 1 spreads tags from the East def: animal has tags ["Documentary"] -> animalp must too.
     const animalp = CHANNELS["animalp"] as CanonicalChannel | undefined;
 
-    assert.ok(animalp);
+    assert.ok(animalp, "animalp Pacific variant should be auto-generated from animal");
     assert.deepEqual(animalp.tags, ["Documentary"]);
   });
 
@@ -330,7 +330,7 @@ describe("Pacific auto-generation: Step 1 (generate from pacificStationId)", () 
     // pacificStationId on a Pacific entry would be meaningless and could trigger another generation cycle. Confirmed by checking animalp.
     const animalp = CHANNELS["animalp"] as CanonicalChannel | undefined;
 
-    assert.ok(animalp);
+    assert.ok(animalp, "animalp Pacific variant should be auto-generated");
     assert.equal(animalp.pacificStationId, undefined, "Pacific entries must not advertise pacificStationId");
   });
 
@@ -407,7 +407,7 @@ describe("Pacific auto-generation: Step 2 (merge East services into Pacific)", (
     // would replace the West URL with the East URL and break the channel. We verify the canonical url is still the West URL.
     const bravop = CHANNELS["bravop"] as CanonicalChannel | undefined;
 
-    assert.ok(bravop);
+    assert.ok(bravop, "bravop manual Pacific variant should exist in CHANNELS");
     assert.equal(bravop.url, "https://www.nbc.com/live?brand=bravo&callsign=bravo_west");
   });
 
@@ -417,7 +417,7 @@ describe("Pacific auto-generation: Step 2 (merge East services into Pacific)", (
     // different stationId "60048". The merge must keep the Pacific stationId.
     const cartoonp = CHANNELS["cartoonp"] as CanonicalChannel | undefined;
 
-    assert.ok(cartoonp);
+    assert.ok(cartoonp, "cartoonp manual Pacific variant should exist in CHANNELS");
     assert.equal(cartoonp.stationId, "67703");
     assert.equal(cartoonp.name, "Cartoon Network (Pacific)");
   });
@@ -439,7 +439,7 @@ describe("known catalog entries (sampling)", () => {
 
     const abc = CHANNELS["abc"] as CanonicalChannel | undefined;
 
-    assert.ok(abc);
+    assert.ok(abc, "abc canonical entry should exist in CHANNELS");
     assert.equal(abc.name, "ABC");
     assert.equal(abc.url, "https://abc.com/watch-live");
     assert.deepEqual(abc.tags, ["Local"]);

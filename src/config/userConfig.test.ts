@@ -248,7 +248,7 @@ describe("getSettingByPath", () => {
      */
     const result = getSettingByPath("hls.segmentDuration");
 
-    assert.ok(result);
+    assert.ok(result, "getSettingByPath should resolve a non-server-category setting path");
     assert.equal(result.envVar, "HLS_SEGMENT_DURATION");
   });
 });
@@ -267,8 +267,8 @@ describe("getSettingsTabSections", () => {
     const sections = getSettingsTabSections();
     const server = sections.find((s) => s.id === "server");
 
-    assert.ok(server);
-    assert.ok(server.settings.some((s) => s.path === "server.port"));
+    assert.ok(server, "server section should be present in getSettingsTabSections result");
+    assert.ok(server.settings.some((s) => s.path === "server.port"), "server section should include the server.port setting");
   });
 
   test("orphan paths in SETTINGS_TAB_SECTIONS are silently filtered (defensive)", () => {

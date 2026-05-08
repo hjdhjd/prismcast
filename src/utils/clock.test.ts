@@ -43,11 +43,9 @@ describe("realClock", () => {
   test("sleep() resolves after the requested delay", async () => {
 
     // We use a 1ms delay so the test stays well under the per-test budget. The point is to verify that sleep() returns a promise that resolves; the exact wall
-    // time is not the contract, only that the promise settles.
-    await realClock.sleep(1);
-
-    // Reaching this assertion means the promise settled. (The void return is verified by the type signature; calling it with await proves the runtime contract.)
-    assert.ok(true, "sleep resolved");
+    // time is not the contract, only that the promise settles. assert.doesNotReject is the canonical idiom for "this promise settles cleanly" - it asserts the
+    // contract directly rather than relying on a post-await tautology.
+    await assert.doesNotReject(() => realClock.sleep(1), "sleep returns a promise that settles per the Clock contract");
   });
 
   test("raceWithTimeout() returns the inner promise's value when it resolves before the timeout", async () => {

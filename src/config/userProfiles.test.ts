@@ -1,12 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userProfiles.test.ts: Unit tests for the user profiles and domain mappings module. Coverage focuses on the pure validation helpers (validateProfileKey,
- * validateProfile, validateDomain, validateImportedProfiles) and the legacy-flag normalization utility. Persistence (initializeUserProfiles, mutateProfiles)
- * is exercised indirectly via the persistence test layer.
+ * userProfiles.test.ts: Unit tests for the validation predicates of the user profiles and domain mappings module - normalizeLegacyProfileFlags,
+ * validateProfileKey, validateProfile, validateDomain, validateImportedProfiles. Snapshot accessors live in userProfiles.accessors.test.ts; persistence
+ * orchestrators (initializeUserProfiles, mutateProfiles) are exercised at the integration tier in test/e2e/persistence/profiles.test.ts.
  */
 import { describe, test } from "node:test";
-import { getUserDomains, getUserProfiles, hasProfilesParseError, normalizeLegacyProfileFlags, validateDomain, validateImportedProfiles, validateProfile,
-  validateProfileKey } from "./userProfiles.ts";
+import { normalizeLegacyProfileFlags, validateDomain, validateImportedProfiles, validateProfile, validateProfileKey } from "./userProfiles.ts";
 import type { SiteProfile } from "../types/index.ts";
 import assert from "node:assert/strict";
 
@@ -495,62 +494,5 @@ describe("validateImportedProfiles", () => {
     assert.equal(result.valid, true, "domain referencing a same-batch profile is valid");
     assert.ok(result.profiles["newCustomProfile"], "profile included in result");
     assert.ok(result.domains["custom-cross-ref.example"], "domain included in result");
-  });
-});
-
-describe("getUserProfiles", () => {
-
-  test("returns a fresh object that does not leak module-internal state", () => {
-
-    const a = getUserProfiles();
-    const b = getUserProfiles();
-
-    assert.notEqual(a, b, "two calls return distinct references");
-  });
-
-  test("mutating the returned record (adding a key) does not affect a subsequent call's result", () => {
-
-    /* Pins the shallow-copy contract: callers can mutate the returned record freely without affecting module state. Adding a key on the first snapshot must
-     * not surface in the second snapshot. A regression to a returned-by-reference implementation would fail here.
-     */
-    const a = getUserProfiles();
-
-    (a as Record<string, unknown>)["__test-injected-key"] = { extends: "fullscreenApi" };
-
-    const b = getUserProfiles();
-
-    assert.equal("__test-injected-key" in b, false, "second snapshot does not see the injected key");
-  });
-});
-
-describe("getUserDomains", () => {
-
-  test("returns a fresh object that does not leak module-internal state", () => {
-
-    const a = getUserDomains();
-    const b = getUserDomains();
-
-    assert.notEqual(a, b);
-  });
-
-  test("mutating the returned record (adding a domain) does not affect a subsequent call's result", () => {
-
-    const a = getUserDomains();
-
-    (a as Record<string, unknown>)["injected.example"] = { profile: "fullscreenApi" };
-
-    const b = getUserDomains();
-
-    assert.equal("injected.example" in b, false, "second snapshot does not see the injected domain");
-  });
-});
-
-describe("hasProfilesParseError", () => {
-
-  test("returns a boolean reflecting the current parse-error state", () => {
-
-    const result = hasProfilesParseError();
-
-    assert.equal(typeof result, "boolean", "always boolean even before initialization");
   });
 });

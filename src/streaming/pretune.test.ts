@@ -50,16 +50,17 @@ describe("startPretunePolling / stopPretunePolling", () => {
 
   test("repeated start/stop cycles do not leak intervals", () => {
 
-    // Each pair re-enters the start guard cleanly. We exercise three cycles to ensure the cleanup truly resets state.
+    // Each pair re-enters the start guard cleanly. We exercise three cycles to ensure the cleanup truly resets state. The trailing assert.ok(true) is intentional:
+    // the loop body would throw on regression (start or stop raising, internal Maps growing without bound), and the success criterion is "this completes without
+    // throwing and the process can exit cleanly under the unref'd cleanup timer at the top of this file." There is no observable per-cycle invariant to assert on;
+    // the test's value is in exercising the lifecycle without regression.
     for(let i = 0; i < 3; i++) {
 
       startPretunePolling();
       stopPretunePolling();
     }
 
-    // No assertion on internal state - the success criterion is that this completes without throwing and the process can exit cleanly under the unref'd cleanup
-    // timer at the top of this file.
-    assert.ok(true, "three cycles completed");
+    assert.ok(true, "three cycles completed without throwing");
   });
 
   test("stopPretunePolling clears pending timers even when called immediately after start", () => {
