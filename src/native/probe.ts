@@ -1,17 +1,28 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * probe.ts: DRM probe for HLS manifest encryption classification.
+ * probe.ts: HLS manifest probe and media-feed normalizer.
  */
 import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
 
-/* This module fetches an HLS master manifest, selects the highest-bandwidth variant, and inspects its #EXT-X-KEY tags to classify the encryption type. The result
- * determines whether PrismCast can consume the stream natively (clear or AES-128) or must fall back to screen capture (Widevine, FairPlay, or other DRM).
+/* This module probes an intercepted HLS playlist URL and produces a fully described MediaFeed - the canonical input to the native proxy. The HLS spec defines
+ * exactly two playlist kinds, and this module normalizes both to the same shape so downstream code does not branch on which kind arrived:
  *
- * Classification logic:
+ * - Master (multivariant) playlists declare variant streams via #EXT-X-STREAM-INF and reference media playlist URLs. We select the highest-bandwidth variant,
+ *   resolve any separate audio rendition declared via #EXT-X-MEDIA:TYPE=AUDIO, fetch the chosen variant body, and classify its encryption.
+ * - Media playlists declare segments directly via #EXTINF and #EXT-X-TARGETDURATION. The input URL is itself the media feed; we fetch the body once and
+ *   classify its encryption.
+ *
+ * In both cases the output is a MediaFeed carrying the variant URL the proxy will poll, the encryption classification, the AES-128 key URL when applicable, the
+ * optional separate-audio rendition URL, and the codec/resolution/bandwidth metadata that the status display reads. Encryption classification logic is identical
+ * across both kinds because it operates on the media body, not the master:
+ *
  * - No #EXT-X-KEY or METHOD=NONE -> "clear" (no encryption, direct pass-through)
  * - METHOD=AES-128 with accessible key URL -> "aes128" (Node can decrypt with crypto.createDecipheriv)
  * - METHOD=SAMPLE-AES, SAMPLE-AES-CTR, or any other method -> "drm" (requires CDM, not viable)
+ *
+ * Playlist-kind detection is centralized in classifyHlsPlaylist() so the manifest interceptor and the probe share one source of truth for the master/media
+ * decision.
  */
 
 // Timeout for individual manifest/key fetches.
@@ -23,9 +34,53 @@ const FETCH_TIMEOUT = 10000;
 export type EncryptionType = "aes128" | "clear" | "drm";
 
 /**
- * Result of probing an HLS master manifest for encryption type and best variant.
+ * Kind of HLS playlist as defined by RFC 8216. A master (multivariant) playlist declares variant streams via #EXT-X-STREAM-INF; a media playlist declares
+ * segments directly via #EXTINF and #EXT-X-TARGETDURATION. Bodies that show neither signal classify as "unknown" so consumers can ignore them.
  */
-export interface ProbeResult {
+export type HlsPlaylistKind = "master" | "media" | "unknown";
+
+/**
+ * Classifies an HLS playlist body by inspecting its directives. Master detection short-circuits on the first #EXT-X-STREAM-INF tag because that directive only
+ * appears in master playlists; media detection accumulates positive signals (#EXTINF, #EXT-X-TARGETDURATION) across the body. Bodies with neither signal are
+ * not HLS playlists. This is the single source of truth for the master/media decision - both the manifest interceptor (transport-layer "is this HLS?" gate) and
+ * the probe orchestrator (resolution-layer master-vs-media branch) consume it so the classification cannot drift between call sites.
+ *
+ * @param body - The raw HLS playlist body text.
+ * @returns The kind of playlist, or "unknown" if the body is not a recognizable HLS playlist.
+ */
+export function classifyHlsPlaylist(body: string): HlsPlaylistKind {
+
+  let mediaSignal = false;
+
+  for(const rawLine of body.split("\n")) {
+
+    const line = rawLine.trim();
+
+    if(!line.startsWith("#")) {
+
+      continue;
+    }
+
+    if(line.startsWith("#EXT-X-STREAM-INF")) {
+
+      return "master";
+    }
+
+    if(line.startsWith("#EXTINF") || line.startsWith("#EXT-X-TARGETDURATION")) {
+
+      mediaSignal = true;
+    }
+  }
+
+  return mediaSignal ? "media" : "unknown";
+}
+
+/**
+ * Fully described HLS media feed ready for consumption by the native proxy. Every code path that produces this type (master-playlist resolution today; media-only
+ * passthrough in a follow-on change) emerges with the same shape, so downstream code (proxy creation, token refresh, status display) does not branch on which
+ * playlist kind originally arrived.
+ */
+export interface MediaFeed {
 
   // URL of the audio rendition playlist if the master manifest declares a separate audio track via #EXT-X-MEDIA:TYPE=AUDIO with a URI. Null when audio is muxed into
   // the video variant (no separate audio rendition).
@@ -104,7 +159,7 @@ export function clearProbeCache(channelName: string): void {
  * @param channelName - The channel name for cache lookup.
  * @returns The probe result, or null if probing fails.
  */
-export async function probeManifest(masterUrl: string, channelName: string): Promise<Nullable<ProbeResult>> {
+export async function probeManifest(masterUrl: string, channelName: string): Promise<Nullable<MediaFeed>> {
 
   // Short-circuit for DRM channels only. The cached DRM classification is stable within the TTL window (services rarely change DRM type), and the caller returns
   // null immediately on DRM without using any URLs. For clear/aes128 channels, we must re-probe to get fresh variant and key URLs with current auth tokens.
@@ -309,7 +364,7 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
  * @returns The probe result with the classified encryption type.
  */
 async function classifyEncryption(variantBody: string, variant: VariantSelection, audioVariantUrl: Nullable<string>,
-  channelName: string): Promise<ProbeResult> {
+  channelName: string): Promise<MediaFeed> {
 
   const lines = variantBody.split("\n");
   let encryption: EncryptionType = "clear";

@@ -7,10 +7,10 @@ import { clearProbeCache, probeManifest } from "./probe.ts";
 import { installManifestInterceptor, removeManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
+import type { MediaFeed } from "./probe.ts";
 import type { NativeProxy } from "./proxy.ts";
 import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
-import type { ProbeResult } from "./probe.ts";
 import { createNativeProxy } from "./proxy.ts";
 import { fetchDecryptionKey } from "./decrypt.ts";
 
@@ -149,10 +149,11 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   LOG.debug("native:coordinator", "Manifest intercepted for %s in %sms.", channelName, elapsed());
 
-  // Probe the manifest for encryption type.
-  const probeResult = await probeManifest(interception.masterManifestUrl, channelName);
+  // Probe the intercepted URL and normalize the result to a MediaFeed. The probe handles both master and media playlists transparently; this code path does not
+  // need to know which kind arrived.
+  const mediaFeed = await probeManifest(interception.masterManifestUrl, channelName);
 
-  if(!probeResult) {
+  if(!mediaFeed) {
 
     LOG.debug("native:coordinator", "Probe failed for %s. Falling back to capture.", channelName);
     removeManifestInterceptor(interception.cdpSession);
@@ -160,7 +161,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     return null;
   }
 
-  if(probeResult.encryption === "drm") {
+  if(mediaFeed.encryption === "drm") {
 
     LOG.debug("native:coordinator", "Native streaming not viable for %s: DRM-protected stream.", channelName);
     removeManifestInterceptor(interception.cdpSession);
@@ -170,7 +171,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   // Separate audio renditions (e.g., Google DAI on BET/VH1) cannot be served to MPEG-TS clients because the independent video and audio MPEG-TS segments have
   // incompatible PAT/PMT tables and variable packet sizes from ad splicing. HLS clients (Channels DVR) handle separate audio renditions natively via master playlist.
-  if(mpegTsClient && probeResult.audioVariantUrl) {
+  if(mpegTsClient && mediaFeed.audioVariantUrl) {
 
     LOG.debug("native:coordinator", "Native streaming not viable for %s: separate audio rendition incompatible with MPEG-TS clients.", channelName);
     removeManifestInterceptor(interception.cdpSession);
@@ -178,16 +179,16 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     return null;
   }
 
-  LOG.debug("native:coordinator", "Native streaming viable for %s (%s, variant: %s).", channelName, probeResult.encryption, probeResult.bestVariantUrl.slice(0, 80));
+  LOG.debug("native:coordinator", "Native streaming viable for %s (%s, variant: %s).", channelName, mediaFeed.encryption, mediaFeed.bestVariantUrl.slice(0, 80));
 
   // For AES-128 streams, pre-fetch the decryption key before committing to native mode. This validates key accessibility while the capture pipeline is still intact,
   // allowing a seamless fallback to capture if the key is inaccessible. Without this, the proxy would discover the problem on its first segment fetch - after the
   // capture pipeline has already been torn down and no fallback is possible.
   let prefetchedKey: Nullable<Buffer> = null;
 
-  if((probeResult.encryption === "aes128") && probeResult.keyUrl) {
+  if((mediaFeed.encryption === "aes128") && mediaFeed.keyUrl) {
 
-    prefetchedKey = await fetchDecryptionKey(probeResult.keyUrl);
+    prefetchedKey = await fetchDecryptionKey(mediaFeed.keyUrl);
 
     if(!prefetchedKey) {
 
@@ -204,23 +205,23 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   // refresh occurs. For AES-128 streams, the pre-fetched key is passed so the proxy does not need to fetch it again on the first segment. The preroll segment count
   // determines the segment index offset (reserving index space for preroll). Streams with separate audio cannot use preroll because the preroll content is muxed
   // video+audio and can't be split into separate renditions.
-  const hasSeparateAudio = probeResult.audioVariantUrl !== null;
+  const hasSeparateAudio = mediaFeed.audioVariantUrl !== null;
   const proxyPrerollSegmentCount = (!hasSeparateAudio && options.prerollSegmentCount) ? options.prerollSegmentCount : 0;
 
   const proxy = createNativeProxy({
 
-    audioVariantUrl: probeResult.audioVariantUrl,
+    audioVariantUrl: mediaFeed.audioVariantUrl,
     cdpSession: interception.cdpSession,
     channelName,
-    encryption: probeResult.encryption,
-    keyUrl: probeResult.keyUrl,
+    encryption: mediaFeed.encryption,
+    keyUrl: mediaFeed.keyUrl,
     onError,
     prefetchedKey,
     prerollCodec: options.prerollCodec,
     prerollSegmentCount: proxyPrerollSegmentCount,
     streamId,
     streamIdStr,
-    variantUrl: probeResult.bestVariantUrl
+    variantUrl: mediaFeed.bestVariantUrl
   });
 
   // Schedule token refresh if the URL contains expiration tokens.
@@ -236,7 +237,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   LOG.debug("timing:native", "Native streaming setup completed for %s in %sms.", channelName, elapsed());
 
-  return { bandwidth: probeResult.bandwidth, codec: probeResult.codec, hasAudio: probeResult.audioVariantUrl !== null, proxy, resolution: probeResult.resolution };
+  return { bandwidth: mediaFeed.bandwidth, codec: mediaFeed.codec, hasAudio: mediaFeed.audioVariantUrl !== null, proxy, resolution: mediaFeed.resolution };
 }
 
 // Token Refresh.
@@ -460,9 +461,9 @@ export async function refreshNativeManifest(options: {
 
     // Probe the new manifest to get the updated variant URL. We probe before handing the new CDP session to the proxy so that a probe failure does not leave the
     // proxy holding a reference to a session we are about to clean up.
-    const probeResult = await probeManifest(newInterception.masterManifestUrl, channelName);
+    const refreshedFeed = await probeManifest(newInterception.masterManifestUrl, channelName);
 
-    if(!probeResult) {
+    if(!refreshedFeed) {
 
       streamLog.debug("native:token", "Manifest refresh failed for %s: probe failed on new manifest.", channelName);
       removeManifestInterceptor(newInterception.cdpSession);
@@ -482,11 +483,11 @@ export async function refreshNativeManifest(options: {
     proxy.updateCdpSession(newInterception.cdpSession);
 
     // Update the proxy with the new variant URL(s).
-    proxy.updateVariantUrl(probeResult.bestVariantUrl);
+    proxy.updateVariantUrl(refreshedFeed.bestVariantUrl);
 
-    if(probeResult.audioVariantUrl) {
+    if(refreshedFeed.audioVariantUrl) {
 
-      proxy.updateAudioVariantUrl(probeResult.audioVariantUrl);
+      proxy.updateAudioVariantUrl(refreshedFeed.audioVariantUrl);
     }
 
     streamLog.debug("native:token", "Manifest refresh completed for %s via page reload in %sms.", channelName, refreshElapsed());
@@ -515,20 +516,20 @@ export async function refreshNativeManifest(options: {
 }
 
 /**
- * Attempts to refresh the manifest by directly fetching the master manifest URL from Node.js. Returns the probe result if the fetch succeeds and the variant URL
+ * Attempts to refresh the manifest by directly fetching the master manifest URL from Node.js. Returns a fresh MediaFeed if the fetch succeeds and the variant URL
  * has sufficient token lifetime remaining, or null if the direct fetch should be abandoned in favor of a page reload.
  *
  * @param masterUrl - The master manifest URL to re-fetch.
  * @param channelName - The channel name for logging and cache keys.
  * @param streamLog - The stream-scoped logger.
- * @returns The probe result with a fresh variant URL, or null on failure.
+ * @returns A MediaFeed with a fresh variant URL, or null on failure.
  */
 async function tryDirectManifestRefresh(masterUrl: string, channelName: string,
-  streamLog: ReturnType<typeof LOG.withStreamId>): Promise<Nullable<ProbeResult>> {
+  streamLog: ReturnType<typeof LOG.withStreamId>): Promise<Nullable<MediaFeed>> {
 
-  const probeResult = await probeManifest(masterUrl, channelName);
+  const mediaFeed = await probeManifest(masterUrl, channelName);
 
-  if(!probeResult || (probeResult.encryption === "drm")) {
+  if(!mediaFeed || (mediaFeed.encryption === "drm")) {
 
     return null;
   }
@@ -536,7 +537,7 @@ async function tryDirectManifestRefresh(masterUrl: string, channelName: string,
   // Verify the variant URL's token hasn't already expired or is about to expire. Parse the expiry from the variant URL (not the master URL) since that's what the
   // proxy will actually poll. If the token expires within MIN_USABLE_TOKEN_LIFETIME, the direct fetch result is stale - the page reload path will generate a
   // genuinely fresh token.
-  const variantExpiry = parseTokenExpiry(probeResult.bestVariantUrl);
+  const variantExpiry = parseTokenExpiry(mediaFeed.bestVariantUrl);
 
   if(variantExpiry) {
 
@@ -550,5 +551,5 @@ async function tryDirectManifestRefresh(masterUrl: string, channelName: string,
     }
   }
 
-  return probeResult;
+  return mediaFeed;
 }

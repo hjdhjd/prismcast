@@ -5,6 +5,7 @@
 import type { CDPSession, Page } from "puppeteer-core";
 import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
+import { classifyHlsPlaylist } from "../native/probe.ts";
 
 /* This module installs a Chrome DevTools Protocol (CDP) listener on the Network domain to capture HLS manifest URLs as the browser's video player fetches them. The
  * listener is shared by two consumers:
@@ -14,8 +15,8 @@ import type { Nullable } from "../types/index.ts";
  * - Tune verification: confirms that the channel a strategy clicked actually loaded by matching the resulting manifest URL against an expected predicate (e.g.,
  *   call sign in the path). See awaitMatchingManifest() and the consumer in src/browser/tuning/fox.ts.
  *
- * Both APIs share the underlying CDP observer that filters .m3u8 URLs and verifies each is a master manifest. Master manifests contain #EXT-X-STREAM-INF
- * directives (variant playlist references), which distinguishes them from variant/media playlists. We use a direct fetch rather than CDP's Network.getResponseBody
+ * Both APIs share the underlying CDP observer that filters .m3u8 URLs and verifies the body is a master manifest. The master/media classification is delegated
+ * to classifyHlsPlaylist() in src/native/probe.ts so the decision lives in exactly one place. We use a direct fetch rather than CDP's Network.getResponseBody
  * because Chrome's network cache can evict response bodies before we read them, causing spurious "No data found for resource" failures.
  *
  * For multi-channel sites, the video player may load manifests for channels other than the one requested. installManifestInterceptor tracks both the first and
@@ -41,8 +42,8 @@ const FINALIZE_SETTLE_DELAY = 1500;
 // Default timeout for awaitMatchingManifest. Tune verification is a short-lived check after a click, so the budget is tighter than the native interception path.
 const VERIFICATION_TIMEOUT = 8000;
 
-// Timeout for the per-response manifest body fetch. Master/variant classification reads the body to look for #EXT-X-STREAM-INF; if Chrome's network cache evicts
-// the body or the CDN serves a slow response, we abandon and treat the response as non-master.
+// Timeout for the per-response manifest body fetch. The body is fed to classifyHlsPlaylist() to determine whether it is a master playlist; if Chrome's network
+// cache evicts the body or the CDN serves a slow response, we abandon and treat the response as non-master.
 const MANIFEST_BODY_FETCH_TIMEOUT = 5000;
 
 /**
@@ -87,7 +88,9 @@ interface MasterManifestObserver {
 
 /**
  * Installs a CDP Network.responseReceived listener that calls onMaster() for every master manifest URL observed. The listener filters to .m3u8 URLs, fetches the
- * body to verify it is a master manifest (contains #EXT-X-STREAM-INF), and invokes the callback only for confirmed masters. Variant/media playlists are skipped.
+ * body, and asks classifyHlsPlaylist() whether it is a master playlist; only confirmed masters fire the callback. Media playlists and unrecognized bodies are
+ * skipped. The current consumers - native HLS startup and tune verification - both expect master playlists, and centralizing the classification here keeps the
+ * master-only filter in one place.
  *
  * Returns null when the page is closed or the CDP session cannot be created. The caller is responsible for calling dispose() to clean up.
  * @param page - The Puppeteer page to monitor.
@@ -164,15 +167,16 @@ async function startMasterManifestObserver(page: Page, onMaster: (url: string) =
 
       const body = await response.text();
 
-      // Master manifests contain #EXT-X-STREAM-INF directives that reference variant playlists. Media/variant playlists contain #EXTINF or #EXT-X-TARGETDURATION
-      // but not #EXT-X-STREAM-INF. Both consumers of onMaster (installManifestInterceptor and awaitMatchingManifest) maintain their own resolved-flag guard, so
-      // a callback that arrives after dispose is harmless - their downstream resolve is idempotent.
-      if(body.includes("#EXT-X-STREAM-INF")) {
+      // Delegate the master/media decision to the canonical classifier. Both consumers of onMaster (installManifestInterceptor and awaitMatchingManifest) maintain
+      // their own resolved-flag guard, so a callback that arrives after dispose is harmless - the downstream resolve is idempotent.
+      const kind = classifyHlsPlaylist(body);
+
+      if(kind === "master") {
 
         onMaster(url);
       } else {
 
-        LOG.debug(logCategory, "Skipping non-master .m3u8 (no #EXT-X-STREAM-INF).");
+        LOG.debug(logCategory, "Skipping .m3u8 classified as %s.", kind);
       }
     } catch(error) {
 
