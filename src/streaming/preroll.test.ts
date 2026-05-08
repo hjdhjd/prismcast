@@ -6,8 +6,10 @@
  * real subprocess and HTTP fixtures and are deferred to e2e.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { buildPrerollEntries, computePrerollWindow, computeProgressiveReveal, getPrerollCodec, getPrerollMaxDuration, getPrerollSegmentCount,
-  getPrerollSegmentDuration, getPrerollTotalDurationSec, isPrerollReady } from "./preroll.ts";
+import { buildPrerollEntries, computePrerollWindow, computeProgressiveReveal, generatePrerollPlaylist, getPrerollCodec, getPrerollMaxDuration,
+  getPrerollSegmentCount, getPrerollSegmentDuration, getPrerollTotalDurationSec, isPrerollReady, setupPrerollRoutes } from "./preroll.ts";
+import { makeExpressStub, makeReqRes } from "../routes/express.helpers.ts";
+import type { Express } from "express";
 import assert from "node:assert/strict";
 
 describe("isPrerollReady", () => {
@@ -266,5 +268,131 @@ describe("computeProgressiveReveal", () => {
     const reveal = computeProgressiveReveal("hevc", new Date(1_700_000_000_000));
 
     assert.equal(reveal, 0);
+  });
+});
+
+describe("generatePrerollPlaylist", () => {
+
+  test("returns an empty string when no variant has been generated for the codec (early-return branch)", () => {
+
+    /* The composite preroll playlist is only meaningful when actual fMP4 segments have been encoded; with no variant in the cache, the function short-circuits
+     * with the empty string and the caller (registerPendingStream) decides whether to fall back to a blocking real-stream wait. The other composition steps
+     * (computeProgressiveReveal, buildPrerollEntries, buildPlaylist) collectively require seeded variants - exercising those branches honestly would require
+     * spawning FFmpeg, which is the deferred-orchestration territory documented in the audit-accepted findings for preroll.ts. The early-return path is the
+     * one observable surface the unit tier can pin without that subprocess.
+     */
+    const playlist = generatePrerollPlaylist("http://example.test:5589", "h264", 0, new Date(1_700_000_000_000));
+
+    assert.equal(playlist, "", "no variant -> empty playlist string");
+  });
+
+  test("returns an empty string for the alternate codec when neither variant is generated", () => {
+
+    // Companion to the previous test: locks the contract that both codec branches share the same early-return semantics. A regression that hard-coded
+    // "h264" in the readiness check would still pass the test above but fail here.
+    const playlist = generatePrerollPlaylist("http://example.test:5589", "hevc", 100, new Date(1_700_000_000_000));
+
+    assert.equal(playlist, "", "hevc without a variant also returns the empty string");
+  });
+});
+
+describe("setupPrerollRoutes", () => {
+
+  test("registers GET /preroll/:codec/init.mp4 and GET /preroll/:codec/:segment on the Express app", () => {
+
+    /* The route registration is the structural contract: the preroll subsystem owns these two URL spaces and nothing else. A regression that renamed or moved
+     * a route would surface here as a missing entry in the captured calls list. We assert both routes were registered as GETs at exactly the documented paths.
+     */
+    const stub = makeExpressStub();
+
+    setupPrerollRoutes(stub.app as Express);
+
+    const initRoute = stub.calls.find((c) => (c.path === "/preroll/:codec/init.mp4"));
+    const segmentRoute = stub.calls.find((c) => (c.path === "/preroll/:codec/:segment"));
+
+    assert.ok(initRoute, "init.mp4 route registered");
+    assert.equal(initRoute.method, "get", "init.mp4 served via GET");
+    assert.ok(segmentRoute, "segment route registered");
+    assert.equal(segmentRoute.method, "get", "segment served via GET");
+  });
+
+  test("init.mp4 returns 404 'Preroll not available.' for an unknown codec param", () => {
+
+    /* The codec param is gated by the runtime check ((codec === "h264") || (codec === "hevc")). Anything else - "av1", "foo", undefined - must produce 404
+     * rather than crashing the lookup. Pins the input-validation branch.
+     */
+    const stub = makeExpressStub();
+
+    setupPrerollRoutes(stub.app as Express);
+
+    const initRoute = stub.routes.find((r) => (r.path === "/preroll/:codec/init.mp4"));
+
+    assert.ok(initRoute, "init.mp4 handler captured");
+
+    const { req, res, send, status } = makeReqRes({ params: { codec: "av1" } });
+
+    void initRoute.handler(req, res);
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 404, "unknown codec returns 404");
+    assert.equal(send.mock.calls[0]?.arguments[0], "Preroll not available.");
+  });
+
+  test("init.mp4 returns 404 when the variant Map has no entry for a recognized codec (variant not generated)", () => {
+
+    /* Even when the codec param is recognized, the prerollVariants Map starts empty in tests because generatePreroll() is never called. The handler hits the
+     * `if(!variant)` 404 branch.
+     */
+    const stub = makeExpressStub();
+
+    setupPrerollRoutes(stub.app as Express);
+
+    const initRoute = stub.routes.find((r) => (r.path === "/preroll/:codec/init.mp4"));
+
+    assert.ok(initRoute, "init.mp4 handler captured");
+
+    const { req, res, send, status } = makeReqRes({ params: { codec: "h264" } });
+
+    void initRoute.handler(req, res);
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 404, "h264 with no generated variant returns 404");
+    assert.equal(send.mock.calls[0]?.arguments[0], "Preroll not available.");
+  });
+
+  test("segment route returns 404 'Preroll not available.' for an unknown codec param", () => {
+
+    // Same codec validation as init.mp4. The segment route's own filename validation only runs after the codec/variant gate passes.
+    const stub = makeExpressStub();
+
+    setupPrerollRoutes(stub.app as Express);
+
+    const segmentRoute = stub.routes.find((r) => (r.path === "/preroll/:codec/:segment"));
+
+    assert.ok(segmentRoute, "segment handler captured");
+
+    const { req, res, send, status } = makeReqRes({ params: { codec: "vp9", segment: "segment0.m4s" } });
+
+    void segmentRoute.handler(req, res);
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 404);
+    assert.equal(send.mock.calls[0]?.arguments[0], "Preroll not available.");
+  });
+
+  test("segment route returns 404 'Preroll not available.' when the variant for a recognized codec has not been generated", () => {
+
+    // Identical reasoning to the init.mp4 variant-absence branch. The segment route's variant lookup happens before the filename regex validation.
+    const stub = makeExpressStub();
+
+    setupPrerollRoutes(stub.app as Express);
+
+    const segmentRoute = stub.routes.find((r) => (r.path === "/preroll/:codec/:segment"));
+
+    assert.ok(segmentRoute, "segment handler captured");
+
+    const { req, res, send, status } = makeReqRes({ params: { codec: "h264", segment: "segment0.m4s" } });
+
+    void segmentRoute.handler(req, res);
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 404);
+    assert.equal(send.mock.calls[0]?.arguments[0], "Preroll not available.");
   });
 });

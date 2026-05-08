@@ -416,6 +416,52 @@ describe("attemptNativeStreaming", () => {
     assert.equal(result, null, "rejection on interception path -> null");
   });
 
+  test("returns null when interception stalls past INTERCEPTION_AWAIT_TIMEOUT (cancellableTimeout fires)", async () => {
+
+    /* The orchestrator's race between interceptionPromise and cancellableTimeout(INTERCEPTION_AWAIT_TIMEOUT). The "interception resolves first" branch is
+     * exercised by every other test in this suite (each one passes a Promise.resolve(...) interception). The "timeout fires first" branch is the user's
+     * recently-modified path: it switched from delay() to cancellableTimeout() and added a try/finally to clear the underlying setTimeout so it does not
+     * hold an event loop reference. Without this test, a regression in the race coercion (e.g., dropping the `(result === false) ? null : result` step) or
+     * the finally-cancel cleanup would not surface here.
+     *
+     * We virtualize setTimeout via mock.timers so the 5-second wait is instantaneous in test time. The neverResolving promise simulates a CDP listener that
+     * captured no manifest before the deadline. After advancing past INTERCEPTION_AWAIT_TIMEOUT (5000ms) the cancellableTimeout's internal setTimeout fires
+     * and resolves the race with `false`, which the orchestrator coerces to null and short-circuits to the "No manifest intercepted" log path. The await
+     * then resolves with null without waiting on real wall-clock time.
+     */
+    mock.timers.enable({ apis: ["setTimeout"] });
+
+    try {
+
+      // A promise that intentionally never resolves so cancellableTimeout's setTimeout wins the race. We construct it via Promise.withResolvers and discard
+      // the resolvers so nothing can complete the promise from outside; this is the modern equivalent of `new Promise(() => {})` without the empty-executor
+      // lint complaint.
+      const { promise: neverResolving } = Promise.withResolvers<null>();
+
+      const options = makeAttemptOptions({
+
+        channelName: "timeout-channel",
+        interceptionPromise: neverResolving
+      });
+
+      clearProbeCache("timeout-channel");
+
+      const resultPromise = attemptNativeStreaming(options);
+
+      // Advance past the 5-second INTERCEPTION_AWAIT_TIMEOUT. cancellableTimeout's setTimeout fires, the race resolves to false, the orchestrator coerces to
+      // null, and the function returns through the "No manifest intercepted" branch. A small extra tick (1ms) ensures we are past the timer's exact firing
+      // boundary regardless of strict-vs-loose comparison semantics in the runtime's timer wheel.
+      mock.timers.tick(5_001);
+
+      const result = await resultPromise;
+
+      assert.equal(result, null, "timeout-wins branch coerces the race result to null");
+    } finally {
+
+      mock.timers.reset();
+    }
+  });
+
   test("schedules a token refresh when the master URL contains an expiry token", async () => {
 
     // Boundary: when the master URL embeds an exp= token, the orchestrator schedules a refresh timer on the proxy. The minimum-refresh-delay floor of 30s keeps

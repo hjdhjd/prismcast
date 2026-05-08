@@ -8,11 +8,11 @@
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { deleteResumeData, getResumeSegmentIndex, loadResumeState, peekResumeData, saveResumeState } from "./hlsResume.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
-import { readFileSync } from "node:fs";
 
 /**
  * Shape of a single channel's persisted resume entry. Mirrors ResumeEntryJSON in the production module; we keep a local copy so tests do not import a private
@@ -447,6 +447,111 @@ describe("saveResumeState", () => {
     loadResumeState();
 
     assertEqual(getResumeSegmentIndex("same"), 999, "active stream value won the merge");
+  });
+
+  test("does not throw when the resume file path is unwritable (fs.writeFileSync fails)", () => {
+
+    /* The save path wraps fs.writeFileSync in try/catch and emits a warning rather than throwing - shutdown must remain robust to a momentarily unwritable
+     * data directory (read-only filesystem, permission flip, parent removed by an external process). The catch block was previously untested. We trigger the
+     * branch by pointing initializeDataDir at a path that contains a non-directory component as its parent, so writeFileSync raises ENOTDIR / ENOENT depending
+     * on the platform. The function must swallow the error and return cleanly.
+     */
+    const unwritablePath = path.join(tempDir, "this-is-a-file");
+
+    writeFileSync(unwritablePath, "not a directory", "utf-8");
+
+    // Now point the data dir at a child path BENEATH that file. fs.writeFileSync inside saveResumeState will fail because "this-is-a-file" is not a directory.
+    initializeDataDir(path.join(unwritablePath, "child"));
+
+    let threw = false;
+
+    try {
+
+      saveResumeState([{
+
+
+        channelName: "alpha",
+        initSegment: null,
+        initVersion: 0,
+        segmentIndex: 1,
+        trackTimestamps: new Map()
+      }]);
+    } catch {
+
+      threw = true;
+    }
+
+    assertEqual(threw, false, "writeFileSync failure swallowed by saveResumeState's try/catch");
+
+    // Restore the data dir for any subsequent setup; the afterEach hook removes the temp tree regardless.
+    initializeDataDir(tempDir);
+  });
+
+  test("round-trips a non-null initSegment Buffer through save -> load -> peek with bytewise equality", () => {
+
+    /* The base64 encode/decode path was previously exercised only with initSegment: null. A regression in the encode side, the decode side, or the Map-key
+     * stringification could silently corrupt the segment without affecting any other test. We seed a 256-byte Buffer with distinguishable content (sequential
+     * byte values mod 256) so any byte slip surfaces as a mismatch.
+     */
+    const original = Buffer.alloc(256);
+
+    for(let i = 0; i < 256; i++) {
+
+      original[i] = i;
+    }
+
+    saveResumeState([{
+
+
+      channelName: "bytes",
+      initSegment: original,
+      initVersion: 1,
+      segmentIndex: 100,
+      trackTimestamps: new Map([[ 1, 12345n ]])
+    }]);
+
+    loadResumeState();
+
+    const peeked = peekResumeData("bytes");
+
+    assert(peeked, "entry recovered after save -> load");
+    assert(peeked.initSegment, "initSegment present after the base64 round-trip");
+    assertEqual(peeked.initSegment.equals(original), true, "initSegment bytes match the saved buffer exactly");
+  });
+
+  test("does not carry forward in-memory entries whose timestamp has aged past the TTL", async () => {
+
+    /* The carry-forward branch in saveResumeState filters in-memory entries by `(now - entry.timestamp) <= RESUME_TTL` so a multi-restart scenario does not
+     * resurrect entries that have been stale for more than 90 seconds. The "active stream wins" test exercises the merge with a fresh-timestamp carryforward;
+     * this case pins the negative branch where the carryforward is older than TTL.
+     */
+    await makeResumeFile(tempDir, {
+
+
+      stale: { initVersion: 0, segmentIndex: 50, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+    });
+
+    loadResumeState();
+
+    // Advance virtual time past the 90-second TTL boundary so the in-memory entry now classifies as stale. The mock.timers harness above is enabled by
+    // beforeEach and reset in afterEach, so the advance survives until this test completes.
+    mock.timers.tick(91_000);
+
+    // Save with NO active streams. The carry-forward filter should drop the stale entry, producing zero entries; saveResumeState's "Nothing to save" branch
+    // skips the write entirely so the file does not exist on disk afterward.
+    saveResumeState([]);
+
+    let fileExists = true;
+
+    try {
+
+      readFileSync(path.join(tempDir, "hls-resume.json"), "utf-8");
+    } catch {
+
+      fileExists = false;
+    }
+
+    assertEqual(fileExists, false, "stale carryforward dropped, save produces no file");
   });
 });
 

@@ -2,7 +2,7 @@
  *
  * index.ts: Coordinator for native HLS streaming - manifest interception, DRM probe, and proxy lifecycle.
  */
-import { LOG, delay, formatError, startTimer } from "../utils/index.ts";
+import { LOG, cancellableTimeout, formatError, startTimer } from "../utils/index.ts";
 import { clearProbeCache, probeManifest } from "./probe.ts";
 import { installManifestInterceptor, removeManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
@@ -120,17 +120,24 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   LOG.debug("native:coordinator", "Attempting native streaming for %s.", channelName);
 
   // Await the manifest interception with a short timeout. The CDP listener was installed before navigation, so by the time we get here the manifest should
-  // already be captured or close to it.
+  // already be captured or close to it. cancellableTimeout owns the underlying setTimeout so we clear it in finally when interceptionPromise wins the race;
+  // otherwise the ref'd timer would hold the event loop for up to INTERCEPTION_AWAIT_TIMEOUT after a successful tune.
   let interception: Nullable<ManifestInterceptionResult>;
+  const timeout = cancellableTimeout(INTERCEPTION_AWAIT_TIMEOUT);
 
   try {
 
-    interception = await Promise.race([ interceptionPromise, delay(INTERCEPTION_AWAIT_TIMEOUT).then(() => null) ]);
+    const result = await Promise.race([ interceptionPromise, timeout.promise ]);
+
+    interception = (result === false) ? null : result;
   } catch(error) {
 
     LOG.debug("native:coordinator", "Manifest interception error for %s: %s.", channelName, formatError(error));
 
     return null;
+  } finally {
+
+    timeout.cancel();
   }
 
   if(!interception) {

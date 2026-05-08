@@ -58,6 +58,50 @@ import { triggerShowNameUpdate } from "./showInfo.ts";
 // 13-15s) get preroll content after the delay to prevent HTTP timeouts.
 const PREROLL_DELAY_MS = 9_000;
 
+/**
+ * Builds the onError/onStop callbacks for createFMP4Segmenter. Both callbacks share the same termination chain (skip-if-already-terminating guard, log error,
+ * terminate stream, emit current system status); the only differences between callsites are the log-message and termination-reason suffixes used to mark the
+ * post-tab-replacement scenario. Centralizing the shape prevents drift if the termination contract evolves.
+ * @param streamId - The numeric stream id.
+ * @param channelName - The channel name for log messages.
+ * @param options - Optional logSuffix appended to the log message; optional reasonSuffix appended to the termination reason. Both default to no suffix.
+ * @returns onError and onStop callbacks ready to spread into createFMP4Segmenter options.
+ */
+function buildSegmenterTerminationHandlers(streamId: number, channelName: string,
+  options: { logSuffix?: string; reasonSuffix?: string } = {}): { onError: (error: Error) => void; onStop: () => void } {
+
+  const logSfx = options.logSuffix ? " " + options.logSuffix : "";
+  const reasonSfx = options.reasonSuffix ? " " + options.reasonSuffix : "";
+
+  return {
+
+    onError: (error: Error): void => {
+
+      if(isTerminationInitiated(streamId)) {
+
+        return;
+      }
+
+      LOG.error("Segmenter error" + logSfx + " for %s: %s.", channelName, formatError(error));
+
+      terminateStream(streamId, channelName, "stream processing error" + reasonSfx);
+      void emitCurrentSystemStatus();
+    },
+    onStop: (): void => {
+
+      if(isTerminationInitiated(streamId)) {
+
+        return;
+      }
+
+      LOG.error("Segmenter stopped unexpectedly" + logSfx + " for %s.", channelName);
+
+      terminateStream(streamId, channelName, "stream ended unexpectedly" + reasonSfx);
+      void emitCurrentSystemStatus();
+    }
+  };
+}
+
 // Channel Validation.
 
 /**
@@ -751,32 +795,7 @@ function createTabReplacementHandler(
 
       initialTrackTimestamps: currentTrackTimestamps,
 
-      onError: (error: Error) => {
-
-        if(isTerminationInitiated(numericStreamId)) {
-
-          return;
-        }
-
-        LOG.error("Segmenter error after tab replacement for %s: %s.", channelName, formatError(error));
-
-        terminateStream(numericStreamId, channelName, "stream processing error after recovery");
-        void emitCurrentSystemStatus();
-      },
-
-      onStop: () => {
-
-        if(isTerminationInitiated(numericStreamId)) {
-
-          return;
-        }
-
-        LOG.error("Segmenter stopped unexpectedly after tab replacement for %s.", channelName);
-
-        terminateStream(numericStreamId, channelName, "stream ended unexpectedly after recovery");
-        void emitCurrentSystemStatus();
-      },
-
+      ...buildSegmenterTerminationHandlers(numericStreamId, channelName, { logSuffix: "after tab replacement", reasonSuffix: "after recovery" }),
       pendingDiscontinuity: true,
       previousInitSegment: currentInitSegment,
       priorSessionStats: currentSessionStats,
@@ -1244,34 +1263,7 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
       startingSegmentIndex: baseSegmentIndex + prerollSegmentCount
     } : {}),
 
-    onError: (error: Error) => {
-
-      // Skip error handling if termination was already initiated.
-      if(isTerminationInitiated(numericStreamId)) {
-
-        return;
-      }
-
-      LOG.error("Segmenter error for %s: %s.", channelName, formatError(error));
-
-      terminateStream(numericStreamId, channelName, "stream processing error");
-      void emitCurrentSystemStatus();
-    },
-
-    onStop: () => {
-
-      // Skip handling if termination was already initiated.
-      if(isTerminationInitiated(numericStreamId)) {
-
-        return;
-      }
-
-      LOG.error("Segmenter stopped unexpectedly for %s.", channelName);
-
-      terminateStream(numericStreamId, channelName, "stream ended unexpectedly");
-      void emitCurrentSystemStatus();
-    },
-
+    ...buildSegmenterTerminationHandlers(numericStreamId, channelName),
     streamId: numericStreamId
   });
 
