@@ -42,6 +42,11 @@ export function generateStatusScript(): string {
   // window.X = ... before this script loads, and bare identifiers in non-strict script-tag scope resolve through the global object. updateRestartDialogStatus
   // is wrapped in a typeof guard inside a getter because config.ts loads after status.ts; a streamRemoved event arriving before config.ts has registered the
   // callback must not throw.
+  //
+  // Trampoline capture: the handlers toggleStreamPopover, toggleStreamDetails, and copyOverviewPlaylistUrl share names with the window.* properties we bind
+  // them to. In classic-script scope, function declarations live as properties of the global object, so assigning window.toggleStreamPopover = ... would
+  // overwrite the global binding...subsequent bare-identifier lookups inside the arrow body would then resolve back to the arrow itself, causing infinite
+  // recursion. We capture the original function references in IIFE-local consts first; the arrow bodies close over those locals instead of the global.
   const iife = [
 
     "(function() {",
@@ -83,9 +88,12 @@ export function generateStatusScript(): string {
     "    on('channelUpdate', (e) => handleChannelUpdate(JSON.parse(e.data), ctx));",
     "    statusEventSource.onerror = () => handleSseError(ctx);",
     "  }",
-    "  window.toggleStreamPopover = () => toggleStreamPopover(ctx);",
-    "  window.toggleStreamDetails = (id) => toggleStreamDetails(id, ctx);",
-    "  window.copyOverviewPlaylistUrl = () => copyOverviewPlaylistUrl(ctx);",
+    "  const togglePopoverImpl = toggleStreamPopover;",
+    "  const toggleDetailsImpl = toggleStreamDetails;",
+    "  const copyPlaylistImpl = copyOverviewPlaylistUrl;",
+    "  window.toggleStreamPopover = () => togglePopoverImpl(ctx);",
+    "  window.toggleStreamDetails = (id) => toggleDetailsImpl(id, ctx);",
+    "  window.copyOverviewPlaylistUrl = () => copyPlaylistImpl(ctx);",
     "  connectStatusSSE();",
     "  setInterval(() => updateDurations(ctx), 1000);",
     "  setInterval(() => {",
