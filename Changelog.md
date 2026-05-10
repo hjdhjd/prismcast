@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.10.1 (2026-05-10)
+  * Housekeeping.
+
 ## 1.10.0 (2026-05-10)
   * Improvement: Fox local affiliate channels are easier to set up and more reliable — PrismCast now detects your local Fox affiliate automatically on the first tune and remembers it for future tunes, so you don't have to look up your market's call sign yourself. Each tune is also verified to match the requested channel, and if you'd rather use a different local affiliate, you can edit the channel's selector to your preferred call sign.
   * Improvement: native HLS streaming now covers more providers — PrismCast can bypass screen capture for services that deliver media-only HLS playlists (no separate master manifest) by inferring codec details from the first segment, expanding the set of channels that stream at higher quality with lower CPU usage.
