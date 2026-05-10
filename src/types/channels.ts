@@ -125,8 +125,8 @@ export interface CanonicalChannel extends ChannelIdentity, ChannelServiceBinding
  *
  * Enforcement layers:
  *
- *   1. Type system (this declaration): VariantChannel extends only ChannelServiceBinding. The Partial&lt;ChannelIdentity&gt; that appeared in the original
- *      partition has been removed - the type now refuses to admit identity fields on variants in code.
+ *   1. Type system (this declaration): VariantChannel extends only ChannelServiceBinding. The type structurally refuses to admit identity fields on
+ *      variants in code; identity always inherits from the canonical at resolution time.
  *   2. Catalog source (ServiceVariant in this file): carries binding fields only. The catalog flattener cannot produce identity-bearing variants.
  *   3. Resolver (overlayVariantBinding in userChannels.ts): variant overlays apply CHANNEL_BINDING_KEYS only. Identity fields encountered in a variant entry
  *      (legacy data, hand-edited files, future migrations) are silently dropped during resolution - canonical's identity always wins.

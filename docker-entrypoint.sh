@@ -1,6 +1,7 @@
 #!/bin/bash
-# docker-entrypoint.sh
-# 2026.03.13
+# Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
+#
+# docker-entrypoint.sh: Container startup script for PrismCast - launches Xvfb, x11vnc, noVNC, and PrismCast with shared signal handling and log forwarding.
 
 set -e
 

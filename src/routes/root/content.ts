@@ -95,7 +95,7 @@ export function generateOverviewContent(baseUrl: string): string {
     // Active streams table at the top.
     generateActiveStreamsSection(),
 
-    // What Is PrismCast?
+    // What is PrismCast.
     "<div class=\"section\">",
     "<h3>What Is PrismCast?</h3>",
     "<p>PrismCast captures live video from web-based TV players by driving a real Chrome browser. It navigates to streaming sites, captures the ",
