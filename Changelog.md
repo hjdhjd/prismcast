@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.10.0 (2026-05-10)
+  * Improvement: Fox local affiliate channels are easier to set up and more reliable — PrismCast now detects your local Fox affiliate automatically on the first tune and remembers it for future tunes, so you don't have to look up your market's call sign yourself. Each tune is also verified to match the requested channel, and if you'd rather use a different local affiliate, you can edit the channel's selector to your preferred call sign.
+  * Improvement: native HLS streaming now covers more providers — PrismCast can bypass screen capture for services that deliver media-only HLS playlists (no separate master manifest) by inferring codec details from the first segment, expanding the set of channels that stream at higher quality with lower CPU usage.
+  * Improvement: HLS stream resilience for token-protected streams — when a provider's HLS manifest URL embeds an authentication token (in the path or as a query parameter) that expires mid-stream, PrismCast now refreshes the manifest with a fresh token instead of stalling on dead segment URLs, keeping native HLS streams alive across longer recordings.
+  * Improvement: service management hardening — `install`, `start`, `stop`, `restart`, and `uninstall` commands are now fully asynchronous and no longer block the CLI during multi-second platform operations, and error messages surface the underlying tool's stderr text instead of a generic "Command failed" line. On Windows, the service launcher was rewritten to a single PowerShell script with stdout and stderr redirected to the data directory, eliminating a class of shell-quoting hazards in argument handling.
+  * Improvement: persistence framework expansion — atomic writes with automatic backup recovery now apply across every configuration file (channels, profiles, health, and config), schema migrations are versioned and audited, and a cross-store consistency probe catches and repairs orphaned references at startup.
+  * Improvement: configurable Channels DVR port — if your Channels DVR runs on a non-default port, you can now set it from the Advanced settings tab. PrismCast continues to auto-discover the DVR's host address; only the port is configurable.
+  * Fix: profile saves applied in rapid succession now both apply correctly without one overwriting the other.
+  * Fix: predictive pretuning now respects your service filter — channels you've hidden are skipped, keeping browser resources focused on your active lineup.
+  * Fix: user-set channel numbers and station IDs on local-affiliate variants are now preserved across upgrades.
+  * Fix: channel tags and guide titles containing quote or backslash characters no longer break the generated M3U playlist — attribute values are now properly escaped at every write site.
+  * Housekeeping.
+
 ## 1.9.0 (2026-04-19)
   * New feature: M3U playlist tags and guide metadata — the playlist now includes `group-title` attributes from your channel tags, enabling automatic channel grouping in Channels DVR and other M3U consumers. Guide metadata (`tvg-id`, `tvg-name`, `tvg-logo`) is embedded for richer channel identification. Tags preserve the exact casing you entered.
   * New feature: informed channel creation — adding a custom channel now shows matching predefined channels as suggestions and warns when your active service filter would prevent the new channel from appearing.

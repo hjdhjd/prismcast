@@ -1,7 +1,7 @@
 {
   "name": "prismcast",
   "displayName": "PrismCast",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "Browser-based live TV capture server for Channels DVR, Plex, and other streaming clients.",
   "author": {
     "name": "HJD",
@@ -43,7 +43,7 @@
     "video-streaming"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.6"
   },
   "repository": {
     "type": "git",
@@ -55,11 +55,16 @@
   },
   "main": "./dist/index.js",
   "scripts": {
-    "build": "shx rm -rf dist && tsc",
+    "build": "shx rm -rf dist && tsc -p tsconfig.build.json",
     "clean": "shx rm -rf dist",
-    "lint": "ESLINT_MAX_WARNINGS=${ESLINT_MAX_WARNINGS:--1} eslint src eslint.config.mjs",
+    "dev": "scripts/dev-prismcast.sh",
+    "lint": "ESLINT_MAX_WARNINGS=${ESLINT_MAX_WARNINGS:--1} eslint src test eslint.config.mjs",
     "prepublishOnly": "npm run lint && npm run build",
     "start": "node dist/index.js",
+    "test": "node --strip-types --test --test-force-exit --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-exclude=\"src/**/*.test.ts\" --test-coverage-exclude=\"src/**/*.helpers.ts\" --experimental-test-module-mocks --test-timeout=15000 \"src/**/*.test.ts\"",
+    "test:all": "npm run test && npm run test:integration",
+    "test:integration": "node --strip-types --test --test-force-exit --experimental-test-module-mocks --test-timeout=120000 \"test/**/*.test.ts\"",
+    "test:watch": "node --strip-types --test --experimental-test-module-mocks --watch \"src/**/*.test.ts\"",
     "watch": "npm run build && nodemon"
   },
   "dependencies": {
@@ -67,7 +72,7 @@
     "express": "5.2.1",
     "ffmpeg-for-homebridge": "2.2.2",
     "morgan": "1.10.1",
-    "puppeteer-core": "24.41.0",
+    "puppeteer-core": "24.43.0",
     "puppeteer-stream": "3.0.21"
   },
   "devDependencies": {
@@ -75,12 +80,13 @@
     "@types/compression": "^1.8.1",
     "@types/express": "5.0.6",
     "@types/morgan": "1.9.10",
-    "@types/node": "25.6.0",
+    "@types/node": "25.6.2",
     "eslint": "9.39.2",
+    "happy-dom": "^20.9.0",
     "homebridge-plugin-utils": "1.35.0",
     "nodemon": "3.1.14",
     "shx": "0.4.0",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.58.2"
+    "typescript-eslint": "8.59.2"
   }
 }
