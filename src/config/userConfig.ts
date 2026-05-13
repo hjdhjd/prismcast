@@ -1046,7 +1046,7 @@ export const DEFAULTS: Config = {
   browser: {
 
     executablePath: null,
-    initTimeout: 1000
+    initTimeout: 3000
   },
 
   channels: {
