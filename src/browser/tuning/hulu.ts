@@ -861,6 +861,84 @@ async function releaseHeldPlaylist(page: Page): Promise<void> {
 }
 
 /**
+ * Hulu surfaces a "Who's Watching?" profile-selector modal when an account has more than one profile, and re-prompts intermittently across sessions. The modal
+ * blocks all guide and channel UI until a profile is chosen, so PrismCast's tuning logic (#CHANNELS click, guide-grid binary search) never gets a chance to run.
+ * This helper detects the modal and clicks the first profile, restoring the normal /live page flow. Both the tuning path (guideGridStrategy) and the discovery
+ * path (discoverHuluChannels) call this immediately after navigation so they share one source of truth for the profile-selector workaround.
+ *
+ * Selection policy: always the first profile. We do not expose a configurable name because the typical PrismCast deployment has a single primary profile, and an
+ * operator who wants a different one can reorder profiles in Hulu's account settings. The selected profile name is captured in the audit log so the operator
+ * always knows which one was picked.
+ *
+ * The probe is cheap when no modal is present (one DOM evaluate) and best-effort when it is: any failure between detection and post-click navigation is logged
+ * and returns silently. The downstream #CHANNELS-wait timeout becomes the failure signal of last resort, so the existing error path stays intact.
+ * @param page - The Puppeteer page object.
+ */
+async function handleProfileSelectorIfPresent(page: Page): Promise<void> {
+
+  const probe = await page.evaluate((): { name?: string; present: boolean; tile?: { x: number; y: number } } => {
+
+    const modal = document.querySelector("[data-testid=\"ProfileSelectorModal\"]");
+
+    if(!modal) {
+
+      return { present: false };
+    }
+
+    const tile = modal.querySelector("a.ProfileList__profile-item--modal");
+
+    if(!tile) {
+
+      return { present: true };
+    }
+
+    const rect = tile.getBoundingClientRect();
+    const ariaLabel = tile.getAttribute("aria-label") ?? "";
+
+    // "Switch profile to <name>" is the format Hulu emits today; we strip the prefix to surface the name in the log. A future relabel falls through to the
+    // literal "(unnamed)" rather than failing, so a Hulu UX rename never blocks tuning - it only loses the friendly name in the audit line.
+    const match = (/^Switch profile to (.+)$/).exec(ariaLabel);
+
+    return {
+
+      name: match ? match[1] : "(unnamed)",
+      present: true,
+      tile: { x: rect.left + (rect.width / 2), y: rect.top + (rect.height / 2) }
+    };
+  });
+
+  if(!probe.present) {
+
+    return;
+  }
+
+  if(!probe.tile) {
+
+    LOG.warn("Hulu prompted for profile selection but no profile tile was found. Tuning may fail; sign into Hulu in this browser to investigate.");
+
+    return;
+  }
+
+  LOG.info("Hulu prompted for profile selection. Defaulting to the first profile, \"%s\".", probe.name ?? "(unnamed)");
+
+  try {
+
+    // Coordinate-based click. Synthetic element.click() inside page.evaluate() does not reliably reach React's handlers on Hulu's SPA; the project's tuning code
+    // standardizes on page.mouse.click() with computed centers for this reason.
+    await page.mouse.click(probe.tile.x, probe.tile.y);
+
+    // Wait for the URL to leave /profiles, indicating the navigation triggered by the profile click has begun. The caller's downstream wait for #CHANNELS picks
+    // up the rest of the page settling; we only need to confirm the picker is out of the way before yielding back. The 5s timeout is a "post-click settle"
+    // budget - longer than a synchronous URL update needs, shorter than CONFIG.streaming.videoTimeout (which is sized for page-render waits); a real failure
+    // bubbles up via the catch and the downstream #CHANNELS-wait becomes the final timeout.
+    await page.waitForFunction(() => !window.location.pathname.startsWith("/profiles"), { timeout: 5000 });
+  } catch(error) {
+
+    LOG.warn("Hulu profile selection click did not complete cleanly: %s.", formatError(error));
+  }
+}
+
+/**
  * Guide grid strategy: finds a channel in a virtualized, alphabetically sorted channel grid by scrolling the page to the target row using binary search, then
  * clicking the on-now program cell to open the playback overlay. This strategy works for sites like Hulu Live TV where the channel guide is rendered as a
  * virtualized list - only ~13 of ~124 rows exist in the DOM at any time, positioned absolutely within a tall spacer div. The virtualizer renders rows based on
@@ -872,13 +950,14 @@ async function releaseHeldPlaylist(page: Page): Promise<void> {
  * 3. Linear scan fallback - safety net for raw call sign searches or any channel the binary search cannot find (~2.4 seconds)
  *
  * The selection process:
- * 1. If listSelector is provided, click the tab/button to reveal the channel list (e.g., a "Channels" tab)
- * 2. Wait for the channel grid rows to render in the DOM
- * 3. Check the unified cache for a row number direct-scroll shortcut
- * 4. Binary search: scroll to the midpoint row, read rendered channels (caching row numbers), check for exact match or infer local affiliate
- * 5. If binary search fails, linear scan from top to bottom as a universal fallback
- * 6. Click the on-now program cell (`.LiveGuideProgram--first`) in the target channel's row to open the playback overlay
- * 7. If playSelector is provided, wait for and click the play button to start live playback
+ * 1. Clear any "Who's Watching?" profile-selector modal that intercepts before guide interaction (see handleProfileSelectorIfPresent)
+ * 2. If listSelector is provided, click the tab/button to reveal the channel list (e.g., a "Channels" tab)
+ * 3. Wait for the channel grid rows to render in the DOM
+ * 4. Check the unified cache for a row number direct-scroll shortcut
+ * 5. Binary search: scroll to the midpoint row, read rendered channels (caching row numbers), check for exact match or infer local affiliate
+ * 6. If binary search fails, linear scan from top to bottom as a universal fallback
+ * 7. Click the on-now program cell (`.LiveGuideProgram--first`) in the target channel's row to open the playback overlay
+ * 8. If playSelector is provided, wait for and click the play button to start live playback
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile with a non-null channelSelector (channel name) and channelSelection config.
  * @returns Result object with success status and optional failure reason.
@@ -887,6 +966,10 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
   const { channelSelection, channelSelector: channelName } = profile;
   const { listSelector, playSelector } = channelSelection;
+
+  // Clear the "Who's Watching?" profile-selector modal before any guide interaction. Hulu prompts for profile selection intermittently across sessions; without
+  // this step, all downstream selectors (#CHANNELS, live-guide-row) fail because the picker overlay blocks them.
+  await handleProfileSelectorIfPresent(page);
 
   // Ensure the guide is open and on the correct tab. We wait for the tab button to become VISIBLE (not just present in the DOM) because the guide overlay may exist
   // in the DOM structure while still hidden during page initialization or animation. Clicking a hidden button dispatches a DOM event but has no visual effect - the
@@ -1999,6 +2082,9 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
 
     return [];
   }
+
+  // Clear the "Who's Watching?" profile-selector modal before any guide interaction (same logic guideGridStrategy uses on the tuning path).
+  await handleProfileSelectorIfPresent(page);
 
   // Click the Channels tab to reveal the channel list and trigger full API expansion. Matches the tuning path's retry logic - if guide rows don't appear after
   // the first tab click, retry once with a longer delay in case the first click fired during a transitional state before the guide was fully interactive.
