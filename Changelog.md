@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.10.2 (2026-05-14)
+  * Fix: HBO Max tuning updated for HBO's recent site restructure — live channels are now read from the new consolidated /channels hub instead of the old homepage menu navigation.
+  * Improvement: Hulu's intermittent "Who's Watching?" profile selector is now dismissed automatically during tuning and channel discovery, so accounts with multiple profiles no longer get stuck on the picker overlay when Hulu re-prompts for profile selection across sessions.
+  * Improvement: the default browser extension init timeout is now 3 seconds, giving slower machines more headroom before stream startup considers the capture pipeline failed.
+  * Housekeeping.
+
 ## 1.10.1 (2026-05-10)
   * Housekeeping.
 
