@@ -7,9 +7,10 @@
  * createDefaultServiceContext (in commands.context.ts), tests pass a context literal. The decision logic - install gating, restart vs. start, status display,
  * dispatcher routing - is fully testable without touching real launchctl/systemctl/sc.exe state, real config files, or real HTTP.
  */
-import { type Platform, SERVICE_NAME } from "../utils/platform.ts";
 import type { ServiceDefinition, ServiceGenerator, ServicePaths, StalePathResult } from "./generators.ts";
 import type { Nullable } from "../types/index.ts";
+import type { Platform } from "../utils/platform.ts";
+import { SERVICE_NAME } from "../identity.ts";
 import { createDefaultServiceContext } from "./commands.context.ts";
 import { formatDuration } from "../utils/format.ts";
 import path from "node:path";

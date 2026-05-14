@@ -4,7 +4,7 @@
  */
 import type { Config, Nullable } from "../types/index.ts";
 import { DEFAULTS, mergeConfiguration, readConfig } from "./userConfig.ts";
-import { LOG, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.ts";
+import { LOG, displayLine, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.ts";
 import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.ts";
 import { getChromeDataDir, getConfigFilePath } from "./paths.ts";
 import { RECOGNIZED_CODECS } from "../types/index.ts";
@@ -130,7 +130,7 @@ export function validatePositiveInt(name: string, value: number, min?: number, m
   // Check for NaN (from parseInt of invalid input) and non-positive values.
   if(!Number.isInteger(value) || (value < 1)) {
 
-    return [ name, " must be a positive integer, got: ", String(value) ].join("");
+    return name + " must be a positive integer, got: " + String(value);
   }
 
   return checkBounds(name, value, min, max);
@@ -149,7 +149,7 @@ export function validatePositiveNumber(name: string, value: number, min?: number
   // Check for NaN and non-positive values.
   if(Number.isNaN(value) || (value <= 0)) {
 
-    return [ name, " must be a positive number, got: ", String(value) ].join("");
+    return name + " must be a positive number, got: " + String(value);
   }
 
   return checkBounds(name, value, min, max);
@@ -168,12 +168,12 @@ function checkBounds(name: string, value: number, min: number | undefined, max: 
 
   if((min !== undefined) && (value < min)) {
 
-    return [ name, " must be at least ", String(min), ", got: ", String(value) ].join("");
+    return name + " must be at least " + String(min) + ", got: " + String(value);
   }
 
   if((max !== undefined) && (value > max)) {
 
-    return [ name, " must be at most ", String(max), ", got: ", String(value) ].join("");
+    return name + " must be at most " + String(max) + ", got: " + String(value);
   }
 
   return null;
@@ -275,36 +275,52 @@ export function validateConfiguration(): void {
   // If any validation errors occurred, throw with complete list for operator to fix all issues at once.
   if(errors.length > 0) {
 
-    throw new Error([ "Configuration validation failed:\n  ", errors.join("\n  ") ].join(""));
+    throw new Error("Configuration validation failed:\n  " + errors.join("\n  "));
   }
+}
+
+/**
+ * Emits a single indented configuration row in the "label: value" format used by the startup display. Routes through displayLine so the line stays free of the
+ * sentence-normalization contract that LOG.info applies - a config dump is tabular display, not a sentence, and forcing a trailing period on every row would
+ * degrade readability of the block as a whole. Keeps the call-site authoring shape minimal so future additions are a one-liner.
+ * @param label - The metric label, displayed left of the colon.
+ * @param value - The value to display. Coerced via String() so callers can pass numbers, booleans, or any value without per-call ceremony.
+ */
+function printConfigRow(label: string, value: unknown): void {
+
+  displayLine("  " + label + ": " + String(value));
 }
 
 /**
  * Displays the active configuration at startup. This helps operators verify their settings and diagnose connection issues. We log only the most commonly adjusted
  * values to keep output concise while providing useful debugging information.
  *
- * This function also checks for preset degradation and logs a warning if the configured preset exceeds display capabilities. The warning helps users understand why
- * their stream resolution may be lower than configured.
+ * The block is emitted through displayLine / printConfigRow rather than LOG.info because it is structured display output (a header plus indented label/value
+ * rows), not prose log messages - the logger's sentence-normalization contract is intentionally bypassed for this block so the rows render as tabular data, not
+ * sentences.
+ *
+ * This function also checks for preset degradation and logs a warning if the configured preset exceeds display capabilities. The warning helps users understand
+ * why their stream resolution may be lower than configured.
  */
 export function displayConfiguration(): void {
 
   const presetResult = getEffectivePreset(CONFIG);
   const presetStatus = formatPresetStatus(presetResult);
 
-  LOG.info("Starting PrismCast v%s with configuration:", getPackageVersion());
-  LOG.info("  Configuration file: %s", getConfigFilePath());
-  LOG.info("  Chrome profile: %s", getChromeDataDir(CONFIG));
-  LOG.info("  Server port: %s", CONFIG.server.port);
-  LOG.info("  Quality preset: %s", presetStatus);
-  LOG.info("  Capture codecs: %s", CONFIG.streaming.captureCodecs.join(", "));
-  LOG.info("  Video bitrate: %s", CONFIG.streaming.videoBitsPerSecond);
-  LOG.info("  Max retries: %s", CONFIG.streaming.maxNavigationRetries);
-  LOG.info("  Max concurrent streams: %s", CONFIG.streaming.maxConcurrentStreams);
-  LOG.info("  Circuit breaker threshold: %s failures in %s minutes",
+  displayLine("Starting PrismCast v%s with configuration:", getPackageVersion());
+  printConfigRow("Configuration file", getConfigFilePath());
+  printConfigRow("Chrome profile", getChromeDataDir(CONFIG));
+  printConfigRow("Server port", CONFIG.server.port);
+  printConfigRow("Quality preset", presetStatus);
+  printConfigRow("Capture codecs", CONFIG.streaming.captureCodecs.join(", "));
+  printConfigRow("Video bitrate", CONFIG.streaming.videoBitsPerSecond);
+  printConfigRow("Max retries", CONFIG.streaming.maxNavigationRetries);
+  printConfigRow("Max concurrent streams", CONFIG.streaming.maxConcurrentStreams);
+  displayLine("  Circuit breaker threshold: %s failures in %s minutes",
     CONFIG.recovery.circuitBreakerThreshold, Math.round(CONFIG.recovery.circuitBreakerWindow / 60000));
-  LOG.info("  Chrome executable: %s", CONFIG.browser.executablePath ?? "autodetect");
-  LOG.info("  HLS segment duration: %ss, max segments: %s", CONFIG.hls.segmentDuration, CONFIG.hls.maxSegments);
-  LOG.info("  HDHomeRun emulation: %s", CONFIG.hdhr.enabled ? "enabled (port " + String(CONFIG.hdhr.port) + ")" : "disabled");
+  printConfigRow("Chrome executable", CONFIG.browser.executablePath ?? "autodetect");
+  displayLine("  HLS segment duration: %ss, max segments: %s", CONFIG.hls.segmentDuration, CONFIG.hls.maxSegments);
+  printConfigRow("HDHomeRun emulation", CONFIG.hdhr.enabled ? "enabled (port " + String(CONFIG.hdhr.port) + ")" : "disabled");
 
   // Log a prominent warning if preset was degraded due to display limitations.
   if(presetResult.degraded && presetResult.maxViewport) {

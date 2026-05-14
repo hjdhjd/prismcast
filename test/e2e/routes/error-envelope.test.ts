@@ -267,7 +267,16 @@ const EXCLUDED_ENDPOINTS: readonly ExclusionSpec[] = [
   { method: "GET", reason: "Read-only export response (channels JSON download). No validation rejection path.", registeredPath: "/config/channels/export" },
   { method: "GET", reason: "Read-only data response (tag vocabulary). No validation rejection path.", registeredPath: "/config/tags" },
   { method: "GET", reason: "Read-only data response (changelog markdown). No validation rejection path.", registeredPath: "/version/changelog" },
-  { method: "GET", reason: "Server-rendered HTML page (landing page). No JSON envelope.", registeredPath: "/" }
+  { method: "GET", reason: "Server-rendered HTML page (landing page). No JSON envelope.", registeredPath: "/" },
+
+  /* CDP proxy discovery endpoints. These speak the Chrome DevTools Protocol's JSON wire shape (https://chromedevtools.github.io/devtools-protocol/), not the
+   * PrismCast HTTP error envelope - their consumers (chrome://inspect, puppeteer.connect, chrome-remote-interface) parse fixed CDP-defined fields like
+   * `webSocketDebuggerUrl` and `Browser`. Each returns 404 (no body) when the cdp debug category is disabled and the upstream CDP-shaped JSON otherwise; in
+   * neither case does the PrismCast validation envelope apply.
+   */
+  { method: "GET", reason: "Chrome DevTools Protocol discovery (CDP-shaped JSON or 404). Not a PrismCast-envelope endpoint.", registeredPath: "/cdp/json" },
+  { method: "GET", reason: "Chrome DevTools Protocol discovery (alias of /cdp/json). Not a PrismCast-envelope endpoint.", registeredPath: "/cdp/json/list" },
+  { method: "GET", reason: "Chrome DevTools Protocol version (CDP-shaped JSON or 404). Not a PrismCast-envelope endpoint.", registeredPath: "/cdp/json/version" }
 ];
 
 /**

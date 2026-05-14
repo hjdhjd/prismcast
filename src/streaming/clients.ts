@@ -3,6 +3,7 @@
  * clients.ts: Client tracking for PrismCast streams.
  */
 import { getStream } from "./registry.ts";
+import { normalizeClientAddress } from "../utils/index.ts";
 
 /* This module tracks which clients are connected to each stream by protocol (HLS or MPEG-TS). MPEG-TS clients have persistent connections and are registered on
  * connect, unregistered on disconnect. HLS clients are stateless - each playlist request refreshes a TTL-based entry that expires after 30 seconds of inactivity. The
@@ -71,17 +72,6 @@ const clientMaps = new Map<number, Map<string, StreamClient>>();
 // Registration.
 
 /**
- * Normalizes an IP address by stripping the IPv6-mapped IPv4 prefix. This prevents the same client from appearing twice when Express reports the address as
- * "::ffff:192.168.1.50" on some requests and "192.168.1.50" on others.
- * @param address - The raw IP address string.
- * @returns The normalized address.
- */
-function normalizeAddress(address: string): string {
-
-  return address.startsWith("::ffff:") ? address.slice(7) : address;
-}
-
-/**
  * Registers or refreshes a client for a stream. For HLS clients, this updates the lastSeen timestamp to prevent TTL expiration. For MPEG-TS clients, this creates
  * the client entry on connect. Guards against registration after stream termination by verifying the stream still exists in the registry.
  * @param streamId - The numeric stream ID.
@@ -96,7 +86,7 @@ export function registerClient(streamId: number, clientAddress: string, protocol
     return;
   }
 
-  const address = normalizeAddress(clientAddress);
+  const address = normalizeClientAddress(clientAddress);
   const key = protocol + ":" + address;
 
   let clients = clientMaps.get(streamId);
@@ -131,7 +121,7 @@ export function unregisterClient(streamId: number, clientAddress: string, protoc
     return;
   }
 
-  const address = normalizeAddress(clientAddress);
+  const address = normalizeClientAddress(clientAddress);
   const key = protocol + ":" + address;
 
   clients.delete(key);

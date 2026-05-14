@@ -48,15 +48,15 @@ export function formatDuration(value: number, unit: "ms" | "s" = "ms"): string {
 
   if(hours > 0) {
 
-    return minutes > 0 ? [ String(hours), "h ", String(minutes), "m" ].join("") : [ String(hours), "h" ].join("");
+    return minutes > 0 ? String(hours) + "h " + String(minutes) + "m" : String(hours) + "h";
   }
 
   if(minutes > 0) {
 
-    return seconds > 0 ? [ String(minutes), "m ", String(seconds), "s" ].join("") : [ String(minutes), "m" ].join("");
+    return seconds > 0 ? String(minutes) + "m " + String(seconds) + "s" : String(minutes) + "m";
   }
 
-  return [ String(seconds), "s" ].join("");
+  return String(seconds) + "s";
 }
 
 /**

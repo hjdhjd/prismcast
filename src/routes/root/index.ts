@@ -49,32 +49,26 @@ function generateVersionHtml(): string {
   const versionInfo = getVersionInfo(currentVersion);
 
   // Refresh icon for manual update check (using Unicode refresh symbol).
-  const refreshIcon = [
-    "<button type=\"button\" class=\"version-check\" onclick=\"checkForUpdates()\" title=\"Check for updates\" aria-label=\"Check for updates\">",
-    "&#8635;",
-    "</button>"
-  ].join("");
+  const refreshIcon = "<button type=\"button\" class=\"version-check\" onclick=\"checkForUpdates()\" title=\"Check for updates\" aria-label=\"Check for updates\">" +
+    "&#8635;" +
+    "</button>";
 
   if(versionInfo.updateAvailable && versionInfo.latestVersion) {
 
     // Update available - make version area clickable to open changelog modal, with refresh icon.
-    return [
-      "<span class=\"version-container\">",
-      "<a href=\"#\" class=\"version version-update\" onclick=\"openChangelogModal(); return false;\">",
-      "v" + currentVersion + " &rarr; v" + versionInfo.latestVersion,
-      "</a>",
-      refreshIcon,
-      "</span>"
-    ].join("");
+    return "<span class=\"version-container\">" +
+      "<a href=\"#\" class=\"version version-update\" onclick=\"openChangelogModal(); return false;\">" +
+      "v" + currentVersion + " &rarr; v" + versionInfo.latestVersion +
+      "</a>" +
+      refreshIcon +
+      "</span>";
   }
 
   // No update - show current version (clickable to view changelog) with refresh icon.
-  return [
-    "<span class=\"version-container\" id=\"version-display\">",
-    "<a href=\"#\" class=\"version\" onclick=\"openChangelogModal(); return false;\">v" + currentVersion + "</a>",
-    refreshIcon,
-    "</span>"
-  ].join("");
+  return "<span class=\"version-container\" id=\"version-display\">" +
+    "<a href=\"#\" class=\"version\" onclick=\"openChangelogModal(); return false;\">v" + currentVersion + "</a>" +
+    refreshIcon +
+    "</span>";
 }
 
 /**

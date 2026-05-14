@@ -197,7 +197,7 @@ export async function emitCurrentSystemStatus(): Promise<void> {
 export function registerManagedPage(page: Page): void {
 
   // Generate a unique ID for this page.
-  const pageId = [ "page-", String(++managedPageIdCounter) ].join("");
+  const pageId = "page-" + String(++managedPageIdCounter);
 
   // Associate the Page object with its ID.
   pageToId.set(page, pageId);
@@ -565,7 +565,7 @@ export function buildLaunchOptions(): LaunchOptions {
       "--hide-crash-restore-bubble",
       "--hide-scrollbars",
       "--no-first-run",
-      [ "--window-size=", String(getPresetViewport(CONFIG).width), ",", String(getPresetViewport(CONFIG).height) ].join("")
+      "--window-size=" + String(getPresetViewport(CONFIG).width) + "," + String(getPresetViewport(CONFIG).height)
     ],
 
     // Disable Puppeteer's default viewport constraints. We manage viewport sizing ourselves via CDP to account for browser chrome (toolbars, borders) and

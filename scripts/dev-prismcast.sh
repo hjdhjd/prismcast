@@ -97,10 +97,16 @@ fi
 # Ensure the dev data directory exists before node tries to write into it. Idempotent - existing dirs are left alone.
 mkdir -p "$DEV_DATA_DIR"
 
+# Default the debug filter to the cdp category so the Chrome DevTools Protocol proxy is enabled for dev runs out of the box. The ${VAR:=default} form assigns only
+# when the variable is unset or empty, so a user-set PRISMCAST_DEBUG=tuning:hulu (or anything else) is preserved verbatim.
+: "${PRISMCAST_DEBUG:=cdp}"
+export PRISMCAST_DEBUG
+
 # Echo the resolved environment so the operator can sanity-check before the process backgrounds (or before grepping logs after a foreground crash).
 echo "[dev-prismcast] PRISMCAST_DATA_DIR=$DEV_DATA_DIR"
 echo "[dev-prismcast] HTTP port=$DEV_PORT"
 echo "[dev-prismcast] HDHR_ENABLED=$HDHR_ENABLED_VAL (port=$HDHR_PORT_FOR_LOG)"
+echo "[dev-prismcast] PRISMCAST_DEBUG=$PRISMCAST_DEBUG"
 echo "[dev-prismcast] PrismCast version: $(node -p "require('./package.json').version")"
 echo "[dev-prismcast] Launching..."
 

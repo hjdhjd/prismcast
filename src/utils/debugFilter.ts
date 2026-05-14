@@ -177,6 +177,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
 
   { category: "browser:lifecycle", description: "Browser lifecycle: launch, close, stale page cleanup, restart." },
   { category: "browser:video", description: "Video context, fullscreen, volume locking, playback." },
+  { category: "cdp", description: "Enables the Chrome DevTools Protocol proxy at /cdp. Feature gate, not a log filter - observable via its HTTP/WS surface." },
   { category: "config:general", description: "Service groups, version checking." },
   { category: "native:coordinator", description: "Native streaming decisions: interception result, probe result, capture teardown, proxy start." },
   { category: "native:decrypt", description: "AES-128 decryption: key fetch, IV source (explicit vs. sequence), segment sizes." },

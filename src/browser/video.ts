@@ -1066,7 +1066,7 @@ export async function ensureFullscreen(
         new Error("Fullscreen queue entry timed out."));
     } catch(error) {
 
-      LOG.warn("Fullscreen queue entry failed: %s", formatError(error));
+      LOG.warn("Fullscreen queue entry failed: %s.", formatError(error));
     }
   });
 

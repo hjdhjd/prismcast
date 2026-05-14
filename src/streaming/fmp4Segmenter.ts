@@ -695,7 +695,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     // Combine all fragment data into a single segment.
     const segmentData = Buffer.concat(state.fragmentBuffer);
-    const segmentName = [ "segment", String(state.segmentIndex), ".m4s" ].join("");
+    const segmentName = "segment" + String(state.segmentIndex) + ".m4s";
 
     // Store the segment and update size and track composition for health monitoring.
     storeSegment(streamId, segmentName, segmentData);

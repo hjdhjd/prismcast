@@ -5,6 +5,7 @@
 import type { Express } from "express";
 import { setupAssetEndpoints } from "./assets.ts";
 import { setupAuthEndpoint } from "./auth.ts";
+import { setupCdpEndpoint } from "./cdp.ts";
 import { setupChannelsEndpoint } from "./channels.ts";
 import { setupConfigEndpoint } from "./config/index.ts";
 import { setupDebugEndpoint } from "./debug.ts";
@@ -31,6 +32,7 @@ export function setupRoutes(app: Express): void {
 
   setupAssetEndpoints(app);
   setupAuthEndpoint(app);
+  setupCdpEndpoint(app);
   setupChannelsEndpoint(app);
   setupConfigEndpoint(app);
   setupDebugEndpoint(app);

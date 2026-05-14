@@ -4,8 +4,6 @@
  */
 import type { Nullable } from "../types/index.ts";
 import fs from "node:fs";
-import { getDataDir } from "../config/paths.ts";
-import os from "node:os";
 import path from "node:path";
 import url from "node:url";
 
@@ -24,12 +22,6 @@ const CONTAINER_ENV_VAR = "PRISMCAST_CONTAINER";
 
 // Environment variable name used to detect service mode.
 const SERVICE_ENV_VAR = "PRISMCAST_SERVICE";
-
-// Service identifier used in service files.
-export const SERVICE_ID = "com.github.hjdhjd.prismcast";
-
-// Service name for display purposes.
-export const SERVICE_NAME = "PrismCast";
 
 /**
  * Returns the current platform as a normalized string.
@@ -120,49 +112,6 @@ export function isRunningInContainer(): boolean {
 }
 
 /**
- * Returns the path where the service file should be installed for the current platform.
- * @returns The absolute path to the service file location.
- */
-export function getServiceFilePath(): string {
-
-  const homeDir = os.homedir();
-
-  switch(getPlatform()) {
-
-    case "darwin": {
-
-      return path.join(homeDir, "Library", "LaunchAgents", SERVICE_ID + ".plist");
-    }
-
-    case "linux": {
-
-      return path.join(homeDir, ".config", "systemd", "user", "prismcast.service");
-    }
-
-    case "windows": {
-
-      // The PowerShell launcher script is the primary service file on Windows. It contains the runtime configuration (working directory, environment variables,
-      // node and entry point paths) and serves as the single source of truth for stale path detection. Task Scheduler invokes this launcher at user logon.
-      return path.join(getDataDir(), "prismcast-service.ps1");
-    }
-
-    default: {
-
-      return "";
-    }
-  }
-}
-
-/**
- * Returns the directory containing the service file for the current platform. This directory may need to be created before writing the service file.
- * @returns The absolute path to the service file directory.
- */
-export function getServiceFileDirectory(): string {
-
-  return path.dirname(getServiceFilePath());
-}
-
-/**
  * Returns the full path to the Node.js executable. This is needed for service files which require absolute paths since the service environment may not have PATH set.
  * We prefer symlink paths (e.g., /opt/homebrew/bin/node) over resolved paths (e.g., /opt/homebrew/Cellar/node/25.4.0/bin/node) so that Homebrew and similar package
  * managers can upgrade Node without breaking the service.
@@ -227,29 +176,3 @@ export function getPrismCastWorkingDirectory(): string {
   return path.dirname(path.dirname(entryPoint));
 }
 
-/**
- * Returns the data directory path for PrismCast. Delegates to the centralized paths module.
- * @returns The absolute path to the data directory.
- */
-export function getDataDirectory(): string {
-
-  return getDataDir();
-}
-
-/**
- * Returns the directory path for service stdout/stderr output. This is the same as the data directory to keep all PrismCast files in one place.
- * @returns The absolute path to the service logs directory.
- */
-export function getLogsDirectory(): string {
-
-  return getDataDir();
-}
-
-/**
- * Checks if a service file exists at the expected location.
- * @returns True if the service file exists.
- */
-export function serviceFileExists(): boolean {
-
-  return fs.existsSync(getServiceFilePath());
-}

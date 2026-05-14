@@ -3,6 +3,9 @@
  * paths.ts: Centralized filesystem path resolution for PrismCast.
  */
 import type { Config } from "../types/index.ts";
+import { SERVICE_ID } from "../identity.ts";
+import fs from "node:fs";
+import { getPlatform } from "../utils/platform.ts";
 import os from "node:os";
 import path from "node:path";
 
@@ -128,6 +131,71 @@ export function getChromePidFilePath(): string {
 export function getServerPidFilePath(): string {
 
   return path.join(getDataDir(), "prismcast.pid");
+}
+
+/**
+ * Returns the directory path for service stdout/stderr output. This is the same as the data directory today; the named alias documents intent at the call site
+ * (a service generator asking for "where do my logs go?" rather than reaching directly for the data dir) and leaves room to diverge if a future platform wants
+ * its service logs elsewhere.
+ * @returns The absolute path to the service logs directory.
+ */
+export function getLogsDirectory(): string {
+
+  return getDataDir();
+}
+
+/**
+ * Returns the platform-specific path where the service file should be installed. macOS and Linux use well-known per-user locations (Library/LaunchAgents,
+ * ~/.config/systemd/user); on Windows we co-locate the PowerShell launcher script with the rest of PrismCast's runtime state inside the data directory, since
+ * Windows has no equivalent per-user service registry path. The launcher carries the runtime configuration (working dir, env vars, node and entry-point paths)
+ * and acts as the single source of truth for stale-path detection in service/commands.ts.
+ * @returns The absolute path to the service file location, or "" on unsupported platforms.
+ */
+export function getServiceFilePath(): string {
+
+  const homeDir = os.homedir();
+
+  switch(getPlatform()) {
+
+    case "darwin": {
+
+      return path.join(homeDir, "Library", "LaunchAgents", SERVICE_ID + ".plist");
+    }
+
+    case "linux": {
+
+      return path.join(homeDir, ".config", "systemd", "user", "prismcast.service");
+    }
+
+    case "windows": {
+
+      return path.join(getDataDir(), "prismcast-service.ps1");
+    }
+
+    default: {
+
+      return "";
+    }
+  }
+}
+
+/**
+ * Returns the directory containing the service file for the current platform. May need to be created before writing the service file.
+ * @returns The absolute path to the service file directory.
+ */
+export function getServiceFileDirectory(): string {
+
+  return path.dirname(getServiceFilePath());
+}
+
+/**
+ * Checks whether a service file exists at the expected platform-specific location. Centralized here alongside the path resolver it depends on so a single module
+ * owns both the "where" and "does it exist" questions for the service file.
+ * @returns True if the service file exists.
+ */
+export function serviceFileExists(): boolean {
+
+  return fs.existsSync(getServiceFilePath());
 }
 
 /**

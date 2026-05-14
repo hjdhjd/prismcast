@@ -326,10 +326,10 @@ export function formatPresetStatus(result: EffectivePresetResult): string {
 
   if(!result.degraded) {
 
-    return [ result.configuredPreset.id, " (", String(effectiveWidth), "\u00d7", String(effectiveHeight), ")" ].join("");
+    return result.configuredPreset.id + " (" + String(effectiveWidth) + "\u00d7" + String(effectiveHeight) + ")";
   }
 
-  return [ result.configuredPreset.id, " (limited to ", result.effectivePreset.id, " by display)" ].join("");
+  return result.configuredPreset.id + " (limited to " + result.effectivePreset.id + " by display)";
 }
 
 /**

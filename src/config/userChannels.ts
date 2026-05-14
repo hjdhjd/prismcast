@@ -2583,7 +2583,7 @@ export function validateChannelProfile(profile: string | undefined, validProfile
   // Check if profile exists.
   if(!validProfiles.includes(profile)) {
 
-    return [ "Unknown profile: ", profile, ". Valid profiles: ", validProfiles.join(", "), "." ].join("");
+    return "Unknown profile: " + profile + ". Valid profiles: " + validProfiles.join(", ") + ".";
   }
 
   return undefined;

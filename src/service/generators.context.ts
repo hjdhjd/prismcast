@@ -5,7 +5,8 @@
  * Tests bypass this file entirely by constructing GeneratorIO literals inline so install/uninstall/start/stop pipelines run against fakes rather than spawning
  * launchctl/systemctl/powershell.exe.
  */
-import { type Platform, getPlatform, getServiceFileDirectory, getServiceFilePath } from "../utils/platform.ts";
+import { type Platform, getPlatform } from "../utils/platform.ts";
+import { getServiceFileDirectory, getServiceFilePath } from "../config/paths.ts";
 import type { GeneratorIO } from "./generators.ts";
 import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs";

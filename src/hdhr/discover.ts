@@ -3,10 +3,10 @@
  * discover.ts: HDHomeRun discovery and lineup endpoints for PrismCast.
  */
 import type { Express, Request, Response } from "express";
+import { getPackageVersion, normalizeClientAddress } from "../utils/index.ts";
 import { CONFIG } from "../config/index.ts";
 import { buildChannelMap } from "./channelMap.ts";
 import { getAllStreams } from "../streaming/registry.ts";
-import { getPackageVersion } from "../utils/index.ts";
 
 /* These endpoints implement the HDHomeRun HTTP API that Plex and other clients use to identify, configure, and monitor tuners. Plex does not auto-detect emulated
  * tuners on non-standard ports - users must manually enter the address (IP:port) in Plex's DVR setup. The core discovery endpoints are device.xml (UPnP device
@@ -199,8 +199,7 @@ export function setupHdhrEndpoints(app: Express): void {
 
       // Build the tuner entry. Active tuners include channel info and signal stats. Signal values are hardcoded at 100 since PrismCast streams are network-based and
       // either working or not - there is no analog signal quality to report. Channel info is merged conditionally: prefer the channel map for VctNumber (numeric
-      // channel) and VctName (display name), fall back to stream.channelName for VctName if the channel was removed from the map after the stream started. Client
-      // address is normalized to strip IPv6-mapped IPv4 prefixes (::ffff:192.168.1.1 -> 192.168.1.1).
+      // channel) and VctName (display name), fall back to stream.channelName for VctName if the channel was removed from the map after the stream started.
       const tuner: TunerStatusEntry = {
 
         Frequency: 0,
@@ -210,7 +209,7 @@ export function setupHdhrEndpoints(app: Express): void {
         SymbolQualityPercent: 100,
         ...(channelEntry ? { VctName: channelEntry.name, VctNumber: String(channelEntry.number) } : {}),
         ...(!channelEntry && stream.channelName ? { VctName: stream.channelName } : {}),
-        ...(stream.clientAddress ? { TargetIP: stream.clientAddress.startsWith("::ffff:") ? stream.clientAddress.slice(7) : stream.clientAddress } : {})
+        ...(stream.clientAddress ? { TargetIP: normalizeClientAddress(stream.clientAddress) } : {})
       };
 
       tuners.push(tuner);

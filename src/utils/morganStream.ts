@@ -34,7 +34,7 @@ export function createMorganStream(): StreamOptions {
         const timestamp = formatTimestamp();
 
         // eslint-disable-next-line no-console
-        console.log([ "[", timestamp, "] ", trimmedMessage ].join(""));
+        console.log("[" + timestamp + "] " + trimmedMessage);
       } else {
 
         // File logging mode - route through the file logger which adds its own timestamp. HTTP request logs use the default terminal color, matching info-level output.

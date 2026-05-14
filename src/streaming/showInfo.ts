@@ -2,7 +2,7 @@
  *
  * showInfo.ts: Channels DVR API integration for show name and channel logo lookup.
  */
-import { LOG, formatError } from "../utils/index.ts";
+import { LOG, formatError, normalizeClientAddress } from "../utils/index.ts";
 import { clearChannelLogos, getAllChannels, getChannelListing, getChannelLogo, getChannelStationId, setChannelLogo,
   setChannelLogos } from "../config/userChannels.ts";
 import { mutateConfig, readConfig } from "../config/userConfig.ts";
@@ -361,10 +361,7 @@ async function updateShowNames(): Promise<void> {
 
     if(stream.clientAddress) {
 
-      // Normalize IPv6-mapped IPv4 addresses (::ffff:192.168.1.1 -> 192.168.1.1).
-      const host = stream.clientAddress.startsWith("::ffff:") ? stream.clientAddress.slice(7) : stream.clientAddress;
-
-      discoveryHosts.add(host);
+      discoveryHosts.add(normalizeClientAddress(stream.clientAddress));
     }
   }
 

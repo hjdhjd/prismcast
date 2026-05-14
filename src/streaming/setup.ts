@@ -303,17 +303,17 @@ export function generateStreamId(channelName: string | undefined, url: string | 
   // If we have a channel name, use it as the prefix. Channel names are short and meaningful (e.g., "nbc", "espn").
   if(channelName) {
 
-    return [ channelName, "-", requestId ].join("");
+    return channelName + "-" + requestId;
   }
 
   // For direct URL requests, use the concise domain as the prefix.
   if(url) {
 
-    return [ extractDomain(url), "-", requestId ].join("");
+    return extractDomain(url) + "-" + requestId;
   }
 
   // Fallback when neither channel name nor URL is available. This shouldn't happen in normal operation but provides a valid ID for edge cases.
-  return [ "unknown-", requestId ].join("");
+  return "unknown-" + requestId;
 }
 
 // URL Validation.
@@ -342,7 +342,7 @@ export function validateStreamUrl(url: string | undefined): UrlValidationResult 
 
     if(!allowedProtocols.includes(parsed.protocol)) {
 
-      return { reason: [ "Unsupported protocol: ", parsed.protocol ].join(""), valid: false };
+      return { reason: "Unsupported protocol: " + parsed.protocol, valid: false };
     }
 
     return { valid: true };
@@ -891,7 +891,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       LOG.error("Invalid URL requested: %s - %s.", url, validation.reason ?? "Unknown error");
 
       throw new StreamSetupError(
-        [ "Invalid URL: ", validation.reason ?? "Unknown error" ].join(""),
+        "Invalid URL: " + (validation.reason ?? "Unknown error"),
         400,
         validation.reason ?? "Invalid URL."
       );
@@ -905,7 +905,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       throw new StreamSetupError(
         "Concurrent stream limit reached.",
         503,
-        [ "Maximum concurrent streams (", String(CONFIG.streaming.maxConcurrentStreams), ") reached. Try again later." ].join("")
+        "Maximum concurrent streams (" + String(CONFIG.streaming.maxConcurrentStreams) + ") reached. Try again later."
       );
     }
 

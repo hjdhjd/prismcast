@@ -6,11 +6,29 @@
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { getChannelsFilePath, getChromeDataDir, getChromePidFilePath, getConfigFilePath, getDataDir, getDebugEnv, getExtensionDir, getHealthFilePath,
-  getLogFilePath, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, initializeDataDir } from "./paths.ts";
+  getLogFilePath, getLogsDirectory, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, getServiceFileDirectory, getServiceFilePath,
+  initializeDataDir, serviceFileExists } from "./paths.ts";
 import type { Config } from "../types/index.ts";
+import { SERVICE_ID } from "../identity.ts";
 import assert from "node:assert/strict";
+import os from "node:os";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
+
+/**
+ * Stubs process.platform via the `value` configurable property override. process.platform is a getter on some Node builds; defineProperty handles both the
+ * accessor and data-property cases. Tests pair this with the captured ORIGINAL_PLATFORM for restoration in afterEach.
+ */
+function setPlatform(value: string): void {
+
+  Object.defineProperty(process, "platform", {
+
+    configurable: true,
+    value
+  });
+}
+
+const ORIGINAL_PLATFORM = process.platform;
 
 /* The data-dir state is module-level. Each test scopes its own value via withTempDir + initializeDataDir, but we still capture and restore the surrounding
  * value (and the env var) so the suite leaves the global state exactly as it found it.
@@ -433,5 +451,80 @@ describe("getDebugEnv", () => {
         process.env["PRISMCAST_DEBUG"] = original;
       }
     }
+  });
+});
+
+describe("getLogsDirectory", () => {
+
+  test("returns the same path as getDataDir (logs co-located with data)", async () => {
+
+    await withTempDir((dir) => {
+
+      initializeDataDir(dir);
+      assert.equal(getLogsDirectory(), getDataDir());
+
+      return Promise.resolve();
+    });
+  });
+});
+
+describe("getServiceFilePath", () => {
+
+  afterEach(() => {
+
+    setPlatform(ORIGINAL_PLATFORM);
+  });
+
+  test("on darwin uses ~/Library/LaunchAgents/<id>.plist", () => {
+
+    setPlatform("darwin");
+    const expected = path.join(os.homedir(), "Library", "LaunchAgents", SERVICE_ID + ".plist");
+
+    assert.equal(getServiceFilePath(), expected);
+  });
+
+  test("on linux uses ~/.config/systemd/user/prismcast.service", () => {
+
+    setPlatform("linux");
+    const expected = path.join(os.homedir(), ".config", "systemd", "user", "prismcast.service");
+
+    assert.equal(getServiceFilePath(), expected);
+  });
+
+  test("on windows points at <data-dir>/prismcast-service.ps1", async () => {
+
+    await withTempDir((dir) => {
+
+      initializeDataDir(dir);
+      setPlatform("win32");
+
+      assert.match(getServiceFilePath(), /prismcast-service\.ps1$/, "ends with the PowerShell launcher filename");
+
+      return Promise.resolve();
+    });
+  });
+});
+
+describe("getServiceFileDirectory", () => {
+
+  afterEach(() => {
+
+    setPlatform(ORIGINAL_PLATFORM);
+  });
+
+  test("returns the parent directory of getServiceFilePath()", () => {
+
+    setPlatform("darwin");
+    assert.equal(getServiceFileDirectory(), path.dirname(getServiceFilePath()));
+  });
+});
+
+describe("serviceFileExists", () => {
+
+  test("returns a boolean (existence check via fs.existsSync)", () => {
+
+    // No platform override - the function reads whatever the live process platform reports, so on a clean dev box we just lock the boolean shape rather than
+    // mocking the filesystem. The cross-platform branches are covered by getServiceFilePath above.
+    assert.equal(typeof serviceFileExists(), "boolean");
   });
 });

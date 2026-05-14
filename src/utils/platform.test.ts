@@ -4,20 +4,11 @@
  * verify the per-platform branches by stubbing process.platform via Object.defineProperty (it is a getter property under v8). Tests restore the original platform
  * value in afterEach so cross-test pollution is impossible.
  */
-import { SERVICE_ID, SERVICE_NAME, getDataDirectory, getLogsDirectory, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getPrismCastWorkingDirectory,
-  getServiceFileDirectory, getServiceFilePath, getServiceManager, isRunningAsService, isRunningInContainer, serviceFileExists } from "./platform.ts";
-import { afterEach, before, beforeEach, describe, mock, test } from "node:test";
+import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { getNodeExecutablePath, getPlatform, getPrismCastEntryPoint, getPrismCastWorkingDirectory, getServiceManager, isRunningAsService,
+  isRunningInContainer } from "./platform.ts";
 import assert from "node:assert/strict";
-import { initializeDataDir } from "../config/paths.ts";
-import os from "node:os";
 import path from "node:path";
-
-// Initialize the data directory once for the suite. The platform helpers that touch getDataDir() throw if it has not been initialized; tests want a stable
-// fixture rather than the dependency injection ceremony of stubbing the path module.
-before(() => {
-
-  initializeDataDir(path.join(os.tmpdir(), "prismcast-platform-test"));
-});
 
 // Tests stub process.platform via this helper rather than direct assignment, because Node exposes process.platform as an accessor on some builds. The helper
 // captures the original value and lets the test stash a getter that returns whatever the test wants.
@@ -220,52 +211,6 @@ describe("isRunningInContainer", () => {
   });
 });
 
-describe("getServiceFilePath", () => {
-
-  afterEach(() => {
-
-    setPlatform(ORIGINAL_PLATFORM);
-  });
-
-  test("on darwin uses ~/Library/LaunchAgents/<id>.plist", () => {
-
-    setPlatform("darwin");
-    const expected = path.join(os.homedir(), "Library", "LaunchAgents", SERVICE_ID + ".plist");
-
-    assert.equal(getServiceFilePath(), expected);
-  });
-
-  test("on linux uses ~/.config/systemd/user/prismcast.service", () => {
-
-    setPlatform("linux");
-    const expected = path.join(os.homedir(), ".config", "systemd", "user", "prismcast.service");
-
-    assert.equal(getServiceFilePath(), expected);
-  });
-
-  test("on windows points at <data-dir>/prismcast-service.ps1", () => {
-
-    setPlatform("win32");
-    const result = getServiceFilePath();
-
-    assert.match(result, /prismcast-service\.ps1$/, "ends with the PowerShell launcher filename");
-  });
-});
-
-describe("getServiceFileDirectory", () => {
-
-  afterEach(() => {
-
-    setPlatform(ORIGINAL_PLATFORM);
-  });
-
-  test("returns the parent directory of getServiceFilePath()", () => {
-
-    setPlatform("darwin");
-    assert.equal(getServiceFileDirectory(), path.dirname(getServiceFilePath()));
-  });
-});
-
 describe("getNodeExecutablePath", () => {
 
   test("returns a non-empty absolute path", () => {
@@ -317,46 +262,6 @@ describe("getPrismCastWorkingDirectory", () => {
     const expected = path.dirname(path.dirname(getPrismCastEntryPoint()));
 
     assert.equal(getPrismCastWorkingDirectory(), expected);
-  });
-});
-
-describe("getDataDirectory and getLogsDirectory", () => {
-
-  test("getDataDirectory returns an absolute path", () => {
-
-    const result = getDataDirectory();
-
-    assert.equal(typeof result, "string");
-    assert.ok(result.length > 0);
-  });
-
-  test("getLogsDirectory returns the same path as getDataDirectory", () => {
-
-    // The two are documented as aliases - logs go in the data directory.
-    assert.equal(getLogsDirectory(), getDataDirectory());
-  });
-});
-
-describe("serviceFileExists", () => {
-
-  test("returns a boolean (existence check via fs.existsSync)", () => {
-
-    const result = serviceFileExists();
-
-    assert.equal(typeof result, "boolean");
-  });
-});
-
-describe("module-level constants", () => {
-
-  test("SERVICE_ID is the documented bundle identifier", () => {
-
-    assert.equal(SERVICE_ID, "com.github.hjdhjd.prismcast");
-  });
-
-  test("SERVICE_NAME is the documented display name", () => {
-
-    assert.equal(SERVICE_NAME, "PrismCast");
   });
 });
 

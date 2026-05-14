@@ -596,7 +596,7 @@ export function setupProfileRoutes(app: Express): void {
 
         for(const warning of importResult.errors) {
 
-          LOG.warn("Import warning: %s", warning);
+          LOG.warn("Import warning: %s.", warning);
         }
       }
 

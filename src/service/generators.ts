@@ -6,11 +6,13 @@
  * getServiceGenerator() which uses createDefaultGeneratorIO() under the hood. Tests construct GeneratorIO literals inline so install/uninstall/start/stop run
  * against fakes that record subprocess invocations and file writes without spawning real launchctl/systemctl/powershell.exe.
  */
-import { type Platform, SERVICE_ID, SERVICE_NAME, type ServiceManager, getLogsDirectory, getNodeExecutablePath, getPrismCastEntryPoint,
-  getPrismCastWorkingDirectory } from "../utils/platform.ts";
+import { type Platform, type ServiceManager, getNodeExecutablePath, getPrismCastEntryPoint, getPrismCastWorkingDirectory } from "../utils/platform.ts";
+import { SERVICE_ID, SERVICE_NAME } from "../identity.ts";
 import { CONFIG_METADATA } from "../config/userConfig.ts";
 import type { Nullable } from "../types/index.ts";
 import { createDefaultGeneratorIO } from "./generators.context.ts";
+import { escapeXml } from "../utils/index.ts";
+import { getLogsDirectory } from "../config/paths.ts";
 import path from "node:path";
 
 /* These generators create platform-specific service definitions that allow PrismCast to run as a managed service. Each generator produces the appropriate
@@ -123,16 +125,6 @@ export interface ServiceGenerator {
 
   // Uninstall the service (deregister and remove any support files).
   uninstall(): Promise<void>;
-}
-
-/**
- * Escapes a string for use in XML by replacing special characters with entities. Used by the macOS plist generator; the other platforms do not emit XML.
- * @param str - The string to escape.
- * @returns The escaped string safe for XML.
- */
-function escapeXml(str: string): string {
-
-  return str.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\"", "&quot;").replaceAll("'", "&apos;");
 }
 
 /**

@@ -155,11 +155,11 @@ export function writeLogEntry(level: string, message: string, color: LogColor, c
 
   // Format the log entry with timestamp and level. See the file's design block for the rationale behind baking SGR codes into the file output.
   const timestamp = formatTimestamp();
-  const levelTag = categoryTag ? [ level.toUpperCase(), ":", categoryTag ].join("") : level.toUpperCase();
-  const levelPrefix = (level === "info") ? "" : [ "[", levelTag, "] " ].join("");
+  const levelTag = categoryTag ? level.toUpperCase() + ":" + categoryTag : level.toUpperCase();
+  const levelPrefix = (level === "info") ? "" : "[" + levelTag + "] ";
   const body = levelPrefix + message;
   const coloredBody = color ? styleText(color, body, { validateStream: false }) : body;
-  const entry = [ "[", timestamp, "] ", coloredBody, "\n" ].join("");
+  const entry = "[" + timestamp + "] " + coloredBody + "\n";
 
   // Add to buffer.
   writeBuffer.push(entry);

@@ -1084,7 +1084,7 @@ function handleSetupFailure(numericStreamId: number, channelName: string, channe
 
     if(error instanceof StreamSetupError) {
 
-      LOG.warn("Stream setup failed for %s: %s", channelName, error.userMessage);
+      LOG.warn("Stream setup failed for %s: %s.", channelName, error.userMessage);
     } else {
 
       LOG.error("Unexpected error during stream setup for %s: %s.", channelName, formatError(error));

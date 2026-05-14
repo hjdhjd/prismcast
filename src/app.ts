@@ -20,6 +20,7 @@ import type { Nullable } from "./types/index.ts";
 import type { ParsedArgs } from "./index.ts";
 import type { ResumeStreamData } from "./streaming/hlsResume.ts";
 import type { Server } from "node:http";
+import { attachCdpUpgradeHandler } from "./routes/cdp.ts";
 import { cleanupIdleStreams } from "./streaming/hls.ts";
 import compression from "compression";
 import express from "express";
@@ -468,7 +469,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
     await ensureAllMigrated();
   } catch(error) {
 
-    LOG.error("Failed during release boot coordinator: %s", formatError(error));
+    LOG.error("Failed during release boot coordinator: %s.", formatError(error));
 
     process.exit(1);
   }
@@ -539,7 +540,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
       process.exit(1);
     }
 
-    LOG.info("Using FFmpeg at: %s", ffmpegPath);
+    LOG.info("Using FFmpeg at: %s.", ffmpegPath);
   }
 
   // Load user channels from channels.json in the data directory if it exists.
@@ -616,6 +617,10 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
       LOG.info("PrismCast is now listening on %s:%s.", CONFIG.server.host, CONFIG.server.port);
     });
+
+    // Attach the CDP proxy upgrade handler once the underlying http.Server exists. The handler is gated on the `cdp` debug category at request time, so it sits
+    // dormant until the user enables CDP via /debug. We attach unconditionally so the toggle takes effect without requiring a restart.
+    attachCdpUpgradeHandler(server);
   } catch(error) {
 
     LOG.error("Failed to build application: %s.", formatError(error));

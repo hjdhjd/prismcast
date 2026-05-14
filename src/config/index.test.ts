@@ -7,6 +7,7 @@
  */
 import { CONFIG, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration, validatePositiveInt,
   validatePositiveNumber } from "./index.ts";
+import { type LogEntry, subscribeToLogs } from "../utils/logEmitter.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import type { Config } from "../types/index.ts";
 import { DEFAULTS } from "./userConfig.ts";
@@ -306,13 +307,16 @@ describe("validateConfiguration", () => {
 
 describe("displayConfiguration", () => {
 
-  /* The function emits multiple LOG.info lines plus a conditional LOG.warn for preset degradation. We capture every log call by spying on the LOG methods, then
-   * assert on call counts and message content. The spies are restored in afterEach so other suites are unaffected.
+  /* The function emits a startup block through displayLine / printConfigRow (the structured-display escape hatch) plus a conditional LOG.warn for preset
+   * degradation. Both paths route through the same SSE emitter, so we capture every emitted entry via subscribeToLogs and assert against the emission stream
+   * - that decouples the test from which internal API the function uses (LOG.info vs displayLine) and pins the actual observable output instead. The LOG.warn
+   * spy stays in place for the degradation branch, which is a genuine warn-level message that should appear at level "warn" specifically.
    *
    * Display state from getMaxSupportedViewport() is module-level cache state (browser/display.ts). To keep the suite from leaking a small viewport into other
    * tests, every test that mutates it restores a large viewport at the end so subsequent runs see "no degradation" by default.
    */
-  let infoSpy: ReturnType<typeof mock.method>;
+  let captured: LogEntry[];
+  let unsubscribe: () => void;
   let warnSpy: ReturnType<typeof mock.method>;
 
   beforeEach(() => {
@@ -322,13 +326,16 @@ describe("displayConfiguration", () => {
      * paths into log strings) so no cleanup is needed.
      */
     initializeDataDir(os.tmpdir());
-    infoSpy = mock.method(LOG, "info", () => undefined);
+
+    captured = [];
+    unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+
     warnSpy = mock.method(LOG, "warn", () => undefined);
   });
 
   afterEach(() => {
 
-    infoSpy.mock.restore();
+    unsubscribe();
     warnSpy.mock.restore();
 
     // Restore a generous viewport so subsequent suites do not see the small one a degradation test may have left behind. 8K width covers every preset.
@@ -344,13 +351,32 @@ describe("displayConfiguration", () => {
 
     displayConfiguration();
 
-    const messages = infoSpy.mock.calls.map((call) => String(call.arguments[0]));
+    const messages = captured.map((entry) => entry.message);
 
     assert.ok(messages.some((m) => m.includes("Server port")), "server port line must be emitted");
     assert.ok(messages.some((m) => m.includes("Quality preset")), "quality preset line must be emitted");
     assert.ok(messages.some((m) => m.includes("Capture codecs")), "capture codecs line must be emitted");
     assert.ok(messages.some((m) => m.includes("HDHomeRun emulation")), "HDHR line must be emitted");
     assert.equal(warnSpy.mock.calls.length, 0, "no degradation warning when the display fits the configured preset");
+  });
+
+  test("startup block lines are emitted without trailing periods (tabular display, not sentences)", () => {
+
+    /* The block goes through displayLine which deliberately bypasses the logger's sentence-normalization contract. This locks the no-trailing-period behavior
+     * so a future regression that routed the rows back through LOG.info (and re-introduced trailing periods on every tabular row) would surface immediately.
+     */
+    setMaxSupportedViewport(7680, 4320);
+
+    displayConfiguration();
+
+    const rowMessages = captured.map((entry) => entry.message).filter((m) => m.startsWith("  "));
+
+    assert.ok(rowMessages.length >= 8, "the startup block emits at least eight indented rows");
+
+    for(const row of rowMessages) {
+
+      assert.equal(row.endsWith("."), false, "tabular row should NOT end with a period: " + row);
+    }
   });
 
   test("emits a degradation warning when the display cannot fit the configured preset", () => {

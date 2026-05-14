@@ -71,6 +71,37 @@ export function isDebugLogging(): boolean {
  * For logging outside a stream context (e.g., iterating over streams in a disconnect handler), use LOG.withStreamId() to create a bound logger.
  */
 
+/* The logger commits to emitting exactly one sentence terminator on every non-debug line so callers do not have to reason about whether the format string or an
+ * interpolated value carries the punctuation. This encodes the "non-debug logs are complete sentences" project rule as logger behavior rather than as per-call-site
+ * discipline - a producer changing its message punctuation can no longer silently regress an interpolated log line, and the historical split between formatError
+ * (which strips trailing punctuation) and userMessage/validator strings (which carry it) becomes invisible to callers. Debug stays raw because debug is fragments
+ * by convention.
+ */
+
+/**
+ * Normalizes a non-debug log message to exactly one terminal sentence terminator. Runs of trailing periods collapse to a single period (the double-period
+ * regression class); existing "?" and "!" terminators pass through unchanged because they are producer-intentional and have no run-collision class to defend
+ * against; messages without any terminator gain a period.
+ * @param message - The composed message body.
+ * @returns The message with a single, well-formed terminator.
+ */
+function normalizeSentence(message: string): string {
+
+  // Empty input stays empty. Forcing a bare "." into a zero-length message would be a worse outcome than leaving it - and in practice no caller passes an
+  // empty format string, so this guard is defensive rather than load-bearing.
+  if(!message) {
+
+    return message;
+  }
+
+  // Collapse runs of trailing periods to one. We only collapse periods because they are the only terminator that the format-string + value composition can
+  // double up (a value ending in "." plus a format string ending in "." yields ".."); "?" and "!" never compose the same way.
+  const collapsed = message.replace(/\.+$/, ".");
+
+  // If the collapsed message ends with any terminator now, keep it; otherwise append a period so the line is a complete sentence.
+  return (/[.?!]$/).test(collapsed) ? collapsed : collapsed + ".";
+}
+
 /**
  * Emits a log entry to SSE subscribers for real-time streaming.
  * @param level - The log level.
@@ -105,8 +136,27 @@ function emitToSubscribers(level: LogEntry["level"], message: string, categoryTa
  */
 function logWithLevel(level: LogEntry["level"], color: LogColor, message: string, args: unknown[], explicitStreamId?: string, categoryTag?: string): void {
 
+  const rawFormatted = args.length > 0 ? format(message, ...args) : message;
+
+  // Non-debug levels are guaranteed sentence-terminated; debug stays raw because debug is fragments by convention. The contract lives here, not at the call site.
+  const formatted = (level === "debug") ? rawFormatted : normalizeSentence(rawFormatted);
+
+  emitFormatted(level, color, formatted, explicitStreamId, categoryTag);
+}
+
+/**
+ * Emits an already-formatted message body through the full logger pipeline: stream-ID prefix composition, SSE subscriber emission, and console-or-file routing.
+ * Shared between logWithLevel (which normalizes first) and displayLine (which deliberately bypasses normalization for tabular display). Factoring this out keeps
+ * the two callers from drifting on prefix shape, SSE routing, or color handling.
+ * @param level - The log level (drives console method routing and category tagging).
+ * @param color - Color name for styleText, or null for the default terminal color.
+ * @param formatted - The fully-prepared message body (post-normalization if applicable).
+ * @param explicitStreamId - Optional explicit stream ID (used by withStreamId).
+ * @param categoryTag - Optional debug category tag.
+ */
+function emitFormatted(level: LogEntry["level"], color: LogColor, formatted: string, explicitStreamId?: string, categoryTag?: string): void {
+
   const streamId = explicitStreamId ?? getStreamId();
-  const formatted = args.length > 0 ? format(message, ...args) : message;
 
   // Build the log prefix. Stream ID is always included when available. The show name (resolved lazily from the stream context) is appended when present,
   // giving log readers immediate context for correlating issues with DVR recordings without cross-referencing timestamps against the guide.
@@ -169,6 +219,21 @@ function logWithLevel(level: LogEntry["level"], color: LogColor, message: string
 
     writeLogEntry(level, logMessage, color, categoryTag);
   }
+}
+
+/**
+ * Emits a non-sentence line at info level through the same SSE / file / console pipeline as LOG.info, but without the sentence-normalization contract. Use this
+ * for structured display output where the line is not a prose sentence and forcing a terminal period would degrade readability - the canonical case is the
+ * startup configuration dump (header + indented "label: value" rows). For ordinary log messages, use LOG.info; this function is the explicit escape hatch for
+ * display-style output, named so misuse stands out at a glance during review.
+ * @param message - The format string emitted verbatim (after util.format interpolation), with no terminator appended.
+ * @param args - Format arguments interpolated via util.format.
+ */
+export function displayLine(message: string, ...args: unknown[]): void {
+
+  const formatted = args.length > 0 ? format(message, ...args) : message;
+
+  emitFormatted("info", null, formatted);
 }
 
 /**

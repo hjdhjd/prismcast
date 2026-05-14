@@ -5,7 +5,7 @@
  * exercise console-mode and SSE emission instead by stubbing console methods and subscribing to the log emitter. Tests reset console-logging mode and the debug
  * filter between cases to avoid state leakage.
  */
-import { LOG, isConsoleLogging, isDebugLogging, setConsoleLogging, setDebugLogging } from "./logger.ts";
+import { LOG, displayLine, isConsoleLogging, isDebugLogging, setConsoleLogging, setDebugLogging } from "./logger.ts";
 import { type LogEntry, subscribeToLogs } from "./logEmitter.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import assert from "node:assert/strict";
@@ -92,7 +92,7 @@ describe("LOG.info / warn / error (via SSE emission)", () => {
     initDebugFilter("");
   });
 
-  test("LOG.info emits one entry with level 'info' and the formatted message", () => {
+  test("LOG.info emits one entry with level 'info' and the sentence-terminated formatted message", () => {
 
     LOG.info("hello %s", "world");
 
@@ -101,7 +101,7 @@ describe("LOG.info / warn / error (via SSE emission)", () => {
     const entry = captured[0]!;
 
     assert.equal(entry.level, "info");
-    assert.equal(entry.message, "hello world", "format args interpolated via util.format");
+    assert.equal(entry.message, "hello world.", "format args interpolated via util.format and terminated by the logger's sentence contract");
   });
 
   test("LOG.warn emits one entry with level 'warn'", () => {
@@ -113,7 +113,7 @@ describe("LOG.info / warn / error (via SSE emission)", () => {
     const entry = captured[0]!;
 
     assert.equal(entry.level, "warn");
-    assert.equal(entry.message, "careful");
+    assert.equal(entry.message, "careful.");
   });
 
   test("LOG.error emits one entry with level 'error'", () => {
@@ -124,12 +124,12 @@ describe("LOG.info / warn / error (via SSE emission)", () => {
     assert.equal(captured[0]?.level, "error");
   });
 
-  test("messages without format args are emitted verbatim", () => {
+  test("messages without format args are emitted with the sentence terminator appended", () => {
 
-    // Boundary: zero format args - the implementation skips util.format() entirely on this path.
+    // Boundary: zero format args - the implementation skips util.format() entirely on this path but still runs the message through the sentence normalizer.
     LOG.info("plain message");
 
-    assert.equal(captured[0]?.message, "plain message");
+    assert.equal(captured[0]?.message, "plain message.");
   });
 
   test("each call produces exactly one entry (no duplication)", () => {
@@ -238,7 +238,7 @@ describe("LOG stream context prefixing", () => {
     });
 
     assert.equal(captured.length, 1);
-    assert.equal(captured[0]?.message, "[cnn-abc] in context");
+    assert.equal(captured[0]?.message, "[cnn-abc] in context.");
   });
 
   test("appends the show name when the resolver returns one", async () => {
@@ -248,7 +248,7 @@ describe("LOG stream context prefixing", () => {
       LOG.info("with show");
     });
 
-    assert.equal(captured[0]?.message, "[nbc-xyz] [Today Show] with show");
+    assert.equal(captured[0]?.message, "[nbc-xyz] [Today Show] with show.");
   });
 
   test("omits the show name suffix when the resolver returns an empty string", async () => {
@@ -258,14 +258,14 @@ describe("LOG stream context prefixing", () => {
       LOG.info("no show");
     });
 
-    assert.equal(captured[0]?.message, "[abc-def] no show", "no double-bracket section when show name is empty");
+    assert.equal(captured[0]?.message, "[abc-def] no show.", "no double-bracket section when show name is empty");
   });
 
   test("does NOT prefix when called outside a stream context", () => {
 
     LOG.info("uncontexted");
 
-    assert.equal(captured[0]?.message, "uncontexted");
+    assert.equal(captured[0]?.message, "uncontexted.");
   });
 });
 
@@ -295,9 +295,9 @@ describe("LOG.withStreamId bound logger", () => {
     bound.error("error-msg");
 
     assert.equal(captured.length, 3);
-    assert.equal(captured[0]?.message, "[bound-123] info-msg");
-    assert.equal(captured[1]?.message, "[bound-123] warn-msg");
-    assert.equal(captured[2]?.message, "[bound-123] error-msg");
+    assert.equal(captured[0]?.message, "[bound-123] info-msg.");
+    assert.equal(captured[1]?.message, "[bound-123] warn-msg.");
+    assert.equal(captured[2]?.message, "[bound-123] error-msg.");
   });
 
   test("preserves the level on each routed message", () => {
@@ -336,7 +336,187 @@ describe("LOG.withStreamId bound logger", () => {
       bound.info("explicit");
     });
 
-    assert.equal(captured[0]?.message, "[bound-abc] explicit", "show name suffix not applied on bound logger");
+    assert.equal(captured[0]?.message, "[bound-abc] explicit.", "show name suffix not applied on bound logger");
+  });
+});
+
+describe("LOG sentence normalization (info / warn / error)", () => {
+
+  /* The logger guarantees that every non-debug line ends with exactly one terminator. This suite pins each branch of the normalizer so a future regression in
+   * the helper (or a removal of the call from logWithLevel) surfaces immediately. Debug intentionally bypasses the normalizer and is covered separately.
+   */
+  let captured: LogEntry[];
+  let unsubscribe: () => void;
+
+  beforeEach(() => {
+
+    captured = [];
+    unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+  });
+
+  afterEach(() => {
+
+    unsubscribe();
+    initDebugFilter("");
+  });
+
+  test("appends a period when the message lacks any terminator", () => {
+
+    LOG.info("plain");
+
+    assert.equal(captured[0]?.message, "plain.");
+  });
+
+  test("leaves a single trailing period unchanged", () => {
+
+    LOG.info("already terminated.");
+
+    assert.equal(captured[0]?.message, "already terminated.");
+  });
+
+  test("collapses repeated trailing periods to a single period (double-period regression class)", () => {
+
+    // This is the exact pathology the helper exists to prevent: a format string carrying "." plus an interpolated value also carrying "." would yield "..".
+    LOG.info("redundant..");
+
+    assert.equal(captured[0]?.message, "redundant.");
+  });
+
+  test("collapses long runs of trailing periods to a single period", () => {
+
+    LOG.info("ellipsis-like...");
+
+    assert.equal(captured[0]?.message, "ellipsis-like.");
+  });
+
+  test("preserves a trailing question mark (producer-intentional)", () => {
+
+    LOG.info("is this expected?");
+
+    assert.equal(captured[0]?.message, "is this expected?");
+  });
+
+  test("preserves a trailing exclamation mark (producer-intentional)", () => {
+
+    LOG.warn("watch out!");
+
+    assert.equal(captured[0]?.message, "watch out!");
+  });
+
+  test("normalizes warn-level messages", () => {
+
+    LOG.warn("warn body");
+
+    assert.equal(captured[0]?.message, "warn body.");
+  });
+
+  test("normalizes error-level messages", () => {
+
+    LOG.error("error body");
+
+    assert.equal(captured[0]?.message, "error body.");
+  });
+
+  test("normalizes the body but not the stream-id prefix when running in a stream context", async () => {
+
+    await runWithStreamContext({ streamId: "stream-1" }, async () => {
+
+      LOG.info("inside ctx");
+    });
+
+    assert.equal(captured[0]?.message, "[stream-1] inside ctx.");
+  });
+
+  test("does NOT normalize debug messages (debug is fragments by convention)", () => {
+
+    initDebugFilter("*");
+    LOG.debug("recovery:tab", "raw fragment");
+
+    assert.equal(captured[0]?.message, "raw fragment", "debug bypasses the sentence contract");
+  });
+
+  test("works with %s interpolation: format-string period + value period collapses to one", () => {
+
+    // The original regression: format string ends with "." and value also ends with "." - the assembled message would be ".." without the normalizer.
+    LOG.info("startup failed: %s", "Invalid URL.");
+
+    assert.equal(captured[0]?.message, "startup failed: Invalid URL.");
+  });
+
+  test("works with %s interpolation: format-string period + value without period yields one period", () => {
+
+    // formatError strips trailing punctuation so values may arrive bare; the period in the format string carries through unchanged.
+    LOG.info("startup failed: %s.", "boom");
+
+    assert.equal(captured[0]?.message, "startup failed: boom.");
+  });
+
+  test("works with %s interpolation: no format-string period + value carries period yields one period", () => {
+
+    // The historical "userMessage carries period, format string omits" pattern: still emits a single terminating period after normalization.
+    LOG.info("startup failed: %s", "Invalid URL.");
+
+    assert.equal(captured[0]?.message, "startup failed: Invalid URL.");
+  });
+});
+
+describe("displayLine (non-sentence escape hatch)", () => {
+
+  /* displayLine routes through the same SSE / file / console pipeline as LOG.info but bypasses the sentence normalizer. It exists so structured display output
+   * (the startup configuration dump, banners) can render without forced terminal periods. This suite pins its contract so a future change that quietly funneled
+   * displayLine through normalizeSentence - or stripped its format-arg support - would surface immediately.
+   */
+  let captured: LogEntry[];
+  let unsubscribe: () => void;
+
+  beforeEach(() => {
+
+    captured = [];
+    unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+  });
+
+  afterEach(() => {
+
+    unsubscribe();
+  });
+
+  test("emits at info level (matches LOG.info routing without the contract)", () => {
+
+    displayLine("plain");
+
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0]?.level, "info");
+  });
+
+  test("does NOT append a terminator to a message that lacks one", () => {
+
+    // The whole point of the escape hatch: a structured row like "  Server port: 5589" must NOT become "  Server port: 5589." on the way out.
+    displayLine("  Server port: 5589");
+
+    assert.equal(captured[0]?.message, "  Server port: 5589");
+  });
+
+  test("does NOT touch a message that already ends with a colon (e.g. block header)", () => {
+
+    // The startup block header ends with ":" to introduce the rows below. The sentence normalizer would append "." after the colon; displayLine preserves it.
+    displayLine("Starting PrismCast v1.10.1 with configuration:");
+
+    assert.equal(captured[0]?.message, "Starting PrismCast v1.10.1 with configuration:");
+  });
+
+  test("supports util.format interpolation like LOG.info", () => {
+
+    displayLine("  HLS segment duration: %ss, max segments: %s", 6, 12);
+
+    assert.equal(captured[0]?.message, "  HLS segment duration: 6s, max segments: 12");
+  });
+
+  test("preserves a trailing period verbatim (no double-period collapse, no append)", () => {
+
+    // Caller is in charge of terminal punctuation. We emit exactly what was passed in.
+    displayLine("ends with period.");
+
+    assert.equal(captured[0]?.message, "ends with period.");
   });
 });
 

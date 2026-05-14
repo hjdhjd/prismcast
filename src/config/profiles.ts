@@ -283,7 +283,7 @@ export function validateProfiles(): void {
       // If we've seen this profile before, we have a circular reference.
       if(visited.has(current)) {
 
-        errors.push([ "Circular inheritance detected in profile: ", profileName ].join(""));
+        errors.push("Circular inheritance detected in profile: " + profileName);
 
         break;
       }
@@ -297,7 +297,7 @@ export function validateProfiles(): void {
       // Check if the extends target exists. This catches typos and references to deleted profiles.
       if((current !== undefined) && !allBuiltinProfiles.has(current)) {
 
-        errors.push([ "Profile ", profileName, " extends non-existent profile: ", current ].join(""));
+        errors.push("Profile " + profileName + " extends non-existent profile: " + current);
 
         break;
       }
@@ -311,7 +311,7 @@ export function validateProfiles(): void {
 
       if(!getBuiltinProfile(config.profile)) {
 
-        errors.push([ "Domain ", domain, " references non-existent profile: ", config.profile ].join(""));
+        errors.push("Domain " + domain + " references non-existent profile: " + config.profile);
       }
     }
   }
@@ -325,14 +325,14 @@ export function validateProfiles(): void {
 
     if((channelProfile !== undefined) && (channelProfile !== "auto") && !getBuiltinProfile(channelProfile) && !(channelProfile in userProfiles)) {
 
-      errors.push([ "Channel ", channelName, " references non-existent profile: ", channelProfile ].join(""));
+      errors.push("Channel " + channelName + " references non-existent profile: " + channelProfile);
     }
   }
 
   // If any built-in configuration errors were found, throw with all error messages for comprehensive feedback.
   if(errors.length > 0) {
 
-    throw new Error([ "Profile validation failed:\n  ", errors.join("\n  ") ].join(""));
+    throw new Error("Profile validation failed:\n  " + errors.join("\n  "));
   }
 
   // Validate user-defined profiles and domain mappings. These are warnings, not fatal errors - broken user profiles should not prevent the server from starting.
@@ -360,7 +360,7 @@ export function validateProfiles(): void {
 
     for(const warning of userWarnings) {
 
-      LOG.warn("User profile validation: %s", warning);
+      LOG.warn("User profile validation: %s.", warning);
     }
   }
 }
