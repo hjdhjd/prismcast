@@ -49,7 +49,7 @@ export function readPidFile(filePath: string, label: string, log?: { warn: (mess
     const content = fs.readFileSync(filePath, "utf-8").trim();
     const pid = parseInt(content, 10);
 
-    if(!isNaN(pid)) {
+    if(!Number.isNaN(pid)) {
 
       return pid;
     }

@@ -4,9 +4,10 @@
  * control sleeps and timeout races without depending on real-time delays - the function's nested raceWithTimeout/Promise.race/finally/await delay chain is
  * exactly the shape Node's synchronous mock.timers.tick cannot drain.
  */
-import { type Clock, realClock } from "./clock.ts";
 import { formatError, isSessionClosedError } from "./errors.ts";
+import type { Clock } from "./clock.ts";
 import { LOG } from "./logger.ts";
+import { realClock } from "./clock.ts";
 
 /* The retry system provides resilient operation execution with exponential backoff and jitter. When operations fail due to transient issues like network hiccups or
  * slow page loads, the system automatically retries with increasing delays. The exponential backoff prevents overwhelming struggling services, while jitter prevents

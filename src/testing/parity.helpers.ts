@@ -41,8 +41,8 @@ export function assertSameShape(actual: object, expected: object, description: s
   const actualKeys = new Set(Object.keys(actual));
   const expectedKeys = new Set(Object.keys(expected));
 
-  const onlyInActual = [...actualKeys].filter((k) => !expectedKeys.has(k)).toSorted();
-  const onlyInExpected = [...expectedKeys].filter((k) => !actualKeys.has(k)).toSorted();
+  const onlyInActual = [...actualKeys.difference(expectedKeys)].toSorted();
+  const onlyInExpected = [...expectedKeys.difference(actualKeys)].toSorted();
 
   if((onlyInActual.length === 0) && (onlyInExpected.length === 0)) {
 

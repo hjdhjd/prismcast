@@ -4,8 +4,9 @@
  * through the Clock port (see utils/clock.ts) so tests can deterministically simulate "promise resolves before timeout" vs "timeout fires before promise"
  * without depending on real timers - the race is exactly the pattern Node's synchronous mock.timers.tick cannot drive reliably.
  */
-import { type Clock, LOG, realClock } from "../utils/index.ts";
+import { LOG, realClock } from "../utils/index.ts";
 import { CONFIG } from "../config/index.ts";
+import type { Clock } from "../utils/index.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
 import { getStream } from "./registry.ts";
 

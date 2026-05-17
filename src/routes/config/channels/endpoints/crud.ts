@@ -15,15 +15,16 @@
 import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, sanitizeString } from "../../../../utils/index.ts";
-import { type UserChannel, clearChannelOverrides, getPredefinedChannel, inferTargetVariant, intersectBindingDeltas, isPredefinedChannel, isUserChannel,
+import { channelMatches, computePredefinedDelta, findMatchingVariant } from "../../../../config/channelForm.ts";
+import { clearChannelOverrides, getPredefinedChannel, inferTargetVariant, intersectBindingDeltas, isPredefinedChannel, isUserChannel,
   mutateChannels, parseTagInput, pickBindingFields, pickIdentityFields, replaceVariantBinding, sortTags, validateChannelKey, validateChannelName,
   validateChannelNumber, validateChannelProfile, validateChannelUrl } from "../../../../config/userChannels.ts";
-import { channelMatches, computePredefinedDelta, findMatchingVariant } from "../../../../config/channelForm.ts";
 import { getResolvedChannel, resolveServiceKey } from "../../../../config/services.ts";
 import { playlistHintForChange, playlistHintForDelta, playlistHintForStored } from "../http/playlistHint.ts";
 import { sendFormErrors, sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import type { ChannelFormValues } from "../../../../config/channelForm.ts";
 import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
+import type { UserChannel } from "../../../../config/userChannels.ts";
 import { buildServiceFilterWarning } from "../http/serviceWarning.ts";
 import { getProfiles } from "../../../../config/profiles.ts";
 import { route } from "../http/handler.ts";

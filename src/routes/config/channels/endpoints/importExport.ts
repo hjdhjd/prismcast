@@ -8,9 +8,10 @@
 import type { Channel, StoredChannelMap } from "../../../../types/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, parseM3U, sanitizeString, stringifySorted } from "../../../../utils/index.ts";
-import { type UserChannel, getChannelListing, getUserChannels, mutateChannels, resolveStoredChannel, validateChannelName, validateChannelUrl,
+import { getChannelListing, getUserChannels, mutateChannels, resolveStoredChannel, validateChannelName, validateChannelUrl,
   validateImportedChannels } from "../../../../config/userChannels.ts";
 import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import type { UserChannel } from "../../../../config/userChannels.ts";
 import { buildChannelTablePatch } from "../table.ts";
 import { getProfiles } from "../../../../config/profiles.ts";
 import { route } from "../http/handler.ts";

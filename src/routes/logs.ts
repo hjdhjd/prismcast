@@ -182,7 +182,7 @@ export function setupLogsEndpoint(app: Express): void {
 
     // Parse query parameters.
     const linesParam = parseInt(req.query["lines"] as string, 10);
-    const lines = (!isNaN(linesParam) && (linesParam > 0) && (linesParam <= 1000)) ? linesParam : 100;
+    const lines = (!Number.isNaN(linesParam) && (linesParam > 0) && (linesParam <= 1000)) ? linesParam : 100;
     const level = req.query["level"] as string | undefined;
 
     try {

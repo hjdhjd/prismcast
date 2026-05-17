@@ -8,11 +8,12 @@
  */
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.ts";
-import { type UserChannel, disablePredefinedChannels, enablePredefinedChannels, isPredefinedChannel, mutateChannels,
+import { disablePredefinedChannels, enablePredefinedChannels, isPredefinedChannel, mutateChannels,
   validateChannelUrl } from "../../../../config/userChannels.ts";
 import { getServiceTagForChannel, resolveServiceKey } from "../../../../config/services.ts";
 import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
+import type { UserChannel } from "../../../../config/userChannels.ts";
 import { buildServiceFilterWarning } from "../http/serviceWarning.ts";
 import { route } from "../http/handler.ts";
 

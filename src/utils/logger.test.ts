@@ -6,11 +6,12 @@
  * filter between cases to avoid state leakage.
  */
 import { LOG, displayLine, isConsoleLogging, isDebugLogging, setConsoleLogging, setDebugLogging } from "./logger.ts";
-import { type LogEntry, subscribeToLogs } from "./logEmitter.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import type { LogEntry } from "./logEmitter.ts";
 import assert from "node:assert/strict";
 import { initDebugFilter } from "./debugFilter.ts";
 import { runWithStreamContext } from "./streamContext.ts";
+import { subscribeToLogs } from "./logEmitter.ts";
 
 describe("setConsoleLogging and isConsoleLogging", () => {
 

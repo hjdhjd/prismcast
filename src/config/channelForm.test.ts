@@ -4,8 +4,9 @@
  * and findMatchingVariant - plus their tag-comparison contract. The module mediates between HTML form values and the channel storage model, so the tests
  * verify the field normalization (default-empty strings, undefined channelNumber, true-by-default hdhrEnabled) and delta-clear semantics.
  */
-import { type ChannelFormValues, channelMatches, computePredefinedDelta, findMatchingVariant } from "./channelForm.ts";
+import { channelMatches, computePredefinedDelta, findMatchingVariant } from "./channelForm.ts";
 import { describe, test } from "node:test";
+import type { ChannelFormValues } from "./channelForm.ts";
 import assert from "node:assert/strict";
 import { makeChannel } from "./userChannels.helpers.ts";
 

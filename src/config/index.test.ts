@@ -7,15 +7,16 @@
  */
 import { CONFIG, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration, validatePositiveInt,
   validatePositiveNumber } from "./index.ts";
-import { type LogEntry, subscribeToLogs } from "../utils/logEmitter.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import type { Config } from "../types/index.ts";
 import { DEFAULTS } from "./userConfig.ts";
 import { LOG } from "../utils/index.ts";
+import type { LogEntry } from "../utils/logEmitter.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "./paths.ts";
 import os from "node:os";
 import { setMaxSupportedViewport } from "../browser/display.ts";
+import { subscribeToLogs } from "../utils/logEmitter.ts";
 
 describe("validatePositiveInt", () => {
 

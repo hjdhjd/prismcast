@@ -275,7 +275,7 @@ function parseArgs(): ParsedArgs {
 
       const parsed = parseInt(args[++i] ?? "");
 
-      if(!isNaN(parsed)) {
+      if(!Number.isNaN(parsed)) {
 
         port = parsed;
       }

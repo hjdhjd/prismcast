@@ -4,9 +4,10 @@
  * Split out from userConfig.test.ts to keep both files under the conventions' 500-line guidance and to isolate the tests that mutate process.env from the
  * pure-function tests in the sibling suite.
  */
-import { CONFIG_METADATA, DEFAULTS, HYDRATED_FIELDS, PERSISTENCE_ONLY_FIELDS, PRESERVED_FIELDS, type UserConfig, filterDefaults, getEnvOverrides, getNestedValue,
+import { CONFIG_METADATA, DEFAULTS, HYDRATED_FIELDS, PERSISTENCE_ONLY_FIELDS, PRESERVED_FIELDS, filterDefaults, getEnvOverrides, getNestedValue,
   mergeConfiguration } from "./userConfig.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
+import type { UserConfig } from "./userConfig.ts";
 import assert from "node:assert/strict";
 
 describe("mergeConfiguration", () => {

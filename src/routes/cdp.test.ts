@@ -50,17 +50,7 @@ class FakeWebSocket extends EventEmitter {
   // Returns the most recent frame whose method matches the predicate.
   lastEvent(method: string): unknown {
 
-    for(let i = this.sent.length - 1; i >= 0; i--) {
-
-      const frame = this.sent[i] as { method?: string };
-
-      if(frame.method === method) {
-
-        return frame;
-      }
-    }
-
-    return undefined;
+    return this.sent.findLast((frame) => (frame as { method?: string }).method === method);
   }
 }
 

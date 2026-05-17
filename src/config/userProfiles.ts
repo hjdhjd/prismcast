@@ -5,7 +5,8 @@
 import { DOMAIN_CONFIG, SITE_PROFILES, getBuiltinProfile, isProviderProfile } from "./sites.ts";
 import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "../types/index.ts";
 import { LOG, containsNonPrintable } from "../utils/index.ts";
-import { type Migration, createFileStore } from "./persistence.ts";
+import type { Migration } from "./persistence.ts";
+import { createFileStore } from "./persistence.ts";
 import { extractDomain } from "../utils/format.ts";
 import { getProfilesFilePath } from "./paths.ts";
 

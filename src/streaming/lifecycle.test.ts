@@ -5,9 +5,10 @@
  * tears down every resource associated with a stream. The terminateStream tests focus on the contract: idempotency, registry removal, channel-mapping cleanup,
  * preroll-timer cancellation, abort-controller signaling, segmenter.stop() invocation, FFmpeg.kill() invocation, and "terminated" event emission.
  */
-import { type StreamRegistryEntry, getNextStreamId, getStream, registerStream } from "./registry.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.ts";
+import { getNextStreamId, getStream, registerStream } from "./registry.ts";
+import type { StreamRegistryEntry } from "./registry.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";

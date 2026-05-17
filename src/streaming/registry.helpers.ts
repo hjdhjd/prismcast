@@ -12,7 +12,8 @@
  * writes. If production changes the format - e.g., a different request-id length or prefix shape - tests pick up the change automatically rather than asserting
  * against a stale "test-stream-NN" placeholder that no real stream ever carries.
  */
-import { type StreamRegistryEntry, createHLSState, getNextStreamId } from "./registry.ts";
+import { createHLSState, getNextStreamId } from "./registry.ts";
+import type { StreamRegistryEntry } from "./registry.ts";
 import { declareKeysOf } from "../testing.helpers.ts";
 import { generateStreamId } from "./setup.ts";
 

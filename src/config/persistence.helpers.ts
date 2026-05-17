@@ -12,10 +12,11 @@
  *      paths (snapshot pruning's per-entry stat/unlink errors, post-write integrity check's readback mismatch, tryRecoverFromBackup's restore-write failure,
  *      doMutate's non-ENOENT backup failure) are pinned without resorting to fragile real-fs trickery (chmod, EISDIR via directory-as-file).
  *
- * Helper-location convention: this is a domain-specific factory tied to one production module (persistence.ts), so it co-locates per arch-testing.md's helper
- * location rule (cross-cutting primitives in src/testing/, domain-specific factories next to their owner).
+ * Helper-location convention: this is a domain-specific factory tied to one production module (persistence.ts), so it co-locates with its owner. Cross-cutting
+ * test primitives live in src/testing/; domain-specific factories sit next to the module they test.
  */
-import { type FileStore, type Migration, type StorageBackend, type ValidationIssue, createFileStore } from "./persistence.ts";
+import type { FileStore, Migration, StorageBackend, ValidationIssue } from "./persistence.ts";
+import { createFileStore } from "./persistence.ts";
 import { initializeDataDir } from "./paths.ts";
 import path from "node:path";
 

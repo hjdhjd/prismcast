@@ -6,10 +6,11 @@
  * that touch CONFIG.
  */
 import type { CaptureCodec, Nullable } from "../types/index.ts";
-import { type GpuCapabilities, getGpuCapabilities, setGpuCapabilities } from "../browser/display.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { getCaptureMimeType, getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
+import { getGpuCapabilities, setGpuCapabilities } from "../browser/display.ts";
 import { CONFIG } from "../config/index.ts";
+import type { GpuCapabilities } from "../browser/display.ts";
 import assert from "node:assert/strict";
 
 /* makeGpuCapabilities builds a GpuCapabilities literal with sensible defaults (no hardware encoding, software renderer). Tests override only the fields they

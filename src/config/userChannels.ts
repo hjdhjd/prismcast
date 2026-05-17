@@ -5,8 +5,9 @@
 import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "../types/index.ts";
 import type { Channel, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelSortField, CustomizableField, ResolvedChannel, ResolvedChannelMap,
   SortDirection, StoredChannel, StoredChannelMap } from "../types/index.ts";
-import { FileStoreParseError, type Migration, type ValidationIssue, createFileStore } from "./persistence.ts";
+import { FileStoreParseError, createFileStore } from "./persistence.ts";
 import { LOG, containsNonPrintable, extractDomain, sanitizeString } from "../utils/index.ts";
+import type { Migration, ValidationIssue } from "./persistence.ts";
 import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.ts";
 import { buildServiceGroups, getAllServiceTags, getResolvedChannel, isChannelAvailableByService, isServiceVariant,
   resolveServiceKey, setEnabledServices, setServiceSelections } from "./services.ts";
@@ -257,11 +258,11 @@ function parseChannelsFile(raw: string): ChannelsFileData {
   return { channels, migrationsApplied, schemaVersion, serviceSelections, tagRegistry };
 }
 
-/* Array-valued ChannelDelta fields whose equality requires canonical case-insensitive ordering before JSON.stringify. The set declares which array fields are
- * unordered-set semantics rather than order-significant lists; equality for these fields canonical-sorts both sides so authoring-order or case differences do
- * not defeat the match. Tags are the only such field today, but the property-based framing is the architectural truth: any unordered-set array field belongs in
- * this set. The `satisfies` constraint keeps the list in sync with ChannelDelta's actual keys at compile time - renaming or removing a field forces this tuple
- * to be updated.
+/* Array-valued ChannelDelta fields whose equality requires canonical case-insensitive ordering before structural comparison via isDeepStrictEqual. The set
+ * declares which array fields have unordered-set semantics rather than order-significant lists; equality for these fields runs both sides through sortTags so
+ * authoring-order or case differences do not defeat the match. Tags are the only such field today, but the property-based framing is the architectural truth:
+ * any unordered-set array field belongs in this set. The `satisfies` constraint keeps the list in sync with ChannelDelta's actual keys at compile time -
+ * renaming or removing a field forces this tuple to be updated.
  */
 const CANONICAL_SORTED_ARRAY_FIELDS = new Set<keyof ChannelDelta>(
   ["tags"] as const satisfies readonly (keyof ChannelDelta)[]
@@ -269,9 +270,9 @@ const CANONICAL_SORTED_ARRAY_FIELDS = new Set<keyof ChannelDelta>(
 
 /**
  * Normalizes a single stored entry as a delta against a base channel. Delta fields are dropped when they are no-ops: undefined values, nulls against a base
- * that has no such field, and values that match the base exactly. Array-valued fields use JSON.stringify for equality with case-insensitive canonical sorting
- * for the fields listed in CANONICAL_SORTED_ARRAY_FIELDS so authoring-order differences do not defeat the match. Non-delta fields (e.g., canonicalKey) pass
- * through unchanged so the stored entry retains its relationship metadata.
+ * that has no such field, and values that match the base exactly. Array-valued fields use isDeepStrictEqual for structural equality, with sortTags applied to
+ * both sides for the fields listed in CANONICAL_SORTED_ARRAY_FIELDS so authoring-order differences do not defeat the match. Non-delta fields (e.g.,
+ * canonicalKey) pass through unchanged so the stored entry retains its relationship metadata.
  * @param stored - The raw stored entry.
  * @param base - The base Channel to diff against (predefined definition for overrides, resolved canonical for variants).
  * @returns The normalized entry, or null when every field is a no-op and the entry would carry no information.
@@ -323,8 +324,8 @@ function normalizeEntryAgainstBase(stored: StoredChannel, base: Channel): Stored
       continue;
     }
 
-    // Values that match the base exactly are redundant. Arrays compare by JSON.stringify; fields in CANONICAL_SORTED_ARRAY_FIELDS are sorted on both sides
-    // first so the equality check is order-independent.
+    // Values that match the base exactly are redundant. Arrays compare structurally via isDeepStrictEqual; fields in CANONICAL_SORTED_ARRAY_FIELDS are routed
+    // through sortTags on both sides first so the equality check is order-independent.
     const baseValue = (base as unknown as Record<string, unknown>)[field];
 
     if(Array.isArray(value)) {
@@ -1236,7 +1237,8 @@ function detectIdentityFieldLoss(before: StoredChannelMap, after: StoredChannelM
       }
 
       // Field went value -> undefined. Check whether the canonical provides the same value, in which case this is variant inheritance / delta minimization
-      // and not data loss. Array-valued fields (notably tags) are compared via JSON.stringify since reference equality would always fail.
+      // and not data loss. Array-valued fields (notably tags) are compared structurally via isDeepStrictEqual since reference equality would always fail
+      // across freshly-deserialized arrays.
       const canonicalValue = canonical ? (canonical as unknown as Record<string, unknown>)[field] : undefined;
 
       if(canonicalValue !== undefined) {
@@ -1423,7 +1425,7 @@ export async function resetUserChannels(): Promise<void> {
  * are user-created standalones that happen to share the hyphenated key shape (e.g., "abc-kabc" as a local affiliate with its own channel number and station
  * ID) and must be left alone - stamping them would mark them for delta normalization and silently destroy the user's custom identity.
  *
- * Array-valued identity fields (tags) compare via JSON.stringify with case-insensitive canonical sorting so historical write order does not defeat the match.
+ * Array-valued identity fields (tags) compare via isDeepStrictEqual after sortTags canonicalizes both sides, so historical write order does not defeat the match.
  * @param channels - The raw stored channel entries.
  * @returns Keys that should receive a canonicalKey stamp. Empty when nothing needs migrating.
  */
@@ -3110,8 +3112,8 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
 /**
  * Sorts tags case-insensitively using locale-aware comparison. This is the single source of truth for tag ordering. Every write path (parseTagInput, PATCH
  * handlers, computePredefinedDelta, transformChannelTags, setTagRegistry) routes through this so stored tag arrays share one canonical ordering. The channels
- * normalizer is a READER of that invariant - it uses sortTags on both sides when comparing a delta's tags against a predefined's tags, making the JSON.stringify
- * equality check canonical regardless of how either side was originally populated.
+ * normalizer is a READER of that invariant - it uses sortTags on both sides when comparing a delta's tags against a predefined's tags, making the
+ * isDeepStrictEqual comparison canonical regardless of how either side was originally populated.
  * @param tags - Any iterable of tag strings (array, Set, generator). Not mutated.
  * @returns A new array with the same elements in canonical case-insensitive order.
  */

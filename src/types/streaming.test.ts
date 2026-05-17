@@ -4,8 +4,9 @@
  * the CaptureCodec union, the MIME type lookup in codec.ts, and the captureCodecs allowlist validation in CONFIG. The tests pin literal membership, ordering,
  * and disjointness, plus the type-level relationship between the array and the derived CaptureCodec union via @ts-expect-error.
  */
-import { type CaptureCodec, RECOGNIZED_CODECS } from "./streaming.ts";
 import { describe, test } from "node:test";
+import type { CaptureCodec } from "./streaming.ts";
+import { RECOGNIZED_CODECS } from "./streaming.ts";
 import assert from "node:assert/strict";
 
 describe("RECOGNIZED_CODECS", () => {

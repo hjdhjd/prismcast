@@ -15,8 +15,9 @@
  * and pretune.test.ts precedent.
  */
 import type * as PersistenceHelpers from "./persistence.helpers.ts";
-import { type CapturedLogLine, type TestLogger, capturingLog, silentLog } from "../testing.helpers.ts";
+import type { CapturedLogLine, TestLogger } from "../testing.helpers.ts";
 import { before, beforeEach, describe, mock, test } from "node:test";
+import { capturingLog, silentLog } from "../testing.helpers.ts";
 import type { ValidationIssue } from "./persistence.ts";
 import assert from "node:assert/strict";
 

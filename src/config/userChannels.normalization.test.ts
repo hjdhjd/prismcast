@@ -87,9 +87,9 @@ describe("normalizeEntryAgainstBase", () => {
 
   test("tags array comparison is order-independent (case-sensitive on final values)", () => {
 
-    // sortTags is case-insensitive on sort order but preserves each tag's authored casing. JSON.stringify equality compares the sorted arrays verbatim, so tags
-    // match only when both the content and the case agree. Order, however, does not matter - a user who drops tags in a different sequence than the predefined
-    // author still gets their delta stripped when the effective tag set is identical.
+    // sortTags is case-insensitive on sort order but preserves each tag's authored casing. isDeepStrictEqual then compares the sorted arrays element by element,
+    // so tags match only when both the content and the case agree. Order, however, does not matter - a user who drops tags in a different sequence than the
+    // predefined author still gets their delta stripped when the effective tag set is identical.
     const base = { name: "ABC", tags: [ "Local", "News" ], url: "https://abc.com" } as Channel;
     const stored = { tags: [ "News", "Local" ] } as StoredChannel;
 
@@ -289,17 +289,12 @@ describe("normalizeChannelDeltas", () => {
     assert.deepEqual(result["mychannel"], { name: "My Channel", url: "https://example.com" });
   });
 
-  /* The original .mjs jsfullam-scenario test (variant carrying identity overrides) is superseded by the standalone-path test "abc-kabc with divergent identity
-   * stays a standalone and resolves as-is" in userChannels.migration.test.ts, which exercises the equivalent WHAT (per-affiliate identity preserved through
-   * normalize → resolve) under the current architecture where variants cannot carry identity.
-   */
-
   test("dangling canonical (user variant pointing at missing canonical) preserves the entry rather than silently dropping it", () => {
 
     /* The WHAT this protects: a user variant whose canonicalKey points at a canonical that does not exist (typo, renamed canonical, removed predefined) must
-     * not be silently deleted by the normalizer - the user keeps their binding data. The original test additionally asserted identity survived; under the
-     * current architecture identity is unconditionally stripped from variant-shaped entries by filterToDeltaSurface, so we assert the more focused contract:
-     * canonicalKey and binding fields survive, and the entry is not removed from the map.
+     * not be silently deleted by the normalizer - the user keeps their binding data. Identity is unconditionally stripped from variant-shaped entries by
+     * filterToDeltaSurface upstream, so the surviving contract is narrower than the resolved view: canonicalKey and binding fields survive, and the entry
+     * stays in the map.
      */
     const channels: StoredChannelMap = {
 
@@ -546,8 +541,7 @@ describe("invariants", () => {
 
     /* The WHAT this protects: normalization is a storage optimization, not a semantic change. For an input that survives normalization - here, a user binding
      * override on a predefined variant - the resolved view must be identical before and after. This is the regression guard against accidentally turning the
-     * normalizer into a destructive transform. The original .mjs version used a variant-with-identity input (now invalid); we shift to a binding-override input
-     * which is the case the current architecture actually supports.
+     * normalizer into a destructive transform.
      */
     const storedBefore: StoredChannelMap = {
 

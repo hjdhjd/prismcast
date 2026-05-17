@@ -3,9 +3,10 @@
  * userConfig.ts: User configuration file management for PrismCast.
  */
 import type { Config, Nullable } from "../types/index.ts";
-import { type Migration, createFileStore } from "./persistence.ts";
 import type { CliOverrides } from "./index.ts";
 import { LOG } from "../utils/index.ts";
+import type { Migration } from "./persistence.ts";
+import { createFileStore } from "./persistence.ts";
 import { getConfigFilePath } from "./paths.ts";
 import { getValidPresetIds } from "./presets.ts";
 import { isDeepStrictEqual } from "node:util";

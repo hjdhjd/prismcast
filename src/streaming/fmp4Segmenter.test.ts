@@ -5,8 +5,9 @@
  * Readable input through createMP4BoxParser, accumulates fragments, stores them via hlsSegments.storeSegment, and emits playlists via hlsSegments.updatePlaylist;
  * its happy path requires real fMP4 fixtures from a Chrome MediaRecorder capture and is deferred to e2e.
  */
-import { type KeyframeStats, type SessionStats, formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.ts";
+import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.ts";
 import { describe, test } from "node:test";
+import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 

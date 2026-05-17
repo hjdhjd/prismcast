@@ -5,11 +5,12 @@
  * playlistReady) that downstream consumers (HLS preroll, MPEG-TS clients) await before serving content. Every public function gates on getStream(streamId) and
  * silently no-ops when the stream is unknown - those negative paths are explicitly covered.
  */
-import { type StreamRegistryEntry, getStream, registerStream, unregisterStream } from "./registry.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getSegmentCount, getVideoPlaylist, storeAudioSegment, storeInitSegment,
   storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "./hlsSegments.ts";
+import { getStream, registerStream, unregisterStream } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
+import type { StreamRegistryEntry } from "./registry.ts";
 import assert from "node:assert/strict";
 import { makeRegistryEntry } from "./registry.helpers.ts";
 

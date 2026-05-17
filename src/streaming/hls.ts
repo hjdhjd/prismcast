@@ -2,12 +2,11 @@
  *
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
-import { type CaptureCodec, getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
 import type { HLSState, StreamRegistryEntry } from "./registry.ts";
 import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
-import { StreamSetupError, type StreamSetupResult, createPageWithCapture, generateStreamId, setupStream } from "./setup.ts";
+import { StreamSetupError, createPageWithCapture, generateStreamId, setupStream } from "./setup.ts";
 import { createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
 import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.ts";
@@ -17,9 +16,12 @@ import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../
 import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.ts";
 import { getAuthDomainForChannel, getResolvedChannel, getServiceTagForChannel, isChannelAvailableByService, resolveServiceKey } from "../config/services.ts";
 import { getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.ts";
+import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
 import { markChannelFailure, markChannelSuccess } from "../config/health.ts";
 import { CONFIG } from "../config/index.ts";
+import type { CaptureCodec } from "./codec.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
+import type { StreamSetupResult } from "./setup.ts";
 import type { TabReplacementHandlerFactory } from "./setup.ts";
 import type { TabReplacementResult } from "./recovery.ts";
 import { attemptNativeStreaming } from "../native/index.ts";

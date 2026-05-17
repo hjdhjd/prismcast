@@ -5,11 +5,12 @@
  * Tests bypass this file entirely by constructing ServiceContext literals inline.
  */
 import { DEFAULTS, readConfig } from "../config/userConfig.ts";
-import { type Platform, getNodeExecutablePath, getPlatform, getPrismCastEntryPoint } from "../utils/platform.ts";
 import type { ServiceContext, StreamsResponse } from "./commands.ts";
 import { buildServiceDefinition, detectStalePaths, getServiceGenerator, getServicePaths } from "./generators.ts";
 import { getDataDir, getServiceFilePath } from "../config/paths.ts";
+import { getNodeExecutablePath, getPlatform, getPrismCastEntryPoint } from "../utils/platform.ts";
 import { print, printError } from "../utils/cliOutput.ts";
+import type { Platform } from "../utils/platform.ts";
 
 /**
  * Builds the default ServiceContext from real runtime I/O.

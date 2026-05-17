@@ -5,7 +5,8 @@
  * connect. The tests lock the snapshot/event contract: emit-then-snapshot reflects the latest state, removed streams stop appearing, the zombie-update guard rejects
  * status for removed streams, and the systemStatusChanged dedup logic only emits when browser.connected or streams.active changes.
  */
-import { type StatusEventType, type StreamStatus, type SystemStatus, createInitialStreamStatus, emitChannelUpdate, emitStreamAdded, emitStreamHealthChanged,
+import type { StatusEventType, StreamStatus, SystemStatus } from "./statusEmitter.ts";
+import { createInitialStreamStatus, emitChannelUpdate, emitStreamAdded, emitStreamHealthChanged,
   emitStreamRemoved, emitSystemStatusChanged, getStatusSnapshot, getStreamStatus, removeStreamStatus, subscribeToStatus, updateSystemStatus } from "./statusEmitter.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";

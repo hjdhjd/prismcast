@@ -3,7 +3,8 @@
  * timing.ts: Timing measurement utilities for PrismCast. Reads the clock through the Clock port (see clock.ts) so tests can inject a deterministic time source;
  * production callers omit the argument and the default-argument wires through to realClock which delegates to performance.now().
  */
-import { type Clock, realClock } from "./clock.ts";
+import type { Clock } from "./clock.ts";
+import { realClock } from "./clock.ts";
 
 /**
  * Creates a lightweight elapsed-time closure. Captures the clock's current reading at creation and rounds the elapsed delta on each call. Production callers

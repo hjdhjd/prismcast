@@ -15,10 +15,10 @@
  *
  * Adding a new check is a single function returning ConsistencyIssue[]; collectConsistencyIssues fans out to every check in parallel.
  */
+import { LOG, formatError } from "../utils/index.ts";
 import { getAllServiceTags, mutateEnabledServices } from "./services.ts";
 import { CONFIG } from "./index.ts";
 import type { Channel } from "../types/index.ts";
-import { LOG } from "../utils/index.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import { getBuiltinProfile } from "./sites.ts";
 import { getStoredUserChannels } from "./userChannels.ts";
@@ -186,17 +186,21 @@ export async function runConsistencyProbeAtStartup(): Promise<void> {
     }
   }
 
-  // Run auto-fixes in parallel. Each fix is independent and a failure on one does not block the others.
-  await Promise.all(issues.filter((issue) => (issue.severity === "warning") && issue.autoFix).map(async (issue) => {
+  // Run auto-fixes in parallel via Promise.allSettled - each fix is independent and a failure on one must not block the others. We iterate the eligible issues
+  // and look up each settlement by index (length-paired by construction; Promise.allSettled preserves input order and arity), logging rejected reasons as
+  // warnings while leaving successful fixes intact.
+  const eligible = issues.filter((issue) => (issue.severity === "warning") && issue.autoFix);
+  const results = await Promise.allSettled(eligible.map(async (issue) => issue.autoFix?.()));
 
-    try {
+  for(const [ index, issue ] of eligible.entries()) {
 
-      await issue.autoFix?.();
-    } catch(error) {
+    const result = results[index];
 
-      LOG.warn("Consistency probe auto-fix failed for %s: %s.", issue.category, (error instanceof Error) ? error.message : String(error));
+    if(result?.status === "rejected") {
+
+      LOG.warn("Consistency probe auto-fix failed for %s: %s.", issue.category, formatError(result.reason));
     }
-  }));
+  }
 
   // Defensive: paired with the per-issue severity dispatch above. No checker currently emits severity:"error", so this aggregate report is unreachable today;
   // it remains in place so a future error-severity check produces the operator-visible summary line without any further wiring.

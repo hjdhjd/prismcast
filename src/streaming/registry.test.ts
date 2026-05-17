@@ -5,9 +5,10 @@
  * tests lock the registry's contract: register/unregister round-trips, ID monotonicity, getAllStreams snapshot independence, lookup with getStream, byte counter
  * arithmetic in getStreamMemoryUsage, and the shape of a freshly-minted HLSState.
  */
-import { type StreamRegistryEntry, createHLSState, getAllStreams, getLastSegmentHasVideo, getLastSegmentSize, getNextStreamId, getStream, getStreamCount,
-  getStreamMemoryUsage, getTotalSegmentMemory, registerStream, unregisterStream, updateLastAccess } from "./registry.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { createHLSState, getAllStreams, getLastSegmentHasVideo, getLastSegmentSize, getNextStreamId, getStream, getStreamCount,
+  getStreamMemoryUsage, getTotalSegmentMemory, registerStream, unregisterStream, updateLastAccess } from "./registry.ts";
+import type { StreamRegistryEntry } from "./registry.ts";
 import assert from "node:assert/strict";
 import { makeRegistryEntry } from "./registry.helpers.ts";
 

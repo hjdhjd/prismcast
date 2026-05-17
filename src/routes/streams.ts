@@ -81,7 +81,7 @@ export function setupStreamsEndpoint(app: Express): void {
 
     const streamIdParam = parseInt((req.params as { id: string }).id);
 
-    if(isNaN(streamIdParam)) {
+    if(Number.isNaN(streamIdParam)) {
 
       sendValidationError(res, "Invalid stream ID.");
 

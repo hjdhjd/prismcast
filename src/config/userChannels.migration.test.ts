@@ -109,9 +109,9 @@ describe("regression: canonical override propagates to predefined variants", () 
 
   test("user override on abc canonical surfaces through resolving abc-hulu", () => {
 
-    // This is the regression flagged during the refactor. Before the fix, applyVariantInheritance lived on the read path and pulled identity from the (possibly
-    // overridden) canonical. Removing that function without moving the behavior elsewhere broke canonical override propagation. The new flattener leaves
-    // identity off predefined variants, and resolveVariant layers canonical -> predefined -> user, so the override propagates through.
+    // Regression guard for the canonical-override invariant: an identity edit on a canonical (name, tags, anything in CHANNEL_IDENTITY_KEYS) must surface in
+    // every resolved variant of that canonical. The read path leaves identity off predefined variant entries and resolveVariant layers canonical -> predefined
+    // -> user, so an override on "abc" propagates to every "abc-*" variant view that resolves through it.
     const storedInput: StoredChannelMap = { "abc": { name: "American Broadcasting Custom" } };
 
     const resolvedCanonicals = buildResolvedCanonicals(storedInput);
@@ -217,9 +217,9 @@ describe("regression: redundant predefined override collapses to nothing", () =>
 
 describe("collectLegacyVariantStamps: post-isDeepStrictEqual array semantics", () => {
 
-  /* The classifier recently switched the array-equality check from JSON.stringify to isDeepStrictEqual (line 1146 in userChannels.ts). The two are equivalent
-   * for plain string arrays of the same length, but the canonical-sort wrapper (sortTags) lifts both sides into a normalized order before comparison. These
-   * tests pin the post-swap behavior for the cases the audit specifically called out: tag arrays equal modulo case-insensitive sort order.
+  /* Tag-array equality is structural and order-independent: collectLegacyVariantStamps wraps both sides through sortTags (case-insensitive canonical order)
+   * before isDeepStrictEqual at the comparison site. These tests pin the cases where authoring-order or case-only differences must (or must not) be treated as
+   * shape-compatible for the migration's stamp decision.
    */
 
   test("stamps when stored tags differ only in authoring order from the canonical's tags", () => {

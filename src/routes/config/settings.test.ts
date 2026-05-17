@@ -6,12 +6,13 @@
  * the public surface. The route-aggregator setupSettingsRoutes is verified for registration shape only because the handlers themselves require a live
  * Express runtime and the user-config filesystem layer.
  */
-import { type AdvancedSection, getAdvancedSections } from "../../config/userConfig.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent, hasEnvOverrides,
   setupSettingsRoutes } from "./settings.ts";
+import type { AdvancedSection } from "../../config/userConfig.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
+import { getAdvancedSections } from "../../config/userConfig.ts";
 import { initializeDataDir } from "../../config/paths.ts";
 import { makeExpressStub } from "../express.helpers.ts";
 import os from "node:os";

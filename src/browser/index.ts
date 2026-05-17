@@ -3,7 +3,6 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { type GpuCapabilities, getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.ts";
 import { LOG, cancellableTimeout, clearPidFile, delay, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer,
   writePidFile } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
@@ -11,8 +10,10 @@ import { getAllStreams, getStreamCount } from "../streaming/registry.ts";
 import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.ts";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
+import { getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.ts";
 import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.ts";
 import { CONFIG } from "../config/index.ts";
+import type { GpuCapabilities } from "./display.ts";
 import type { Nullable } from "../types/index.ts";
 import type { SystemStatus } from "../streaming/statusEmitter.ts";
 import { clearChannelSelectionCaches } from "./channelSelection.ts";

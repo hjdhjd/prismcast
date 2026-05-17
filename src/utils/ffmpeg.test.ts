@@ -16,8 +16,9 @@
  * resolveFFmpegPath and isFFmpegAvailable are the production-cached singletons that probe the real filesystem; they have no test seam and no parameters because
  * their caching contract is intentionally sealed.
  */
-import { type FFmpegContext, buildMpegTsRemuxerArgs, buildSpawnFFmpegArgs, getBundledFFmpegPath, probeFFmpegPath } from "./ffmpeg.ts";
+import { buildMpegTsRemuxerArgs, buildSpawnFFmpegArgs, getBundledFFmpegPath, probeFFmpegPath } from "./ffmpeg.ts";
 import { describe, test } from "node:test";
+import type { FFmpegContext } from "./ffmpeg.ts";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 

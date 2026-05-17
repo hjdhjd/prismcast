@@ -6,8 +6,9 @@
  * getServiceGenerator() which uses createDefaultGeneratorIO() under the hood. Tests construct GeneratorIO literals inline so install/uninstall/start/stop run
  * against fakes that record subprocess invocations and file writes without spawning real launchctl/systemctl/powershell.exe.
  */
-import { type Platform, type ServiceManager, getNodeExecutablePath, getPrismCastEntryPoint, getPrismCastWorkingDirectory } from "../utils/platform.ts";
+import type { Platform, ServiceManager } from "../utils/platform.ts";
 import { SERVICE_ID, SERVICE_NAME } from "../identity.ts";
+import { getNodeExecutablePath, getPrismCastEntryPoint, getPrismCastWorkingDirectory } from "../utils/platform.ts";
 import { CONFIG_METADATA } from "../config/userConfig.ts";
 import type { Nullable } from "../types/index.ts";
 import { createDefaultGeneratorIO } from "./generators.context.ts";
@@ -301,7 +302,7 @@ function createLaunchdGenerator(io: GeneratorIO): ServiceGenerator {
 
         const pid = line.trim().split("\t")[0];
 
-        return (pid !== "-") && !isNaN(Number(pid));
+        return (pid !== "-") && !Number.isNaN(Number(pid));
       } catch {
 
         return false;

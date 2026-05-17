@@ -5,9 +5,10 @@
  * minimal (no validation, no normalization, last-write-wins) so the tests focus on the round-trip contract and inter-slot independence rather than complex behavior.
  * Each describe block saves and restores the slot it touches so state from one test cannot leak into another or into other test files that rely on the cache.
  */
-import { type GpuCapabilities, getBrowserChrome, getGpuCapabilities, getMaxSupportedViewport, setBrowserChrome, setGpuCapabilities,
-  setMaxSupportedViewport } from "./display.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
+import { getBrowserChrome, getGpuCapabilities, getMaxSupportedViewport, setBrowserChrome, setGpuCapabilities,
+  setMaxSupportedViewport } from "./display.ts";
+import type { GpuCapabilities } from "./display.ts";
 import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 
