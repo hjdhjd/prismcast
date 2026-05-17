@@ -4,7 +4,6 @@
  */
 import { LOG, cancellableTimeout, formatError, startTimer } from "../utils/index.ts";
 import { clearProbeCache, probeManifest } from "./probe.ts";
-import { installManifestInterceptor, removeManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { MediaFeed } from "./probe.ts";
@@ -13,6 +12,7 @@ import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import { createNativeProxy } from "./proxy.ts";
 import { fetchDecryptionKey } from "./decrypt.ts";
+import { installManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import { parseTokenExpiry } from "./tokenExpiry.ts";
 
 /* This module orchestrates the native streaming decision. After the browser navigates to a channel and video playback begins, we check whether the service's HLS
@@ -98,7 +98,8 @@ export interface NativeStreamResult {
   // Whether the stream has separate audio renditions. Set once at stream creation on HLSState.hasAudio so the HLS handler knows to serve variant playlists.
   hasAudio: boolean;
 
-  // The native proxy that fetches and stores segments. The proxy owns the CDP session from interception and cleans it up on stop().
+  // The native proxy that fetches and stores segments. The proxy holds no CDP session references - session ownership lives entirely inside the manifest
+  // interceptor's tab network observer, which disposes itself when interception completes (finalize, timeout, predicate match, or explicit dispose).
   proxy: NativeProxy;
 
   // Video resolution from the master manifest (e.g., "1920x1080"), or null when absent.
@@ -107,7 +108,7 @@ export interface NativeStreamResult {
 
 /**
  * Attempts to upgrade a stream from screen capture to native HLS streaming. Returns the native proxy on success, or null if the stream is not viable for native
- * consumption (DRM, interception timeout, or probe failure). The proxy owns the CDP session from interception and manages its lifecycle.
+ * consumption (DRM, interception timeout, or probe failure).
  *
  * @param options - Options for the native streaming attempt.
  * @returns The native stream result on success, or null to fall back to capture.
@@ -157,7 +158,6 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   if(!mediaFeed) {
 
     LOG.debug("native:coordinator", "Probe failed for %s. Falling back to capture.", channelName);
-    removeManifestInterceptor(interception.cdpSession);
 
     return null;
   }
@@ -165,7 +165,6 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   if(mediaFeed.encryption === "drm") {
 
     LOG.debug("native:coordinator", "Native streaming not viable for %s: DRM-protected stream.", channelName);
-    removeManifestInterceptor(interception.cdpSession);
 
     return null;
   }
@@ -175,7 +174,6 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   if(mpegTsClient && mediaFeed.audioVariantUrl) {
 
     LOG.debug("native:coordinator", "Native streaming not viable for %s: separate audio rendition incompatible with MPEG-TS clients.", channelName);
-    removeManifestInterceptor(interception.cdpSession);
 
     return null;
   }
@@ -194,7 +192,6 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     if(!prefetchedKey) {
 
       LOG.debug("native:coordinator", "Native streaming not viable for %s: decryption key inaccessible.", channelName);
-      removeManifestInterceptor(interception.cdpSession);
 
       return null;
     }
@@ -202,8 +199,8 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     LOG.debug("native:coordinator", "AES-128 decryption key pre-fetched for %s.", channelName);
   }
 
-  // Create the native proxy. The CDP session is passed so the proxy can clean it up on stop(), preventing session leaks when the stream terminates before a token
-  // refresh occurs. For AES-128 streams, the pre-fetched key is passed so the proxy does not need to fetch it again on the first segment. The preroll segment count
+  // Create the native proxy. The manifest interceptor's underlying CDP session is owned and disposed internally by the interceptor - the proxy holds no session
+  // references. For AES-128 streams, the pre-fetched key is passed so the proxy does not need to fetch it again on the first segment. The preroll segment count
   // determines the segment index offset (reserving index space for preroll). Streams with separate audio cannot use preroll because the preroll content is muxed
   // video+audio and can't be split into separate renditions.
   const hasSeparateAudio = mediaFeed.audioVariantUrl !== null;
@@ -212,7 +209,6 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   const proxy = createNativeProxy({
 
     audioVariantUrl: mediaFeed.audioVariantUrl,
-    cdpSession: interception.cdpSession,
     channelName,
     encryption: mediaFeed.encryption,
     keyUrl: mediaFeed.keyUrl,
@@ -415,36 +411,29 @@ export async function refreshNativeManifest(options: {
       return false;
     }
 
-    // Check if the proxy was stopped while we were waiting for the interception. Clean up the new session since the proxy will not take ownership of it.
+    // Check if the proxy was stopped while we were waiting for the interception. The interceptor has already disposed its observer on resolution; no further
+    // cleanup is required.
     if(proxy.isStopped()) {
-
-      removeManifestInterceptor(newInterception.cdpSession);
 
       return false;
     }
 
-    // Probe the new manifest to get the updated variant URL. We probe before handing the new CDP session to the proxy so that a probe failure does not leave the
-    // proxy holding a reference to a session we are about to clean up.
+    // Probe the new manifest to get the updated variant URL. The interceptor has already released its observer by the time the promise resolves, so a probe
+    // failure here only requires giving up on this refresh attempt - no session bookkeeping to unwind.
     const refreshedFeed = await probeManifest(newInterception.masterManifestUrl, channelName);
 
     if(!refreshedFeed) {
 
       streamLog.debug("native:token", "Manifest refresh failed for %s: probe failed on new manifest.", channelName);
-      removeManifestInterceptor(newInterception.cdpSession);
 
       return false;
     }
 
-    // Check if the proxy was stopped during the probe. Clean up the new session since the proxy will not take ownership of it.
+    // Check if the proxy was stopped during the probe.
     if(proxy.isStopped()) {
 
-      removeManifestInterceptor(newInterception.cdpSession);
-
       return false;
     }
-
-    // Probe succeeded. Hand the new CDP session to the proxy. updateCdpSession cleans up the old session internally before replacing it.
-    proxy.updateCdpSession(newInterception.cdpSession);
 
     // Update the proxy with the new variant URL(s).
     proxy.updateVariantUrl(refreshedFeed.bestVariantUrl);

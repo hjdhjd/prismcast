@@ -6,12 +6,13 @@
  * wiring) and is deferred to e2e coverage; the unit tests here focus on the orchestration branches that can be exercised with synthetic CDP sessions, mocked
  * globalThis.fetch responses, and a minimal page stub.
  */
-import { type AttemptNativeStreamingOptions, attemptNativeStreaming } from "./index.ts";
-import type { CDPSession, Page } from "puppeteer-core";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
+import type { AttemptNativeStreamingOptions } from "./index.ts";
+import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
+import { attemptNativeStreaming } from "./index.ts";
 import { clearProbeCache } from "./probe.ts";
-import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 
 /* eslint-disable sort-keys -- fixture route maps are ordered by HLS resolution chain (master -> variant -> key), not alphabetical key strings, so the logical
  * dependency direction is visible to readers. */
@@ -45,27 +46,6 @@ globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unkn
 // In addition, do a one-shot scan after the file's test queue settles to drain any other handles (notably the WebSocketServer from puppeteer-stream).
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
-
-/* noop is a non-empty function body used wherever we need a stub method to satisfy a contract without doing anything. Using a tiny named function avoids the
- * @typescript-eslint/no-empty-function rule that fires on bare `() => {}`.
- */
-function noop(): void {
-
-  return undefined;
-}
-
-/* makeFakeCdpSession returns a stub CDPSession satisfying the surface that removeManifestInterceptor uses. The functions are non-empty no-ops or resolved promises
- * so the cleanup path runs without hitting Puppeteer internals. The cast bypasses the very wide CDPSession type that a real implementation provides.
- */
-function makeFakeCdpSession(): CDPSession {
-
-  return {
-
-    detach: async (): Promise<void> => Promise.resolve(),
-    removeAllListeners: (): unknown => undefined,
-    send: async (): Promise<unknown> => Promise.resolve(undefined)
-  } as unknown as CDPSession;
-}
 
 /* makeFakePage returns a minimal Page stub for tests that need to construct the AttemptNativeStreamingOptions; attemptNativeStreaming does not call any methods
  * on the page during the success/failure branches exercised here (it just stores the reference for scheduleTokenRefresh to use).
@@ -152,8 +132,9 @@ describe("attemptNativeStreaming", () => {
 
   test("returns null when the probe classifies the manifest as DRM", async () => {
 
-    // The probe runs on the intercepted master URL and detects SAMPLE-AES (Widevine). The orchestrator must clean up the CDP session and return null. We track
-    // removeAllListeners on the stub session so the cleanup invocation surfaces as observable behavior.
+    // The probe runs on the intercepted master URL and detects SAMPLE-AES (Widevine). The orchestrator must return null so the caller falls back to capture mode.
+    // The underlying CDP session ownership is now internal to the interceptor and disposed automatically when its observer finalizes; the orchestrator no longer
+    // performs explicit session cleanup, so this test asserts only the return-value contract.
     const masterUrl = "https://cdn.test/drm-master.m3u8";
     const variantUrl = "https://cdn.test/drm-variant.m3u8";
 
@@ -163,24 +144,10 @@ describe("attemptNativeStreaming", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n", { status: 200 })
     });
 
-    let cleanupCalls = 0;
-
-    const cdpSession = {
-
-      detach: async (): Promise<void> => Promise.resolve(),
-      removeAllListeners: (): unknown => {
-
-        cleanupCalls++;
-
-        return undefined;
-      },
-      send: async (): Promise<unknown> => Promise.resolve(undefined)
-    } as unknown as CDPSession;
-
     const options = makeAttemptOptions({
 
       channelName: "drm-channel-test",
-      interceptionPromise: Promise.resolve({ cdpSession, masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
     });
 
     clearProbeCache("drm-channel-test");
@@ -188,7 +155,6 @@ describe("attemptNativeStreaming", () => {
     const result = await attemptNativeStreaming(options);
 
     assert.equal(result, null, "DRM classification returns null");
-    assert.ok(cleanupCalls > 0, "CDP session cleanup called on DRM path");
   });
 
   test("returns a NativeStreamResult on the clear-encryption happy path", async () => {
@@ -212,7 +178,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "clear-channel-test",
-      interceptionPromise: Promise.resolve({ cdpSession: makeFakeCdpSession(), masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
     });
 
     clearProbeCache("clear-channel-test");
@@ -261,7 +227,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "aes-prefetch-channel",
-      interceptionPromise: Promise.resolve({ cdpSession: makeFakeCdpSession(), masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
     });
 
     clearProbeCache("aes-prefetch-channel");
@@ -294,7 +260,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "dai-channel-test",
-      interceptionPromise: Promise.resolve({ cdpSession: makeFakeCdpSession(), masterManifestUrl: masterUrl }),
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl }),
       mpegTsClient: true
     });
 
@@ -328,7 +294,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "dai-hls-channel",
-      interceptionPromise: Promise.resolve({ cdpSession: makeFakeCdpSession(), masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
     });
 
     clearProbeCache("dai-hls-channel");
@@ -343,7 +309,7 @@ describe("attemptNativeStreaming", () => {
 
   test("returns null when the probe itself fails (master fetch returns 500)", async () => {
 
-    // Negative test: the master fetch returns a server error. probeManifest returns null, the orchestrator cleans up the CDP session and returns null.
+    // Negative test: the master fetch returns a server error. probeManifest returns null and the orchestrator returns null.
     const masterUrl = "https://cdn.test/probe-fail-master.m3u8";
 
     makeFetchRouter({
@@ -354,7 +320,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "probe-fail-channel",
-      interceptionPromise: Promise.resolve({ cdpSession: makeFakeCdpSession(), masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
     });
 
     clearProbeCache("probe-fail-channel");
@@ -383,7 +349,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "onerror-channel",
-      interceptionPromise: Promise.resolve({ cdpSession: makeFakeCdpSession(), masterManifestUrl: masterUrl }),
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl }),
       onError: (): void => {
 
         onErrorCalls++;
@@ -479,7 +445,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "exp-channel",
-      interceptionPromise: Promise.resolve({ cdpSession: makeFakeCdpSession(), masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
     });
 
     clearProbeCache("exp-channel");

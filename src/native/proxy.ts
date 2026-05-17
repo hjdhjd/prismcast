@@ -2,18 +2,17 @@
  *
  * proxy.ts: Native HLS proxy - manifest polling, segment fetching, and playlist generation.
  */
-import { type Clock, LOG, chromeFetch, realClock, startTimer } from "../utils/index.ts";
+import { LOG, chromeFetch, realClock, startTimer } from "../utils/index.ts";
 import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.ts";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.ts";
 import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.ts";
-import type { CDPSession } from "puppeteer-core";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
+import type { Clock } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
 import type { PlaylistSegmentEntry } from "../streaming/playlistBuilder.ts";
 import { buildPlaylist } from "../streaming/playlistBuilder.ts";
 import { getStream } from "../streaming/registry.ts";
-import { removeManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import { resolveUrl } from "./probe.ts";
 
 /* This module implements the native HLS proxy that replaces Chrome screen capture for viable streams. It polls the service's variant manifest at regular intervals,
@@ -51,9 +50,6 @@ export interface NativeProxyOptions {
 
   // URL of the separate audio rendition playlist, or null when audio is muxed into the video variant.
   audioVariantUrl: Nullable<string>;
-
-  // The CDP session from manifest interception. Cleaned up when the proxy stops to prevent session leaks.
-  cdpSession: CDPSession;
 
   // The channel name for logging.
   channelName: string;
@@ -128,14 +124,11 @@ export interface NativeProxy {
   // Sets the token refresh timer handle so it can be cancelled on stop. Called by the coordinator after scheduling a refresh.
   setTokenRefreshTimer: (timer: ReturnType<typeof setTimeout>) => void;
 
-  // Stops the proxy and cleans up timers, token refresh timer, and CDP session.
+  // Stops the proxy and cancels the pending token refresh timer.
   stop: () => void;
 
   // Updates the audio variant URL after a token refresh. Only applicable for streams with separate audio renditions.
   updateAudioVariantUrl: (newUrl: string) => void;
-
-  // Updates the active CDP session after a token refresh. The proxy tracks the session so it can clean it up on stop.
-  updateCdpSession: (session: CDPSession) => void;
 
   // Updates the variant URL after a token refresh.
   updateVariantUrl: (newUrl: string) => void;
@@ -956,7 +949,6 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
   const { channelName, clock = realClock, encryption, keyUrl, onError, streamId } = options;
   const hasAudio = options.audioVariantUrl !== null;
-  let activeCdpSession: CDPSession = options.cdpSession;
 
   // Preroll segment index offset. When preroll is ready (prerollSegmentCount > 0), real segments start numbering after the preroll range (e.g., segmentN.ts where
   // N = prerollSegmentCount). This offset is unconditional - it reserves the index space for preroll regardless of whether the deferred preroll timer fires.
@@ -1607,9 +1599,6 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
         lifecycle.tokenRefreshTimer = null;
       }
 
-      // Clean up the CDP session from manifest interception to prevent session leaks.
-      removeManifestInterceptor(activeCdpSession);
-
       LOG.debug("native:proxy", "Stopped native proxy for %s.", channelName);
     },
 
@@ -1620,13 +1609,6 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       audio.tokenRefreshPending = true;
 
       LOG.debug("native:proxy", "Audio variant URL updated for %s.", channelName);
-    },
-
-    updateCdpSession: (session: CDPSession): void => {
-
-      // Clean up the old CDP session before replacing it. This prevents session leaks when the session is swapped during token refresh or L2 recovery.
-      removeManifestInterceptor(activeCdpSession);
-      activeCdpSession = session;
     },
 
     updateVariantUrl: (newUrl: string): void => {

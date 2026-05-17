@@ -3,59 +3,27 @@
  * proxy.test.ts: Unit tests for the native HLS proxy factory in proxy.ts. createNativeProxy is the only export and returns a NativeProxy instance with the
  * documented surface. The polling loop, manifest parsing, segment fetching, decryption integration, and playlist generation are all encapsulated inside the
  * factory closure and are exercised end-to-end by start()ing the proxy against a live HLS source - not viable as a unit test. The tests here focus on the
- * factory's deterministic surface: initial-state contracts on every getter, stop() lifecycle and CDP cleanup, the token refresh state mutations exposed via
- * update* methods, and stat counter behavior. The full polling loop is deferred to e2e coverage with real Chrome.
+ * factory's deterministic surface: initial-state contracts on every getter, stop() lifecycle, the token refresh state mutations exposed via update* methods,
+ * and stat counter behavior. The full polling loop is deferred to e2e coverage with real Chrome.
  */
-import type { CDPSession, Page } from "puppeteer-core";
-import { type NativeProxy, type NativeProxyOptions, createNativeProxy } from "./proxy.ts";
-import { afterEach, describe, test } from "node:test";
+import { describe, test } from "node:test";
+import type { NativeProxyOptions } from "./proxy.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
+import { createNativeProxy } from "./proxy.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-// We never use the `page` reference inside our tests, but the option is required by the NativeProxyOptions type. Cast a minimal stub.
-const fakePage: Page = {} as unknown as Page;
-
-/* CdpSessionRecorder pairs a stub CDPSession with counters that record cleanup invocations. removeManifestInterceptor calls removeAllListeners, send, and detach
- * on the session - we observe whichever one fires first so tests can assert that the proxy did call the cleanup path.
- */
-interface CdpSessionRecorder {
-
-  removeAllListenersCalls: number;
-
-  session: CDPSession;
-}
-
-function makeCdpSessionRecorder(): CdpSessionRecorder {
-
-  const recorder: CdpSessionRecorder = { removeAllListenersCalls: 0, session: null as unknown as CDPSession };
-
-  recorder.session = {
-
-    detach: async (): Promise<void> => Promise.resolve(),
-    removeAllListeners: (): unknown => {
-
-      recorder.removeAllListenersCalls++;
-
-      return undefined;
-    },
-    send: async (): Promise<unknown> => Promise.resolve(undefined)
-  } as unknown as CDPSession;
-
-  return recorder;
-}
-
 /* makeProxyOptions builds a NativeProxyOptions literal with sensible defaults. Tests override the encryption mode, audio variant URL, and prerollSegmentCount as
- * needed. The onError callback defaults to a no-op; tests that need to observe error escalation override it.
+ * needed. The onError callback defaults to a no-op; tests that need to observe error escalation override it. The proxy no longer holds a CDP session reference -
+ * session ownership lives entirely inside the manifest interceptor's tab network observer and is disposed deterministically when interception ends.
  */
 function makeProxyOptions(overrides: Partial<NativeProxyOptions> = {}): NativeProxyOptions {
 
   return {
 
     audioVariantUrl: null,
-    cdpSession: makeCdpSessionRecorder().session,
     channelName: "test-channel",
     encryption: "clear",
     keyUrl: null,
@@ -167,12 +135,6 @@ describe("createNativeProxy initial state", () => {
 
 describe("NativeProxy.stop", () => {
 
-  afterEach(() => {
-
-    // No global state to reset; each test creates its own proxy and calls stop() directly. The afterEach exists for symmetry with other suites in case future
-    // tests need cleanup hooks.
-  });
-
   test("transitions isStopped from false to true", () => {
 
     // Happy path: stop() is the documented lifecycle exit. After the call, isStopped reports true.
@@ -183,18 +145,6 @@ describe("NativeProxy.stop", () => {
     proxy.stop();
 
     assert.equal(proxy.isStopped(), true, "stopped after stop");
-  });
-
-  test("invokes the CDP session cleanup (removeAllListeners) on the active session", () => {
-
-    // The proxy owns the CDP session passed at construction time. On stop, it calls removeManifestInterceptor which calls removeAllListeners. Locks the contract
-    // that callers do not have to clean up the session themselves - the proxy is the owner.
-    const recorder = makeCdpSessionRecorder();
-    const proxy = createNativeProxy(makeProxyOptions({ cdpSession: recorder.session }));
-
-    proxy.stop();
-
-    assert.ok(recorder.removeAllListenersCalls > 0, "stop calls removeAllListeners on the CDP session");
   });
 
   test("clears a token refresh timer set via setTokenRefreshTimer", () => {
@@ -322,46 +272,6 @@ describe("NativeProxy.updateAudioVariantUrl", () => {
   });
 });
 
-describe("NativeProxy.updateCdpSession", () => {
-
-  test("calls cleanup on the OLD session when a new session replaces it", () => {
-
-    // The proxy must clean up the previous CDP session before assuming ownership of the new one. Otherwise, multiple token refresh cycles would leak sessions
-    // until Chrome runs out of resources.
-    const oldRecorder = makeCdpSessionRecorder();
-    const newRecorder = makeCdpSessionRecorder();
-    const proxy = createNativeProxy(makeProxyOptions({ cdpSession: oldRecorder.session }));
-
-    assert.equal(oldRecorder.removeAllListenersCalls, 0, "old session not yet cleaned");
-    assert.equal(newRecorder.removeAllListenersCalls, 0, "new session not yet cleaned");
-
-    proxy.updateCdpSession(newRecorder.session);
-
-    assert.notEqual(oldRecorder.removeAllListenersCalls, 0, "old session was cleaned up before being replaced");
-    assert.equal(newRecorder.removeAllListenersCalls, 0, "new session is the active one - not cleaned");
-
-    // After stop(), the new (now active) session must be cleaned up.
-    proxy.stop();
-    assert.notEqual(newRecorder.removeAllListenersCalls, 0, "new session cleaned up by stop()");
-  });
-
-  test("transfers session ownership so subsequent stop() cleans the new session, not the old one", () => {
-
-    // Boundary: after updateCdpSession, the old session is already cleaned and stop() must NOT call cleanup on it again (would be a no-op via removeAllListeners,
-    // but conceptually the old session is no longer the proxy's responsibility). We verify by counting cleanup calls on each session: old gets exactly one call
-    // (during update), new gets exactly one call (during stop).
-    const oldRecorder = makeCdpSessionRecorder();
-    const newRecorder = makeCdpSessionRecorder();
-    const proxy = createNativeProxy(makeProxyOptions({ cdpSession: oldRecorder.session }));
-
-    proxy.updateCdpSession(newRecorder.session);
-    proxy.stop();
-
-    assert.equal(oldRecorder.removeAllListenersCalls, 1, "old session cleaned exactly once (by update)");
-    assert.equal(newRecorder.removeAllListenersCalls, 1, "new session cleaned exactly once (by stop)");
-  });
-});
-
 describe("NativeProxy with prefetched AES-128 key", () => {
 
   test("creates without throwing when prefetchedKey is provided alongside keyUrl", () => {
@@ -423,6 +333,3 @@ describe("NativeProxy.getConsecutiveErrors aggregation", () => {
   });
 });
 
-// Reference fakePage to keep TS from flagging it as unused in the harness; the field exists in the options factory for future tests that exercise the start path.
-void fakePage;
-void ((proxy: NativeProxy): NativeProxy => proxy);

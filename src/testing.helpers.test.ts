@@ -14,6 +14,8 @@ import assert from "node:assert/strict";
  */
 const EXPECTED_RUNTIME_EXPORTS = [
 
+  "FakeCdpSession",
+  "FakeConnection",
   "assertNoUnhandledRejections",
   "assertSameShape",
   "bufferOrStringToString",
@@ -26,6 +28,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "expectAt",
   "firstOf",
   "makeExecFileError",
+  "makeFakeCdpPage",
+  "noop",
   "nthOf",
   "silentLog",
   "withTempDir"

@@ -5,12 +5,12 @@
  * entangled with real Chrome via Puppeteer (page.goto, installManifestInterceptor's CDP listener wiring) and is deferred to e2e coverage; the unit tests here
  * focus on the direct-fetch branch and the early-exit conditions (proxy stopped, page closed). The companion attemptNativeStreaming tests live in index.test.ts.
  */
-import type { CDPSession, Page } from "puppeteer-core";
 import { afterEach, describe, test } from "node:test";
+import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
 import type { NativeProxy } from "./proxy.ts";
+import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
 import { clearProbeCache } from "./probe.ts";
-import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { mock } from "node:test";
 import { refreshNativeManifest } from "./index.ts";
 
@@ -32,14 +32,6 @@ globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unkn
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-/* noop is a non-empty function body used wherever we need a stub method to satisfy a contract without doing anything. Using a tiny named function avoids the
- * @typescript-eslint/no-empty-function rule that fires on bare `() => {}`.
- */
-function noop(): void {
-
-  return undefined;
-}
-
 /* makeFakePage returns a Page stub exposing only the methods refreshNativeManifest exercises on a stopped/closed-page path. The non-reload branches do not call
  * page.goto, so this minimal stub is sufficient.
  */
@@ -50,21 +42,6 @@ function makeFakePage(closed = false): Page {
     isClosed: (): boolean => closed
   } as unknown as Page;
 }
-
-/* makeFakeCdpSession returns a stub CDPSession satisfying the surface that removeManifestInterceptor uses. The functions are non-empty no-ops or resolved promises
- * so the cleanup path runs without hitting Puppeteer internals.
- */
-function makeFakeCdpSession(): CDPSession {
-
-  return {
-
-    detach: async (): Promise<void> => Promise.resolve(),
-    removeAllListeners: (): unknown => undefined,
-    send: async (): Promise<unknown> => Promise.resolve(undefined)
-  } as unknown as CDPSession;
-}
-
-void makeFakeCdpSession;
 
 /* ProxyStubHooks captures the side effects that refreshNativeManifest applies to a proxy. Tests inspect these counters and captured values to assert that the
  * orchestrator called updateVariantUrl/updateAudioVariantUrl/setTokenRefreshTimer the expected number of times with the expected arguments.
@@ -108,7 +85,6 @@ function makeFakeProxy(hooks: ProxyStubHooks): NativeProxy {
 
       hooks.audioVariantUrl = newUrl;
     },
-    updateCdpSession: noop,
     updateVariantUrl: (newUrl: string): void => {
 
       hooks.variantUrl = newUrl;
