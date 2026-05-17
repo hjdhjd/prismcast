@@ -2,29 +2,24 @@
  *
  * commands.ts: Upgrade command handler for the PrismCast CLI.
  *
- * handleUpgradeCommand is a pure orchestrator over an UpgradeContext. The context bundles install detection, registry version lookup, the subprocess runner,
- * stdout/stderr writers, process exit, and the service-mode probe; production wires all of them through createDefaultUpgradeContext (in commands.context.ts),
- * tests pass a context literal. The decision logic - help dispatch, --check vs --force vs default flow, "already up to date" gating, post-upgrade restart - is
- * fully testable without touching the real network, real subprocesses, or process state.
+ * handleUpgradeCommand is a pure orchestrator over an UpgradeContext. The context bundles install detection, registry version lookup, the platform-aware
+ * upgrade executor, stdout/stderr writers, process exit, and the service-mode probe; production wires all of them through createDefaultUpgradeContext (in
+ * commands.context.ts), tests pass a context literal. The decision logic - help dispatch, --check vs --force vs default flow, "already up to date" gating,
+ * post-upgrade restart, handoff-on-Windows messaging - is fully testable without touching the real network, real subprocesses, or process state.
+ *
+ * The HOW of running an upgrade lives in lifecycle.ts (a platform-strategy port that returns an UpgradeStep discriminated union). This file is responsible for
+ * the WHEN: ordering the detection-and-version-check phase, deciding whether to run anything at all, and choosing what to print and whether to exit based on
+ * the lifecycle's outcome. The two responsibilities are isolated so neither layer needs to know about the other's edge cases.
  */
 import type { InstallInfo, NonUpgradeableInstallInfo } from "./detection.ts";
 import { getPackageVersion, isVersionLessThan, normalizeVersion } from "../utils/version.ts";
 import type { Nullable } from "../types/index.ts";
+import type { UpgradeStep } from "./lifecycle.ts";
 import { createDefaultUpgradeContext } from "./commands.context.ts";
 
 /**
- * Result of running an upgrade command. The success flag distinguishes ran-without-error from threw-or-exited-non-zero; the runner does not surface the actual
- * error because execSync's stderr is inherited to the user's terminal directly.
- */
-export interface UpgradeResult {
-
-  // True when the command exited 0; false on any non-zero exit, throw, or timeout.
-  readonly success: boolean;
-}
-
-/**
- * The runtime context handleUpgradeCommand consumes. Each field models one capability the command needs - detection, version lookup, subprocess execution,
- * stdout/stderr output, process termination, and a service-mode probe. Decision logic is a pure function of this shape; production wires it through
+ * The runtime context handleUpgradeCommand consumes. Each field models one capability the command needs - detection, version lookup, platform-aware upgrade
+ * execution, stdout/stderr output, process termination, and a service-mode probe. Decision logic is a pure function of this shape; production wires it through
  * createDefaultUpgradeContext (in commands.context.ts), tests pass a context literal.
  */
 export interface UpgradeContext {
@@ -38,13 +33,15 @@ export interface UpgradeContext {
   // Fetches the latest published version from the npm registry. Returns null on network failure or registry error.
   readonly fetchLatestVersion: () => Promise<string | null>;
 
-  // Whether the process is running under a service manager (launchd, systemd, Windows service). Affects the post-upgrade flow - service mode exits cleanly so
-  // the manager restarts the process; manual mode prints "please restart" instructions instead.
+  // Whether the process is running under a service manager (launchd, systemd, Windows Task Scheduler). Affects the in-process success branch: service mode
+  // exits cleanly so launchd KeepAlive or systemd Restart= brings PrismCast back up; manual mode prints "please restart" instructions instead. Unused by the
+  // handoff branch because the helper handles the service restart itself.
   readonly isService: boolean;
 
-  // Subprocess runner that executes the upgrade command. The implementation inherits the user's terminal so they see npm/brew output live; the result captures
-  // only the outcome (success or failure), not stdout/stderr.
-  readonly runUpgradeCommand: (cmd: string, options: { cwd?: string }) => UpgradeResult;
+  // Performs the upgrade for one InstallInfo by dispatching to the platform-appropriate lifecycle strategy. Returns a discriminated UpgradeStep - either "ran"
+  // (the strategy executed the command in-process) or "handed-off" (the strategy spawned a detached helper). Callers narrow on `kind` to choose the right
+  // messaging and exit behavior.
+  readonly performUpgrade: (info: InstallInfo) => UpgradeStep;
 
   // stderr writer.
   readonly stderr: (line: string) => void;
@@ -57,10 +54,6 @@ export interface UpgradeContext {
  * newer version, and the runner executes the per-method upgrade command (or prints manual instructions for non-upgradeable methods).
  */
 
-/**
- * Prints usage information for the upgrade subcommand.
- * @param ctx - The upgrade context (used for stdout output).
- */
 function printUpgradeUsage(ctx: UpgradeContext): void {
 
   ctx.stdout("Usage: prismcast upgrade [options]");
@@ -73,13 +66,7 @@ function printUpgradeUsage(ctx: UpgradeContext): void {
   ctx.stdout("  -h, --help          Show this help message");
 }
 
-/**
- * Prints the upgrade summary table (shared between --check mode and the pre-upgrade display).
- * @param ctx - The upgrade context (used for stdout output).
- * @param info - The detected installation info.
- * @param currentVersion - The currently running version.
- * @param latestVersion - The latest available version, or null if unknown.
- */
+// Shared between --check mode and the pre-upgrade display so both surfaces print identical version/install-method/upgrade-command rows.
 function printUpgradeInfo(ctx: UpgradeContext, info: InstallInfo, currentVersion: string, latestVersion: Nullable<string>): void {
 
   ctx.stdout("PrismCast Upgrade Check");
@@ -125,14 +112,6 @@ function printNonUpgradeableSummary(ctx: UpgradeContext, info: NonUpgradeableIns
   ctx.stdout("  " + info.upgradeCommand);
 }
 
-/**
- * Handles the --check flag: prints upgrade information and exits with 0.
- * @param ctx - The upgrade context.
- * @param info - The detected installation info.
- * @param currentVersion - The currently running version.
- * @param latestVersion - The latest available version, or null if unknown.
- * @returns Exit code (0).
- */
 function handleCheck(ctx: UpgradeContext, info: InstallInfo, currentVersion: string, latestVersion: Nullable<string>): number {
 
   if(!info.upgradeable) {
@@ -160,9 +139,9 @@ function handleCheck(ctx: UpgradeContext, info: InstallInfo, currentVersion: str
 }
 
 /**
- * Main handler for the `upgrade` subcommand. Parses arguments and orchestrates the appropriate upgrade flow through the UpgradeContext. Pure function of
- * UpgradeContext modulo the help/usage paths that just write to stdout - no detection, registry, subprocess, or process state is touched outside the context's
- * methods.
+ * Main handler for the `upgrade` subcommand. Parses arguments and orchestrates the appropriate upgrade flow through the UpgradeContext. Pure orchestrator over
+ * UpgradeContext - decision logic depends only on context methods plus the synchronous getPackageVersion() lookup, never on direct subprocess, registry, or
+ * process-state I/O.
  * @param args - Arguments after 'upgrade' (e.g., ['--check', '--force']).
  * @param ctx - The upgrade context. Defaults to createDefaultUpgradeContext() which wires real runtime I/O.
  * @returns Exit code (0 for success, 1 for error).
@@ -199,7 +178,7 @@ export async function handleUpgradeCommand(args: readonly string[], ctx: Upgrade
   }
 
   // Already-current short-circuit: skip when --force is set or when we could not check the registry. Without --force, an indeterminate version check is fatal
-  // because we should not blindly run npm install when we can not see whether it would do anything.
+  // because we should not blindly run npm install when we cannot see whether it would do anything.
   if(!force && latestVersion && !isVersionLessThan(currentVersion, latestVersion)) {
 
     ctx.stdout("PrismCast v" + currentVersion + " is already the latest version.");
@@ -221,11 +200,30 @@ export async function handleUpgradeCommand(args: readonly string[], ctx: Upgrade
   ctx.stdout("Running: " + info.upgradeCommand);
   ctx.stdout("");
 
-  // Execute the upgrade. packageDir is set only by the npm-local strategy (it is the lone field in ResolvableFields and only npm-local declares a resolver),
-  // so reading it directly is sufficient - the runner uses it as cwd when present and falls back to process.cwd() when absent.
-  const result = ctx.runUpgradeCommand(info.upgradeCommand, { cwd: info.packageDir });
+  // Dispatch to the platform-aware lifecycle. The returned UpgradeStep tells us whether the upgrade ran in-process synchronously (POSIX path) or was handed
+  // off to a detached helper (Windows path); we narrow on `kind` and handle each variant's messaging and exit behavior. packageDir flows through to the
+  // lifecycle as part of InstallInfo (only npm-local declares a resolver that sets it).
+  const step = ctx.performUpgrade(info);
 
-  if(!result.success) {
+  if(step.kind === "handed-off") {
+
+    // The Windows handoff strategy has spawned a detached helper that is waiting for the current process to exit so file locks on the prismcast directory
+    // release before npm install runs. We must exit immediately; the helper handles the upgrade and (conditionally) the service-task restart on its own. The
+    // log path is surfaced so the user has somewhere to look while the upgrade runs.
+    //
+    // The restart message is deliberately phrased as a conditional rather than an unconditional promise. The helper only restarts the scheduled task when one
+    // is registered; a user who invokes `prismcast upgrade` against a non-service install will need to restart PrismCast manually after the helper finishes.
+    // We cannot know which branch will apply without probing Task Scheduler from our process, and that would add a synchronous PowerShell call to every
+    // upgrade. The honest two-clause message keeps both audiences correctly informed without that cost.
+    ctx.stdout("Upgrade is running in the background.");
+    ctx.stdout("If PrismCast is registered as a Windows service, the helper will restart it when the upgrade completes; otherwise, restart PrismCast manually.");
+    ctx.stdout("Helper log: " + step.logPath);
+
+    ctx.exit(0);
+  }
+
+  // In-process path: the upgrade ran synchronously and the result is the runner's outcome.
+  if(!step.success) {
 
     ctx.stderr("");
     ctx.stderr("Upgrade failed. Check the output above for details.");
@@ -236,7 +234,8 @@ export async function handleUpgradeCommand(args: readonly string[], ctx: Upgrade
   ctx.stdout("");
   ctx.stdout("Upgrade complete.");
 
-  // Service-managed processes restart automatically when we exit; manual installs need a user-driven restart.
+  // Service-managed processes restart automatically when we exit; manual installs need a user-driven restart. The handoff branch above does not reach this
+  // code because its helper owns the restart; only the in-process branch falls through here.
   if(ctx.isService) {
 
     ctx.stdout("Restarting PrismCast via service manager...");

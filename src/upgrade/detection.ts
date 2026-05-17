@@ -12,6 +12,9 @@
  *   - RegisteredMethod, InstallMethod (derived) - the literal-union types produced from the registry; cannot drift from the strategies
  *   - InstallInfo (this file) - the dispatcher's output; mirrors the strategy union so non-upgradeable infos carry the message
  *   - detectInstallMethod (this file) - the dispatcher; a fold over the registry that builds the right InstallInfo variant
+ *   - PathHandle (pathHandle.ts) - the platform-aware value type wrapping the running module's filesystem location; the SSOT for path semantics (separator
+ *     selection, case-folding, segment topology). Strategies query it through a narrow structural API and never see a raw path string, which makes the
+ *     forward-slash-vs-backslash class of cross-platform bugs structurally inexpressible at the strategy layer.
  *   - createDefaultDetectionContext (detection.context) - the adapter; the only place that reads import.meta.url, runs subprocesses, or touches the FS
  *
  * Adding a new install method is appending one record to INSTALL_STRATEGIES. The InstallMethod type updates automatically. The dispatcher and the adapter never
@@ -24,8 +27,8 @@
  * upgradeable is false. Consumers narrow on `if(!info.upgradeable)` and read the message field with full type safety; the structural impossibility of an
  * upgradeable strategy carrying manual instructions, or a non-upgradeable one omitting them, is enforced at the type level rather than by convention.
  */
+import type { PathHandle } from "./pathHandle.ts";
 import { createDefaultDetectionContext } from "./detection.context.ts";
-import path from "node:path";
 
 /**
  * The runtime context detection consumes. Each field is one narrow capability the decision logic depends on - the path of the running module, whether we are
@@ -34,8 +37,10 @@ import path from "node:path";
  */
 export interface DetectionContext {
 
-  // The absolute filesystem path of the running module, derived from import.meta.url at the boundary. Used by the path-pattern strategies (homebrew, npm-*).
-  readonly currentFile: string;
+  // The platform-aware handle on the running module's filesystem location, constructed at the boundary from import.meta.url. Used by the path-pattern strategies
+  // (homebrew, npm-*), which query it through PathHandle's structural API rather than reasoning about separators directly. The PathHandle type is the SSOT for
+  // path semantics in the detection layer...see pathHandle.ts.
+  readonly currentFile: PathHandle;
 
   // Filesystem existence check. Used by the npm-local strategy to verify the project root has a package.json.
   readonly fileExists: (path: string) => boolean;
@@ -117,17 +122,6 @@ export interface NonUpgradeableInstallStrategy<M extends string = string> extend
  */
 export type InstallStrategy<M extends string = string> = UpgradeableInstallStrategy<M> | NonUpgradeableInstallStrategy<M>;
 
-// Path marker that distinguishes Homebrew formula installs from npm-on-Homebrew installs. The npm global directory under Homebrew lives at /opt/homebrew/lib/
-// node_modules/prismcast/ on Apple Silicon, which would otherwise produce a false-positive homebrew match; checking for /Cellar/prismcast/ specifically avoids
-// that.
-const HOMEBREW_MARKER = "/Cellar/prismcast/";
-
-// Path marker for npm local installs. The package's source files live under <project>/node_modules/prismcast/...; the npm-local resolver extracts the project
-// root by slicing the path before this marker. The npm-global strategy also uses the broader "/node_modules/" substring as a cheap prefilter to skip the
-// subprocess call when the path could not possibly be an npm install.
-const NPM_LOCAL_MARKER = "/node_modules/prismcast/";
-const ANY_NODE_MODULES = "/node_modules/";
-
 /**
  * Docker strategy. Matched via the container-environment probe rather than the path - inside a container, path-based detection is irrelevant because the path
  * looks like any other npm install but the upgrade flow is fundamentally different (recreate the container, not run a package manager). Carries the manual
@@ -148,22 +142,25 @@ const DOCKER_STRATEGY = {
 } as const satisfies InstallStrategy<"docker">;
 
 /**
- * Homebrew strategy. Matched via the /Cellar/prismcast/ path marker. Homebrew formula installs always live under <prefix>/Cellar/<formula>/<version>/, so the
- * marker is a reliable discriminator on both Intel (/usr/local/Cellar) and Apple Silicon (/opt/homebrew/Cellar) layouts.
+ * Homebrew strategy. Matched via the "Cellar" + "prismcast" segment chain. Homebrew formula installs always live under <prefix>/Cellar/<formula>/<version>/, so
+ * the pair is a reliable discriminator on both Intel (/usr/local/Cellar) and Apple Silicon (/opt/homebrew/Cellar) layouts. The chain is deliberately the pair
+ * rather than just "Cellar" so an npm-on-Homebrew install at /opt/homebrew/lib/node_modules/prismcast/ does not false-positive...that path contains "homebrew"
+ * but not "Cellar/prismcast".
  */
 const HOMEBREW_STRATEGY = {
 
   displayName: "Homebrew",
   id: "homebrew",
-  matches: (ctx: DetectionContext): boolean => ctx.currentFile.includes(HOMEBREW_MARKER),
+  matches: (ctx: DetectionContext): boolean => ctx.currentFile.hasSegmentChain("Cellar", "prismcast"),
   upgradeCommand: "brew update && brew upgrade prismcast",
   upgradeable: true
 } as const satisfies InstallStrategy<"homebrew">;
 
 /**
- * npm global strategy. Matched in two stages: a cheap path prefilter (the running file must be under SOME node_modules tree), then the authoritative subprocess
- * call to `npm prefix -g`. The prefilter avoids spawning npm for paths that obviously can not be an npm install (e.g., a development checkout, a Homebrew Cellar
- * path), keeping the matches predicate inexpensive in the common no-match case.
+ * npm global strategy. Matched in two stages: a cheap path prefilter (the running file must contain a "node_modules" segment), then the authoritative subprocess
+ * call to `npm prefix -g` followed by a structural is-under check against the reported prefix. The prefilter avoids spawning npm for paths that obviously cannot
+ * be an npm install (e.g., a development checkout, a Homebrew Cellar path), keeping the matches predicate inexpensive in the common no-match case. Both checks
+ * flow through PathHandle so the predicate is platform-agnostic by construction.
  */
 const NPM_GLOBAL_STRATEGY = {
 
@@ -171,7 +168,7 @@ const NPM_GLOBAL_STRATEGY = {
   id: "npm-global",
   matches: (ctx: DetectionContext): boolean => {
 
-    if(!ctx.currentFile.includes(ANY_NODE_MODULES)) {
+    if(!ctx.currentFile.hasSegmentChain("node_modules")) {
 
       return false;
     }
@@ -183,28 +180,32 @@ const NPM_GLOBAL_STRATEGY = {
       return false;
     }
 
-    return ctx.currentFile.startsWith(globalPrefix);
+    return ctx.currentFile.isUnder(globalPrefix);
   },
   upgradeCommand: "npm install -g prismcast@latest",
   upgradeable: true
 } as const satisfies InstallStrategy<"npm-global">;
 
 /**
- * npm local strategy. Matched via the /node_modules/prismcast/ path marker; the resolver computes packageDir as the directory above node_modules, but only when
- * that directory actually has a package.json (some weird layouts have an orphaned node_modules without a manifest, and the upgrade runner needs the right cwd
- * for npm install).
+ * npm local strategy. Matched via the "node_modules" + "prismcast" segment chain; the resolver walks the same chain via parentBefore to recover the consumer's
+ * project root (the directory above node_modules) and confirms the manifest is actually there via fileExists. Some unusual layouts have an orphaned node_modules
+ * without a manifest, and the upgrade runner needs the right cwd for `npm install`, so we only surface packageDir when we can prove the manifest exists.
  */
 const NPM_LOCAL_STRATEGY = {
 
   displayName: "npm (local)",
   id: "npm-local",
-  matches: (ctx: DetectionContext): boolean => ctx.currentFile.includes(NPM_LOCAL_MARKER),
+  matches: (ctx: DetectionContext): boolean => ctx.currentFile.hasSegmentChain("node_modules", "prismcast"),
   resolve: (ctx: DetectionContext): ResolvableFields => {
 
-    const localIndex = ctx.currentFile.indexOf(NPM_LOCAL_MARKER);
-    const projectRoot = ctx.currentFile.slice(0, localIndex);
+    const projectRoot = ctx.currentFile.parentBefore("node_modules", "prismcast");
 
-    return ctx.fileExists(path.join(projectRoot, "package.json")) ? { packageDir: projectRoot } : {};
+    if(!projectRoot) {
+
+      return {};
+    }
+
+    return ctx.fileExists(projectRoot.join("package.json")) ? { packageDir: projectRoot.raw } : {};
   },
   upgradeCommand: "npm install prismcast@latest",
   upgradeable: true

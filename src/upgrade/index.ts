@@ -4,3 +4,4 @@
  */
 export * from "./commands.ts";
 export * from "./detection.ts";
+export * from "./lifecycle.ts";

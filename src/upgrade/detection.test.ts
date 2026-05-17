@@ -3,23 +3,44 @@
  * detection.test.ts: Unit tests for the install-method detection logic in detection.ts. Strategies are data records, so tests read constant fields directly
  * (HOMEBREW_STRATEGY.upgradeCommand) and exercise predicates by passing constructed DetectionContexts to matches/resolve. The dispatcher is tested separately
  * by calling detectInstallMethod with full contexts and verifying it routes to the right strategy.
+ *
+ * Cross-platform testing is first-class here. The PathHandle wrapper that currentFile uses accepts an explicit platform override, so a single Linux-hosted test
+ * suite can construct Windows-flavored handles (backslash separators, case-insensitive matching) and verify the strategies behave correctly on Windows install
+ * layouts. This is how the v1.10.2 detection-on-Windows regression becomes a unit test rather than a user-reported bug.
  */
-import { type DetectionContext, INSTALL_STRATEGIES, type InstallStrategy, UNKNOWN_INSTALL, detectInstallMethod } from "./detection.ts";
+import type { DetectionContext, InstallStrategy } from "./detection.ts";
+import { INSTALL_STRATEGIES, UNKNOWN_INSTALL, detectInstallMethod } from "./detection.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { createPathHandle } from "./pathHandle.ts";
+
+/* ContextOverrides is the test-facing shape for makeContext - currentFile is a string (the test author writes raw paths, never PathHandles directly), and a
+ * platform field selects POSIX or Windows semantics for the wrapping. Defaults below keep every other field in a no-match state so only the strategy under test
+ * fires.
+ */
+interface ContextOverrides {
+
+  readonly currentFile?: string;
+  readonly fileExists?: (path: string) => boolean;
+  readonly isContainer?: boolean;
+  readonly platform?: NodeJS.Platform;
+  readonly runCommand?: (cmd: string) => string | null;
+}
 
 /* makeContext builds a DetectionContext literal with sensible defaults that match no install strategy (path under /tmp/test/, no container, no npm prefix, no
- * file existence). Tests override the fields they care about; everything else stays in the no-match state so only the strategy under test fires.
+ * file existence). Tests override the fields they care about; everything else stays in the no-match state so only the strategy under test fires. The platform
+ * override flows through createPathHandle so a single test can produce a Windows handle on a Linux host (and vice versa) without touching process state.
  */
-function makeContext(overrides: Partial<DetectionContext> = {}): DetectionContext {
+function makeContext(overrides: ContextOverrides = {}): DetectionContext {
+
+  const platform: NodeJS.Platform = overrides.platform ?? "linux";
 
   return {
 
-    currentFile: "/tmp/test/dist/upgrade/detection.js",
-    fileExists: (): boolean => false,
-    isContainer: false,
-    runCommand: (): string | null => null,
-    ...overrides
+    currentFile: createPathHandle(overrides.currentFile ?? "/tmp/test/dist/upgrade/detection.js", { platform }),
+    fileExists: overrides.fileExists ?? ((): boolean => false),
+    isContainer: overrides.isContainer ?? false,
+    runCommand: overrides.runCommand ?? ((): string | null => null)
   };
 }
 
@@ -248,6 +269,50 @@ describe("NPM_GLOBAL strategy", () => {
 
     assert.deepEqual(seenCommands, ["npm prefix -g"]);
   });
+
+  test("matches a Windows path under the reported npm global prefix (the v1.10.2 detection-on-Windows regression)", () => {
+
+    // The exact shape of the install layout that produced the v1.10.2 bug report: Node global prefix is "%AppData%\\npm" and PrismCast lives under that directory.
+    // Before the PathHandle refactor, the strategy's substring prefilter checked for "/node_modules/" against a backslash path and bailed out, leaving the user
+    // with "Install method: Unknown" and a manual upgrade instruction. The PathHandle-based predicate matches structurally and the strategy now fires correctly.
+    const matched = strategy.matches(makeContext({
+
+      currentFile: "C:\\Users\\jp\\AppData\\Roaming\\npm\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
+      platform: "win32",
+      runCommand: (cmd) => (cmd === "npm prefix -g") ? "C:\\Users\\jp\\AppData\\Roaming\\npm" : null
+    }));
+
+    assert.equal(matched, true, "Windows npm-global must detect when prefix and currentFile agree under backslash semantics");
+  });
+
+  test("matches a Windows path even when prefix and currentFile use mismatched casing (case-insensitive Windows comparison)", () => {
+
+    // Windows filesystems are case-insensitive at the OS layer, so "C:\\users\\jp" and "C:\\Users\\jp" denote the same directory. The PathHandle isUnder check
+    // case-folds both sides on win32 to match that OS semantic. A future change that re-introduced a case-sensitive comparison would silently break installs
+    // whose npm prefix casing happens to differ from the canonical casing in import.meta.url; this test locks the behavior.
+    const matched = strategy.matches(makeContext({
+
+      currentFile: "C:\\Users\\JP\\AppData\\Roaming\\npm\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
+      platform: "win32",
+      runCommand: (): string => "c:\\users\\jp\\appdata\\roaming\\npm"
+    }));
+
+    assert.equal(matched, true);
+  });
+
+  test("does not match when the Windows path is on a different drive than the reported prefix", () => {
+
+    // Negative: an npm prefix on C: with a currentFile on D: cannot be an npm-global install. The structural is-under check rejects this cleanly because the
+    // drive segment is part of the segment list and never folds across drives.
+    const matched = strategy.matches(makeContext({
+
+      currentFile: "D:\\dev\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
+      platform: "win32",
+      runCommand: (): string => "C:\\Users\\jp\\AppData\\Roaming\\npm"
+    }));
+
+    assert.equal(matched, false);
+  });
 });
 
 describe("NPM_LOCAL strategy", () => {
@@ -306,6 +371,44 @@ describe("NPM_LOCAL strategy", () => {
     }));
 
     assert.equal(partial.packageDir, undefined);
+  });
+
+  test("matches a Windows path containing node_modules\\prismcast", () => {
+
+    // The matches predicate on Windows: the "node_modules" + "prismcast" segment chain is found against a backslash-separated path. Before PathHandle this was a
+    // string substring check against "/node_modules/prismcast/" and silently never matched on Windows. Locking the behavior with an explicit win32 fixture.
+    const matched = strategy.matches(makeContext({
+
+      currentFile: "C:\\Users\\jp\\my-app\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
+      platform: "win32"
+    }));
+
+    assert.equal(matched, true);
+  });
+
+  test("resolver extracts a Windows project root with backslash separators and queries the manifest at the right path", () => {
+
+    // Locks the Windows analogue of the POSIX resolver test above. parentBefore on a win32 PathHandle returns a handle whose raw path uses backslashes; the
+    // resolver's join("package.json") composes the manifest path with the same separator; fileExists sees a clean Windows path. This is exactly the contract the
+    // upgrade runner needs because npm install on Windows expects a Windows-style cwd.
+    const queriedPaths: string[] = [];
+
+    const ctx = makeContext({
+
+      currentFile: "C:\\Users\\jp\\my-app\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
+      fileExists: (p) => {
+
+        queriedPaths.push(p);
+
+        return p === "C:\\Users\\jp\\my-app\\package.json";
+      },
+      platform: "win32"
+    });
+
+    const partial = strategy.resolve!(ctx);
+
+    assert.equal(partial.packageDir, "C:\\Users\\jp\\my-app");
+    assert.deepEqual(queriedPaths, ["C:\\Users\\jp\\my-app\\package.json"], "fileExists must be queried with a Windows-style manifest path");
   });
 });
 
@@ -493,6 +596,42 @@ describe("detectInstallMethod (dispatcher)", () => {
     assert.equal(typeof info.upgradeable, "boolean");
     assert.ok(info.upgradeCommand.length > 0, "upgradeCommand is always non-empty");
   });
+
+  test("routes a Windows npm-global layout to the npm-global InstallInfo end-to-end (v1.10.2 regression lock)", () => {
+
+    // End-to-end regression test for the bug a Windows user hit on the v1.10.2 release: `prismcast upgrade` reported "Install method: Unknown" because the
+    // refactored npm-global predicate had a forward-slash substring prefilter against a backslash path. The PathHandle-based predicate now routes this layout
+    // correctly. Locking the dispatcher's output (not just the predicate's boolean) catches any future regression that might break the wiring at a different
+    // layer (e.g., if a future refactor stopped composing the resolved fields through the dispatcher).
+    const info = detectInstallMethod(makeContext({
+
+      currentFile: "C:\\Users\\jp\\AppData\\Roaming\\npm\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
+      platform: "win32",
+      runCommand: (cmd) => (cmd === "npm prefix -g") ? "C:\\Users\\jp\\AppData\\Roaming\\npm" : null
+    }));
+
+    assert.equal(info.method, "npm-global");
+    assert.equal(info.displayName, "npm (global)");
+    assert.equal(info.upgradeable, true);
+    assert.equal(info.upgradeCommand, "npm install -g prismcast@latest");
+  });
+
+  test("routes a Windows npm-local layout to the npm-local InstallInfo with a Windows-style packageDir", () => {
+
+    // Companion to the regression test above. Verifies that an npm-local layout on Windows (a developer working on a project that depends on prismcast)
+    // resolves packageDir as a backslash-separated Windows path...the npm install runner uses this as cwd, so it must round-trip through fileExists and into
+    // the InstallInfo without any cross-platform normalization that would confuse npm on Windows.
+    const info = detectInstallMethod(makeContext({
+
+      currentFile: "C:\\Users\\jp\\my-app\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
+      fileExists: (p) => p === "C:\\Users\\jp\\my-app\\package.json",
+      platform: "win32"
+    }));
+
+    assert.equal(info.method, "npm-local");
+    assert.equal(info.upgradeable, true);
+    assert.equal(info.packageDir, "C:\\Users\\jp\\my-app");
+  });
 });
 
 describe("UNKNOWN_INSTALL sentinel", () => {
@@ -517,7 +656,7 @@ describe("UNKNOWN_INSTALL sentinel", () => {
   test("declares the documented manualUpgradeMessage", () => {
 
     // The unknown sentinel carries its own one-line message because it has no registered strategy to inherit from. Locked because operators see this string
-    // verbatim when the tool can not figure out how PrismCast was installed.
+    // verbatim when the tool cannot figure out how PrismCast was installed.
     assert.deepEqual(UNKNOWN_INSTALL.manualUpgradeMessage, ["Unable to detect installation method. Please upgrade manually:"]);
   });
 });
