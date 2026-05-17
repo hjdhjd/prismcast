@@ -9,6 +9,7 @@ import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, 
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, isRunningAsService, stringifySorted } from "../../utils/index.ts";
 import { sendErrorResponse, sendFormErrors, sendSuccess, sendValidationError } from "./http/envelope.ts";
+import { ACTIONS } from "../clientActions.ts";
 import type { Nullable } from "../../types/index.ts";
 import { getConfigFilePath } from "../../config/paths.ts";
 import { getGpuCapabilities } from "../../browser/display.ts";
@@ -504,7 +505,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
       postDescription.push("<label style=\"" + labelStyle + "\">");
       postDescription.push("<input type=\"checkbox\" value=\"" + escapeHtml(item.value) + "\"" + checked + (isDisabled ? " disabled" : "") +
-        " onchange=\"updateCheckboxList(this)\"> " + escapeHtml(item.label));
+        " data-change-action=\"" + ACTIONS.updateCheckboxList + "\"> " + escapeHtml(item.label));
 
       if(item.disabled && item.disabledReason) {
 
@@ -589,8 +590,8 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   // Add reset button for modified settings.
   if(isModified) {
 
-    lines.push("<button type=\"button\" class=\"btn-reset\" onclick=\"resetSetting('" + escapeHtml(setting.path) +
-      "')\" title=\"Reset to default\" aria-label=\"Reset to default\">&#8635;</button>");
+    lines.push("<button type=\"button\" class=\"btn-reset\" data-click-action=\"" + ACTIONS.resetSetting + "\" data-setting-path=\"" + escapeHtml(setting.path) +
+      "\" title=\"Reset to default\" aria-label=\"Reset to default\">&#8635;</button>");
   }
 
   lines.push("</div>");
@@ -857,7 +858,8 @@ export function generateSettingsTabContent(validationErrors?: Map<string, string
   // Panel header with description and reset button.
   lines.push("<div class=\"panel-header\">");
   lines.push("<p class=\"settings-panel-description\">" + escapeHtml(settingsTab?.description ?? "Configure common options.") + "</p>");
-  lines.push("<a href=\"#\" class=\"panel-reset\" onclick=\"resetTabToDefaults('settings'); return false;\">Reset to Defaults</a>");
+  lines.push("<a href=\"#\" class=\"panel-reset\" data-click-action=\"" + ACTIONS.resetTabToDefaults +
+    "\" data-tab=\"settings\" data-click-prevent-default>Reset to Defaults</a>");
   lines.push("</div>");
 
   // Generate each section with a header.
@@ -902,7 +904,7 @@ export function generateCollapsibleSection(section: AdvancedSection, validationE
   lines.push("<div class=\"advanced-section\" data-section=\"" + escapeHtml(section.id) + "\">");
 
   // Section header with chevron, title, and count.
-  lines.push("<div class=\"section-header\" onclick=\"toggleSection('" + escapeHtml(section.id) + "')\">");
+  lines.push("<div class=\"section-header\" data-click-action=\"" + ACTIONS.toggleSection + "\" data-section-id=\"" + escapeHtml(section.id) + "\">");
   lines.push("<span class=\"section-chevron\">&#9654;</span>");
   lines.push("<span class=\"section-title\">" + escapeHtml(section.displayName) + "</span>");
   lines.push("<span class=\"section-count\">(" + String(settingCount) + " setting" + (settingCount === 1 ? "" : "s") + ")</span>");
@@ -945,7 +947,8 @@ export function generateAdvancedTabContent(validationErrors?: Map<string, string
   // Panel header with description and reset button.
   lines.push("<div class=\"panel-header\">");
   lines.push("<p class=\"settings-panel-description\">" + escapeHtml(advancedTab?.description ?? "Expert tuning options.") + "</p>");
-  lines.push("<a href=\"#\" class=\"panel-reset\" onclick=\"resetTabToDefaults('advanced'); return false;\">Reset All to Defaults</a>");
+  lines.push("<a href=\"#\" class=\"panel-reset\" data-click-action=\"" + ACTIONS.resetTabToDefaults + "\" data-tab=\"advanced\" " +
+    "data-click-prevent-default>Reset All to Defaults</a>");
   lines.push("</div>");
 
   // Generate each collapsible section.

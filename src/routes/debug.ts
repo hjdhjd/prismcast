@@ -2,82 +2,156 @@
  *
  * debug.ts: Debug logging configuration endpoint for PrismCast.
  */
-import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, initDebugFilter, isCategoryEnabled } from "../utils/index.ts";
+import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, initDebugFilter, isCategoryEnabled, serializeAttrs } from "../utils/index.ts";
 import type { Express, Request, Response } from "express";
 import { generateBaseStyles, generatePageWrapper } from "./ui.ts";
 import { CONFIG } from "../config/index.ts";
+import type { DebugCategory } from "../utils/index.ts";
 import { getDebugEnv } from "../config/paths.ts";
 import { mutateConfig } from "../config/userConfig.ts";
 
-/* This module provides a hidden (undocumented) web page at /debug for runtime control of debug logging categories. The page renders all known categories as
- * hierarchical checkboxes grouped by namespace prefix. Toggling a parent group enables or disables all children. Changes are applied immediately via POST without
- * requiring a server restart.
+/* This module provides a hidden (undocumented) web page at /debug for runtime control of debug logging categories. Toggling a category enables or disables its
+ * debug output immediately; the runtime filter is updated in place and the canonical form is persisted to config.json so the change survives restarts.
+ *
+ * The page is laid out as a vertical stack of cards (".debug-section"), each holding one or more rows (".debug-row"). The row is the only visual primitive on
+ * the page, and every variant - group header, grouped leaf, standalone leaf - emits the same DOM shape; the variants differ only in which named tracks of a
+ * shared CSS Grid each cell occupies. ".debug-section" owns the grid template; ".debug-row" inherits the column tracks via subgrid, so the column geometry
+ * exists in exactly one CSS rule and every row participates in the same coordinate system.
+ *
+ * Identifier conventions (ID prefixes, data-attribute names) are hoisted to module constants and templated into both the server-side HTML emission and the
+ * client-side script string. Renaming any of them is a one-line change and the server and client stay in lockstep. The client uses delegated change-event
+ * handling, so the rendered HTML carries no inline onchange handlers - the only function-name surface between the two sides is the constants themselves.
  */
+
+// Identifier Conventions.
+
+/* ID prefixes, data-attribute names, and action values referenced by both the server-side renderer (when emitting markup) and the client-side script string
+ * (when querying or matching against it). Both sides interpolate these constants rather than hard-coding the literals, so renaming any of them is a one-line
+ * change and the server and client stay in lockstep.
+ */
+
+// HTML id prefixes: leaves and section parent toggles.
+const LEAF_ID_PREFIX = "cat-";
+const SECTION_ID_PREFIX = "group-";
+
+// Data-attribute names carried by leaf and action elements.
+const ATTR_ACTION = "data-debug-action";
+const ATTR_CATEGORY = "data-category";
+const ATTR_GROUP = "data-group";
+const ATTR_INDETERMINATE = "data-indeterminate";
+
+// Action values for the data-debug-action attribute on the action-bar buttons.
+const ACTION_APPLY = "apply";
+const ACTION_DESELECT_ALL = "deselect-all";
+const ACTION_SELECT_ALL = "select-all";
 
 // Types.
 
 /**
- * A group of debug categories sharing a common namespace prefix.
+ * A discriminated union describing one top-level entry on the /debug page. A "section" wraps one or more namespaced leaves under a shared prefix (e.g., the
+ * "browser" section holds "browser:lifecycle" and "browser:video"). A "standalone" is a single namespaceless leaf (e.g., "cdp", "precache", "retry") rendered
+ * as its own one-row card. The view model is built once per render from the flat DEBUG_CATEGORIES list; the renderer is an exhaustive switch over this union,
+ * so the prefix-vs-standalone classification lives in exactly one place.
  */
-interface CategoryGroup {
+type CategoryNode =
+  { readonly kind: "section"; readonly leaves: readonly DebugCategory[]; readonly prefix: string } |
+  { readonly kind: "standalone"; readonly leaf: DebugCategory };
 
-  // Children categories (the part after the colon, or the full name for standalone items).
-  children: { category: string; description: string }[];
+/* The three visual row shapes. "leaf" is the default (grouped child); "header" is the section's parent toggle; "standalone" is a namespaceless category
+ * rendered as its own bold row. Variant-specific styling is applied via a CSS modifier class derived from this discriminator.
+ */
+type RowVariant = "header" | "leaf" | "standalone";
 
-  // The group prefix (e.g., "browser", "streaming"). For standalone categories, this equals the category name.
-  prefix: string;
+/**
+ * A pure data description of one row on the page. The renderer takes this and produces the HTML; all escaping happens inside the renderer so callers pass raw
+ * values. This is the single shape every row variant funnels through, which is what makes the four-track grid template on ".debug-section" the sole source of
+ * truth for column alignment - there is no second markup path that could drift.
+ */
+interface RowSpec {
+
+  readonly description: string;
+  readonly inputAttrs: Record<string, string | boolean | undefined>;
+  readonly inputId: string;
+  readonly labelText: string;
+  readonly variant: RowVariant;
 }
 
 // Helpers.
 
 /**
- * Organizes the flat category list into hierarchical groups by splitting on the first colon. Categories without a colon that are also a prefix of other categories
- * are treated as both a group parent and a child within that group. Standalone categories with no colon and no sub-categories form single-child groups.
- * @returns Sorted array of category groups.
+ * Builds the view model from the flat DEBUG_CATEGORIES list. Categories with a colon are grouped under the substring preceding the colon; categories without
+ * a colon become standalone leaves. The resulting list is sorted alphabetically by display key (section prefix for groups, category name for standalones) so
+ * the page renders deterministically regardless of registry insertion order.
+ * @returns Sorted array of top-level category nodes.
  */
-function buildCategoryGroups(): CategoryGroup[] {
+function buildCategoryNodes(): readonly CategoryNode[] {
 
-  const groupMap = new Map<string, { category: string; description: string }[]>();
+  const sections = new Map<string, DebugCategory[]>();
+  const standalones: DebugCategory[] = [];
 
   for(const entry of DEBUG_CATEGORIES) {
 
     const colonIndex = entry.category.indexOf(":");
-    const prefix = (colonIndex === -1) ? entry.category : entry.category.substring(0, colonIndex);
 
-    let group = groupMap.get(prefix);
+    if(colonIndex === -1) {
 
-    if(!group) {
+      standalones.push({ category: entry.category, description: entry.description });
 
-      group = [];
-      groupMap.set(prefix, group);
+      continue;
     }
 
-    group.push({ category: entry.category, description: entry.description });
+    const prefix = entry.category.substring(0, colonIndex);
+    let leaves = sections.get(prefix);
+
+    if(!leaves) {
+
+      leaves = [];
+      sections.set(prefix, leaves);
+    }
+
+    leaves.push({ category: entry.category, description: entry.description });
   }
 
-  // Sort groups alphabetically by prefix, and children alphabetically within each group.
-  const groups: CategoryGroup[] = [];
+  const nodes: CategoryNode[] = [];
 
-  for(const [ prefix, children ] of groupMap) {
+  for(const [ prefix, leaves ] of sections) {
 
-    children.sort((a, b) => a.category.localeCompare(b.category));
-    groups.push({ children, prefix });
+    leaves.sort((a, b) => a.category.localeCompare(b.category));
+    nodes.push({ kind: "section", leaves, prefix });
   }
 
-  groups.sort((a, b) => a.prefix.localeCompare(b.prefix));
+  for(const leaf of standalones) {
 
-  return groups;
+    nodes.push({ kind: "standalone", leaf });
+  }
+
+  nodes.sort((a, b) => {
+
+    const aKey = (a.kind === "section") ? a.prefix : a.leaf.category;
+    const bKey = (b.kind === "section") ? b.prefix : b.leaf.category;
+
+    return aKey.localeCompare(bKey);
+  });
+
+  return nodes;
 }
 
 /**
- * Generates the page-specific CSS styles for the debug endpoint.
+ * Generates the page-specific CSS styles for the debug endpoint. Layout is owned by ".debug-section" - a CSS Grid with four named tracks. Each ".debug-row"
+ * inherits those tracks via subgrid, so the column geometry exists in exactly one rule and every row participates in the same coordinate system. Variants
+ * (header, leaf, standalone) place their cells into the appropriate named tracks via modifier classes; description-column alignment falls out of the grid
+ * template itself rather than depending on per-row CSS staying in sync.
  * @returns CSS string for the debug page.
  */
 function generateDebugStyles(): string {
 
   return [
 
-    ".debug-container { max-width: 800px; margin: 0 auto; padding: 24px; }",
+    // Column geometry. These five variables are the sole source of truth for the grid's column widths and gaps; the rules below reference them rather than
+    // restating numeric values, so tuning the layout means editing this one line. Scoped to ".debug-container" - the only consumer subtree - so they don't
+    // leak into the rest of the document's cascade.
+    ".debug-container { max-width: 800px; margin: 0 auto; padding: 24px;",
+    "  --debug-indent-col: 28px; --debug-checkbox-col: 14px; --debug-label-col: 11rem; --debug-col-gap: 8px; --debug-row-gap: 6px; }",
     ".debug-header { margin-bottom: 24px; }",
     ".debug-header h1 { margin: 0 0 8px 0; font-size: 1.5rem; color: var(--text-heading); }",
     ".debug-header p { margin: 0; color: var(--text-secondary); font-size: 0.9rem; }",
@@ -88,17 +162,31 @@ function generateDebugStyles(): string {
     "  word-break: break-all; }",
     ".debug-status-label { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }",
 
-    // Category groups.
-    ".debug-groups { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }",
-    ".debug-group { background: var(--surface-elevated); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px; }",
-    ".debug-group-header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }",
-    ".debug-group-header label { font-weight: 600; font-size: 0.95rem; color: var(--text-heading); cursor: pointer; min-width: 150px; }",
-    ".debug-group-children { padding-left: 28px; display: flex; flex-direction: column; gap: 6px; }",
-    ".debug-child { display: flex; align-items: baseline; gap: 8px; }",
-    ".debug-child label { cursor: pointer; font-size: 0.9rem; color: var(--text-primary); min-width: 150px; }",
-    ".debug-child-desc { color: var(--text-muted); font-size: 0.8rem; margin-left: 4px; }",
+    // Section cards. ".debug-section" is the grid container that owns the four-track column template; every row inside it inherits these tracks via subgrid,
+    // so the column x-positions are computed once per card and shared across all of the card's rows.
+    ".debug-pane { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }",
+    ".debug-section { background: var(--surface-elevated); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px;",
+    "  display: grid; column-gap: var(--debug-col-gap); row-gap: var(--debug-row-gap);",
+    "  grid-template-columns: [indent] var(--debug-indent-col) [checkbox] var(--debug-checkbox-col) [label] var(--debug-label-col) [desc] 1fr; }",
 
-    // Checkbox styling.
+    // The row template. Rows span all four section columns and inherit those tracks via "grid-template-columns: subgrid", so every cell across every row
+    // (across every section) lives in the same coordinate system. There is no second column declaration anywhere.
+    ".debug-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; }",
+
+    // Default cell placement is the grouped-leaf shape: checkbox in [checkbox], label in [label], description in [desc]. Visually this is the indented child
+    // sitting under a parent header row inside the same section card.
+    ".debug-row > input[type=\"checkbox\"] { grid-column: checkbox; }",
+    ".debug-row > label { grid-column: label; cursor: pointer; font-size: 0.9rem; color: var(--text-primary); }",
+    ".debug-row > .debug-row__desc { grid-column: desc; color: var(--text-muted); font-size: 0.8rem; }",
+
+    // Header and standalone variants share the same column slotting: the checkbox sits in [indent] (visually at the section's left edge), and the label spans
+    // the [checkbox] and [label] tracks so the bold prefix label can stretch wider than a regular leaf label. The description, when present (standalone only -
+    // header rows leave it empty), still lands in [desc], which is what aligns it with every other description on the page.
+    ".debug-row--header > input[type=\"checkbox\"], .debug-row--standalone > input[type=\"checkbox\"] { grid-column: indent; }",
+    ".debug-row--header > label, .debug-row--standalone > label { grid-column: checkbox / desc; font-weight: 600; font-size: 0.95rem;",
+    "  color: var(--text-heading); }",
+
+    // Checkbox styling. Shared by every checkbox on the page (group headers, leaves, standalones).
     "input[type='checkbox'] { cursor: pointer; accent-color: var(--interactive-primary); position: relative; top: 2px; }",
 
     // Action bar.
@@ -128,101 +216,208 @@ function generateDebugStyles(): string {
 }
 
 /**
- * Generates the client-side JavaScript for checkbox behavior: parent toggles all children, child changes update parent state, select all / deselect all, and
- * synchronization between checkboxes and the raw pattern input.
+ * Generates the client-side JavaScript for checkbox and action-button behavior. Two delegated listeners cover the whole page: one "change" listener on
+ * ".debug-pane" dispatches checkbox events by identity (id prefix vs. presence of the group data-attribute), and one "click" listener on ".debug-actions"
+ * dispatches button clicks by the data-debug-action attribute. The rendered HTML therefore carries no inline event handlers, so the JS function names are
+ * only referenced from inside this script. The ID prefixes, attribute names, and action values are templated in from the module constants above, so the
+ * server-side renderer and the client-side script cannot drift.
  * @returns JavaScript string (without script tags).
  */
 function generateDebugScript(): string {
 
   return [
 
+    // Initial state. The HTML "checked" attribute cannot express the indeterminate state, so we apply it from JS once the rows have rendered. Matches by
+    // attribute presence (no value), aligned with the HTML5 boolean-attribute form the renderer emits.
+    "for(const el of document.querySelectorAll('[" + ATTR_INDETERMINATE + "]')) el.indeterminate = true;",
+
     "function updateParentState(prefix) {",
-    "  var parent = document.getElementById('group-' + prefix);",
+    "  const parent = document.getElementById('" + SECTION_ID_PREFIX + "' + prefix);",
     "  if(!parent) return;",
-    "  var children = document.querySelectorAll('input[data-group=\"' + prefix + '\"]');",
-    "  var checked = 0;",
-    "  for(var i = 0; i < children.length; i++) { if(children[i].checked) checked++; }",
+    "  const children = document.querySelectorAll('input[" + ATTR_GROUP + "=\"' + prefix + '\"]');",
+    "  const checked = Array.from(children).filter((child) => child.checked).length;",
     "  parent.checked = (checked === children.length);",
     "  parent.indeterminate = (checked > 0) && (checked < children.length);",
     "}",
 
-    "function onParentToggle(prefix) {",
-    "  var parent = document.getElementById('group-' + prefix);",
-    "  var children = document.querySelectorAll('input[data-group=\"' + prefix + '\"]');",
-    "  for(var i = 0; i < children.length; i++) { children[i].checked = parent.checked; }",
-    "  parent.indeterminate = false;",
-    "  syncRawFromCheckboxes();",
-    "}",
-
-    "function onChildToggle(prefix) {",
-    "  updateParentState(prefix);",
-    "  syncRawFromCheckboxes();",
-    "}",
-
     "function selectAll(checked) {",
-    "  var boxes = document.querySelectorAll('input[type=\"checkbox\"]');",
-    "  for(var i = 0; i < boxes.length; i++) { boxes[i].checked = checked; boxes[i].indeterminate = false; }",
+    "  const boxes = document.querySelectorAll('input[type=\"checkbox\"]');",
+    "  for(const box of boxes) { box.checked = checked; box.indeterminate = false; }",
     "  syncRawFromCheckboxes();",
     "}",
 
     "function syncRawFromCheckboxes() {",
-    "  var all = document.querySelectorAll('input[data-category]');",
-    "  var selected = [];",
-    "  var total = all.length;",
-    "  for(var i = 0; i < all.length; i++) { if(all[i].checked) selected.push(all[i].getAttribute('data-category')); }",
-    "  var input = document.getElementById('raw-pattern');",
-    "  if(selected.length === total) { input.value = '*'; }",
+    "  const all = document.querySelectorAll('input[" + ATTR_CATEGORY + "]');",
+    "  const selected = Array.from(all).filter((cb) => cb.checked).map((cb) => cb.getAttribute('" + ATTR_CATEGORY + "'));",
+    "  const input = document.getElementById('raw-pattern');",
+    "  if(selected.length === all.length) { input.value = '*'; }",
     "  else if(selected.length === 0) { input.value = ''; }",
     "  else { input.value = selected.join(','); }",
     "}",
 
     "function syncCheckboxesFromRaw() {",
-    "  var raw = document.getElementById('raw-pattern').value.trim();",
-    "  var all = document.querySelectorAll('input[data-category]');",
-    "  if(raw === '') { for(var i = 0; i < all.length; i++) { all[i].checked = false; } }",
-    "  else {",
-    "    var rawParts = raw.split(',').map(function(p) { return p.trim(); }).filter(function(p) { return p.length > 0; });",
-    "    var hasWildcard = rawParts.includes('*');",
-    "    var includes = rawParts.filter(function(p) { return p !== '*' && p[0] !== '-'; });",
-    "    var excludes = rawParts.filter(function(p) { return p[0] === '-'; }).map(function(p) { return p.substring(1); });",
-    "    for(var i = 0; i < all.length; i++) {",
-    "      var cat = all[i].getAttribute('data-category');",
-    "      var excluded = false;",
-    "      for(var j = 0; j < excludes.length; j++) {",
-    "        if(cat === excludes[j] || cat.indexOf(excludes[j] + ':') === 0) { excluded = true; break; }",
-    "      }",
-    "      if(excluded) { all[i].checked = false; continue; }",
-    "      if(hasWildcard) { all[i].checked = true; continue; }",
-    "      var match = false;",
-    "      for(var j = 0; j < includes.length; j++) {",
-    "        if(cat === includes[j] || cat.indexOf(includes[j] + ':') === 0) { match = true; break; }",
-    "      }",
-    "      all[i].checked = match;",
+    "  const raw = document.getElementById('raw-pattern').value.trim();",
+    "  const all = document.querySelectorAll('input[" + ATTR_CATEGORY + "]');",
+    "  if(raw === '') {",
+    "    for(const cb of all) cb.checked = false;",
+    "  } else {",
+    "    const rawParts = raw.split(',').map((p) => p.trim()).filter((p) => p.length > 0);",
+    "    const hasWildcard = rawParts.includes('*');",
+    "    const includes = rawParts.filter((p) => (p !== '*') && (p[0] !== '-'));",
+    "    const excludes = rawParts.filter((p) => p[0] === '-').map((p) => p.substring(1));",
+    "    for(const cb of all) {",
+    "      const cat = cb.getAttribute('" + ATTR_CATEGORY + "');",
+    "      const isExcluded = excludes.some((ex) => (cat === ex) || cat.startsWith(ex + ':'));",
+    "      if(isExcluded) { cb.checked = false; continue; }",
+    "      if(hasWildcard) { cb.checked = true; continue; }",
+    "      cb.checked = includes.some((inc) => (cat === inc) || cat.startsWith(inc + ':'));",
     "    }",
     "  }",
-    "  var prefixes = {};",
-    "  for(var i = 0; i < all.length; i++) {",
-    "    var g = all[i].getAttribute('data-group');",
-    "    if(g) prefixes[g] = true;",
+    "  const prefixes = new Set();",
+    "  for(const cb of all) {",
+    "    const g = cb.getAttribute('" + ATTR_GROUP + "');",
+    "    if(g) prefixes.add(g);",
     "  }",
-    "  for(var p in prefixes) { updateParentState(p); }",
+    "  for(const p of prefixes) updateParentState(p);",
     "}",
 
     "function applyPattern() {",
-    "  var input = document.getElementById('raw-pattern');",
+    "  const input = document.getElementById('raw-pattern');",
     "  document.getElementById('debug-form-pattern').value = input.value;",
     "  document.getElementById('debug-form').submit();",
     "}",
 
-    "document.getElementById('raw-pattern').addEventListener('keydown', function(e) {",
-    "  if(e.key === 'Enter') { e.preventDefault(); applyPattern(); }",
+    // Delegated change listener for every checkbox on the page. The handler dispatches on identity: id starting with the section prefix means a parent
+    // toggle, presence of the group data-attribute means a grouped child, neither means a standalone. Any change syncs the raw pattern input afterward.
+    "const pane = document.querySelector('.debug-pane');",
+    "pane.addEventListener('change', (e) => {",
+    "  const target = e.target;",
+    "  if((target.tagName !== 'INPUT') || (target.type !== 'checkbox')) return;",
+    "  if(target.id.startsWith('" + SECTION_ID_PREFIX + "')) {",
+    "    const prefix = target.id.substring(" + String(SECTION_ID_PREFIX.length) + ");",
+    "    const children = document.querySelectorAll('input[" + ATTR_GROUP + "=\"' + prefix + '\"]');",
+    "    for(const child of children) child.checked = target.checked;",
+    "    target.indeterminate = false;",
+    "  } else if(target.hasAttribute('" + ATTR_GROUP + "')) {",
+    "    updateParentState(target.getAttribute('" + ATTR_GROUP + "'));",
+    "  }",
+    "  syncRawFromCheckboxes();",
     "});",
 
-    "document.getElementById('raw-pattern').addEventListener('input', function() {",
-    "  syncCheckboxesFromRaw();",
-    "});"
+    // Delegated click listener for the action bar. Buttons declare their intent via data-debug-action; the handler closest()-walks to find the nearest
+    // ancestor carrying the attribute, so clicks landing on child elements of a button still resolve correctly.
+    "const actions = document.querySelector('.debug-actions');",
+    "actions.addEventListener('click', (e) => {",
+    "  const button = e.target.closest('[" + ATTR_ACTION + "]');",
+    "  if(!button) return;",
+    "  switch(button.getAttribute('" + ATTR_ACTION + "')) {",
+    "    case '" + ACTION_APPLY + "': applyPattern(); break;",
+    "    case '" + ACTION_SELECT_ALL + "': selectAll(true); break;",
+    "    case '" + ACTION_DESELECT_ALL + "': selectAll(false); break;",
+    "  }",
+    "});",
+
+    "const rawPattern = document.getElementById('raw-pattern');",
+    "rawPattern.addEventListener('keydown', (e) => { if(e.key === 'Enter') { e.preventDefault(); applyPattern(); } });",
+    "rawPattern.addEventListener('input', syncCheckboxesFromRaw);"
 
   ].join("\n");
+}
+
+/**
+ * Emits one row of the page from a typed RowSpec. Every visual variant (group header, grouped leaf, standalone leaf) flows through this single template; the
+ * variant's modifier class and per-cell content are all that change between calls. All HTML escaping happens here, so the variant builders pass raw values
+ * and stay declarative.
+ * @param spec - Row data description.
+ * @returns The row HTML.
+ */
+function renderRow(spec: RowSpec): string {
+
+  const variantSuffix = (spec.variant === "leaf") ? "" : " debug-row--" + spec.variant;
+  const escapedId = escapeHtml(spec.inputId);
+
+  return [
+
+    "<div class=\"debug-row" + variantSuffix + "\">",
+    "<input type=\"checkbox\" id=\"" + escapedId + "\"" + serializeAttrs(spec.inputAttrs) + ">",
+    "<label for=\"" + escapedId + "\">" + escapeHtml(spec.labelText) + "</label>",
+    "<span class=\"debug-row__desc\">" + escapeHtml(spec.description) + "</span>",
+    "</div>"
+
+  ].join("\n");
+}
+
+/**
+ * Renders a section's parent-toggle header row. The checkbox toggles every leaf below it via the delegated change handler; its checked/indeterminate state
+ * mirrors how many children are currently enabled.
+ * @param prefix - The namespace prefix shared by the section's leaves (also the displayed label text).
+ * @param allChecked - True when every child leaf is currently enabled.
+ * @param someChecked - True when at least one child leaf is currently enabled; combined with !allChecked this surfaces as the checkbox's indeterminate state.
+ * @returns The header row HTML.
+ */
+function renderHeaderRow(prefix: string, allChecked: boolean, someChecked: boolean): string {
+
+  return renderRow({
+
+    description: "",
+    inputAttrs: {
+
+      // HTML5 boolean attribute form: emit a bare "data-indeterminate" (no value) when the row is partially checked, otherwise omit the attribute entirely.
+      // The init script in the script blob below matches on presence ([data-indeterminate]), so the "true" literal lives in exactly zero places.
+      [ATTR_INDETERMINATE]: (!allChecked) && someChecked,
+      checked: allChecked
+    },
+    inputId: SECTION_ID_PREFIX + prefix,
+    labelText: prefix,
+    variant: "header"
+  });
+}
+
+/**
+ * Renders a grouped leaf row inside a section. The leaf carries data-group so the delegated handler can route the change to the section's parent header at
+ * "group-<prefix>".
+ * @param prefix - The section prefix owning this leaf.
+ * @param leaf - The leaf category to render.
+ * @returns The leaf row HTML.
+ */
+function renderLeafRow(prefix: string, leaf: DebugCategory): string {
+
+  return renderRow({
+
+    description: leaf.description,
+    inputAttrs: {
+
+      [ATTR_CATEGORY]: leaf.category,
+      [ATTR_GROUP]: prefix,
+      checked: isCategoryEnabled(leaf.category)
+    },
+    inputId: LEAF_ID_PREFIX + leaf.category,
+    labelText: leaf.category,
+    variant: "leaf"
+  });
+}
+
+/**
+ * Renders a standalone (namespaceless) leaf row. Standalones have no parent group, so the row carries no data-group; the modifier class makes it visually
+ * match a section header (bold, left-aligned at the section's edge) while the description still lands in the shared [desc] track, so it aligns with every
+ * other description on the page.
+ * @param leaf - The standalone leaf category to render.
+ * @returns The standalone row HTML.
+ */
+function renderStandaloneRow(leaf: DebugCategory): string {
+
+  return renderRow({
+
+    description: leaf.description,
+    inputAttrs: {
+
+      [ATTR_CATEGORY]: leaf.category,
+      checked: isCategoryEnabled(leaf.category)
+    },
+    inputId: LEAF_ID_PREFIX + leaf.category,
+    labelText: leaf.category,
+    variant: "standalone"
+  });
 }
 
 /**
@@ -232,7 +427,7 @@ function generateDebugScript(): string {
 function generateDebugBody(): string {
 
   const currentPattern = getCurrentPattern();
-  const groups = buildCategoryGroups();
+  const nodes = buildCategoryNodes();
   const parts: string[] = [];
 
   parts.push("<div class=\"debug-container\">");
@@ -262,11 +457,31 @@ function generateDebugBody(): string {
   parts.push(currentPattern ? escapeHtml(currentPattern) : "<em style=\"color: var(--text-muted);\">No debug categories enabled.</em>");
   parts.push("</div>");
 
-  // Action buttons.
+  // Action buttons. Each entry carries the semantic intent ("primary" vs. the default secondary visual treatment), the action identifier dispatched by the
+  // delegated click listener on ".debug-actions", and the display label. The "primary"-to-class-name mapping lives in exactly one place below, so changing
+  // the CSS class scheme is a one-line edit rather than three. No inline onclick handlers, so the JS function names are not referenced from the HTML.
+  const actionButtons: readonly { readonly action: string; readonly label: string; readonly primary?: boolean }[] = [
+
+    { action: ACTION_APPLY, label: "Apply", primary: true },
+    { action: ACTION_SELECT_ALL, label: "Select All" },
+    { action: ACTION_DESELECT_ALL, label: "Deselect All" }
+  ];
+
   parts.push("<div class=\"debug-actions\">");
-  parts.push("<button type=\"button\" class=\"debug-btn-apply\" onclick=\"applyPattern()\">Apply</button>");
-  parts.push("<button type=\"button\" class=\"debug-btn-secondary\" onclick=\"selectAll(true)\">Select All</button>");
-  parts.push("<button type=\"button\" class=\"debug-btn-secondary\" onclick=\"selectAll(false)\">Deselect All</button>");
+
+  for(const button of actionButtons) {
+
+    // Routed through serializeAttrs so the leading-space contract, HTML escaping, and conditional emission live in exactly one place - same shape the row
+    // renderer uses below. Keys are listed in the source-name alphabetical order the project's sort-keys rule expects; serializeAttrs emits in insertion
+    // order, so the rendered output mirrors that ordering and tests assert on attribute presence rather than positional layout.
+    parts.push("<button" + serializeAttrs({
+
+      [ATTR_ACTION]: button.action,
+      "class": button.primary ? "debug-btn-apply" : "debug-btn-secondary",
+      type: "button"
+    }) + ">" + escapeHtml(button.label) + "</button>");
+  }
+
   parts.push("</div>");
 
   // Raw pattern input.
@@ -277,62 +492,41 @@ function generateDebugBody(): string {
   parts.push("<div class=\"debug-raw-hint\">Comma-separated. Use * for all, prefix with - to exclude.</div>");
   parts.push("</div>");
 
-  // Category groups with checkboxes.
-  parts.push("<div class=\"debug-groups\">");
+  // Category sections. Every top-level CategoryNode produces one ".debug-section" card; sections expand into a header row plus one leaf row per child,
+  // standalones into a single row. The renderer is an exhaustive switch over the discriminated union, so adding a new variant means adding a case here and
+  // a small builder above - no branch in the HTML emission itself.
+  parts.push("<div class=\"debug-pane\">");
 
-  for(const group of groups) {
+  for(const node of nodes) {
 
-    const groupId = "group-" + group.prefix;
-    const firstChild = group.children[0];
-    const isSingleChild = (group.children.length === 1) && (firstChild?.category === group.prefix);
+    parts.push("<section class=\"debug-section\">");
 
-    parts.push("<div class=\"debug-group\">");
+    switch(node.kind) {
 
-    if(isSingleChild) {
+      case "section": {
 
-      // Standalone category (no colon, no sub-categories). Render as a single checkbox.
-      const checked = isCategoryEnabled(firstChild.category) ? " checked" : "";
+        const allChecked = node.leaves.every((leaf) => isCategoryEnabled(leaf.category));
+        const someChecked = node.leaves.some((leaf) => isCategoryEnabled(leaf.category));
 
-      parts.push("<div class=\"debug-group-header\">");
-      parts.push("<input type=\"checkbox\" id=\"cat-" + escapeHtml(firstChild.category) + "\" data-category=\"" + escapeHtml(firstChild.category) + "\"");
-      parts.push(" data-group=\"" + escapeHtml(group.prefix) + "\"" + checked);
-      parts.push(" onchange=\"syncRawFromCheckboxes()\">");
-      parts.push("<label for=\"cat-" + escapeHtml(firstChild.category) + "\">" + escapeHtml(firstChild.category) + "</label>");
-      parts.push("<span class=\"debug-child-desc\">" + escapeHtml(firstChild.description) + "</span>");
-      parts.push("</div>");
-    } else {
+        parts.push(renderHeaderRow(node.prefix, allChecked, someChecked));
 
-      // Group with children. Render parent checkbox and indented children.
-      const allChecked = group.children.every((c) => isCategoryEnabled(c.category));
-      const someChecked = group.children.some((c) => isCategoryEnabled(c.category));
-      const parentChecked = allChecked ? " checked" : "";
-      const parentIndeterminate = (!allChecked && someChecked) ? " data-indeterminate=\"true\"" : "";
+        for(const leaf of node.leaves) {
 
-      parts.push("<div class=\"debug-group-header\">");
-      parts.push("<input type=\"checkbox\" id=\"" + groupId + "\"" + parentChecked + parentIndeterminate);
-      parts.push(" onchange=\"onParentToggle('" + escapeHtml(group.prefix) + "')\">");
-      parts.push("<label for=\"" + groupId + "\">" + escapeHtml(group.prefix) + "</label>");
-      parts.push("</div>");
+          parts.push(renderLeafRow(node.prefix, leaf));
+        }
 
-      parts.push("<div class=\"debug-group-children\">");
-
-      for(const child of group.children) {
-
-        const checked = isCategoryEnabled(child.category) ? " checked" : "";
-
-        parts.push("<div class=\"debug-child\">");
-        parts.push("<input type=\"checkbox\" id=\"cat-" + escapeHtml(child.category) + "\" data-category=\"" + escapeHtml(child.category) + "\"");
-        parts.push(" data-group=\"" + escapeHtml(group.prefix) + "\"" + checked);
-        parts.push(" onchange=\"onChildToggle('" + escapeHtml(group.prefix) + "')\">");
-        parts.push("<label for=\"cat-" + escapeHtml(child.category) + "\">" + escapeHtml(child.category) + "</label>");
-        parts.push("<span class=\"debug-child-desc\">" + escapeHtml(child.description) + "</span>");
-        parts.push("</div>");
+        break;
       }
 
-      parts.push("</div>");
+      case "standalone": {
+
+        parts.push(renderStandaloneRow(node.leaf));
+
+        break;
+      }
     }
 
-    parts.push("</div>");
+    parts.push("</section>");
   }
 
   parts.push("</div>");
@@ -344,12 +538,7 @@ function generateDebugBody(): string {
 
   parts.push("</div>");
 
-  // Script to set initial indeterminate state on page load. The HTML checked attribute cannot express the indeterminate state, so we set it via JavaScript.
-  const initScript = [
-    "document.querySelectorAll('[data-indeterminate=\"true\"]').forEach(function(el) { el.indeterminate = true; });"
-  ].join("\n");
-
-  parts.push("<script>" + initScript + "\n" + generateDebugScript() + "</script>");
+  parts.push("<script>" + generateDebugScript() + "</script>");
 
   return parts.join("\n");
 }

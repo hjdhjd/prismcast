@@ -17,7 +17,8 @@ describe("generateWizardModal", () => {
 
     assert.match(html, /<div id="mywiz" class="wizard-modal" style="display: none;">/);
     assert.match(html, /<h3>My Wizard<\/h3>/);
-    assert.match(html, /<button type="button" class="wizard-close" aria-label="Close">/);
+    // The X close button. Attributes are alphabetized by serializeAttrs (aria-label, class, type) and carry no inline onclick.
+    assert.match(html, /<button aria-label="Close" class="wizard-close" type="button">/);
   });
 
   test("includes a step indicator when steps are provided", () => {
@@ -96,21 +97,25 @@ describe("generateWizardModal", () => {
     assert.doesNotMatch(html, /role="back"[^>]*onclick=/);
   });
 
-  test("emits non-role buttons with inline onclick", () => {
+  test("emits non-role buttons with data-click-action", () => {
 
+    // Custom buttons (Save, Apply, Finish) declare an action name dispatched by the project-wide action dispatcher in shared.ts. They do NOT carry an inline
+    // onclick attribute - the dispatch is by data-click-action only.
     const html = generateWizardModal({
 
-      buttons: [{ label: "Save", onclick: "doSave()", position: "right" }],
+      buttons: [{ action: "do-save", label: "Save", position: "right" }],
       id: "w",
       title: "T"
     });
 
-    assert.match(html, /onclick="doSave\(\)"/);
+    assert.match(html, /data-click-action="do-save"/);
     assert.doesNotMatch(html, /data-wizard-role/);
+    assert.doesNotMatch(html, /onclick=/, "buttons must never carry an inline onclick attribute");
   });
 
   test("hides buttons whose visible flag is false", () => {
 
+    // Attribute order is alphabetical via serializeAttrs, so style is not guaranteed to be the last attribute. Match the style attribute as a standalone token.
     const html = generateWizardModal({
 
       buttons: [{ label: "Hidden", position: "right", visible: false }],
@@ -118,7 +123,7 @@ describe("generateWizardModal", () => {
       title: "T"
     });
 
-    assert.match(html, /style="display: none;">Hidden<\/button>/);
+    assert.match(html, /<button[^>]* style="display: none;"[^>]*>Hidden<\/button>/);
   });
 
   test("renders the description below the title when provided", () => {
@@ -176,17 +181,20 @@ describe("generateWizardModal", () => {
     assert.match(html, /<div class="wizard-content wizard-content-compact" id="w-content"><p>preloaded<\/p><\/div>/);
   });
 
-  test("attaches the close handler to the X button when onClose is provided", () => {
+  test("attaches the close action to the X button when closeAction is provided", () => {
 
+    // Non-controller modals (Import/Export) pass closeAction so the X button dispatches a named action via the project-wide action dispatcher. Controller-
+    // managed modals omit closeAction and let the wizard controller discover the .wizard-close button to attach its own handler.
     const html = generateWizardModal({
 
       buttons: [],
+      closeAction: "my-close",
       id: "w",
-      onClose: "myClose()",
       title: "T"
     });
 
-    assert.match(html, /class="wizard-close" aria-label="Close" onclick="myClose\(\)"/);
+    assert.match(html, /<button aria-label="Close" class="wizard-close" data-click-action="my-close" type="button">/);
+    assert.doesNotMatch(html, /onclick=/, "the X button must never carry an inline onclick attribute");
   });
 
   test("emits data-* attributes from dataAttributes", () => {

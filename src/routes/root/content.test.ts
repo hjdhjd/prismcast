@@ -232,7 +232,7 @@ describe("generateChannelsTabContent", () => {
 
     assert.match(html, /id="login-modal"/);
     assert.match(html, /Channel Authentication/);
-    assert.match(html, /onclick="endLogin\(\)"/, "Done button wired to endLogin");
+    assert.match(html, /data-click-action="end-login"/, "Done button wired to the end-login action");
   });
 
   test("includes the test modal for profile testing", () => {
@@ -242,8 +242,8 @@ describe("generateChannelsTabContent", () => {
 
     assert.match(html, /id="test-modal"/);
     assert.match(html, /Profile Test/);
-    assert.match(html, /onclick="checkSelectors\(\)"/);
-    assert.match(html, /onclick="endProfileTest\(\)"/);
+    assert.match(html, /data-click-action="check-selectors"/);
+    assert.match(html, /data-click-action="end-profile-test"/);
   });
 
   test("does not produce template-literal artifacts", () => {
@@ -320,7 +320,7 @@ describe("generateConfigContent", () => {
 
     assert.match(html, /id="settings-form"/);
     assert.match(html, /id="save-btn"/);
-    assert.match(html, /onclick="resetAllToDefaults\(\)"/);
+    assert.match(html, /data-click-action="reset-all-to-defaults"/);
   });
 
   test("includes the Backup subtab panel with download/import controls", () => {
@@ -329,8 +329,8 @@ describe("generateConfigContent", () => {
     const html = generateConfigContent();
 
     assert.match(html, /id="subtab-backup"/);
-    assert.match(html, /onclick="exportConfig\(\)"/);
-    assert.match(html, /onclick="exportChannels\(\)"/);
+    assert.match(html, /data-click-action="export-config"/);
+    assert.match(html, /data-click-action="export-channels"/);
     assert.match(html, /id="import-settings-file"/);
     assert.match(html, /id="import-channels-file"/);
   });

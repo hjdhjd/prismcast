@@ -44,7 +44,7 @@ describe("generateSettingsTabContent", () => {
 
     assert.match(html, /class="panel-header"/, "panel-header div is present");
     assert.match(html, /class="panel-reset"/, "reset link is present");
-    assert.match(html, /resetTabToDefaults\('settings'\)/, "reset link targets the settings tab");
+    assert.match(html, /data-click-action="reset-tab-to-defaults" data-tab="settings"/, "reset link targets the settings tab");
   });
 
   test("renders one settings-section block per section", () => {
@@ -125,7 +125,7 @@ describe("generateAdvancedTabContent", () => {
     const html = generateAdvancedTabContent();
 
     assert.match(html, /class="panel-header"/, "panel-header div is present");
-    assert.match(html, /resetTabToDefaults\('advanced'\)/, "reset link targets the advanced tab");
+    assert.match(html, /data-click-action="reset-tab-to-defaults" data-tab="advanced"/, "reset link targets the advanced tab");
     assert.match(html, /Reset All to Defaults/, "Advanced uses the all-encompassing reset wording");
   });
 
@@ -141,7 +141,7 @@ describe("generateAdvancedTabContent", () => {
 
     const html = generateAdvancedTabContent();
 
-    assert.match(html, /onclick="toggleSection\('/, "section headers wire up the toggleSection handler");
+    assert.match(html, /data-click-action="toggle-section"/, "section headers wire up the toggle-section action");
     assert.match(html, /class="section-chevron"/, "chevron indicator is rendered");
   });
 
@@ -190,21 +190,21 @@ describe("generateCollapsibleSection", () => {
     assert.doesNotMatch(html, /<script>alert/, "raw script tag must not appear");
   });
 
-  test("escapes HTML in the section id used as the data attribute and onclick argument", () => {
+  test("escapes HTML in the section id used as the data attribute", () => {
 
-    // Boundary: the id is interpolated into both data-section= and onclick="toggleSection('...')" - both must escape.
+    // Boundary: the id is interpolated into both the outer data-section= wrapper attribute and the inner data-section-id= header attribute - both must escape.
     const tricky: AdvancedSection = { displayName: "Tricky", id: "id\"with-quote", settings: [] };
     const html = generateCollapsibleSection(tricky);
 
     assert.match(html, /data-section="id&quot;with-quote"/, "id is escaped in data-section attribute");
   });
 
-  test("renders the section-header onclick handler with the section id", () => {
+  test("renders the section-header data-click-action wired to toggle-section with the section id", () => {
 
     const section: AdvancedSection = { displayName: "Foo", id: "foo", settings: [] };
     const html = generateCollapsibleSection(section);
 
-    assert.match(html, /onclick="toggleSection\('foo'\)"/, "toggleSection handler is wired");
+    assert.match(html, /data-click-action="toggle-section" data-section-id="foo"/, "toggle-section action is wired");
   });
 
   test("uses singular 'setting' for exactly 1 setting (boundary)", () => {

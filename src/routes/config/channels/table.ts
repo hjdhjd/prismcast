@@ -15,6 +15,7 @@ import { getActiveTagVocabulary, getChannelCustomizations, getChannelEffectiveTa
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.ts";
 import { getChannelHealth, getDomainAuth } from "../../../config/health.ts";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.ts";
+import { ACTIONS } from "../../clientActions.ts";
 import { CONFIG } from "../../../config/index.ts";
 import { PREDEFINED_CHANNELS } from "../../../channels/index.ts";
 import type { ProfileInfo } from "../../../config/profiles.ts";
@@ -122,7 +123,7 @@ function generateTextField(id: string, name: string, label: string, value: strin
   const modifiedDot = isModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
   const defaultAttr = (options.defaultValue !== undefined) ? " data-default=\"" + escapeHtml(options.defaultValue) + "\"" : "";
   const resetBtn = isModified ? "<button type=\"button\" class=\"btn-reset\" title=\"Reset to predefined default\" aria-label=\"Reset to predefined default\" " +
-    "onclick=\"resetChannelField('" + id + "')\">&#8635;</button>" : "";
+    "data-click-action=\"" + ACTIONS.resetChannelField + "\" data-field-id=\"" + id + "\">&#8635;</button>" : "";
 
   lines.push("<div class=\"form-row" + modifiedClass + "\">");
   lines.push(modifiedDot + "<label for=\"" + id + "\">" + label + "</label>");
@@ -168,7 +169,7 @@ function generateProfileDropdown(id: string, selectedProfile: string, profiles: 
   const modifiedDot = isModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
   const defaultAttr = (defaultProfile !== undefined) ? " data-default=\"" + escapeHtml(defaultProfile) + "\"" : "";
   const resetBtn = isModified ? "<button type=\"button\" class=\"btn-reset\" title=\"Reset to predefined default\" aria-label=\"Reset to predefined default\" " +
-    "onclick=\"resetChannelField('" + id + "')\">&#8635;</button>" : "";
+    "data-click-action=\"" + ACTIONS.resetChannelField + "\" data-field-id=\"" + id + "\">&#8635;</button>" : "";
 
   // Helper to generate option elements for a profile.
   const renderOption = (profile: ProfileInfo): string => {
@@ -257,7 +258,7 @@ function generateProfileDropdown(id: string, selectedProfile: string, profiles: 
 
     lines.push("<div class=\"hint\">Autodetect uses predefined profiles for known sites. If video doesn't play or fullscreen fails, " +
       "try experimenting with different profiles. ");
-    lines.push("<a href=\"#\" onclick=\"toggleProfileReference(); return false;\">View profile reference</a></div>");
+    lines.push("<a href=\"#\" data-click-action=\"" + ACTIONS.toggleProfileReference + "\" data-click-prevent-default>View profile reference</a></div>");
   }
 
   return lines;
@@ -278,7 +279,8 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
   lines.push("<div id=\"profile-reference\" class=\"profile-reference\" style=\"display: none;\">");
   lines.push("<div class=\"profile-reference-header\">");
   lines.push("<h3>Profile Reference</h3>");
-  lines.push("<button type=\"button\" class=\"profile-reference-close\" aria-label=\"Close\" onclick=\"toggleProfileReference()\">\u2715</button>");
+  lines.push("<button type=\"button\" class=\"profile-reference-close\" aria-label=\"Close\" data-click-action=\"" +
+    ACTIONS.toggleProfileReference + "\">\u2715</button>");
   lines.push("</div>");
   lines.push("<p class=\"reference-intro\">Profiles configure how PrismCast interacts with different video players. Autodetect uses predefined ");
   lines.push("profiles for known sites. If video doesn't play or fullscreen fails, use this reference to experiment with different profiles.</p>");
@@ -475,9 +477,8 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
   const lines: string[] = [];
 
   // Advanced fields toggle.
-  lines.push("<div class=\"advanced-toggle\" onclick=\"document.getElementById('" + idPrefix +
-    "-advanced').classList.toggle('show'); this.textContent = this.textContent === 'Show Advanced Options' ? " +
-    "'Hide Advanced Options' : 'Show Advanced Options';\">Show Advanced Options</div>");
+  lines.push("<div class=\"advanced-toggle\" data-click-action=\"" + ACTIONS.toggleAdvancedFields + "\" data-advanced-id=\"" + idPrefix +
+    "-advanced\">Show Advanced Options</div>");
 
   lines.push("<div id=\"" + idPrefix + "-advanced\" class=\"advanced-fields\">");
 
@@ -549,7 +550,7 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 
       lines.push("<label class=\"tag-checkbox-label\">" +
         "<input type=\"checkbox\" class=\"tag-checkbox\" data-tag=\"" + escapeHtml(tag) + "\"" + checked +
-        " onchange=\"updateTagsHidden(this.closest('.form-row'))\">" +
+        " data-change-action=\"" + ACTIONS.updateTagsHidden + "\">" +
         "<span class=\"tag-badge\">" + escapeHtml(tag) + "</span></label>");
     }
 
@@ -683,15 +684,16 @@ export function generateTagFilterContent(): string {
 
   for(const tag of vocabulary) {
 
-    lines.push("<label class=\"provider-option\" onclick=\"event.stopPropagation()\">" +
-      "<input type=\"checkbox\" class=\"tag-filter-checkbox\" data-tag=\"" + escapeHtml(tag) + "\" checked onchange=\"applyTagColumnFilter()\"> " +
-      escapeHtml(tag) + "</label>");
+    lines.push("<label class=\"provider-option\" data-click-stop-propagation>" +
+      "<input type=\"checkbox\" class=\"tag-filter-checkbox\" data-tag=\"" + escapeHtml(tag) + "\" checked data-change-action=\"" +
+      ACTIONS.applyTagColumnFilter + "\"> " + escapeHtml(tag) + "</label>");
   }
 
   if(vocabulary.length > 0) {
 
     lines.push("<div class=\"dropdown-divider\"></div>");
-    lines.push("<div class=\"dropdown-item\" id=\"tag-filter-toggle\" onclick=\"event.stopPropagation(); toggleTagColumnFilter()\">Show None</div>");
+    lines.push("<div class=\"dropdown-item\" id=\"tag-filter-toggle\" data-click-action=\"" + ACTIONS.toggleTagColumnFilter +
+      "\" data-click-stop-propagation>Show None</div>");
   }
 
   return lines.join("");
@@ -713,10 +715,11 @@ export function generateTagManagerBody(): string {
   for(const tag of vocabulary) {
 
     tagListItems.push("<div class=\"tag-manager-item\" data-tag=\"" + escapeHtml(tag) + "\">" +
-      "<span class=\"tag-badge tag-editable\" title=\"Click to rename\" onclick=\"startTagRename(this, '" + escapeHtml(tag) +
-      "')\">" + escapeHtml(tag) + "</span>" +
-      "<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete tag\" onclick=\"deleteTag('" + escapeHtml(tag) +
-      "')\">" + ICON_DELETE + "</button></div>");
+      "<span class=\"tag-badge tag-editable\" title=\"Click to rename\" data-click-action=\"" + ACTIONS.startTagRename +
+      "\" data-tag-name=\"" + escapeHtml(tag) + "\">" + escapeHtml(tag) + "</span>" +
+      "<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete tag\" data-click-action=\"" +
+      ACTIONS.deleteTag + "\" data-tag-name=\"" + escapeHtml(tag) +
+      "\">" + ICON_DELETE + "</button></div>");
   }
 
   // Deleted predefined tags section - show restore option for tags the user has deleted.
@@ -726,8 +729,8 @@ export function generateTagManagerBody(): string {
 
     deletedItems.push("<div class=\"tag-manager-item tag-deleted\" data-tag=\"" + escapeHtml(tag) + "\">" +
       "<span class=\"tag-badge tag-badge-deleted\">" + escapeHtml(tag) + "</span> <span class=\"tag-annotation\">(deleted)</span>" +
-      "<button type=\"button\" class=\"btn-icon\" title=\"Restore tag\" onclick=\"restoreTag('" + escapeHtml(tag) +
-      "')\">" + ICON_REVERT + "</button></div>");
+      "<button type=\"button\" class=\"btn-icon\" title=\"Restore tag\" data-click-action=\"" + ACTIONS.restoreTag + "\" data-tag-name=\"" + escapeHtml(tag) +
+      "\">" + ICON_REVERT + "</button></div>");
   }
 
   return "<div class=\"tag-manager\">" +
@@ -735,8 +738,8 @@ export function generateTagManagerBody(): string {
     "for playlist filtering and organization.</p>" +
     "<div class=\"tag-manager-add\">" +
     "<input type=\"text\" id=\"tag-manager-input\" placeholder=\"New tag name\" maxlength=\"30\" " +
-    "pattern=\"[a-zA-Z0-9]([a-zA-Z0-9 -]*[a-zA-Z0-9])?\" onkeydown=\"if(event.key==='Enter'){event.preventDefault();createTag();}\">" +
-    "<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"createTag()\">Add</button>" +
+    "pattern=\"[a-zA-Z0-9]([a-zA-Z0-9 -]*[a-zA-Z0-9])?\" data-keydown-action=\"" + ACTIONS.createTagOnEnter + "\">" +
+    "<button type=\"button\" class=\"btn btn-primary btn-sm\" data-click-action=\"" + ACTIONS.createTag + "\">Add</button>" +
     "</div>" +
     "<div id=\"tag-manager-error\" class=\"wizard-error\" style=\"display: none;\"></div>" +
     "<div id=\"tag-manager-list\" class=\"tag-manager-list\">" +
@@ -757,11 +760,11 @@ function generateTagManagementModal(): string {
 
     body: generateTagManagerBody(),
     buttons: [
-      { label: "Done", onclick: "closeTagManager()", position: "right", variant: "primary" }
+      { action: ACTIONS.closeTagManager, label: "Done", position: "right", variant: "primary" }
     ],
+    closeAction: ACTIONS.closeTagManager,
     id: "tag-manager-modal",
     maxWidth: "420px",
-    onClose: "closeTagManager()",
     title: "Manage Tags"
   });
 }
@@ -783,7 +786,7 @@ function generateBrowseModal(): string {
     buttons: [
       { id: "browse-back", label: "Back", position: "left", role: "back", visible: false },
       { label: "Cancel", position: "right", role: "close" },
-      { id: "browse-add-btn", label: "Apply", onclick: "submitBrowseChannels()", position: "right", variant: "primary", visible: false }
+      { action: ACTIONS.submitBrowseChannels, id: "browse-add-btn", label: "Apply", position: "right", variant: "primary", visible: false }
     ],
     contentId: "browse-content",
     dataBlocks: [
@@ -817,9 +820,9 @@ function generateSetupWizardModal(): string {
 
     buttons: [
       { id: "setup-back", label: "Back", position: "left", role: "back", visible: false },
-      { id: "setup-skip", label: "Skip Setup", onclick: "skipSetup()", position: "right" },
+      { action: ACTIONS.skipSetup, id: "setup-skip", label: "Skip Setup", position: "right" },
       { id: "setup-next", label: "Next", position: "right", role: "next", variant: "primary" },
-      { id: "setup-finish", label: "Finish", onclick: "finishSetup()", position: "right", variant: "primary", visible: false }
+      { action: ACTIONS.finishSetup, id: "setup-finish", label: "Finish", position: "right", variant: "primary", visible: false }
     ],
     contentId: "setup-content",
     dataAttributes: { "setup-completed": CONFIG.channels.setupCompleted ? "true" : "false" },
@@ -940,7 +943,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
     const currentSelection = resolveServiceKey(key);
 
     displayLines.push("<select class=\"provider-select\" data-channel=\"" + escapeHtml(key) +
-      "\" title=\"Choose which streaming service delivers this channel\" onchange=\"updateServiceSelection(this)\"" + contentHidden + ">");
+      "\" title=\"Choose which streaming service delivers this channel\" data-change-action=\"" + ACTIONS.updateServiceSelection + "\"" + contentHidden + ">");
 
     for(const variant of serviceGroup.variants) {
 
@@ -967,19 +970,20 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
   displayLines.push("<td class=\"col-chnum editable-cell\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelNumber")) +
     "\" data-field=\"channelNumber\" data-key=\"" + cellKey + "\" data-value=\"" + (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "") +
-    "\" onclick=\"startInlineEdit(this)\">" + (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "<span class=\"text-muted\">&ndash;</span>") +
-    "</td>");
+    "\" data-click-action=\"" + ACTIONS.startInlineEdit + "\">" +
+    (channel.channelNumber ? escapeHtml(String(channel.channelNumber)) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
 
   // HDHR column: inline checkbox for quick toggling. The checkbox submits changes via the toggleHdhr() client-side function.
   const hdhrCheckedAttr = getEffectiveHdhrEnabled(channel) ? " checked" : "";
 
   displayLines.push("<td class=\"col-hdhr\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "hdhrEnabled")) +
     "\"><input type=\"checkbox\" data-key=\"" + cellKey + "\"" + hdhrCheckedAttr +
-    " onchange=\"toggleHdhr(this)\" title=\"Include in HDHomeRun/Plex lineup\"></td>");
+    " data-change-action=\"" + ACTIONS.toggleHdhr + "\" title=\"Include in HDHomeRun/Plex lineup\"></td>");
 
   displayLines.push("<td class=\"col-stationid editable-cell\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "stationId")) +
     "\" data-field=\"stationId\" data-key=\"" + cellKey + "\" data-value=\"" + (channel.stationId ? escapeHtml(channel.stationId) : "") +
-    "\" onclick=\"startInlineEdit(this)\">" + (channel.stationId ? escapeHtml(channel.stationId) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
+    "\" data-click-action=\"" + ACTIONS.startInlineEdit + "\">" +
+    (channel.stationId ? escapeHtml(channel.stationId) : "<span class=\"text-muted\">&ndash;</span>") + "</td>");
 
   // Profile column: show explicit profile as-is, or the auto-resolved friendly name with "(auto)" suffix in muted style.
   const profileSortKey = escapeHtml(getChannelSortKey(channel, key, "profile"));
@@ -1014,7 +1018,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
   displayLines.push("<td class=\"col-tags editable-cell dropdown\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "tags")) +
     "\" data-key=\"" + cellKey + "\" data-tags=\"" + escapeHtml(effectiveTags.join(",")) +
-    "\" onclick=\"toggleInlineTagDropdown(this)\">" + tagsHtml + "</td>");
+    "\" data-click-action=\"" + ACTIONS.toggleInlineTagDropdown + "\">" + tagsHtml + "</td>");
 
   // Actions column with icon buttons. Five positions per row: Edit (always), Login/placeholder, Health/placeholder, context-sensitive, and Copy URL.
   displayLines.push("<td>");
@@ -1027,8 +1031,8 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   const authDomain = getAuthDomainForChannel(variantKey);
 
   // Position 1: Edit (all channels).
-  displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-edit\" title=\"Edit\" aria-label=\"Edit\" onclick=\"showEditForm('" + escapedKey +
-    "')\">" + ICON_EDIT + "</button>");
+  displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-edit\" title=\"Edit\" aria-label=\"Edit\" " +
+    "data-click-action=\"" + ACTIONS.showEditForm + "\" data-channel-key=\"" + escapedKey + "\">" + ICON_EDIT + "</button>");
 
   // Position 2: Login for enabled channels (with domain auth color), placeholder for disabled predefined. Custom channels (user-defined, not predefined) skip
   // login coloring because they have no service concept.
@@ -1036,11 +1040,16 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
     const authTimestamp = (isPredefined || isOverride) ? getDomainAuth(authDomain) : null;
     const loginColorClass = authTimestamp ? " health-success" : "";
-    const loginTitle = authTimestamp ? "Verified " + formatTimeAgo(authTimestamp) : "Not yet verified";
+
+    // Lead the title with the action so users discover that the icon is interactive...the trailing fact reports the service-scoped verified state, since the
+    // auth domain is shared across every channel of the same service.
+    const serviceLabel = getChannelServiceLabel(channel);
+    const loginTitle = "Click to open this channel in PrismCast's Chrome to sign in or test. " + serviceLabel +
+      (authTimestamp ? " verified " + formatTimeAgo(authTimestamp) : " not yet verified") + ".";
 
     displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-login" + loginColorClass + "\" data-auth-domain=\"" +
-      escapeHtml(authDomain) + "\" title=\"" + loginTitle + "\" aria-label=\"Login\" " +
-      "onclick=\"startChannelLogin('" + escapedKey + "')\">" + ICON_LOGIN + "</button>");
+      escapeHtml(authDomain) + "\" title=\"" + escapeHtml(loginTitle) + "\" aria-label=\"Login\" " +
+      "data-click-action=\"" + ACTIONS.startChannelLogin + "\" data-channel-key=\"" + escapedKey + "\">" + ICON_LOGIN + "</button>");
   } else {
 
     displayLines.push("<span class=\"btn-icon-placeholder\"></span>");
@@ -1067,26 +1076,28 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
     if(isDisabled) {
 
-      displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-enable\" title=\"Enable\" aria-label=\"Enable\" onclick=\"togglePredefinedChannel('" +
-        escapedKey + "', true)\">" + ICON_ENABLE + "</button>");
+      displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-enable\" title=\"Enable\" aria-label=\"Enable\" " +
+        "data-click-action=\"" + ACTIONS.togglePredefinedChannel + "\" data-channel-key=\"" + escapedKey + "\" data-enabled=\"true\">" + ICON_ENABLE + "</button>");
     } else {
 
-      displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-disable\" title=\"Disable\" aria-label=\"Disable\" onclick=\"togglePredefinedChannel('" +
-        escapedKey + "', false)\">" + ICON_DISABLE + "</button>");
+      displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-disable\" title=\"Disable\" aria-label=\"Disable\" " +
+        "data-click-action=\"" + ACTIONS.togglePredefinedChannel + "\" data-channel-key=\"" + escapedKey + "\" data-enabled=\"false\">" + ICON_DISABLE + "</button>");
     }
   } else if(isUser) {
 
-    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete\" aria-label=\"Delete\" onclick=\"deleteChannel('" +
-      escapedKey + "')\">" + ICON_DELETE + "</button>");
+    displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete\" aria-label=\"Delete\" " +
+      "data-click-action=\"" + ACTIONS.deleteChannel + "\" data-channel-key=\"" + escapedKey + "\">" + ICON_DELETE + "</button>");
   }
 
   // Position 5: Copy URL dropdown (all channels).
   displayLines.push("<div class=\"dropdown copy-dropdown\">");
   displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-copy\" title=\"Copy stream URL\" aria-label=\"Copy stream URL\" " +
-    "onclick=\"toggleDropdown(this)\">" + ICON_COPY + "</button>");
+    "data-click-action=\"" + ACTIONS.toggleDropdown + "\">" + ICON_COPY + "</button>");
   displayLines.push("<div class=\"dropdown-menu copy-url-menu\">");
-  displayLines.push("<div class=\"dropdown-item\" onclick=\"copyStreamUrl('hls', '" + escapedKey + "')\">Copy HLS URL</div>");
-  displayLines.push("<div class=\"dropdown-item\" onclick=\"copyStreamUrl('mpegts', '" + escapedKey + "')\">Copy MPEG-TS URL</div>");
+  displayLines.push("<div class=\"dropdown-item\" data-click-action=\"" + ACTIONS.copyStreamUrl + "\" data-protocol=\"hls\" data-channel-key=\"" +
+    escapedKey + "\">Copy HLS URL</div>");
+  displayLines.push("<div class=\"dropdown-item\" data-click-action=\"" + ACTIONS.copyStreamUrl + "\" data-protocol=\"mpegts\" data-channel-key=\"" +
+    escapedKey + "\">Copy MPEG-TS URL</div>");
   displayLines.push("</div>");
   displayLines.push("</div>");
 
@@ -1104,7 +1115,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   editLines.push("<td colspan=\"" + String(TOTAL_COLUMN_COUNT) + "\">");
   editLines.push("<div class=\"channel-form\" style=\"margin: 0;\">");
   editLines.push("<h3>Edit Channel: " + escapedKey + "</h3>");
-  editLines.push("<form id=\"edit-channel-form-" + escapedKey + "\" onsubmit=\"return submitChannelForm(event, 'edit')\">");
+  editLines.push("<form id=\"edit-channel-form-" + escapedKey + "\" data-submit-action=\"" + ACTIONS.submitChannelFormEdit + "\" data-submit-prevent-default>");
   editLines.push("<input type=\"hidden\" name=\"action\" value=\"edit\">");
   editLines.push("<input type=\"hidden\" name=\"key\" value=\"" + escapedKey + "\">");
 
@@ -1202,12 +1213,13 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   // Form buttons.
   editLines.push("<div class=\"form-buttons\">");
   editLines.push("<button type=\"submit\" class=\"btn btn-primary\">Save Changes</button>");
-  editLines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"hideEditForm('" + escapedKey + "')\">Cancel</button>");
+  editLines.push("<button type=\"button\" class=\"btn btn-secondary\" data-click-action=\"" + ACTIONS.hideEditForm +
+    "\" data-channel-key=\"" + escapedKey + "\">Cancel</button>");
 
   if(isOverride) {
 
-    editLines.push("<button type=\"button\" class=\"btn btn-secondary btn-revert\" onclick=\"revertChannel('" + escapedKey +
-      "')\">Revert to Defaults</button>");
+    editLines.push("<button type=\"button\" class=\"btn btn-secondary btn-revert\" data-click-action=\"" + ACTIONS.revertChannel + "\" data-channel-key=\"" + escapedKey +
+      "\">Revert to Defaults</button>");
   }
 
   editLines.push("</div>");
@@ -1461,7 +1473,7 @@ export function generateServiceFilterToolbar(): string {
   const buttonText = hasFilter ? "Filtered" : "All Services";
 
   lines.push("<button type=\"button\" class=\"btn btn-sm toolbar-icon-btn\" id=\"provider-filter-btn\" " +
-    "title=\"Filter channels by streaming service\" onclick=\"toggleDropdown(this)\">" + ICON_FILTER + " " + buttonText + " &#9662;</button>");
+    "title=\"Filter channels by streaming service\" data-click-action=\"" + ACTIONS.toggleDropdown + "\">" + ICON_FILTER + " " + buttonText + " &#9662;</button>");
   lines.push("<div class=\"dropdown-menu provider-dropdown-menu\">");
 
   for(const tagInfo of allTags) {
@@ -1473,7 +1485,7 @@ export function generateServiceFilterToolbar(): string {
 
     lines.push("<label class=\"provider-option\">");
     lines.push("<input type=\"checkbox\" data-tag=\"" + escapeHtml(tagInfo.tag) + "\"" + checkedAttr + disabledAttr +
-      " onchange=\"toggleServiceTag(this)\"> " + serviceDisplaySpan(tagInfo.displayName, tagInfo.domain, tagInfo.iconUrl));
+      " data-change-action=\"" + ACTIONS.toggleServiceTag + "\"> " + serviceDisplaySpan(tagInfo.displayName, tagInfo.domain, tagInfo.iconUrl));
     lines.push("</label>");
   }
 
@@ -1498,7 +1510,7 @@ export function generateServiceFilterToolbar(): string {
       lines.push("<span class=\"provider-chip\" data-tag=\"" + escapeHtml(tag) + "\">" +
         serviceDisplaySpan(displayName, chipTag?.domain, chipTag?.iconUrl, true) +
         "<button type=\"button\" class=\"chip-close\" title=\"Remove " + escapeHtml(displayName) + " from filter\" aria-label=\"Remove " +
-        escapeHtml(displayName) + "\" onclick=\"removeServiceChip('" + escapeHtml(tag) + "')\">&times;</button></span>");
+        escapeHtml(displayName) + "\" data-click-action=\"" + ACTIONS.removeServiceChip + "\" data-tag-name=\"" + escapeHtml(tag) + "\">&times;</button></span>");
     }
   }
 
@@ -1552,7 +1564,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Manage Channels dropdown - primary channel creation and setup actions.
   lines.push("<div class=\"dropdown\">");
   lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm toolbar-icon-btn\" title=\"Add, browse, or set up channels\" " +
-    "onclick=\"toggleDropdown(this)\">" + ICON_MANAGE + " Manage Channels &#9662;</button>");
+    "data-click-action=\"" + ACTIONS.toggleDropdown + "\">" + ICON_MANAGE + " Manage Channels &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
   // Dropdown item icons: tinted variants of the shared icons for visual differentiation in menu items. Each uses a distinct color so items are scannable at
   // a glance. These are local to this function because the tint colors are context-specific to this dropdown.
@@ -1571,13 +1583,13 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1.5 8.7V2.5a1 1 0 011-1h6.2a1 1 0 01.7.3l5.1 5.1a1 1 0 010 1.4l-5.5 5.5a1 " +
     "1 0 01-1.4 0L1.8 9.4a1 1 0 01-.3-.7z\"/><circle cx=\"5\" cy=\"5\" r=\"1\"/></svg>";
 
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); " +
-    "document.getElementById('add-channel-form').style.display='block';\">" + TINTED_ADD + " Add Channel</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); openBrowseModal()\">" + TINTED_BROWSE +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" data-click-action=\"" + ACTIONS.showAddChannelForm + "\" data-click-close-dropdown>" + TINTED_ADD +
+    " Add Channel</div>");
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" data-click-action=\"" + ACTIONS.openBrowseModal + "\" data-click-close-dropdown>" + TINTED_BROWSE +
     " Browse Service Channels</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); openTagManager()\">" + TINTED_TAG +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" data-click-action=\"" + ACTIONS.openTagManager + "\" data-click-close-dropdown>" + TINTED_TAG +
     " Manage Tags</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); openSetupWizard()\">" + TINTED_SETUP +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" data-click-action=\"" + ACTIONS.openSetupWizard + "\" data-click-close-dropdown>" + TINTED_SETUP +
     " Service Setup</div>");
   lines.push("</div>");
   lines.push("</div>");
@@ -1585,7 +1597,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Import / Export dropdown - data I/O operations.
   lines.push("<div class=\"dropdown\">");
   lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" title=\"Import or export channel data\" " +
-    "onclick=\"toggleDropdown(this)\">" + ICON_TRANSFER + " Import / Export &#9662;</button>");
+    "data-click-action=\"" + ACTIONS.toggleDropdown + "\">" + ICON_TRANSFER + " Import / Export &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
   const TINTED_IMPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#5b8def\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 2v8M5 7l3 3 3-3\"/><path d=\"M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2\"/></svg>";
@@ -1593,17 +1605,17 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   const TINTED_EXPORT = "<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#22a563\" stroke-width=\"1.5\" " +
     "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 10V2M5 5l3-3 3 3\"/><path d=\"M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2\"/></svg>";
 
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); document.getElementById('import-channels-file').click()\">" +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" data-click-action=\"" + ACTIONS.triggerChannelsImport + "\" data-click-close-dropdown>" +
     TINTED_IMPORT + " Import Channels (JSON)</div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); document.getElementById('import-m3u-file').click()\">" +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" data-click-action=\"" + ACTIONS.triggerM3uImport + "\" data-click-close-dropdown>" +
     TINTED_IMPORT + " Import M3U Playlist</div>");
   lines.push("<label class=\"dropdown-option\"><input type=\"checkbox\" id=\"m3u-replace-duplicates\"> Replace duplicates on M3U import</label>");
   lines.push("<div class=\"dropdown-divider\"></div>");
-  lines.push("<div class=\"dropdown-item dropdown-item-icon\" onclick=\"dropdowns.close(); exportChannels()\">" +
+  lines.push("<div class=\"dropdown-item dropdown-item-icon\" data-click-action=\"" + ACTIONS.exportChannels + "\" data-click-close-dropdown>" +
     TINTED_EXPORT + " Export Channels (JSON)</div>");
   lines.push("</div>");
   lines.push("</div>");
-  lines.push("<input type=\"file\" id=\"import-m3u-file\" accept=\".m3u,.m3u8\" style=\"display: none;\" onchange=\"importM3U(this)\">");
+  lines.push("<input type=\"file\" id=\"import-m3u-file\" accept=\".m3u,.m3u8\" style=\"display: none;\" data-change-action=\"" + ACTIONS.importM3u + "\">");
 
   // Visible column set, used by Quick Actions to gate column-dependent options and by the table header to set initial hide classes.
   const visibleCols = new Set(CONFIG.channels.visibleColumns);
@@ -1611,7 +1623,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Quick Actions dropdown - bulk operations for predefined channels.
   lines.push("<div class=\"dropdown quick-actions-dropdown\">");
   lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" title=\"Bulk operations for predefined channels\" " +
-    "onclick=\"toggleDropdown(this)\">" + ICON_BOLT + " Quick Actions &#9662;</button>");
+    "data-click-action=\"" + ACTIONS.toggleDropdown + "\">" + ICON_BOLT + " Quick Actions &#9662;</button>");
   lines.push("<div class=\"dropdown-menu\">");
 
   // Compute initial toggle counts for predefined channel scopes. The server is the single source of truth - the client renders what we return here.
@@ -1629,8 +1641,8 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
     const checked = (s.count === s.total) ? " checked" : "";
 
-    lines.push("<label class=\"provider-option\" onclick=\"event.preventDefault(); bulkTogglePredefined(!this.querySelector('input').checked, '" + s.scope +
-      "')\">" + "<input type=\"checkbox\" class=\"scope-toggle\" data-scope=\"" + s.scope + "\"" + checked + "> " +
+    lines.push("<label class=\"provider-option\" data-click-action=\"" + ACTIONS.bulkTogglePredefined + "\" data-scope=\"" + s.scope + "\" data-click-prevent-default>" +
+      "<input type=\"checkbox\" class=\"scope-toggle\" data-scope=\"" + s.scope + "\"" + checked + "> " +
       s.label + "<span class=\"quick-action-count\" data-scope=\"" + s.scope + "\" data-enabled=\"" + String(s.count) + "\" data-total=\"" + String(s.total) +
       "\">" + String(s.count) + " of " + String(s.total) + " enabled</span></label>");
   }
@@ -1645,7 +1657,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<div class=\"bulk-assign-row\">");
   lines.push("<span>Set all channels to:</span>");
   lines.push("<select id=\"bulk-assign-select\" class=\"bulk-assign-select\" title=\"Switch all multi-service channels to this service\" " +
-    "onchange=\"if(this.value) { dropdowns.close(); bulkAssignService(this.value); this.value = ''; }\">");
+    "data-change-action=\"" + ACTIONS.bulkAssignService + "\">");
   lines.push("<option value=\"\">Select service</option>");
 
   for(const tagInfo of allTags) {
@@ -1671,8 +1683,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<div class=\"bulk-assign-row\">");
   lines.push("<span>Auto-number from:</span>");
   lines.push("<input type=\"number\" id=\"auto-number-start\" class=\"auto-number-input\" value=\"1\" min=\"0\" max=\"99999\" " +
-    "placeholder=\"Clear\" onclick=\"event.stopPropagation()\">");
-  lines.push("<button type=\"button\" class=\"btn btn-sm btn-secondary\" onclick=\"dropdowns.close(); autoNumberChannels()\">Apply</button>");
+    "placeholder=\"Clear\" data-click-stop-propagation>");
+  lines.push("<button type=\"button\" class=\"btn btn-sm btn-secondary\" data-click-action=\"" + ACTIONS.autoNumberChannels +
+    "\" data-click-close-dropdown>Apply</button>");
   lines.push("</div>");
   lines.push("</div>");
 
@@ -1683,7 +1696,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   const hdhrIndeterminate = ((hdhrCounts.enabled > 0) && (hdhrCounts.enabled < hdhrCounts.total)) ? " data-indeterminate=\"true\"" : "";
 
   lines.push("<div id=\"quick-action-hdhr\"" + hdhrVisible + ">");
-  lines.push("<label class=\"provider-option\" onclick=\"event.preventDefault(); bulkToggleHdhr()\">");
+  lines.push("<label class=\"provider-option\" data-click-action=\"" + ACTIONS.bulkToggleHdhr + "\" data-click-prevent-default>");
   lines.push("<input type=\"checkbox\" id=\"hdhr-bulk-toggle\"" + hdhrCheckedAttr + hdhrIndeterminate + "> ");
   lines.push("Include all in HDHR/Plex");
   lines.push("<span class=\"quick-action-count\" id=\"hdhr-bulk-count\">" + String(hdhrCounts.enabled) + " of " + String(hdhrCounts.total) + "</span>");
@@ -1732,8 +1745,8 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
       const checkedAttr = (count === totalEnabled) ? " checked" : "";
       const indeterminate = ((count > 0) && (count < totalEnabled)) ? " data-indeterminate=\"true\"" : "";
 
-      lines.push("<label class=\"provider-option\" onclick=\"event.preventDefault(); bulkToggleTag('" + escapeHtml(tag) +
-        "', !this.querySelector('input').checked)\">" +
+      lines.push("<label class=\"provider-option\" data-click-action=\"" + ACTIONS.bulkToggleTag +
+        "\" data-tag-name=\"" + escapeHtml(tag) + "\" data-click-prevent-default>" +
         "<input type=\"checkbox\" class=\"tag-bulk-toggle\" data-tag=\"" + escapeHtml(tag) + "\"" + checkedAttr + indeterminate + "> " +
         escapeHtml(tag) +
         "<span class=\"quick-action-count\" data-tag-count=\"" + escapeHtml(tag) + "\">" +
@@ -1806,7 +1819,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   lines.push("<div id=\"add-channel-form\" class=\"channel-form\" style=\"display: " + (addFormVisible ? "block" : "none") + ";\">");
   lines.push("<h3>Add New Channel</h3>");
-  lines.push("<form id=\"add-channel-form-el\" onsubmit=\"return submitChannelForm(event, 'add')\">");
+  lines.push("<form id=\"add-channel-form-el\" data-submit-action=\"" + ACTIONS.submitChannelFormAdd + "\" data-submit-prevent-default>");
   lines.push("<input type=\"hidden\" name=\"action\" value=\"add\">");
 
   // Service pills. Clicking a service auto-fills the URL field, which triggers the existing URL-change infrastructure (datalist population, profile
@@ -1828,7 +1841,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     const pillUrl = addFormGuideUrls[tagInfo.tag] ?? (tagInfo.domain ? "https://" + tagInfo.domain + "/" : "");
 
     lines.push("<button type=\"button\" class=\"provider-pill\" data-slug=\"" + escapeHtml(tagInfo.tag) + "\" data-url=\"" + escapeHtml(pillUrl) +
-      "\" onclick=\"selectServicePill(this)\">" + serviceDisplaySpan(tagInfo.displayName, tagInfo.domain, tagInfo.iconUrl) + "</button>");
+      "\" data-click-action=\"" + ACTIONS.selectServicePill + "\">" + serviceDisplaySpan(tagInfo.displayName, tagInfo.domain, tagInfo.iconUrl) + "</button>");
   }
 
   lines.push("</div>");
@@ -1880,7 +1893,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Form buttons.
   lines.push("<div class=\"form-buttons\">");
   lines.push("<button type=\"submit\" class=\"btn btn-primary\">Add Channel</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary\" onclick=\"document.getElementById('add-channel-form').style.display='none';\">Cancel</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary\" data-click-action=\"" + ACTIONS.hideAddChannelForm + "\">Cancel</button>");
   lines.push("</div>");
 
   lines.push("</form>");
@@ -1943,7 +1956,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     const activeIndicator = isActive ? ((sortDir === "asc") ? " &#9650;" : " &#9660;") : "";
 
     lines.push("<th class=\"" + hdr.cssClass + " sortable\" data-sort-field=\"" + hdr.field +
-      "\" onclick=\"channelTable.sort('" + hdr.field + "')\">");
+      "\" data-click-action=\"" + ACTIONS.channelTableSort + "\" data-field=\"" + hdr.field + "\">");
     lines.push("<span class=\"sort-label\">" + hdr.label + activeIndicator + "</span>");
 
     // Tags header: additional filter dropdown alongside the sort label. The dropdown is a client-side-only view filter (transient, not persisted) that
@@ -1953,7 +1966,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
       lines.push("<div class=\"dropdown tag-filter-dropdown\" style=\"display: inline;\">");
       lines.push("<button type=\"button\" class=\"btn-icon btn-tag-filter\" title=\"Filter by tag\" " +
-        "onclick=\"event.stopPropagation(); toggleDropdown(this)\">" + ICON_FILTER + "</button>");
+        "data-click-action=\"" + ACTIONS.toggleDropdown + "\" data-click-stop-propagation>" + ICON_FILTER + "</button>");
       lines.push("<div class=\"dropdown-menu\" id=\"tag-filter-menu\">" + generateTagFilterContent() + "</div>");
       lines.push("</div>");
 
@@ -1962,7 +1975,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
       lines.push("<div class=\"dropdown\" style=\"display: inline;\">");
       lines.push("<button type=\"button\" class=\"btn-icon btn-playlist-hint\" id=\"playlist-hint-btn\" " +
         "title=\"Playlist URL for this filter\" style=\"display: none;\" " +
-        "onclick=\"event.stopPropagation(); showPlaylistHint(this)\">" + ICON_LINK + "</button>");
+        "data-click-action=\"" + ACTIONS.showPlaylistHint + "\" data-click-stop-propagation>" + ICON_LINK + "</button>");
       lines.push("<div class=\"dropdown-menu playlist-hint-menu\"></div>");
       lines.push("</div>");
     }
@@ -1974,9 +1987,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<th class=\"col-actions\"><span>Actions</span>");
   lines.push("<div class=\"dropdown column-picker\">");
   lines.push("<button type=\"button\" class=\"btn-icon btn-col-picker\" title=\"Table options\" aria-label=\"Table options\" " +
-    "onclick=\"toggleDropdown(this)\">&#8942;</button>");
+    "data-click-action=\"" + ACTIONS.toggleDropdown + "\">&#8942;</button>");
   lines.push("<div class=\"dropdown-menu column-picker-menu\">");
-  lines.push("<label class=\"provider-option\"><input type=\"checkbox\" id=\"show-disabled-toggle\" onchange=\"toggleDisabledVisibility()\"> " +
+  lines.push("<label class=\"provider-option\"><input type=\"checkbox\" id=\"show-disabled-toggle\" data-change-action=\"" + ACTIONS.toggleDisabledVisibility + "\"> " +
     "Show disabled channels</label>");
   lines.push("<div class=\"dropdown-divider\"></div>");
 
@@ -1985,7 +1998,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     const checked = visibleCols.has(col.field) ? " checked" : "";
 
     lines.push("<label class=\"provider-option\"><input type=\"checkbox\" data-col-class=\"" + col.cssClass + "\" data-col-field=\"" + col.field +
-      "\" onchange=\"toggleColumn(this)\"" + checked + "> " + col.label + "</label>");
+      "\" data-change-action=\"" + ACTIONS.toggleColumn + "\"" + checked + "> " + col.label + "</label>");
   }
 
   lines.push("</div>");
@@ -2036,7 +2049,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   for(const tag of vocabulary) {
 
-    lines.push("<label class=\"provider-option\" onclick=\"event.stopPropagation()\">" +
+    lines.push("<label class=\"provider-option\" data-click-stop-propagation>" +
       "<input type=\"checkbox\" class=\"inline-tag-checkbox\" data-tag=\"" + escapeHtml(tag) + "\"> " + escapeHtml(tag) + "</label>");
   }
 

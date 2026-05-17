@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * status-iife-runtime.test.ts: DOM-runtime coverage for the IIFE wiring layer of status.ts - the seam between the pure handler module and the window.* trampolines
- * that the page's onclick attributes call. The sibling suites cover the surface around this seam but not the seam itself:
+ * that the project-wide action dispatcher invokes via its registerAction handlers. The sibling suites cover the surface around this seam but not the seam itself:
  *
  *   - status.test.ts (next to status.ts) pins the SHAPE of the emitted string: "the script contains window.toggleStreamPopover = ...". It never executes the
  *     script, so any runtime collision is invisible to it.
@@ -16,7 +16,8 @@
  *
  * The harness loads the served landing-page HTML, stubs EventSource on the synthetic Window (happy-dom v20 does not implement it), runs the shared utilities
  * script to install the externals (channelTable, dropdowns, copyToClipboard) that the status IIFE captures at init time, then runs the status script. Tests
- * call window.toggleStreamPopover, window.toggleStreamDetails, and window.copyOverviewPlaylistUrl through the same surface the page's onclick attributes use.
+ * call window.toggleStreamPopover, window.toggleStreamDetails, and window.copyOverviewPlaylistUrl directly - the same trampolines the project-wide dispatcher
+ * invokes when a click matches a data-click-action attribute in the rendered page.
  */
 import { describe, test } from "node:test";
 import type { DisposableDomTestContext } from "../../helpers/dom.helpers.ts";

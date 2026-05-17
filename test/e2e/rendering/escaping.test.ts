@@ -95,10 +95,10 @@ describe("HTML escaping invariants - table renderer", () => {
 
   test("a tag name with HTML special characters renders with every dangerous char escaped in the tag manager body", async () => {
 
-    /* The tag manager body at table.ts:708 emits each tag's name three times per entry: once in data-tag="...", once in onclick="startTagRename(this, '...')",
-     * and once as the visible label inside <span>. All three positions go through escapeHtml. A user who creates a tag with embedded special characters (the
-     * pattern attribute on the input does limit this, but the renderer must still be safe against bypassed validation - persisted state can outlive any
-     * client-side check) needs every position to be safe.
+    /* The tag manager body in generateTagManagerBody emits each tag's name in multiple positions per entry: once in the wrapper's data-tag="...", once in the
+     * rename anchor's data-tag-name="...", once in the delete button's data-tag-name="...", and once as the visible label inside <span>. All positions go
+     * through escapeHtml. A user who creates a tag with embedded special characters (the pattern attribute on the input does limit this, but the renderer must
+     * still be safe against bypassed validation - persisted state can outlive any client-side check) needs every position to be safe.
      *
      * Note: tag-name validation upstream restricts the character set so users cannot land arbitrary characters via the UI. We seed the registry directly via
      * mutateChannels to bypass that check and verify the renderer's defense-in-depth. A regression here would mean: if validation is ever loosened, or if a

@@ -632,7 +632,8 @@ function renderStreamsTable(ctx: HandlerContext): void {
     const channelText = (s.channel ?? "") || (s.serviceName ?? "") || getDomain(s.url);
     const channelDisplay = ctx.externals.channelDisplayHtml(s.logoUrl, channelText, "channel-logo", "channel-text");
 
-    html += "<tr class=\"stream-row\" data-id=\"" + id + "\" onclick=\"toggleStreamDetails(" + id + ")\" style=\"background-color: " + rowTint + ";\">";
+    html += "<tr class=\"stream-row\" data-id=\"" + id + "\" data-click-action=\"toggle-stream-details\" data-stream-id=\"" + id +
+      "\" style=\"background-color: " + rowTint + ";\">";
     html += "<td class=\"chevron\">" + chevron + "</td>";
 
     const hwIcon = s.hardwareAccelerated ? "⚡ " : "";

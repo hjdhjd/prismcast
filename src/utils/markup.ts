@@ -63,3 +63,36 @@ export function escapeXml(value: string): string {
 
   return escapeMarkup(value, XML_ENTITIES);
 }
+
+/**
+ * Serializes a record of HTML attribute names to values into the inline fragment suitable for embedding in an opening tag. Three value semantics keep this tied
+ * to the way HTML actually shapes attributes: undefined and boolean false are omitted entirely; boolean true emits the attribute name alone (HTML5 boolean
+ * attribute form, e.g. {@code <input disabled>}); string values are HTML-escaped via {@link escapeHtml} and emitted as {@code name="value"}. The returned
+ * fragment begins with a leading space when non-empty, so callers concatenate it directly after a preceding attribute without any spacing arithmetic of their
+ * own. Renderers therefore pass raw values - boolean predicates and untrusted strings alike - and the encoding contract lives in exactly one place.
+ * @param attrs - Attribute name/value pairs. Keys are emitted in insertion order.
+ * @returns The serialized attribute fragment, or the empty string when no attribute would be emitted.
+ */
+export function serializeAttrs(attrs: Readonly<Record<string, string | boolean | undefined>>): string {
+
+  const fragments: string[] = [];
+
+  for(const [ name, value ] of Object.entries(attrs)) {
+
+    if((value === undefined) || (value === false)) {
+
+      continue;
+    }
+
+    if(value === true) {
+
+      fragments.push(name);
+
+      continue;
+    }
+
+    fragments.push(name + "=\"" + escapeHtml(value) + "\"");
+  }
+
+  return (fragments.length > 0) ? (" " + fragments.join(" ")) : "";
+}

@@ -8,6 +8,7 @@ import { generateApiReferenceContent, generateChannelsTabContent, generateConfig
   generateOverviewContent } from "./content.ts";
 import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "../ui.ts";
 import { generateChannelsSubtabScript, generateConfigSubtabScript, generateSharedUtilitiesScript, generateStatusScript } from "./scripts/index.ts";
+import { ACTIONS } from "../clientActions.ts";
 import { generateLandingPageStyles } from "./styles.ts";
 import { resolveBaseUrl } from "../playlist.ts";
 import { sendSuccess } from "../config/http/envelope.ts";
@@ -32,7 +33,7 @@ function generateHeaderStatusHtml(): string {
     "<div id=\"system-status\" class=\"header-status\">",
     "<span id=\"system-health\"><span class=\"status-dot\" style=\"color: var(--text-muted);\">&#9679;</span> Connecting...</span>",
     "<div class=\"dropdown stream-popover\">",
-    "<button type=\"button\" id=\"stream-count\" aria-label=\"Active streams\" onclick=\"toggleStreamPopover()\">-</button>",
+    "<button type=\"button\" id=\"stream-count\" aria-label=\"Active streams\" data-click-action=\"" + ACTIONS.toggleStreamPopover + "\">-</button>",
     "<div class=\"dropdown-menu\" id=\"stream-popover-menu\"></div>",
     "</div>",
     "</div>"
@@ -49,15 +50,15 @@ function generateVersionHtml(): string {
   const versionInfo = getVersionInfo(currentVersion);
 
   // Refresh icon for manual update check (using Unicode refresh symbol).
-  const refreshIcon = "<button type=\"button\" class=\"version-check\" onclick=\"checkForUpdates()\" title=\"Check for updates\" aria-label=\"Check for updates\">" +
-    "&#8635;" +
-    "</button>";
+  const refreshIcon = "<button type=\"button\" class=\"version-check\" data-click-action=\"" + ACTIONS.checkForUpdates + "\"" +
+    " title=\"Check for updates\" aria-label=\"Check for updates\">&#8635;</button>";
 
   if(versionInfo.updateAvailable && versionInfo.latestVersion) {
 
-    // Update available - make version area clickable to open changelog modal, with refresh icon.
+    // Update available - make version area clickable to open changelog modal, with refresh icon. data-click-prevent-default on the <a> tells the dispatcher to call
+    // event.preventDefault() before the handler runs, so the href="#" anchor target does not get navigated to.
     return "<span class=\"version-container\">" +
-      "<a href=\"#\" class=\"version version-update\" onclick=\"openChangelogModal(); return false;\">" +
+      "<a href=\"#\" class=\"version version-update\" data-click-action=\"" + ACTIONS.openChangelogModal + "\" data-click-prevent-default>" +
       "v" + currentVersion + " &rarr; v" + versionInfo.latestVersion +
       "</a>" +
       refreshIcon +
@@ -66,7 +67,7 @@ function generateVersionHtml(): string {
 
   // No update - show current version (clickable to view changelog) with refresh icon.
   return "<span class=\"version-container\" id=\"version-display\">" +
-    "<a href=\"#\" class=\"version\" onclick=\"openChangelogModal(); return false;\">v" + currentVersion + "</a>" +
+    "<a href=\"#\" class=\"version\" data-click-action=\"" + ACTIONS.openChangelogModal + "\" data-click-prevent-default>v" + currentVersion + "</a>" +
     refreshIcon +
     "</span>";
 }
@@ -85,9 +86,10 @@ function generateChangelogModal(): string {
     "<div class=\"changelog-content\" style=\"display: none;\"></div>",
     "<p class=\"changelog-error\" style=\"display: none;\">Unable to load changelog.</p>",
     "<div class=\"changelog-modal-buttons\">",
-    "<button type=\"button\" id=\"changelog-upgrade-btn\" class=\"btn btn-success\" style=\"display: none;\" onclick=\"startUpgrade()\">Upgrade</button>",
+    "<button type=\"button\" id=\"changelog-upgrade-btn\" class=\"btn btn-success\" style=\"display: none;\" data-click-action=\"" +
+      ACTIONS.startUpgrade + "\">Upgrade</button>",
     "<a href=\"https://github.com/hjdhjd/prismcast/releases\" target=\"_blank\" rel=\"noopener\" class=\"btn btn-primary\">View on GitHub</a>",
-    "<button type=\"button\" class=\"btn btn-secondary\" onclick=\"closeChangelogModal()\">Close</button>",
+    "<button type=\"button\" class=\"btn btn-secondary\" data-click-action=\"" + ACTIONS.closeChangelogModal + "\">Close</button>",
     "</div>",
     "</div>",
     "</div>"
@@ -201,22 +203,23 @@ export function setupRootEndpoint(app: Express): void {
       "<p>Configuration saved. <span id=\"restart-stream-count\">0</span> active stream(s) will be interrupted if you restart now.</p>",
       "<div class=\"restart-modal-status\">Waiting for streams to end...</div>",
       "<div class=\"restart-modal-buttons\">",
-      "<button type=\"button\" class=\"btn btn-secondary\" onclick=\"cancelPendingRestart()\">Cancel</button>",
-      "<button type=\"button\" class=\"btn btn-danger\" onclick=\"forceRestart()\">Restart Now</button>",
+      "<button type=\"button\" class=\"btn btn-secondary\" data-click-action=\"" + ACTIONS.cancelPendingRestart + "\">Cancel</button>",
+      "<button type=\"button\" class=\"btn btn-danger\" data-click-action=\"" + ACTIONS.forceRestart + "\">Restart Now</button>",
       "</div>",
       "</div>",
       "</div>"
     ].join("\n");
 
-    // Build the body content.
+    // Build the body content. The shared utilities script is emitted first so the action dispatcher (and other window.* primitives like showToast,
+    // extractErrorMessage, dropdowns, safe storage, etc.) is installed before any inline script in the body content parses - this is what lets the
+    // log-viewer's inline registerAction calls in content.ts work correctly. All other tab-specific scripts go in the trailing scripts block as before.
     const changelogModal = generateChangelogModal();
-    const bodyContent = [ header, tabBar, tabPanels, restartModal, changelogModal,
+    const bodyContent = [ generateSharedUtilitiesScript(), header, tabBar, tabPanels, restartModal, changelogModal,
       "<div id=\"toast-container\" class=\"toast-container\"></div>" ].join("\n");
 
     // Generate scripts: tab switching, config subtab handling, then status SSE for header updates.
     const scripts = [
       generateTabScript({ localStorageKey: "prismcast-home-tab" }),
-      generateSharedUtilitiesScript(),
       generateChannelsSubtabScript(),
       generateConfigSubtabScript(),
       generateStatusScript()

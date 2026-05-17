@@ -7,6 +7,7 @@
 import type { AddressInfo, Server } from "node:net";
 import { after, before, describe, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { ACTIONS } from "../clientActions.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../../testing.helpers.ts";
 import express from "express";
@@ -138,7 +139,7 @@ describe("setupRootEndpoint", () => {
     assert.match(body, /id="changelog-modal"/);
     assert.match(body, /class="changelog-modal-content"/);
     assert.match(body, /class="changelog-loading"/, "loading placeholder before async fetch");
-    assert.match(body, /onclick="closeChangelogModal\(\)"/, "close button wired");
+    assert.match(body, /data-click-action="close-changelog-modal"/, "close button wired to the close-changelog-modal action");
   });
 
   test("includes the restart modal hidden by default", async () => {
@@ -149,8 +150,8 @@ describe("setupRootEndpoint", () => {
 
     assert.match(body, /id="restart-dialog"/);
     assert.match(body, /id="restart-stream-count"/);
-    assert.match(body, /onclick="cancelPendingRestart\(\)"/);
-    assert.match(body, /onclick="forceRestart\(\)"/);
+    assert.match(body, /data-click-action="cancel-pending-restart"/);
+    assert.match(body, /data-click-action="force-restart"/);
   });
 
   test("includes the toast container for client-side notifications", async () => {
@@ -226,5 +227,120 @@ describe("setupRootEndpoint", () => {
 
     assert.match(body, /id="toast-container"/);
     assert.match(body, /id="system-status"/);
+  });
+
+  test("every emitted data-*-action attribute resolves to a registered handler (runtime dispatch coverage)", async () => {
+
+    /* Direction 1 of action coverage: every action the rendered HTML emits as a trigger MUST resolve to a window.registerAction handler. Orphans here surface
+     * at runtime as silent no-ops with a console warning - clicks just don't do anything. We catch them before shipping.
+     *
+     * "Emission" covers the two shapes the runtime dispatcher actually sees: a static data-<event>-action="name" HTML attribute, OR a dynamic
+     * setAttribute('data-<event>-action', 'name') call inside a script blob (used by handlers that retrofit a button after creation). The dispatcher does
+     * not care which path produced the attribute - both end up as the same DOM state - so the test recognizes both.
+     *
+     * Direction 2 (registered-with-no-emission) is NOT asserted here. The landing page renders one conditional state (empty data fixture); actions that only
+     * emit when the user has channels / profiles / deleted tags would false-positive as dead. The static dead-registration check lives in the next test,
+     * which scans against the ACTIONS registry directly - typed, complete, fixture-independent.
+     */
+    const body = await (await fetch(urlFor("/"))).text();
+
+    /* emissionRegexes is the SSOT for the shapes the dispatcher recognizes. Adding a future emission path (e.g., assignment via el.dataset.clickAction) is a
+     * one-line edit here; the coverage check stays accurate without touching anything else.
+     */
+    const emissionRegexes: readonly RegExp[] = [
+      /data-(?:click|change|keydown|submit)-action="([^"]+)"/g,
+      /setAttribute\(\s*['"]data-(?:click|change|keydown|submit)-action['"]\s*,\s*['"]([^'"]+)['"]/g
+    ];
+    const emitted = new Set<string>();
+
+    for(const regex of emissionRegexes) {
+
+      for(const match of body.matchAll(regex)) {
+
+        if(match[1] !== undefined) {
+
+          emitted.add(match[1]);
+        }
+      }
+    }
+
+    // Collect every window.registerAction('<name>', ...) call in the embedded scripts.
+    const registered = new Set<string>();
+
+    for(const match of body.matchAll(/window\.registerAction\(\s*'([^']+)'\s*,/g)) {
+
+      if(match[1] !== undefined) {
+
+        registered.add(match[1]);
+      }
+    }
+
+    // Sanity: both sets should be non-trivial (the page renders many actions and the scripts register many handlers).
+    assert.ok(emitted.size > 30, "should emit many actions as triggers (sanity check); got " + String(emitted.size));
+    assert.ok(registered.size > 30, "should register many action handlers (sanity check); got " + String(registered.size));
+
+    const orphanEmissions = Array.from(emitted).filter((name) => !registered.has(name)).toSorted();
+
+    assert.deepEqual(orphanEmissions, [], "every emitted action must have a registered handler; orphans: " + JSON.stringify(orphanEmissions));
+  });
+
+  test("every registered handler corresponds to a name in the ACTIONS registry (static dead-registration check)", async () => {
+
+    /* Direction 2 of action coverage, recast as a static check. Reading rendered HTML cannot give a true negative on dead registrations because emission is
+     * conditional on application state - the landing page render here has an empty data fixture, so per-channel buttons, user-profile rows, deleted-tag
+     * restore buttons, and other state-gated triggers all sit unrendered, falsely shadowing their registrations.
+     *
+     * What we can assert structurally is: every registered name must be a value in the ACTIONS registry. ACTIONS is the typed SSOT for action identifiers
+     * (clientActions.ts); a registration whose name is NOT a value there means the script blob hand-rolled a string literal instead of routing through the
+     * registry, and would be invisible to compile-time renaming - a different but real form of dead registration.
+     *
+     * The corresponding "ACTIONS key with no source reference anywhere" guarantee already lives in the type system: every ACTIONS.<name> read at a callsite
+     * is type-checked against the registry, so removing a key surfaces as compile errors at every consuming site. Combined, the two checks give the same
+     * coverage as the runtime bidirectional sweep would, without the conditional-render false positives.
+     */
+    const body = await (await fetch(urlFor("/"))).text();
+    const registered = new Set<string>();
+
+    for(const match of body.matchAll(/window\.registerAction\(\s*'([^']+)'\s*,/g)) {
+
+      if(match[1] !== undefined) {
+
+        registered.add(match[1]);
+      }
+    }
+
+    const validNames = new Set<string>(Object.values(ACTIONS));
+    const unregistered = Array.from(registered).filter((name) => !validNames.has(name)).toSorted();
+
+    assert.deepEqual(unregistered, [], "every registered handler name must come from the ACTIONS registry; off-registry names: " + JSON.stringify(unregistered));
+  });
+
+  test("every emitted data-<event>-(action|prevent-default|stop-propagation|close-dropdown) attribute uses a supported event type", async () => {
+
+    /* The dispatcher listens for exactly four event types: click, change, keydown, submit. A typo (data-keydon-action, missing "w") or an unsupported event
+     * type (data-pointerdown-prevent-default) silently no-ops at runtime - the modifier or action never fires, and nothing catches it. This test walks every
+     * data-*-(action|prevent-default|stop-propagation|close-dropdown) attribute in the rendered HTML and asserts the event prefix is in the supported set.
+     * Class of bug it catches: any future emission of an attribute name whose event word is misspelled or out of scope for the dispatcher.
+     */
+    const body = await (await fetch(urlFor("/"))).text();
+
+    const SUPPORTED_EVENTS = new Set([ "change", "click", "keydown", "submit" ]);
+    const attrRegex = /data-([a-z]+)-(action|prevent-default|stop-propagation|close-dropdown)\b/g;
+    const offenders = new Set<string>();
+    let m: RegExpExecArray | null;
+
+    while((m = attrRegex.exec(body)) !== null) {
+
+      const eventName = m[1];
+
+      if((eventName !== undefined) && !SUPPORTED_EVENTS.has(eventName)) {
+
+        offenders.add("data-" + eventName + "-" + String(m[2]));
+      }
+    }
+
+    assert.deepEqual(Array.from(offenders).sort(), [],
+      "every modifier/action attribute must use a supported event type (click/change/keydown/submit); offenders: " +
+      JSON.stringify(Array.from(offenders).sort()));
   });
 });

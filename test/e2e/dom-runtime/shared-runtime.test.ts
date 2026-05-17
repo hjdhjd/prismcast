@@ -833,8 +833,8 @@ describe("shared.ts: createWizardController", () => {
 
   test("the controller binds click handlers to data-wizard-role buttons during construction", async () => {
 
-    /* Role-tagged buttons (data-wizard-role=back/next/close) get their onclick wired to ctrl.back / ctrl.next / ctrl.close at construction time. This is the
-     * IIFE-scope fix for the inline-onclick-to-global-scope problem - we confirm by clicking the role=next button and verifying step advancement.
+    /* Role-tagged buttons (data-wizard-role=back/next/close) have their click handlers attached at construction time by createWizardController, closing over the
+     * per-controller ctrl instance. We confirm the wiring by clicking the role=next button and asserting that the controller advances the step.
      */
     await using ctx = await setupSharedRuntime();
 
@@ -1248,5 +1248,155 @@ describe("shared.ts: window.channelTable namespace", () => {
 
     assert.equal(rows.length, 1, "exactly one row should carry the id - the new one replaced the old");
     assert.match(rows[0]?.textContent ?? "", /NewName/);
+  });
+});
+
+describe("shared.ts: action dispatcher modifier scoping", () => {
+
+  /* This block guards the class of bug that escaped string-shape tests in the past: an event modifier on an ancestor element (e.g., a form's preventDefault
+   * intended for its submit event) silently breaking unrelated events (e.g., keydown on input fields inside the form). The dispatcher uses event-type-prefixed
+   * modifier attributes (data-<event>-prevent-default, data-<event>-stop-propagation, data-<event>-close-dropdown) so each modifier fires only for its own
+   * event type. We assert this property by dispatching synthetic events and reading event.defaultPrevented / a propagation observer.
+   */
+
+  test("data-submit-prevent-default on a form prevents the submit default but NOT keydown defaults on input fields inside the form", async () => {
+
+    /* This is the regression test for the typing-blocked-in-edit-form bug. Before the event-type-scoped rename, data-prevent-default on a form fired on every
+     * event bubbling through, including keydown on inputs inside it, which prevented the typed character from inserting. The fix: scope the modifier to the
+     * submit event via the attribute name. We assert both halves directly: submit gets defaultPrevented; keydown does not.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    // Seed a form with a submit-scoped prevent-default and an input inside it.
+    ctx.evaluate(
+      "document.body.insertAdjacentHTML('beforeend', " +
+      "'<form id=\"test-form\" data-submit-action=\"test-submit\" data-submit-prevent-default>' +" +
+      "'<input id=\"test-input\" type=\"text\" />' +" +
+      "'</form>');"
+    );
+
+    // Register a no-op handler for the action so the dispatcher's typo warning doesn't fire.
+    ctx.evaluate("window.registerAction('test-submit', () => {});");
+
+    // Dispatch a submit event on the form. The modifier should fire (preventDefault called).
+    const submitPrevented = ctx.evaluate(
+      "(() => {" +
+      "  const form = document.getElementById('test-form');" +
+      "  const ev = new window.Event('submit', { bubbles: true, cancelable: true });" +
+      "  form.dispatchEvent(ev);" +
+      "  return ev.defaultPrevented;" +
+      "})()"
+    );
+
+    assert.equal(submitPrevented, true, "submit on the form should have its default prevented by data-submit-prevent-default");
+
+    // Dispatch a keydown event on the input. The submit-scoped modifier should NOT fire - the typed character would insert normally.
+    const keydownPrevented = ctx.evaluate(
+      "(() => {" +
+      "  const input = document.getElementById('test-input');" +
+      "  const ev = new window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'a' });" +
+      "  input.dispatchEvent(ev);" +
+      "  return ev.defaultPrevented;" +
+      "})()"
+    );
+
+    assert.equal(keydownPrevented, false, "keydown on an input inside a form with data-SUBMIT-prevent-default must NOT have its default prevented");
+  });
+
+  test("data-click-prevent-default on an anchor prevents the click default but NOT submit defaults on a form inside the anchor", async () => {
+
+    /* Symmetric coverage in the other direction: a click-scoped modifier must not leak to submit events. The modifier dispatch is event-type-scoped via the
+     * attribute name, so a click modifier and a submit modifier on the same element are independent.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate(
+      "document.body.insertAdjacentHTML('beforeend', " +
+      "'<div id=\"click-scope\" data-click-action=\"test-click\" data-click-prevent-default>' +" +
+      "'<form id=\"inner-form\"><input id=\"inner-input\" /></form>' +" +
+      "'</div>');"
+    );
+
+    ctx.evaluate("window.registerAction('test-click', () => {});");
+
+    const clickPrevented = ctx.evaluate(
+      "(() => {" +
+      "  const el = document.getElementById('click-scope');" +
+      "  const ev = new window.Event('click', { bubbles: true, cancelable: true });" +
+      "  el.dispatchEvent(ev);" +
+      "  return ev.defaultPrevented;" +
+      "})()"
+    );
+
+    assert.equal(clickPrevented, true, "click on the data-click-prevent-default element should have its default prevented");
+
+    const submitPrevented = ctx.evaluate(
+      "(() => {" +
+      "  const form = document.getElementById('inner-form');" +
+      "  const ev = new window.Event('submit', { bubbles: true, cancelable: true });" +
+      "  form.dispatchEvent(ev);" +
+      "  return ev.defaultPrevented;" +
+      "})()"
+    );
+
+    assert.equal(submitPrevented, false, "submit on an inner form must NOT have its default prevented by an outer data-CLICK-prevent-default");
+  });
+
+  test("data-click-stop-propagation stops click propagation but does not affect keydown propagation through the same element", async () => {
+
+    /* Same scoping property for stopPropagation: a click-scoped stopPropagation must not interfere with keydown events bubbling through the same element. We
+     * attach a probe listener at the document level to observe whether the keydown reaches it.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate(
+      "document.body.insertAdjacentHTML('beforeend', " +
+      "'<div id=\"stop-outer\">' +" +
+      "'<div id=\"stop-inner\" data-click-stop-propagation>' +" +
+      "'<input id=\"stop-input\" />' +" +
+      "'</div></div>');"
+    );
+
+    // Observe whether click and keydown reach an outer probe listener.
+    ctx.evaluate("window.__probe = { clickFired: false, keydownFired: false };");
+    ctx.evaluate(
+      "document.getElementById('stop-outer').addEventListener('click', () => { window.__probe.clickFired = true; });"
+    );
+    ctx.evaluate(
+      "document.getElementById('stop-outer').addEventListener('keydown', () => { window.__probe.keydownFired = true; });"
+    );
+
+    // Click on the inner element - the stop-propagation modifier should prevent the outer click listener from firing.
+    ctx.evaluate(
+      "document.getElementById('stop-inner').dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true }));"
+    );
+
+    // Keydown on the input - the click-scoped stop-propagation must NOT prevent the outer keydown listener from firing.
+    ctx.evaluate(
+      "document.getElementById('stop-input').dispatchEvent(new window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'a' }));"
+    );
+
+    const probe = ctx.evaluateJson("window.__probe") as { clickFired: boolean; keydownFired: boolean };
+
+    assert.equal(probe.clickFired, false, "click on the data-click-stop-propagation element must not reach the outer click listener");
+    assert.equal(probe.keydownFired, true, "keydown on an input inside data-CLICK-stop-propagation must still reach the outer keydown listener");
+  });
+
+  test("registerAction throws on a duplicate action name", async () => {
+
+    // Collision detection is the load-bearing primitive for the action namespace. Silent overwrites would break dispatch in ways hard to localize.
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate("window.registerAction('test-collision-action', () => {});");
+
+    const result = ctx.evaluateJson(
+      "(() => {" +
+      "  try { window.registerAction('test-collision-action', () => {}); return { threw: false }; }" +
+      "  catch(e) { return { threw: true, message: e.message }; }" +
+      "})()"
+    ) as { threw: boolean; message?: string };
+
+    assert.equal(result.threw, true, "second registerAction call for the same name should throw");
+    assert.match(result.message ?? "", /already registered/, "error message should name the collision");
   });
 });

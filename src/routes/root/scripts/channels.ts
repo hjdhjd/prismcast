@@ -2,6 +2,7 @@
  *
  * channels.ts: Client-side JavaScript generator for the PrismCast channels subtab.
  */
+import { ACTIONS } from "../../clientActions.ts";
 
 export function generateChannelsSubtabScript(): string {
 
@@ -1146,7 +1147,8 @@ export function generateChannelsSubtabScript(): string {
     "    } catch(err) { console.error('Setup finish request failed.', err); setupWizard.close(); }",
     "  };",
 
-    // Render the auth waiting state - shows a message while the user authenticates in Chrome.
+    // Render the auth waiting state - shows a message while the user authenticates in Chrome. The Done and Skip buttons carry data-click-action attributes; the
+    // project-wide dispatcher routes the clicks through the registerAction handlers installed below.
     "  function renderSetupAuthWaiting() {",
     "    const slug = setupWizard.state.selectedServices[setupWizard.state.authIndex];",
     "    const svc = setupServices.find((p) => p.tag === slug);",
@@ -1155,16 +1157,8 @@ export function generateChannelsSubtabScript(): string {
     "    content.innerHTML = '<div class=\"wizard-spinner\">Complete authentication for ' + esc(label) +",
     "      ' in the Chrome browser window...</div>' +",
     "      '<div class=\"wizard-step-centered-compact\">' +",
-    "      '<button type=\"button\" class=\"btn btn-primary\" data-action=\"auth-done\">Done</button> ' +",
-    "      '<button type=\"button\" class=\"btn btn-secondary\" data-action=\"auth-skip\">Skip</button></div>';",
-
-    // Attach handlers to the auth waiting buttons programmatically.
-    "    const waitActions = content.querySelectorAll('[data-action]');",
-    "    for(const btn of waitActions) {",
-    "      const action = btn.getAttribute('data-action');",
-    "      if(action === 'auth-done') { btn.onclick = () => { setupAuthDone(); }; }",
-    "      else if(action === 'auth-skip') { btn.onclick = () => { setupAuthSkip(); }; }",
-    "    }",
+    "      '<button type=\"button\" class=\"btn btn-primary\" data-click-action=\"" + ACTIONS.authDone + "\">Done</button> ' +",
+    "      '<button type=\"button\" class=\"btn btn-secondary\" data-click-action=\"" + ACTIONS.authSkip + "\">Skip</button></div>';",
     "  }",
 
     // Render the current setup step content and update navigation buttons. The controller handles step indicator updates and error clearing.
@@ -1206,8 +1200,8 @@ export function generateChannelsSubtabScript(): string {
     "      html += '<div class=\"wizard-step-centered\">';",
     "      html += '<p class=\"wizard-step-provider-name\">' + esc(label) + '</p>';",
     "      html += '<p class=\"wizard-step-provider-count\">Service ' + current + ' of ' + total + '</p>';",
-    "      html += '<button type=\"button\" class=\"btn btn-primary\" data-action=\"auth-start\">Sign In</button> ';",
-    "      html += '<button type=\"button\" class=\"btn btn-secondary\" data-action=\"auth-skip\">Skip</button>';",
+    "      html += '<button type=\"button\" class=\"btn btn-primary\" data-click-action=\"" + ACTIONS.authStart + "\">Sign In</button> ';",
+    "      html += '<button type=\"button\" class=\"btn btn-secondary\" data-click-action=\"" + ACTIONS.authSkip + "\">Skip</button>';",
     "      html += '</div>';",
     "    }",
 
@@ -1222,15 +1216,6 @@ export function generateChannelsSubtabScript(): string {
     "    }",
 
     "    content.innerHTML = html;",
-
-    // Attach event handlers to dynamically-rendered buttons programmatically. Uses data-action attributes to identify buttons without inline onclick.
-    "    const actions = content.querySelectorAll('[data-action]');",
-    "    for(const btn of actions) {",
-    "      const action = btn.getAttribute('data-action');",
-    "      if(action === 'auth-start') { btn.onclick = () => { setupAuthService(); }; }",
-    "      else if(action === 'auth-skip') { btn.onclick = () => { setupAuthSkip(); }; }",
-    "      else if(action === 'auth-done') { btn.onclick = () => { setupAuthDone(); }; }",
-    "    }",
     "  }",
 
     // Tag Management Modal.
@@ -1384,7 +1369,7 @@ export function generateChannelsSubtabScript(): string {
     "        '<p>Playlist URL for Channels DVR: ' + label + '.</p>' +",
     "        '<div class=\"playlist-hint-url\">' +",
     "        '<code>' + url + '</code>' +",
-    "        '<button type=\"button\" class=\"btn btn-primary btn-sm\" onclick=\"copyPlaylistHintUrl()\">Copy</button>' +",
+    "        '<button type=\"button\" class=\"btn btn-primary btn-sm\" data-click-action=\"" + ACTIONS.copyPlaylistHintUrl + "\">Copy</button>' +",
     "        '</div></div>';",
     "    }});",
     "  };",
@@ -1458,6 +1443,49 @@ export function generateChannelsSubtabScript(): string {
     "    storageKey: 'prismcast-channels-subtab',",
     "    switchFn: switchChannelsSubtab",
     "  });",
+
+    /* Action registrations. Each binds an ACTIONS name to a window-exposed handler defined above; the project-wide dispatcher in shared.ts looks up the handler
+     * by name when a click / change / keydown / submit event lands on a matching [data-<event>-action] element. Handlers express only the action's intent -
+     * event mechanics (preventDefault, stopPropagation, dropdown close) live declaratively on the trigger element via the event-type-scoped data-<event>-prevent
+     * -default, data-<event>-stop-propagation, and data-<event>-close-dropdown attributes that the dispatcher processes before the handler runs.
+     */
+    "  window.registerAction('" + ACTIONS.applyTagColumnFilter + "', () => applyTagColumnFilter());",
+    "  window.registerAction('" + ACTIONS.authDone + "', () => setupAuthDone());",
+    "  window.registerAction('" + ACTIONS.authSkip + "', () => setupAuthSkip());",
+    "  window.registerAction('" + ACTIONS.authStart + "', () => setupAuthService());",
+    "  window.registerAction('" + ACTIONS.checkSelectors + "', () => checkSelectors());",
+    "  window.registerAction('" + ACTIONS.copyPlaylistHintUrl + "', () => copyPlaylistHintUrl());",
+    "  window.registerAction('" + ACTIONS.closeExportModal + "', () => closeExportModal());",
+    "  window.registerAction('" + ACTIONS.closeImportModal + "', () => closeImportModal());",
+    "  window.registerAction('" + ACTIONS.closeTagManager + "', () => closeTagManager());",
+    "  window.registerAction('" + ACTIONS.createTag + "', () => createTag());",
+    /* Conditional preventDefault on a specific key. data-keydown-prevent-default would fire on every keystroke; only Enter should be canceled. The conditional
+     * filtering logic lives in the handler since the dispatcher's modifier walk has no per-key scope.
+     */
+    "  window.registerAction('" + ACTIONS.createTagOnEnter + "', (target, event) => {",
+    "    if(event.key === 'Enter') { event.preventDefault(); createTag(); }",
+    "  });",
+    "  window.registerAction('" + ACTIONS.deleteTag + "', (target) => deleteTag(target.dataset.tagName));",
+    "  window.registerAction('" + ACTIONS.deleteUserProfile + "', (target) => deleteUserProfile(target.dataset.profileKey));",
+    "  window.registerAction('" + ACTIONS.editUserProfile + "', (target) => editUserProfile(target.dataset.profileKey));",
+    "  window.registerAction('" + ACTIONS.endProfileTest + "', () => endProfileTest());",
+    "  window.registerAction('" + ACTIONS.executeExport + "', () => executeExport());",
+    "  window.registerAction('" + ACTIONS.executeImport + "', () => executeImport());",
+    "  window.registerAction('" + ACTIONS.finishSetup + "', () => finishSetup());",
+    "  window.registerAction('" + ACTIONS.openBrowseModal + "', () => openBrowseModal());",
+    "  window.registerAction('" + ACTIONS.openSetupWizard + "', () => openSetupWizard());",
+    "  window.registerAction('" + ACTIONS.openTagManager + "', () => openTagManager());",
+    "  window.registerAction('" + ACTIONS.openWizard + "', () => openWizard());",
+    "  window.registerAction('" + ACTIONS.restoreTag + "', (target) => restoreTag(target.dataset.tagName));",
+    "  window.registerAction('" + ACTIONS.saveProfile + "', (target) => saveProfile(target.dataset.withTest === 'true'));",
+    "  window.registerAction('" + ACTIONS.showPlaylistHint + "', (target) => showPlaylistHint(target));",
+    "  window.registerAction('" + ACTIONS.skipSetup + "', () => skipSetup());",
+    "  window.registerAction('" + ACTIONS.startServiceExport + "', () => startServiceExport());",
+    "  window.registerAction('" + ACTIONS.startServiceImport + "', () => startServiceImport());",
+    "  window.registerAction('" + ACTIONS.startTagRename + "', (target) => startTagRename(target, target.dataset.tagName));",
+    "  window.registerAction('" + ACTIONS.submitBrowseChannels + "', () => submitBrowseChannels());",
+    "  window.registerAction('" + ACTIONS.toggleExportAll + "', (target) => toggleExportAll(target));",
+    "  window.registerAction('" + ACTIONS.toggleTagColumnFilter + "', () => toggleTagColumnFilter());",
 
     "})();",
     "</script>"

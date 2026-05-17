@@ -20,6 +20,7 @@
  * EventSource, JSON, document, setInterval, window). The IIFE has no closures over server-side TS state.
  */
 import { HANDLER_CONSTANTS, HANDLER_FUNCTIONS } from "./status.handlers.ts";
+import { ACTIONS } from "../../clientActions.ts";
 
 /**
  * Generates the inline <script> block that drives the status display. Returns a complete <script>...</script> string ready to embed in the page wrapper.
@@ -84,7 +85,6 @@ export function generateStatusScript(): string {
     "    on('streamRemoved', (e) => handleStreamRemoved(JSON.parse(e.data), ctx));",
     "    on('streamHealthChanged', (e) => handleStreamHealthChanged(JSON.parse(e.data), ctx));",
     "    on('systemStatusChanged', (e) => handleSystemStatusChanged(JSON.parse(e.data), ctx));",
-    "    on('healthChanged', (e) => handleHealthChanged(JSON.parse(e.data), ctx));",
     "    on('channelUpdate', (e) => handleChannelUpdate(JSON.parse(e.data), ctx));",
     "    statusEventSource.onerror = () => handleSseError(ctx);",
     "  }",
@@ -101,6 +101,11 @@ export function generateStatusScript(): string {
     "  }, 45000);",
     "  document.addEventListener('visibilitychange', () => handleVisibilityChange(ctx, connectStatusSSE));",
     "  initIPadTooltips(ctx);",
+    // Action registrations. Bound to the project-wide dispatcher so the Overview Copy button, the header stream-count toggle, and the per-row stream details
+    // toggle (rendered dynamically by status.handlers.ts) dispatch via data-*-action attributes.
+    "  window.registerAction('" + ACTIONS.copyOverviewPlaylistUrl + "', () => copyOverviewPlaylistUrl());",
+    "  window.registerAction('" + ACTIONS.toggleStreamDetails + "', (target) => toggleStreamDetails(Number(target.dataset.streamId)));",
+    "  window.registerAction('" + ACTIONS.toggleStreamPopover + "', () => toggleStreamPopover());",
     "})();"
   ].join("\n");
 

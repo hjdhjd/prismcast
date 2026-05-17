@@ -108,18 +108,31 @@ describe("generateButton", () => {
     assert.match(html, /id="my&quot;id"/);
   });
 
-  test("includes onclick when provided and escapes it", () => {
+  test("emits data-click-action when an action is provided", () => {
 
-    const html = generateButton("Save", { onclick: "alert(\"x\")", variant: "primary" });
+    // The action attribute is dispatched at runtime by the project-wide action dispatcher in shared.ts; the button itself carries no inline onclick handler.
+    const html = generateButton("Save", { action: "submit-form", variant: "primary" });
 
-    assert.match(html, /onclick="alert\(&quot;x&quot;\)"/);
+    assert.match(html, /data-click-action="submit-form"/);
+    assert.doesNotMatch(html, /onclick=/, "buttons should never carry an inline onclick attribute");
+  });
+
+  test("escapes the action value when it contains special characters", () => {
+
+    // The renderer flows the value through serializeAttrs, which routes through escapeHtml. Defensive only - action names should be kebab-case identifiers in
+    // practice, but the escape contract guarantees safe rendering for any string the caller passes in.
+    const html = generateButton("Save", { action: "<weird>", variant: "primary" });
+
+    assert.match(html, /data-click-action="&lt;weird&gt;"/);
   });
 
   test("adds the disabled attribute when disabled=true", () => {
 
+    // The attribute is emitted in HTML5 boolean form (bare attribute name) via serializeAttrs. We match it as a standalone token rather than at end-of-tag,
+    // since the renderer emits attributes in alphabetical order and disabled may not be the final one.
     const html = generateButton("Save", { disabled: true, variant: "primary" });
 
-    assert.match(html, / disabled>/);
+    assert.match(html, / disabled[ >]/);
   });
 
   test("omits the disabled attribute when disabled is false or unset", () => {
@@ -128,8 +141,8 @@ describe("generateButton", () => {
     const a = generateButton("Save", { disabled: false, variant: "primary" });
     const b = generateButton("Save", { variant: "primary" });
 
-    assert.doesNotMatch(a, / disabled>/);
-    assert.doesNotMatch(b, / disabled>/);
+    assert.doesNotMatch(a, / disabled[ >]/);
+    assert.doesNotMatch(b, / disabled[ >]/);
   });
 
   test("escapes the label", () => {

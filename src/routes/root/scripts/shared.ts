@@ -3,6 +3,7 @@
  * shared.ts: Shared client-side utilities for all tabs. This script runs before any tab-specific script so that cross-tab functions (toast notifications,
  * dropdown menus, channel display rendering) are available during both initialization and event handling.
  */
+import { ACTIONS } from "../../clientActions.ts";
 
 /**
  * Generates the shared utilities script block containing cross-tab client-side functions. Runs before all tab-specific scripts to eliminate execution order
@@ -14,6 +15,60 @@ export function generateSharedUtilitiesScript(): string {
   return [
     "<script>",
     "(function() {",
+
+    /* Action dispatcher. The single project-wide primitive for event handling. Subsystems register named handlers via window.registerAction(name, handler), and
+     * one document-level delegated listener routes click / change / keydown / submit events to the registered handler. Triggers declare their intent on the
+     * element via data-<event>-action="name" (with optional sibling data-* attributes for per-instance arguments).
+     *
+     * Event mechanics are also declarative AND event-type-scoped, symmetric with actions: data-<event>-prevent-default calls event.preventDefault(),
+     * data-<event>-stop-propagation calls event.stopPropagation(), data-<event>-close-dropdown closes any open dropdown menus. Each modifier fires only for
+     * the event type encoded in its attribute name, so a <form data-submit-prevent-default> prevents the form's submit default without affecting keydown
+     * events on input fields inside the form. The event-type-in-the-name shape is self-documenting and uniform with data-<event>-action: one mental model
+     * for "when does this fire", expressed entirely in the attribute name.
+     *
+     * The registration API enforces uniqueness - a second registerAction call for an already-registered name throws, so silent overwrites are impossible.
+     * When a click/change/etc. lands on an element carrying a data-<event>-action whose value is not registered, the dispatcher logs a console warning
+     * naming the missing action - typos surface fast.
+     */
+    "  const actionHandlers = new Map();",
+    "  window.registerAction = (name, handler) => {",
+    "    if(actionHandlers.has(name)) {",
+    "      throw new Error('Action \"' + name + '\" is already registered. Action names must be globally unique.');",
+    "    }",
+    "    actionHandlers.set(name, handler);",
+    "  };",
+    /* Modifier handling runs in the capture phase so stopPropagation actually stops further propagation. Capture phase fires from document down to target -
+     * before any element-level listener between the document and the trigger - so stopPropagation called here prevents intermediate bubble-phase listeners
+     * from firing. preventDefault and close-dropdown are side-effect modifiers that work equally well in either phase but live here for cohesion: every
+     * declarative modifier flows through one listener. The selector is built from event.type so each modifier fires only for its own event type.
+     */
+    "  const dispatchModifiers = (event) => {",
+    "    const prefix = 'data-' + event.type + '-';",
+    "    const modTarget = event.target.closest('[' + prefix + 'prevent-default], [' + prefix + 'stop-propagation], [' + prefix + 'close-dropdown]');",
+    "    if(!modTarget) return;",
+    "    if(modTarget.hasAttribute(prefix + 'prevent-default')) event.preventDefault();",
+    "    if(modTarget.hasAttribute(prefix + 'stop-propagation')) event.stopPropagation();",
+    "    if(modTarget.hasAttribute(prefix + 'close-dropdown') && window.dropdowns) window.dropdowns.close();",
+    "  };",
+    /* Action dispatch runs in the bubble phase so element-level listeners get a chance to fire first. Action handlers see the event after the element-level
+     * processing has run. Missing handlers log a console warning so typos surface fast.
+     */
+    "  const dispatchAction = (event) => {",
+    "    const attrName = 'data-' + event.type + '-action';",
+    "    const target = event.target.closest('[' + attrName + ']');",
+    "    if(!target) return;",
+    "    const action = target.getAttribute(attrName);",
+    "    const handler = actionHandlers.get(action);",
+    "    if(handler) {",
+    "      handler(target, event);",
+    "    } else {",
+    "      console.warn('No handler registered for ' + attrName + '=\"' + action + '\".');",
+    "    }",
+    "  };",
+    "  for(const type of [ 'click', 'change', 'keydown', 'submit' ]) {",
+    "    document.addEventListener(type, dispatchModifiers, { capture: true });",
+    "    document.addEventListener(type, dispatchAction);",
+    "  }",
 
     // Show a toast notification. Auto-dismiss durations: success/info = 5s, warning = 8s, error = no auto-dismiss. Optional action: { label, onclick } appends an
     // inline button between the message text and the close button.
@@ -738,6 +793,13 @@ export function generateSharedUtilitiesScript(): string {
     "      }",
     "    }",
     "  };",
+
+    /* Action registrations. The cross-cutting actions bound to functions defined in this same script (toggleDropdown, channelTable.sort). Each subsystem
+     * registers its own actions in its corresponding script file; this block keeps shared-utility actions colocated with their definitions. Event mechanics
+     * (preventDefault, stopPropagation, close-dropdown) live declaratively on the trigger element, not in these handler bodies.
+     */
+    "  window.registerAction('" + ACTIONS.channelTableSort + "', (target) => channelTable.sort(target.dataset.field));",
+    "  window.registerAction('" + ACTIONS.toggleDropdown + "', (target) => toggleDropdown(target));",
 
     "})();",
     "</script>"

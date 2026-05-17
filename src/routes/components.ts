@@ -2,7 +2,7 @@
  *
  * components.ts: Reusable UI components for PrismCast web pages.
  */
-import { escapeHtml } from "../utils/index.ts";
+import { escapeHtml, serializeAttrs } from "../utils/index.ts";
 
 /* This module provides reusable HTML component generators for consistent UI across PrismCast. Each component returns an HTML string that can be included in page
  * generation. Components use CSS custom properties from theme.ts for styling, ensuring automatic dark mode support.
@@ -59,6 +59,10 @@ export type ButtonSize = "md" | "sm";
  */
 export interface ButtonOptions {
 
+  // The click action dispatched via the project-wide action dispatcher (window.registerAction). The renderer emits this as a data-click-action attribute; the
+  // dispatcher in shared.ts looks up the registered handler and invokes it on click. Omit when the button has no click behavior (e.g., a disabled placeholder).
+  action?: string;
+
   // Additional CSS classes.
   className?: string;
 
@@ -67,9 +71,6 @@ export interface ButtonOptions {
 
   // Button ID attribute.
   id?: string;
-
-  // Inline onclick handler.
-  onclick?: string;
 
   // Button size (default: md).
   size?: ButtonSize;
@@ -89,7 +90,7 @@ export interface ButtonOptions {
  */
 export function generateButton(label: string, options: ButtonOptions): string {
 
-  const { className, disabled, id, onclick, size = "md", type = "button", variant } = options;
+  const { action, className, disabled, id, size = "md", type = "button", variant } = options;
 
   const classes = [ "btn", "btn-" + variant ];
 
@@ -103,27 +104,16 @@ export function generateButton(label: string, options: ButtonOptions): string {
     classes.push(className);
   }
 
-  const attrs: string[] = [
-    "type=\"" + type + "\"",
-    "class=\"" + classes.join(" ") + "\""
-  ];
+  // The attribute set is serialized through serializeAttrs so the leading-space contract, HTML escaping, and conditional emission (undefined/false → omit;
+  // boolean true → bare attribute name) all live in one place. Property order is alphabetical to match the project's style.
+  return "<button" + serializeAttrs({
 
-  if(id) {
-
-    attrs.push("id=\"" + escapeHtml(id) + "\"");
-  }
-
-  if(onclick) {
-
-    attrs.push("onclick=\"" + escapeHtml(onclick) + "\"");
-  }
-
-  if(disabled) {
-
-    attrs.push("disabled");
-  }
-
-  return "<button " + attrs.join(" ") + ">" + escapeHtml(label) + "</button>";
+    "class": classes.join(" "),
+    "data-click-action": action,
+    disabled: disabled,
+    id: id,
+    type: type
+  }) + ">" + escapeHtml(label) + "</button>";
 }
 
 /**
@@ -415,15 +405,21 @@ export interface WizardModalButton {
   // Button label text.
   label: string;
 
-  // Inline onclick handler for custom buttons. Omit for controller-managed buttons that have a role - the controller attaches handlers via JavaScript.
-  onclick?: string;
+  // The click action dispatched via the project-wide action dispatcher when the button is clicked. Mutually exclusive with role: role-tagged buttons are
+  // managed by the client-side wizard controller (Back/Next/Close), action-tagged buttons are handled via window.registerAction. Custom buttons (Save, Apply,
+  // Finish) carry an action; standard navigation buttons carry a role instead.
+  action?: string;
+
+  // Optional per-instance data attributes carried alongside the action. Keys are emitted without the "data-" prefix; camelCase keys are converted to kebab-case
+  // attribute names (e.g., { withTest: "true" } emits data-with-test="true"). The action's registered handler reads these via target.dataset.* when it needs
+  // per-button data to decide what to do.
+  data?: Record<string, string>;
 
   // Position in the footer. Left-positioned buttons sit on the leading edge (e.g., Back), right-positioned buttons sit on the trailing edge.
   position: "left" | "right";
 
-  // Standard navigation role. When set, the button emits a data-wizard-role attribute and omits the onclick attribute. The client-side wizard controller
-  // discovers role-tagged buttons within its modal and attaches handlers from inside the IIFE closure, avoiding the inline-onclick-to-global-scope problem.
-  // Custom buttons (Save, Apply, Finish) omit the role and provide an onclick string pointing to a window-exposed function.
+  // Standard navigation role. When set, the button emits a data-wizard-role attribute and the controller attaches its handler from inside the IIFE closure.
+  // Mutually exclusive with action: role-tagged buttons are wizard-controller-managed, action-tagged buttons are action-dispatcher-managed.
   role?: "back" | "close" | "next";
 
   // Button size (default: md).
@@ -471,9 +467,10 @@ export interface WizardModalOptions {
   // Override the default max-width of the modal content box. Useful for narrower dialogs like Import/Export.
   maxWidth?: string;
 
-  // Close handler invoked by the header close button. Required for non-controller modals (Import/Export) where the X button needs an inline onclick. Optional
-  // for controller-managed modals where the controller discovers the .wizard-close button and attaches its own handler from inside the IIFE closure.
-  onClose?: string;
+  // The click action dispatched when the X close button is clicked. Required for non-controller modals (Import/Export) where the X needs an action to close
+  // the dialog. Optional for controller-managed modals: when omitted, the controller discovers the .wizard-close button and attaches its own handler from
+  // inside the IIFE closure.
+  closeAction?: string;
 
   // Step labels for the step indicator. When omitted, no step indicator is rendered (used for simple dialogs). The first step is marked active by default.
   steps?: string[];
@@ -498,7 +495,7 @@ export interface WizardModalOptions {
  */
 export function generateWizardModal(options: WizardModalOptions): string {
 
-  const { body, buttons, contentId, dataAttributes, dataBlocks, description, errorId, id, maxWidth, onClose, steps, stepsId, title, titleId } = options;
+  const { body, buttons, closeAction, contentId, dataAttributes, dataBlocks, description, errorId, id, maxWidth, steps, stepsId, title, titleId } = options;
 
   const resolvedContentId = contentId ?? (id + "-content");
   const resolvedStepsId = stepsId ?? (id + "-steps");
@@ -535,11 +532,16 @@ export function generateWizardModal(options: WizardModalOptions): string {
   const titleTag = titleId ? "<h3 id=\"" + escapeHtml(titleId) + "\">" : "<h3>";
 
   lines.push(titleTag + escapeHtml(title) + "</h3>");
-  // The X close button. For controller-managed modals, the controller discovers this button by class and attaches its own handler. For non-controller modals,
-  // the inline onclick provides the close behavior directly.
-  const closeAttrs = onClose ? " onclick=\"" + escapeHtml(onClose) + "\"" : "";
 
-  lines.push("<button type=\"button\" class=\"wizard-close\" aria-label=\"Close\"" + closeAttrs + ">\u2715</button>");
+  // The X close button. Controller-managed modals omit closeAction and let the controller discover the button by class. Non-controller modals (Import/Export)
+  // pass closeAction; the renderer emits it as a data-click-action that the project-wide action dispatcher routes to a registered handler.
+  lines.push("<button" + serializeAttrs({
+
+    "aria-label": "Close",
+    "class": "wizard-close",
+    "data-click-action": closeAction,
+    type: "button"
+  }) + ">\u2715</button>");
 
   if(description) {
 
@@ -639,30 +641,26 @@ function generateWizardButton(btn: WizardModalButton): string {
     classes.push("btn-sm");
   }
 
-  const attrs: string[] = [
-    "type=\"button\"",
-    "class=\"" + classes.join(" ") + "\""
-  ];
+  // Role and action are mutually exclusive: role-tagged buttons (Back/Next/Close) are discovered by the wizard controller via data-wizard-role; action-tagged
+  // buttons (Save/Apply/Finish) are dispatched by the project-wide action dispatcher via data-click-action. The renderer emits at most one of the two. Per-
+  // instance data attributes from btn.data are merged in (without the "data-" prefix, so { withTest: "true" } emits data-with-test="true").
+  const attrs: Record<string, string | boolean | undefined> = {
 
-  if(btn.id) {
+    "class": classes.join(" "),
+    "data-click-action": btn.role ? undefined : btn.action,
+    "data-wizard-role": btn.role,
+    id: btn.id,
+    style: visible ? undefined : "display: none;",
+    type: "button"
+  };
 
-    attrs.push("id=\"" + escapeHtml(btn.id) + "\"");
+  if(btn.data) {
+
+    for(const [ key, value ] of Object.entries(btn.data)) {
+
+      attrs["data-" + key.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())] = value;
+    }
   }
 
-  // Role-tagged buttons are managed by the client-side wizard controller. The data attribute lets the controller discover them within the modal DOM.
-  // Custom buttons without a role use an inline onclick handler pointing to a window-exposed function.
-  if(btn.role) {
-
-    attrs.push("data-wizard-role=\"" + escapeHtml(btn.role) + "\"");
-  } else if(btn.onclick) {
-
-    attrs.push("onclick=\"" + escapeHtml(btn.onclick) + "\"");
-  }
-
-  if(!visible) {
-
-    attrs.push("style=\"display: none;\"");
-  }
-
-  return "<button " + attrs.join(" ") + ">" + escapeHtml(btn.label) + "</button>";
+  return "<button" + serializeAttrs(attrs) + ">" + escapeHtml(btn.label) + "</button>";
 }

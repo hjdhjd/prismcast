@@ -254,6 +254,6 @@ describe("generateTagManagerBody", () => {
 
     assert.match(html, /tag-manager/, "contains the manager root class");
     assert.match(html, /tag-manager-input/, "contains the new-tag input id");
-    assert.match(html, /createTag\(\)/, "contains the create handler reference");
+    assert.match(html, /data-click-action="create-tag"/, "contains the create-tag action reference");
   });
 });

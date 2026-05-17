@@ -2,6 +2,7 @@
  *
  * config.ts: Client-side JavaScript generator for the PrismCast configuration subtab.
  */
+import { ACTIONS } from "../../clientActions.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../../config/presets.ts";
 import { isRunningAsService } from "../../../utils/index.ts";
 
@@ -375,7 +376,10 @@ export function generateConfigSubtabScript(): string {
     "          btn.title = 'Reset to default';",
     "          btn.setAttribute('aria-label', 'Reset to default');",
     "          btn.innerHTML = '&#8635;';",
-    "          btn.onclick = () => { resetSetting(path); };",
+
+    // Mirror the server-rendered reset button (settings.ts): the project-wide action dispatcher routes the click via the registerAction handler installed below.
+    "          btn.setAttribute('data-click-action', '" + ACTIONS.resetSetting + "');",
+    "          btn.setAttribute('data-setting-path', path);",
     "          row.appendChild(btn);",
     "        }",
     "      }",
@@ -1309,7 +1313,7 @@ export function generateConfigSubtabScript(): string {
     "      const iconAttr = chipIconUrl ? ' data-icon-url=\"' + chipIconUrl + '\"' : '';",
     "      chip.innerHTML = '<span class=\"provider-display\"' + domainAttr + iconAttr + ' data-sm>' + label + '</span>' +",
     "        '<button type=\"button\" class=\"chip-close\" aria-label=\"Remove ' + label +",
-    "        '\" onclick=\"removeServiceChip(\\'' + tag + '\\')\">\\u00d7</button>';",
+    "        '\" data-click-action=\"" + ACTIONS.removeServiceChip + "\" data-tag-name=\"' + tag + '\">\\u00d7</button>';",
     "      container.appendChild(chip);",
     "    }",
     "    processServiceDisplays();",
@@ -1603,7 +1607,7 @@ export function generateConfigSubtabScript(): string {
     "              const names = matches.map((m) => '<strong>' + esc(m.name) + '</strong> (' + m.serviceCount + ' service' +",
     "                ((m.serviceCount === 1) ? '' : 's') + ')');",
     "              predefinedHint.innerHTML = names.join(', ') + ' available as predefined ' + ((matches.length === 1) ? 'channel' : 'channels') +",
-    "                ' with multi-service support. <a href=\"#\" onclick=\"event.preventDefault(); openBrowseModal();\">Browse predefined channels</a>';",
+    "                ' with multi-service support. <a href=\"#\" data-click-action=\"" + ACTIONS.openBrowseModal + "\">Browse predefined channels</a>';",
     "              predefinedHint.style.display = '';",
     "            } else {",
     "              predefinedHint.style.display = 'none';",
@@ -1764,6 +1768,73 @@ export function generateConfigSubtabScript(): string {
     "    storageKey: 'prismcast-config-subtab',",
     "    switchFn: switchSubtab",
     "  });",
+
+    /* Action registrations. Each binds an ACTIONS name to a window-exposed handler defined above; the project-wide dispatcher in shared.ts looks up the handler
+     * by name when a click / change / keydown / submit event lands on a matching [data-<event>-action] element. Handlers express only the action's intent -
+     * event mechanics (preventDefault, stopPropagation, dropdown close) live declaratively on the trigger element via the event-type-scoped data-<event>-prevent
+     * -default, data-<event>-stop-propagation, and data-<event>-close-dropdown attributes that the dispatcher processes before the handler runs.
+     */
+    "  window.registerAction('" + ACTIONS.autoNumberChannels + "', () => autoNumberChannels());",
+    "  window.registerAction('" + ACTIONS.bulkAssignService + "', (target) => {",
+    "    if(target.value) { window.dropdowns.close(); bulkAssignService(target.value); target.value = ''; }",
+    "  });",
+    "  window.registerAction('" + ACTIONS.bulkToggleHdhr + "', () => bulkToggleHdhr());",
+    "  window.registerAction('" + ACTIONS.bulkTogglePredefined + "', (target) => {",
+    "    bulkTogglePredefined(!target.querySelector('input').checked, target.dataset.scope);",
+    "  });",
+    "  window.registerAction('" + ACTIONS.bulkToggleTag + "', (target) => {",
+    "    bulkToggleTag(target.dataset.tagName, !target.querySelector('input').checked);",
+    "  });",
+    "  window.registerAction('" + ACTIONS.cancelPendingRestart + "', () => cancelPendingRestart());",
+    "  window.registerAction('" + ACTIONS.checkForUpdates + "', () => checkForUpdates());",
+    "  window.registerAction('" + ACTIONS.closeChangelogModal + "', () => closeChangelogModal());",
+    "  window.registerAction('" + ACTIONS.copyStreamUrl + "', (target) => copyStreamUrl(target.dataset.protocol, target.dataset.channelKey));",
+    "  window.registerAction('" + ACTIONS.deleteChannel + "', (target) => deleteChannel(target.dataset.channelKey));",
+    "  window.registerAction('" + ACTIONS.endLogin + "', () => endLogin());",
+    "  window.registerAction('" + ACTIONS.exportChannels + "', () => exportChannels());",
+    "  window.registerAction('" + ACTIONS.exportConfig + "', () => exportConfig());",
+    "  window.registerAction('" + ACTIONS.forceRestart + "', () => forceRestart());",
+    "  window.registerAction('" + ACTIONS.hideAddChannelForm + "', () => { document.getElementById('add-channel-form').style.display = 'none'; });",
+    "  window.registerAction('" + ACTIONS.hideEditForm + "', (target) => hideEditForm(target.dataset.channelKey));",
+    "  window.registerAction('" + ACTIONS.importChannels + "', (target) => importChannels(target));",
+    "  window.registerAction('" + ACTIONS.importConfig + "', (target) => importConfig(target));",
+    "  window.registerAction('" + ACTIONS.importM3u + "', (target) => importM3U(target));",
+    "  window.registerAction('" + ACTIONS.openChangelogModal + "', () => openChangelogModal());",
+    "  window.registerAction('" + ACTIONS.resetAllToDefaults + "', () => resetAllToDefaults());",
+    "  window.registerAction('" + ACTIONS.resetChannelField + "', (target) => resetChannelField(target.dataset.fieldId));",
+    "  window.registerAction('" + ACTIONS.resetSetting + "', (target) => resetSetting(target.dataset.settingPath));",
+    "  window.registerAction('" + ACTIONS.resetTabToDefaults + "', (target) => resetTabToDefaults(target.dataset.tab));",
+    "  window.registerAction('" + ACTIONS.revertChannel + "', (target) => revertChannel(target.dataset.channelKey));",
+    "  window.registerAction('" + ACTIONS.selectServicePill + "', (target) => selectServicePill(target));",
+    "  window.registerAction('" + ACTIONS.showAddChannelForm + "', () => { document.getElementById('add-channel-form').style.display = 'block'; });",
+    "  window.registerAction('" + ACTIONS.showEditForm + "', (target) => showEditForm(target.dataset.channelKey));",
+    "  window.registerAction('" + ACTIONS.startChannelLogin + "', (target) => startChannelLogin(target.dataset.channelKey));",
+    "  window.registerAction('" + ACTIONS.startInlineEdit + "', (target) => startInlineEdit(target));",
+    "  window.registerAction('" + ACTIONS.startUpgrade + "', () => startUpgrade());",
+    "  window.registerAction('" + ACTIONS.submitChannelFormAdd + "', (target, event) => submitChannelForm(event, 'add'));",
+    "  window.registerAction('" + ACTIONS.submitChannelFormEdit + "', (target, event) => submitChannelForm(event, 'edit'));",
+    "  window.registerAction('" + ACTIONS.submitSettingsForm + "', (target, event) => submitSettingsForm(event));",
+    "  window.registerAction('" + ACTIONS.toggleAdvancedFields + "', (target) => {",
+    "    const panel = document.getElementById(target.dataset.advancedId);",
+    "    if(panel) panel.classList.toggle('show');",
+    "    target.textContent = (target.textContent === 'Show Advanced Options') ? 'Hide Advanced Options' : 'Show Advanced Options';",
+    "  });",
+    "  window.registerAction('" + ACTIONS.toggleColumn + "', (target) => toggleColumn(target));",
+    "  window.registerAction('" + ACTIONS.toggleDisabledVisibility + "', () => toggleDisabledVisibility());",
+    "  window.registerAction('" + ACTIONS.toggleHdhr + "', (target) => toggleHdhr(target));",
+    "  window.registerAction('" + ACTIONS.toggleInlineTagDropdown + "', (target) => toggleInlineTagDropdown(target));",
+    "  window.registerAction('" + ACTIONS.togglePredefinedChannel + "', (target) => " +
+    "togglePredefinedChannel(target.dataset.channelKey, target.dataset.enabled === 'true'));",
+    "  window.registerAction('" + ACTIONS.toggleProfileReference + "', () => toggleProfileReference());",
+    "  window.registerAction('" + ACTIONS.toggleSection + "', (target) => toggleSection(target.dataset.sectionId));",
+    "  window.registerAction('" + ACTIONS.toggleServiceTag + "', (target) => toggleServiceTag(target));",
+    "  window.registerAction('" + ACTIONS.removeServiceChip + "', (target) => removeServiceChip(target.dataset.tagName));",
+    "  window.registerAction('" + ACTIONS.triggerChannelsImport + "', () => document.getElementById('import-channels-file').click());",
+    "  window.registerAction('" + ACTIONS.triggerM3uImport + "', () => document.getElementById('import-m3u-file').click());",
+    "  window.registerAction('" + ACTIONS.triggerSettingsImport + "', () => document.getElementById('import-settings-file').click());",
+    "  window.registerAction('" + ACTIONS.updateCheckboxList + "', (target) => updateCheckboxList(target));",
+    "  window.registerAction('" + ACTIONS.updateServiceSelection + "', (target) => updateServiceSelection(target));",
+    "  window.registerAction('" + ACTIONS.updateTagsHidden + "', (target) => updateTagsHidden(target.closest('.form-row')));",
 
     "})();",
     "</script>"

@@ -64,11 +64,11 @@ describe("empty-state rendering across tabs", () => {
 
     assert.match(html, /<div class="empty-state">[\s\S]*<p class="empty-state-title">No custom services installed<\/p>/,
       "empty-state div with the documented title is rendered when no user profiles exist");
-    assert.doesNotMatch(html, /onclick="startServiceExport\(\)"/, "Export button is omitted in the empty state (nothing to export)");
+    assert.doesNotMatch(html, /data-click-action="start-service-export"/, "Export button is omitted in the empty state (nothing to export)");
 
     // The New Profile button is always present (the user can create one), and the import flow is also always available.
-    assert.match(html, /onclick="openWizard\(\)"/, "New Profile button is present even in the empty state");
-    assert.match(html, /onclick="startServiceImport\(\)"/, "Import button is present even in the empty state");
+    assert.match(html, /data-click-action="open-wizard"/, "New Profile button is present even in the empty state");
+    assert.match(html, /data-click-action="start-service-import"/, "Import button is present even in the empty state");
   });
 
   test("tag filter content and tag manager render cleanly with no user tags (predefined vocabulary only)", async () => {

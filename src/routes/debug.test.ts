@@ -6,13 +6,13 @@
  * directory so mutateConfig has a concrete target. The HTML structure is verified by checking for the documented sections and section headers.
  */
 import type { AddressInfo, Server } from "node:net";
+import { DEBUG_CATEGORIES, initDebugFilter } from "../utils/index.ts";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { CONFIG } from "../config/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../testing.helpers.ts";
 import express from "express";
-import { initDebugFilter } from "../utils/index.ts";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
@@ -121,12 +121,18 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
 
   test("renders the action buttons (Apply, Select All, Deselect All)", async () => {
 
+    // Attribute order is alphabetical via serializeAttrs, so we slice the button tag by label and check the data-debug-action attribute independently rather
+    // than asserting a positional layout (which would couple the test to insertion order).
     const res = await fetch(urlFor("/debug"));
     const body = await res.text();
 
-    assert.match(body, /onclick="applyPattern\(\)">Apply</);
-    assert.match(body, /onclick="selectAll\(true\)">Select All</);
-    assert.match(body, /onclick="selectAll\(false\)">Deselect All</);
+    for(const [ label, action ] of [ [ "Apply", "apply" ], [ "Select All", "select-all" ], [ "Deselect All", "deselect-all" ] ] as const) {
+
+      const tagMatch = new RegExp("<button [^>]*>" + label + "</button>").exec(body);
+
+      assert.ok(tagMatch, label + " button is rendered");
+      assert.match(tagMatch[0], new RegExp("data-debug-action=\"" + action + "\""), label + " button carries data-debug-action=\"" + action + "\"");
+    }
   });
 
   test("renders the raw pattern input field", async () => {
@@ -148,14 +154,14 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
     assert.match(body, /<input type="hidden" id="debug-form-pattern" name="pattern"/);
   });
 
-  test("renders the category groups container", async () => {
+  test("renders the category sections container", async () => {
 
     const res = await fetch(urlFor("/debug"));
     const body = await res.text();
 
-    assert.match(body, /<div class="debug-groups">/);
-    // The group container should hold at least one group based on DEBUG_CATEGORIES content.
-    assert.match(body, /<div class="debug-group">/);
+    assert.match(body, /<div class="debug-pane">/);
+    // The pane should hold at least one section card based on DEBUG_CATEGORIES content.
+    assert.match(body, /<section class="debug-section">/);
   });
 
   test("emits the debug script (selectAll, applyPattern, syncRaw) so checkboxes work", async () => {
@@ -170,13 +176,16 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
     assert.match(body, /function syncCheckboxesFromRaw/);
   });
 
-  test("includes the inline init script that sets indeterminate states", async () => {
+  test("includes the init logic that sets indeterminate states on page load", async () => {
 
     const res = await fetch(urlFor("/debug"));
     const body = await res.text();
 
-    // The inline init script preserves indeterminate state across the HTML serialization barrier (the checked attribute cannot express it).
-    assert.match(body, /querySelectorAll\('\[data-indeterminate="true"\]'\)/);
+    // The HTML "checked" attribute cannot express the indeterminate state, so the script applies it from JS once the rows have rendered. The renderer emits
+    // the HTML5 boolean-attribute form (a bare data-indeterminate, no value), so the init selector must also be presence-based, not value-based - any drift
+    // here would silently fail to restore the indeterminate state.
+    assert.match(body, /document\.querySelectorAll\('\[data-indeterminate\]'\)/);
+    assert.match(body, /el\.indeterminate = true/);
   });
 
   test("includes theme styles in the rendered page (dark mode support)", async () => {
@@ -186,6 +195,99 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
     const body = await res.text();
 
     assert.match(body, /--surface-page:/, "should include the theme variable declarations");
+  });
+
+  test("every row in the pane contains exactly one input, one label, and one description span", async () => {
+
+    // Structural invariant: the row template emits a 1:1:1:1 shape - one wrapper div, one checkbox, one label, one description span - for every variant. This
+    // is what lets the four-track grid place every cell into the same column on every row. If the renderer ever drifts (e.g., header rows stop emitting an
+    // empty desc span), the counts diverge and this test fails before the visual misalignment can ship.
+    const res = await fetch(urlFor("/debug"));
+    const body = await res.text();
+    const paneMatch = (/<div class="debug-pane">([\s\S]*?)<form id="debug-form"/).exec(body);
+    const pane = paneMatch?.[1] ?? "";
+
+    assert.ok(pane.length > 0, "should find the debug-pane container");
+
+    const rowOpenings = (pane.match(/<div class="debug-row\b/g) ?? []).length;
+    const checkboxes = (pane.match(/<input type="checkbox"/g) ?? []).length;
+    const labels = (pane.match(/<label for="/g) ?? []).length;
+    const descs = (pane.match(/<span class="debug-row__desc"/g) ?? []).length;
+
+    assert.ok(rowOpenings > 10, "there should be many rows (sanity check)");
+    assert.equal(checkboxes, rowOpenings, "each row should have exactly one checkbox");
+    assert.equal(labels, rowOpenings, "each row should have exactly one label");
+    assert.equal(descs, rowOpenings, "each row should have exactly one description span");
+  });
+
+  test("namespaceless categories render with --standalone; namespaced categories do not", async () => {
+
+    // Variant slotting is what makes alignment work. Standalones must carry the --standalone modifier so the CSS places their cells in the header tracks
+    // (label spanning [checkbox]/[desc], description still in [desc]); grouped leaves must NOT carry it so they sit in the default leaf tracks. Drive the
+    // expectation directly off DEBUG_CATEGORIES so the test grows with the registry rather than capturing today's list.
+    const res = await fetch(urlFor("/debug"));
+    const body = await res.text();
+
+    for(const cat of DEBUG_CATEGORIES) {
+
+      const isStandalone = !cat.category.includes(":");
+      const escapedCategory = cat.category.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const standaloneRegex = new RegExp("<div class=\"debug-row debug-row--standalone\">[\\s\\S]{0,500}?id=\"cat-" + escapedCategory + "\"");
+      const leafRegex = new RegExp("<div class=\"debug-row\">[\\s\\S]{0,500}?id=\"cat-" + escapedCategory + "\"");
+
+      if(isStandalone) {
+
+        assert.match(body, standaloneRegex, "namespaceless category '" + cat.category + "' should be in a --standalone row");
+      } else {
+
+        assert.match(body, leafRegex, "namespaced category '" + cat.category + "' should be in a default leaf row");
+      }
+    }
+  });
+
+  test("CSS owns the four-track grid on .debug-section and rows inherit via subgrid", async () => {
+
+    // The load-bearing CSS: the section is the grid container that declares the column tracks (named for self-documentation), and every .debug-row inherits
+    // those tracks via "grid-template-columns: subgrid". This is the single source of truth for column geometry; if either side is missing the layout falls
+    // back to per-row "auto" sizing and descriptions drift across variants.
+    const res = await fetch(urlFor("/debug"));
+    const body = await res.text();
+
+    assert.match(body, /\.debug-section\b[^}]*grid-template-columns:[^}]*\[indent\][^}]*\[checkbox\][^}]*\[label\][^}]*\[desc\][^}]*\}/);
+    assert.match(body, /\.debug-row\b[^}]*grid-template-columns:\s*subgrid/);
+  });
+
+  test("checkboxes carry no inline onchange handlers (change events flow through the delegated listener)", async () => {
+
+    // A single delegated change listener on .debug-pane handles every checkbox; the rendered HTML must not embed inline onchange handlers (which would
+    // duplicate the dispatch logic into the markup and re-introduce the function-name surface we removed).
+    const res = await fetch(urlFor("/debug"));
+    const body = await res.text();
+    const checkboxTags = body.match(/<input type="checkbox"[^>]*>/g) ?? [];
+
+    assert.ok(checkboxTags.length > 10, "there should be many checkboxes (sanity check)");
+
+    for(const tag of checkboxTags) {
+
+      assert.ok(!tag.includes("onchange="), "checkbox should not carry inline onchange: " + tag);
+    }
+  });
+
+  test("action buttons carry no inline onclick handlers (clicks flow through the delegated listener)", async () => {
+
+    // The action-bar buttons declare their intent via data-debug-action and the delegated click listener on .debug-actions reads it. The rendered HTML must
+    // not embed inline onclick handlers, which would re-introduce a function-name surface between the markup and the script.
+    const res = await fetch(urlFor("/debug"));
+    const body = await res.text();
+    const buttonTags = body.match(/<button[^>]*>/g) ?? [];
+
+    assert.ok(buttonTags.length >= 3, "should render at least the three action buttons");
+
+    for(const tag of buttonTags) {
+
+      assert.ok(!tag.includes("onclick="), "button should not carry inline onclick: " + tag);
+      assert.ok(tag.includes("data-debug-action="), "button should declare its action via data-debug-action: " + tag);
+    }
   });
 });
 

@@ -5,6 +5,7 @@
 import { escapeHtml, isRunningAsService } from "../../utils/index.ts";
 import { generateAdvancedTabContent, generateChannelsPanel, generateCustomProfilesPanel, generateProfileWizardModal, generateSettingsFormFooter,
   generateSettingsTabContent, hasEnvOverrides } from "../config/index.ts";
+import { ACTIONS } from "../clientActions.ts";
 import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
 import { getUITabs } from "../../config/userConfig.ts";
 
@@ -50,13 +51,13 @@ function generateBackupPanel(): string {
     "<h3>Download Settings</h3>",
     "<p>Download your current server configuration as a JSON file. This includes all settings (server, browser, streaming, playback, etc.) ",
     "but does not include channel definitions.</p>",
-    "<button type=\"button\" class=\"btn btn-export\" onclick=\"exportConfig()\">Download Settings</button>",
+    "<button type=\"button\" class=\"btn btn-export\" data-click-action=\"" + ACTIONS.exportConfig + "\">Download Settings</button>",
     "</div>",
     "<div class=\"backup-section\">",
     "<h3>Import Settings</h3>",
     "<p>Import a previously saved settings file. " + restartDescription + "</p>",
-    "<button type=\"button\" class=\"btn btn-import\" onclick=\"document.getElementById('import-settings-file').click()\">Import Settings</button>",
-    "<input type=\"file\" id=\"import-settings-file\" accept=\".json\" onchange=\"importConfig(this)\">",
+    "<button type=\"button\" class=\"btn btn-import\" data-click-action=\"" + ACTIONS.triggerSettingsImport + "\">Import Settings</button>",
+    "<input type=\"file\" id=\"import-settings-file\" accept=\".json\" data-change-action=\"" + ACTIONS.importConfig + "\">",
     "</div>",
     "</div>",
 
@@ -67,13 +68,13 @@ function generateBackupPanel(): string {
     "<h3>Download Channels</h3>",
     "<p>Download your custom channel definitions as a JSON file. This includes only user-defined channels, not the predefined channels ",
     "built into PrismCast.</p>",
-    "<button type=\"button\" class=\"btn btn-export\" onclick=\"exportChannels()\">Download Channels</button>",
+    "<button type=\"button\" class=\"btn btn-export\" data-click-action=\"" + ACTIONS.exportChannels + "\">Download Channels</button>",
     "</div>",
     "<div class=\"backup-section\">",
     "<h3>Import Channels</h3>",
     "<p>Import channel definitions from a previously saved file. This will <strong>replace all existing user channels</strong>.</p>",
-    "<button type=\"button\" class=\"btn btn-import\" onclick=\"document.getElementById('import-channels-file').click()\">Import Channels</button>",
-    "<input type=\"file\" id=\"import-channels-file\" accept=\".json\" onchange=\"importChannels(this)\">",
+    "<button type=\"button\" class=\"btn btn-import\" data-click-action=\"" + ACTIONS.triggerChannelsImport + "\">Import Channels</button>",
+    "<input type=\"file\" id=\"import-channels-file\" accept=\".json\" data-change-action=\"" + ACTIONS.importChannels + "\">",
     "</div>",
     "</div>"
   ].join("\n");
@@ -135,7 +136,7 @@ export function generateOverviewContent(baseUrl: string): string {
     "<li>Go to <strong>Settings &rarr; Custom Channels</strong> in your Channels DVR server.</li>",
     "<li>Click <strong>Add Source</strong> and select <strong>M3U Playlist</strong>.</li>",
     "<li>Enter the playlist URL: <code id=\"overview-playlist-url\">" + baseUrl + "/playlist</code> ",
-    "<button class=\"btn-copy-inline\" onclick=\"copyOverviewPlaylistUrl()\" title=\"Copy URL\">Copy</button></li>",
+    "<button class=\"btn-copy-inline\" data-click-action=\"" + ACTIONS.copyOverviewPlaylistUrl + "\" title=\"Copy URL\">Copy</button></li>",
     "<li>Set <strong>Stream Format</strong> to <strong>HLS</strong>.</li>",
     "<li>Optionally, go to the <a href=\"#channels\">Channels tab</a> and set the <strong>service filter</strong> to only include streaming services you ",
     "subscribe to. This controls which channels Channels DVR sees in the playlist.</li>",
@@ -829,8 +830,8 @@ export function generateChannelsTabContent(): string {
     "<p id=\"test-modal-status\">A Chrome window has been opened on the PrismCast server. Navigate to the site and verify that your profile works.</p>",
     "<div id=\"test-selector-results\" style=\"display: none;\"></div>",
     "<div class=\"login-modal-buttons\" style=\"gap: 8px;\">",
-    "<button type=\"button\" class=\"btn btn-secondary\" id=\"test-check-btn\" onclick=\"checkSelectors()\">Check Selectors</button>",
-    "<button type=\"button\" class=\"btn btn-primary\" onclick=\"endProfileTest()\">Done</button>",
+    "<button type=\"button\" class=\"btn btn-secondary\" id=\"test-check-btn\" data-click-action=\"" + ACTIONS.checkSelectors + "\">Check Selectors</button>",
+    "<button type=\"button\" class=\"btn btn-primary\" data-click-action=\"" + ACTIONS.endProfileTest + "\">Done</button>",
     "</div>",
     "</div>",
     "</div>",
@@ -845,7 +846,7 @@ export function generateChannelsTabContent(): string {
     "(VNC, Screen Sharing, etc.) to access it. Sign in with your TV provider credentials in that window. ",
     "This login session will automatically close after 15 minutes.</p>",
     "<div class=\"login-modal-buttons\">",
-    "<button type=\"button\" class=\"btn btn-primary\" onclick=\"endLogin()\">Done</button>",
+    "<button type=\"button\" class=\"btn btn-primary\" data-click-action=\"" + ACTIONS.endLogin + "\">Done</button>",
     "</div>",
     "</div>",
     "</div>"
@@ -863,14 +864,14 @@ export function generateLogsContent(): string {
     "<div class=\"log-controls\" style=\"display: flex; gap: 15px; align-items: center; margin-bottom: 15px; flex-wrap: wrap;\">",
     "<div>",
     "<label for=\"log-level\" style=\"margin-right: 5px;\">Level:</label>",
-    "<select id=\"log-level\" onchange=\"onLevelChange()\">",
+    "<select id=\"log-level\" data-change-action=\"" + ACTIONS.logLevelChange + "\">",
     "<option value=\"\">All</option>",
     "<option value=\"error\">Errors</option>",
     "<option value=\"warn\">Warnings</option>",
     "<option value=\"info\">Info</option>",
     "</select>",
     "</div>",
-    "<button class=\"btn btn-primary btn-sm\" onclick=\"loadLogs()\">Reload History</button>",
+    "<button class=\"btn btn-primary btn-sm\" data-click-action=\"" + ACTIONS.reloadLogs + "\">Reload History</button>",
     "<span id=\"sse-status\" style=\"font-size: 13px; margin-left: auto;\"></span>",
     "</div>",
     "</div>",
@@ -1025,6 +1026,10 @@ export function generateLogsContent(): string {
     "  }",
     "});",
 
+    // Action registrations. The Reload History button and the level-filter select both dispatch via the project-wide action dispatcher.
+    "window.registerAction('" + ACTIONS.logLevelChange + "', () => onLevelChange());",
+    "window.registerAction('" + ACTIONS.reloadLogs + "', () => loadLogs());",
+
     "</script>"
   ].join("\n");
 }
@@ -1067,7 +1072,7 @@ export function generateConfigContent(): string {
   lines.push("</div>");
 
   // Start the settings form (wraps settings and advanced subtabs, not channels or backup).
-  lines.push("<form id=\"settings-form\" onsubmit=\"return submitSettingsForm(event)\">");
+  lines.push("<form id=\"settings-form\" data-submit-action=\"" + ACTIONS.submitSettingsForm + "\" data-submit-prevent-default>");
 
   // Settings subtab panel with non-collapsible section headers (default active subtab).
   lines.push("<div id=\"subtab-settings\" class=\"subtab-panel active\" role=\"tabpanel\">");
@@ -1084,7 +1089,7 @@ export function generateConfigContent(): string {
 
   lines.push("<div id=\"settings-buttons\" class=\"button-row\" style=\"display: flex;\">");
   lines.push("<button type=\"submit\" class=\"btn btn-primary\" id=\"save-btn\">" + saveButtonText + "</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-danger\" onclick=\"resetAllToDefaults()\">Reset All to Defaults</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-danger\" data-click-action=\"" + ACTIONS.resetAllToDefaults + "\">Reset All to Defaults</button>");
   lines.push("</div>");
 
   lines.push("</form>");

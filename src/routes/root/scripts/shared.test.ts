@@ -194,4 +194,36 @@ describe("generateSharedUtilitiesScript", () => {
 
     assert.equal(opens, closes, "paren balance (opens=" + String(opens) + ", closes=" + String(closes) + ")");
   });
+
+  test("installs the project-wide action dispatcher with collision detection and a typo warning", () => {
+
+    // The dispatcher is the load-bearing primitive every page depends on. We lock its shape so a regression that loses the collision throw, the typo warning,
+    // or the modifier walk would fail this test before it could ship.
+    const script = generateSharedUtilitiesScript();
+
+    // Registration API exposed on window with uniqueness enforcement.
+    assert.match(script, /window\.registerAction = \(name, handler\) =>/, "registerAction is exposed on window");
+    assert.match(script, /if\(actionHandlers\.has\(name\)\)/, "registerAction guards against re-registration");
+    assert.match(script, /throw new Error\('Action "/, "registerAction throws on collision so silent overwrites are impossible");
+
+    // Modifier walk is event-type-scoped: the selector is constructed from event.type so data-<event>-prevent-default fires only for its own event type. This
+    // is what prevents a <form data-submit-prevent-default> from blocking keydown events on input fields inside it.
+    assert.match(script, /const prefix = 'data-' \+ event\.type \+ '-'/, "modifier selector is event-type-prefixed");
+    assert.match(script, /closest\('\[' \+ prefix \+ 'prevent-default\], \[' \+ prefix \+ 'stop-propagation\], \[' \+ prefix \+ 'close-dropdown\]'\)/,
+      "modifier walk uses the event-type-prefixed selector");
+    assert.match(script, /hasAttribute\(prefix \+ 'prevent-default'\)\) event\.preventDefault\(\)/);
+    assert.match(script, /hasAttribute\(prefix \+ 'stop-propagation'\)\) event\.stopPropagation\(\)/);
+    assert.match(script, /hasAttribute\(prefix \+ 'close-dropdown'\) && window\.dropdowns\) window\.dropdowns\.close\(\)/);
+
+    // Action walk: matches the closest [data-<type>-action] ancestor and warns when no handler is registered.
+    assert.match(script, /const attrName = 'data-' \+ event\.type \+ '-action'/);
+    assert.match(script, /console\.warn\('No handler registered for ' \+ attrName/,
+      "missing handlers log a console warning so typos surface fast");
+
+    // Four event types delegated through document-level listeners: a capture-phase listener for the modifier walk (so stopPropagation fires before any
+    // intermediate bubble-phase listener can run), and a bubble-phase listener for action dispatch (so element-level listeners get a chance to fire first).
+    assert.match(script, /for\(const type of \[ 'click', 'change', 'keydown', 'submit' \]\)/, "all four event types delegated in one loop");
+    assert.match(script, /document\.addEventListener\(type, dispatchModifiers, \{ capture: true \}\)/, "modifier walk uses the modern { capture: true } object form");
+    assert.match(script, /document\.addEventListener\(type, dispatchAction\)/, "action dispatch is bubble-phase");
+  });
 });

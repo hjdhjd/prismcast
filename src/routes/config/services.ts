@@ -12,6 +12,7 @@ import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.
 import { exportServicePack, importServicePack, parseServicePack } from "../../config/servicePacks.ts";
 import { getChannelListing, validateChannelUrl } from "../../config/userChannels.ts";
 import { sendErrorResponse, sendNotFoundError, sendSuccess, sendValidationError } from "./http/envelope.ts";
+import { ACTIONS } from "../clientActions.ts";
 import type { ProfileInfo } from "../../config/profiles.ts";
 import { categorizeProfiles } from "./index.ts";
 import { generateWizardModal } from "../components.ts";
@@ -62,14 +63,15 @@ export function generateCustomProfilesPanel(): string {
   // Toolbar with service operations. Icons imported from the shared icon module.
   lines.push("<div class=\"channel-toolbar\">");
   lines.push("<div class=\"toolbar-group\">");
-  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm toolbar-icon-btn\" onclick=\"openWizard()\">" + ICON_ADD + " New Profile</button>");
-  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" onclick=\"startServiceImport()\">" + ICON_IMPORT +
+  lines.push("<button type=\"button\" class=\"btn btn-primary btn-sm toolbar-icon-btn\" data-click-action=\"" + ACTIONS.openWizard +
+    "\">" + ICON_ADD + " New Profile</button>");
+  lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" data-click-action=\"" + ACTIONS.startServiceImport + "\">" + ICON_IMPORT +
     " Import</button>");
 
   // Only show export when there are user profiles to export.
   if(Object.keys(userProfiles).length > 0) {
 
-    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" onclick=\"startServiceExport()\">" + ICON_EXPORT +
+    lines.push("<button type=\"button\" class=\"btn btn-secondary btn-sm toolbar-icon-btn\" data-click-action=\"" + ACTIONS.startServiceExport + "\">" + ICON_EXPORT +
       " Export</button>");
   }
 
@@ -83,13 +85,13 @@ export function generateCustomProfilesPanel(): string {
   lines.push(generateWizardModal({
 
     buttons: [
-      { label: "Cancel", onclick: "closeImportModal()", position: "right" },
-      { id: "import-btn", label: "Import", onclick: "executeImport()", position: "right", size: "sm", variant: "primary" }
+      { action: ACTIONS.closeImportModal, label: "Cancel", position: "right" },
+      { action: ACTIONS.executeImport, id: "import-btn", label: "Import", position: "right", size: "sm", variant: "primary" }
     ],
+    closeAction: ACTIONS.closeImportModal,
     contentId: "import-modal-body",
     id: "import-modal",
     maxWidth: "480px",
-    onClose: "closeImportModal()",
     title: "Import Service Pack"
   }));
 
@@ -170,9 +172,9 @@ export function generateCustomProfilesPanel(): string {
     lines.push("<td class=\"actions-col\">");
     lines.push("<div class=\"btn-group\">");
     lines.push("<button type=\"button\" class=\"btn-icon btn-icon-edit\" title=\"Edit\" aria-label=\"Edit\" " +
-      "onclick=\"editUserProfile('" + escapeHtml(key) + "')\">" + ICON_EDIT + "</button>");
+      "data-click-action=\"" + ACTIONS.editUserProfile + "\" data-profile-key=\"" + escapeHtml(key) + "\">" + ICON_EDIT + "</button>");
     lines.push("<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete\" aria-label=\"Delete\" " +
-      "onclick=\"deleteUserProfile('" + escapeHtml(key) + "')\">" + ICON_DELETE + "</button>");
+      "data-click-action=\"" + ACTIONS.deleteUserProfile + "\" data-profile-key=\"" + escapeHtml(key) + "\">" + ICON_DELETE + "</button>");
     lines.push("</div>");
     lines.push("</td>");
     lines.push("</tr>");
@@ -186,7 +188,7 @@ export function generateCustomProfilesPanel(): string {
   const exportBody = [
     "<div id=\"export-select-all-row\" class=\"export-section-header\">",
     "<label class=\"export-option-label\">",
-    "<input type=\"checkbox\" id=\"export-select-all\" checked onchange=\"toggleExportAll(this)\"> Select all</label>",
+    "<input type=\"checkbox\" id=\"export-select-all\" checked data-change-action=\"" + ACTIONS.toggleExportAll + "\"> Select all</label>",
     "</div>",
     "<div id=\"export-profile-list\"></div>",
     "<div class=\"export-divider\"></div>",
@@ -199,12 +201,12 @@ export function generateCustomProfilesPanel(): string {
 
     body: exportBody,
     buttons: [
-      { label: "Cancel", onclick: "closeExportModal()", position: "right" },
-      { id: "export-btn", label: "Export", onclick: "executeExport()", position: "right", size: "sm", variant: "primary" }
+      { action: ACTIONS.closeExportModal, label: "Cancel", position: "right" },
+      { action: ACTIONS.executeExport, id: "export-btn", label: "Export", position: "right", size: "sm", variant: "primary" }
     ],
+    closeAction: ACTIONS.closeExportModal,
     id: "export-modal",
     maxWidth: "480px",
-    onClose: "closeExportModal()",
     title: "Export Service Profiles"
   }));
 
@@ -292,8 +294,9 @@ export function generateProfileWizardModal(): string {
       { id: "wizard-back", label: "Back", position: "left", role: "back", visible: false },
       { label: "Cancel", position: "right", role: "close" },
       { id: "wizard-next", label: "Next", position: "right", role: "next", variant: "primary" },
-      { id: "wizard-save", label: "Save", onclick: "saveProfile(false)", position: "right", variant: "primary", visible: false },
-      { id: "wizard-save-test", label: "Save & Test", onclick: "saveProfile(true)", position: "right", variant: "primary", visible: false }
+      { action: ACTIONS.saveProfile, data: { withTest: "false" }, id: "wizard-save", label: "Save", position: "right", variant: "primary", visible: false },
+      { action: ACTIONS.saveProfile, data: { withTest: "true" }, id: "wizard-save-test", label: "Save & Test", position: "right",
+        variant: "primary", visible: false }
     ],
     contentId: "wizard-content",
     dataBlocks: [

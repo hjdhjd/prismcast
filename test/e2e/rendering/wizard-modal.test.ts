@@ -30,7 +30,7 @@ const FOUR_STEP_OPTIONS = {
 
   buttons: [
     { label: "Back", position: "left" as const, role: "back" as const, variant: "secondary" as const },
-    { label: "Cancel", onclick: "window.closeWizard()", position: "right" as const, variant: "secondary" as const },
+    { action: "close-wizard", label: "Cancel", position: "right" as const, variant: "secondary" as const },
     { label: "Next", position: "right" as const, role: "next" as const, variant: "primary" as const }
   ] satisfies WizardModalButton[],
   errorId: "test-wizard-error",
@@ -62,8 +62,12 @@ describe("generateWizardModal - shell HTML structure", () => {
     // Header with title and the X close button.
     assert.match(html, /<div class="wizard-header[^"]*">/, "header carries the wizard-header class");
     assert.match(html, /<h3>Test Wizard<\/h3>/, "header includes the title in an h3");
-    assert.match(html, /<button type="button" class="wizard-close" aria-label="Close"[^>]*>✕<\/button>/,
-      "X close button carries class wizard-close and aria-label Close");
+    // Attribute order is alphabetical via serializeAttrs, so we slice the button tag and check attributes independently.
+    const closeMatch = /<button [^>]*class="wizard-close"[^>]*>✕<\/button>/.exec(html);
+
+    assert.ok(closeMatch, "X close button is rendered");
+    assert.match(closeMatch[0], /aria-label="Close"/, "X close button carries aria-label=\"Close\"");
+    assert.match(closeMatch[0], /class="wizard-close"/, "X close button carries class=\"wizard-close\"");
 
     // Content area. The 4-step wizard does NOT use the compact variant.
     assert.match(html, /<div class="wizard-content"[^>]*id="test-wizard-content"/, "content area carries wizard-content class and the derived content id");
@@ -125,11 +129,11 @@ describe("generateWizardModal - shell HTML structure", () => {
 
       body: "<p>Dialog body content</p>",
       buttons: [
-        { label: "Cancel", onclick: "window.closeDialog()", position: "right", variant: "secondary" },
-        { label: "Save", onclick: "window.saveDialog()", position: "right", variant: "primary" }
+        { action: "close-dialog", label: "Cancel", position: "right", variant: "secondary" },
+        { action: "save-dialog", label: "Save", position: "right", variant: "primary" }
       ],
+      closeAction: "close-dialog",
       id: "test-dialog",
-      onClose: "window.closeDialog()",
       title: "Test Dialog"
     });
 
@@ -146,29 +150,32 @@ describe("generateWizardModal - shell HTML structure", () => {
     assert.match(html, /<div class="wizard-content wizard-content-compact" id="test-dialog-content">[\s\S]*<p>Dialog body content<\/p>[\s\S]*<\/div>/,
       "dialog content area uses compact class and contains the pre-filled body");
 
-    // Close button has an inline onclick because onClose was provided.
-    assert.match(html, /<button type="button" class="wizard-close" aria-label="Close" onclick="window.closeDialog\(\)">✕<\/button>/,
-      "non-controller dialog binds the X close to the onClose function inline");
+    // Close button carries data-click-action="close-dialog" because closeAction was provided. The dispatcher routes the click to the registered handler;
+    // no inline onclick attribute is emitted.
+    assert.match(html, /<button [^>]*class="wizard-close"[^>]*data-click-action="close-dialog"[^>]*>✕<\/button>/,
+      "non-controller dialog binds the X close via data-click-action carrying the closeAction");
+    assert.doesNotMatch(html, /<button [^>]*class="wizard-close"[^>]*onclick=/,
+      "X close button must not carry an inline onclick attribute");
   });
 });
 
 describe("generateWizardModal - button ownership rules", () => {
 
-  test("role-tagged buttons emit data-wizard-role and omit onclick; custom action buttons emit onclick and omit data-wizard-role", async () => {
+  test("role-tagged buttons emit data-wizard-role; custom action buttons emit data-click-action; neither emits inline onclick", async () => {
 
     /* The button-ownership rule: standard navigation buttons (Back, Next, Cancel, X close) are managed by the wizard controller via closure-scoped handlers
-     * attached at construction time, identified through data-wizard-role. Custom action buttons (Save, Apply, Finish) use inline onclick pointing to a window.*
-     * function - this avoids the inline-HTML-attribute-references-IIFE-scoped-variable problem.
+     * attached at construction time, identified through data-wizard-role. Custom action buttons (Save, Apply, Finish) declare their click intent via
+     * data-click-action; the project-wide action dispatcher (shared.ts) routes the click to the registered handler. Neither path emits an inline onclick
+     * attribute - all event mechanics flow through delegation.
      *
-     * The renderer's structural pin: a role-tagged button MUST emit data-wizard-role and MUST NOT emit onclick. A custom button MUST emit onclick and MUST NOT
-     * emit data-wizard-role. The contract is exclusive at the attribute level so a future refactor that broke the rule (e.g., emitting both attributes on the
-     * same button, or omitting both) would surface here.
+     * The renderer's structural pin: a role-tagged button MUST emit data-wizard-role and MUST NOT emit data-click-action or onclick. A custom action button
+     * MUST emit data-click-action and MUST NOT emit data-wizard-role or onclick. No button anywhere carries inline onclick.
      */
     const html = generateWizardModal({
 
       buttons: [
         { label: "Back", position: "left", role: "back" },
-        { label: "Save", onclick: "window.savePayload()", position: "right", variant: "primary" },
+        { action: "save-payload", label: "Save", position: "right", variant: "primary" },
         { label: "Cancel", position: "right", role: "close" },
         { label: "Next", position: "right", role: "next" }
       ] satisfies WizardModalButton[],
@@ -176,7 +183,7 @@ describe("generateWizardModal - button ownership rules", () => {
       title: "Ownership Test"
     });
 
-    // Each role-tagged button emits data-wizard-role with the role value and does NOT carry onclick. We slice each button out via a focused regex on its label.
+    // Each role-tagged button emits data-wizard-role with the role value and carries neither data-click-action nor onclick.
     for(const [ label, role ] of [ [ "Back", "back" ], [ "Cancel", "close" ], [ "Next", "next" ] ] as const) {
 
       const buttonPattern = new RegExp("<button [^>]*>" + label + "</button>");
@@ -187,18 +194,20 @@ describe("generateWizardModal - button ownership rules", () => {
       const tag = buttonMatch[0];
 
       assert.match(tag, new RegExp("data-wizard-role=\"" + role + "\""), label + " button carries data-wizard-role=\"" + role + "\"");
-      assert.doesNotMatch(tag, /onclick=/, label + " button does NOT carry onclick (controller manages handler)");
+      assert.doesNotMatch(tag, /data-click-action=/, label + " button does NOT carry data-click-action (controller manages handler)");
+      assert.doesNotMatch(tag, /onclick=/, label + " button does NOT carry inline onclick");
     }
 
-    // The Save custom button: emits onclick, does NOT emit data-wizard-role.
+    // The Save custom button: emits data-click-action, does NOT emit data-wizard-role or onclick.
     const saveMatch = /<button [^>]*>Save<\/button>/.exec(html);
 
     assert.ok(saveMatch, "rendered HTML must contain the Save button");
 
     const saveTag = saveMatch[0];
 
-    assert.match(saveTag, /onclick="window.savePayload\(\)"/, "Save custom button carries inline onclick");
+    assert.match(saveTag, /data-click-action="save-payload"/, "Save custom button carries its data-click-action");
     assert.doesNotMatch(saveTag, /data-wizard-role=/, "Save custom button does NOT carry data-wizard-role");
+    assert.doesNotMatch(saveTag, /onclick=/, "Save custom button does NOT carry inline onclick");
   });
 });
 

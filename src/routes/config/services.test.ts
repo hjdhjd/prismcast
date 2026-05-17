@@ -129,15 +129,24 @@ describe("generateProfileWizardModal", () => {
 
   test("declares Back, Next, Save, and Save & Test buttons via the controller wiring", () => {
 
-    // The controller-managed buttons declare role attributes for closure-scoped handlers. Save and Save & Test use inline onclick to window.* helpers.
+    // The controller-managed buttons (Back, Next) declare data-wizard-role for closure-scoped handlers. Both Save buttons carry the same data-click-action
+    // ("save-profile") and differentiate via data-with-test ("false" for plain Save, "true" for Save & Test). The registered handler reads target.dataset.withTest
+    // to decide whether to invoke the test path. The rendered HTML carries no inline onclick attribute on any button.
     const html = generateProfileWizardModal();
 
     assert.match(html, /id="wizard-back"/, "Back button");
     assert.match(html, /id="wizard-next"/, "Next button");
-    assert.match(html, /id="wizard-save"/, "Save button");
-    assert.match(html, /id="wizard-save-test"/, "Save & Test button");
-    assert.match(html, /saveProfile\(false\)/, "Save invokes saveProfile(false)");
-    assert.match(html, /saveProfile\(true\)/, "Save & Test invokes saveProfile(true)");
+    // Extract each Save button's tag so we can check the attributes inside, independent of attribute order.
+    const saveTag = (/<button[^>]*id="wizard-save"[^>]*>/).exec(html)?.[0] ?? "";
+    const saveTestTag = (/<button[^>]*id="wizard-save-test"[^>]*>/).exec(html)?.[0] ?? "";
+
+    assert.ok(saveTag, "Save button is rendered");
+    assert.ok(saveTestTag, "Save & Test button is rendered");
+    assert.match(saveTag, /data-click-action="save-profile"/, "plain Save dispatches save-profile");
+    assert.match(saveTag, /data-with-test="false"/, "plain Save carries withTest=false");
+    assert.match(saveTestTag, /data-click-action="save-profile"/, "Save & Test dispatches save-profile");
+    assert.match(saveTestTag, /data-with-test="true"/, "Save & Test carries withTest=true");
+    assert.doesNotMatch(html, /onclick=/, "no wizard button carries an inline onclick attribute");
   });
 
   test("embeds the wizard registries as JSON in a single <script> data block", () => {
