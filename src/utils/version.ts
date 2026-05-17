@@ -77,19 +77,56 @@ export function isVersionLessThan(a: string, b: string): boolean {
 }
 
 /**
+ * Performs a timed fetch with explicit timer lifecycle management. The standard `AbortSignal.timeout(ms)` helper schedules a setTimeout whose handle libuv must
+ * dispose during natural process exit; on Windows that disposal can race with pending TLS-socket cleanup and trigger the `UV_HANDLE_CLOSING` assertion in
+ * libuv's `src\win\async.c` that the v1.10.2 upgrade flow surfaced. By owning the AbortController and the timer explicitly and clearing the timer in `finally`
+ * before we return, we guarantee the handle is disposed while the event loop is still healthy, sidestepping the race regardless of how soon after the fetch the
+ * process exits. The behavior of the public callers is unchanged: a null return still means "treat the response as unavailable", whether the cause was a network
+ * error, a non-2xx response, or a timeout.
+ *
+ * @param url - The URL to fetch.
+ * @param timeoutMs - The hard timeout in milliseconds.
+ * @param failureLogTemplate - The LOG.debug template for failures...the formatError(error) string is interpolated via the standard %s placeholder.
+ * @returns The Response on a 2xx outcome, null otherwise.
+ */
+async function fetchWithTimeout(url: string, timeoutMs: number, failureLogTemplate: string): Promise<Nullable<Response>> {
+
+  const controller = new AbortController();
+  const timer = setTimeout((): void => {
+
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+
+    const response = await fetch(url, { signal: controller.signal });
+
+    return response.ok ? response : null;
+  } catch(error) {
+
+    LOG.debug("config:general", failureLogTemplate, formatError(error));
+
+    return null;
+  } finally {
+
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Fetches the latest version from the npm registry.
  * @returns The latest version string, or null if the fetch failed.
  */
 export async function fetchLatestVersion(): Promise<Nullable<string>> {
 
+  const response = await fetchWithTimeout("https://registry.npmjs.org/" + NPM_PACKAGE_NAME, 5000, "Failed to fetch latest version from npm: %s.");
+
+  if(!response) {
+
+    return null;
+  }
+
   try {
-
-    const response = await fetch("https://registry.npmjs.org/" + NPM_PACKAGE_NAME, { signal: AbortSignal.timeout(5000) });
-
-    if(!response.ok) {
-
-      return null;
-    }
 
     const data = await response.json() as { "dist-tags"?: { latest?: string } };
     const latest = data["dist-tags"]?.latest;
@@ -97,7 +134,7 @@ export async function fetchLatestVersion(): Promise<Nullable<string>> {
     return latest ? normalizeVersion(latest) : null;
   } catch(error) {
 
-    LOG.debug("config:general", "Failed to fetch latest version from npm: %s.", formatError(error));
+    LOG.debug("config:general", "Failed to parse latest version response from npm: %s.", formatError(error));
 
     return null;
   }
@@ -109,19 +146,19 @@ export async function fetchLatestVersion(): Promise<Nullable<string>> {
  */
 async function fetchChangelogContent(): Promise<Nullable<string>> {
 
+  const response = await fetchWithTimeout(CHANGELOG_URL, 5000, "Failed to fetch changelog from GitHub: %s.");
+
+  if(!response) {
+
+    return null;
+  }
+
   try {
-
-    const response = await fetch(CHANGELOG_URL, { signal: AbortSignal.timeout(5000) });
-
-    if(!response.ok) {
-
-      return null;
-    }
 
     return await response.text();
   } catch(error) {
 
-    LOG.debug("config:general", "Failed to fetch changelog from GitHub: %s.", formatError(error));
+    LOG.debug("config:general", "Failed to read changelog response from GitHub: %s.", formatError(error));
 
     return null;
   }
