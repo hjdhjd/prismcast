@@ -506,6 +506,12 @@ export function getExecutablePath(): string {
   throw new Error("No Chrome installation found. Set CHROME_BIN environment variable.");
 }
 
+/* Chrome extension ID for puppeteer-stream's bundled capture extension. This is the deterministic ID Chrome assigns based on the extension's public key, mirrored
+ * from their dist at node_modules/puppeteer-stream/dist/PuppeteerStream.js (the extensionId constant). We use it below in --allowlisted-extension-id to work around
+ * the broken activeTab grant path introduced in puppeteer-stream 3.0.22...see the "--allowlisted-extension-id" entry in buildLaunchOptions for the full rationale.
+ */
+const PUPPETEER_STREAM_EXTENSION_ID = "jjndjgheafjngoipoacpjgeicjeomjli";
+
 /**
  * Assembles the configuration options for launching Chrome with Puppeteer. These options are critical for reliable streaming:
  *
@@ -523,6 +529,12 @@ export function buildLaunchOptions(): LaunchOptions {
      *
      * --allow-running-insecure-content: Some streaming sites serve mixed HTTP/HTTPS content. Without this flag, the browser blocks HTTP resources on HTTPS
      *   pages, which can break video players that load some assets over HTTP.
+     *
+     * --allowlisted-extension-id=<extension-id>: Restores Chrome's global allowlist for puppeteer-stream's capture extension. puppeteer-stream 3.0.22 stopped
+     *   injecting this flag in favor of granting activeTab via a synthetic Cmd/Ctrl+Shift+Y keystroke, but CDP-synthesized keystrokes do not satisfy
+     *   chrome.commands under automation (the renderer sees the event but the browser-process accelerator dispatcher does not), so the new flow fails to grant
+     *   activeTab and capture is denied at the API level (see github.com/Flam3rboy/puppeteer-stream/issues/206). Re-emitting the flag ourselves bypasses the
+     *   broken activeTab path. Remove this entry and the PUPPETEER_STREAM_EXTENSION_ID constant when issue #206 closes with a real fix.
      *
      * --autoplay-policy=no-user-gesture-required: Allows video and audio to play without requiring a user click first. Essential for automated streaming
      *   since we cannot simulate genuine user interaction for autoplay policy purposes.
@@ -556,6 +568,7 @@ export function buildLaunchOptions(): LaunchOptions {
     args: [
 
       "--allow-running-insecure-content",
+      "--allowlisted-extension-id=" + PUPPETEER_STREAM_EXTENSION_ID,
       "--autoplay-policy=no-user-gesture-required",
       "--disable-background-media-suspend",
       "--disable-background-networking",
