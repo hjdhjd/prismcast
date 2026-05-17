@@ -32,7 +32,7 @@
  *     Do NOT fix the production module in this suite - fixes are a separate authorized arc.
  */
 import * as handlers from "../../../src/routes/root/scripts/status.handlers.ts";
-import type { ClientExternals, ClientState, HandlerContext, HealthSnapshot, SnapshotPayload, StreamSummary } from "../../../src/routes/root/scripts/status.handlers.ts";
+import type { ClientExternals, ClientState, HandlerContext, SnapshotPayload, StreamSummary } from "../../../src/routes/root/scripts/status.handlers.ts";
 import { after, before, describe, test } from "node:test";
 import type { DisposableDomTestContext } from "../../helpers/dom.helpers.ts";
 import assert from "node:assert/strict";
@@ -1344,174 +1344,6 @@ describe("status.handlers: updateDurations (DOM mutator)", () => {
   });
 });
 
-describe("status.handlers: updateChannelHealth (DOM mutator)", () => {
-
-  test("no-op when the display row does not exist (the channel is not currently rendered)", () => {
-
-    return (async (): Promise<void> => {
-
-      await using ctx = await createDomTestContext();
-      const harness = makeHandlerContext(asDomDocument(ctx));
-
-      // Should not throw and should not mutate any DOM since the row is absent.
-      handlers.updateChannelHealth("nonexistent-channel", "success", Date.now(), undefined, harness.ctx);
-
-      assert.equal(ctx.document.getElementById("display-row-nonexistent-channel"), null);
-    })();
-  });
-
-  test("toggles health-success/health-failed classes on the .btn-icon-health element when the row exists", () => {
-
-    /* We synthesize a display-row fixture so the test does not depend on a specific channel being rendered by the production page. The handler queries by the
-     * id construction 'display-row-' + key and updates the .btn-icon-health child.
-     */
-    return (async (): Promise<void> => {
-
-      await using ctx = await createDomTestContext();
-
-      ctx.document.body.insertAdjacentHTML(
-        "beforeend",
-        "<div id=\"display-row-test-key\"><span class=\"btn-icon-health health-failed\"></span></div>"
-      );
-
-      const harness = makeHandlerContext(asDomDocument(ctx));
-
-      handlers.updateChannelHealth("test-key", "success", Date.now(), undefined, harness.ctx);
-
-      const icon = ctx.document.getElementById("display-row-test-key")?.querySelector(".btn-icon-health");
-
-      assert.ok(icon, "btn-icon-health element must exist after the seed");
-      assert.equal(icon.classList.contains("health-success"), true);
-      assert.equal(icon.classList.contains("health-failed"), false, "previous failed class must be removed");
-    })();
-  });
-
-  test("guards against stale events by verifying domain match against the login button's data-auth-domain", () => {
-
-    /* The domain match check: when the event carries a domain, the row's login button must agree. If a race delivered an event for a stale service binding (the
-     * channel was just re-bound to a different service), the guard prevents the mismatched update from landing.
-     */
-    return (async (): Promise<void> => {
-
-      await using ctx = await createDomTestContext();
-
-      ctx.document.body.insertAdjacentHTML(
-        "beforeend",
-        "<div id=\"display-row-tk\">" +
-        "<button class=\"btn-icon-login\" data-auth-domain=\"current-service.test\"></button>" +
-        "<span class=\"btn-icon-health\"></span>" +
-        "</div>"
-      );
-
-      const harness = makeHandlerContext(asDomDocument(ctx));
-
-      handlers.updateChannelHealth("tk", "success", Date.now(), "stale-service.test", harness.ctx);
-
-      const icon = ctx.document.getElementById("display-row-tk")?.querySelector(".btn-icon-health");
-
-      assert.equal(icon?.classList.contains("health-success"), false,
-        "domain mismatch must prevent the health icon update");
-    })();
-  });
-
-  test("title carries 'Succeeded {time-ago}' on success and 'Failed {time-ago}' on failure", () => {
-
-    return (async (): Promise<void> => {
-
-      await using ctx = await createDomTestContext();
-
-      ctx.document.body.insertAdjacentHTML(
-        "beforeend",
-        "<div id=\"display-row-titlekey\"><span class=\"btn-icon-health\"></span></div>"
-      );
-
-      const harness = makeHandlerContext(asDomDocument(ctx));
-
-      handlers.updateChannelHealth("titlekey", "success", Date.now(), undefined, harness.ctx);
-
-      const icon = ctx.document.getElementById("display-row-titlekey")?.querySelector(".btn-icon-health") as unknown as { getAttribute(n: string): string | null } | null;
-
-      assert.match(icon?.getAttribute("title") ?? "", /^Succeeded /);
-
-      handlers.updateChannelHealth("titlekey", "failed", Date.now() - 60000, undefined, harness.ctx);
-
-      assert.match(icon?.getAttribute("title") ?? "", /^Failed 1 minute ago$/);
-    })();
-  });
-});
-
-describe("status.handlers: updateDomainAuth (DOM mutator)", () => {
-
-  test("marks every login button bound to the supplied domain with health-success and a 'Verified {time-ago}' title", () => {
-
-    return (async (): Promise<void> => {
-
-      await using ctx = await createDomTestContext();
-
-      ctx.document.body.insertAdjacentHTML(
-        "beforeend",
-        "<button class=\"btn-icon-login\" data-auth-domain=\"a.test\"></button>" +
-        "<button class=\"btn-icon-login\" data-auth-domain=\"a.test\"></button>" +
-        "<button class=\"btn-icon-login\" data-auth-domain=\"b.test\"></button>"
-      );
-
-      const harness = makeHandlerContext(asDomDocument(ctx));
-
-      handlers.updateDomainAuth("a.test", Date.now(), harness.ctx);
-
-      const aButtons = ctx.document.querySelectorAll(".btn-icon-login[data-auth-domain=\"a.test\"]");
-      const bButtons = ctx.document.querySelectorAll(".btn-icon-login[data-auth-domain=\"b.test\"]");
-
-      for(const btn of Array.from(aButtons)) {
-
-        assert.equal((btn as unknown as { classList: DOMTokenList }).classList.contains("health-success"), true);
-        assert.match((btn as unknown as { getAttribute(n: string): string | null }).getAttribute("title") ?? "", /^Verified /);
-      }
-
-      // Untargeted buttons must NOT be touched.
-      for(const btn of Array.from(bButtons)) {
-
-        assert.equal((btn as unknown as { classList: DOMTokenList }).classList.contains("health-success"), false,
-          "untargeted login buttons must remain untouched");
-      }
-    })();
-  });
-});
-
-describe("status.handlers: applyHealthSnapshot (DOM mutator)", () => {
-
-  test("walks channels and domains, applying updateChannelHealth and updateDomainAuth in turn", () => {
-
-    return (async (): Promise<void> => {
-
-      await using ctx = await createDomTestContext();
-
-      ctx.document.body.insertAdjacentHTML(
-        "beforeend",
-        "<div id=\"display-row-c1\"><button class=\"btn-icon-login\" data-auth-domain=\"d1.test\"></button><span class=\"btn-icon-health\"></span></div>" +
-        "<button class=\"btn-icon-login\" data-auth-domain=\"d2.test\"></button>"
-      );
-
-      const harness = makeHandlerContext(asDomDocument(ctx));
-      const snapshot: HealthSnapshot = {
-
-        channels: { "c1": { domain: "d1.test", status: "success", timestamp: Date.now() } },
-        domains: { "d2.test": Date.now() }
-      };
-
-      handlers.applyHealthSnapshot(snapshot, harness.ctx);
-
-      const channelIcon = ctx.document.getElementById("display-row-c1")?.querySelector(".btn-icon-health");
-      const d2Btn = ctx.document.querySelector(".btn-icon-login[data-auth-domain=\"d2.test\"]");
-
-      assert.equal(channelIcon?.classList.contains("health-success"), true,
-        "channel entry must drive updateChannelHealth");
-      assert.equal(d2Btn?.classList.contains("health-success"), true,
-        "domain entry must drive updateDomainAuth");
-    })();
-  });
-});
-
 describe("status.handlers: handleSnapshot (SSE handler)", () => {
 
   test("replaces all client state with the snapshot's contents and re-renders the system status, table, and popover", () => {
@@ -1546,31 +1378,45 @@ describe("status.handlers: handleSnapshot (SSE handler)", () => {
     })();
   });
 
-  test("applies the optional health snapshot when present", () => {
+  test("forwards the optional channelPatch to channelTable.applyPatch for SSE-reconnect catch-up", () => {
 
+    /* The snapshot's channelPatch field carries the server-rendered catch-up for any rows whose health/auth state changed during the disconnect gap. It travels
+     * through the same applyPatch primitive as live channelUpdate events so client-side row state has a single ingress point.
+     */
     return (async (): Promise<void> => {
 
       await using ctx = await createDomTestContext();
-
-      ctx.document.body.insertAdjacentHTML(
-        "beforeend",
-        "<div id=\"display-row-cc1\"><span class=\"btn-icon-health\"></span></div>"
-      );
-
       const harness = makeHandlerContext(asDomDocument(ctx));
+      const channelPatch = { counts: { disabled: 0, enabled: 3, predefined: 3, total: 3, user: 0 }, rows: [{ action: "update", key: "nbc" }] };
       const snapshot: SnapshotPayload = {
 
-        health: { channels: { "cc1": { status: "success", timestamp: Date.now() } }, domains: {} },
+        channelPatch,
         streams: [],
         system: { browser: { connected: true }, streams: { active: 0, limit: 5 } }
       };
 
       handlers.handleSnapshot(snapshot, harness.ctx);
 
-      const icon = ctx.document.getElementById("display-row-cc1")?.querySelector(".btn-icon-health");
+      assert.equal(harness.recorder.applyPatchCalls.length, 1, "channelPatch must be forwarded to channelTable.applyPatch exactly once");
+      assert.deepEqual(harness.recorder.applyPatchCalls[0], channelPatch, "applyPatch must receive the patch verbatim");
+    })();
+  });
 
-      assert.equal(icon?.classList.contains("health-success"), true,
-        "snapshot.health must drive applyHealthSnapshot");
+  test("skips the channelPatch forwarding when the field is absent (snapshot delivered before any health state existed)", () => {
+
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const harness = makeHandlerContext(asDomDocument(ctx));
+      const snapshot: SnapshotPayload = {
+
+        streams: [],
+        system: { browser: { connected: true }, streams: { active: 0, limit: 5 } }
+      };
+
+      handlers.handleSnapshot(snapshot, harness.ctx);
+
+      assert.equal(harness.recorder.applyPatchCalls.length, 0, "no patch is forwarded when channelPatch is absent");
     })();
   });
 });
@@ -1740,64 +1586,6 @@ describe("status.handlers: handleSystemStatusChanged (SSE handler)", () => {
       assert.equal(harness.ctx.state.systemData?.browser.connected, false);
       assert.match(ctx.document.getElementById("system-health")?.innerHTML ?? "", /Browser offline/);
       assert.equal(ctx.document.getElementById("stream-count")?.textContent, "2/10 streams");
-    })();
-  });
-});
-
-describe("status.handlers: handleHealthChanged (SSE handler)", () => {
-
-  test("targets the channel by key; on success with a domain, also refreshes domain-auth icons", () => {
-
-    return (async (): Promise<void> => {
-
-      await using ctx = await createDomTestContext();
-
-      ctx.document.body.insertAdjacentHTML(
-        "beforeend",
-        "<div id=\"display-row-cc\"><button class=\"btn-icon-login\" data-auth-domain=\"x.test\"></button><span class=\"btn-icon-health\"></span></div>" +
-        "<button class=\"btn-icon-login\" data-auth-domain=\"x.test\"></button>"
-      );
-
-      const harness = makeHandlerContext(asDomDocument(ctx));
-
-      handlers.handleHealthChanged({ channelKey: "cc", domain: "x.test", status: "success", timestamp: Date.now() }, harness.ctx);
-
-      const channelIcon = ctx.document.getElementById("display-row-cc")?.querySelector(".btn-icon-health");
-      const otherLoginBtn = ctx.document.body.lastElementChild;
-
-      assert.ok(channelIcon, "channel health icon must exist on the seeded fixture");
-      assert.ok(otherLoginBtn, "trailing login button must exist on the seeded fixture");
-      assert.equal(channelIcon.classList.contains("health-success"), true,
-        "channel health icon must update");
-      assert.equal(otherLoginBtn.classList.contains("health-success"), true,
-        "all login buttons for the domain must mark verified");
-    })();
-  });
-
-  test("on failure, only the channel icon is updated; domain-auth refresh is skipped", () => {
-
-    /* Failures don't mark the domain as verified - that would be wrong, since the failure could be the channel itself misbehaving while auth is fine, or auth
-     * having genuinely lapsed. We pin: failure status -> channel icon updates; domain auth icons stay untouched.
-     */
-    return (async (): Promise<void> => {
-
-      await using ctx = await createDomTestContext();
-
-      ctx.document.body.insertAdjacentHTML(
-        "beforeend",
-        "<div id=\"display-row-cf\"><button class=\"btn-icon-login\" data-auth-domain=\"y.test\"></button><span class=\"btn-icon-health\"></span></div>"
-      );
-
-      const harness = makeHandlerContext(asDomDocument(ctx));
-
-      handlers.handleHealthChanged({ channelKey: "cf", domain: "y.test", status: "failed", timestamp: Date.now() }, harness.ctx);
-
-      const channelIcon = ctx.document.getElementById("display-row-cf")?.querySelector(".btn-icon-health");
-      const loginBtn = ctx.document.querySelector(".btn-icon-login[data-auth-domain=\"y.test\"]");
-
-      assert.equal(channelIcon?.classList.contains("health-failed"), true);
-      assert.equal(loginBtn?.classList.contains("health-success"), false,
-        "failure must NOT mark the domain auth as verified");
     })();
   });
 });
@@ -2204,7 +1992,6 @@ describe("status.handlers - module export inventory", () => {
   const EXPECTED_EXPORTS: readonly string[] = [
     "HANDLER_CONSTANTS",
     "HANDLER_FUNCTIONS",
-    "applyHealthSnapshot",
     "buildStreamPopoverContent",
     "copyOverviewPlaylistUrl",
     "createInitialState",
@@ -2219,7 +2006,6 @@ describe("status.handlers - module export inventory", () => {
     "getHealthBadge",
     "getRecoveringLabel",
     "handleChannelUpdate",
-    "handleHealthChanged",
     "handleSnapshot",
     "handleSseError",
     "handleStreamAdded",
@@ -2236,8 +2022,6 @@ describe("status.handlers - module export inventory", () => {
     "scheduleTableRender",
     "toggleStreamDetails",
     "toggleStreamPopover",
-    "updateChannelHealth",
-    "updateDomainAuth",
     "updateDurations",
     "updateStreamPopover",
     "updateStreamRow",
@@ -2257,10 +2041,9 @@ describe("status.handlers - module export inventory", () => {
   test("HANDLER_FUNCTIONS includes every emittable function the production script body needs", () => {
 
     // The HANDLER_FUNCTIONS array drives the emitted script body in generateStatusScript. Every function that needs to ship to the browser must be in this
-    // array - missing one means the runtime breaks at the call site. We lock the count against EXPECTED_EXPORTS to catch a drop. Functions that are
-    // browser-side only (formatters, renderers, handlers, mutators, trampolines, schedulers) total 36 entries; HANDLER_CONSTANTS, applyHealthSnapshot, and
-    // createInitialState are NOT emitted (createInitialState is called only by status.ts at IIFE start).
-    assert.ok(handlers.HANDLER_FUNCTIONS.length > 30, "HANDLER_FUNCTIONS contains the documented script-body functions");
+    // array - missing one means the runtime breaks at the call site. HANDLER_CONSTANTS and createInitialState are NOT emitted (createInitialState is called only
+    // by status.ts at IIFE start). The lower-bound check guards against an accidental drop without re-pinning the exact count on every additive change.
+    assert.ok(handlers.HANDLER_FUNCTIONS.length > 25, "HANDLER_FUNCTIONS contains the documented script-body functions");
 
     for(const fn of handlers.HANDLER_FUNCTIONS) {
 

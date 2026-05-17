@@ -254,10 +254,10 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
 
   test("forwards a named status event through sse.sendEvent(eventType, data) - 'event: <name>' line followed by 'data: <json>' line", () => {
 
-    // Pins streams.ts:117 - subscribeToStatus forwards each named event (channelUpdate, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged,
-    // healthChanged) to sse.sendEvent(eventType, data). The existing fetch-based suite asserts only the initial snapshot frame; nothing observes that subsequent
-    // live events reach the wire with their named eventType. We use emitChannelUpdate as the driver because it is exported and accepts a free-form payload (the
-    // other emit*() functions require constructing full StreamStatus / SystemStatus shapes that are orthogonal to the routing contract under test here).
+    // Pins streams.ts - subscribeToStatus forwards each named event (channelUpdate, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged) to
+    // sse.sendEvent(eventType, data). The existing fetch-based suite asserts only the initial snapshot frame; nothing observes that subsequent live events reach
+    // the wire with their named eventType. We use emitChannelUpdate as the driver because it is exported and accepts a free-form payload (the other emit*()
+    // functions require constructing full StreamStatus / SystemStatus shapes that are orthogonal to the routing contract under test here).
     const route = findStreamsStatusHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();
 

@@ -28,6 +28,7 @@ import { generatePreroll } from "./streaming/preroll.ts";
 import { getAllStreams } from "./streaming/registry.ts";
 import { initializeUserChannels } from "./config/userChannels.ts";
 import { initializeUserProfiles } from "./config/userProfiles.ts";
+import { installHealthBridge } from "./routes/config/channels/healthBridge.ts";
 import { loadHealthState } from "./config/health.ts";
 import morgan from "morgan";
 import { runConsistencyProbeAtStartup } from "./config/consistencyProbe.ts";
@@ -548,6 +549,10 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Load persisted health state (channel health + domain auth) from health.json.
   await loadHealthState();
+
+  // Install the reactive bridge that translates health/auth state changes into channel table patches over SSE. Channel row HTML has a single source of truth -
+  // generateChannelRowHtml on the server - and every reactive update flows through this bridge so the client never composes channel row state imperatively.
+  installHealthBridge();
 
   // Run the cross-store consistency probe now that every store is loaded. Validates foreign-key-style invariants spanning multiple stores (service selections,
   // variant canonicalKey targets, domain profile mappings, service tag filter) and auto-fixes warnings where safe. Errors do not block startup.

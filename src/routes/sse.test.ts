@@ -150,8 +150,8 @@ describe("installSseStream - sendEvent", () => {
 
   test("named eventType writes 'event: <type>\\n' followed by 'data: <json>\\n\\n'", () => {
 
-    // The named-event branch is what /streams/status uses for snapshot, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged, healthChanged, and
-    // channelUpdate. We pin the two-write shape exactly: first the event line, then the data line with the trailing blank line that terminates the SSE frame.
+    // The named-event branch is what /streams/status uses for snapshot, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged, and channelUpdate.
+    // We pin the two-write shape exactly: first the event line, then the data line with the trailing blank line that terminates the SSE frame.
     const { res, write } = makeReqRes();
     const sse = installSseStream(res);
 

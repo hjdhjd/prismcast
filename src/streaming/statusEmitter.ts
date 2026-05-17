@@ -2,9 +2,7 @@
  *
  * statusEmitter.ts: Event emitter for real-time stream and system status via SSE.
  */
-import type { HealthEvent, HealthSnapshot } from "../config/health.ts";
 import type { Nullable, StreamingMode } from "../types/index.ts";
-import { getHealthSnapshot, subscribeToHealth } from "../config/health.ts";
 import { CONFIG } from "../config/index.ts";
 import type { ClientTypeCount } from "./clients.ts";
 import { EventEmitter } from "node:events";
@@ -76,11 +74,11 @@ export interface SystemStatus {
 }
 
 /**
- * Initial snapshot sent when an SSE client connects.
+ * Initial snapshot sent when an SSE client connects. The channel table catch-up patch is composed at the route layer (routes/streams.ts) - this snapshot covers
+ * only the stream and system state that statusEmitter owns.
  */
 export interface StatusSnapshot {
 
-  health: HealthSnapshot;
   streams: StreamStatus[];
   system: SystemStatus;
 }
@@ -88,15 +86,15 @@ export interface StatusSnapshot {
 /**
  * Event types emitted by the status emitter.
  */
-export type StatusEventType = "channelUpdate" | "healthChanged" | "snapshot" | "streamAdded" | "streamHealthChanged" | "streamRemoved" |
-  "systemStatusChanged";
+export type StatusEventType = "channelUpdate" | "snapshot" | "streamAdded" | "streamHealthChanged" | "streamRemoved" | "systemStatusChanged";
 
 /**
- * Typed event map for status notifications. Ensures event names and argument types are checked at compile time.
+ * Typed event map for status notifications. Ensures event names and argument types are checked at compile time. The channelUpdate payload is intentionally
+ * opaque - statusEmitter is a transport, and the patch shape is owned by routes/config/channels/healthBridge.ts (sender) and channelTable.applyPatch (receiver).
  */
 interface StatusEmitterEventMap {
 
-  channelUpdate: [patch: Record<string, unknown>];
+  channelUpdate: [patch: unknown];
   streamAdded: [status: StreamStatus];
   streamHealthChanged: [status: StreamStatus];
   streamRemoved: [info: { id: number }];
@@ -250,7 +248,6 @@ export function getStatusSnapshot(): StatusSnapshot {
 
   return {
 
-    health: getHealthSnapshot(),
     streams: Array.from(streamStatuses.values()),
     system: cachedSystemStatus ?? {
 
@@ -286,7 +283,7 @@ export function removeStreamStatus(streamId: number): void {
  * channels tab open apply the patch via channelTable.applyPatch. Used for server-initiated updates like logo population that have no associated client request.
  * @param patch - The partial channel table patch to emit.
  */
-export function emitChannelUpdate(patch: Record<string, unknown>): void {
+export function emitChannelUpdate(patch: unknown): void {
 
   statusEmitter.emit("channelUpdate", patch);
 }
@@ -297,10 +294,10 @@ export function emitChannelUpdate(patch: Record<string, unknown>): void {
  * @returns A function to unsubscribe the callback.
  */
 export function subscribeToStatus(
-  callback: (event: StatusEventType, data: HealthEvent | Record<string, unknown> | StreamStatus | SystemStatus | StatusSnapshot | { id: number }) => void
+  callback: (event: StatusEventType, data: unknown) => void
 ): () => void {
 
-  const channelUpdateHandler = (data: Record<string, unknown>): void => { callback("channelUpdate", data); };
+  const channelUpdateHandler = (data: unknown): void => { callback("channelUpdate", data); };
   const streamAddedHandler = (data: StreamStatus): void => { callback("streamAdded", data); };
   const streamRemovedHandler = (data: { id: number }): void => { callback("streamRemoved", data); };
   const streamHealthChangedHandler = (data: StreamStatus): void => { callback("streamHealthChanged", data); };
@@ -312,9 +309,6 @@ export function subscribeToStatus(
   statusEmitter.on("streamHealthChanged", streamHealthChangedHandler);
   statusEmitter.on("systemStatusChanged", systemStatusChangedHandler);
 
-  // Forward health events from the health emitter through the same SSE connection. This avoids a separate SSE endpoint for health updates.
-  const unsubscribeHealth = subscribeToHealth((event) => { callback("healthChanged", event); });
-
   return (): void => {
 
     statusEmitter.off("channelUpdate", channelUpdateHandler);
@@ -322,6 +316,5 @@ export function subscribeToStatus(
     statusEmitter.off("streamRemoved", streamRemovedHandler);
     statusEmitter.off("streamHealthChanged", streamHealthChangedHandler);
     statusEmitter.off("systemStatusChanged", systemStatusChangedHandler);
-    unsubscribeHealth();
   };
 }

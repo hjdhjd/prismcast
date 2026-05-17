@@ -43,10 +43,10 @@ describe("generateStatusScript", () => {
 
   test("registers handlers for the documented SSE event types", () => {
 
-    // The server emits: heartbeat, snapshot, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged, healthChanged, channelUpdate. Each must be
-    // wired so the page reacts to that event.
+    // The server emits: heartbeat, snapshot, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged, channelUpdate. Each must be wired so the page
+    // reacts to that event. Channel health and domain auth changes arrive as channelUpdate patches built by healthBridge, never as a dedicated event type.
     const script = generateStatusScript();
-    const events = [ "heartbeat", "snapshot", "streamAdded", "streamRemoved", "streamHealthChanged", "systemStatusChanged", "healthChanged", "channelUpdate" ];
+    const events = [ "heartbeat", "snapshot", "streamAdded", "streamRemoved", "streamHealthChanged", "systemStatusChanged", "channelUpdate" ];
 
     for(const event of events) {
 
@@ -136,14 +136,14 @@ describe("generateStatusScript", () => {
     assert.match(script, /document\.hidden/);
   });
 
-  test("registers the channel and domain auth health updaters", () => {
+  test("routes channelUpdate patches through the channelTable namespace", () => {
 
-    // applyHealthSnapshot is invoked from the snapshot SSE event. updateChannelHealth and updateDomainAuth are the targeted updaters for individual events.
+    // handleChannelUpdate is the sole client entry point for channel row changes - both snapshot catch-up (data.channelPatch) and live events flow through
+    // channelTable.applyPatch. There are no client-side composers of row state to assert; that is the architectural invariant healthBridge enforces server-side.
     const script = generateStatusScript();
 
-    assert.match(script, /function updateChannelHealth\(/);
-    assert.match(script, /function updateDomainAuth\(/);
-    assert.match(script, /function applyHealthSnapshot\(/);
+    assert.match(script, /function handleChannelUpdate\(/);
+    assert.match(script, /channelTable\.applyPatch/);
   });
 
   test("starts the 1-second duration update interval at the bottom of the script", () => {

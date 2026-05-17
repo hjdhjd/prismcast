@@ -10,6 +10,7 @@ import { CONFIG } from "../config/index.ts";
 import type { ClientTypeCount } from "../streaming/clients.ts";
 import type { Nullable } from "../types/index.ts";
 import type { StreamHealthStatus } from "../streaming/statusEmitter.ts";
+import { buildSnapshotChannelPatch } from "./config/channels/healthBridge.ts";
 import { emitCurrentSystemStatus } from "../browser/index.ts";
 import { installSseStream } from "./sse.ts";
 import { terminateStream } from "../streaming/lifecycle.ts";
@@ -110,8 +111,9 @@ export function setupStreamsEndpoint(app: Express): void {
 
     const sse = installSseStream(res);
 
-    // Send the initial snapshot so clients have current state.
-    sse.sendEvent("snapshot", getStatusSnapshot());
+    // Send the initial snapshot so clients have current state. The wire shape composes the stream/system snapshot owned by statusEmitter with the channel table
+    // catch-up patch owned by healthBridge - assembled here at the route layer so neither module needs to know about the other.
+    sse.sendEvent("snapshot", { ...getStatusSnapshot(), channelPatch: buildSnapshotChannelPatch() });
 
     // Subscribe to status events and forward them to the client; the heartbeat is owned by installSseStream.
     const unsubscribe = subscribeToStatus((eventType, data) => { sse.sendEvent(eventType, data); });

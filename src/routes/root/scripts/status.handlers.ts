@@ -65,11 +65,13 @@ export interface SystemSummary {
 }
 
 /**
- * The shape of the snapshot SSE payload. snapshot is the only event that delivers the full state in one message; subsequent events are deltas.
+ * The shape of the snapshot SSE payload. snapshot is the only event that delivers the full state in one message; subsequent events are deltas. The channel
+ * table catch-up patch is opaque at this layer - the server composes it via buildSnapshotChannelPatch and the client routes it through channelTable.applyPatch
+ * without inspecting its shape.
  */
 export interface SnapshotPayload {
 
-  readonly health?: HealthSnapshot;
+  readonly channelPatch?: unknown;
   readonly streams: readonly StreamSummary[];
   readonly system: SystemSummary;
 }
@@ -80,26 +82,6 @@ export interface SnapshotPayload {
 export interface StreamRemovedPayload {
 
   readonly id: number | string;
-}
-
-/**
- * The shape of the healthChanged SSE payload. Carries the per-channel update plus the domain that owns the auth context.
- */
-export interface HealthChangedPayload {
-
-  readonly channelKey: string;
-  readonly domain?: string;
-  readonly status: "failed" | "success";
-  readonly timestamp: number;
-}
-
-/**
- * Health snapshot delivered inside the snapshot event. Channels and domains are independent maps keyed by their respective identifiers.
- */
-export interface HealthSnapshot {
-
-  readonly channels: Readonly<Record<string, { readonly domain?: string; readonly status: "failed" | "success"; readonly timestamp: number }>>;
-  readonly domains: Readonly<Record<string, number>>;
 }
 
 /**
@@ -781,76 +763,8 @@ function updateDurations(ctx: HandlerContext): void {
   schedulePopoverRender(ctx);
 }
 
-// Update the per-channel health icon in the Channels tab. Domain match check guards against stale events from a prior service binding - the login button carries
-// a data-auth-domain attribute that must agree with the event's domain (when supplied) for the update to apply.
-function updateChannelHealth(channelKey: string, status: "failed" | "success", timestamp: number, domain: string | undefined, ctx: HandlerContext): void {
-
-  const row = ctx.document.getElementById("display-row-" + channelKey);
-
-  if(!row) {
-
-    return;
-  }
-
-  if(domain) {
-
-    const loginBtn = row.querySelector(".btn-icon-login");
-
-    if(loginBtn && (loginBtn.getAttribute("data-auth-domain") !== domain)) {
-
-      return;
-    }
-  }
-
-  const icon = row.querySelector<HTMLElement>(".btn-icon-health");
-
-  if(!icon) {
-
-    return;
-  }
-
-  icon.classList.remove("health-success", "health-failed");
-
-  if(status === "success") {
-
-    icon.classList.add("health-success");
-  } else {
-
-    icon.classList.add("health-failed");
-  }
-
-  icon.title = (status === "success" ? "Succeeded " : "Failed ") + formatTimeAgo(timestamp);
-}
-
-// Mark every login button bound to the given domain as verified, with a "Verified {time-ago}" tooltip. Called for successful health events and for snapshot
-// domain entries.
-function updateDomainAuth(domain: string, timestamp: number, ctx: HandlerContext): void {
-
-  const buttons = ctx.document.querySelectorAll<HTMLElement>(".btn-icon-login[data-auth-domain=\"" + domain + "\"]");
-
-  for(const button of Array.from(buttons)) {
-
-    button.classList.add("health-success");
-    button.title = "Verified " + formatTimeAgo(timestamp);
-  }
-}
-
-// Apply a full health snapshot. Walks the channels map then the domains map, applying the per-key updaters for each entry.
-function applyHealthSnapshot(data: HealthSnapshot, ctx: HandlerContext): void {
-
-  for(const [ channelKey, entry ] of Object.entries(data.channels)) {
-
-    updateChannelHealth(channelKey, entry.status, entry.timestamp, entry.domain, ctx);
-  }
-
-  for(const [ domain, timestamp ] of Object.entries(data.domains)) {
-
-    updateDomainAuth(domain, timestamp, ctx);
-  }
-}
-
 // SSE handlers. Each takes the parsed event payload and the HandlerContext. The IIFE wires JSON.parse and event-listener registration; the handlers themselves
-// are pure logic.
+// are pure logic. Channel row state is owned by the server - every reactive update arrives as a channelUpdate patch and is applied via channelTable.applyPatch.
 
 // Snapshot handler. Replaces all client state with the snapshot's contents and re-renders everything, then applies the optional health snapshot.
 function handleSnapshot(data: SnapshotPayload, ctx: HandlerContext): void {
@@ -867,9 +781,11 @@ function handleSnapshot(data: SnapshotPayload, ctx: HandlerContext): void {
   renderStreamsTable(ctx);
   updateStreamPopover(ctx);
 
-  if(data.health) {
+  // Channel table catch-up. The server includes a patch covering any rows whose state may have changed during the SSE disconnect gap; routing it through the
+  // same applyPatch primitive as live channelUpdate events keeps presentation logic in one place.
+  if(data.channelPatch !== undefined) {
 
-    applyHealthSnapshot(data.health, ctx);
+    ctx.externals.channelTable.applyPatch(data.channelPatch);
   }
 }
 
@@ -929,17 +845,6 @@ function handleSystemStatusChanged(data: SystemSummary, ctx: HandlerContext): vo
 
   ctx.state.systemData = data;
   updateSystemStatus(ctx);
-}
-
-// healthChanged handler. Targeted update for a single channel; if the result is success, also refreshes the domain-auth icons for that domain.
-function handleHealthChanged(data: HealthChangedPayload, ctx: HandlerContext): void {
-
-  updateChannelHealth(data.channelKey, data.status, data.timestamp, data.domain, ctx);
-
-  if((data.status === "success") && data.domain) {
-
-    updateDomainAuth(data.domain, data.timestamp, ctx);
-  }
 }
 
 // channelUpdate handler. Forwards the patch to the shared channelTable namespace exposed by shared.ts.
@@ -1124,15 +1029,11 @@ export const HANDLER_FUNCTIONS: readonly EmittableFn[] = [
   updateStreamRow,
   toggleStreamDetails,
   updateDurations,
-  updateChannelHealth,
-  updateDomainAuth,
-  applyHealthSnapshot,
   handleSnapshot,
   handleStreamAdded,
   handleStreamRemoved,
   handleStreamHealthChanged,
   handleSystemStatusChanged,
-  handleHealthChanged,
   handleChannelUpdate,
   handleSseError,
   toggleStreamPopover,
@@ -1145,7 +1046,6 @@ export const HANDLER_FUNCTIONS: readonly EmittableFn[] = [
 // import and call them directly.
 export {
 
-  applyHealthSnapshot,
   buildStreamPopoverContent,
   copyOverviewPlaylistUrl,
   formatAutoRecovery,
@@ -1159,7 +1059,6 @@ export {
   getHealthBadge,
   getRecoveringLabel,
   handleChannelUpdate,
-  handleHealthChanged,
   handleSnapshot,
   handleSseError,
   handleStreamAdded,
@@ -1176,8 +1075,6 @@ export {
   scheduleTableRender,
   toggleStreamDetails,
   toggleStreamPopover,
-  updateChannelHealth,
-  updateDomainAuth,
   updateDurations,
   updateStreamPopover,
   updateStreamRow,
