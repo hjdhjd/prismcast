@@ -247,7 +247,7 @@ describe("handlePredefinedEdit (PUT /config/channels/:key)", () => {
     assert.equal(abcEntry["channelSelector"], undefined, "binding field must NOT be written on the canonical entry");
 
     // Variant entry: binding-only. Should have the channelSelector override; should NOT have the name identity field. canonicalKey may be present (preserved
-    // by applyVariantDelta from the prior entry) but is not an identity field, so it doesn't violate the partition.
+    // by replaceVariantBinding from the prior entry) but is not an identity field, so it doesn't violate the partition.
     assert.ok(variantEntry, "variant entry must exist for the binding edit");
     assert.equal(variantEntry["channelSelector"], "ABC-CUSTOM", "binding field routed to the variant entry");
     assert.equal(variantEntry["name"], undefined, "identity field must NOT be written on the variant entry");
@@ -338,6 +338,99 @@ describe("handlePredefinedEdit (PUT /config/channels/:key)", () => {
 
     assert.equal(body["success"], false);
     assert.ok(body["errors"], "field-keyed errors map should be present");
+  });
+
+  /* Sibling-variant inference (no variant pre-selected). The earlier identity-vs-binding routing tests above set serviceSelections[key] = variantKey before
+   * invoking PUT, exercising the explicit-variant branch. The tests below cover the URL-inferred branch: no serviceSelections entry exists, but the submitted
+   * URL's domain matches a sibling variant. The handler routes per-field exactly like the variant-active branch and records serviceSelections[key] = inferred
+   * variant. This is the producer-side enforcement of the sibling-variant non-overlap rule documented in types/channels.ts (CanonicalChannel block).
+   */
+
+  test("PUT with submitted URL matching a sibling variant's domain (no pre-existing selection) routes per-field and records the redirect", async () => {
+
+    /* User opens the Edit form for ABC (no service selection set). Form pre-populates with the canonical (site URL = abc.com/watch-live). User adds a
+     * stationId AND changes the URL to hulu.com/live (intending "default ABC to Hulu"). Expected: stationId lands on the canonical entry, URL is recognized as
+     * matching the abc-hulu sibling and is NOT stored on the canonical (binding matches predefined exactly so no variant override is created either),
+     * serviceSelections.abc = "abc-hulu". This is the production-data shape that motivated the entire refactor.
+     */
+    const formBody = makeFormBody({ name: "ABC", stationId: "20456", tags: "Local", url: "https://www.hulu.com/live" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+
+    const stored = await readChannelsFile(dir);
+    const abcEntry = stored["abc"];
+    const variantEntry = stored["abc-hulu"];
+
+    assert.ok(abcEntry, "canonical entry must carry the identity edit (stationId)");
+    assert.equal(abcEntry["stationId"], "20456", "stationId routed to the canonical entry");
+    assert.equal(abcEntry["url"], undefined, "URL must NOT land on the canonical (it matches a sibling variant's domain)");
+    assert.equal(abcEntry["channelSelector"], undefined, "channelSelector must NOT land on the canonical");
+
+    assert.equal(variantEntry, undefined, "no variant override created when binding matches predefined exactly");
+
+    const raw = await readFile(path.join(dir, "channels.json"), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const selections = (parsed["serviceSelections"] ?? {}) as Record<string, string>;
+
+    assert.equal(selections["abc"], "abc-hulu", "serviceSelections records the URL-inferred redirect");
+  });
+
+  test("PUT with submitted URL matching a sibling AND a divergent binding field persists the divergence as a variant binding-only override", async () => {
+
+    /* Same as above but the user also customizes channelSelector. The matching sibling abc-hulu has predefined channelSelector "ABC"; the user submits
+     * "MyCustomABC". The handler routes the divergent binding to the variant entry, leaving the canonical with identity-only fields.
+     */
+    const formBody = makeFormBody({ channelSelector: "MyCustomABC", name: "ABC", stationId: "20456", tags: "Local", url: "https://www.hulu.com/live" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+
+    const stored = await readChannelsFile(dir);
+    const abcEntry = stored["abc"];
+    const variantEntry = stored["abc-hulu"];
+
+    assert.deepEqual(abcEntry, { stationId: "20456" }, "canonical retains identity-only delta");
+    assert.ok(variantEntry, "variant entry must exist when binding diverges from predefined");
+    assert.equal(variantEntry["channelSelector"], "MyCustomABC", "divergent channelSelector persisted as variant binding override");
+    assert.equal(variantEntry["url"], undefined, "URL not stored on variant - it matches the predefined Hulu URL");
+  });
+
+  test("PUT with a truly custom URL (no sibling match) leaves the full delta on the canonical and clears serviceSelections", async () => {
+
+    /* The legitimate Custom-URL case: user enters a URL whose domain matches no sibling variant. The handler treats this as a real custom override - full
+     * delta lands on the canonical, serviceSelections is cleared so the dropdown reflects the "Custom (domain)" state via buildServiceGroups Scenario B. This
+     * preserves backward-compatible behavior for users who have genuinely customized URLs.
+     */
+    const formBody = makeFormBody({ name: "ABC", stationId: "20456", tags: "Local", url: "https://example.com/abc-mirror" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+
+    const stored = await readChannelsFile(dir);
+    const abcEntry = stored["abc"];
+
+    assert.ok(abcEntry, "canonical entry must exist for the identity edit");
+    assert.equal(abcEntry["stationId"], "20456");
+    assert.equal(abcEntry["url"], "https://example.com/abc-mirror", "custom URL stays on the canonical when no sibling matches");
+
+    const raw = await readFile(path.join(dir, "channels.json"), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const selections = (parsed["serviceSelections"] ?? {}) as Record<string, string>;
+
+    assert.equal(selections["abc"], undefined, "serviceSelections cleared for the custom-URL case");
   });
 });
 

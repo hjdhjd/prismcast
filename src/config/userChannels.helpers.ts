@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * userChannels.helpers.ts: Test helpers for the channel-resolution suite. Co-located with userChannels.ts, the production module that owns ResolvedChannel
- * construction (via getAllChannels and the merge/normalization pipeline). The factories accept partial overrides and return fully-shaped values cast to the
+ * construction (via getAllChannels and the merge/normalization pipeline). The factories accept partial overrides and return fully-shaped values typed to the
  * appropriate union member, mirroring the make<Thing> pattern from the test conventions. Excluded from the build emit by the *.helpers.ts pattern in
  * tsconfig.build.json.
  *
- * Three layers of channel construction live here:
+ * The helpers fall into the following groups:
  *
  * - makeStoredVariant / makeStoredCanonical / makeChannelDelta build StoredChannel values - the on-disk shape carrying full identity (canonical) or partial
  *   override (variant/delta) data. Used by tests that exercise the merge/resolution pipeline directly.
@@ -13,15 +13,23 @@
  * - makeChannel builds a ResolvedChannel - the merged read-model that consumers see after the pipeline runs. Used by tests that operate above the resolution
  *   boundary and only care about the merged shape.
  *
+ * - makeChannelsData builds a minimal ChannelsFileData envelope (the compound shape mutateChannels and normalizeChannelDeltas operate on). Tests that need to
+ *   assert on serviceSelections or other envelope fields use this; tests that only assert on the channels map use the convenience normalize() wrapper below.
+ *
+ * - normalize wraps normalizeChannelDeltas with envelope construction so tests focused on the channels map don't have to build the envelope themselves.
+ *
  * - getCanonical narrows PREDEFINED_CHANNELS lookups to CanonicalChannel with a runtime guard for misuse.
  */
-import type { CanonicalChannel, ChannelDelta, ResolvedChannel, StoredChannel, VariantChannel } from "../types/index.ts";
+import type { CanonicalChannel, ChannelDelta, ResolvedChannel, StoredChannel, StoredChannelMap, VariantChannel } from "../types/index.ts";
+import type { ChannelsFileData } from "./userChannels.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
+import { __internalForTests } from "./userChannels.ts";
+
+const { normalizeChannelDeltas } = __internalForTests;
 
 /**
  * Builds a stored variant entry - a stored channel that carries a canonicalKey discriminator. Defaults to a minimal abc-hulu shape so callers only override
- * what they're actually testing. The cast to StoredChannel is necessary because StoredChannel is a union (Channel | ChannelDelta) and the literal shape would
- * otherwise resolve ambiguously.
+ * what they're actually testing.
  * @param overrides - Field overrides; canonicalKey and binding fields are merged onto the defaults.
  * @returns A StoredChannel-typed variant entry.
  */
@@ -79,6 +87,44 @@ export function makeStoredCanonical(overrides: Partial<CanonicalChannel> = {}): 
 export function makeChannelDelta(overrides: Partial<ChannelDelta>): StoredChannel {
 
   return { ...overrides };
+}
+
+/**
+ * Builds a minimal ChannelsFileData envelope around a stored channels map. Used by tests that need to assert on serviceSelections (or any envelope field other
+ * than channels). The defaults are the empty-state envelope: schemaVersion=1, no migrations applied, no service selections, empty tag registry. Callers
+ * override anything they care about via the second argument; the channels map is required because every test passes a different one. Centralizing the
+ * envelope shape here keeps tests focused on what they're customizing.
+ * @param channels - The channels map for this test. Defensively shallow-copied so callers can mutate freely.
+ * @param overrides - Optional envelope-field overrides (serviceSelections, tagRegistry, schemaVersion, migrationsApplied).
+ * @returns A fully-populated ChannelsFileData envelope.
+ */
+export function makeChannelsData(channels: StoredChannelMap, overrides: Partial<Omit<ChannelsFileData, "channels">> = {}): ChannelsFileData {
+
+  return {
+
+    channels: { ...channels },
+    migrationsApplied: [],
+    schemaVersion: 1,
+    serviceSelections: {},
+    tagRegistry: { deletedTags: [], tags: [] },
+    ...overrides
+  };
+}
+
+/**
+ * Convenience wrapper: builds a minimal ChannelsFileData envelope, runs the in-place normalizer, and returns just the channels map. Tests focused on channel
+ * behavior (the majority) use this; tests that need to assert on serviceSelections build the envelope via makeChannelsData and call normalizeChannelDeltas
+ * directly. Both paths share makeChannelsData's defaults so the envelope-construction rule lives in one place.
+ * @param channels - The stored channels map to normalize.
+ * @returns The normalized channels map (post-heal, post-delta-minimization).
+ */
+export function normalize(channels: StoredChannelMap): StoredChannelMap {
+
+  const data = makeChannelsData(channels);
+
+  normalizeChannelDeltas(data);
+
+  return data.channels;
 }
 
 /**

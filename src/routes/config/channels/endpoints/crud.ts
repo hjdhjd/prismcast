@@ -12,12 +12,12 @@
  *   POST   /config/channels/:key/revert      - Revert a predefined channel override to defaults.
  *   PATCH  /config/channels/:key             - Partial update (inline cell edits: channelNumber, stationId, hdhrEnabled, tags).
  */
-import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS } from "../../../../types/index.ts";
 import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, sanitizeString } from "../../../../utils/index.ts";
-import { type UserChannel, clearChannelOverrides, getPredefinedChannel, isPredefinedChannel, isUserChannel, mutateChannels, parseTagInput, sortTags,
-  validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl } from "../../../../config/userChannels.ts";
+import { type UserChannel, clearChannelOverrides, getPredefinedChannel, inferTargetVariant, intersectBindingDeltas, isPredefinedChannel, isUserChannel,
+  mutateChannels, parseTagInput, pickBindingFields, pickIdentityFields, replaceVariantBinding, sortTags, validateChannelKey, validateChannelName,
+  validateChannelNumber, validateChannelProfile, validateChannelUrl } from "../../../../config/userChannels.ts";
 import { channelMatches, computePredefinedDelta, findMatchingVariant } from "../../../../config/channelForm.ts";
 import { getResolvedChannel, resolveServiceKey } from "../../../../config/services.ts";
 import { playlistHintForChange, playlistHintForDelta, playlistHintForStored } from "../http/playlistHint.ts";
@@ -192,54 +192,6 @@ function buildUserChannelFromForm(formValues: ChannelFormValues, tags: readonly 
   return channel;
 }
 
-/* Field category sets used by handlePredefinedEdit to route per-field saves to the correct stored entry. Identity fields live on the canonical entry; binding
- * fields live on the active variant entry (when a non-canonical service is resolved) or the canonical entry (when canonical is active). Built once from the
- * type-system source of truth so renaming or adding a field surfaces here at compile time via the as-const tuples in types/channels.ts.
- */
-const IDENTITY_FIELD_SET = new Set<string>(CHANNEL_IDENTITY_KEYS);
-const BINDING_FIELD_SET = new Set<string>(CHANNEL_BINDING_KEYS);
-
-/**
- * Filters a delta to only the fields in the allowlist. Used to split a full delta into identity-only and binding-only halves so the routed save can write
- * each half to the correct stored entry.
- */
-function filterDeltaFields(delta: ChannelDelta, allowlist: ReadonlySet<string>): ChannelDelta {
-
-  const filtered: Record<string, unknown> = {};
-
-  for(const [ field, value ] of Object.entries(delta)) {
-
-    if(allowlist.has(field)) {
-
-      filtered[field] = value;
-    }
-  }
-
-  return filtered;
-}
-
-/**
- * Applies the new variant-binding delta to an existing variant stored entry while preserving any non-binding fields the entry already carries (notably
- * canonicalKey). Removes any prior binding-field overrides that the new delta does not include - the new delta is the complete declaration of binding-field
- * customization for this save. Returns null when the resulting entry would be empty (no binding overrides, no preserved non-binding fields), signalling the
- * caller to delete the entry entirely.
- */
-function applyVariantDelta(existing: StoredChannel | undefined, delta: ChannelDelta): StoredChannel | null {
-
-  const next: Record<string, unknown> = { ...(existing as Record<string, unknown> | undefined) };
-
-  // Strip prior binding-field overrides; the new delta is authoritative for this category.
-  for(const field of CHANNEL_BINDING_KEYS) {
-
-    Reflect.deleteProperty(next, field);
-  }
-
-  // Apply the new binding-field overrides.
-  Object.assign(next, delta);
-
-  return (Object.keys(next).length > 0) ? next : null;
-}
-
 /**
  * Handles PUT /config/channels/:key for a channel that has a predefined base. Routes the submitted form values to the correct stored entry per field category:
  * identity fields go to the canonical entry; binding fields go to the active variant entry (when a non-canonical service is resolved via explicit selection or
@@ -272,7 +224,6 @@ async function handlePredefinedEdit(key: string, predefinedBase: ResolvedChannel
 
   // Determine the active variant. Undefined when the canonical service is active (no override needed); otherwise the variant key the canonical resolves to.
   const activeVariantKey = (resolvedKey === key) ? undefined : resolvedKey;
-  const predefinedVariant = activeVariantKey ? PREDEFINED_CHANNELS[activeVariantKey] : undefined;
 
   // Compute the canonical-relative delta. This determines the no-op-vs-canonical case (revert path) and supplies identity-field values for the canonical
   // entry. With a variant active, binding-field values in this delta are computed against canonical's binding (e.g., Cox URL) - those values are not what we
@@ -339,17 +290,32 @@ async function handlePredefinedEdit(key: string, predefinedBase: ResolvedChannel
     return;
   }
 
-  // Real edit. Route per-field to the correct stored entry. With a variant active: identity fields go to canonical, binding fields go to variant (computed
-  // against the predefined variant's binding values, since that's the right baseline for the variant entry). Without a variant: everything goes to canonical
-  // as before.
-  if(activeVariantKey && predefinedVariant) {
+  // Real edit. Resolve the target service variant for binding-field routing: an explicitly-selected variant takes precedence; otherwise infer from the
+  // submitted URL's domain via inferTargetVariant (the SSoT helper used by both the producer here and the storage normalizer). When a target resolves, route
+  // per-field - identity to canonical, binding to target variant - so the canonical never carries wholesale duplication of a sibling's binding. When no
+  // sibling matches, the URL is genuinely custom and the full delta lands on the canonical (the existing Custom-URL path).
+  await mutateChannels((data) => {
 
-    const { delta: variantRelativeDelta } = computePredefinedDelta(predefinedVariant, formValues, tags);
+    const targetVariantKey = activeVariantKey ?? inferTargetVariant(key, formValues.url, data.channels);
+    const targetPredefinedVariant = targetVariantKey ? PREDEFINED_CHANNELS[targetVariantKey] : undefined;
 
-    const canonicalEntryDelta = filterDeltaFields(canonicalRelativeDelta, IDENTITY_FIELD_SET);
-    const variantEntryDelta = filterDeltaFields(variantRelativeDelta, BINDING_FIELD_SET);
+    if(targetVariantKey && targetPredefinedVariant) {
 
-    await mutateChannels((data) => {
+      const { delta: variantRelativeDelta } = computePredefinedDelta(targetPredefinedVariant, formValues, tags);
+
+      const canonicalEntryDelta = pickIdentityFields(canonicalRelativeDelta);
+
+      /* Variant-binding delta semantics depend on how the target variant was resolved:
+       *   - Explicit (activeVariantKey set): the form was pre-populated with the variant's data, so any binding-field value the user submits is authoritative
+       *     (including explicit clears). Take all binding fields from variantRelativeDelta directly via pickBindingFields.
+       *   - URL-inferred (no activeVariantKey): the form was pre-populated with the canonical's data (which has different binding values from the inferred
+       *     variant). Binding fields the user did NOT explicitly change relative to the canonical must NOT be propagated to the variant - otherwise an unset
+       *     form field becomes an unintended "clear" against the variant's predefined defaults, silently destroying tuning data. intersectBindingDeltas
+       *     restricts to binding fields that the user actually changed (present in canonicalRelativeDelta) using the variant-relative values.
+       */
+      const variantEntryDelta = (targetVariantKey === activeVariantKey) ?
+        pickBindingFields(variantRelativeDelta) :
+        intersectBindingDeltas(variantRelativeDelta, canonicalRelativeDelta);
 
       // Canonical entry: replace with identity-only delta. Empty delta -> remove the entry.
       if(Object.keys(canonicalEntryDelta).length > 0) {
@@ -360,27 +326,32 @@ async function handlePredefinedEdit(key: string, predefinedBase: ResolvedChannel
         Reflect.deleteProperty(data.channels, key);
       }
 
-      // Variant entry: merge binding-only delta with the entry's preserved non-binding fields (notably canonicalKey). Empty result -> remove the entry.
-      const next = applyVariantDelta(data.channels[activeVariantKey], variantEntryDelta);
+      // Variant entry: replaceVariantBinding (authoritative-replace semantic) wipes any prior binding fields on the variant entry and applies the new delta -
+      // the user's submission is authoritative for the variant's binding state. Non-binding fields (notably canonicalKey) on the existing entry are preserved.
+      // Returns null when the result would be empty, signalling deletion.
+      const next = replaceVariantBinding(data.channels[targetVariantKey], variantEntryDelta);
 
       if(next) {
 
-        data.channels[activeVariantKey] = next;
+        data.channels[targetVariantKey] = next;
       } else {
 
-        Reflect.deleteProperty(data.channels, activeVariantKey);
+        Reflect.deleteProperty(data.channels, targetVariantKey);
       }
-    });
-  } else {
 
-    // No variant active - everything routes to canonical. The service selection is cleared so the dropdown reflects the "Custom" state if the user has now
-    // diverged from any sibling variant.
-    await mutateChannels((data) => {
+      // Record the redirect when the target was inferred from URL. When it was the explicitly-active variant, serviceSelections already points at it.
+      if(targetVariantKey !== activeVariantKey) {
 
+        data.serviceSelections[key] = targetVariantKey;
+      }
+    } else {
+
+      // Truly custom URL - no sibling matches. Full delta lands on the canonical and serviceSelections is cleared so the dropdown reflects "Custom".
       data.channels[key] = canonicalRelativeDelta;
+
       Reflect.deleteProperty(data.serviceSelections, key);
-    });
-  }
+    }
+  });
 
   LOG.info("User channel '%s' updated.", key);
 

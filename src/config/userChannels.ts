@@ -6,7 +6,7 @@ import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEY
 import type { Channel, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelSortField, CustomizableField, ResolvedChannel, ResolvedChannelMap,
   SortDirection, StoredChannel, StoredChannelMap } from "../types/index.ts";
 import { FileStoreParseError, type Migration, type ValidationIssue, createFileStore } from "./persistence.ts";
-import { LOG, containsNonPrintable, sanitizeString } from "../utils/index.ts";
+import { LOG, containsNonPrintable, extractDomain, sanitizeString } from "../utils/index.ts";
 import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.ts";
 import { buildServiceGroups, getAllServiceTags, getResolvedChannel, isChannelAvailableByService, isServiceVariant,
   resolveServiceKey, setEnabledServices, setServiceSelections } from "./services.ts";
@@ -146,9 +146,10 @@ const CURRENT_CHANNELS_SCHEMA_VERSION = 3;
 
 /**
  * Compound data type for the channels file store. Carries channel entries alongside the metadata keys that are stored in the same JSON file. The framework
- * uses schemaVersion and migrationsApplied for migration tracking; everything else is application-owned.
+ * uses schemaVersion and migrationsApplied for migration tracking; everything else is application-owned. Exported so test code that drives the in-place
+ * normalizer (which mutates both channels and serviceSelections atomically) can build a minimal envelope without depending on parseChannelsFile.
  */
-interface ChannelsFileData {
+export interface ChannelsFileData {
 
   channels: StoredChannelMap;
   migrationsApplied: string[];
@@ -589,28 +590,280 @@ function stripNulls(stored: StoredChannel): StoredChannel {
   return Object.fromEntries(Object.entries(stored).filter(([ , v ]) => v !== null));
 }
 
+/* Module-private partition Sets, derived once from the type-system source of truth. The Sets back the public picker functions below; callers never reference
+ * the Sets directly. Adding or renaming a field in CHANNEL_IDENTITY_KEYS / CHANNEL_BINDING_KEYS automatically updates both Sets at runtime - the partition
+ * lives in types/channels.ts and these are the single derived runtime form.
+ */
+const IDENTITY_FIELDS: ReadonlySet<string> = new Set(CHANNEL_IDENTITY_KEYS);
+const BINDING_FIELDS: ReadonlySet<string> = new Set(CHANNEL_BINDING_KEYS);
+
+/**
+ * Internal: filters a delta to fields in the supplied allowlist. Backs pickIdentityFields and pickBindingFields. Not exported - the public surface is the
+ * named pickers, which hide the partition Sets so consumers never have to know how the partition is enumerated.
+ */
+function filterDeltaFields(delta: ChannelDelta, allowlist: ReadonlySet<string>): ChannelDelta {
+
+  const filtered: Record<string, unknown> = {};
+
+  for(const [ field, value ] of Object.entries(delta)) {
+
+    if(allowlist.has(field)) {
+
+      filtered[field] = value;
+    }
+  }
+
+  return filtered;
+}
+
+/**
+ * Returns the identity-only subset of a ChannelDelta - the fields enumerated by CHANNEL_IDENTITY_KEYS. Used by the per-field write router (PUT handler) and
+ * the storage normalizer's heal path to split a full delta into identity-only and binding-only halves so each half is routed to the correct stored entry.
+ * @param delta - The delta to project.
+ * @returns A new delta with only identity fields retained.
+ */
+export function pickIdentityFields(delta: ChannelDelta): ChannelDelta {
+
+  return filterDeltaFields(delta, IDENTITY_FIELDS);
+}
+
+/**
+ * Returns the binding-only subset of a ChannelDelta - the fields enumerated by CHANNEL_BINDING_KEYS. Peer to pickIdentityFields; together they cover the
+ * delta surface and partition it cleanly.
+ * @param delta - The delta to project.
+ * @returns A new delta with only binding fields retained.
+ */
+export function pickBindingFields(delta: ChannelDelta): ChannelDelta {
+
+  return filterDeltaFields(delta, BINDING_FIELDS);
+}
+
+/**
+ * Applies a binding delta to an existing variant entry with replace semantics: any prior binding fields on the existing entry are stripped first, then the
+ * new delta's binding fields are applied. Non-binding fields (notably canonicalKey) on the existing entry are preserved. Returns null when the resulting
+ * entry would be empty.
+ *
+ * Used by the producer (handlePredefinedEdit) when the user submits a form with explicit values - the form values are the authoritative declaration of the
+ * variant's binding state, so any pre-existing binding override on the variant entry is wiped.
+ *
+ * Pair with mergeVariantBinding (preserve-existing semantics) below. The two functions name the precedence rule explicitly so future callers pick the right
+ * semantic for their context.
+ * @param existing - The existing variant entry, if any.
+ * @param delta - The new binding-only delta. The producer is asserting these are the authoritative values.
+ * @returns The merged stored entry, or null when the result would be empty.
+ */
+export function replaceVariantBinding(existing: StoredChannel | undefined, delta: ChannelDelta): StoredChannel | null {
+
+  const next: Record<string, unknown> = { ...(existing as Record<string, unknown> | undefined) };
+
+  // Strip prior binding-field overrides; the new delta is authoritative for this category.
+  for(const field of CHANNEL_BINDING_KEYS) {
+
+    Reflect.deleteProperty(next, field);
+  }
+
+  // Apply the new binding-field overrides.
+  Object.assign(next, delta);
+
+  return (Object.keys(next).length > 0) ? next : null;
+}
+
+/**
+ * Merges a binding delta into an existing variant entry with preserve-existing semantics: existing variant fields win on conflicts; the delta only fills
+ * fields the variant doesn't already declare. Always returns a non-empty entry (caller is expected to invoke this only when delta has something to contribute).
+ *
+ * Used by the storage normalizer's canonical-binding overlap heal. The heal context is healing legacy data, not recording a new explicit user intent - the
+ * variant's prior customization is more recent or at least equally legitimate as the canonical-side stored binding being moved over, so the variant wins.
+ *
+ * Pair with replaceVariantBinding (replace semantics) above. The two functions name the precedence rule explicitly.
+ * @param existing - The existing variant entry, if any. Existing fields take precedence on conflicts.
+ * @param delta - The binding-only delta whose fields fill any gaps the existing entry doesn't declare.
+ * @returns The merged stored entry. Always non-empty (delta contributes at least the keys the existing didn't have).
+ */
+export function mergeVariantBinding(existing: StoredChannel | undefined, delta: ChannelDelta): StoredChannel {
+
+  const merged: Record<string, unknown> = { ...(delta as Record<string, unknown>) };
+
+  if(existing) {
+
+    Object.assign(merged, existing as Record<string, unknown>);
+  }
+
+  return merged;
+}
+
+/**
+ * Intersects a binding delta with a criterion delta by key, returning a new binding-only delta containing fields that appear in BOTH and using values from
+ * the primary delta. Used by the URL-inferred branch of the per-field write router: when a user submits a form with no pre-selected variant but a URL that
+ * implies a sibling, the producer must avoid treating unset form fields as explicit clears against the inferred variant's predefined defaults. Restricting
+ * the variant-relative delta to fields the user actually changed (relative to the canonical) prevents that silent destruction of tuning data.
+ *
+ * Pure function - operates on two deltas independently of any storage state. Generic over the criterion: any binding field present on `criterion` makes
+ * `primary`'s value for that field eligible to land on the result.
+ * @param primary - The delta whose values populate the result.
+ * @param criterion - The delta whose key set restricts which fields propagate.
+ * @returns A new binding-only delta with primary's values for keys present in both, restricted to CHANNEL_BINDING_KEYS.
+ */
+export function intersectBindingDeltas(primary: ChannelDelta, criterion: ChannelDelta): ChannelDelta {
+
+  const restricted: Record<string, unknown> = {};
+
+  for(const field of CHANNEL_BINDING_KEYS) {
+
+    if((field in criterion) && (field in primary)) {
+
+      restricted[field] = (primary as Record<string, unknown>)[field];
+    }
+  }
+
+  return restricted;
+}
+
+/**
+ * Given a canonical key and a URL, returns the sibling variant key whose effective URL extracts to the same domain. Returns undefined when no sibling matches -
+ * that is the legitimate "Custom URL" case where the user genuinely has a non-predefined URL.
+ *
+ * Used by both the producer (handlePredefinedEdit in routes/config/channels/endpoints/crud.ts) and the storage normalizer (normalizeChannelDeltas) to enforce
+ * the rule that a canonical override's binding fields must not duplicate a sibling variant's domain. When a sibling matches, the user's intent is "default this
+ * channel to the sibling's service" - architecturally expressed via serviceSelections, not via overriding the canonical URL. Both call sites share this single
+ * helper so the inference rule lives in exactly one place.
+ *
+ * Pure function. Walks predefined and user-stored siblings, sorts by key for determinism (multiple variants with the same domain pick the alphabetically-first
+ * one), and returns the first match. Effective URL is the user-stored override (if any string-valued) layered onto the predefined variant URL - same precedence
+ * as resolveVariant.
+ * @param canonicalKey - The canonical channel key whose siblings should be searched.
+ * @param submittedUrl - The URL being matched. Empty/undefined returns undefined.
+ * @param channels - The stored channels map snapshot for finding user-defined sibling variants.
+ * @returns The matching variant key, or undefined when no sibling's URL domain matches.
+ */
+export function inferTargetVariant(canonicalKey: string, submittedUrl: string | null | undefined, channels: StoredChannelMap): string | undefined {
+
+  if((submittedUrl === undefined) || (submittedUrl === null) || (submittedUrl === "")) {
+
+    return undefined;
+  }
+
+  const userDomain = extractDomain(submittedUrl);
+
+  // Enumerate sibling variant keys: predefined variants and user-stored variants whose canonicalKey points at this canonical. Excludes the canonical itself.
+  // Dedupe via Set since a key may appear in both maps (user override of a predefined variant).
+  const siblingKeys = new Set<string>();
+
+  for(const [ predefinedKey, predefinedChannel ] of Object.entries(PREDEFINED_CHANNELS)) {
+
+    if((predefinedKey !== canonicalKey) && (predefinedChannel.canonicalKey === canonicalKey)) {
+
+      siblingKeys.add(predefinedKey);
+    }
+  }
+
+  for(const [ storedKey, storedChannel ] of Object.entries(channels)) {
+
+    if((storedKey !== canonicalKey) && ((storedChannel as Channel).canonicalKey === canonicalKey)) {
+
+      siblingKeys.add(storedKey);
+    }
+  }
+
+  // Sort for deterministic pick when multiple siblings share a domain.
+  const sortedKeys = [...siblingKeys].sort();
+
+  for(const siblingKey of sortedKeys) {
+
+    // Effective URL: user override (when string-valued) takes precedence over the predefined variant's URL. A null delta value clears the field, falling back
+    // to the predefined; an absent field inherits, also falling back. Both collapse to "use the predefined URL."
+    const stored = channels[siblingKey];
+    const predefined = PREDEFINED_CHANNELS[siblingKey];
+    const storedUrl = stored ? (stored as ChannelDelta).url : undefined;
+    const effectiveUrl = (typeof storedUrl === "string") ? storedUrl : predefined?.url;
+
+    if(!effectiveUrl) {
+
+      continue;
+    }
+
+    if(extractDomain(effectiveUrl) === userDomain) {
+
+      return siblingKey;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Detects whether any canonical override in the stored map carries binding whose URL extracts to a sibling variant's domain. Used by initializeUserChannels to
+ * conditionally trigger a one-shot startup heal pass via mutateChannels - the normalizer does the actual work, this probe just decides whether the trigger is
+ * needed so unaffected users incur no boot-time write.
+ *
+ * Cheap walk: classify, check stored URL, call inferTargetVariant. Returns on the first match - we only need to know whether at least one entry needs healing.
+ * @param channels - The stored channels map snapshot to probe.
+ * @returns True when at least one canonical override would be redirected by the normalizer.
+ */
+function hasCanonicalBindingOverlap(channels: StoredChannelMap): boolean {
+
+  for(const [ key, stored ] of Object.entries(channels)) {
+
+    const classification = classifyEntry(key, stored);
+
+    if(classification.kind !== "canonical") {
+
+      continue;
+    }
+
+    const url = (stored as ChannelDelta).url;
+
+    if(typeof url !== "string") {
+
+      continue;
+    }
+
+    if(inferTargetVariant(key, url, channels)) {
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Normalizes the stored channels map to its minimal delta form. Each entry is classified, diffed against its applicable base, and any no-op fields are
- * stripped. Standalone user channels have no base, so nulls are stripped but everything else is preserved.
+ * stripped. Standalone user channels have no base, so nulls are stripped but everything else is preserved. Mutates the data in place so the caller's reference
+ * (the file store framework's data envelope) reflects normalized state on return - matching the migration `apply` convention so the same shape is used wherever
+ * the framework runs writes.
  *
  * The flow is uniform across kinds:
  *
- * - Canonical (predefined with user override): base is the predefined channel.
+ * - Canonical (predefined with user override): base is the predefined channel. Before delta minimization, any binding fields whose URL extracts to a sibling
+ *   variant's domain are healed by routing them to the matching variant entry and recording a serviceSelections redirect - the same per-field routing the
+ *   producer (handlePredefinedEdit) performs at write time. This makes the rule "canonical overrides only carry canonical-service binding" structurally
+ *   self-healing for any data path that misses the producer (legacy data, hand-edited files, future producers).
  * - Variant: base is the resolved canonical layered with the predefined variant's service fields (the view the user sees in the form/table, so the delta
  *   records only what differs from that).
  * - Standalone: no base, null values are stripped as a storage convention.
  *
  * Entries whose normalized delta is empty collapse to nothing and get dropped - a redundant override carries no information, and resolution falls through to
  * the default.
- * @param channels - The raw channel entries to normalize.
- * @returns The normalized channel map.
+ * @param data - The full channels file data envelope. Channels and serviceSelections are both mutated in place.
  */
-function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
+function normalizeChannelDeltas(data: ChannelsFileData): void {
 
-  const filtered: StoredChannelMap = {};
-  const resolvedCanonicals = buildResolvedCanonicals(channels);
+  const resolvedCanonicals = buildResolvedCanonicals(data.channels);
 
-  for(const [ key, stored ] of Object.entries(channels)) {
+  // Snapshot keys before iteration: the canonical-binding heal may write new variant entries to data.channels (heal-created variants when the matched sibling
+  // had no prior user override), and we don't want to re-process those in this pass. Heal-created entries are written in already-minimal delta shape, so
+  // skipping them is correct.
+  const initialKeys = Object.keys(data.channels);
+
+  for(const key of initialKeys) {
+
+    const stored = data.channels[key];
+
+    if(!stored) {
+
+      continue;
+    }
 
     // Step 1: enforce the expected stored shape via filterToDeltaSurface. Strips orphan fields (non-delta-eligible identity, non-delta-eligible binding,
     // identity-on-variants) before any diff computation. When fields are stripped, log a warning so operators see when their data is being cleaned. The shape
@@ -630,11 +883,59 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
 
     if(classification.kind === "canonical") {
 
+      // Step 2a: canonical-binding overlap heal. When the canonical override carries binding whose URL extracts to a sibling variant's domain, the user's
+      // intent is "default this channel to the sibling's service" - architecturally expressed via serviceSelections, not via overriding the canonical URL.
+      // Strip the binding fields from the canonical, propagate any binding that diverges from the matching variant's predefined defaults to the variant
+      // entry via mergeVariantBinding (preserve-existing semantics: the variant's prior user customization wins on field conflicts), and record the
+      // redirect. Distinct from the producer's replaceVariantBinding semantic - the heal is healing legacy data, not recording a new explicit user intent.
+      const canonicalDelta = shapeFiltered as ChannelDelta;
+      const targetVariantKey = inferTargetVariant(key, canonicalDelta.url, data.channels);
+
+      if(targetVariantKey) {
+
+        const targetPredefinedVariant = PREDEFINED_CHANNELS[targetVariantKey];
+
+        // For predefined siblings, diff the canonical's binding against the predefined variant's binding so only divergent fields land on the variant entry.
+        // For user-only siblings (no predefined entry), the matched variant already has its own binding from when the user created it; the canonical's
+        // binding simply represents redundant duplication and is dropped without modifying the variant entry.
+        if(targetPredefinedVariant) {
+
+          const bindingOnly = pickBindingFields(canonicalDelta);
+          const variantDelta = normalizeEntryAgainstBase(bindingOnly, targetPredefinedVariant);
+
+          if(variantDelta) {
+
+            data.channels[targetVariantKey] = mergeVariantBinding(data.channels[targetVariantKey], variantDelta);
+          }
+        }
+
+        data.serviceSelections[key] = targetVariantKey;
+
+        LOG.info("Resolved canonical-binding overlap for '%s'; redirected default service to variant '%s'.", key, targetVariantKey);
+
+        // Continue normalization with the binding-stripped canonical delta. If only identity remains and matches the predefined canonical, the entry collapses.
+        const identityOnly = pickIdentityFields(canonicalDelta);
+        const normalizedIdentity = normalizeEntryAgainstBase(identityOnly, classification.predefined);
+
+        if(normalizedIdentity) {
+
+          data.channels[key] = normalizedIdentity;
+        } else {
+
+          Reflect.deleteProperty(data.channels, key);
+        }
+
+        continue;
+      }
+
       const normalized = normalizeEntryAgainstBase(shapeFiltered, classification.predefined);
 
       if(normalized) {
 
-        filtered[key] = normalized;
+        data.channels[key] = normalized;
+      } else {
+
+        Reflect.deleteProperty(data.channels, key);
       }
 
       continue;
@@ -642,7 +943,7 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
 
     if(classification.kind === "standalone") {
 
-      filtered[key] = stripNulls(shapeFiltered);
+      data.channels[key] = stripNulls(shapeFiltered);
 
       continue;
     }
@@ -656,7 +957,7 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
 
     if(!canonical) {
 
-      filtered[key] = stripNulls(shapeFiltered);
+      data.channels[key] = stripNulls(shapeFiltered);
 
       continue;
     }
@@ -669,11 +970,12 @@ function normalizeChannelDeltas(channels: StoredChannelMap): StoredChannelMap {
 
     if(normalized) {
 
-      filtered[key] = normalized;
+      data.channels[key] = normalized;
+    } else {
+
+      Reflect.deleteProperty(data.channels, key);
     }
   }
-
-  return filtered;
 }
 
 /**
@@ -979,8 +1281,9 @@ export async function mutateChannels(fn: (data: ChannelsFileData) => void): Prom
     fn(data);
 
     // Normalize channel deltas before the beforeWrite hook serializes the data. This ensures the in-memory cache and the on-disk representation are
-    // identical. Other top-level fields (serviceSelections, tagRegistry, framework metadata) are not delta-shaped and pass through unchanged.
-    data.channels = normalizeChannelDeltas(data.channels);
+    // identical. The normalizer mutates data in place (channels and serviceSelections both - the canonical-binding overlap heal touches both), matching the
+    // migration `apply` convention so all in-place writes share one shape.
+    normalizeChannelDeltas(data);
     writtenData = data;
   });
 
@@ -996,6 +1299,32 @@ export async function mutateChannels(fn: (data: ChannelsFileData) => void): Prom
 
   userChannelsParseError = false;
   userChannelsParseErrorMessage = undefined;
+}
+
+/**
+ * Runs the startup channels-file cleanup pass. Combines two boot-time concerns into one atomic write so they share a single disk transaction:
+ *
+ * - Stale service-selections cleanup: any selection whose variant key no longer exists (deleted predefined variant, removed user channel) is removed by
+ *   buildServiceGroups in module state; this pass mirrors that cleanup to disk so the file matches the runtime view across restarts.
+ * - Canonical-binding overlap heal: invoked indirectly by the post-callback normalizer (normalizeChannelDeltas) which runs against the freshly-read data
+ *   inside mutateChannels. Any canonical override carrying binding whose URL extracts to a sibling variant's domain is healed in place - binding stripped
+ *   from the canonical, propagated to the matching variant entry, serviceSelections updated. The normalizer always runs post-callback; the heal happening
+ *   automatically is the load-bearing behavior, not the explicit body of this function.
+ *
+ * Existence as a named function is the architectural point: a bare `mutateChannels(() => {})` would correctly trigger the normalizer but obscure the intent
+ * at the call site. The name documents what the pass does so callers see "run startup cleanup" rather than "do nothing inside a mutation."
+ * @param staleSelections - Service-selection keys to delete from data.serviceSelections. Empty array is allowed (heal-only path).
+ * @throws FileStoreParseError if the channels file contains invalid JSON.
+ */
+export async function runStartupChannelsCleanup(staleSelections: readonly string[]): Promise<void> {
+
+  await mutateChannels((data) => {
+
+    for(const key of staleSelections) {
+
+      Reflect.deleteProperty(data.serviceSelections, key);
+    }
+  });
 }
 
 /**
@@ -1225,15 +1554,17 @@ export async function initializeUserChannels(): Promise<void> {
   // buildServiceGroups already performed.
   const staleSelections = buildServiceGroups(mergedChannels);
 
-  if(staleSelections.length > 0) {
+  /* Canonical-binding overlap heal at startup. Any canonical override whose binding URL extracts to a sibling variant's domain represents the wholesale-
+   * duplication shape from before the per-field PUT routing landed - the user wanted "default this channel to the sibling's service" but the producer
+   * dumped the full delta onto the canonical instead of routing binding to the variant and recording the redirect via serviceSelections. The normalizer
+   * fixes this on every write; this conditional one-shot pass triggers the heal at boot for users on upgrade so they don't have to perform any manual save
+   * action to clean up their data. Combined with the stale-selections cleanup so a single write handles both startup conditions when both apply.
+   */
+  const needsOverlapHeal = hasCanonicalBindingOverlap(loadedUserChannels);
 
-    await mutateChannels((data) => {
+  if((staleSelections.length > 0) || needsOverlapHeal) {
 
-      for(const key of staleSelections) {
-
-        Reflect.deleteProperty(data.serviceSelections, key);
-      }
-    });
+    await runStartupChannelsCleanup(staleSelections);
   }
 
   // Now that service groups are built, validate the configured service tags. Strip any unrecognized tags and warn.

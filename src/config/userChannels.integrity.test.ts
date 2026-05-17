@@ -11,22 +11,14 @@
  */
 import type { CanonicalChannel, StoredChannelMap } from "../types/index.ts";
 import { describe, test } from "node:test";
+import type { ChannelsFileData } from "./userChannels.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import { __internalForTests } from "./userChannels.ts";
 import assert from "node:assert/strict";
 import { firstOf } from "../testing.helpers.ts";
+import { makeChannelsData } from "./userChannels.helpers.ts";
 
 const { detectIdentityFieldLoss, validateChannelsIntegrity } = __internalForTests;
-
-// ChannelsFileData shape mirrored locally so the test can construct prev/next snapshots without exposing the internal type.
-interface TestData {
-
-  channels: StoredChannelMap;
-  migrationsApplied: string[];
-  schemaVersion: number;
-  serviceSelections: Record<string, string>;
-  tagRegistry: { deletedTags: string[]; tags: string[] };
-}
 
 describe("detectIdentityFieldLoss", () => {
 
@@ -187,9 +179,13 @@ describe("validateChannelsIntegrity", () => {
    *   - "metadata-wholesale-clear": one entry per top-level collection (serviceSelections, tagRegistry.tags, tagRegistry.deletedTags) that went non-empty -> empty.
    */
 
-  function makeData(channels: StoredChannelMap, serviceSelections: Record<string, string>, tagRegistry: { tags: string[]; deletedTags: string[] }): TestData {
+  /* Thin positional wrapper around the shared makeChannelsData helper. Local because the integrity tests favor a (channels, selections, tagRegistry) triple
+   * over keyword overrides for readability - every test sets all three explicitly. Routing through makeChannelsData keeps the envelope shape (schemaVersion,
+   * migrationsApplied, defaults) defined in exactly one place.
+   */
+  function makeData(channels: StoredChannelMap, serviceSelections: Record<string, string>, tagRegistry: { tags: string[]; deletedTags: string[] }): ChannelsFileData {
 
-    return { channels, migrationsApplied: [], schemaVersion: 3, serviceSelections, tagRegistry };
+    return makeChannelsData(channels, { serviceSelections, tagRegistry });
   }
 
   test("returns empty issues for a no-op write", () => {

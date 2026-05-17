@@ -12,8 +12,9 @@ import { describe, test } from "node:test";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import { __internalForTests } from "./userChannels.ts";
 import assert from "node:assert/strict";
+import { normalize } from "./userChannels.helpers.ts";
 
-const { buildResolvedCanonicals, channelsMigrations, classifyEntry, collectLegacyVariantStamps, normalizeChannelDeltas, resolveVariant } = __internalForTests;
+const { buildResolvedCanonicals, channelsMigrations, classifyEntry, collectLegacyVariantStamps, resolveVariant } = __internalForTests;
 
 describe("collectLegacyVariantStamps", () => {
 
@@ -155,7 +156,7 @@ describe("regression: hyphenated user standalone survives the migration", () => 
     assert.deepEqual(collectLegacyVariantStamps(storedInput), []);
 
     // Normalization (treats as standalone) preserves all user fields. The resulting standalone is shaped like a CanonicalChannel since it carries identity.
-    const normalized = normalizeChannelDeltas(storedInput);
+    const normalized = normalize(storedInput);
     const entry = normalized["abc-kabc"] as CanonicalChannel;
 
     assert.equal(entry.name, "ABC Los Angeles");
@@ -208,7 +209,7 @@ describe("regression: redundant predefined override collapses to nothing", () =>
         url: abc.url
       }
     };
-    const normalized = normalizeChannelDeltas(storedInput);
+    const normalized = normalize(storedInput);
 
     assert.equal("abc" in normalized, false, "empty override collapses to no entry");
   });

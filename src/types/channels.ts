@@ -110,6 +110,15 @@ export interface ChannelServiceBinding {
  * with a string canonicalKey is a VariantChannel, anything else is a CanonicalChannel.
  *
  * Predefined canonicals are produced by the flattener; standalone user channels (no predefined parent) take this same shape.
+ *
+ * Sibling-variant non-overlap rule (storage invariant): a canonical override's binding fields exist to customize the canonical service's binding -
+ * NOT to express "I'd rather default this channel to a sibling service." When the user wants a sibling service to be the default for a channel, that intent
+ * is expressed via serviceSelections (config/services.ts), not by overriding the canonical URL. The storage layer enforces this: any canonical override whose
+ * binding URL extracts to a sibling variant's domain is normalized at write time by inferTargetVariant + normalizeChannelDeltas in config/userChannels.ts.
+ * Binding fields are stripped from the canonical override, propagated to the matching variant entry as a binding-only override (when they diverge from the
+ * variant's predefined defaults), and serviceSelections[canonicalKey] is set to the matching variant key. The producer (the PUT handler in
+ * routes/config/channels/endpoints/crud.ts), the startup heal in initializeUserChannels, and the normalizer all share one inferTargetVariant helper, so the
+ * rule lives in exactly one place.
  */
 export interface CanonicalChannel extends ChannelIdentity, ChannelServiceBinding {
 
