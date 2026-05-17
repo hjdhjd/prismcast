@@ -1061,7 +1061,8 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
     const channelHealthResult = getChannelHealth(key, authDomain);
     const healthColorClass = (channelHealthResult?.status === "success") ? " health-success" : (channelHealthResult?.status === "failed") ? " health-failed" : "";
     const healthTitle = channelHealthResult ?
-      (channelHealthResult.status === "success" ? "Succeeded " : "Failed ") + formatTimeAgo(channelHealthResult.timestamp) : "Not yet tuned";
+      "Last tune " + (channelHealthResult.status === "success" ? "succeeded " : "failed ") + formatTimeAgo(channelHealthResult.timestamp) + "." :
+      "Not yet tuned.";
 
     displayLines.push("<span class=\"btn-icon btn-icon-health" + healthColorClass + "\" title=\"" + healthTitle +
       "\" aria-label=\"Channel health\">" + ICON_HEALTH + "</span>");
