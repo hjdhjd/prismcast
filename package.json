@@ -1,7 +1,7 @@
 {
   "name": "prismcast",
   "displayName": "PrismCast",
-  "version": "1.10.2",
+  "version": "1.10.3",
   "description": "Browser-based live TV capture server for Channels DVR, Plex, and other streaming clients.",
   "author": {
     "name": "HJD",
@@ -73,7 +73,7 @@
     "ffmpeg-for-homebridge": "2.2.2",
     "morgan": "1.10.1",
     "puppeteer-core": "24.43.1",
-    "puppeteer-stream": "3.0.21",
+    "puppeteer-stream": "3.0.22",
     "ws": "^8.20.1"
   },
   "devDependencies": {

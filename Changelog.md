@@ -2,8 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.10.3 (2026-05-17)
+  * Improvement: native HLS streaming now applies to a much richer set of site types - if a site delivers unencrypted live HLS, PrismCast captures it natively, including local TV station live cams and pages with embedded third-party players, dramatically expanding the set of channels that stream at higher quality with lower CPU usage.
+  * Improvement: channel health tooltip is now phrased as a full last-tune sentence for at-a-glance readability.
+  * Fix: `prismcast upgrade` on Windows now runs the install step in a detached helper process, so installations where PrismCast runs as a service (or is set to auto-restart) complete cleanly instead of failing on locked files or stalling after the restart.
+  * Fix: rare process-exit crash on Windows when the startup version check times out.
+  * Fix: stale PID files no longer trigger "another PrismCast instance is already running" errors after reboots, crashes, or container restarts.
+  * Housekeeping.
+
 ## 1.10.2 (2026-05-14)
-  * Fix: HBO Max tuning updated for HBO's recent site restructure — live channels are now read from the new consolidated /channels hub instead of the old homepage menu navigation.
+  * Fix: HBO Max tuning updated for HBO's recent site restructure - live channels are now read from the new consolidated /channels hub instead of the old homepage menu navigation.
   * Improvement: Hulu's intermittent "Who's Watching?" profile selector is now dismissed automatically during tuning and channel discovery, so accounts with multiple profiles no longer get stuck on the picker overlay when Hulu re-prompts for profile selection across sessions.
   * Improvement: the default browser extension init timeout is now 3 seconds, giving slower machines more headroom before stream startup considers the capture pipeline failed.
   * Housekeeping.
@@ -12,21 +20,21 @@ All notable changes to this project will be documented in this file.
   * Housekeeping.
 
 ## 1.10.0 (2026-05-10)
-  * Improvement: Fox local affiliate channels are easier to set up and more reliable — PrismCast now detects your local Fox affiliate automatically on the first tune and remembers it for future tunes, so you don't have to look up your market's call sign yourself. Each tune is also verified to match the requested channel, and if you'd rather use a different local affiliate, you can edit the channel's selector to your preferred call sign.
-  * Improvement: native HLS streaming now covers more providers — PrismCast can bypass screen capture for services that deliver media-only HLS playlists (no separate master manifest) by inferring codec details from the first segment, expanding the set of channels that stream at higher quality with lower CPU usage.
-  * Improvement: HLS stream resilience for token-protected streams — when a provider's HLS manifest URL embeds an authentication token (in the path or as a query parameter) that expires mid-stream, PrismCast now refreshes the manifest with a fresh token instead of stalling on dead segment URLs, keeping native HLS streams alive across longer recordings.
-  * Improvement: service management hardening — `install`, `start`, `stop`, `restart`, and `uninstall` commands are now fully asynchronous and no longer block the CLI during multi-second platform operations, and error messages surface the underlying tool's stderr text instead of a generic "Command failed" line. On Windows, the service launcher was rewritten to a single PowerShell script with stdout and stderr redirected to the data directory, eliminating a class of shell-quoting hazards in argument handling.
-  * Improvement: persistence framework expansion — atomic writes with automatic backup recovery now apply across every configuration file (channels, profiles, health, and config), schema migrations are versioned and audited, and a cross-store consistency probe catches and repairs orphaned references at startup.
-  * Improvement: configurable Channels DVR port — if your Channels DVR runs on a non-default port, you can now set it from the Advanced settings tab. PrismCast continues to auto-discover the DVR's host address; only the port is configurable.
+  * Improvement: Fox local affiliate channels are easier to set up and more reliable - PrismCast now detects your local Fox affiliate automatically on the first tune and remembers it for future tunes, so you don't have to look up your market's call sign yourself. Each tune is also verified to match the requested channel, and if you'd rather use a different local affiliate, you can edit the channel's selector to your preferred call sign.
+  * Improvement: native HLS streaming now covers more providers - PrismCast can bypass screen capture for services that deliver media-only HLS playlists (no separate master manifest) by inferring codec details from the first segment, expanding the set of channels that stream at higher quality with lower CPU usage.
+  * Improvement: HLS stream resilience for token-protected streams - when a provider's HLS manifest URL embeds an authentication token (in the path or as a query parameter) that expires mid-stream, PrismCast now refreshes the manifest with a fresh token instead of stalling on dead segment URLs, keeping native HLS streams alive across longer recordings.
+  * Improvement: service management hardening - `install`, `start`, `stop`, `restart`, and `uninstall` commands are now fully asynchronous and no longer block the CLI during multi-second platform operations, and error messages surface the underlying tool's stderr text instead of a generic "Command failed" line. On Windows, the service launcher was rewritten to a single PowerShell script with stdout and stderr redirected to the data directory, eliminating a class of shell-quoting hazards in argument handling.
+  * Improvement: persistence framework expansion - atomic writes with automatic backup recovery now apply across every configuration file (channels, profiles, health, and config), schema migrations are versioned and audited, and a cross-store consistency probe catches and repairs orphaned references at startup.
+  * Improvement: configurable Channels DVR port - if your Channels DVR runs on a non-default port, you can now set it from the Advanced settings tab. PrismCast continues to auto-discover the DVR's host address; only the port is configurable.
   * Fix: profile saves applied in rapid succession now both apply correctly without one overwriting the other.
-  * Fix: predictive pretuning now respects your service filter — channels you've hidden are skipped, keeping browser resources focused on your active lineup.
+  * Fix: predictive pretuning now respects your service filter - channels you've hidden are skipped, keeping browser resources focused on your active lineup.
   * Fix: user-set channel numbers and station IDs on local-affiliate variants are now preserved across upgrades.
-  * Fix: channel tags and guide titles containing quote or backslash characters no longer break the generated M3U playlist — attribute values are now properly escaped at every write site.
+  * Fix: channel tags and guide titles containing quote or backslash characters no longer break the generated M3U playlist - attribute values are now properly escaped at every write site.
   * Housekeeping.
 
 ## 1.9.0 (2026-04-19)
-  * New feature: M3U playlist tags and guide metadata — the playlist now includes `group-title` attributes from your channel tags, enabling automatic channel grouping in Channels DVR and other M3U consumers. Guide metadata (`tvg-id`, `tvg-name`, `tvg-logo`) is embedded for richer channel identification. Tags preserve the exact casing you entered.
-  * New feature: informed channel creation — adding a custom channel now shows matching predefined channels as suggestions and warns when your active service filter would prevent the new channel from appearing.
+  * New feature: M3U playlist tags and guide metadata - the playlist now includes `group-title` attributes from your channel tags, enabling automatic channel grouping in Channels DVR and other M3U consumers. Guide metadata (`tvg-id`, `tvg-name`, `tvg-logo`) is embedded for richer channel identification. Tags preserve the exact casing you entered.
+  * New feature: informed channel creation - adding a custom channel now shows matching predefined channels as suggestions and warns when your active service filter would prevent the new channel from appearing.
   * Improvement: static page channels are now fully supported in the M3U playlist and HDHomeRun lineup.
   * Improvement: configuration persistence now uses atomic writes with automatic backup and recovery, so your settings are always safely saved.
   * Improvement: service selection indicators and channel override badges on the channels tab.
@@ -36,36 +44,36 @@ All notable changes to this project will be documented in this file.
   * Housekeeping.
 
 ## 1.8.0 (2026-04-02)
-  * New feature: channel tags — organize channels into groups like "sports", "news", "hbo", or "starz" for filtered playlists and channel management. Tags can be created, renamed, and deleted from the Manage Tags modal, assigned to channels via Quick Actions or inline editing, and used to filter the playlist with `?tag=` query parameters. Predefined channels ship with tags pre-assigned, including premium brand tags (HBO, Showtime, Starz) for subscription-based filtering. When the tag column filter is active, a playlist hint icon appears with the corresponding Channels DVR playlist URL ready to copy.
-  * New feature: capture codec selection — control which codecs are eligible for browser capture. HEVC is used by default when GPU hardware encoding is available; H.264 is always enabled as the universal baseline. Users who experience issues with HEVC can disable it from the streaming settings.
+  * New feature: channel tags - organize channels into groups like "sports", "news", "hbo", or "starz" for filtered playlists and channel management. Tags can be created, renamed, and deleted from the Manage Tags modal, assigned to channels via Quick Actions or inline editing, and used to filter the playlist with `?tag=` query parameters. Predefined channels ship with tags pre-assigned, including premium brand tags (HBO, Showtime, Starz) for subscription-based filtering. When the tag column filter is active, a playlist hint icon appears with the corresponding Channels DVR playlist URL ready to copy.
+  * New feature: capture codec selection - control which codecs are eligible for browser capture. HEVC is used by default when GPU hardware encoding is available; H.264 is always enabled as the universal baseline. Users who experience issues with HEVC can disable it from the streaming settings.
   * Improvement: expanded predefined channel coverage.
   * Fix: Fox local affiliate channels defaulting to Cox instead of fox.com as the canonical provider.
   * Housekeeping.
 
 ## 1.7.0 (2026-03-27)
-  * New feature: hardware-accelerated HEVC capture — when PrismCast detects that Chrome is using GPU-accelerated rendering, it automatically captures in HEVC/H.265 instead of H.264, delivering higher quality at lower bitrates with significantly reduced CPU usage. No configuration needed — detection and switching are fully automatic and seamless.
+  * New feature: hardware-accelerated HEVC capture - when PrismCast detects that Chrome is using GPU-accelerated rendering, it automatically captures in HEVC/H.265 instead of H.264, delivering higher quality at lower bitrates with significantly reduced CPU usage. No configuration needed - detection and switching are fully automatic and seamless.
   * New feature: Cox Contour TV provider support with channel discovery. Thanks to @babsonnexus for the collaboration.
-  * New feature: Browse Channels — a new wizard on the channels tab lets you discover and manage channels by provider. Select a provider, see all available channels with their current status (new, active, available via another provider), and add, switch, or remove channels in bulk. Channel logos are displayed using artwork from your Channels DVR library.
-  * New feature: Provider Setup — a guided first-run wizard walks you through selecting your streaming providers, signing in, and building your initial channel lineup. Automatically appears on first visit and can be re-run anytime.
-  * New feature: inline editing for channel numbers and station IDs — click any Number or Station ID cell in the channels table to edit it in place. Changes save on Enter or when you click away, and Escape cancels.
-  * New feature: auto-number channels — assign sequential channel numbers to all visible channels based on the current sort order, or clear all channel numbers at once. Found in the Quick Actions menu.
-  * New feature: per-channel HDHomeRun/Plex lineup control — choose which channels appear in the HDHomeRun lineup for Plex on a per-channel basis. A new opt-in HDHR column in the channels table provides inline checkboxes for quick toggling, and a bulk toggle in Quick Actions lets you include or exclude all channels at once. The add/edit channel form also includes the setting under Advanced Options. Channels excluded from the HDHR lineup remain available in the M3U playlist for Channels DVR.
+  * New feature: Browse Channels - a new wizard on the channels tab lets you discover and manage channels by provider. Select a provider, see all available channels with their current status (new, active, available via another provider), and add, switch, or remove channels in bulk. Channel logos are displayed using artwork from your Channels DVR library.
+  * New feature: Provider Setup - a guided first-run wizard walks you through selecting your streaming providers, signing in, and building your initial channel lineup. Automatically appears on first visit and can be re-run anytime.
+  * New feature: inline editing for channel numbers and station IDs - click any Number or Station ID cell in the channels table to edit it in place. Changes save on Enter or when you click away, and Escape cancels.
+  * New feature: auto-number channels - assign sequential channel numbers to all visible channels based on the current sort order, or clear all channel numbers at once. Found in the Quick Actions menu.
+  * New feature: per-channel HDHomeRun/Plex lineup control - choose which channels appear in the HDHomeRun lineup for Plex on a per-channel basis. A new opt-in HDHR column in the channels table provides inline checkboxes for quick toggling, and a bulk toggle in Quick Actions lets you include or exclude all channels at once. The add/edit channel form also includes the setting under Advanced Options. Channels excluded from the HDHR lineup remain available in the M3U playlist for Channels DVR.
   * Improvement: webUI improvements and refinements.
   * Improvement: resolution degradation detection and log message refinements.
-  * Improvement: Hallmark site provider entries removed — Hallmark no longer offers direct streaming from their website. Hallmark, Hallmark Family, and Hallmark Mystery remain available through all TV provider variants (Cox, DirecTV, Hulu, Spectrum, Xfinity, YouTube TV).
+  * Improvement: Hallmark site provider entries removed - Hallmark no longer offers direct streaming from their website. Hallmark, Hallmark Family, and Hallmark Mystery remain available through all TV provider variants (Cox, DirecTV, Hulu, Spectrum, Xfinity, YouTube TV).
   * Fix: provider filter not applied to predefined variant options in the channels tab dropdown.
   * Fix: user-set channel numbers on predefined channels now correctly appear when a non-default provider is selected.
   * Fix: filtered-out provider options in the provider dropdown no longer appear when a user customizes a predefined channel.
   * Housekeeping.
 
 ## 1.6.0 (2026-03-15)
-  * New feature: Xfinity Stream provider support. Note: Xfinity's player is slow to initialize and tune — expect 15-30 seconds for channel changes. This is a limitation of the Xfinity Stream web player, not PrismCast. I'm exploring improvements for the future, but no promises — this is as good as it gets for now.
-  * New feature: native HLS streaming — PrismCast automatically detects when a provider delivers non-DRMed HLS and bypasses screen capture entirely, consuming the stream directly for higher quality with lower CPU usage. Known to work with the A&E family (A&E, History, Lifetime), BET, C-SPAN, the Food Network family (Discovery, Food Network, HGTV, OWN, TLC, Travel, and others), Fox One, Fox Sports, VH1, and more. DRM-protected providers automatically fall back to screen capture.
-  * New feature: preroll immediate response — HLS clients can receive video within seconds of a tune request rather than waiting for the full stream initialization to complete.
-  * New feature: predictive channel pretuning — PrismCast reads the Channels DVR programming schedule and pretunes upcoming channels before recordings start, reducing tune latency to near zero.
+  * New feature: Xfinity Stream provider support. Note: Xfinity's player is slow to initialize and tune - expect 15-30 seconds for channel changes. This is a limitation of the Xfinity Stream web player, not PrismCast. I'm exploring improvements for the future, but no promises - this is as good as it gets for now.
+  * New feature: native HLS streaming - PrismCast automatically detects when a provider delivers non-DRMed HLS and bypasses screen capture entirely, consuming the stream directly for higher quality with lower CPU usage. Known to work with the A&E family (A&E, History, Lifetime), BET, C-SPAN, the Food Network family (Discovery, Food Network, HGTV, OWN, TLC, Travel, and others), Fox One, Fox Sports, VH1, and more. DRM-protected providers automatically fall back to screen capture.
+  * New feature: preroll immediate response - HLS clients can receive video within seconds of a tune request rather than waiting for the full stream initialization to complete.
+  * New feature: predictive channel pretuning - PrismCast reads the Channels DVR programming schedule and pretunes upcoming channels before recordings start, reducing tune latency to near zero.
   * New feature: dismiss intermittent site modals that block video playback.
   * New feature: video resolution degradation detection and recovery.
-  * New feature: Docker Intel GPU hardware acceleration — containers with an Intel GPU can offload video processing from the CPU, significantly reducing CPU usage. Thanks to @ajvolin for the initial work and @bnhf for the contribution.
+  * New feature: Docker Intel GPU hardware acceleration - containers with an Intel GPU can offload video processing from the CPU, significantly reducing CPU usage. Thanks to @ajvolin for the initial work and @bnhf for the contribution.
   * Improvement: native proxy upstream metadata propagation for HLS discontinuity, SCTE-35 cues, and program date-time.
   * Improvement: track-aware segment health monitoring with provider-specific thresholds.
   * Improvement: video readiness enhancements with per-domain timeout, offscreen scrolling, and diagnostic logging.
@@ -95,14 +103,14 @@ All notable changes to this project will be documented in this file.
 
 ## 1.5.0 (2026-02-28)
   * New feature: DirecTV Stream provider support. Thanks to @kineticmac for the collaboration.
-  * New feature: sortable columns and optional columns on the channels tab — click any column header to sort, and use the column picker to show or hide Number, Station ID, Profile, and Selector columns. Preferences persist across sessions. **Note: your preferred sort will determine how the playlist is ordered for Channels DVR by default.**
-  * New feature: channel health and provider login indicators on the channels tab — green/red dots show last tune status per channel, and provider badges indicate verified authentication.
-  * New feature: channel lineup precaching at startup — provider guide data can be optionally fetched in the background so channel discovery is instant on first tune. Precaching only helps speed up the first tune of a channel on a given provider.
-  * New feature: bulk actions dropdown on the channels tab for toggling predefined channels by scope — all, Pacific variants only, or East variants only.
-  * New feature: user-defined provider profiles — add support for any streaming site without waiting for a built-in update. A step-by-step builder wizard guides you through profile creation, live CSS selector testing verifies your configuration against the real site, and shareable provider packs let you export and import complete provider setups.
+  * New feature: sortable columns and optional columns on the channels tab - click any column header to sort, and use the column picker to show or hide Number, Station ID, Profile, and Selector columns. Preferences persist across sessions. **Note: your preferred sort will determine how the playlist is ordered for Channels DVR by default.**
+  * New feature: channel health and provider login indicators on the channels tab - green/red dots show last tune status per channel, and provider badges indicate verified authentication.
+  * New feature: channel lineup precaching at startup - provider guide data can be optionally fetched in the background so channel discovery is instant on first tune. Precaching only helps speed up the first tune of a channel on a given provider.
+  * New feature: bulk actions dropdown on the channels tab for toggling predefined channels by scope - all, Pacific variants only, or East variants only.
+  * New feature: user-defined provider profiles - add support for any streaming site without waiting for a built-in update. A step-by-step builder wizard guides you through profile creation, live CSS selector testing verifies your configuration against the real site, and shareable provider packs let you export and import complete provider setups.
   * Improvement: the playlist endpoint now accepts optional `?sort=` and `?direction=` query parameters to override the saved sort order per request without changing the saved preference. Thanks to @bnhf for the inspiration.
   * Improvement: expanded predefined channel coverage across providers, with automatic Pacific timezone variant generation. Thanks to @bnhf for the collaboration.
-  * Improvement: detect and fix stale service paths after upgrades — `service start` and `service restart` auto-regenerate the service file when paths change, and `service status` warns about mismatches.
+  * Improvement: detect and fix stale service paths after upgrades - `service start` and `service restart` auto-regenerate the service file when paths change, and `service status` warns about mismatches.
   * Improvement: profile-level scroll options for sites like Disney+ that lazy-load page content.
   * Improvement: webUI performance refinements.
   * Improvement: channel selector autocomplete now suggests all available channels from provider discovery, with fuzzy URL matching and "Did you mean?" hints for common domain variants.
@@ -122,8 +130,8 @@ All notable changes to this project will be documented in this file.
   * Housekeeping.
 
 ## 1.4.0 (2026-02-19)
-  * New feature: Hulu direct tuning — channels now cache on first tune for faster subsequent tunes.
-  * New feature: `upgrade` command for CLI and web UI — detects your install method (npm, Homebrew, Docker) and runs the appropriate upgrade.
+  * New feature: Hulu direct tuning - channels now cache on first tune for faster subsequent tunes.
+  * New feature: `upgrade` command for CLI and web UI - detects your install method (npm, Homebrew, Docker) and runs the appropriate upgrade.
   * New feature: optionally include channel numbers in the M3U playlist for Channels DVR.
   * New feature: configurable data, Chrome profile, and log file paths via `--data-dir`, `--chrome-data-dir`, and `--log-file` CLI flags and environment variables, with a new `--list-env` option to list all available settings.
   * Improvement: smoother stream continuity and resiliency across playback recovery boundaries.
