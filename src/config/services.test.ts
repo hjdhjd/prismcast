@@ -26,12 +26,12 @@ describe("PREDEFINED_SUFFIX", () => {
 
 describe("getServiceDisplayName", () => {
 
-  test("returns the built-in service name for a known full hostname", () => {
+  test("returns the builtin service name for a known full hostname", () => {
 
     assert.equal(getServiceDisplayName("https://tv.youtube.com/watch/abc"), "YouTube TV");
   });
 
-  test("returns the built-in service name for a known concise domain", () => {
+  test("returns the builtin service name for a known concise domain", () => {
 
     assert.equal(getServiceDisplayName("https://www.hulu.com/live"), "Hulu");
   });
@@ -260,7 +260,7 @@ describe("findPredefinedByDomain", () => {
 
 describe("getServiceDisplayName: extended branch coverage", () => {
 
-  /* The function checks the built-in DOMAIN_CONFIG (full hostname first, then concise domain) before falling through to getDomainConfig (which includes user
+  /* The function checks the builtin DOMAIN_CONFIG (full hostname first, then concise domain) before falling through to getDomainConfig (which includes user
    * domain mappings). The test in the upstream describe block covers full-hostname and concise hits; here we add the user-domain fallthrough path. Without
    * runtime initialization of user domain mappings, the user-domain branch yields the same path as no-config (returns concise domain).
    */
@@ -277,7 +277,7 @@ describe("getServiceDisplayName: extended branch coverage", () => {
 describe("getChannelServiceLabel", () => {
 
   /* The label dispatcher checks fields in order: explicit `service` field on the channel, channel.profile resolved via user domain mappings, then URL-based
-   * built-in display name. We test the explicit field and the URL fallback; the user-profile branch requires runtime user domain state (transitively covered
+   * builtin display name. We test the explicit field and the URL fallback; the user-profile branch requires runtime user domain state (transitively covered
    * by the channels/services HTTP route tests).
    */
 
@@ -294,7 +294,7 @@ describe("getChannelServiceLabel", () => {
      */
     const channel = makeChannel({ url: "https://www.hulu.com/" });
 
-    assert.equal(getChannelServiceLabel(channel), "Hulu", "URL resolves to the built-in service name");
+    assert.equal(getChannelServiceLabel(channel), "Hulu", "URL resolves to the builtin service name");
   });
 
   test("returns the concise domain when URL resolves to no known service", () => {

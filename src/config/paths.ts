@@ -114,18 +114,9 @@ export function getResumeFilePath(): string {
 }
 
 /**
- * Returns the path to the Chrome PID file. Used for cross-platform process cleanup - the PID file survives crashes and allows the next startup to find and
- * terminate orphaned Chrome processes without relying on Unix-only tools like pkill/pgrep.
- * @returns The absolute path to chrome.pid inside the data directory.
- */
-export function getChromePidFilePath(): string {
-
-  return path.join(getDataDir(), "chrome.pid");
-}
-
-/**
- * Returns the path to the server PID file. Used to detect duplicate PrismCast instances - the PID file is written immediately after the instance check passes and
- * checked at the start of the next launch to prevent two instances from running simultaneously.
+ * Returns the path to the server identity file. Used to detect duplicate PrismCast instances - the file is written immediately after the instance-guard claim
+ * succeeds and is checked at the start of the next launch. Orphaned Chrome processes are discovered via the OS process table (utils/processInspector) using a
+ * command-line signature, so no separate Chrome PID file is needed.
  * @returns The absolute path to prismcast.pid inside the data directory.
  */
 export function getServerPidFilePath(): string {

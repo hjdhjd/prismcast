@@ -9,7 +9,7 @@
  *   - registerManagedPage / unregisterManagedPage (the WeakMap-backed page-registration tracker)
  *   - getChromeVersion (the cached version string accessor)
  *   - getBrowserInstance / isBrowserConnected (the synchronous status accessors)
- *   - canCleanupChrome (the flag that gates Chrome cleanup at process exit)
+ *   - findChromeProcessesUsingProfile (the pure discovery filter killStaleChrome composes)
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - getExecutablePath (the env-var-or-search executable resolver)
  *   - emitCurrentSystemStatus (the status emitter wrapper - we drain the resulting SSE event)
@@ -18,9 +18,9 @@
  * not prevent the file from exiting cleanly.
  */
 import { afterEach, before, beforeEach, describe, test } from "node:test";
-import { buildLaunchOptions, canCleanupChrome, emitCurrentSystemStatus, getBrowserInstance, getChromeVersion, getExecutablePath, isBrowserConnected,
-  isGracefulShutdown, registerManagedPage, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { buildLaunchOptions, emitCurrentSystemStatus, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance, getChromeVersion,
+  getExecutablePath, isBrowserConnected, isGracefulShutdown, registerManagedPage, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
@@ -189,13 +189,82 @@ describe("isBrowserConnected", () => {
   });
 });
 
-describe("canCleanupChrome", () => {
+describe("findChromeProcessesUsingProfile", () => {
 
-  test("returns a boolean (the cleanup-ownership flag is initialized at module load)", () => {
+  // A live-PID predicate that treats every PID in a set as alive. Tests parameterize the set to drive the ppid liveness branch deterministically.
+  const aliveSet = (pids: ReadonlySet<number>) => (pid: number): boolean => pids.has(pid);
 
-    // The flag starts false and is set true when killStaleChrome runs in the startup sequence. We assert only on the boolean type since the value depends on
-    // whether other test files have run killStaleChrome by the time this test runs.
-    assert.equal(typeof canCleanupChrome(), "boolean", "result is a boolean");
+  test("matches Chrome processes whose command line carries our --user-data-dir flag", () => {
+
+    const processes = [
+
+      { commandLine: "/usr/sbin/syslogd", pid: 1, ppid: 0 },
+      { commandLine: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/home/x/.prismcast/chromedata --no-sandbox",
+        pid: 100, ppid: 50 },
+      { commandLine: "node /app/dist/index.js", pid: 50, ppid: 1 }
+    ];
+
+    // Our process is PID 50 (the node parent of Chrome). Chrome (PID 100) has ppid 50 = us, so ownership is ours. SIGTERM.
+    assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/.prismcast/chromedata", 50, aliveSet(new Set([50]))), [100]);
+  });
+
+  test("ignores processes whose command line does not reference our profile dir", () => {
+
+    const processes = [
+
+      { commandLine: "/usr/bin/chrome --user-data-dir=/some/other/path", pid: 200, ppid: 1 }
+    ];
+
+    // The match is by profile dir. A Chrome instance for a different profile is none of our business.
+    assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/.prismcast/chromedata", 50, aliveSet(new Set())), []);
+  });
+
+  test("excludes Chrome whose parent is a live unrelated PID (rejected-duplicate safety)", () => {
+
+    // A legitimate PrismCast (PID 999) owns a Chrome (PID 100) with our profile. We are a rejected duplicate (PID 50). Chrome 100's ppid is 999, which is
+    // alive and is not us - so it belongs to 999, not us, and we must leave it alone.
+    const processes = [
+
+      { commandLine: "/usr/bin/chrome --user-data-dir=/home/x/.prismcast/chromedata", pid: 100, ppid: 999 }
+    ];
+
+    assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/.prismcast/chromedata", 50, aliveSet(new Set([999]))), []);
+  });
+
+  test("includes orphaned Chrome whose parent is no longer alive", () => {
+
+    // A previous PrismCast died without killing its Chrome. The OS reparented Chrome to init (or it has a dead-PID parent on Windows). We launched fresh and
+    // claimed the instance slot; this orphan needs to go before we spawn our own Chrome.
+    const processes = [
+
+      { commandLine: "/usr/bin/chrome --user-data-dir=/home/x/.prismcast/chromedata", pid: 100, ppid: 1 }
+    ];
+
+    // PID 1 (init) is alive but is not us; without further info this would be excluded. The test injects ppid=1 as NOT alive in the predicate, which captures
+    // the typical orphan signature on systems where the original parent died and the kernel reparented to init. The discovery filter trusts the predicate.
+    assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/.prismcast/chromedata", 50, aliveSet(new Set())), [100]);
+  });
+
+  test("rejects substring matches that extend past the profile dir (no false positives on path prefixes)", () => {
+
+    // The user-data-dir flag's value is "/home/x/data-backup". Our profile dir is "/home/x/data". Naive substring matching would treat this as a hit; the
+    // boundary check (next char must be whitespace or end-of-string) rejects it.
+    const processes = [
+
+      { commandLine: "/usr/bin/chrome --user-data-dir=/home/x/data-backup --no-sandbox", pid: 100, ppid: 50 }
+    ];
+
+    assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/data", 50, aliveSet(new Set([50]))), []);
+  });
+
+  test("accepts the match when the user-data-dir is the last argument (end-of-string boundary)", () => {
+
+    const processes = [
+
+      { commandLine: "/usr/bin/chrome --user-data-dir=/home/x/data", pid: 100, ppid: 50 }
+    ];
+
+    assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/data", 50, aliveSet(new Set([50]))), [100]);
   });
 });
 
@@ -366,6 +435,38 @@ describe("emitCurrentSystemStatus", () => {
     // twice in a row must not throw even when the second emission is suppressed by the cache.
     await assert.doesNotReject(() => emitCurrentSystemStatus(), "first call");
     await assert.doesNotReject(() => emitCurrentSystemStatus(), "second call");
+  });
+});
+
+describe("ensureDataDirectory legacy-artifact purge", () => {
+
+  test("removes a pre-existing chrome.pid file (legacy artifact from PrismCast <= 1.10.3)", async () => {
+
+    // Simulate an upgraded install: the user has a stale chrome.pid file from a previous version. We create one in the tempDataDir, run ensureDataDirectory,
+    // and assert the file is gone. This is the masterclass test for "don't litter on upgrade" - the purge happens transparently as part of normal startup.
+    const legacyChromePid = path.join(tempDataDir, "chrome.pid");
+
+    writeFileSync(legacyChromePid, "12345");
+
+    assert.equal(existsSync(legacyChromePid), true, "sentinel chrome.pid is in place before ensureDataDirectory runs");
+
+    await ensureDataDirectory();
+
+    assert.equal(existsSync(legacyChromePid), false, "ensureDataDirectory purged the legacy chrome.pid file");
+  });
+
+  test("is a no-op when chrome.pid is absent (steady state)", async () => {
+
+    // The common case after the first purge: ensureDataDirectory runs cleanly with no chrome.pid to remove. ENOENT is silenced inside the purge helper, so
+    // there is nothing to assert beyond "does not throw."
+    const legacyChromePid = path.join(tempDataDir, "chrome.pid");
+
+    if(existsSync(legacyChromePid)) {
+
+      rmSync(legacyChromePid, { force: true });
+    }
+
+    await assert.doesNotReject(async () => ensureDataDirectory());
   });
 });
 

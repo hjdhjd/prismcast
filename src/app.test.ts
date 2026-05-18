@@ -2,17 +2,19 @@
  *
  * app.test.ts: Unit tests for the Express application builder module. Almost everything in app.ts is wired into a process-level lifecycle - the HTTP server,
  * the Chrome browser, the file logger, the SIGINT/SIGTERM handlers, the polling intervals - so the surface that can be exercised in isolation is small. The
- * module exports only two symbols: clearServerPid and startServer. startServer cannot be invoked safely from a unit test (it spawns Chrome, binds the port,
- * registers signal handlers, and calls process.exit on failure), so it is deferred to e2e coverage. clearServerPid is exercised here against the only
- * externally-observable starting state - ownership flag false - which is the path traversed when a duplicate-instance rejection or a never-started process
- * runs through its exit handler.
+ * module exports only two symbols: releaseInstanceSlot and startServer. startServer cannot be invoked safely from a unit test (it spawns Chrome, binds the
+ * port, registers signal handlers, and calls process.exit on failure), so it is deferred to e2e coverage. releaseInstanceSlot is exercised here against the
+ * critical-correctness path: a process that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file
+ * record and refuses to remove a file whose PID does not match this process), which replaces the legacy in-memory ownsServerPid flag with a self-evident
+ * invariant that survives across module loads.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "./testing.helpers.ts";
 import { existsSync, writeFileSync } from "node:fs";
 import { getServerPidFilePath, initializeDataDir } from "./config/paths.ts";
 import assert from "node:assert/strict";
-import { clearServerPid } from "./app.ts";
+import { releaseInstanceSlot } from "./app.ts";
+import { serializeRecord } from "./utils/index.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -38,53 +40,56 @@ afterEach(() => {
   }
 });
 
-describe("clearServerPid", () => {
+describe("releaseInstanceSlot", () => {
 
   test("is exported as a callable function", () => {
 
-    assert.equal(typeof clearServerPid, "function", "clearServerPid should be exported");
+    assert.equal(typeof releaseInstanceSlot, "function", "releaseInstanceSlot should be exported");
   });
 
-  test("does not throw when invoked without a prior saveServerPid (ownership flag is false)", () => {
+  test("does not throw when there is no identity file on disk", () => {
 
-    // The internal ownsServerPid flag starts at false in a fresh module load. saveServerPid is the only path that flips it to true, and saveServerPid is not
-    // exported - so from any external caller the only observable starting state is "not owning". The function must early-return cleanly in that state.
+    // A never-claimed process running its exit handler must early-return cleanly. The state machine inside release() classifies a missing file as "free" and
+    // skips the unlink entirely.
     assert.doesNotThrow(() => {
 
-      clearServerPid();
-    }, "clearServerPid should be a safe no-op when ownership is false");
+      releaseInstanceSlot();
+    }, "releaseInstanceSlot should be a safe no-op when no identity file exists");
   });
 
-  test("is idempotent on repeated calls when not owning the PID file", () => {
+  test("is idempotent on repeated calls", () => {
 
-    // Repeated invocation is the realistic scenario: the process exit handler may run after a graceful shutdown that already called clearServerPid, and the
-    // function must not throw or otherwise misbehave on the second pass.
+    // Repeated invocation is the realistic scenario: the process exit handler may run after a graceful shutdown that already called releaseInstanceSlot, and
+    // the function must not throw or otherwise misbehave on the second pass.
     assert.doesNotThrow(() => {
 
-      clearServerPid();
-      clearServerPid();
-      clearServerPid();
+      releaseInstanceSlot();
+      releaseInstanceSlot();
+      releaseInstanceSlot();
     }, "three back-to-back calls should all be silent no-ops");
   });
 
-  test("does NOT delete a pre-existing PID file on disk when ownership flag is false", async () => {
+  test("does NOT delete a pre-existing identity file owned by another live process (rejected-duplicate safety)", async () => {
 
-    // Sentinel test: the ownership guard exists specifically so that a duplicate-instance rejection cannot delete the running instance's PID file via its exit
-    // handler. We simulate a "running instance owns the file" scenario by writing a sentinel at the server PID path, then call clearServerPid from this process
-    // (which has never called saveServerPid and therefore must not own anything). The sentinel must survive untouched.
+    // Sentinel test: the ownership check exists specifically so that a duplicate-instance rejection cannot delete the running instance's identity file via its
+    // exit handler. We write a well-formed record at the server identity path whose PID is NOT this process - simulating the legitimate holder's record - then
+    // call releaseInstanceSlot from this process. release() inspects the file, finds the PID mismatch, and leaves the file untouched.
     await withTempDir(async (dir) => {
 
       initializeDataDir(dir);
 
       const pidPath = getServerPidFilePath();
+      const otherPid = process.pid === 99999 ? 99998 : 99999;
 
-      writeFileSync(pidPath, "12345", "utf-8");
+      // The bootId here does not matter for the test - whether the state classifies as held-live, stale-different-boot, or stale-dead-pid, the structural
+      // ownership check (pid match) is the gate that protects the file. Using process.pid + 1 ensures we are definitely not the holder.
+      writeFileSync(pidPath, serializeRecord({ bootId: "any-boot", pid: otherPid, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }), "utf-8");
 
-      assert.equal(existsSync(pidPath), true, "sentinel PID file exists before the call");
+      assert.equal(existsSync(pidPath), true, "sentinel record exists before the call");
 
-      clearServerPid();
+      releaseInstanceSlot();
 
-      assert.equal(existsSync(pidPath), true, "sentinel PID file must still exist after clearServerPid (ownership guard held)");
+      assert.equal(existsSync(pidPath), true, "sentinel record must still exist after releaseInstanceSlot (ownership check held)");
 
       return Promise.resolve();
     });
@@ -92,17 +97,16 @@ describe("clearServerPid", () => {
 
   test("does NOT throw when invoked before initializeDataDir has been called for this test", () => {
 
-    // The ownership guard short-circuits before any call to getServerPidFilePath(), so the absence of a resolved data directory is irrelevant when the flag is
-    // false. Locking this contract documents that the guard runs first and the path resolution is reached only on the owning path.
+    // release() reads the file before checking ownership, so it must tolerate the absence of a configured data directory. ENOENT (or any path error) from the
+    // unconfigured state resolves to kind: "free" or kind: "stale-malformed", both of which short-circuit before the unlink path.
     assert.doesNotThrow(() => {
 
-      clearServerPid();
-    }, "the early ownership return must not depend on initializeDataDir being called first");
+      releaseInstanceSlot();
+    }, "the call must not depend on initializeDataDir being called first");
   });
 });
 
 /* startServer is intentionally not tested here. It launches Chrome via puppeteer-core, binds the configured port, registers process-level signal handlers,
- * starts seven recurring intervals (idle cleanup, browser restart checking, stale page cleanup, pretune polling, show info polling, update checking, HDHR
- * server), runs file-based persistence migrations, and on most failure paths invokes process.exit(1). None of those are safe to invoke from a unit test
- * runner. The function's behavior is exercised by the e2e suite, which spawns the full process and asserts on the listening port and the served endpoints.
+ * spawns ffmpeg children, and may call process.exit on failure - any of which is incompatible with a unit-test context. The integration tier covers it via the
+ * test/e2e/ harness.
  */

@@ -270,7 +270,7 @@ describe("parseServicePack", () => {
     });
 
     assert.ok(result.errors.length > 0);
-    assert.match(result.errors.join(" "), /non-existent built-in profile/);
+    assert.match(result.errors.join(" "), /non-existent builtin profile/);
   });
 });
 

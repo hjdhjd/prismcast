@@ -56,7 +56,7 @@ export function generateCustomProfilesPanel(): string {
   lines.push("<div class=\"settings-panel-description\">");
   lines.push("<p>Define custom site profiles and domain mappings to add support for streaming services not built into PrismCast.</p>");
   lines.push("<p class=\"description-hint\">Tip: Use the <strong>Profile Builder</strong> wizard to create new profiles step by step, ");
-  lines.push("or <strong>Import</strong> a pre-made service pack shared by others. User profiles extend built-in profiles and can override ");
+  lines.push("or <strong>Import</strong> a pre-made service pack shared by others. User profiles extend builtin profiles and can override ");
   lines.push("specific behaviors like channel selection strategy or playback controls.</p>");
   lines.push("</div>");
 
@@ -220,12 +220,12 @@ export function generateCustomProfilesPanel(): string {
  */
 export function generateProfileWizardModal(): string {
 
-  // Build the profile data for Step 1 radio buttons. Include all profiles (built-in and user-defined).
+  // Build the profile data for Step 1 radio buttons. Include all profiles (builtin and user-defined).
   const profiles = getProfiles();
   const groups = categorizeProfiles(profiles);
 
-  // Only general built-in profiles are shown in the wizard. Service profiles live in a separate table (PROVIDER_PROFILES) and are already excluded from
-  // getProfiles(). User-defined profiles are also excluded because chained extensions (custom B extends custom A extends built-in X) are not supported.
+  // Only general builtin profiles are shown in the wizard. Service profiles live in a separate table (PROVIDER_PROFILES) and are already excluded from
+  // getProfiles(). User-defined profiles are also excluded because chained extensions (custom B extends custom A extends builtin X) are not supported.
   const include = (p: ProfileInfo): boolean => (p.source === "builtin");
 
   // Serialize profile groups as JSON for the wizard JavaScript. Each entry has name, description, and summary.
@@ -239,7 +239,7 @@ export function generateProfileWizardModal(): string {
   };
 
   // Server-side registries for the wizard. Strategies define user-configurable channel selection approaches (service-specific strategies like foxGrid, slingGrid,
-  // etc. are built-in only and never appear in the wizard). Flags define boolean profile flags exposed in step 3. Both are serialized as JSON so the wizard client
+  // etc. are builtin only and never appear in the wizard). Flags define boolean profile flags exposed in step 3. Both are serialized as JSON so the wizard client
   // code is fully data-driven - adding a new strategy field or flag only requires updating these arrays.
   const WIZARD_STRATEGIES = [
     {
@@ -430,7 +430,7 @@ export function setupProfileRoutes(app: Express): void {
       const existingProfiles = getUserProfiles();
       const isNew = !(key in existingProfiles);
 
-      // Validate the key format and built-in conflict.
+      // Validate the key format and builtin conflict.
       const keyError = validateProfileKey(key, isNew);
 
       if(keyError) {
@@ -440,7 +440,7 @@ export function setupProfileRoutes(app: Express): void {
         return;
       }
 
-      // Validate the profile content: extends must reference a built-in profile, strategy must be recognized and generic, all flags must be valid SiteProfile fields.
+      // Validate the profile content: extends must reference a builtin profile, strategy must be recognized and generic, all flags must be valid SiteProfile fields.
       const profileErrors = validateProfile(key, profile);
 
       if(profileErrors.length > 0) {
@@ -450,7 +450,7 @@ export function setupProfileRoutes(app: Express): void {
         return;
       }
 
-      // Validate domain mappings if provided. Build the available profiles set from built-in + existing user profiles + the profile being saved.
+      // Validate domain mappings if provided. Build the available profiles set from builtin + existing user profiles + the profile being saved.
       if(domainMappings && (Object.keys(domainMappings).length > 0)) {
 
         const availableProfiles = new Set(getProfiles().map((p) => p.name));

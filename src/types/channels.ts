@@ -363,7 +363,7 @@ export interface ChannelListingEntry {
   // The channel key (URL-safe slug used in stream URLs).
   key: string;
 
-  // Where this channel comes from: "predefined" (built-in), "user" (user-defined), or "override" (user channel replacing a predefined one).
+  // Where this channel comes from: "predefined" (builtin), "user" (user-defined), or "override" (user channel replacing a predefined one).
   source: "override" | "predefined" | "user";
 }
 

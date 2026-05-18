@@ -4,9 +4,9 @@
  */
 import { CONFIG_METADATA, DEFAULTS, getNestedValue } from "./config/userConfig.ts";
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.ts";
-import { canCleanupChrome, isGracefulShutdown, killStaleChrome } from "./browser/index.ts";
-import { clearServerPid, startServer } from "./app.ts";
 import { getDebugEnv, initializeDataDir } from "./config/paths.ts";
+import { isGracefulShutdown, killStaleChrome } from "./browser/index.ts";
+import { releaseInstanceSlot, startServer } from "./app.ts";
 import { flushLogBufferSync } from "./utils/fileLogger.ts";
 import { handleServiceCommand } from "./service/index.ts";
 import { handleUpgradeCommand } from "./upgrade/index.ts";
@@ -402,14 +402,11 @@ if(subcommand === "service") {
 
     try {
 
-      clearServerPid();
+      releaseInstanceSlot();
 
-      // Only kill Chrome if this process has taken ownership via killStaleChrome() during startup. Without this guard, a duplicate instance rejected by the
-      // instance check would kill Chrome belonging to the running server on its way out.
-      if(canCleanupChrome()) {
-
-        killStaleChrome();
-      }
+      // killStaleChrome is safe to call unconditionally now: the ownership filter inside it (parent-pid match or parent-pid dead) excludes Chrome belonging to
+      // another live PrismCast instance, so a rejected-duplicate startup's exit handler will not signal the legitimate holder's Chrome.
+      killStaleChrome();
     } catch {
 
       // Best-effort process cleanup. If signaling fails for any reason, the process is exiting anyway.

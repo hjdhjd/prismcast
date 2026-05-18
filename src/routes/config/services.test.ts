@@ -162,7 +162,7 @@ describe("generateProfileWizardModal", () => {
 
   test("strategy registry includes the three user-configurable strategies (tileClick, thumbnailRow, none)", () => {
 
-    // Service-specific strategies (foxGrid, slingGrid, etc.) are built-in only and must NOT appear in the wizard. The user-facing strategy list is
+    // Service-specific strategies (foxGrid, slingGrid, etc.) are builtin only and must NOT appear in the wizard. The user-facing strategy list is
     // exactly tileClick, thumbnailRow, and none.
     const html = generateProfileWizardModal();
 
@@ -171,9 +171,9 @@ describe("generateProfileWizardModal", () => {
     assert.match(html, /"id":"none"/, "none strategy");
   });
 
-  test("strategy registry does NOT include the service-specific built-in strategies", () => {
+  test("strategy registry does NOT include the service-specific builtin strategies", () => {
 
-    // Negative test: foxGrid, slingGrid, hboGrid, etc. are built-in-only strategies that must never appear in the user-facing wizard. Their absence
+    // Negative test: foxGrid, slingGrid, hboGrid, etc. are builtin-only strategies that must never appear in the user-facing wizard. Their absence
     // is structurally important - showing them would let users pick strategies that require code support beyond what the wizard configures.
     const html = generateProfileWizardModal();
 

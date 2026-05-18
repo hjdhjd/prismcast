@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * sites.test.ts: Unit tests for the site profile and domain mapping module. The module is the SSOT for built-in profile data, the lookup precedence between
+ * sites.test.ts: Unit tests for the site profile and domain mapping module. The module is the SSOT for builtin profile data, the lookup precedence between
  * full-hostname and concise-domain matching, and the provider-module profile registry. We exercise every lookup path and the profile registration guards.
  */
 import { DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, getBuiltinProfile, getDomainConfig, getRegisteredProviderModuleProfiles, isProviderProfile,

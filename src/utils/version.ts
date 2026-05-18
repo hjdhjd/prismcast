@@ -79,7 +79,7 @@ export function isVersionLessThan(a: string, b: string): boolean {
 /**
  * Performs a timed fetch with explicit timer lifecycle management. The standard `AbortSignal.timeout(ms)` helper schedules a setTimeout whose handle libuv must
  * dispose during natural process exit; on Windows that disposal can race with pending TLS-socket cleanup and trigger the `UV_HANDLE_CLOSING` assertion in
- * libuv's `src\win\async.c` that the v1.10.2 upgrade flow surfaced. By owning the AbortController and the timer explicitly and clearing the timer in `finally`
+ * libuv's `src\win\async.c`. By owning the AbortController and the timer explicitly and clearing the timer in `finally`
  * before we return, we guarantee the handle is disposed while the event loop is still healthy, sidestepping the race regardless of how soon after the fetch the
  * process exits. The behavior of the public callers is unchanged: a null return still means "treat the response as unavailable", whether the cause was a network
  * error, a non-2xx response, or a timeout.

@@ -66,7 +66,7 @@ let enabledServices: string[] = [];
 function resolveServiceTag(channel: Channel): string {
 
   // If the channel specifies a user-defined profile, use that profile's serviceTag rather than deriving from the URL. This ensures channels with explicit profile
-  // assignments are grouped under the correct service filter even when their URL domain has a different built-in serviceTag.
+  // assignments are grouped under the correct service filter even when their URL domain has a different builtin serviceTag.
   if(channel.profile) {
 
     const profileService = resolveUserProfileService(channel.profile);
@@ -223,7 +223,7 @@ export function getAllServiceTags(): { displayName: string; domain?: string; ico
     }
   }
 
-  // Scan user domain mappings for metadata not covered by built-in DOMAIN_CONFIG.
+  // Scan user domain mappings for metadata not covered by builtin DOMAIN_CONFIG.
   for(const [ domain, config ] of Object.entries(userDomains)) {
 
     if(config.serviceTag && config.service && !tagMeta.has(config.serviceTag)) {
@@ -605,15 +605,15 @@ export function getPredefinedDomainMap(): Record<string, PredefinedChannelSummar
 }
 
 /**
- * Resolves a URL to a friendly service display name. Checks built-in DOMAIN_CONFIG first for a stable, well-known service name, then falls back to
+ * Resolves a URL to a friendly service display name. Checks builtin DOMAIN_CONFIG first for a stable, well-known service name, then falls back to
  * getDomainConfig() which includes user domain mappings. This ordering prevents user domain overrides from corrupting display labels for predefined channel
- * variants - a user mapping a built-in domain to a custom profile should not rename every service dropdown entry that uses that domain.
+ * variants - a user mapping a builtin domain to a custom profile should not rename every service dropdown entry that uses that domain.
  * @param url - The URL to resolve a service display name for.
  * @returns The service display name, or the concise domain if no service name is configured.
  */
 export function getServiceDisplayName(url: string): string {
 
-  // Prefer built-in DOMAIN_CONFIG service names for stable display. Check by full hostname first (for subdomain-specific entries like tv.youtube.com), then by
+  // Prefer builtin DOMAIN_CONFIG service names for stable display. Check by full hostname first (for subdomain-specific entries like tv.youtube.com), then by
   // concise domain (e.g., disneyplus.com).
   try {
 
@@ -669,8 +669,8 @@ function resolveUserProfileService(profileKey: string): { service?: string; serv
 
 /**
  * Resolves the service display label for a channel. Checks in order: explicit `service` field on the channel, the channel's explicit profile resolved via
- * user domain mappings, then URL-based built-in display name. This ensures channels assigned to user-defined profiles show the profile's service name rather
- * than the built-in name for the URL domain.
+ * user domain mappings, then URL-based builtin display name. This ensures channels assigned to user-defined profiles show the profile's service name rather
+ * than the builtin name for the URL domain.
  * @param channel - The channel to resolve a label for.
  * @returns The service display label.
  */
@@ -797,7 +797,7 @@ export function getChannelSortKey(channel: ResolvedChannel, key: string, field: 
 }
 
 /**
- * Compares two channels for sorting by the specified field and direction with a built-in channel name tiebreaker. The tiebreaker is always ascending so that rows
+ * Compares two channels for sorting by the specified field and direction with a builtin channel name tiebreaker. The tiebreaker is always ascending so that rows
  * within each group maintain a consistent alphabetical order regardless of the primary sort direction. This is the single comparator for all sort sites - server HTML
  * render, client re-sort, and M3U playlist - to prevent ordering divergence.
  * @param channelA - First channel definition.

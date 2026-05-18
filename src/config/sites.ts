@@ -187,7 +187,7 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   },
 
   // Base profile for sites that respond to the f key for fullscreen toggle. This is the most common fullscreen mechanism, following YouTube-style keyboard
-  // shortcuts. The f key is sent as a keyboard event to the page, triggering the player's built-in fullscreen toggle. This works with most standard video players.
+  // shortcuts. The f key is sent as a keyboard event to the page, triggering the player's builtin fullscreen toggle. This works with most standard video players.
   keyboardFullscreen: {
 
     category: "keyboard",
@@ -342,8 +342,8 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
  */
 export function getDomainConfig(url: string): DomainConfig | undefined {
 
-  // User domain mappings take precedence over built-in mappings. The lookup order is: user full hostname -> built-in full hostname -> user concise domain ->
-  // built-in concise domain. This allows users to override specific subdomain mappings or base domain mappings independently.
+  // User domain mappings take precedence over builtin mappings. The lookup order is: user full hostname -> builtin full hostname -> user concise domain ->
+  // builtin concise domain. This allows users to override specific subdomain mappings or base domain mappings independently.
   const userDomains = getUserDomains();
 
   try {
@@ -358,7 +358,7 @@ export function getDomainConfig(url: string): DomainConfig | undefined {
       return userHostnameMatch;
     }
 
-    // Try the built-in full hostname for subdomain-specific overrides (e.g., "tv.youtube.com" before "youtube.com").
+    // Try the builtin full hostname for subdomain-specific overrides (e.g., "tv.youtube.com" before "youtube.com").
     const hostnameMatch = DOMAIN_CONFIG[hostname];
 
     if(hostnameMatch) {
@@ -404,8 +404,8 @@ export function registerProviderModuleProfile(name: string, profile: SiteProfile
 }
 
 /**
- * Looks up a built-in profile by name, checking the general SITE_PROFILES table, the static PROVIDER_PROFILES table, and dynamically registered provider module
- * profiles. This is the single lookup function for all built-in profile resolution - callers should use this instead of accessing any table directly.
+ * Looks up a builtin profile by name, checking the general SITE_PROFILES table, the static PROVIDER_PROFILES table, and dynamically registered provider module
+ * profiles. This is the single lookup function for all builtin profile resolution - callers should use this instead of accessing any table directly.
  * @param name - The profile name to look up.
  * @returns The matching SiteProfile, or undefined if not found in any source.
  */

@@ -56,8 +56,8 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
     return { ...DEFAULT_SITE_PROFILE };
   }
 
-  // Check all profile sources: static built-in tables (general + provider) and registered provider module profiles via getBuiltinProfile(), then user-defined
-  // profiles. User profiles can only extend built-in profiles (not other user profiles), so the resolution chain always terminates at a built-in profile.
+  // Check all profile sources: static builtin tables (general + provider) and registered provider module profiles via getBuiltinProfile(), then user-defined
+  // profiles. User profiles can only extend builtin profiles (not other user profiles), so the resolution chain always terminates at a builtin profile.
   const profile = getBuiltinProfile(profileName) ?? (getUserProfiles()[profileName]);
 
   if(!profile) {
@@ -316,7 +316,7 @@ export function validateProfiles(): void {
     }
   }
 
-  // Validate all channel profile references point to existing profiles (built-in or user). This catches typos in channel definitions.
+  // Validate all channel profile references point to existing profiles (builtin or user). This catches typos in channel definitions.
   const userProfiles = getUserProfiles();
 
   for(const [ channelName, channel ] of Object.entries(CHANNELS)) {
@@ -329,7 +329,7 @@ export function validateProfiles(): void {
     }
   }
 
-  // If any built-in configuration errors were found, throw with all error messages for comprehensive feedback.
+  // If any builtin configuration errors were found, throw with all error messages for comprehensive feedback.
   if(errors.length > 0) {
 
     throw new Error("Profile validation failed:\n  " + errors.join("\n  "));
@@ -390,7 +390,7 @@ export interface ProfileInfo {
 }
 
 /**
- * Returns all profiles (built-in and user-defined) with their descriptions, categories, summaries, and source tags, sorted alphabetically by name. Used by the
+ * Returns all profiles (builtin and user-defined) with their descriptions, categories, summaries, and source tags, sorted alphabetically by name. Used by the
  * channel configuration UI to populate the profile dropdown with tooltips and the profile reference section.
  * @returns Array of profile info objects.
  */
@@ -398,7 +398,7 @@ export function getProfiles(): ProfileInfo[] {
 
   const result: ProfileInfo[] = [];
 
-  // Add built-in profiles. Iterate entries so each profile reference is fully-typed (keys from Object.keys would force a Record lookup per iteration).
+  // Add builtin profiles. Iterate entries so each profile reference is fully-typed (keys from Object.keys would force a Record lookup per iteration).
   for(const [ name, profile ] of Object.entries(SITE_PROFILES).toSorted(([a], [b]) => a.localeCompare(b))) {
 
     result.push({

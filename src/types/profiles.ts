@@ -255,7 +255,7 @@ export interface ProfileResolutionResult {
 
 /**
  * Domain-level configuration associating domain patterns with site profiles and service display names. Each entry can specify a site profile for behavior
- * configuration and/or a service display name for friendly UI labels. Used by both built-in domain mappings in sites.ts and user-defined mappings in profiles.json.
+ * configuration and/or a service display name for friendly UI labels. Used by both builtin domain mappings in sites.ts and user-defined mappings in profiles.json.
  */
 export interface DomainConfig {
 
@@ -295,7 +295,7 @@ export interface DomainConfig {
 }
 
 /**
- * Storage format for profiles.json. Contains user-defined site profiles and domain mappings that extend or override the built-in configurations.
+ * Storage format for profiles.json. Contains user-defined site profiles and domain mappings that extend or override the builtin configurations.
  */
 export interface UserProfilesFile {
 
@@ -303,7 +303,7 @@ export interface UserProfilesFile {
   domains?: Record<string, DomainConfig>;
 
   // User-defined site profiles. Each key is a profile name (e.g., "huluLive") and the value is a SiteProfile definition with an extends property referencing
-  // a built-in profile.
+  // a builtin profile.
   profiles?: Record<string, SiteProfile>;
 }
 

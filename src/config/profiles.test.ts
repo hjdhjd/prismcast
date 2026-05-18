@@ -2,7 +2,7 @@
  *
  * profiles.test.ts: Unit tests for the profile resolution module. The module composes inheritance chains, resolves URL- and channel-level overrides, and
  * gates the validation of inheritance cycles and missing references at startup. We exercise every resolution path and every error-collection branch of
- * validateProfiles. The user-profile/domain registry is left at its default (empty) state so resolution exercises only the static built-in tables.
+ * validateProfiles. The user-profile/domain registry is left at its default (empty) state so resolution exercises only the static builtin tables.
  */
 import { DEFAULT_SITE_PROFILE, getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile, validateProfiles } from "./profiles.ts";
 import { describe, test } from "node:test";
@@ -174,7 +174,7 @@ describe("getProfileForChannel", () => {
   test("falls back to concise domain when explicit profile requires channelSelection but channel has no channelSelector", () => {
 
     /* The fallback fires when the resolved profile has a non-"none" channelSelection strategy and the channel has no channelSelector. apiMultiVideo is a
-     * built-in general profile that declares a tileClick strategy. With it, the fallback to the concise domain (example.com -> default) bypasses apiMultiVideo
+     * builtin general profile that declares a tileClick strategy. With it, the fallback to the concise domain (example.com -> default) bypasses apiMultiVideo
      * because the channel can't supply a selector.
      */
     const result = getProfileForChannel({ profile: "apiMultiVideo", url: "https://example.com" });
@@ -189,7 +189,7 @@ describe("getProfileForChannel", () => {
 
     /* Positive case for the channel-selection fallback at profiles.ts:190-199. The audit's recommended fixture (watch.sling.com, slingLive) doesn't apply at
      * unit-test scope because slingLive is a provider profile registered only when browser/channelSelection.ts loads. We use an in-process equivalent: the
-     * channel asks for apiMultiVideo (a built-in general profile with strategy="tileClick") but provides no channelSelector and a URL whose concise domain
+     * channel asks for apiMultiVideo (a builtin general profile with strategy="tileClick") but provides no channelSelector and a URL whose concise domain
      * (cnbc.com) maps to fullscreenApi - a profile that does not require channel selection. The fallback fires and the profileName flips from apiMultiVideo
      * to fullscreenApi.
      */
@@ -269,7 +269,7 @@ describe("getProfileForChannel", () => {
 
 describe("getProfiles", () => {
 
-  test("returns built-in profiles sorted alphabetically by name", () => {
+  test("returns builtin profiles sorted alphabetically by name", () => {
 
     const profiles = getProfiles();
     const names = profiles.map((p) => p.name);
@@ -292,7 +292,7 @@ describe("getProfiles", () => {
     }
   });
 
-  test("source field marks every built-in profile as 'builtin'", () => {
+  test("source field marks every builtin profile as 'builtin'", () => {
 
     const profiles = getProfiles();
 

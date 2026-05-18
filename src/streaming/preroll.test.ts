@@ -278,8 +278,8 @@ describe("generatePrerollPlaylist", () => {
     /* The composite preroll playlist is only meaningful when actual fMP4 segments have been encoded; with no variant in the cache, the function short-circuits
      * with the empty string and the caller (registerPendingStream) decides whether to fall back to a blocking real-stream wait. The other composition steps
      * (computeProgressiveReveal, buildPrerollEntries, buildPlaylist) collectively require seeded variants - exercising those branches honestly would require
-     * spawning FFmpeg, which is the deferred-orchestration territory documented in the audit-accepted findings for preroll.ts. The early-return path is the
-     * one observable surface the unit tier can pin without that subprocess.
+     * spawning FFmpeg, which belongs to integration coverage rather than this unit suite. The early-return path is the one observable surface the unit tier
+     * can pin without that subprocess.
      */
     const playlist = generatePrerollPlaylist("http://example.test:5589", "h264", 0, new Date(1_700_000_000_000));
 

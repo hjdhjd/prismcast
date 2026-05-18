@@ -2,6 +2,7 @@
  *
  * index.ts: Utility module exports for PrismCast.
  */
+export * from "./bootSession.ts";
 export * from "./chromeFetch.ts";
 export * from "./cliOutput.ts";
 export * from "./clock.ts";
@@ -19,7 +20,9 @@ export * from "./morganStream.ts";
 export * from "./network.ts";
 export * from "./pid.ts";
 export * from "./platform.ts";
+export * from "./processInspector.ts";
 export * from "./retry.ts";
+export * from "./runtimeIdentity.ts";
 export * from "./sanitize.ts";
 export * from "./streamContext.ts";
 export * from "./timing.ts";

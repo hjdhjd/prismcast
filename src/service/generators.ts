@@ -568,7 +568,7 @@ function makePowerShellInvoker(io: GeneratorIO): (scriptBody: string, args?: str
  *
  * The first step stops any currently-running instance of the existing task and waits for its process to actually terminate before we replace the definition. Two
  * Microsoft-documented facts make this wait necessary: Stop-ScheduledTask initiates the stop but returns before the process has exited (there is no -Wait
- * switch and no built-in completion primitive), and "You can make changes to a task definition even if an instance of the task is running. The changes do not
+ * switch and no builtin completion primitive), and "You can make changes to a task definition even if an instance of the task is running. The changes do not
  * affect the current instance." (Set-ScheduledTask docs, which applies equally to Register-ScheduledTask -Force). Without the poll loop, `prismcast service
  * install --force` on a running service would leave the old node process holding port 5589 while Start-ScheduledTask spawns a new node that fails to bind,
  * triggering the 1-minute RestartOnFailure backoff and silently delaying the service becoming available for up to three minutes.

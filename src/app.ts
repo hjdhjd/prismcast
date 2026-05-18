@@ -4,8 +4,8 @@
  */
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.ts";
 import type { Express, NextFunction, Request, Response } from "express";
-import { LOG, clearPidFile, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, isProcessRunning,
-  readPidFile, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking, writePidFile } from "./utils/index.ts";
+import { LOG, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release, resolveFFmpegPath,
+  setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
@@ -150,8 +150,8 @@ function setupGracefulShutdown(): void {
     // Close the browser.
     await closeBrowser();
 
-    // Remove the server PID file so the next startup does not see a stale PID.
-    clearServerPid();
+    // Release the server instance slot so the next startup does not see a stale identity file.
+    releaseInstanceSlot();
 
     // Close the HTTP server.
     try {
@@ -353,58 +353,54 @@ async function buildApp(): Promise<Express> {
   return app;
 }
 
-/* PrismCast instance guard. Only one server instance should run at a time - a second instance would launch a competing Chrome process, bind to the same port, and
- * corrupt shared state. The guard uses a PID file written immediately after the instance check passes, before Chrome launches or the port binds. On the next
- * startup, we check whether the stored PID is still alive and exit early if so. Stale PID files (from crashes or container restarts) are handled gracefully via
- * isProcessRunning(), and the exit handler removes the file if startup fails.
+/* PrismCast instance guard. Only one server instance should run at a time - a second instance would launch a competing Chrome process, bind to the same port,
+ * and corrupt shared state. The guard delegates to the runtime-identity primitive in utils/runtimeIdentity.ts, which composes PID liveness with the current
+ * boot session ID to classify the on-disk identity file. Stale records from reboots, container restarts, crashes, and ungraceful shutdowns are recovered
+ * transparently: the next claim() overwrites them. A held-live record (same boot, alive PID) is the only state that rejects a startup.
  *
- * The ownsServerPid flag tracks whether this process has written the PID file. Without it, the exit handler would unconditionally remove the file - including when
- * a duplicate instance is rejected by the guard. That would delete the legitimately running instance's PID file, allowing a third instance to bypass the check.
+ * Ownership is verified structurally inside release(): the function reads the on-disk record and only removes the file when its PID matches this process's
+ * PID. The file content is itself the source of truth, so a rejected duplicate startup's exit handler cannot accidentally delete the legitimate holder's file.
  */
-
-// Tracks whether this process owns the server PID file. Set to true by saveServerPid(), checked by clearServerPid() to avoid removing another instance's file.
-let ownsServerPid = false;
 
 /**
- * Checks for an already-running PrismCast instance by reading the server PID file and verifying the process is alive. If a live instance is detected, logs an error
- * and exits. Stale PID files from crashed or terminated instances are silently ignored.
+ * Claims the server instance slot for this process. On success, the identity file at getServerPidFilePath() now holds our PID and boot session ID; subsequent
+ * starts of PrismCast will recover the file as stale on the next reboot/crash. On failure, a live instance already holds the slot - we surface a precise
+ * diagnostic (PID + version + start time of the holder) and exit.
  */
-function checkForRunningInstance(): void {
+function claimInstanceSlot(): void {
 
-  const pid = readPidFile(getServerPidFilePath(), "server", LOG);
+  const result = claim(getServerPidFilePath(), { version: getPackageVersion() });
 
-  if((pid !== null) && isProcessRunning(pid)) {
-
-    // eslint-disable-next-line no-console
-    console.error("Error: another PrismCast instance is already running (PID " + String(pid) + "). Stop it before starting a new one.");
-
-    process.exit(1);
-  }
-}
-
-/**
- * Writes the current process PID to the server PID file. Called immediately after the instance check passes to claim the slot before Chrome launches or the port
- * binds. If startup subsequently fails, the exit handler calls clearServerPid() to remove the stale file.
- */
-function saveServerPid(): void {
-
-  writePidFile(getServerPidFilePath(), process.pid, "server", LOG);
-  ownsServerPid = true;
-}
-
-/**
- * Removes the server PID file if this process owns it. Called during graceful shutdown and from the process exit handler as a fallback. The ownership check
- * prevents a rejected duplicate instance from deleting the running instance's PID file during its exit handler.
- */
-export function clearServerPid(): void {
-
-  if(!ownsServerPid) {
+  if(result.ok) {
 
     return;
   }
 
-  clearPidFile(getServerPidFilePath(), "server", LOG);
-  ownsServerPid = false;
+  const conflict = result.conflict;
+
+  // eslint-disable-next-line no-console
+  console.error("Error: another PrismCast instance is already running (PID " + String(conflict.pid) + ", version " + conflict.version + ", started " +
+    conflict.startedAt + "). Stop it before starting a new one.");
+
+  process.exit(1);
+}
+
+/**
+ * Releases the server instance slot if this process owns it. Called during graceful shutdown and from the process exit handler. The ownership check is
+ * structural (release() reads the on-disk record and refuses to remove a file belonging to a different PID), so a rejected-duplicate startup whose exit
+ * handler runs this function will correctly leave the legitimate holder's file in place. Tolerates an unresolved data directory: a startup that fails before
+ * initializeDataDir() runs still reaches the exit handler, and a slot we never claimed has nothing to release.
+ */
+export function releaseInstanceSlot(): void {
+
+  try {
+
+    release(getServerPidFilePath());
+  } catch {
+
+    // The data directory may not have been initialized when this runs (early-startup failure paths). Without a resolvable path there is no slot to release; the
+    // legitimate holder's file, if any, is in the configured data directory which we cannot address - so we never could have touched it. Silent no-op is safe.
+  }
 }
 
 /* The startServer function initializes and starts the HTTP server. It validates configuration, cleans up stale processes, warms up the browser, and starts the
@@ -462,8 +458,8 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Release boot coordinator: snapshot every persistence-managed file before any reads or migrations run, then apply any pending schema migrations across all
   // stores. Both operations are idempotent within a release (snapshots skip when the labeled copy already exists; ensureMigrated skips when the file is at the
-  // current schema version). Running them up front guarantees a guaranteed restore point exists for every file at the start of every release boot, even if a
-  // subsequent initialize* function or migration discovers a problem and aborts startup.
+  // current schema version). Running them up front guarantees a restore point exists for every file at the start of every release boot, even if a subsequent
+  // initialize* function or migration discovers a problem and aborts startup.
   try {
 
     await snapshotAllForRelease("pre-v" + getPackageVersion());
@@ -495,11 +491,10 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // Ensure the data directory exists before any operations that depend on it.
   await ensureDataDirectory();
 
-  // Check for an already-running instance before launching Chrome or binding the port. This must come after ensureDataDirectory() since the PID file lives there.
-  // We write the PID immediately after the check passes to close the race window - without this, a second instance launched during Chrome startup or port binding
-  // could pass the same check. If startup subsequently fails, the exit handler calls clearServerPid() to remove the stale file.
-  checkForRunningInstance();
-  saveServerPid();
+  // Claim the server instance slot before launching Chrome or binding the port. This must come after ensureDataDirectory() since the identity file lives there.
+  // claimInstanceSlot() exits with a precise diagnostic when a live holder is detected; on success the identity file holds our PID and boot session ID. If
+  // startup subsequently fails, the exit handler calls releaseInstanceSlot() to remove the stale file.
+  claimInstanceSlot();
 
   // Initialize file logger if not using console logging. This must happen after config loading (to resolve the log file path) and after ensureDataDirectory()
   // (to create the parent directory). All startup log messages that should appear in the log file must come after this point.

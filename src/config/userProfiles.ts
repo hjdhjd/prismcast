@@ -10,15 +10,15 @@ import { createFileStore } from "./persistence.ts";
 import { extractDomain } from "../utils/format.ts";
 import { getProfilesFilePath } from "./paths.ts";
 
-/* PrismCast allows users to define custom site profiles and domain mappings in profiles.json inside the data directory. User profiles extend built-in profiles and
- * are merged at runtime, with user domain mappings taking precedence over built-in mappings for domain conflicts. This module handles persistence, validation, and
+/* PrismCast allows users to define custom site profiles and domain mappings in profiles.json inside the data directory. User profiles extend builtin profiles and
+ * are merged at runtime, with user domain mappings taking precedence over builtin mappings for domain conflicts. This module handles persistence, validation, and
  * cache management for user-defined profiles and domains.
  *
  * The profiles.json file contains two top-level keys:
- *   - "profiles": Custom site profile definitions (each must extend a built-in profile)
- *   - "domains": Domain-to-profile mappings (can reference built-in or user profiles)
+ *   - "profiles": Custom site profile definitions (each must extend a builtin profile)
+ *   - "domains": Domain-to-profile mappings (can reference builtin or user profiles)
  *
- * User profiles cannot extend other user profiles - only built-in profiles. This prevents cascading breakage when a referenced user profile is deleted.
+ * User profiles cannot extend other user profiles - only builtin profiles. This prevents cascading breakage when a referenced user profile is deleted.
  */
 
 // Legacy profile flag names that have been renamed. Keys are the old names, values are the current names. Used by initializeUserProfiles() and service pack import to
@@ -31,7 +31,7 @@ const VALID_PROFILE_FLAGS = new Set([
   "needsIframeHandling", "selectReadyVideo", "staticCapture", "useRequestFullscreen", "waitForNetworkIdle"
 ]);
 
-// Generic strategies available for user profiles. Service-specific strategies are built-in implementations and cannot be used by user profiles.
+// Generic strategies available for user profiles. Service-specific strategies are builtin implementations and cannot be used by user profiles.
 const GENERIC_STRATEGIES = new Set([ "none", "thumbnailRow", "tileClick" ]);
 
 // All recognized strategy names (generic + service-specific). Used for validation error messages.
@@ -408,7 +408,7 @@ export async function initializeUserProfiles(): Promise<void> {
 // Validation Functions.
 
 /**
- * Validates a profile key for format, length, and uniqueness against built-in profiles.
+ * Validates a profile key for format, length, and uniqueness against builtin profiles.
  * @param key - The profile key to validate.
  * @param isNew - True if this is a new profile (checks for duplicates among user profiles).
  * @returns Error message if invalid, undefined if valid.
@@ -435,7 +435,7 @@ export function validateProfileKey(key: string, isNew: boolean): string | undefi
   // Built-in profile keys are reserved.
   if(key in SITE_PROFILES) {
 
-    return "Profile key '" + key + "' conflicts with a built-in profile. Choose a different name.";
+    return "Profile key '" + key + "' conflicts with a builtin profile. Choose a different name.";
   }
 
   // Check for duplicates when adding a new profile.
@@ -448,7 +448,7 @@ export function validateProfileKey(key: string, isNew: boolean): string | undefi
 }
 
 /**
- * Validates a user-defined site profile. Checks that extends references a built-in profile, strategy is recognized and generic, matchSelector is present when
+ * Validates a user-defined site profile. Checks that extends references a builtin profile, strategy is recognized and generic, matchSelector is present when
  * required, and all flag names are valid SiteProfile fields.
  * @param key - The profile key (for error messages).
  * @param profile - The profile definition to validate.
@@ -458,19 +458,19 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
 
   const errors: string[] = [];
 
-  // The extends field is required for user profiles - they must build on a built-in profile.
+  // The extends field is required for user profiles - they must build on a builtin profile.
   if(!profile.extends) {
 
-    errors.push("Profile '" + key + "': extends is required. User profiles must extend a built-in profile.");
+    errors.push("Profile '" + key + "': extends is required. User profiles must extend a builtin profile.");
 
     return errors;
   }
 
-  // extends must reference a built-in general profile (not another user profile or a service-specific profile). Service-specific profiles are tightly coupled to
+  // extends must reference a builtin general profile (not another user profile or a service-specific profile). Service-specific profiles are tightly coupled to
   // a streaming service's DOM structure and cannot be meaningfully extended by user profiles.
   if(!getBuiltinProfile(profile.extends)) {
 
-    errors.push("Profile '" + key + "': extends references non-existent built-in profile '" + profile.extends + "'.");
+    errors.push("Profile '" + key + "': extends references non-existent builtin profile '" + profile.extends + "'.");
   } else if(isProviderProfile(profile.extends)) {
 
     errors.push("Profile '" + key + "': '" + profile.extends + "' is a service-specific profile and cannot be extended. " +
@@ -487,7 +487,7 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
       errors.push("Profile '" + key + "': unrecognized channel selection strategy '" + strategy + "'.");
     } else if(!GENERIC_STRATEGIES.has(strategy)) {
 
-      errors.push("Profile '" + key + "': strategy '" + strategy + "' is a built-in service strategy and cannot be used by user profiles. " +
+      errors.push("Profile '" + key + "': strategy '" + strategy + "' is a builtin service strategy and cannot be used by user profiles. " +
         "Use 'tileClick', 'thumbnailRow', or 'none'.");
     }
 
@@ -517,7 +517,7 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
  * Validates a domain mapping. Checks hostname format, profile references, service/serviceTag strings, loginUrl format, and maxContinuousPlayback type and range.
  * @param domain - The domain hostname.
  * @param config - The domain configuration.
- * @param availableProfiles - Set of available profile names (built-in + user, including profiles in the same import batch).
+ * @param availableProfiles - Set of available profile names (builtin + user, including profiles in the same import batch).
  * @returns Array of error messages (empty if valid).
  */
 export function validateDomain(domain: string, config: DomainConfig, availableProfiles: Set<string>): string[] {
@@ -538,8 +538,8 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
     errors.push("Domain '" + domain + "': invalid hostname format.");
   }
 
-  // Reject domains that collide with built-in domain mappings. User domains that shadow built-in domains cause the built-in service to disappear from the system,
-  // affecting all channels on that domain. Users should set the profile field on individual channels to use a custom profile on a built-in domain instead.
+  // Reject domains that collide with builtin domain mappings. User domains that shadow builtin domains cause the builtin service to disappear from the system,
+  // affecting all channels on that domain. Users should set the profile field on individual channels to use a custom profile on a builtin domain instead.
   const conciseDomain = extractDomain("https://" + domain);
   const collidesWithBuiltin = (DOMAIN_CONFIG[domain]) ?? (DOMAIN_CONFIG[conciseDomain]);
 
@@ -547,7 +547,7 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
 
     const builtinService = collidesWithBuiltin.service ?? conciseDomain;
 
-    errors.push("Domain '" + domain + "' is already mapped to built-in service '" + builtinService +
+    errors.push("Domain '" + domain + "' is already mapped to builtin service '" + builtinService +
       "'. Set the profile field on individual channels to use your custom profile instead.");
   }
 
@@ -674,7 +674,7 @@ export function validateImportedProfiles(data: unknown): ProfilesValidationResul
     }
   }
 
-  // Build the set of available profile names for domain validation: built-in profiles + successfully validated user profiles from this import + existing user
+  // Build the set of available profile names for domain validation: builtin profiles + successfully validated user profiles from this import + existing user
   // profiles.
   const availableProfiles = new Set([
     ...Object.keys(SITE_PROFILES),

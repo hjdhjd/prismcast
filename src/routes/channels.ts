@@ -32,7 +32,7 @@ interface ChannelEntry {
   // Profile name override for site-specific behavior.
   profile?: string;
 
-  // Where this channel comes from: "predefined" (built-in), "user" (user-defined), or "override" (user channel replacing a predefined one).
+  // Where this channel comes from: "predefined" (builtin), "user" (user-defined), or "override" (user channel replacing a predefined one).
   source: "override" | "predefined" | "user";
 
   // Gracenote station ID for electronic program guide integration.

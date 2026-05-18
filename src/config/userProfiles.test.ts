@@ -107,16 +107,16 @@ describe("validateProfileKey", () => {
     assert.equal(validateProfileKey(exactKey, false), undefined);
   });
 
-  test("rejects keys that collide with built-in profiles", () => {
+  test("rejects keys that collide with builtin profiles", () => {
 
-    assert.match(validateProfileKey("keyboardFullscreen", false) ?? "", /conflicts with a built-in/);
-    assert.match(validateProfileKey("fullscreenApi", false) ?? "", /conflicts with a built-in/);
+    assert.match(validateProfileKey("keyboardFullscreen", false) ?? "", /conflicts with a builtin/);
+    assert.match(validateProfileKey("fullscreenApi", false) ?? "", /conflicts with a builtin/);
   });
 
   test("isNew=true returns undefined for a non-colliding key (no duplicate among loaded user profiles in unit-test state)", () => {
 
-    /* The isNew=true branch checks loadedUserProfiles for a duplicate key. In unit tests no user profiles are loaded, so any non-built-in non-colliding key
-     * returns undefined. This pins the contract that the check fires (it does not fall through to the built-in check) and that isNew=true produces a clean
+    /* The isNew=true branch checks loadedUserProfiles for a duplicate key. In unit tests no user profiles are loaded, so any non-builtin non-colliding key
+     * returns undefined. This pins the contract that the check fires (it does not fall through to the builtin check) and that isNew=true produces a clean
      * result for the empty-state. The duplicate-among-user-profiles branch requires module state that only the integration tier provides.
      */
     assert.equal(validateProfileKey("brand-new-user-key", true), undefined);
@@ -132,14 +132,14 @@ describe("validateProfile", () => {
     assert.match(errors[0] ?? "", /extends is required/);
   });
 
-  test("rejects extends pointing to a non-existent built-in profile", () => {
+  test("rejects extends pointing to a non-existent builtin profile", () => {
 
     const errors = validateProfile("test", { extends: "not-a-real-profile" });
 
-    assert.match(errors[0] ?? "", /non-existent built-in profile/);
+    assert.match(errors[0] ?? "", /non-existent builtin profile/);
   });
 
-  test("accepts valid profile extending a general built-in", () => {
+  test("accepts valid profile extending a general builtin", () => {
 
     const errors = validateProfile("test", { extends: "fullscreenApi" });
 
@@ -176,7 +176,7 @@ describe("validateProfile", () => {
     };
     const errors = validateProfile("test", profile);
 
-    assert.ok(errors.some((e) => e.includes("built-in service strategy")));
+    assert.ok(errors.some((e) => e.includes("builtin service strategy")));
   });
 
   test("requires matchSelector for tileClick strategy", () => {
@@ -285,11 +285,11 @@ describe("validateDomain", () => {
     assert.equal(errors.length, 0);
   });
 
-  test("rejects collision with built-in DOMAIN_CONFIG entry", () => {
+  test("rejects collision with builtin DOMAIN_CONFIG entry", () => {
 
     const errors = validateDomain("hulu.com", {}, new Set());
 
-    assert.ok(errors.some((e) => e.includes("already mapped to built-in service")));
+    assert.ok(errors.some((e) => e.includes("already mapped to builtin service")));
   });
 
   test("rejects profile reference that's not in the available set", () => {
@@ -455,10 +455,10 @@ describe("validateImportedProfiles", () => {
     assert.equal(result.valid, false, "any error makes the batch invalid");
     assert.ok(result.profiles["good"], "valid entries are still included so partial imports are possible");
     assert.equal(result.profiles["bad"], undefined, "invalid entry is excluded");
-    assert.match(result.errors.join(" "), /non-existent built-in profile/);
+    assert.match(result.errors.join(" "), /non-existent builtin profile/);
   });
 
-  test("rejects domain with hostname that collides with built-in", () => {
+  test("rejects domain with hostname that collides with builtin", () => {
 
     const result = validateImportedProfiles({
 
@@ -474,9 +474,9 @@ describe("validateImportedProfiles", () => {
 
   test("a domain referencing a profile from the same import batch resolves to that profile", () => {
 
-    /* The cross-reference invariant: the import builds an availableProfiles set that includes built-in profiles + profiles validated earlier in this batch +
+    /* The cross-reference invariant: the import builds an availableProfiles set that includes builtin profiles + profiles validated earlier in this batch +
      * existing user profiles. A domain mapping that references a profile validated within the SAME batch must resolve cleanly without "non-existent profile"
-     * errors. Pins that the in-batch resolution actually fires (a regression that built availableProfiles only from built-ins would fail here).
+     * errors. Pins that the in-batch resolution actually fires (a regression that built availableProfiles only from builtins would fail here).
      */
     const result = validateImportedProfiles({
 

@@ -5,9 +5,9 @@
  * contract for the Config-derived getters.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { getChannelsFilePath, getChromeDataDir, getChromePidFilePath, getConfigFilePath, getDataDir, getDebugEnv, getExtensionDir, getHealthFilePath,
-  getLogFilePath, getLogsDirectory, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, getServiceFileDirectory, getServiceFilePath,
-  initializeDataDir, serviceFileExists } from "./paths.ts";
+import { getChannelsFilePath, getChromeDataDir, getConfigFilePath, getDataDir, getDebugEnv, getExtensionDir, getHealthFilePath, getLogFilePath,
+  getLogsDirectory, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, getServiceFileDirectory, getServiceFilePath, initializeDataDir,
+  serviceFileExists } from "./paths.ts";
 import type { Config } from "../types/index.ts";
 import { SERVICE_ID } from "../identity.ts";
 import assert from "node:assert/strict";
@@ -258,19 +258,6 @@ describe("getResumeFilePath", () => {
   });
 });
 
-describe("getChromePidFilePath", () => {
-
-  test("returns dataDir + chrome.pid", async () => {
-
-    await withTempDir((dir) => {
-
-      initializeDataDir(dir);
-      assert.equal(getChromePidFilePath(), path.join(dir, "chrome.pid"));
-
-      return Promise.resolve();
-    });
-  });
-});
 
 describe("getServerPidFilePath", () => {
 

@@ -958,7 +958,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   } else {
 
     // Single-service: wrap the service name in a span so client-side JS can toggle it with the no-service label. Uses profile-aware label resolution so
-    // channels with explicit profile assignments show the profile's service name rather than the built-in name for the URL domain.
+    // channels with explicit profile assignments show the profile's service name rather than the builtin name for the URL domain.
     displayLines.push("<span class=\"provider-name\"" + contentHidden + ">" +
       escapeHtml(getChannelServiceLabel(channel)) + "</span>");
   }

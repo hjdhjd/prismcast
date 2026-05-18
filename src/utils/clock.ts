@@ -5,7 +5,7 @@
  * default realClock delegates to delay() and raceWithTimeout() in delay.ts and to performance.now() in the runtime; tests pass a fake-clock literal that resolves
  * sleeps instantly and chooses raceWithTimeout outcomes explicitly.
  *
- * Why this exists. Node's built-in node:test mock.timers exposes only synchronous tick() and runAll() - it has never shipped a tickAsync/runAllAsync variant on
+ * Why this exists. Node's builtin node:test mock.timers exposes only synchronous tick() and runAll() - it has never shipped a tickAsync/runAllAsync variant on
  * any version. Synchronous tick advances the fake clock but does not drain microtask chains across nested Promise.race / .finally / await delay() patterns; the
  * promises stay pending past the tick. retryOperation is the canonical case: its internal raceWithTimeout -> Promise.race -> .finally -> await delay() chain is
  * exactly the shape mock.timers cannot deterministically resolve. Injecting a Clock sidesteps the runtime gap entirely - tests provide a sleep() that resolves

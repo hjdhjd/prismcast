@@ -332,7 +332,7 @@ export function buildSpawnFFmpegArgs(audioBitrate: number, options: SpawnFFmpegO
   const platform = options.platform ?? process.platform;
   const comment = options.comment;
 
-  // Use Apple's AudioToolbox AAC encoder on macOS for better quality and performance. Fall back to FFmpeg's built-in AAC encoder on other platforms.
+  // Use Apple's AudioToolbox AAC encoder on macOS for better quality and performance. Fall back to FFmpeg's builtin AAC encoder on other platforms.
   const aacEncoder = platform === "darwin" ? "aac_at" : "aac";
 
   const ffmpegArgs = [

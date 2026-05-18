@@ -7,7 +7,7 @@
  *
  *   - Service selections (in channels.json) reference variants that exist in the rebuilt service group taxonomy.
  *   - Variant entries with a canonicalKey (in channels.json) reference a canonical that exists in PREDEFINED_CHANNELS or the user's stored channels.
- *   - User domain mappings (in profiles.json) reference profiles that exist as built-in or user-defined.
+ *   - User domain mappings (in profiles.json) reference profiles that exist as builtin or user-defined.
  *   - The service tag filter (in config.json's channels.enabledServices) contains only recognized service tags.
  *
  * Each issue is logged loudly and, when an auto-fix is provided, applied immediately. Auto-fixes that need to mutate persistent state go through the same
@@ -111,7 +111,7 @@ function checkVariantCanonicals(): ConsistencyIssue[] {
 }
 
 /**
- * Validates that every user domain mapping references a profile that exists either as a built-in or user-defined profile.
+ * Validates that every user domain mapping references a profile that exists either as a builtin or user-defined profile.
  */
 function checkDomainProfiles(): ConsistencyIssue[] {
 

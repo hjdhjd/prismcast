@@ -3,11 +3,10 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { LOG, cancellableTimeout, clearPidFile, delay, evaluateWithAbort, formatError, isProcessRunning, readPidFile, startTimer,
-  writePidFile } from "../utils/index.ts";
+import { LOG, cancellableTimeout, delay, evaluateWithAbort, formatError, isProcessRunning, listProcesses, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount } from "../streaming/registry.ts";
-import { getChromeDataDir, getChromePidFilePath, getDataDir, getExtensionDir } from "../config/paths.ts";
+import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getEffectivePreset, getPresetViewport } from "../config/presets.ts";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.ts";
@@ -15,6 +14,7 @@ import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.ts";
 import { CONFIG } from "../config/index.ts";
 import type { GpuCapabilities } from "./display.ts";
 import type { Nullable } from "../types/index.ts";
+import type { ProcessInfo } from "../utils/index.ts";
 import type { SystemStatus } from "../streaming/statusEmitter.ts";
 import { clearChannelSelectionCaches } from "./channelSelection.ts";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.ts";
@@ -42,15 +42,6 @@ const { promises: fsPromises } = fs;
 // The shared browser instance used by all streaming sessions. Created on first stream request or during warmup. Set to null when the browser is not running or
 // has disconnected.
 let currentBrowser: Nullable<Browser> = null;
-
-// The PID of the Chrome process launched by Puppeteer. Tracked in memory for fast access and persisted to a PID file on disk so that orphaned Chrome processes
-// can be cleaned up after a crash or container restart without relying on Unix-only tools like pkill/pgrep.
-let chromePid: Nullable<number> = null;
-
-// Tracks whether this process has taken ownership of Chrome cleanup by running killStaleChrome() during startup. The exit handler checks this flag to avoid
-// killing Chrome that belongs to another running PrismCast instance - e.g., when a duplicate instance is rejected by the instance guard and exits before
-// killStaleChrome() runs in the startup sequence.
-let ownsChromeCleanup = false;
 
 // The Chrome version string (e.g., "Chrome/144.0.7559.110") captured when the browser launches. Cleared when the browser disconnects. Used by the
 // health endpoint to report the active Chrome version.
@@ -258,6 +249,65 @@ export async function ensureDataDirectory(): Promise<void> {
 
     throw error;
   }
+
+  // Purge on-disk artifacts retired in earlier releases. The data directory is the right boundary for this work - it runs once per startup, after the directory
+  // exists, before any subsequent step reads it. Future retirements add a single line to purgeLegacyArtifacts; the call site here does not change.
+  await purgeLegacyArtifacts();
+}
+
+/* The retirement registry. Each entry documents one on-disk artifact that earlier PrismCast versions wrote and the current code no longer maintains, along with
+ * the version that retired it and a short explanation of what replaced it. Adding a future retirement is a single-line append - the loop in purgeLegacyArtifacts
+ * picks it up automatically and the structured metadata becomes part of the codebase's history. The list is data, not logic: the "what" and "why" of every
+ * retirement is captured here in one place rather than scattered across cleanup call sites.
+ */
+interface RetiredArtifact {
+
+  // The filename inside the data directory (relative path, no leading slash).
+  readonly filename: string;
+
+  // The PrismCast version in which this artifact stopped being written. Informational; appears in the debug log on successful purge.
+  readonly retiredIn: string;
+
+  // One-sentence rationale for why this artifact is no longer needed. Informational; appears in the debug log on successful purge.
+  readonly replacedBy: string;
+}
+
+const RETIRED_ARTIFACTS: readonly RetiredArtifact[] = [
+
+  {
+
+    filename: "chrome.pid",
+    replacedBy: "OS process-table discovery in utils/processInspector",
+    retiredIn: "1.10.3"
+  }
+];
+
+/**
+ * Removes every on-disk artifact in RETIRED_ARTIFACTS. Failures are non-fatal: a missing file is the steady-state expectation (fresh installs and any
+ * post-first-run startup) and any other I/O error is logged but does not interrupt startup - the user's running configuration is not at risk from a leftover
+ * artifact. The data-directory boundary in ensureDataDirectory is the natural caller: it runs once per startup, after the directory exists, before any
+ * subsequent step reads it.
+ */
+async function purgeLegacyArtifacts(): Promise<void> {
+
+  for(const artifact of RETIRED_ARTIFACTS) {
+
+    const filePath = path.join(getDataDir(), artifact.filename);
+
+    try {
+
+      // eslint-disable-next-line no-await-in-loop
+      await fsPromises.unlink(filePath);
+
+      LOG.debug("browser:lifecycle", "Purged legacy artifact %s (retired in %s, replaced by %s).", filePath, artifact.retiredIn, artifact.replacedBy);
+    } catch(error: unknown) {
+
+      if((error as NodeJS.ErrnoException).code !== "ENOENT") {
+
+        LOG.warn("Failed to remove legacy artifact %s: %s.", filePath, formatError(error));
+      }
+    }
+  }
 }
 
 /* These functions handle the Chrome browser lifecycle: startup, cleanup, and instance management. The browser is a shared resource used by all streaming sessions,
@@ -276,38 +326,6 @@ export async function ensureDataDirectory(): Promise<void> {
  */
 
 /**
- * Persists the Chrome process PID to both the module-level variable (fast, in-memory) and a PID file on disk (survives crashes). The PID file allows the next
- * startup to find and terminate orphaned Chrome processes even if the Node process crashed without cleanup.
- * @param pid - The Chrome process ID to save.
- */
-function saveChromePid(pid: number): void {
-
-  chromePid = pid;
-
-  writePidFile(getChromePidFilePath(), pid, "Chrome", LOG);
-}
-
-/**
- * Loads the Chrome PID from the module-level variable (fast path) or falls back to reading the PID file on disk (crash recovery path). Returns null if no PID
- * is available - either first run or the PID file was already cleaned up.
- * @returns The Chrome process ID, or null if unavailable.
- */
-function loadChromePid(): Nullable<number> {
-
-  return chromePid ?? readPidFile(getChromePidFilePath(), "Chrome", LOG);
-}
-
-/**
- * Clears the Chrome PID from both the module-level variable and the PID file on disk. Called after successful process cleanup to prevent stale PID reuse.
- */
-function clearChromePid(): void {
-
-  chromePid = null;
-
-  clearPidFile(getChromePidFilePath(), "Chrome", LOG);
-}
-
-/**
  * Synchronous sleep using Atomics.wait(). This is a cross-platform replacement for execSync("sleep N") that works on all platforms without shelling out.
  * Required because killStaleChrome() runs in the synchronous process.on("exit") handler where async operations are not available.
  * @param ms - Duration to sleep in milliseconds.
@@ -318,30 +336,73 @@ function syncSleep(ms: number): void {
 }
 
 /**
- * Ensures a clean slate for browser launch by terminating any stale Chrome processes and removing orphaned profile lock files. Chrome locks its profile directory
- * while running, and if a previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. This function uses the
- * saved Chrome PID to find and terminate the process via process.kill(), then polls for exit using signal 0. This approach is fully cross-platform - it does not
- * rely on Unix-only tools like pkill or pgrep.
+ * Identifies Chrome processes that this PrismCast instance is responsible for terminating. The filter has two stages: command-line discovery (anything using
+ * our profile directory) followed by ownership verification (we spawned it, or its parent is no longer alive). The ownership stage is structural - we do not
+ * rely on an in-memory flag; the parent-child relationship in the OS process table IS the ownership proof, which means this function is safe to call from any
+ * code path, including from a rejected-duplicate startup's exit handler.
+ *
+ * Why ownership matters. A duplicate PrismCast that the instance guard rejects must NOT signal Chrome that belongs to the legitimate holder. With PID-based
+ * cleanup the only defense was an in-memory ownsChromeCleanup flag set at startup. With process-table discovery, the OS itself tells us who owns what: a Chrome
+ * whose ppid is a live unrelated PID belongs to that parent, not to us.
+ * @param processes - The current process table snapshot.
+ * @param profileDir - The Chrome user-data-dir to match against.
+ * @param ownPid - The current process's PID (anything whose parent is us is ours to kill).
+ * @param isProcessAlive - Predicate that returns true when the given PID is currently a live process. Injected so tests do not depend on real PIDs.
+ * @returns The PIDs to terminate, in process-table order.
+ */
+export function findChromeProcessesUsingProfile(processes: readonly ProcessInfo[], profileDir: string, ownPid: number,
+  isProcessAlive: (pid: number) => boolean): number[] {
+
+  const target = "--user-data-dir=" + profileDir;
+
+  return processes.filter((p): boolean => {
+
+    // Stage 1: command-line match. Chrome puppeteer launches with --user-data-dir=<path> (equals form, no quotes). We also verify the character following
+    // the path is whitespace or end-of-string, otherwise "/x/y" would match "--user-data-dir=/x/yz".
+    const idx = p.commandLine.indexOf(target);
+
+    if(idx === -1) {
+
+      return false;
+    }
+
+    const after = p.commandLine.charAt(idx + target.length);
+
+    if((after !== "") && (after !== " ") && (after !== "\t")) {
+
+      return false;
+    }
+
+    // Stage 2: ownership verification. Kill if we spawned it (ppid is us) or if its parent is no longer alive (orphaned from a previous PrismCast that died).
+    // Skip if its parent is a live unrelated PID - that process owns it, not us.
+    return (p.ppid === ownPid) || !isProcessAlive(p.ppid);
+  }).map((p) => p.pid);
+}
+
+/**
+ * Ensures a clean slate for browser launch by terminating any stale Chrome processes and removing orphaned profile lock files. Chrome locks its profile
+ * directory while running; if a previous instance crashed without releasing the lock, we cannot launch a new browser with the same profile. Discovery is done
+ * via the OS process table (utils/processInspector) and filtered to Chrome processes using our profile directory whose ownership belongs to us - either because
+ * we spawned them (ppid === process.pid) or because their parent is no longer alive (orphaned from a previous instance).
  *
  * The termination strategy escalates from SIGTERM to SIGKILL. SIGTERM is sent first, giving Chrome up to 5 seconds to flush its profile databases (LevelDB,
  * extension state, session storage) and exit cleanly. If Chrome does not exit, SIGKILL is sent as a fallback. This escalation is critical when called from the
- * process exit handler - Chrome may be running normally (e.g., after a capture probe timeout), and an immediate SIGKILL would corrupt its profile databases,
+ * process exit handler: Chrome may be running normally (e.g., after a capture probe timeout) and an immediate SIGKILL would corrupt its profile databases,
  * poisoning the Docker volume for subsequent container restarts.
  *
- * If no PID is available (first run or clean shutdown where the PID file was already removed), process killing is skipped entirely and only lock file cleanup
- * runs. When a PID file does exist but the process is gone (Docker restart with a mounted volume - the PID belongs to the previous container's PID namespace),
- * process.kill() throws ESRCH, which is caught gracefully.
+ * The ownership filter makes this function safe to call from any context, including a rejected-duplicate startup's exit handler: a duplicate that never
+ * spawned Chrome will find nothing matching its ownership criteria and signal nothing.
  *
- * This is called at startup before launching the browser and from the process exit handler as a crash recovery fallback. It's safe to call even when no stale
- * processes or files exist.
+ * Called at startup before launching the browser and from the process exit handler as a crash recovery fallback. Safe to call when no stale processes or files
+ * exist - the discovery and lock-file cleanup are both no-ops in the empty case.
  */
 export function killStaleChrome(): void {
 
   const profileDir = getChromeDataDir(CONFIG);
-  const pid = loadChromePid();
   const POLL_INTERVAL_MS = 200;
+  const pidsToKill = findChromeProcessesUsingProfile(listProcesses(), profileDir, process.pid, isProcessRunning);
 
-  if(pid !== null) {
+  for(const pid of pidsToKill) {
 
     try {
 
@@ -385,25 +446,10 @@ export function killStaleChrome(): void {
         LOG.warn("Failed to signal Chrome process %d: %s.", pid, formatError(error));
       }
     }
-
-    clearChromePid();
   }
 
   // Remove stale lock and port files left behind by an unclean Chrome exit.
   cleanStaleProfileFiles(profileDir);
-
-  // Mark this process as owning Chrome cleanup. The exit handler checks this flag to avoid killing Chrome that belongs to another running instance.
-  ownsChromeCleanup = true;
-}
-
-/**
- * Returns whether this process has taken ownership of Chrome cleanup by running killStaleChrome() during startup. Used by the exit handler to avoid killing
- * Chrome that belongs to another running PrismCast instance.
- * @returns True if killStaleChrome() has run in this process.
- */
-export function canCleanupChrome(): boolean {
-
-  return ownsChromeCleanup;
 }
 
 /**
@@ -934,10 +980,11 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
  */
 function handleBrowserDisconnect(): void {
 
-  // Clear the browser reference, launch timestamp, cached version, user agent, and stale PID so getCurrentBrowser() will launch a new instance on the next call.
+  // Clear the browser reference, launch timestamp, cached version, and user agent so getCurrentBrowser() will launch a new instance on the next call. We do not
+  // track Chrome's PID directly anymore - killStaleChrome discovers orphans via the OS process table on the next startup, which removes a class of state that
+  // could go stale.
   currentBrowser = null;
   browserLaunchTime = null;
-  chromePid = null;
   currentChromeVersion = null;
   setChromeUserAgent(null);
 
@@ -1037,18 +1084,6 @@ async function launchBrowser(): Promise<Browser> {
     // The launch function from puppeteer-stream wraps standard Puppeteer launch to inject the streaming extension. We pass our custom launch function that
     // handles packaged executable extension paths.
     currentBrowser = await launch({ launch: launchWithCustomArgs }, options);
-
-    // Persist the Chrome PID for cross-platform process cleanup. The PID file survives Node crashes, allowing the next startup to find and terminate orphaned
-    // Chrome processes without relying on Unix-only tools like pkill/pgrep.
-    const launchedPid = currentBrowser.process()?.pid;
-
-    if(launchedPid) {
-
-      saveChromePid(launchedPid);
-    } else {
-
-      LOG.warn("Chrome process PID is unavailable. Orphaned process cleanup after a crash will be limited to lock file removal.");
-    }
 
     // Register a handler for browser disconnection. This ensures we clean up properly if the browser crashes or is closed unexpectedly.
     currentBrowser.on("disconnected", handleBrowserDisconnect);
@@ -1316,8 +1351,8 @@ export async function closeBrowser(): Promise<void> {
     void browserRef.disconnect();
   }
 
-  // Clear the PID file and remove stale Chrome profile lock files.
-  clearChromePid();
+  // Remove stale Chrome profile lock files left behind by the disconnected browser. No per-PID state to clear here - killStaleChrome on the next launch will
+  // discover any leftover Chrome via the OS process table.
   cleanStaleProfileFiles(getChromeDataDir(CONFIG));
 }
 
