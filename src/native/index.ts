@@ -272,7 +272,9 @@ function scheduleTokenRefresh(options: TokenRefreshOptions): void {
   }
 
   const timeUntilExpiry = expiry - Date.now();
-  const refreshIn = Math.max(MIN_REFRESH_DELAY, timeUntilExpiry - TOKEN_REFRESH_MARGIN);
+  const rawRefreshIn = Math.max(MIN_REFRESH_DELAY, timeUntilExpiry - TOKEN_REFRESH_MARGIN);
+  const MAX_TIMEOUT_MS = 2147483647;
+  const refreshIn = Math.min(rawRefreshIn, MAX_TIMEOUT_MS);
 
   LOG.debug("native:token", "Token expires in %ss for %s. Refresh scheduled in %ss.",
     Math.round(timeUntilExpiry / 1000), channelName, Math.round(refreshIn / 1000));
