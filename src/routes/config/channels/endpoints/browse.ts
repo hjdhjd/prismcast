@@ -109,7 +109,7 @@ export function registerBrowseRoutes(app: Express): void {
     // batch lands as one atomic write - the framework persists exactly what the fn produced.
     await mutateChannels((data) => {
 
-      const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(data.channels) ]);
+      const allKeys = new Set(Object.keys(PREDEFINED_CHANNELS)).union(new Set(Object.keys(data.channels)));
 
       for(const entry of entries) {
 

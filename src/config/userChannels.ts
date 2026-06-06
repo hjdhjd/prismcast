@@ -550,7 +550,7 @@ function warnDanglingCanonical(variantKey: string, canonicalKey: string): void {
 function buildResolvedCanonicals(stored: StoredChannelMap): ResolvedChannelMap {
 
   const result: ResolvedChannelMap = {};
-  const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(stored) ]);
+  const allKeys = new Set(Object.keys(PREDEFINED_CHANNELS)).union(new Set(Object.keys(stored)));
 
   for(const key of allKeys) {
 
@@ -767,7 +767,7 @@ export function inferTargetVariant(canonicalKey: string, submittedUrl: string | 
   }
 
   // Sort for deterministic pick when multiple siblings share a domain.
-  const sortedKeys = [...siblingKeys].sort();
+  const sortedKeys = Array.from(siblingKeys).toSorted();
 
   for(const siblingKey of sortedKeys) {
 
@@ -1790,7 +1790,7 @@ export function resolveStoredChannel(key: string, stored: StoredChannel): Resolv
 function getMergedChannelMap(): ResolvedChannelMap {
 
   const result = buildResolvedCanonicals(loadedUserChannels);
-  const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(loadedUserChannels) ]);
+  const allKeys = new Set(Object.keys(PREDEFINED_CHANNELS)).union(new Set(Object.keys(loadedUserChannels)));
 
   for(const key of allKeys) {
 
@@ -1859,7 +1859,7 @@ function getMergedChannelMap(): ResolvedChannelMap {
  */
 export function getChannelListing(): ChannelListingEntry[] {
 
-  const allKeys = new Set([ ...Object.keys(PREDEFINED_CHANNELS), ...Object.keys(loadedUserChannels) ]);
+  const allKeys = new Set(Object.keys(PREDEFINED_CHANNELS)).union(new Set(Object.keys(loadedUserChannels)));
   const listing: ChannelListingEntry[] = [];
 
   for(const key of allKeys) {

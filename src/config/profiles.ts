@@ -338,7 +338,7 @@ export function validateProfiles(): void {
   // Validate user-defined profiles and domain mappings. These are warnings, not fatal errors - broken user profiles should not prevent the server from starting.
   // The user can fix them via the web UI.
   const userWarnings: string[] = [];
-  const allProfileNames = new Set([ ...allBuiltinProfiles.keys(), ...Object.keys(userProfiles) ]);
+  const allProfileNames = new Set(allBuiltinProfiles.keys()).union(new Set(Object.keys(userProfiles)));
 
   for(const [ key, profile ] of Object.entries(userProfiles)) {
 

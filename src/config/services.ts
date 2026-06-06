@@ -179,7 +179,7 @@ export function getAllServiceTags(): { displayName: string; domain?: string; ico
   const tags = new Set<string>();
 
   // Scan all channels (not just grouped ones) to find all service tags.
-  const allKeys = new Set([ ...Object.keys(channelsRef), ...Object.keys(PREDEFINED_CHANNELS) ]);
+  const allKeys = new Set(Object.keys(channelsRef)).union(new Set(Object.keys(PREDEFINED_CHANNELS)));
 
   for(const key of allKeys) {
 
