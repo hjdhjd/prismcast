@@ -366,7 +366,8 @@ describe("observeHlsPlaylists", () => {
     const rootSession = new FakeCdpSession(connection);
     const url = "https://cdn.test/transient-fail.m3u8";
 
-    const { counts } = makeFetchCounter({});  // Empty map - all fetches return 404 from the mock.
+    // Empty map - all fetches return 404 from the mock.
+    const { counts } = makeFetchCounter({});
 
     const observed: ObservedHlsPlaylist[] = [];
     const observer = await observeHlsPlaylists(makeFakeCdpPage(rootSession), {

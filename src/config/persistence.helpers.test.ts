@@ -1,9 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * persistence.helpers.test.ts: Self-tests for the in-memory storage backend used by the persistence framework's test suites. Helpers earn the same coverage
- * rigor as production code per arch-testing.md - a bug in the backend would cascade through every dependent test, masking or fabricating failures. The tests
- * pin every operation's contract: presence/absence semantics, ENOENT shape, mtime monotonicity, override-takes-precedence-over-default, and the StorageBackend
- * surface conformance.
+ * rigor as production code - a bug in the backend would cascade through every dependent test, masking or fabricating failures. The tests pin every operation's
+ * contract: presence/absence semantics, ENOENT shape, mtime monotonicity, override-takes-precedence-over-default, and the StorageBackend surface conformance.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
