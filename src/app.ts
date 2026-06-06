@@ -2,7 +2,7 @@
  *
  * app.ts: Express application builder for PrismCast.
  */
-import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.ts";
+import { CONFIG, displayConfiguration, initializeConfiguration, persistCoercedConfig, validateConfiguration } from "./config/index.ts";
 import type { Express, NextFunction, Request, Response } from "express";
 import { LOG, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release, resolveFFmpegPath,
   setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
@@ -107,8 +107,9 @@ function setupGracefulShutdown(): void {
     // Set the graceful shutdown flag early so that page close errors are suppressed during stream termination.
     setGracefulShutdown(true);
 
-    // Stop cleanup and polling intervals.
-    stopHdhrServer();
+    // Stop cleanup and polling intervals. HDHR teardown is awaited so the HTTP and UDP sockets fully release before the rest of shutdown proceeds; the other
+    // stop functions return synchronously.
+    await stopHdhrServer();
     stopBrowserRestartChecking();
     stopStalePageCleanup();
     stopIdleCleanup();
@@ -403,6 +404,55 @@ export function releaseInstanceSlot(): void {
   }
 }
 
+/**
+ * Starts the main HTTP server and resolves only once the bind has actually succeeded. Express's app.listen callback fires even when the bind fails (it resolves
+ * with a non-listening server on EADDRINUSE / EADDRNOTAVAIL), so it cannot be trusted to signal success; we detect the outcome through the explicit "listening"
+ * and "error" events instead, mirroring the HDHomeRun HTTP server and the UDP responder. A bind failure rejects rather than lingering, so startServer's caller
+ * logs the error and exits cleanly instead of leaving a process that printed a false "listening" line while its HTTP surface never came up.
+ * @param app - The built Express application.
+ * @returns The listening http.Server.
+ */
+async function listenMainServer(app: Express): Promise<Server> {
+
+  const { promise, reject, resolve } = Promise.withResolvers<Server>();
+  const httpServer = app.listen(CONFIG.server.port, CONFIG.server.host);
+
+  // On a bind failure, reject with a clear, operator-actionable message. Exactly one of "error" or "listening" fires for a given bind attempt, so the promise
+  // always settles.
+  const onBindError = (error: NodeJS.ErrnoException): void => {
+
+    if(error.code === "EADDRINUSE") {
+
+      LOG.error("Cannot start PrismCast: port %s on %s is already in use. Stop the conflicting service or choose a different port.",
+        CONFIG.server.port, CONFIG.server.host);
+    } else {
+
+      LOG.error("Failed to start the PrismCast HTTP server: %s.", formatError(error));
+    }
+
+    reject(error);
+  };
+
+  httpServer.once("error", onBindError);
+
+  httpServer.once("listening", (): void => {
+
+    // Bind succeeded: retire the bind-failure handler and attach a long-lived runtime handler so a later socket error is logged rather than crashing the process
+    // on an unhandled "error" event.
+    httpServer.removeListener("error", onBindError);
+    httpServer.on("error", (error: NodeJS.ErrnoException): void => {
+
+      LOG.error("PrismCast HTTP server encountered a socket error: %s.", formatError(error));
+    });
+
+    LOG.info("PrismCast is now listening on %s:%s.", CONFIG.server.host, CONFIG.server.port);
+
+    resolve(httpServer);
+  });
+
+  return promise;
+}
+
 /* The startServer function initializes and starts the HTTP server. It validates configuration, cleans up stale processes, warms up the browser, and starts the
  * Express application.
  */
@@ -477,6 +527,12 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
     await initializeConfiguration(cliOverrides);
     validateConfiguration();
+
+    // Write any startup capture coercion back to disk so the on-disk state matches the coerced live CONFIG. This keeps a config file that holds an unsupported
+    // capture value (native mode) from staying divergent forever, which would otherwise make the reload-validation path reject every later save on the phantom
+    // capture diff. A no-op unless validateConfiguration actually coerced something.
+    await persistCoercedConfig();
+
     await initializeUserProfiles();
     validateProfiles();
   } catch(error) {
@@ -613,17 +669,17 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
     const app = await buildApp();
 
-    server = app.listen(CONFIG.server.port, CONFIG.server.host, (): void => {
-
-      LOG.info("PrismCast is now listening on %s:%s.", CONFIG.server.host, CONFIG.server.port);
-    });
+    // Bind the main HTTP server, detecting bind success or failure through explicit events rather than the unreliable listen callback. A bind failure throws out
+    // of here so the catch below surfaces it and the process exits cleanly rather than lingering with no HTTP surface.
+    server = await listenMainServer(app);
 
     // Attach the CDP proxy upgrade handler once the underlying http.Server exists. The handler is gated on the `cdp` debug category at request time, so it sits
     // dormant until the user enables CDP via /debug. We attach unconditionally so the toggle takes effect without requiring a restart.
     attachCdpUpgradeHandler(server);
   } catch(error) {
 
-    LOG.error("Failed to build application: %s.", formatError(error));
+    // Covers both a buildApp failure and a listenMainServer bind failure; the latter already logged the precise, operator-actionable line before rejecting.
+    LOG.error("Failed to build or start the HTTP server: %s.", formatError(error));
 
     throw error;
   }
