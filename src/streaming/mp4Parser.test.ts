@@ -274,6 +274,29 @@ describe("iterateChildBoxes", () => {
 
     assert.deepEqual(seen, [], "no children for empty container");
   });
+
+  test("stops iterating on a malformed extended-size child whose 64-bit size is zero (must not hang)", () => {
+
+    /* Boundary mirroring the non-extended zero-size case: a child with sizeField === 1 (extended-size sentinel) whose 64-bit size resolves to zero is malformed.
+     * Without the extended-branch lower-bound guard this would advance pos by zero and spin the loop forever, hanging the event loop. The node:test per-test
+     * timeout is the backstop that would catch a regression; a clean run proves the guard stops iteration. We build the 16-byte extended header by hand:
+     * size field 1, type "tfhd", high 32 bits 0, low 32 bits 0.
+     */
+    // 16 bytes: 4 (size field) + 4 (type) + 8 (64-bit extended size). Matches the production EXTENDED_HEADER_SIZE.
+    const extZeroChild = Buffer.alloc(16);
+
+    extZeroChild.writeUInt32BE(1, 0);
+    extZeroChild.write("tfhd", 4, 4, "ascii");
+    extZeroChild.writeUInt32BE(0, 8);
+    extZeroChild.writeUInt32BE(0, 12);
+
+    const traf = makeBox("traf", extZeroChild);
+    const seen: string[] = [];
+
+    iterateChildBoxes(traf, (type) => seen.push(type));
+
+    assert.deepEqual(seen, [], "no children emitted on a zero-valued extended-size child");
+  });
 });
 
 describe("MP4BoxCallback", () => {

@@ -212,6 +212,14 @@ export function iterateChildBoxes(data: Buffer, callback: (type: string, data: B
       }
 
       boxSize = data.readUInt32BE(pos + 12);
+
+      // Lower-bound guard, symmetric with the non-extended branch below. An extended-size box must be at least its own 16-byte header; a declared size smaller
+      // than that (most dangerously zero) is malformed. Without this check a zero size would pass the fit check below and advance pos by zero, spinning this
+      // loop forever on the main thread and hanging the process. A truncated or corrupted fMP4 fragment can carry exactly these bytes, so we stop iterating.
+      if(boxSize < EXTENDED_HEADER_SIZE) {
+
+        return;
+      }
     } else if((sizeField < MIN_HEADER_SIZE) || (sizeField === 0)) {
 
       // Invalid size or "extends to end of file" - stop iterating.
