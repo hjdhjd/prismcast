@@ -5,8 +5,8 @@
  * accessor surface, and the displayConfiguration log-output branches. Tests that mutate CONFIG save and restore the prior state in afterEach so they remain
  * independent of any other suite that touches CONFIG.
  */
-import { CONFIG, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration, validatePositiveInt,
-  validatePositiveNumber } from "./index.ts";
+import { CONFIG, applyLoggingConfigChanges, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration,
+  validatePositiveInt, validatePositiveNumber } from "./index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import type { Config } from "../types/index.ts";
 import { DEFAULTS } from "./userConfig.ts";
@@ -303,6 +303,26 @@ describe("validateConfiguration", () => {
     CONFIG.server.host = "127.0.0.1";
 
     assert.doesNotThrow(() => { validateConfiguration(); });
+  });
+});
+
+describe("applyLoggingConfigChanges", () => {
+
+  test("reports debugFilter as applied (live, no restart) and other logging fields as deferred", async () => {
+
+    // applyConfigNormalizations applies the debug filter live during reload, so the handler reports it applied and triggers no restart. httpLogLevel and maxSize
+    // are wired at startup, so they defer to a restart.
+    const outcomes = await applyLoggingConfigChanges([
+      { current: "tuning:hulu", path: "logging.debugFilter", previous: "" },
+      { current: "all", path: "logging.httpLogLevel", previous: "errors" },
+      { current: 2097152, path: "logging.maxSize", previous: 1048576 }
+    ]);
+
+    assert.deepEqual(outcomes, [
+      { kind: "applied", path: "logging.debugFilter" },
+      { kind: "deferred", path: "logging.httpLogLevel", reason: "this logging setting takes effect on the next restart" },
+      { kind: "deferred", path: "logging.maxSize", reason: "this logging setting takes effect on the next restart" }
+    ]);
   });
 });
 

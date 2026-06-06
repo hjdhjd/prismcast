@@ -23,11 +23,11 @@ let anyEnabled = false;
 // Whether wildcard (*) was specified - all categories pass unless explicitly excluded.
 let wildcardEnabled = false;
 
-// Categories to include (exact or prefix match).
-const includeSet = new Set<string>();
+// Categories to include (exact or prefix match). Reassigned wholesale by initDebugFilter from a freshly parsed pattern, so it is a let rather than a const.
+let includeSet = new Set<string>();
 
-// Categories to exclude (exact or prefix match). Takes priority over includes and wildcard.
-const excludeSet = new Set<string>();
+// Categories to exclude (exact or prefix match). Takes priority over includes and wildcard. Reassigned wholesale by initDebugFilter.
+let excludeSet = new Set<string>();
 
 /**
  * Checks whether a category matches any pattern in the given set. A pattern matches if it equals the category exactly or if the category starts with the pattern
@@ -55,39 +55,96 @@ function matchesAny(category: string, patterns: Set<string>): boolean {
 }
 
 /**
- * Parses a comma-separated pattern string and configures the debug filter. Calling this function replaces any previous filter configuration.
+ * The structured form of a parsed filter pattern: the wildcard flag plus the include and exclude category sets. Shared by the runtime filter (initDebugFilter
+ * stores it as module state) and the pure canonicalizer (canonicalizeDebugPattern), so the parse and the re-emission live in one place each.
+ */
+interface ParsedPattern {
+
+  readonly excludes: Set<string>;
+  readonly includes: Set<string>;
+  readonly wildcard: boolean;
+}
+
+/**
+ * Parses a comma-separated pattern string into its structured form. Pure: it allocates fresh sets and never touches module state, so it is safe to call for
+ * canonicalization independently of applying the filter. Whitespace around commas is trimmed and empty tokens are dropped; duplicate tokens collapse via the sets.
+ * @param pattern - Comma-separated list of category patterns (e.g., "tuning:hulu,recovery,-streaming:ffmpeg").
+ * @returns The parsed wildcard flag and include/exclude sets.
+ */
+function parsePattern(pattern: string): ParsedPattern {
+
+  const excludes = new Set<string>();
+  const includes = new Set<string>();
+  let wildcard = false;
+
+  for(const part of pattern.split(",").map((p) => p.trim()).filter((p) => p.length > 0)) {
+
+    if(part === "*") {
+
+      wildcard = true;
+    } else if(part.startsWith("-")) {
+
+      excludes.add(part.substring(1));
+    } else {
+
+      includes.add(part);
+    }
+  }
+
+  return { excludes, includes, wildcard };
+}
+
+/**
+ * Re-emits a parsed pattern as its canonical string form: wildcard first, then excludes (prefixed with "-"), then includes, comma-joined. Pure inverse of
+ * parsePattern, shared by getCurrentPattern (formatting module state) and canonicalizeDebugPattern (formatting a freshly parsed pattern).
+ * @param parsed - The parsed pattern to format.
+ * @returns The canonical comma-separated pattern string ("" when nothing is configured).
+ */
+function formatPattern(parsed: ParsedPattern): string {
+
+  const parts: string[] = [];
+
+  if(parsed.wildcard) {
+
+    parts.push("*");
+  }
+
+  for(const entry of parsed.excludes) {
+
+    parts.push("-" + entry);
+  }
+
+  for(const entry of parsed.includes) {
+
+    parts.push(entry);
+  }
+
+  return parts.join(",");
+}
+
+/**
+ * Parses a comma-separated pattern string and configures the runtime debug filter. Calling this function replaces any previous filter configuration.
  * @param pattern - Comma-separated list of category patterns (e.g., "tuning:hulu,recovery,-streaming:ffmpeg").
  */
 export function initDebugFilter(pattern: string): void {
 
-  // Reset state.
-  includeSet.clear();
-  excludeSet.clear();
-  wildcardEnabled = false;
-  anyEnabled = false;
+  const parsed = parsePattern(pattern);
 
-  const parts = pattern.split(",").map((p) => p.trim()).filter((p) => p.length > 0);
+  includeSet = parsed.includes;
+  excludeSet = parsed.excludes;
+  wildcardEnabled = parsed.wildcard;
+  anyEnabled = parsed.wildcard || (parsed.includes.size > 0) || (parsed.excludes.size > 0);
+}
 
-  if(parts.length === 0) {
+/**
+ * Re-emits a pattern string in the canonical form getCurrentPattern produces - whitespace trimmed, duplicates collapsed, wildcard then excludes then includes -
+ * WITHOUT touching the active runtime filter. Used to normalize a persisted pattern for storage and diffing independently of applying it live.
+ * @param pattern - The raw pattern string to canonicalize.
+ * @returns The canonical pattern string.
+ */
+export function canonicalizeDebugPattern(pattern: string): string {
 
-    return;
-  }
-
-  for(const part of parts) {
-
-    if(part === "*") {
-
-      wildcardEnabled = true;
-    } else if(part.startsWith("-")) {
-
-      excludeSet.add(part.substring(1));
-    } else {
-
-      includeSet.add(part);
-    }
-  }
-
-  anyEnabled = true;
+  return formatPattern(parsePattern(pattern));
 }
 
 /**
@@ -136,26 +193,7 @@ export function getCurrentPattern(): string {
     return "";
   }
 
-  const parts: string[] = [];
-
-  if(wildcardEnabled) {
-
-    parts.push("*");
-  }
-
-  // Exclude entries are prefixed with "-".
-  for(const entry of excludeSet) {
-
-    parts.push("-" + entry);
-  }
-
-  // Include entries are bare category names.
-  for(const entry of includeSet) {
-
-    parts.push(entry);
-  }
-
-  return parts.join(",");
+  return formatPattern({ excludes: excludeSet, includes: includeSet, wildcard: wildcardEnabled });
 }
 
 // Debug Category Registry.
@@ -179,6 +217,8 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "browser:video", description: "Video context, fullscreen, volume locking, playback." },
   { category: "cdp", description: "Enables the Chrome DevTools Protocol proxy at /cdp. Feature gate, not a log filter - observable via its HTTP/WS surface." },
   { category: "config:general", description: "Service groups, version checking." },
+  { category: "config:reactivity", description: "Config-change reactivity dispatch: outcomes ignored for paths a handler was not given." },
+  { category: "hdhr", description: "HDHomeRun UDP responder: per-packet dispatch traces (Discover, Get, Set, malformed drops), reply send failures." },
   { category: "native:coordinator", description: "Native streaming decisions: interception result, probe result, capture teardown, proxy start." },
   { category: "native:decrypt", description: "AES-128 decryption: key fetch, IV source (explicit vs. sequence), segment sizes." },
   { category: "native:intercept", description: "CDP manifest interception: listener installed, .m3u8 URLs observed, master identified, timeout." },

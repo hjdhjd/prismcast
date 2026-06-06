@@ -6,8 +6,11 @@
  * require a live Express app; we flag those as integration-level rather than exercise them here.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { categorizeProfiles, scheduleServerRestart, setupConfigEndpoint } from "./index.ts";
+import { categorizeProfiles, describeConfigurationOutcome, scheduleServerRestart, setupConfigEndpoint } from "./index.ts";
+import type { ApplyConfigurationResult } from "./index.ts";
+import type { ConfigChange } from "../../config/reactivity.ts";
 import type { ProfileInfo } from "../../config/profiles.ts";
+import type { RestartResult } from "./index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
 
@@ -241,6 +244,97 @@ describe("scheduleServerRestart", () => {
     const result = scheduleServerRestart("UNIQUE_REASON_TOKEN_42");
 
     assert.doesNotMatch(result.message, /UNIQUE_REASON_TOKEN_42/, "reason is for logging only, not the message");
+  });
+});
+
+describe("describeConfigurationOutcome", () => {
+
+  // makeChange builds a synthetic ConfigChange. The path and values are opaque to describeConfigurationOutcome - only the bucket counts and rejection reasons
+  // shape the message - so we can pass minimal placeholders.
+  function makeChange(path: string): ConfigChange {
+
+    return { current: 1, path, previous: 0 };
+  }
+
+  // makeRestart builds a fake RestartResult. Used to assert that the restart message wins over any live-applied or rejected summary.
+  function makeRestart(message: string): RestartResult {
+
+    return { activeStreams: 0, deferred: false, message, willRestart: true };
+  }
+
+  test("returns the restart message verbatim when a restart was scheduled", () => {
+
+    const outcome: ApplyConfigurationResult = {
+
+      apply: { applied: [], deferred: [{ change: makeChange("server.port"), reason: "no handler" }], rejected: [] },
+      restart: makeRestart("Server is restarting...")
+    };
+
+    assert.equal(describeConfigurationOutcome(outcome), "Server is restarting...");
+  });
+
+  test("returns a generic 'Configuration saved.' when nothing changed and no restart was scheduled", () => {
+
+    const outcome: ApplyConfigurationResult = {
+
+      apply: { applied: [], deferred: [], rejected: [] },
+      restart: null
+    };
+
+    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved.");
+  });
+
+  test("reports a single live-applied change in the singular", () => {
+
+    const outcome: ApplyConfigurationResult = {
+
+      apply: { applied: [makeChange("hdhr.enabled")], deferred: [], rejected: [] },
+      restart: null
+    };
+
+    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved. 1 setting applied live.");
+  });
+
+  test("reports multiple live-applied changes in the plural", () => {
+
+    const outcome: ApplyConfigurationResult = {
+
+      apply: { applied: [ makeChange("hdhr.enabled"), makeChange("hdhr.port"), makeChange("hdhr.discoveryEnabled") ], deferred: [], rejected: [] },
+      restart: null
+    };
+
+    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved. 3 settings applied live.");
+  });
+
+  test("surfaces the first rejection reason when any change was rejected and no restart was scheduled", () => {
+
+    const outcome: ApplyConfigurationResult = {
+
+      apply: {
+
+        applied: [makeChange("hdhr.discoveryEnabled")],
+        deferred: [],
+        rejected: [
+          { change: makeChange("hdhr.enabled"), reason: "FFmpeg unavailable" },
+          { change: makeChange("hdhr.port"), reason: "port in use" }
+        ]
+      },
+      restart: null
+    };
+
+    // The message reports the count using grammatical agreement ("2 changes were rejected") and includes the first reason as a directly actionable hint.
+    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved, but 2 changes were rejected: FFmpeg unavailable.");
+  });
+
+  test("agrees in number when exactly one change was rejected", () => {
+
+    const outcome: ApplyConfigurationResult = {
+
+      apply: { applied: [], deferred: [], rejected: [{ change: makeChange("hdhr.enabled"), reason: "FFmpeg unavailable" }] },
+      restart: null
+    };
+
+    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved, but 1 change was rejected: FFmpeg unavailable.");
   });
 });
 

@@ -3,11 +3,13 @@
  * index.ts: Configuration endpoint coordinator for PrismCast.
  */
 import { LOG, isRunningAsService } from "../../utils/index.ts";
+import type { Nullable, ProfileCategory } from "../../types/index.ts";
+import type { ApplyResult } from "../../config/reactivity.ts";
 import type { Express } from "express";
-import type { ProfileCategory } from "../../types/index.ts";
 import type { ProfileInfo } from "../../config/profiles.ts";
 import { closeBrowser } from "../../browser/index.ts";
 import { getStreamCount } from "../../streaming/registry.ts";
+import { reloadConfiguration } from "../../config/index.ts";
 import { setupChannelRoutes } from "./channels/index.ts";
 import { setupProfileRoutes } from "./services.ts";
 import { setupSettingsRoutes } from "./settings.ts";
@@ -28,6 +30,20 @@ export interface RestartResult {
 
   // Whether the server will auto-restart (true if running as a service, false if manual restart required).
   willRestart: boolean;
+}
+
+/**
+ * Combined result of applying a configuration change. apply describes which subsystems took the change live, deferred it, or rejected it; restart is non-null
+ * only when at least one change deferred and a restart was scheduled. Callers use this shape to build the user-facing response message and to decide which UI
+ * dialog to show (active-streams deferral, restart-in-progress spinner, or a simple toast).
+ */
+export interface ApplyConfigurationResult {
+
+  // The result of dispatching the diff to registered handlers.
+  apply: ApplyResult;
+
+  // The restart schedule outcome, or null if no restart was scheduled.
+  restart: Nullable<RestartResult>;
 }
 
 /**
@@ -86,6 +102,67 @@ export function scheduleServerRestart(reason: string): RestartResult {
     message: "Configuration saved. Server is restarting...",
     willRestart: true
   };
+}
+
+/**
+ * Reloads the in-memory configuration from disk, dispatches the diff to registered subsystem handlers, and schedules a server restart only if there are
+ * changes that no handler could apply live. The single entry point both the /config save handler and /config/import handler call after writing to disk. The
+ * returned shape lets each handler tailor its response message and pick between the "show toast" and "restart in progress" UI flows.
+ *
+ * Rejected changes do not trigger a restart on their own - rejection means a handler refused the change after the disk write, so the value is persisted but
+ * the live side-effect did not occur (e.g., a handler that refused to start a port-conflicting server). Callers should surface rejected reasons to the user so
+ * they can fix the underlying cause and re-save rather than restarting blindly.
+ * @param reason - A description of why configuration is changing, used in the restart log message when a restart is scheduled.
+ * @returns Combined apply and restart result.
+ */
+export async function applyConfigurationChange(reason: string): Promise<ApplyConfigurationResult> {
+
+  const apply = await reloadConfiguration();
+
+  // If every change applied live (or was rejected without needing a restart), there is nothing for the service manager to do; the in-memory CONFIG already
+  // reflects the new values, and any registered handlers have made the live side-effects.
+  if(apply.deferred.length === 0) {
+
+    return { apply, restart: null };
+  }
+
+  // Some change could not be applied live - schedule a restart so the service manager picks up the new state on respawn.
+  return { apply, restart: scheduleServerRestart(reason) };
+}
+
+/**
+ * Builds the user-facing message for a save response based on the apply and restart outcome. Picks the strongest signal: a restart message when a restart
+ * was scheduled (preserves the legacy phrasing operators are accustomed to), a live-applied summary when the change took effect immediately, or a rejected
+ * summary when handlers refused the change. The message is plain prose - the structured counts ride alongside in the data envelope for clients that want them.
+ * @param result - The combined apply and restart result.
+ * @returns Single-sentence message describing the outcome.
+ */
+export function describeConfigurationOutcome(result: ApplyConfigurationResult): string {
+
+  // A scheduled restart subsumes the live counts - the legacy message already conveys what the operator needs to know about the restart flow.
+  if(result.restart) {
+
+    return result.restart.message;
+  }
+
+  const appliedCount = result.apply.applied.length;
+  const rejectedCount = result.apply.rejected.length;
+
+  if((appliedCount === 0) && (rejectedCount === 0)) {
+
+    return "Configuration saved.";
+  }
+
+  if(rejectedCount === 0) {
+
+    // Singular vs plural handled inline so the message reads naturally for a one-change save.
+    return "Configuration saved. " + String(appliedCount) + " setting" + ((appliedCount === 1) ? "" : "s") + " applied live.";
+  }
+
+  // Surface the first rejection reason so operators get a directly actionable hint without scanning the structured payload.
+  const firstReason = result.apply.rejected[0]?.reason ?? "unknown reason";
+
+  return "Configuration saved, but " + String(rejectedCount) + " change" + ((rejectedCount === 1) ? " was" : "s were") + " rejected: " + firstReason + ".";
 }
 
 /**

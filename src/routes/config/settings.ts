@@ -8,6 +8,7 @@ import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, 
   setNestedValue } from "../../config/userConfig.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, isRunningAsService, stringifySorted } from "../../utils/index.ts";
+import { applyConfigurationChange, describeConfigurationOutcome } from "./index.ts";
 import { sendErrorResponse, sendFormErrors, sendSuccess, sendValidationError } from "./http/envelope.ts";
 import { ACTIONS } from "../clientActions.ts";
 import type { Nullable } from "../../types/index.ts";
@@ -15,7 +16,6 @@ import { getConfigFilePath } from "../../config/paths.ts";
 import { getGpuCapabilities } from "../../browser/display.ts";
 import { getPresetOptionsWithDegradation } from "../../config/presets.ts";
 import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
-import { scheduleServerRestart } from "./index.ts";
 
 /* The checkboxList setting type renders a grid of checkboxes backed by a hidden JSON array input. Each checkboxList field specifies a listItemsKey that identifies
  * which item provider to use. The registry maps keys to functions that return the list of items to render. Keeping the registry in the routes layer (not the config
@@ -1074,18 +1074,23 @@ export function setupSettingsRoutes(app: Express): void {
         mergeConfigValues(existing, newConfig);
       });
 
-      // Schedule restart after response is sent and return success response with restart info.
-      const restartResult = scheduleServerRestart("to apply configuration changes");
+      // Reload the in-memory CONFIG from the freshly-written disk state and dispatch the diff to registered subsystem handlers. Subsystems that opted in to
+      // live application (HDHR is the first) make their changes immediately; everything else is reported as deferred and triggers a service restart so the
+      // change lands on the next boot.
+      const outcome = await applyConfigurationChange("to apply configuration changes");
 
       sendSuccess(res, {
 
         data: {
 
-          activeStreams: restartResult.activeStreams,
-          deferred: restartResult.deferred,
-          willRestart: restartResult.willRestart
+          activeStreams: outcome.restart?.activeStreams ?? 0,
+          appliedCount: outcome.apply.applied.length,
+          deferred: outcome.restart?.deferred ?? false,
+          deferredCount: outcome.apply.deferred.length,
+          rejectedCount: outcome.apply.rejected.length,
+          willRestart: outcome.restart?.willRestart ?? false
         },
-        message: restartResult.message
+        message: describeConfigurationOutcome(outcome)
       });
     } catch(error) {
 
@@ -1216,18 +1221,22 @@ export function setupSettingsRoutes(app: Express): void {
         mergeConfigValues(existing, importedConfig);
       });
 
-      // Schedule restart after response is sent and return success response with restart info.
-      const restartResult = scheduleServerRestart("after configuration import");
+      // Reload and dispatch the diff. Import frequently changes more fields at once than the form save flow, so a higher fraction of imports will land in the
+      // "restart required" path - but the same live-apply machinery still picks off any subsystem that opted in.
+      const outcome = await applyConfigurationChange("after configuration import");
 
       sendSuccess(res, {
 
         data: {
 
-          activeStreams: restartResult.activeStreams,
-          deferred: restartResult.deferred,
-          willRestart: restartResult.willRestart
+          activeStreams: outcome.restart?.activeStreams ?? 0,
+          appliedCount: outcome.apply.applied.length,
+          deferred: outcome.restart?.deferred ?? false,
+          deferredCount: outcome.apply.deferred.length,
+          rejectedCount: outcome.apply.rejected.length,
+          willRestart: outcome.restart?.willRestart ?? false
         },
-        message: restartResult.message
+        message: describeConfigurationOutcome(outcome)
       });
     } catch(error) {
 
