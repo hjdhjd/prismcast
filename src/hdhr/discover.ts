@@ -3,18 +3,21 @@
  * discover.ts: HDHomeRun discovery and lineup endpoints for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { getPackageVersion, normalizeClientAddress } from "../utils/index.ts";
+import { HDHR_FIRMWARE_NAME, HDHR_MANUFACTURER, HDHR_MODEL_NUMBER } from "./identity.ts";
 import { CONFIG } from "../config/index.ts";
 import { buildChannelMap } from "./channelMap.ts";
-import { getAllStreams } from "../streaming/registry.ts";
+import { getPackageVersion } from "../utils/index.ts";
+import { getTunerStates } from "./tunerState.ts";
 
-/* These endpoints implement the HDHomeRun HTTP API that Plex and other clients use to identify, configure, and monitor tuners. Plex does not auto-detect emulated
- * tuners on non-standard ports - users must manually enter the address (IP:port) in Plex's DVR setup. The core discovery endpoints are device.xml (UPnP device
- * description), discover.json (device identity), lineup.json (channel lineup), and lineup_status.json (scan status). Additional endpoints include lineup.post
- * (scan control acknowledgement) and status.json (real-time tuner activity for monitoring dashboards).
+/* These endpoints implement the HDHomeRun HTTP API that Plex uses to identify, configure, and monitor tuners. Plex auto-detects PrismCast on the LAN through
+ * the UDP responder in udp.ts (when CONFIG.hdhr.discoveryEnabled is on) or accepts a manual IP:port via its DVR setup screen. Channels DVR and other HDHR-
+ * aware clients may also reach these endpoints; their compatibility is incidental rather than supported, and Channels DVR specifically expects the HTTP
+ * control plane on port 80 (see hdhr/index.ts for the discovery-flow rationale). The core endpoints are device.xml (UPnP device description), discover.json
+ * (device identity), lineup.json (channel lineup), and lineup_status.json (scan status). Additional endpoints include lineup.post (scan control
+ * acknowledgement) and status.json (real-time tuner activity for monitoring dashboards).
  *
- * The stream URLs in lineup.json point to PrismCast's MPEG-TS streaming endpoint on the main HTTP server, not to this HDHR server. Plex requests the MPEG-TS stream
- * directly from the main server, which remuxes fMP4 segments to MPEG-TS with codec copy.
+ * The stream URLs in lineup.json point to PrismCast's MPEG-TS streaming endpoint on the main HTTP server, not to this HDHR server. The client requests the
+ * MPEG-TS stream directly from the main server, which remuxes fMP4 segments to MPEG-TS with codec copy.
  */
 
 /**
@@ -48,8 +51,8 @@ interface TunerStatusEntry {
 }
 
 /**
- * Resolves the hostname from an incoming request for use in generated URLs. We extract the hostname from the request (which Plex already connected to) and
- * combine it with the appropriate port. This ensures URLs work from Plex's network perspective.
+ * Resolves the hostname from an incoming request for use in generated URLs. We extract the hostname from the request (which the client already connected
+ * to) and combine it with the appropriate port. This ensures URLs work from the client's network perspective.
  * @param req - The Express request object.
  * @returns The hostname (without port) that the client used to connect.
  */
@@ -85,8 +88,8 @@ function resolveHostname(req: Request): string {
  */
 export function setupHdhrEndpoints(app: Express): void {
 
-  // GET /device.xml - UPnP device description. Plex fetches this during tuner discovery before querying discover.json. Without a valid device.xml response,
-  // Plex may silently abort the discovery process.
+  // GET /device.xml - UPnP device description. HDHR-aware clients (Plex in particular) fetch this during tuner discovery before querying discover.json.
+  // Without a valid device.xml response the discovery process may abort silently on stricter clients.
   app.get("/device.xml", (req: Request, res: Response): void => {
 
     const hostname = resolveHostname(req);
@@ -104,9 +107,9 @@ export function setupHdhrEndpoints(app: Express): void {
       "  <device>",
       "    <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>",
       "    <friendlyName>" + CONFIG.hdhr.friendlyName + "</friendlyName>",
-      "    <manufacturer>PrismCast</manufacturer>",
-      "    <modelName>HDTC-2US</modelName>",
-      "    <modelNumber>HDTC-2US</modelNumber>",
+      "    <manufacturer>" + HDHR_MANUFACTURER + "</manufacturer>",
+      "    <modelName>" + HDHR_MODEL_NUMBER + "</modelName>",
+      "    <modelNumber>" + HDHR_MODEL_NUMBER + "</modelNumber>",
       "    <serialNumber>" + deviceId + "</serialNumber>",
       "    <UDN>uuid:" + deviceId + "</UDN>",
       "  </device>",
@@ -117,32 +120,32 @@ export function setupHdhrEndpoints(app: Express): void {
     res.send(xml);
   });
 
-  // GET /discover.json - Device identity and capabilities. Plex uses this to identify the tuner model, determine concurrent stream capacity, and locate the
+  // GET /discover.json - Device identity and capabilities. Clients use this to identify the tuner model, determine concurrent stream capacity, and locate the
   // lineup endpoint.
   app.get("/discover.json", (req: Request, res: Response): void => {
 
     const hostname = resolveHostname(req);
     const baseUrl = "http://" + hostname + ":" + String(CONFIG.hdhr.port);
 
-    // The response follows the HDHomeRun HTTP API format that Plex expects. DeviceAuth must be non-empty; we use the DeviceID since there's no DRM context.
-    // ModelNumber "HDTC-2US" is the HDHomeRun CONNECT DUO, a widely-supported model that Plex recognizes.
+    // The response follows the HDHomeRun HTTP API format that Plex expects. DeviceAuth must be non-empty; we use the DeviceID since there is no DRM context.
+    // Identity strings come from hdhr/identity.ts so a future model swap is a single-file edit.
     res.json({
 
       BaseURL: baseUrl,
       DeviceAuth: CONFIG.hdhr.deviceId.toUpperCase(),
       DeviceID: CONFIG.hdhr.deviceId.toUpperCase(),
-      FirmwareName: "hdhomeruntc_atsc",
+      FirmwareName: HDHR_FIRMWARE_NAME,
       FirmwareVersion: getPackageVersion(),
       FriendlyName: CONFIG.hdhr.friendlyName,
       LineupURL: baseUrl + "/lineup.json",
-      Manufacturer: "PrismCast",
-      ModelNumber: "HDTC-2US",
+      Manufacturer: HDHR_MANUFACTURER,
+      ModelNumber: HDHR_MODEL_NUMBER,
       TunerCount: CONFIG.streaming.maxConcurrentStreams
     });
   });
 
-  // GET /lineup.json - Channel lineup with stream URLs. Each entry maps a numeric channel number to an MPEG-TS stream URL on the main PrismCast server. Plex
-  // requests the MPEG-TS stream directly from the main server when tuning a channel.
+  // GET /lineup.json - Channel lineup with stream URLs. Each entry maps a numeric channel number to an MPEG-TS stream URL on the main PrismCast server. The
+  // client requests the MPEG-TS stream directly from the main server when tuning a channel.
   app.get("/lineup.json", (req: Request, res: Response): void => {
 
     const hostname = resolveHostname(req);
@@ -162,7 +165,7 @@ export function setupHdhrEndpoints(app: Express): void {
     res.json(lineup);
   });
 
-  // GET /lineup_status.json - Channel scan status. Plex checks this during tuner setup. We return a static response indicating scan is complete since PrismCast's
+  // GET /lineup_status.json - Channel scan status. Clients check this during tuner setup. We return a static response indicating scan is complete since PrismCast's
   // channels are configured, not scanned.
   app.get("/lineup_status.json", (_req: Request, res: Response): void => {
 
@@ -175,51 +178,39 @@ export function setupHdhrEndpoints(app: Express): void {
     });
   });
 
-  // POST /lineup.post - Channel scan control. Some clients (Plex during initial setup) POST scan=start to this endpoint. We return 200 OK since PrismCast's channels
-  // are statically configured and scanning is not applicable.
+  // POST /lineup.post - Channel scan control. Some clients (Plex during initial setup is the common case) POST scan=start here. We return 200 OK since
+  // PrismCast's channels are statically configured and scanning is not applicable.
   app.post("/lineup.post", (_req: Request, res: Response): void => {
 
     res.sendStatus(200);
   });
 
   // GET /status.json - Tuner status. Returns a JSON array with one entry per tuner slot. Active tuners include channel info and signal stats; idle tuners have only
-  // Resource. Monitoring dashboards (Home Assistant, Homepage) poll this endpoint to display real-time tuner activity.
+  // Resource. Monitoring dashboards (Home Assistant, Homepage) poll this endpoint to display real-time tuner activity. The slot-indexed projection comes from
+  // getTunerStates - the same SSOT the UDP Get handlers use - so any change to channel-merge or fallback logic lands in one place.
   app.get("/status.json", (_req: Request, res: Response): void => {
 
-    const channelMap = buildChannelMap();
-    const channelByKey = new Map(channelMap.map((entry) => [ entry.key, entry ]));
-    const streams = getAllStreams().sort((a, b) => a.id - b.id);
-    const tunerCount = CONFIG.streaming.maxConcurrentStreams;
-    const tuners: TunerStatusEntry[] = [];
+    const tuners: TunerStatusEntry[] = getTunerStates().map((state) => {
 
-    // Build active tuner entries from currently running streams.
-    for(const [ i, stream ] of streams.entries()) {
+      // Idle slots carry only the resource name; active slots include signal stats hardcoded at 100 (network streams have no analog signal quality), plus
+      // channel and client information whenever the underlying TunerState provides it.
+      if(!state.active) {
 
-      const channelEntry = channelByKey.get(stream.info.storeKey);
+        return { Resource: state.resource };
+      }
 
-      // Build the tuner entry. Active tuners include channel info and signal stats. Signal values are hardcoded at 100 since PrismCast streams are network-based and
-      // either working or not - there is no analog signal quality to report. Channel info is merged conditionally: prefer the channel map for VctNumber (numeric
-      // channel) and VctName (display name), fall back to stream.channelName for VctName if the channel was removed from the map after the stream started.
-      const tuner: TunerStatusEntry = {
+      return {
 
         Frequency: 0,
-        Resource: "tuner" + String(i),
+        Resource: state.resource,
         SignalQualityPercent: 100,
         SignalStrengthPercent: 100,
         SymbolQualityPercent: 100,
-        ...(channelEntry ? { VctName: channelEntry.name, VctNumber: String(channelEntry.number) } : {}),
-        ...(!channelEntry && stream.channelName ? { VctName: stream.channelName } : {}),
-        ...(stream.clientAddress ? { TargetIP: normalizeClientAddress(stream.clientAddress) } : {})
+        ...((state.channelNumber !== null) ? { VctNumber: String(state.channelNumber) } : {}),
+        ...(state.channelName ? { VctName: state.channelName } : {}),
+        ...(state.clientAddress ? { TargetIP: state.clientAddress } : {})
       };
-
-      tuners.push(tuner);
-    }
-
-    // Fill remaining slots with idle tuner entries.
-    for(let i = streams.length; i < tunerCount; i++) {
-
-      tuners.push({ Resource: "tuner" + String(i) });
-    }
+    });
 
     res.json(tuners);
   });

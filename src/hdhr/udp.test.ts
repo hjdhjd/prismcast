@@ -1,0 +1,254 @@
+/* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
+ *
+ * udp.test.ts: Integration tests for the HDHomeRun UDP transport. Coverage layers:
+ *
+ *   1. selectLanAddress is exercised as a pure function against synthetic NetworkInterfaceInfo maps so the subnet-match and fallback logic is verified without
+ *      relying on the host's actual interface configuration.
+ *
+ *   2. startHdhrUdp/stopHdhrUdp are exercised via dgram loopback on an ephemeral port: the test binds the responder on 127.0.0.1:0, sends a Discover request,
+ *      and asserts that a structurally valid reply comes back. The full request-reply round-trip validates the entire path - parser, dispatcher, encoder, and
+ *      socket send.
+ *
+ *   3. Get and Set request paths are exercised similarly to confirm the transport composes the correct reply type for each parsed packet.
+ *
+ * The integration tests run on 127.0.0.1 with an ephemeral port so they cannot collide with a real HDHomeRun device or another emulator on the developer's
+ * host. Tests teardown the responder in an afterEach to prevent leakage across cases. Request packet builders (makeDiscoverRequest, makeGetRequest) and the
+ * shared framing helper (sealPacket) come from protocol.helpers.ts so both test files speak the same wire format.
+ */
+import { HDHR_DISCOVERY_PORT, getBoundHdhrUdpPort, selectLanAddress, startHdhrUdp, stopHdhrUdp } from "./udp.ts";
+import { PACKET_DISCOVER_REPLY, PACKET_GET_REPLY, TLV_BASE_URL, TLV_DEVICE_ID, TLV_DEVICE_TYPE, TLV_ERROR, TLV_GETSET_NAME, TLV_GETSET_VALUE,
+  TLV_TUNER_COUNT } from "./protocol.ts";
+import { afterEach, describe, test } from "node:test";
+import { makeDiscoverRequest, makeGetRequest } from "./protocol.helpers.ts";
+import type { NetworkInterfaceInfo } from "node:os";
+import assert from "node:assert/strict";
+import { createSocket } from "node:dgram";
+
+// makeIPv4 builds a synthetic NetworkInterfaceInfo entry shaped like what os.networkInterfaces() returns. Captures only the fields selectLanAddress reads;
+// other fields the runtime would populate are filled with placeholder values to satisfy the type.
+function makeIPv4(address: string, netmask: string, internal = false): NetworkInterfaceInfo {
+
+  return {
+
+    address,
+    cidr: address + "/24",
+    family: "IPv4",
+    internal,
+    mac: "00:00:00:00:00:00",
+    netmask
+  };
+}
+
+describe("selectLanAddress", () => {
+
+  test("returns the address of the interface whose subnet contains the target", () => {
+
+    // Two non-loopback interfaces. The target 192.168.1.50 lies in the subnet of "en0" but not "eth1"; selectLanAddress should pick en0.
+    const interfaces = {
+
+      en0: [makeIPv4("192.168.1.5", "255.255.255.0")],
+      eth1: [makeIPv4("10.0.0.5", "255.255.255.0")],
+      lo0: [makeIPv4("127.0.0.1", "255.0.0.0", true)]
+    };
+
+    assert.equal(selectLanAddress("192.168.1.50", interfaces), "192.168.1.5");
+  });
+
+  test("falls back to the first non-loopback IPv4 when no subnet matches", () => {
+
+    // The target 172.16.0.5 is not in either subnet; the function falls back to the first non-loopback address.
+    const interfaces = {
+
+      en0: [makeIPv4("192.168.1.5", "255.255.255.0")],
+      eth1: [makeIPv4("10.0.0.5", "255.255.255.0")]
+    };
+
+    assert.equal(selectLanAddress("172.16.0.5", interfaces), "192.168.1.5");
+  });
+
+  test("returns 127.0.0.1 when no non-loopback interfaces are configured", () => {
+
+    // Degenerate case: only loopback is present. The function returns the loopback fallback so the reply still carries a syntactically valid BaseURL.
+    const interfaces = { lo0: [makeIPv4("127.0.0.1", "255.0.0.0", true)] };
+
+    assert.equal(selectLanAddress("192.168.1.50", interfaces), "127.0.0.1");
+  });
+
+  test("returns 127.0.0.1 for a malformed target address", () => {
+
+    // Malformed input (not four octets) falls through subnet matching and lands on the fallback path.
+    const interfaces = {};
+
+    assert.equal(selectLanAddress("not-an-ip", interfaces), "127.0.0.1");
+  });
+});
+
+describe("startHdhrUdp / stopHdhrUdp - round-trip", () => {
+
+  afterEach(async () => {
+
+    await stopHdhrUdp();
+  });
+
+  // sendAndReceive opens a client socket, sends the request to 127.0.0.1:<port>, and resolves with the first reply (or rejects on timeout).
+  async function sendAndReceive(port: number, request: Buffer): Promise<Buffer> {
+
+    const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
+    const client = createSocket("udp4");
+    const timer = setTimeout(() => {
+
+      client.close();
+      reject(new Error("Timed out waiting for UDP reply."));
+    }, 2000);
+
+    client.once("message", (msg) => {
+
+      clearTimeout(timer);
+      client.close();
+      resolve(msg);
+    });
+
+    client.send(request, port, "127.0.0.1", (err) => {
+
+      if(err) {
+
+        clearTimeout(timer);
+        client.close();
+        reject(err);
+      }
+    });
+
+    return promise;
+  }
+
+  // Wildcard Discover request used by every Discover-side test. Centralizing the wildcards as a single fixture keeps each test focused on the assertion.
+  function wildcardDiscover(): Buffer {
+
+    return makeDiscoverRequest(0xFFFFFFFF, 0xFFFFFFFF);
+  }
+
+  test("Discover request elicits a Discover reply with the four required TLVs", async () => {
+
+    const ok = await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+
+    assert.equal(ok, true);
+
+    // We did not pass an explicit port; the responder bound an ephemeral port. Retrieve it via the internal socket. The test reaches in to read the address;
+    // production code never does this.
+    const port = getBoundPort();
+    const reply = await sendAndReceive(port, wildcardDiscover());
+
+    assert.equal(reply.readUInt16BE(0), PACKET_DISCOVER_REPLY);
+
+    const payloadLen = reply.readUInt16BE(2);
+    const payload = reply.subarray(4, 4 + payloadLen);
+    const tagsSeen = new Set<number>();
+    let offset = 0;
+
+    while(offset < payload.length) {
+
+      const tag = payload.readUInt8(offset);
+      const length = payload.readUInt8(offset + 1);
+
+      tagsSeen.add(tag);
+      offset += 2 + length;
+    }
+
+    assert.ok(tagsSeen.has(TLV_DEVICE_TYPE), "DEVICE_TYPE TLV present");
+    assert.ok(tagsSeen.has(TLV_DEVICE_ID), "DEVICE_ID TLV present");
+    assert.ok(tagsSeen.has(TLV_TUNER_COUNT), "TUNER_COUNT TLV present");
+    assert.ok(tagsSeen.has(TLV_BASE_URL), "BASE_URL TLV present");
+  });
+
+  test("Get request for /sys/version elicits a Get reply with name and value TLVs", async () => {
+
+    await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = getBoundPort();
+    const reply = await sendAndReceive(port, makeGetRequest("/sys/version"));
+
+    assert.equal(reply.readUInt16BE(0), PACKET_GET_REPLY);
+
+    const payloadLen = reply.readUInt16BE(2);
+    const payload = reply.subarray(4, 4 + payloadLen);
+    const tagsSeen = new Set<number>();
+    let offset = 0;
+
+    while(offset < payload.length) {
+
+      const tag = payload.readUInt8(offset);
+      const length = payload.readUInt8(offset + 1);
+
+      tagsSeen.add(tag);
+      offset += 2 + length;
+    }
+
+    assert.ok(tagsSeen.has(TLV_GETSET_NAME), "name TLV echoed in reply");
+    assert.ok(tagsSeen.has(TLV_GETSET_VALUE), "value TLV present for known key");
+    assert.equal(tagsSeen.has(TLV_ERROR), false, "no error TLV when key is recognized");
+  });
+
+  test("Get request for an unknown key elicits an error reply", async () => {
+
+    await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = getBoundPort();
+    const reply = await sendAndReceive(port, makeGetRequest("/sys/totally-not-a-real-key"));
+
+    assert.equal(reply.readUInt16BE(0), PACKET_GET_REPLY);
+
+    const payloadLen = reply.readUInt16BE(2);
+    const payload = reply.subarray(4, 4 + payloadLen);
+    const tagsSeen = new Set<number>();
+    let offset = 0;
+
+    while(offset < payload.length) {
+
+      const tag = payload.readUInt8(offset);
+      const length = payload.readUInt8(offset + 1);
+
+      tagsSeen.add(tag);
+      offset += 2 + length;
+    }
+
+    assert.ok(tagsSeen.has(TLV_ERROR), "error TLV present for unknown key");
+    assert.equal(tagsSeen.has(TLV_GETSET_VALUE), false, "no value TLV on error response");
+  });
+
+  test("malformed packets are silently dropped (no reply at all)", async () => {
+
+    await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = getBoundPort();
+    const garbage = Buffer.from([ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF ]);
+
+    // Expect the sendAndReceive to time out because the responder drops malformed packets without replying.
+    await assert.rejects(() => sendAndReceive(port, garbage), /Timed out waiting/);
+  });
+
+  test("idempotent start: calling startHdhrUdp twice returns true without rebinding", async () => {
+
+    const first = await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+    const second = await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+
+    assert.equal(first, true);
+    assert.equal(second, true, "second call is a no-op success");
+  });
+
+  test("HDHR_DISCOVERY_PORT constant matches the canonical SiliconDust value", () => {
+
+    // Pin the constant so a refactor cannot silently change it. The wire protocol fixes this port; clients hard-code it.
+    assert.equal(HDHR_DISCOVERY_PORT, 65001);
+  });
+});
+
+// getBoundPort wraps the responder-port accessor so each test reads as "send to the responder's port" with a load-bearing non-null assertion. A malformed
+// test setup (forgetting startHdhrUdp) surfaces as a clear failure rather than a confusing port-zero send.
+function getBoundPort(): number {
+
+  const port = getBoundHdhrUdpPort();
+
+  assert.ok(port !== null, "expected responder socket to be bound before reading its port");
+
+  return port;
+}

@@ -212,8 +212,11 @@ export interface ChannelsDvrConfig {
 }
 
 /**
- * HDHomeRun emulation configuration. When enabled, PrismCast runs a separate HTTP server that emulates the HDHomeRun API, allowing Plex to discover and use
- * PrismCast as a virtual tuner for live TV and DVR recording. The emulated device appears in Plex's tuner setup and serves PrismCast's HLS streams directly.
+ * HDHomeRun emulation configuration. When enabled, PrismCast runs a separate HTTP server that emulates the HDHomeRun API and (when discoveryEnabled is also
+ * true) a UDP discovery responder on port 65001 that lets Plex find PrismCast on the LAN automatically. The emulated device appears in Plex's tuner setup and
+ * serves PrismCast's MPEG-TS streams directly. Channels DVR also auto-discovers but its discovery assumes the standard HDHomeRun port 80, which most
+ * installations cannot bind; Channels DVR users typically add PrismCast manually as a Custom Channels source. Other HDHR-aware clients work to the extent that
+ * they honor the BaseURL advertised in the protocol; their compatibility is incidental rather than supported.
  */
 export interface HdhrConfig {
 
@@ -221,17 +224,24 @@ export interface HdhrConfig {
   // for persistence across restarts. Must be exactly 8 hex characters with a valid check digit.
   deviceId: string;
 
+  // Whether LAN discovery is enabled. When true and HDHR emulation is enabled, PrismCast binds a UDP responder on the standard HDHomeRun discovery port (65001)
+  // so Plex can auto-detect PrismCast on the local network without the operator entering an IP and port manually. Channels DVR will also discover PrismCast on
+  // the LAN, but its auto-discovery assumes port 80 for the HTTP control plane and so cannot fetch the lineup unless hdhr.port is set to 80 (which requires
+  // elevated privileges to bind). Independent of hdhr.enabled so an operator who wants HTTP HDHR but not LAN announcement (multi-tenant boxes, environments
+  // with an existing real HDHR) can disable just the discovery surface. Environment variable: HDHR_DISCOVERY_ENABLED. Default: true.
+  discoveryEnabled: boolean;
+
   // Whether HDHomeRun emulation is enabled. When enabled, a second HTTP server listens on the configured port and responds to HDHomeRun API requests from Plex.
   // When disabled, no additional server is started and no resources are consumed. Environment variable: HDHR_ENABLED. Default: true.
   enabled: boolean;
 
-  // Friendly name displayed in Plex when it discovers this tuner. This helps users identify PrismCast among multiple tuners in their Plex setup. Environment
-  // variable: HDHR_FRIENDLY_NAME. Default: "PrismCast".
+  // Friendly name displayed in HDHR-aware clients when they discover this tuner. This helps users identify PrismCast among multiple tuners in their setup.
+  // Environment variable: HDHR_FRIENDLY_NAME. Default: "PrismCast".
   friendlyName: string;
 
-  // TCP port for the HDHomeRun emulation server. HDHomeRun devices traditionally use port 5004, and Plex expects this port when auto-discovering tuners via UDP.
-  // If another HDHomeRun device or emulator is already using this port, PrismCast logs a warning and continues without HDHR emulation. Environment variable:
-  // HDHR_PORT. Default: 5004. Valid range: 1-65535.
+  // TCP port for the HDHomeRun emulation server. HDHomeRun devices traditionally use port 5004; this is the port a manual setup paste in Plex or Channels DVR
+  // expects. If another HDHomeRun device or emulator is already using this port, PrismCast logs a warning and continues without HDHR emulation. Environment
+  // variable: HDHR_PORT. Default: 5004. Valid range: 1-65535.
   port: number;
 }
 
