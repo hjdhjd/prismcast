@@ -41,6 +41,27 @@ export interface RecoveryMetrics {
   totalRecoveryTimeMs: number;
 }
 
+/**
+ * Handle returned by monitorPlaybackHealth. The playback monitor is a self-contained resource node: it owns a polling interval and exposes its accumulated recovery
+ * metrics for reading, separately from stopping. The metrics counters are live throughout the monitor's lifetime and remain valid after disposal (the interval is
+ * cleared but the counter object is retained), so the termination prologue reads getMetrics() while the stream is still live, then dispose() stops the interval -
+ * the same read-then-dispose shape as the capture session's segmenter stats and the native proxy's getStats(). Implements both dispose() (project convention) and
+ * TC39 Symbol.dispose so the monitor composes uniformly with the other capture-mode resources.
+ */
+export interface MonitorHandle extends Disposable {
+
+  // Stops the health-monitor interval. Idempotent: a second call is a harmless clearInterval on an already-cleared handle, and the monitor's internal guard
+  // short-circuits any in-flight async tick. Aliased to [Symbol.dispose].
+  readonly dispose: () => void;
+
+  // Returns the live recovery metrics accumulated over the monitor's lifetime. Safe to read at any time, including after disposal. Read in the termination prologue
+  // for the stream-end summary log.
+  readonly getMetrics: () => RecoveryMetrics;
+
+  // TC39 explicit resource management hook. Aliases dispose() so the monitor can be consumed with "using" or composed alongside the other self-disposing nodes.
+  readonly [Symbol.dispose]: () => void;
+}
+
 // Recovery method names used in logging. Centralized to ensure consistency across start, success, and failure messages.
 export const RECOVERY_METHODS = {
 

@@ -88,7 +88,9 @@ function makeFakeProxy(hooks: ProxyStubHooks): NativeProxy {
     updateVariantUrl: (newUrl: string): void => {
 
       hooks.variantUrl = newUrl;
-    }
+    },
+
+    [Symbol.dispose]: noop
   };
 }
 

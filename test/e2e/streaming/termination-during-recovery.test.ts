@@ -8,33 +8,35 @@
  * Investigation summary (mirroring the roadmap's "investigate the cleanup contract before pinning" rule):
  *
  *   1. Recovery state lifetime in production. The monitor in src/streaming/monitor.ts holds RecoveryMetrics and CircuitBreakerState in closure-scoped lets and
- *      exposes a single termination hook on the registry entry: stopMonitor: () => RecoveryMetrics. Calling stopMonitor stops the monitor's interval, returns
- *      the accumulated RecoveryMetrics for the termination summary, and lets the closure release its references. There is no separate "active recovery state"
- *      object exposed on the registry - the closure-scoped state IS the recovery state, and its disposal is structural via stopMonitor's invocation.
+ *      exposes itself on the registry entry as a self-disposing handle: monitor: MonitorHandle, with getMetrics() (reads the live accumulated RecoveryMetrics) and
+ *      dispose()/[Symbol.dispose] (stops the interval). terminateStream reads getMetrics() in its prologue for the termination summary, then disposeStreamResources
+ *      disposes the handle, stopping the interval and letting the closure release its references. There is no separate "active recovery state" object on the
+ *      registry - the closure-scoped state IS the recovery state, drained via getMetrics() and released structurally via dispose().
  *
- *   2. terminateStream's cleanup sequence (src/streaming/lifecycle.ts:122). Order of operations under the early-return-on-already-initiated guard at line 125:
- *      mark terminationInitiated -> abort + unregister AbortController -> clearTimeout(prerollTimer) -> destroy raw capture stream -> stop nativeProxy ->
- *      kill ffmpegProcess -> snapshot + stop segmenter -> remove channel mapping -> stopMonitor() (drains recovery state) -> close page (if not graceful
- *      shutdown) -> emit terminated + remove emitter listeners -> unregister from registry -> clearClients -> clearShowName -> emitStreamRemoved -> delete
- *      from terminationInitiated. Every step is synchronous from the caller's perspective.
+ *   2. terminateStream's cleanup sequence (src/streaming/lifecycle.ts). Under the early-return-on-already-initiated guard: mark terminationInitiated -> prologue
+ *      snapshots the summary stats while live (segmenter via the capture session, nativeProxy.getStats(), monitor.getMetrics()) -> disposeStreamResources(entry)
+ *      [abort + unregister AbortController -> monitor.dispose() -> clearTimeout(prerollTimer) -> nativeProxy.stop() | captureSession.dispose() -> close page (if not
+ *      graceful shutdown)] -> index cleanup [remove channel mapping -> emit terminated + remove emitter listeners -> unregisterStream -> clearClients ->
+ *      clearShowName -> emitStreamRemoved -> delete terminationInitiated] -> log. Every step is synchronous from the caller's perspective.
  *
  *   3. Cleanup gap analysis. Reviewed each branch above for "what survives if termination interrupts an in-flight recovery":
  *        - prerollTimer: cleared via clearTimeout (no orphan timer).
  *        - AbortController: aborted then unregistered (no leaked controller).
- *        - stopMonitor: called when set, return value is consumed (no leaked recovery interval).
+ *        - monitor: getMetrics() read in the prologue, dispose() called once in disposeStreamResources (no leaked recovery interval).
  *        - segmentEmitter: removeAllListeners called after the "terminated" emit (no orphan listeners).
  *        - registry entry: unregisterStream called (no orphan registry entry).
  *        - channel-to-stream index: deleted via channelToStreamId.delete (no orphan index entry).
  *      No cleanup gap surfaces from this reading. The contract is correct as written; this suite pins each branch as an integration-level invariant so a
- *      future regression that drops one (e.g., a refactor that removes the prerollTimer clear, or one that early-returns from stopMonitor without releasing
- *      the closure) fails loudly here.
+ *      future regression that drops one (e.g., a refactor that removes the prerollTimer clear, or one that early-returns from disposeStreamResources without
+ *      disposing the monitor) fails loudly here.
  *
  *   4. Out of scope for this suite. The monitor's interval lifecycle (start/stop, AsyncLocalStorage context propagation) is internal to monitor.ts and would
  *      require a Page stub to exercise end-to-end. That belongs in a monitor-orchestration suite that does not exist yet; its absence is documented in the
- *      Phase 1 recovery-escalation.test.ts header. Instead, this suite uses a fake stopMonitor that captures invocation, lets us verify the contract layer
- *      lifecycle.ts owns: that the hook IS called, that the recovery metrics flow back, and that other streams' hooks are not called.
+ *      Phase 1 recovery-escalation.test.ts header. Instead, this suite uses a fake monitor handle that captures dispose invocation, letting us verify the contract
+ *      layer lifecycle.ts owns: that the handle IS disposed, that the recovery metrics flow back via getMetrics(), and that other streams' handles are not disposed.
  */
-import { RECOVERY_METHODS, type RecoveryMetrics, createRecoveryMetrics, getRecoveryMethod, recordRecoveryAttempt } from "../../../src/streaming/recovery.ts";
+import type { MonitorHandle, RecoveryMetrics } from "../../../src/streaming/recovery.ts";
+import { RECOVERY_METHODS, createRecoveryMetrics, getRecoveryMethod, recordRecoveryAttempt } from "../../../src/streaming/recovery.ts";
 import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setChannelStreamId,
   terminateStream } from "../../../src/streaming/lifecycle.ts";
@@ -43,12 +45,12 @@ import { getStream, registerStream, unregisterStream } from "../../../src/stream
 import assert from "node:assert/strict";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
 
-/* Builds a stopMonitor stub that simulates a stream mid-recovery. The closure captures the metrics object the production code expects to receive on stop, and
- * an array recording every invocation. Using a fake stopMonitor (instead of starting a real monitor) is the right boundary here: this suite tests the
- * lifecycle.ts hook contract, not the monitor's internal interval lifecycle. The monitor-orchestration tests would belong in a separate suite that has the
- * Page stub plumbing required to spin up an actual monitor.
+/* Builds a fake MonitorHandle that simulates a stream mid-recovery. The closure captures the metrics object getMetrics() returns and an array recording every
+ * dispose invocation. Using a fake handle (instead of starting a real monitor) is the right boundary here: this suite tests the lifecycle.ts teardown contract,
+ * not the monitor's internal interval lifecycle. The monitor-orchestration tests would belong in a separate suite that has the Page stub plumbing required to
+ * spin up an actual monitor.
  */
-function makeMidRecoveryMonitor(): { invocations: number[]; metrics: RecoveryMetrics; stopMonitor: () => RecoveryMetrics } {
+function makeMidRecoveryMonitor(): { invocations: number[]; metrics: RecoveryMetrics; monitor: MonitorHandle } {
 
   const metrics = createRecoveryMetrics();
 
@@ -66,28 +68,30 @@ function makeMidRecoveryMonitor(): { invocations: number[]; metrics: RecoveryMet
 
   const invocations: number[] = [];
 
-  const stopMonitor = (): RecoveryMetrics => {
+  // The handle's dispose records each invocation; getMetrics returns the live metrics (read by the termination prologue). dispose() and [Symbol.dispose] are the
+  // same closure, mirroring the production handle.
+  const dispose = (): void => {
 
     invocations.push(Date.now());
-
-    return metrics;
   };
 
-  return { invocations, metrics, stopMonitor };
+  const monitor: MonitorHandle = { dispose, getMetrics: (): RecoveryMetrics => metrics, [Symbol.dispose]: dispose };
+
+  return { invocations, metrics, monitor };
 }
 
 describe("terminateStream during active recovery - cleanup contract", () => {
 
-  test("terminating a stream mid-recovery invokes stopMonitor exactly once and removes every cleanup-tracked resource", async () => {
+  test("terminating a stream mid-recovery disposes the monitor exactly once and removes every cleanup-tracked resource", async () => {
 
     /* The core invariant. A stream that is in the middle of an L2 recovery attempt must clean up cleanly when terminated:
-     *   - stopMonitor is invoked exactly once (drains the closure-scoped recovery state)
+     *   - the monitor handle is disposed exactly once (getMetrics has already drained the closure-scoped recovery state)
      *   - the registry entry is gone
      *   - the channel index entry is gone
      *   - the terminationInitiated flag is cleared (so a future stream with a recycled id is not falsely considered already-terminated)
      *
      * We also confirm the prerollTimer is a separate cleanup branch by setting a real Timeout on the entry and asserting it was cleared. A regression that
-     * dropped that branch (or moved it after stopMonitor and accidentally short-circuited it) would leave a Node Timeout firing after the registry entry is
+     * dropped that branch (or moved it after the monitor dispose and accidentally short-circuited it) would leave a Node Timeout firing after the registry entry is
      * gone - a write-after-free on the (now-undefined) HLSState.
      */
     await using ctx = await createIntegrationContext();
@@ -95,7 +99,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
     void ctx;
     await initializePersistence(ctx);
 
-    const { invocations, stopMonitor } = makeMidRecoveryMonitor();
+    const { invocations, monitor } = makeMidRecoveryMonitor();
 
     // Schedule a real Timeout to stand in for an in-flight prerollTimer. We use a far-future delay so the timer does NOT fire on its own during the test - the
     // assertion below is that terminateStream cleared it. unref() prevents the timer from holding the test-runner event loop open if the cleanup branch is
@@ -105,7 +109,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
 
     prerollTimer.unref();
 
-    const entry = makeRegistryEntry({ channelName: "abc", stopMonitor });
+    const entry = makeRegistryEntry({ channelName: "abc", monitor });
 
     entry.hls.prerollTimer = prerollTimer;
 
@@ -116,7 +120,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
 
     // Recovery state hook: invoked exactly once, returning the in-flight metrics. A second invocation would mean termination ran twice; zero invocations would
     // mean lifecycle.ts skipped the hook (e.g., a refactor that conditioned it on an unrelated field).
-    assert.equal(invocations.length, 1, "stopMonitor must be invoked exactly once during termination");
+    assert.equal(invocations.length, 1, "the monitor handle must be disposed exactly once during termination");
 
     // prerollTimer cleanup: the timer reference still exists, but lifecycle.ts cleared it. The clearest test is to wait past the firing window and assert the
     // timer's callback never ran. Since we set 60_000ms above and unref'd it, the test does not need to wait for that - we can directly observe by polling
@@ -138,7 +142,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
   test("terminateStream is idempotent across recovery cycles: a second call during a notional next-recovery is a no-op", async () => {
 
     /* The "twice in quick succession" scenario. terminateStream's first action is to add the id to terminationInitiated; if the id is already there, it
-     * early-returns without doing anything else (lifecycle.ts:125-129). The second call must NOT invoke stopMonitor again, NOT throw, and NOT corrupt the
+     * early-returns without doing anything else (lifecycle.ts:125-129). The second call must NOT dispose the monitor again, NOT throw, and NOT corrupt the
      * registry. This is the production safety net for cases where multiple sources fire termination concurrently (client disconnect race, monitor circuit
      * breaker trip, graceful shutdown sweep). Without it, a double-cleanup would attempt to drain already-released resources.
      *
@@ -151,8 +155,8 @@ describe("terminateStream during active recovery - cleanup contract", () => {
     void ctx;
     await initializePersistence(ctx);
 
-    const { invocations, stopMonitor } = makeMidRecoveryMonitor();
-    const entry = makeRegistryEntry({ channelName: "abc", stopMonitor });
+    const { invocations, monitor } = makeMidRecoveryMonitor();
+    const entry = makeRegistryEntry({ channelName: "abc", monitor });
 
     registerStream(entry);
     setChannelStreamId("abc", entry.id);
@@ -160,21 +164,21 @@ describe("terminateStream during active recovery - cleanup contract", () => {
     terminateStream(entry.id, "abc", "first call");
     assert.doesNotThrow(() => { terminateStream(entry.id, "abc", "second call"); }, "second termination must not throw");
 
-    // stopMonitor was called exactly once - the second terminateStream early-returned. A regression that dropped the early-return would call stopMonitor again
+    // the monitor was disposed exactly once - the second terminateStream early-returned. A regression that dropped the early-return would dispose the monitor again
     // against a closure that has already been drained - in the real monitor, that is a write-after-stop on the recovery state.
-    assert.equal(invocations.length, 1, "stopMonitor must be invoked exactly once across two terminateStream calls");
+    assert.equal(invocations.length, 1, "the monitor must be disposed exactly once across two terminateStream calls");
 
     // Registry and index remain clean - the second call did not strand a new entry or index pointer.
     assert.equal(getStream(entry.id), undefined, "registry stays clean across the duplicate termination");
     assert.equal(getChannelStreamId("abc"), undefined, "channel index stays clean across the duplicate termination");
   });
 
-  test("two streams in mid-recovery: terminating one does NOT invoke the other's stopMonitor and leaves the other's recovery state intact", async () => {
+  test("two streams in mid-recovery: terminating one does NOT dispose the other's monitor and leaves the other's recovery state intact", async () => {
 
     /* The cross-stream isolation invariant under the recovery axis. Phase 1's lifecycle.test.ts pins cross-stream isolation for the registry/index
-     * cleanup; this test extends the invariant to the recovery-state hook: stopMonitor on stream A must NOT be invoked when stream B is terminated. A
-     * regression that confused the per-stream stopMonitor reference (e.g., a closure that captured a shared variable instead of the per-entry field) would
-     * surface here as both stopMonitors being invoked when one terminates.
+     * cleanup; this test extends the invariant to the recovery-state hook: stream A's monitor must NOT be disposed when stream B is terminated. A
+     * regression that confused the per-stream monitor reference (e.g., a closure that captured a shared variable instead of the per-entry field) would
+     * surface here as both monitors being disposed when one terminates.
      *
      * This is the recovery-side analog of recovery-escalation's per-stream metric isolation: that suite proves the metrics objects are independent at the
      * recovery.ts layer; this suite proves lifecycle.ts respects that independence at the termination boundary.
@@ -187,8 +191,8 @@ describe("terminateStream during active recovery - cleanup contract", () => {
     const monitorA = makeMidRecoveryMonitor();
     const monitorB = makeMidRecoveryMonitor();
 
-    const entryA = makeRegistryEntry({ channelName: "abc", stopMonitor: monitorA.stopMonitor });
-    const entryB = makeRegistryEntry({ channelName: "nbc", stopMonitor: monitorB.stopMonitor });
+    const entryA = makeRegistryEntry({ channelName: "abc", monitor: monitorA.monitor });
+    const entryB = makeRegistryEntry({ channelName: "nbc", monitor: monitorB.monitor });
 
     registerStream(entryA);
     registerStream(entryB);
@@ -200,9 +204,9 @@ describe("terminateStream during active recovery - cleanup contract", () => {
 
     terminateStream(entryA.id, "abc", "test - terminate A while both are mid-recovery");
 
-    // Stream A's stopMonitor was invoked. Stream B's stopMonitor was NOT.
-    assert.equal(monitorA.invocations.length, 1, "stream A's stopMonitor must be invoked");
-    assert.equal(monitorB.invocations.length, 0, "stream B's stopMonitor must NOT be invoked - termination of A must not reach B's hook");
+    // Stream A's monitor was disposed. Stream B's monitor was NOT.
+    assert.equal(monitorA.invocations.length, 1, "stream A's monitor must be disposed");
+    assert.equal(monitorB.invocations.length, 0, "stream B's monitor must NOT be disposed - termination of A must not reach B's handle");
 
     // Stream B is still in the registry; stream A is gone.
     assert.equal(getStream(entryA.id), undefined, "stream A is removed from the registry");

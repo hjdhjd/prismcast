@@ -127,6 +127,10 @@ export interface NativeProxy {
   // Stops the proxy and cancels the pending token refresh timer.
   stop: () => void;
 
+  // TC39 explicit resource management hook, aliasing stop() so the proxy is a self-disposing node that composes uniformly with the other capture-mode resources
+  // (the capture session and the health monitor). Its teardown is self-contained - it owns the polling loop and token-refresh timer and releases exactly those.
+  [Symbol.dispose]: () => void;
+
   // Updates the audio variant URL after a token refresh. Only applicable for streams with separate audio renditions.
   updateAudioVariantUrl: (newUrl: string) => void;
 
@@ -1549,6 +1553,26 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     })();
   }
 
+  // The proxy's teardown: flip the lifecycle flag the polling awaiter checks, and cancel the pending token-refresh timer. Defined as a const so it can be exposed
+  // both as stop() (the established domain verb) and as [Symbol.dispose] (the TC39 protocol), making the proxy a self-disposing node without duplicating the body.
+  const stop = (): void => {
+
+    lifecycle.stopped = true;
+
+    // The polling cadence sleep is owned by schedulePoll's awaiter and is not cancelled here - the awaiter checks lifecycle.stopped after clock.sleep resolves
+    // and exits before issuing the next poll. See schedulePoll's docblock for the cancellation contract.
+
+    // Cancel the pending token refresh timer to prevent fire-after-termination. Without this, the timer fires on a stopped proxy and attempts to navigate a
+    // potentially closed or reused page.
+    if(lifecycle.tokenRefreshTimer) {
+
+      clearTimeout(lifecycle.tokenRefreshTimer);
+      lifecycle.tokenRefreshTimer = null;
+    }
+
+    LOG.debug("native:proxy", "Stopped native proxy for %s.", channelName);
+  };
+
   return {
 
     getConsecutiveErrors: (): number => video.segmentTracker.consecutiveFailures + video.consecutiveManifestFailures +
@@ -1584,23 +1608,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       void pollManifest();
     },
 
-    stop: (): void => {
-
-      lifecycle.stopped = true;
-
-      // The polling cadence sleep is owned by schedulePoll's awaiter and is not cancelled here - the awaiter checks lifecycle.stopped after clock.sleep resolves
-      // and exits before issuing the next poll. See schedulePoll's docblock for the cancellation contract.
-
-      // Cancel the pending token refresh timer to prevent fire-after-termination. Without this, the timer fires on a stopped proxy and attempts to navigate a
-      // potentially closed or reused page.
-      if(lifecycle.tokenRefreshTimer) {
-
-        clearTimeout(lifecycle.tokenRefreshTimer);
-        lifecycle.tokenRefreshTimer = null;
-      }
-
-      LOG.debug("native:proxy", "Stopped native proxy for %s.", channelName);
-    },
+    stop,
 
     updateAudioVariantUrl: (newUrl: string): void => {
 
@@ -1625,6 +1633,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       video.tokenRefreshPending = true;
 
       LOG.debug("native:proxy", "Variant URL updated for %s. Segment tracking reset.", channelName);
-    }
+    },
+
+    // TC39 explicit resource management hook aliasing stop(), so the proxy is a self-disposing node consumable via the protocol (a DisposableStack or "using"). The
+    // explicit teardown in disposeStreamResources calls stop() directly, following the codebase convention that explicit call sites use the readable verb.
+    [Symbol.dispose]: stop
   };
 }

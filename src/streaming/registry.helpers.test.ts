@@ -86,6 +86,7 @@ describe("makeRegistryEntry", () => {
     assert.equal(entry.channelName, null);
     assert.equal(entry.clientAddress, null);
     assert.equal(entry.hardwareAccelerated, false);
+    assert.equal(entry.monitor, null);
     assert.equal(entry.mpegTsClientCount, 0);
     assert.equal(entry.nativeBandwidth, 0);
     assert.equal(entry.nativeProxy, null);
@@ -93,7 +94,6 @@ describe("makeRegistryEntry", () => {
     assert.equal(entry.page, null);
     assert.equal(entry.preTuned, false);
     assert.equal(entry.profile, null);
-    assert.equal(entry.stopMonitor, null);
   });
 
   test("defaults to 'capture' streamingMode and a stable test URL", () => {

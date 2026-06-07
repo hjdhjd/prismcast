@@ -9,6 +9,7 @@ import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recove
 import { getStream, unregisterStream } from "./registry.ts";
 import type { Nullable } from "../types/index.ts";
 import type { RecoveryMetrics } from "./recovery.ts";
+import type { StreamRegistryEntry } from "./registry.ts";
 import { clearClients } from "./clients.ts";
 import { clearShowName } from "./showInfo.ts";
 import { emitStreamRemoved } from "./statusEmitter.ts";
@@ -88,7 +89,57 @@ export function isTerminationInitiated(streamId: number): boolean {
 // Stream Termination.
 
 /**
- * Terminates a stream, cleaning up all resources. This is the authoritative termination function that all code paths should use for consistent cleanup.
+ * Disposes a stream's owned resources in the correct teardown order. The stream is the root of an ownership tree whose leaves are self-disposing nodes - the health
+ * monitor, the native proxy, and the capture session - and this function composes them, inlining the simple owned operations (aborting the per-stream
+ * AbortController, cancelling the deferred preroll timer, closing the page).
+ *
+ * It lives here, in the lifecycle owner, rather than as a [Symbol.dispose] on the registry entry, because the stream's teardown is not self-contained: it reads the
+ * per-stream AbortController from a side registry and the graceful-shutdown flag from the browser module. (The entry's index/membership cleanup - registry, client
+ * tracking, show-name cache, SSE - stays in terminateStream for the same reason: those cross-module registries reference the stream, and the orchestrator removes
+ * them rather than the entry disposing itself from its own containers.) The genuinely self-contained resources are the nodes this composes; the stream composes them.
+ *
+ * Order is load-bearing: abort first so pending page.evaluate() calls reject immediately instead of hanging up to Puppeteer's 180s protocolTimeout while teardown
+ * proceeds; stop the monitor so it no longer reacts to the stream; cancel the preroll timer; dispose the active pipeline (capture and native modes are mutually
+ * exclusive - the capture session destroys its capture stream first, firing STOP_RECORDING while the browser is still connected); and close the page last, after
+ * that destroy.
+ * @param entry - The registry entry whose owned resources to dispose.
+ */
+function disposeStreamResources(entry: StreamRegistryEntry): void {
+
+  // Abort any pending page.evaluate() calls so they reject immediately rather than hanging on Puppeteer's protocolTimeout, then unregister the controller.
+  getAbortController(entry.streamIdStr)?.abort();
+  unregisterAbortController(entry.streamIdStr);
+
+  // Stop the health monitor; it no longer needs to react to the stream. Its metrics were already read in the termination prologue.
+  entry.monitor?.dispose();
+
+  // Cancel the deferred preroll timer so it cannot fire after teardown and write to the soon-to-be-unregistered HLS state.
+  if(entry.hls.prerollTimer) {
+
+    clearTimeout(entry.hls.prerollTimer);
+    entry.hls.prerollTimer = null;
+  }
+
+  // Dispose the active pipeline. The CaptureSession disposes its capture stream, FFmpeg child, and segmenter in kill-then-destroy-then-stop order; the native proxy
+  // stops its polling loop and token-refresh timer. Only one is present for a given stream.
+  entry.nativeProxy?.stop();
+  entry.captureSession?.dispose();
+
+  // Close the browser page last - after the capture stream's destroy fired STOP_RECORDING while the browser was still connected. Skip during graceful shutdown
+  // (closeBrowser() closes every page; double-closing yields "Target closed" errors). The page is null for a pending entry whose async setup never created one.
+  if(entry.page && !isGracefulShutdown() && !entry.page.isClosed()) {
+
+    entry.page.close().catch((error: unknown) => {
+
+      LOG.debug("streaming:hls", "Error closing page for stream %s: %s.", entry.id, formatError(error));
+    });
+  }
+}
+
+/**
+ * Terminates a stream, cleaning up all resources. This is the authoritative termination function that all code paths should use for consistent cleanup. It collapses
+ * to three readable phases: a prologue that snapshots the summary statistics while the resources are still live, disposeStreamResources() to tear down the stream's
+ * owned resources, and the index/membership cleanup plus the termination log.
  *
  * Note: This function does NOT call emitCurrentSystemStatus() to avoid circular dependencies with the browser module. Callers should call emitCurrentSystemStatus()
  * after termination if they need to update the SSE system status.
@@ -98,117 +149,54 @@ export function isTerminationInitiated(streamId: number): boolean {
  */
 export function terminateStream(streamId: number, channelName: string, reason: string): void {
 
-  // Mark termination as initiated to suppress spurious warnings from segmenter callbacks.
+  // The guard makes redundant terminate calls a no-op (callers can issue them freely) and suppresses spurious warnings from in-flight segmenter/monitor callbacks.
   if(terminationInitiated.has(streamId)) {
 
-    // Termination already in progress.
     return;
   }
 
   terminationInitiated.add(streamId);
 
-  // Get stream info early to calculate duration and access resources.
   const streamInfo = getStream(streamId);
   const durationMs = streamInfo ? (Date.now() - streamInfo.startTime.getTime()) : 0;
 
-  // Abort pending evaluate calls for this stream. This immediately rejects any pending page.evaluate() calls, preventing them from hanging for up to 180 seconds
-  // (Puppeteer's protocolTimeout). We do this first so pending operations fail fast before we start cleaning up resources.
-  if(streamInfo?.streamIdStr) {
-
-    const controller = getAbortController(streamInfo.streamIdStr);
-
-    if(controller) {
-
-      controller.abort();
-    }
-
-    unregisterAbortController(streamInfo.streamIdStr);
-  }
-
-  // Cancel the deferred preroll timer if it hasn't fired yet. Without this, a pending stream terminated during setup (idle timeout, capacity reclaim, browser
-  // disconnect) would leave an orphaned timer that writes to the now-unregistered HLS state.
-  if(streamInfo?.hls.prerollTimer) {
-
-    clearTimeout(streamInfo.hls.prerollTimer);
-    streamInfo.hls.prerollTimer = null;
-  }
-
-  // Snapshot statistics for the termination summary before any teardown. The capture-pipeline stats come from the segmenter (reached through the CaptureSession);
-  // the native-proxy stats come from the proxy. All are closure-scoped counters that remain valid after teardown, but reading them up front keeps the data flow
-  // explicit and the disposal below purely side-effecting. Capture and native modes are mutually exclusive, so at most one branch's resources are present.
-  let keyframeStats: Nullable<KeyframeStats> = null;
-  let segmentCount = 0;
-  let sessionStats: Nullable<SessionStats> = null;
-
+  // Prologue: snapshot every statistic the termination summary needs while the resources are still live. Each capture-mode resource is a node exposing a read
+  // alongside its dispose - the segmenter (via the capture session), the native proxy, and the health monitor - read here, disposed below. The counters remain valid
+  // after disposal, but reading up front keeps the disposal purely side-effecting. Capture and native modes are mutually exclusive, so at most one set is present.
   const segmenter = streamInfo?.captureSession?.segmenter;
+  const keyframeStats: Nullable<KeyframeStats> = segmenter?.getKeyframeStats() ?? null;
+  const segmentCount = segmenter?.getSegmentIndex() ?? 0;
+  const sessionStats: Nullable<SessionStats> = segmenter?.getSessionStats() ?? null;
+  const nativeProxyStats = streamInfo?.nativeProxy?.getStats();
+  const recoveryMetrics: Nullable<RecoveryMetrics> = streamInfo?.monitor?.getMetrics() ?? null;
 
-  if(segmenter) {
+  // Dispose the stream's owned resources (abort, monitor, preroll timer, pipeline, page) in teardown order.
+  if(streamInfo) {
 
-    keyframeStats = segmenter.getKeyframeStats();
-    segmentCount = segmenter.getSegmentIndex();
-    sessionStats = segmenter.getSessionStats();
+    disposeStreamResources(streamInfo);
   }
 
-  const nativeProxyStats = streamInfo?.nativeProxy?.getStats();
-
-  // Tear down the active pipeline. The CaptureSession disposes its capture stream, FFmpeg child, and segmenter in the correct kill-then-destroy-then-stop order -
-  // destroying the capture stream fires STOP_RECORDING while the browser is still connected, which must happen before the page is closed below. Stopping the native
-  // proxy halts its manifest polling loop and timers. Only one of the two is present for a given stream.
-  streamInfo?.nativeProxy?.stop();
-  streamInfo?.captureSession?.dispose();
-
-  // Remove channel mapping.
+  // Index/membership cleanup. The channel mapping, registry entry, client tracking, show-name cache, and SSE consumers are owned by other modules and reference this
+  // stream; the orchestrator removes them here. The "terminated" event must fire before unregisterStream() destroys the HLS state, and removing all listeners
+  // prevents orphaned-handler leaks.
   if(channelToStreamId.get(channelName) === streamId) {
 
     channelToStreamId.delete(channelName);
   }
 
-  // Clean up stream resources and capture recovery metrics.
-  let recoveryMetrics: Nullable<RecoveryMetrics> = null;
-
-  if(streamInfo) {
-
-    // Stop the health monitor and get recovery metrics.
-    if(streamInfo.stopMonitor) {
-
-      recoveryMetrics = streamInfo.stopMonitor();
-    }
-
-    // Close the browser page. Skip during graceful shutdown since closeBrowser() will close all pages and we'd get spurious "Target closed" errors. The page may be
-    // null for pending stream entries that were registered but whose async setup has not yet completed (or failed before creating a page).
-    if(streamInfo.page && !isGracefulShutdown() && !streamInfo.page.isClosed()) {
-
-      streamInfo.page.close().catch((error: unknown) => {
-
-        LOG.debug("streaming:hls", "Error closing page for stream %s: %s.", streamId, formatError(error));
-      });
-    }
-  }
-
-  // Notify MPEG-TS clients that this stream is ending. This must happen before unregisterStream() which destroys the HLSState. Removing all listeners prevents
-  // memory leaks from orphaned event handlers.
   if(streamInfo) {
 
     streamInfo.hls.segmentEmitter.emit("terminated");
     streamInfo.hls.segmentEmitter.removeAllListeners();
   }
 
-  // Unregister from registry. This also clears the HLS segment storage.
   unregisterStream(streamId);
-
-  // Clear client tracking data for this stream.
   clearClients(streamId);
-
-  // Clear cached show name.
   clearShowName(streamId);
-
-  // Emit stream removed event.
   emitStreamRemoved(streamId);
-
-  // Clean up termination tracking.
   terminationInitiated.delete(streamId);
 
-  // Log termination with stream ID prefix since we're outside the stream context. Include recovery summary if there were any recoveries.
+  // Epilogue: compose and emit the termination summary from the prologue snapshot. Logged with the stream-ID prefix since we are outside the stream context.
   const streamIdStr = streamInfo?.streamIdStr ?? ("s" + String(streamId).padStart(4, "0"));
   const reasonSuffix = (reason === "no active clients") ? "" : " (" + reason + ")";
   const streamLog = LOG.withStreamId(streamIdStr);

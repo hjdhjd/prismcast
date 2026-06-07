@@ -6,9 +6,9 @@ import type { Nullable, ResolvedSiteProfile, StreamingMode } from "../types/inde
 import type { CaptureCodec } from "./codec.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import { EventEmitter } from "node:events";
+import type { MonitorHandle } from "./recovery.ts";
 import type { NativeProxy } from "../native/proxy.ts";
 import type { Page } from "puppeteer-core";
-import type { RecoveryMetrics } from "./recovery.ts";
 
 /* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser
  * state, HLS segment storage, and the segmenter reference. This consolidation prevents data desync issues that could occur with separate Maps for each concern. The
@@ -206,8 +206,9 @@ export interface StreamRegistryEntry {
   // Timestamp when the stream started.
   startTime: Date;
 
-  // Function to stop the health monitor, or null if monitoring hasn't started. Returns recovery metrics for the termination summary.
-  stopMonitor: Nullable<() => RecoveryMetrics>;
+  // The playback health monitor handle, or null if monitoring hasn't started. Exposes the live recovery metrics (read in the termination prologue) and a
+  // self-contained dispose that stops the monitor's polling interval.
+  monitor: Nullable<MonitorHandle>;
 
   // String identifier for logging (e.g., "cnn-5jecl6").
   streamIdStr: string;

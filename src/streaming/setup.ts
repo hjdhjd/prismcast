@@ -5,8 +5,8 @@
 import type { Frame, Page } from "puppeteer-core";
 import { LOG, delay, extractDomain, formatError, raceWithTimeout, registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext,
   spawnFFmpeg, startTimer } from "../utils/index.ts";
+import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
-import type { RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
 import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.ts";
 import { getNextStreamId, getStreamCount } from "./registry.ts";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.ts";
@@ -169,8 +169,8 @@ export interface StreamSetupResult {
   // Timestamp when the stream started.
   startTime: Date;
 
-  // Function to stop the health monitor. Returns recovery metrics for the termination summary.
-  stopMonitor: () => RecoveryMetrics;
+  // The playback health monitor handle. Exposes the live recovery metrics (read in the termination prologue) and a self-contained dispose that stops the monitor.
+  monitor: MonitorHandle;
 
   // Unique string ID for log correlation (e.g., "nbc-abc123").
   streamId: string;
@@ -1013,7 +1013,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     };
 
     // Start the health monitor for this stream.
-    const stopMonitor = monitorPlaybackHealth(page, context, profile, url, streamId, monitorStreamInfo, onCircuitBreak, onTabReplacement);
+    const monitor = monitorPlaybackHealth(page, context, profile, url, streamId, monitorStreamInfo, onCircuitBreak, onTabReplacement);
 
     // Cleanup function. Releases all resources associated with the stream. Idempotent - safe to call multiple times. completeStreamSetup uses it as the fallback
     // teardown when the pending entry is terminated before the capture session is installed on it; once installed, terminateStream disposes the same session
@@ -1029,7 +1029,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
       cleanupCompleted = true;
 
-      stopMonitor();
+      monitor.dispose();
       captureSession.dispose();
       disposePage(page);
 
@@ -1049,13 +1049,13 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       cleanup,
       directTune,
       manifestInterception,
+      monitor,
       numericStreamId,
       page,
       profile,
       profileName,
       serviceName,
       startTime,
-      stopMonitor,
       streamId,
       url
     };

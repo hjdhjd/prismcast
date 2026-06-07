@@ -2,7 +2,7 @@
  *
  * monitor.ts: Playback health monitoring for PrismCast.
  */
-import type { CircuitBreakerState, RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
+import type { CircuitBreakerState, MonitorHandle, RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
 import { EvaluateTimeoutError, LOG, capitalize, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
@@ -165,7 +165,7 @@ interface SegmentState {
  * @param onCircuitBreak - Callback function called when circuit breaker trips.
  * @param onTabReplacement - Optional callback for tab replacement recovery. When provided and 3+ consecutive timeouts occur, this is called to replace the hung tab.
  *                           If null/undefined, tab replacement is not available and timeouts will eventually trip the circuit breaker.
- * @returns A cleanup function to stop the monitor.
+ * @returns A MonitorHandle exposing the live recovery metrics (getMetrics) and a self-contained dispose that stops the monitor's polling interval.
  */
 export function monitorPlaybackHealth(
   page: Page,
@@ -176,7 +176,7 @@ export function monitorPlaybackHealth(
   streamInfo: MonitorStreamInfo,
   onCircuitBreak: () => void,
   onTabReplacement?: () => Promise<Nullable<TabReplacementResult>>
-): () => RecoveryMetrics {
+): MonitorHandle {
 
   /* Monitor state. These track the video's behavior over time and control recovery decisions. Mutable variables are organized into typed state objects by subsystem
    * (recovery, segments, native health, resolution) to clarify ownership and interaction boundaries. Variables that don't belong to a specific subsystem remain as
@@ -691,9 +691,9 @@ export function monitorPlaybackHealth(
    */
   function emitStatusUpdate(): void {
 
-    // Do not emit after the monitor has been stopped. An in-flight async tick can resume from an await after terminateStream() has called stopMonitor() and
-    // emitStreamRemoved(). Without this guard, the emitStreamHealthChanged() call below would re-add the dead stream to the streamStatuses Map, creating a zombie
-    // entry that persists in SSE snapshots indefinitely.
+    // Do not emit after the monitor has been stopped. An in-flight async tick can resume from an await after terminateStream() has disposed the monitor handle
+    // (clearing this interval) and called emitStreamRemoved(). Without this guard, the emitStreamHealthChanged() call below would re-add the dead stream to the
+    // streamStatuses Map, creating a zombie entry that persists in SSE snapshots indefinitely.
     if(intervalCleared) {
 
       return;
@@ -2153,15 +2153,22 @@ export function monitorPlaybackHealth(
     });
   }, CONFIG.playback.monitorInterval);
 
-  /* Return the cleanup function. The caller (stream handler) should call this when the stream ends to stop monitoring. Returns the recovery metrics for the
-   * termination summary log.
+  /* The monitor's teardown: mark the interval cleared (so any in-flight async tick short-circuits) and clear it. Self-contained - it owns only the interval. Defined
+   * as a const so it is exposed as both dispose() and [Symbol.dispose].
    */
-  return function(): RecoveryMetrics {
+  const dispose = (): void => {
 
     intervalCleared = true;
-
     clearInterval(interval);
+  };
 
-    return metrics;
+  /* Return the monitor handle. getMetrics() exposes the live recovery metrics (read in the termination prologue for the summary log); dispose() / [Symbol.dispose]
+   * stops the monitor. The metrics object remains valid after disposal because it is a retained counter snapshot, not derived at stop time.
+   */
+  return {
+
+    dispose,
+    getMetrics: (): RecoveryMetrics => metrics,
+    [Symbol.dispose]: dispose
   };
 }

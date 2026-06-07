@@ -1008,6 +1008,7 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
       lastPlaylistRequest: Date.now(),
       storeKey: channelName
     },
+    monitor: null,
     mpegTsClientCount: 0,
     nativeBandwidth: 0,
     nativeProxy: null,
@@ -1016,7 +1017,6 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
     preTuned: options.preTuned ?? false,
     profile: null,
     startTime: options.streamStartTime ?? new Date(),
-    stopMonitor: null,
     streamIdStr,
     streamingMode: "capture",
     url
@@ -1336,10 +1336,10 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
   }
 
   stream.captureSession = setup.captureSession;
+  stream.monitor = setup.monitor;
   stream.page = setup.page;
   stream.profile = setup.profile;
   stream.startTime = setup.startTime;
-  stream.stopMonitor = setup.stopMonitor;
   stream.url = setup.url;
 
   // Continue within stream context for consistent logging.

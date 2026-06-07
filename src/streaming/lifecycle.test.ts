@@ -298,15 +298,16 @@ describe("terminateStream", () => {
     assert.ok(calls.includes("stop"), "segmenter.stop was invoked");
   });
 
-  test("calls stopMonitor when present", () => {
+  test("disposes the monitor handle when present", () => {
 
-    let stopMonitorCalled = false;
-    const stopMonitor = (): ReturnType<NonNullable<StreamRegistryEntry["stopMonitor"]>> => {
+    // terminateStream reads the monitor's metrics in the prologue and disposes the handle in disposeStreamResources. This test pins that the handle's dispose runs.
+    let monitorDisposed = false;
+    const dispose = (): void => { monitorDisposed = true; };
 
-      stopMonitorCalled = true;
+    const monitor: NonNullable<StreamRegistryEntry["monitor"]> = {
 
-      return {
-
+      dispose,
+      getMetrics: () => ({
 
         currentRecoveryMethod: null,
         currentRecoveryStartTime: null,
@@ -319,15 +320,16 @@ describe("terminateStream", () => {
         tabReplacementAttempts: 0,
         tabReplacementSuccesses: 0,
         totalRecoveryTimeMs: 0
-      };
+      }),
+      [Symbol.dispose]: dispose
     };
 
-    const entry = makeRegistryEntry({ stopMonitor });
+    const entry = makeRegistryEntry({ monitor });
 
     registerStream(entry);
     terminateStream(entry.id, entry.channelName ?? "", "test");
 
-    assert.equal(stopMonitorCalled, true, "stopMonitor invoked");
+    assert.equal(monitorDisposed, true, "monitor.dispose invoked on termination");
   });
 
   test("emits a 'terminated' event on the segmentEmitter and removes all listeners", () => {
