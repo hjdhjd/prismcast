@@ -4,12 +4,10 @@
  */
 import type { Nullable, ResolvedSiteProfile, StreamingMode } from "../types/index.ts";
 import type { CaptureCodec } from "./codec.ts";
+import type { CaptureSession } from "./captureSession.ts";
 import { EventEmitter } from "node:events";
-import type { FFmpegProcess } from "../utils/index.ts";
-import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
 import type { NativeProxy } from "../native/proxy.ts";
 import type { Page } from "puppeteer-core";
-import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./recovery.ts";
 
 /* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser
@@ -157,14 +155,16 @@ export interface StreamRegistryEntry {
   // HLS manifest. Null before stream setup completes.
   captureCodec: Nullable<string>;
 
+  // The capture-pipeline composite for capture-mode streams: the raw puppeteer-stream capture, the optional Matroska-to-fMP4 FFmpeg child, and the fMP4 segmenter,
+  // owned as one self-disposing unit with the correct kill-then-destroy-then-stop teardown order. Null for native-mode streams and for pending entries before setup
+  // completes; the attached segmenter (read via captureSession.segmenter) is itself null until createCaptureSegmenter wires it. Mutually exclusive with nativeProxy.
+  captureSession: Nullable<CaptureSession>;
+
   // Channel name if streaming a named channel, or null for arbitrary URLs.
   channelName: Nullable<string>;
 
   // IP address of the client that initiated this stream. Used to identify the Channels DVR server for show info lookup.
   clientAddress: Nullable<string>;
-
-  // The FFmpeg process for Matroska-to-fMP4 transcoding, or null if using native fMP4 capture.
-  ffmpegProcess: Nullable<FFmpegProcess>;
 
   // Whether this stream is using hardware-accelerated video encoding on the local GPU. True when Chrome's MediaRecorder is using hardware encoding in capture mode.
   // False for native HLS (pass-through, no local encoding) and software-only capture.
@@ -202,14 +202,6 @@ export interface StreamRegistryEntry {
   // The resolved site profile used for this stream. Needed for tab replacement recovery to recreate the capture with the same profile. Null for pending stream entries
   // that have been registered but whose async setup has not yet completed.
   profile: Nullable<ResolvedSiteProfile>;
-
-  // The raw capture stream from puppeteer-stream. In FFmpeg mode, this is the Matroska stream piped to FFmpeg's stdin. In native mode, this is the same as the segmenter
-  // input. Must be destroyed before closing the page to ensure chrome.tabCapture releases the capture and prevents "Cannot capture a tab with an active stream" errors
-  // on subsequent stream requests.
-  rawCaptureStream: Nullable<Readable>;
-
-  // The fMP4 segmenter that processes the capture stream, or null if not yet created.
-  segmenter: Nullable<FMP4SegmenterResult>;
 
   // Timestamp when the stream started.
   startTime: Date;
@@ -411,7 +403,7 @@ export function getTotalSegmentMemory(): number {
  */
 export function getLastSegmentHasVideo(entry: StreamRegistryEntry): Nullable<boolean> {
 
-  return entry.segmenter?.getLastSegmentHasVideo() ?? null;
+  return entry.captureSession?.segmenter?.getLastSegmentHasVideo() ?? null;
 }
 
 /**
@@ -422,5 +414,5 @@ export function getLastSegmentHasVideo(entry: StreamRegistryEntry): Nullable<boo
  */
 export function getLastSegmentSize(entry: StreamRegistryEntry): Nullable<number> {
 
-  return entry.segmenter?.getLastSegmentSize() ?? null;
+  return entry.captureSession?.segmenter?.getLastSegmentSize() ?? null;
 }

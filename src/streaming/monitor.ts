@@ -603,13 +603,14 @@ export function monitorPlaybackHealth(
     }
 
     // Use the existing tab replacement infrastructure. It sets recoveryState.inProgress = true internally and clears it in finalizeTabReplacement. It creates a new
-    // page with capture, navigates, sets up playback, creates a segmenter, and updates the registry entry (page, rawCaptureStream, ffmpegProcess, segmenter).
+    // page with capture, navigates, sets up playback, creates a segmenter, and updates the registry entry (the page and the new capture session, with the segmenter
+    // attached to it).
     const outcome = await executeTabReplacement("native fallback to capture");
 
     if(outcome.outcome === "success") {
 
-      // Tab replacement succeeded. Update the registry to reflect capture mode. The tab replacement handler already set page, rawCaptureStream, ffmpegProcess,
-      // and segmenter on the registry entry. We just need to update the streaming mode and clear audio state.
+      // Tab replacement succeeded. Update the registry to reflect capture mode. The tab replacement handler already set the page and the new capture session (with
+      // its segmenter attached) on the registry entry. We just need to update the streaming mode and clear audio state.
       entry.streamingMode = "capture";
 
       // Clear separate audio state from the native proxy. Without this, hasAudio remains true and the HLS handler continues serving the master playlist (referencing
@@ -643,7 +644,7 @@ export function monitorPlaybackHealth(
   // a pending discontinuity flag so the next segment boundary includes an #EXT-X-DISCONTINUITY tag. This tells HLS clients to flush their decoder state.
   const markStreamDiscontinuity = (): void => {
 
-    getStream(streamInfo.numericStreamId)?.segmenter?.markDiscontinuity();
+    getStream(streamInfo.numericStreamId)?.captureSession?.segmenter?.markDiscontinuity();
   };
 
   /**
@@ -766,7 +767,7 @@ export function monitorPlaybackHealth(
     segmentState.productionStalled = false;
     segmentState.consecutiveTinySegments = 0;
     segmentState.wasInTinyState = false;
-    segmentState.lastCheckedIndex = getStream(streamInfo.numericStreamId)?.segmenter?.getSegmentIndex() ?? 0;
+    segmentState.lastCheckedIndex = getStream(streamInfo.numericStreamId)?.captureSession?.segmenter?.getSegmentIndex() ?? 0;
     segmentState.lastSegmentAdvanceTime = Date.now();
   }
 
@@ -1253,7 +1254,7 @@ export function monitorPlaybackHealth(
 
       // Check if segments are flowing by comparing current index to pre-recovery index.
       const entry = getStream(streamInfo.numericStreamId);
-      const currentIndex = entry?.segmenter?.getSegmentIndex() ?? null;
+      const currentIndex = entry?.captureSession?.segmenter?.getSegmentIndex() ?? null;
 
       if((currentIndex !== null) && (currentIndex > segmentState.preRecoveryIndex)) {
 
@@ -1272,7 +1273,7 @@ export function monitorPlaybackHealth(
 
     // Continuous segment size monitoring. Runs on every healthy interval to detect spontaneous capture pipeline death.
     const sizeCheckEntry = getStream(streamInfo.numericStreamId);
-    const currentSegmentIndex = sizeCheckEntry?.segmenter?.getSegmentIndex() ?? 0;
+    const currentSegmentIndex = sizeCheckEntry?.captureSession?.segmenter?.getSegmentIndex() ?? 0;
 
     if((currentSegmentIndex > segmentState.lastCheckedIndex) && sizeCheckEntry) {
 
@@ -1669,7 +1670,7 @@ export function monitorPlaybackHealth(
 
       const entry = getStream(streamInfo.numericStreamId);
 
-      segmentState.preRecoveryIndex = entry?.segmenter?.getSegmentIndex() ?? null;
+      segmentState.preRecoveryIndex = entry?.captureSession?.segmenter?.getSegmentIndex() ?? null;
       segmentState.waitStartTime = null;
       segmentState.productionStalled = false;
     }

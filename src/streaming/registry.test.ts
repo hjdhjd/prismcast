@@ -8,9 +8,25 @@
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { createHLSState, getAllStreams, getLastSegmentHasVideo, getLastSegmentSize, getNextStreamId, getStream, getStreamCount,
   getStreamMemoryUsage, getTotalSegmentMemory, registerStream, unregisterStream, updateLastAccess } from "./registry.ts";
+import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
+import type { Readable } from "node:stream";
 import type { StreamRegistryEntry } from "./registry.ts";
 import assert from "node:assert/strict";
+import { createCaptureSession } from "./captureSession.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
+
+/* entryWithSegmenter builds a registry entry whose capture session exposes the given (partial) segmenter, so the getLastSegment* getters can be exercised through
+ * the production read path (entry.captureSession?.segmenter?.getX()). A no-op pipe is supplied because attachSegmenter pipes the segmenter to the session's capture
+ * output; the test doubles only implement the one getter under assertion.
+ */
+function entryWithSegmenter(segmenter: Record<string, unknown>): StreamRegistryEntry {
+
+  const session = createCaptureSession({ ffmpegProcess: null, rawCaptureStream: { destroy: (): void => { /* inert */ }, destroyed: false } as unknown as Readable });
+
+  session.attachSegmenter({ pipe: (): void => { /* inert */ }, ...segmenter } as unknown as FMP4SegmenterResult);
+
+  return makeRegistryEntry({ captureSession: session });
+}
 
 /* clearRegistry removes any entries left behind by previous tests. The registry is module-scoped, so beforeEach in each describe must reset it to keep tests
  * independent. We iterate getAllStreams() and unregister each by id rather than reaching into private state, exercising the public API.
@@ -410,25 +426,17 @@ describe("getTotalSegmentMemory", () => {
 
 describe("getLastSegmentHasVideo", () => {
 
-  test("returns null when no segmenter exists on the entry", () => {
+  test("returns null when no capture session exists on the entry", () => {
 
-    // Boundary: pending stream entries have segmenter === null. The getter must not crash on that path.
-    const entry = makeRegistryEntry({ segmenter: null });
+    // Boundary: pending stream entries (and native-mode entries) have captureSession === null. The getter must not crash on that path.
+    const entry = makeRegistryEntry({ captureSession: null });
 
     assert.equal(getLastSegmentHasVideo(entry), null);
   });
 
   test("returns the value reported by the segmenter when present", () => {
 
-    // We synthesize a minimal segmenter object satisfying the FMP4SegmenterResult shape used by the getter. The other fields go untyped because the cast hides them.
-    const entry = makeRegistryEntry({
-
-
-      segmenter: {
-
-        getLastSegmentHasVideo: (): boolean => true
-      } as unknown as StreamRegistryEntry["segmenter"]
-    });
+    const entry = entryWithSegmenter({ getLastSegmentHasVideo: (): boolean => true });
 
     assert.equal(getLastSegmentHasVideo(entry), true);
   });
@@ -436,14 +444,7 @@ describe("getLastSegmentHasVideo", () => {
   test("forwards a null result from the segmenter", () => {
 
     // Segmenters return null when the video trackId is unknown - locks the pass-through contract.
-    const entry = makeRegistryEntry({
-
-
-      segmenter: {
-
-        getLastSegmentHasVideo: (): null => null
-      } as unknown as StreamRegistryEntry["segmenter"]
-    });
+    const entry = entryWithSegmenter({ getLastSegmentHasVideo: (): null => null });
 
     assert.equal(getLastSegmentHasVideo(entry), null);
   });
@@ -451,23 +452,16 @@ describe("getLastSegmentHasVideo", () => {
 
 describe("getLastSegmentSize", () => {
 
-  test("returns null when no segmenter exists on the entry", () => {
+  test("returns null when no capture session exists on the entry", () => {
 
-    const entry = makeRegistryEntry({ segmenter: null });
+    const entry = makeRegistryEntry({ captureSession: null });
 
     assert.equal(getLastSegmentSize(entry), null);
   });
 
   test("returns the size reported by the segmenter", () => {
 
-    const entry = makeRegistryEntry({
-
-
-      segmenter: {
-
-        getLastSegmentSize: (): number => 12_345
-      } as unknown as StreamRegistryEntry["segmenter"]
-    });
+    const entry = entryWithSegmenter({ getLastSegmentSize: (): number => 12_345 });
 
     assert.equal(getLastSegmentSize(entry), 12_345);
   });
@@ -475,14 +469,7 @@ describe("getLastSegmentSize", () => {
   test("returns null when the segmenter returns undefined / nullish (??)", () => {
 
     // The getter uses ?? null to coerce an absent return into null. This locks the coercion path.
-    const entry = makeRegistryEntry({
-
-
-      segmenter: {
-
-        getLastSegmentSize: (): undefined => undefined
-      } as unknown as StreamRegistryEntry["segmenter"]
-    });
+    const entry = entryWithSegmenter({ getLastSegmentSize: (): undefined => undefined });
 
     assert.equal(getLastSegmentSize(entry), null);
   });

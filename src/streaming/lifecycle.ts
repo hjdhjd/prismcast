@@ -8,7 +8,6 @@ import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Seg
 import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recovery.ts";
 import { getStream, unregisterStream } from "./registry.ts";
 import type { Nullable } from "../types/index.ts";
-import type { Readable } from "node:stream";
 import type { RecoveryMetrics } from "./recovery.ts";
 import { clearClients } from "./clients.ts";
 import { clearShowName } from "./showInfo.ts";
@@ -86,28 +85,6 @@ export function isTerminationInitiated(streamId: number): boolean {
   return terminationInitiated.has(streamId);
 }
 
-// Capture Stream Cleanup.
-
-/**
- * Destroys the raw capture stream to ensure chrome.tabCapture releases the capture. This MUST be called before closing the page to prevent capture state corruption.
- * When the stream is destroyed, puppeteer-stream's close handler fires synchronously (while the browser is still connected), which calls STOP_RECORDING in the
- * extension. Without this, the extension may think a capture is still active, causing subsequent getStream() calls to hang with "Cannot capture a tab with an active
- * stream" errors.
- * @param rawCaptureStream - The raw capture stream from puppeteer-stream, or null if not available.
- */
-function destroyCaptureStream(rawCaptureStream: Nullable<Readable>): void {
-
-  if(!rawCaptureStream) {
-
-    return;
-  }
-
-  if(!rawCaptureStream.destroyed) {
-
-    rawCaptureStream.destroy();
-  }
-}
-
 // Stream Termination.
 
 /**
@@ -156,43 +133,29 @@ export function terminateStream(streamId: number, channelName: string, reason: s
     streamInfo.hls.prerollTimer = null;
   }
 
-  // Destroy the raw capture stream BEFORE killing FFmpeg or closing the page. This triggers puppeteer-stream's close handler while the browser is still connected,
-  // ensuring STOP_RECORDING is called and chrome.tabCapture releases the capture. Without this, subsequent getStream() calls may hang with "active stream" errors.
-  if(streamInfo) {
-
-    destroyCaptureStream(streamInfo.rawCaptureStream);
-  }
-
-  // Capture native proxy statistics before stopping. The stats are closure-scoped counters that remain valid after stop(), but reading them before stop() makes the
-  // data flow explicit and avoids relying on implementation details.
-  const nativeProxyStats = streamInfo?.nativeProxy?.getStats();
-
-  // Stop the native proxy if running. This stops the manifest polling loop and cleans up timers.
-  if(streamInfo?.nativeProxy) {
-
-    streamInfo.nativeProxy.stop();
-  }
-
-  // Kill the FFmpeg process if using FFmpeg mode. This sets FFmpeg's internal shuttingDown flag, so when the segmenter stops (which closes the capture stream and
-  // FFmpeg's stdin), FFmpeg won't report spurious errors about truncated input. The order matters: kill() must be called before segmenter.stop() to set the flag
-  // before stdin closes.
-  if(streamInfo?.ffmpegProcess) {
-
-    streamInfo.ffmpegProcess.kill();
-  }
-
-  // Capture keyframe and session statistics before stopping the segmenter. The stats are snapshots of the accumulated state, so they remain valid after stop().
+  // Snapshot statistics for the termination summary before any teardown. The capture-pipeline stats come from the segmenter (reached through the CaptureSession);
+  // the native-proxy stats come from the proxy. All are closure-scoped counters that remain valid after teardown, but reading them up front keeps the data flow
+  // explicit and the disposal below purely side-effecting. Capture and native modes are mutually exclusive, so at most one branch's resources are present.
   let keyframeStats: Nullable<KeyframeStats> = null;
   let segmentCount = 0;
   let sessionStats: Nullable<SessionStats> = null;
 
-  if(streamInfo?.segmenter) {
+  const segmenter = streamInfo?.captureSession?.segmenter;
 
-    keyframeStats = streamInfo.segmenter.getKeyframeStats();
-    segmentCount = streamInfo.segmenter.getSegmentIndex();
-    sessionStats = streamInfo.segmenter.getSessionStats();
-    streamInfo.segmenter.stop();
+  if(segmenter) {
+
+    keyframeStats = segmenter.getKeyframeStats();
+    segmentCount = segmenter.getSegmentIndex();
+    sessionStats = segmenter.getSessionStats();
   }
+
+  const nativeProxyStats = streamInfo?.nativeProxy?.getStats();
+
+  // Tear down the active pipeline. The CaptureSession disposes its capture stream, FFmpeg child, and segmenter in the correct kill-then-destroy-then-stop order -
+  // destroying the capture stream fires STOP_RECORDING while the browser is still connected, which must happen before the page is closed below. Stopping the native
+  // proxy halts its manifest polling loop and timers. Only one of the two is present for a given stream.
+  streamInfo?.nativeProxy?.stop();
+  streamInfo?.captureSession?.dispose();
 
   // Remove channel mapping.
   if(channelToStreamId.get(channelName) === streamId) {

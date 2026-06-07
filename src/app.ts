@@ -128,15 +128,17 @@ function setupGracefulShutdown(): void {
 
     for(const stream of streams) {
 
-      if(stream.info.storeKey && stream.segmenter) {
+      const segmenter = stream.captureSession?.segmenter;
+
+      if(stream.info.storeKey && segmenter) {
 
         resumeEntries.push({
 
           channelName: stream.info.storeKey,
-          initSegment: stream.segmenter.getInitSegment(),
-          initVersion: stream.segmenter.getInitVersion(),
-          segmentIndex: Math.max(0, stream.segmenter.getSegmentIndex() - 1),
-          trackTimestamps: stream.segmenter.getTrackTimestamps()
+          initSegment: segmenter.getInitSegment(),
+          initVersion: segmenter.getInitVersion(),
+          segmentIndex: Math.max(0, segmenter.getSegmentIndex() - 1),
+          trackTimestamps: segmenter.getTrackTimestamps()
         });
       }
     }

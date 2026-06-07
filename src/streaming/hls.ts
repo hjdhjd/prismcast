@@ -20,7 +20,6 @@ import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.
 import { markChannelFailure, markChannelSuccess } from "../config/health.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
-import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
 import type { StreamSetupResult } from "./setup.ts";
 import type { TabReplacementHandlerFactory } from "./setup.ts";
 import type { TabReplacementResult } from "./recovery.ts";
@@ -611,20 +610,6 @@ function sendSegment(data: Buffer, segmentName: string, res: Response): void {
 
 // Stream Lifecycle.
 
-/**
- * Cleans up resources from a stream that was terminated during setup before the segmenter was stored in the registry. This handles the rare race condition where
- * another code path (e.g., circuit breaker) calls terminateStream() between registerStream() and the segmenter assignment.
- *
- * terminateStream() already cleaned up the page, monitor, channel mapping, and registry entry. We only need to stop the segmenter, which was created after
- * termination occurred and therefore wasn't cleaned up.
- * @param segmenter - The orphaned fMP4 segmenter instance to stop.
- */
-function cleanupOrphanedSetup(segmenter: FMP4SegmenterResult): void {
-
-  LOG.debug("streaming:setup", "Stream was terminated during setup. Stopping orphaned segmenter.");
-  segmenter.stop();
-}
-
 // Maps vertical resolution heights to standard display labels. Used by formatNativeQuality() to convert "1920x1080" -> "1080p".
 const RESOLUTION_LABELS: Record<string, string> = { "1080": "1080p", "2160": "4K", "360": "360p", "480": "480p", "720": "720p" };
 
@@ -716,32 +701,20 @@ function createTabReplacementHandler(
     // Get the current init segment, segment index, and per-track timestamps from the old segmenter before stopping it. The init segment enables discontinuity
     // suppression when codec parameters are unchanged, the segment index allows the new segmenter to continue numbering, and the track timestamps ensure monotonic
     // baseMediaDecodeTime across capture restarts.
-    const currentInitSegment = stream.segmenter?.getInitSegment();
-    const currentInitVersion = stream.segmenter?.getInitVersion() ?? 0;
-    const currentSegmentIndex = stream.segmenter?.getSegmentIndex() ?? 0;
-    const currentSessionStats = stream.segmenter?.getSessionStats();
-    const currentTrackTimestamps = stream.segmenter?.getTrackTimestamps();
+    const oldSegmenter = stream.captureSession?.segmenter;
+    const currentInitSegment = oldSegmenter?.getInitSegment();
+    const currentInitVersion = oldSegmenter?.getInitVersion() ?? 0;
+    const currentSegmentIndex = oldSegmenter?.getSegmentIndex() ?? 0;
+    const currentSessionStats = oldSegmenter?.getSessionStats();
+    const currentTrackTimestamps = oldSegmenter?.getTrackTimestamps();
 
-    // Destroy the OLD capture stream first. This MUST happen before closing the page to ensure chrome.tabCapture releases the capture. Without this, the new
-    // getStream() call would hang with "Cannot capture a tab with an active stream" error.
-    if(stream.rawCaptureStream && !stream.rawCaptureStream.destroyed) {
+    // Dispose the OLD capture pipeline. The CaptureSession destroys the capture stream first (which MUST happen before the old page is closed below, so
+    // chrome.tabCapture releases the capture and the new getStream() does not hang with "Cannot capture a tab with an active stream"), then kills the FFmpeg child
+    // and stops the segmenter. The new pipeline is constructed fresh further down.
+    if(stream.captureSession) {
 
-      LOG.debug("recovery:tab", "Destroying old capture stream for tab replacement.");
-      stream.rawCaptureStream.destroy();
-    }
-
-    // Stop the current segmenter if it exists.
-    if(stream.segmenter) {
-
-      LOG.debug("recovery:tab", "Stopping current segmenter for tab replacement.");
-      stream.segmenter.stop();
-    }
-
-    // Stop the FFmpeg process if it exists.
-    if(stream.ffmpegProcess) {
-
-      LOG.debug("recovery:tab", "Stopping FFmpeg process for tab replacement.");
-      stream.ffmpegProcess.kill();
+      LOG.debug("recovery:tab", "Disposing old capture pipeline for tab replacement.");
+      stream.captureSession.dispose();
     }
 
     // Close the current page. The page may be null for pending entries whose async setup has not yet completed.
@@ -806,14 +779,11 @@ function createTabReplacementHandler(
       streamId: numericStreamId
     });
 
-    // Pipe the new capture to the new segmenter.
-    newSegmenter.pipe(captureResult.captureStream);
-
-    // Update the registry entry with the new resources.
-    stream.ffmpegProcess = captureResult.ffmpegProcess;
+    // Wire the new segmenter into the new capture session (attachSegmenter pipes the session's capture output into it), then install the session and page on the
+    // registry entry.
+    captureResult.captureSession.attachSegmenter(newSegmenter);
+    stream.captureSession = captureResult.captureSession;
     stream.page = captureResult.page;
-    stream.rawCaptureStream = captureResult.rawCaptureStream;
-    stream.segmenter = newSegmenter;
 
     LOG.info("Tab replacement complete. New capture started with segment continuity.");
 
@@ -1027,9 +997,9 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
   registerStream({
 
     captureCodec: null,
+    captureSession: null,
     channelName: channel?.name ?? null,
     clientAddress: options.clientAddress ?? null,
-    ffmpegProcess: null,
     hardwareAccelerated: false,
     hls,
     id: numericStreamId,
@@ -1045,8 +1015,6 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
     page: null,
     preTuned: options.preTuned ?? false,
     profile: null,
-    rawCaptureStream: null,
-    segmenter: null,
     startTime: options.streamStartTime ?? new Date(),
     stopMonitor: null,
     streamIdStr,
@@ -1172,20 +1140,13 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
     return null;
   }
 
-  // Stop the capture pipeline - native streaming replaces it entirely.
-  if(!setup.rawCaptureStream.destroyed) {
-
-    setup.rawCaptureStream.destroy();
-  }
-
-  if(setup.ffmpegProcess) {
-
-    setup.ffmpegProcess.kill();
-  }
+  // Dispose the capture pipeline - native streaming replaces it entirely. No segmenter has been attached yet (native is attempted before createCaptureSegmenter), so
+  // disposal kills the FFmpeg child and destroys the capture stream.
+  setup.captureSession.dispose();
 
   // Update the registry entry to reflect native mode. For streams with separate audio, clear preroll state - preroll is muxed video+audio and can't be
   // split into separate renditions. For muxed-audio streams, preserve preroll state so the proxy can build composite playlists with preroll entries.
-  currentStream.ffmpegProcess = null;
+  currentStream.captureSession = null;
   currentStream.hls.hasAudio = nativeResult.hasAudio;
 
   if(nativeResult.hasAudio) {
@@ -1200,7 +1161,6 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
   currentStream.nativeBandwidth = nativeResult.bandwidth;
   currentStream.nativeProxy = nativeResult.proxy;
   currentStream.nativeResolution = nativeResult.resolution;
-  currentStream.rawCaptureStream = null;
   currentStream.streamingMode = "native";
 
   // Start the native proxy. Signal init segment readiness immediately - native MPEG-TS segments carry their own PAT/PMT codec configuration in every
@@ -1219,12 +1179,13 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
 }
 
 /**
- * Creates the fMP4 segmenter for capture mode streams. Reads resume data, creates the segmenter with preroll and resume configuration, pipes the capture stream,
- * and stores the segmenter in the registry. Resume data is consumed only after the segmenter is successfully stored, ensuring it survives if creation fails.
+ * Creates the fMP4 segmenter for capture mode streams. Reads resume data, creates the segmenter with preroll and resume configuration, and attaches it to the
+ * capture session (which pipes the session's capture output into it). Resume data is consumed only after the segmenter is successfully attached to a non-disposed
+ * session, ensuring it survives if the stream was terminated during setup.
  * @param setup - The stream setup result from setupStream().
  * @param numericStreamId - The stream's numeric ID.
  * @param channelName - The channel key for resume data and logging.
- * @returns True if the segmenter was created and stored, false if the stream was terminated during setup.
+ * @returns True if the segmenter was attached, false if the stream was terminated during setup (the session was already disposed).
  */
 function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: number, channelName: string): boolean {
 
@@ -1269,29 +1230,24 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
     streamId: numericStreamId
   });
 
-  // Pipe the capture stream to the segmenter.
-  segmenter.pipe(setup.captureStream);
+  // Attach the segmenter to the capture session. attachSegmenter pipes the session's capture output into the segmenter. If the stream was terminated mid-setup, the
+  // session is already disposed and attachSegmenter stops the orphan segmenter instead of wiring it - the single home for that rare-race cleanup.
+  setup.captureSession.attachSegmenter(segmenter);
 
-  // Store the segmenter reference in the registry.
-  const captureStream = getStream(numericStreamId);
+  if(setup.captureSession.disposed) {
 
-  if(captureStream) {
-
-    captureStream.segmenter = segmenter;
-
-    // Now that the segmenter is created, piped, and stored, consume the resume data so it's not used again on a subsequent stream start for the same channel.
-    if(resumeData) {
-
-      deleteResumeData(channelName);
-    }
-
-    return true;
+    // The stream was terminated during setup (rare race). attachSegmenter already stopped the orphan; leave the resume data intact so the next stream start for this
+    // channel can retry with it rather than losing it to an HLS sequence reset.
+    return false;
   }
 
-  // Stream was terminated during setup (rare race condition). Clean up the orphaned segmenter.
-  cleanupOrphanedSetup(segmenter);
+  // The segmenter is created, piped, and owned by the session. Consume the resume data so it is not reused on a subsequent stream start for the same channel.
+  if(resumeData) {
 
-  return false;
+    deleteResumeData(channelName);
+  }
+
+  return true;
 }
 
 /**
@@ -1379,10 +1335,9 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
     return null;
   }
 
-  stream.ffmpegProcess = setup.ffmpegProcess;
+  stream.captureSession = setup.captureSession;
   stream.page = setup.page;
   stream.profile = setup.profile;
-  stream.rawCaptureStream = setup.rawCaptureStream;
   stream.startTime = setup.startTime;
   stream.stopMonitor = setup.stopMonitor;
   stream.url = setup.url;

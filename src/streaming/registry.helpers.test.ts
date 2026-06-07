@@ -82,9 +82,9 @@ describe("makeRegistryEntry", () => {
     const entry = makeRegistryEntry();
 
     assert.equal(entry.captureCodec, null);
+    assert.equal(entry.captureSession, null);
     assert.equal(entry.channelName, null);
     assert.equal(entry.clientAddress, null);
-    assert.equal(entry.ffmpegProcess, null);
     assert.equal(entry.hardwareAccelerated, false);
     assert.equal(entry.mpegTsClientCount, 0);
     assert.equal(entry.nativeBandwidth, 0);
@@ -93,8 +93,6 @@ describe("makeRegistryEntry", () => {
     assert.equal(entry.page, null);
     assert.equal(entry.preTuned, false);
     assert.equal(entry.profile, null);
-    assert.equal(entry.rawCaptureStream, null);
-    assert.equal(entry.segmenter, null);
     assert.equal(entry.stopMonitor, null);
   });
 

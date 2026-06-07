@@ -30,9 +30,9 @@ import { generateStreamId } from "./setup.ts";
 export const STREAM_REGISTRY_ENTRY_KEYS = declareKeysOf<StreamRegistryEntry>()([
 
   "captureCodec",
+  "captureSession",
   "channelName",
   "clientAddress",
-  "ffmpegProcess",
   "hardwareAccelerated",
   "hls",
   "id",
@@ -44,8 +44,6 @@ export const STREAM_REGISTRY_ENTRY_KEYS = declareKeysOf<StreamRegistryEntry>()([
   "page",
   "preTuned",
   "profile",
-  "rawCaptureStream",
-  "segmenter",
   "startTime",
   "stopMonitor",
   "streamIdStr",
@@ -78,9 +76,9 @@ export function makeRegistryEntry(overrides: Partial<StreamRegistryEntry> = {}):
   return {
 
     captureCodec: null,
+    captureSession: null,
     channelName,
     clientAddress: null,
-    ffmpegProcess: null,
     hardwareAccelerated: false,
     hls: createHLSState(),
     id,
@@ -92,8 +90,6 @@ export function makeRegistryEntry(overrides: Partial<StreamRegistryEntry> = {}):
     page: null,
     preTuned: false,
     profile: null,
-    rawCaptureStream: null,
-    segmenter: null,
     startTime: new Date(),
     stopMonitor: null,
     streamIdStr,

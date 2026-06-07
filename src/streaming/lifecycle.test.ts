@@ -8,9 +8,15 @@
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.ts";
 import { getNextStreamId, getStream, registerStream } from "./registry.ts";
+import type { CaptureSession } from "./captureSession.ts";
+import type { FFmpegProcess } from "../utils/index.ts";
+import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
+import type { Nullable } from "../types/index.ts";
+import type { Readable } from "node:stream";
 import type { StreamRegistryEntry } from "./registry.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
+import { createCaptureSession } from "./captureSession.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
 import { registerAbortController } from "../utils/index.ts";
 import { setGracefulShutdown } from "../browser/index.ts";
@@ -21,7 +27,7 @@ closePuppeteerStreamWssOnIdle();
 /* makeSegmenter returns a stub satisfying the FMP4SegmenterResult shape that lifecycle's terminateStream calls into. We track which methods were invoked so tests
  * can assert on the cleanup ordering.
  */
-function makeSegmenter(): { calls: string[]; segmenter: StreamRegistryEntry["segmenter"] } {
+function makeSegmenter(): { calls: string[]; segmenter: FMP4SegmenterResult } {
 
   const calls: string[] = [];
 
@@ -57,9 +63,34 @@ function makeSegmenter(): { calls: string[]; segmenter: StreamRegistryEntry["seg
     markDiscontinuity: () => { calls.push("markDiscontinuity"); },
     pipe: () => { calls.push("pipe"); },
     stop: () => { calls.push("stop"); }
-  } as unknown as StreamRegistryEntry["segmenter"];
+  } as unknown as FMP4SegmenterResult;
 
   return { calls, segmenter };
+}
+
+// Synthetic capture handles a lifecycle test can supply to makeCaptureSession; each is optional so a test provides only the handle whose teardown it asserts on.
+interface CaptureSessionParts {
+
+  ffmpeg?: { kill: () => void };
+  rawStream?: { destroy: () => void; destroyed: boolean };
+  segmenter?: FMP4SegmenterResult;
+}
+
+/* makeCaptureSession builds a real CaptureSession over synthetic capture handles so the lifecycle tests exercise the production teardown path: terminateStream
+ * disposes the session, which kills the FFmpeg child, destroys the capture stream, and stops the segmenter in order. Omitted parts get inert defaults.
+ */
+function makeCaptureSession(parts: CaptureSessionParts = {}): CaptureSession {
+
+  const rawCaptureStream = (parts.rawStream ?? { destroy: (): void => { /* inert default */ }, destroyed: false }) as unknown as Readable;
+  const ffmpegProcess = (parts.ffmpeg ?? null) as unknown as Nullable<FFmpegProcess>;
+  const session = createCaptureSession({ ffmpegProcess, rawCaptureStream });
+
+  if(parts.segmenter) {
+
+    session.attachSegmenter(parts.segmenter);
+  }
+
+  return session;
 }
 
 describe("getChannelStreamId / setChannelStreamId / deleteChannelStreamId", () => {
@@ -189,7 +220,7 @@ describe("terminateStream", () => {
     // The terminationInitiated guard ensures double-termination is silently absorbed. Locks the contract that callers can issue redundant terminate calls without
     // worrying about stack overflows or double-stop calls into the segmenter.
     const { calls, segmenter } = makeSegmenter();
-    const entry = makeRegistryEntry({ segmenter });
+    const entry = makeRegistryEntry({ captureSession: makeCaptureSession({ segmenter }) });
 
     registerStream(entry);
 
@@ -230,17 +261,9 @@ describe("terminateStream", () => {
 
   test("destroys the raw capture stream when present", () => {
 
+    // terminateStream disposes the capture session, which destroys the raw capture stream (its first teardown step for a no-FFmpeg session).
     let destroyed = false;
-    const entry = makeRegistryEntry({
-
-
-      rawCaptureStream: {
-
-
-        destroy: () => { destroyed = true; },
-        destroyed: false
-      } as unknown as StreamRegistryEntry["rawCaptureStream"]
-    });
+    const entry = makeRegistryEntry({ captureSession: makeCaptureSession({ rawStream: { destroy: () => { destroyed = true; }, destroyed: false } }) });
 
     registerStream(entry);
     terminateStream(entry.id, entry.channelName ?? "", "test");
@@ -250,18 +273,9 @@ describe("terminateStream", () => {
 
   test("does NOT call destroy when the raw capture stream is already destroyed", () => {
 
-    // Negative test: avoid double-destroy. The destroyed guard prevents re-firing puppeteer-stream's close handler.
+    // Negative test: avoid double-destroy. The session's destroyed guard prevents re-firing puppeteer-stream's close handler.
     let destroyed = false;
-    const entry = makeRegistryEntry({
-
-
-      rawCaptureStream: {
-
-
-        destroy: () => { destroyed = true; },
-        destroyed: true
-      } as unknown as StreamRegistryEntry["rawCaptureStream"]
-    });
+    const entry = makeRegistryEntry({ captureSession: makeCaptureSession({ rawStream: { destroy: () => { destroyed = true; }, destroyed: true } }) });
 
     registerStream(entry);
     terminateStream(entry.id, entry.channelName ?? "", "test");
@@ -271,17 +285,11 @@ describe("terminateStream", () => {
 
   test("invokes ffmpegProcess.kill() and segmenter.stop() during cleanup", () => {
 
-    // Order matters in production: kill() must precede segmenter.stop() so FFmpeg's shutdown flag is set before stdin closes. Both must run.
+    // terminateStream disposes the capture session, which kills the FFmpeg child and stops the segmenter (the composite owns the kill-before-stop order; this test
+    // confirms terminateStream routes the teardown through it so both run).
     const order: string[] = [];
-
-    const ffmpegProcess = {
-
-
-      kill: () => { order.push("ffmpeg.kill"); }
-    } as unknown as StreamRegistryEntry["ffmpegProcess"];
-
     const { calls, segmenter } = makeSegmenter();
-    const entry = makeRegistryEntry({ ffmpegProcess, segmenter });
+    const entry = makeRegistryEntry({ captureSession: makeCaptureSession({ ffmpeg: { kill: () => { order.push("ffmpeg.kill"); } }, segmenter }) });
 
     registerStream(entry);
     terminateStream(entry.id, entry.channelName ?? "", "test");

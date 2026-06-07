@@ -13,11 +13,13 @@ import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } f
 import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
 import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
 import { CONFIG } from "../config/index.ts";
+import type { CaptureSession } from "./captureSession.ts";
 import type { FFmpegProcess } from "../utils/index.ts";
 import type { ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
 import type { Readable } from "node:stream";
 import { chromeFetch } from "../utils/index.ts";
+import { createCaptureSession } from "./captureSession.ts";
 import { getCachedEncryption } from "../native/probe.ts";
 import { getCaptureMimeType } from "./codec.ts";
 import { getDomainConfig } from "../config/sites.ts";
@@ -132,8 +134,9 @@ export interface StreamSetupOptions {
  */
 export interface StreamSetupResult {
 
-  // The puppeteer-stream capture output. For native fMP4 mode, this is the raw MP4/AAC stream. For Matroska+FFmpeg mode, this is FFmpeg's fMP4 output.
-  captureStream: Readable;
+  // The capture-pipeline composite owning the raw capture stream and (in FFmpeg mode) the FFmpeg child. The caller attaches the fMP4 segmenter via
+  // captureSession.attachSegmenter() once it is created, installs the session on the registry entry, and owns its disposal thereafter.
+  captureSession: CaptureSession;
 
   // The channel display name if streaming a named channel.
   channelName: Nullable<string>;
@@ -143,9 +146,6 @@ export interface StreamSetupResult {
 
   // Cleanup function to release all resources. Safe to call multiple times.
   cleanup: () => Promise<void>;
-
-  // The FFmpeg process for Matroska-to-fMP4 transcoding, or null if using native fMP4 mode.
-  ffmpegProcess: Nullable<FFmpegProcess>;
 
   // Manifest interceptor handle from the CDP listener installed before navigation. Contains the interception promise and a finalize() function that the caller
   // invokes after channel selection is complete. Null if the interceptor was not installed (tab replacement or DRM-cached channel).
@@ -165,9 +165,6 @@ export interface StreamSetupResult {
 
   // Friendly service display name derived from the URL domain via DOMAIN_CONFIG (e.g., "Hulu" for hulu.com). Used for SSE status display.
   serviceName: string;
-
-  // The raw capture stream from puppeteer-stream. Must be destroyed before closing the page.
-  rawCaptureStream: Readable;
 
   // Timestamp when the stream started.
   startTime: Date;
@@ -242,8 +239,9 @@ export interface CreatePageWithCaptureOptions {
  */
 export interface CreatePageWithCaptureResult {
 
-  // The output stream for the segmenter. For native fMP4 mode, this is the raw capture. For Matroska+FFmpeg mode, this is FFmpeg's fMP4 output.
-  captureStream: Readable;
+  // The capture-pipeline composite owning the raw puppeteer-stream capture and (in FFmpeg mode) the FFmpeg child. The caller attaches the fMP4 segmenter via
+  // captureSession.attachSegmenter() and owns its disposal thereafter.
+  captureSession: CaptureSession;
 
   // The video context (page or frame containing the video element).
   context: Frame | Page;
@@ -251,18 +249,11 @@ export interface CreatePageWithCaptureResult {
   // Whether the channel was tuned via a direct mechanism (cached URL or API interception) rather than DOM interaction.
   directTune: boolean;
 
-  // The FFmpeg process if using Matroska+FFmpeg mode, null otherwise.
-  ffmpegProcess: Nullable<FFmpegProcess>;
-
   // Manifest interceptor handle for native streaming, or null if interception was not installed.
   manifestInterception: Nullable<ManifestInterceptorHandle>;
 
   // The browser page for this capture.
   page: Page;
-
-  // The raw capture stream from puppeteer-stream (before FFmpeg processing). Must be destroyed before closing the page to ensure chrome.tabCapture releases the
-  // capture. In native mode, this is the same object as captureStream.
-  rawCaptureStream: Readable;
 }
 
 // Request ID Generation.
@@ -356,6 +347,25 @@ export function validateStreamUrl(url: string | undefined): UrlValidationResult 
 // Page and Capture Creation.
 
 /**
+ * Disposes a browser page acquired during stream setup: unregisters it from managed-page tracking and closes it if still open. The close is fire-and-forget with a
+ * debug log on error, matching the long-standing setup-failure cleanup behavior. Used as the DisposableStack disposer for pages in createPageWithCapture and
+ * setupStream, and by the setup-result cleanup closure, so every setup-phase page teardown flows through one definition.
+ * @param page - The page to dispose.
+ */
+function disposePage(page: Page): void {
+
+  unregisterManagedPage(page);
+
+  if(!page.isClosed()) {
+
+    page.close().catch((error: unknown) => {
+
+      LOG.debug("streaming:setup", "Page close error during setup cleanup: %s.", formatError(error));
+    });
+  }
+}
+
+/**
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
  * recovery. It handles:
  * - Creating a new browser page with CSP bypass
@@ -364,13 +374,13 @@ export function validateStreamUrl(url: string | undefined): UrlValidationResult 
  * - Setting up video playback via navigateToPage() + initializePlayback()
  *
  * The caller is responsible for:
- * - Creating the segmenter and piping captureStream to it
+ * - Creating the segmenter and attaching it to the capture session via captureSession.attachSegmenter()
  * - Registering/updating the stream in the registry
  * - Starting/updating the health monitor
  * - Handling cleanup on failure
  *
  * @param options - Options for page and capture creation.
- * @returns The page, context, capture stream, and FFmpeg process (if any).
+ * @returns The page, context, and capture session (which owns the raw capture stream and any FFmpeg child).
  * @throws Error if page creation, capture initialization, or navigation fails.
  */
 export async function createPageWithCapture(options: CreatePageWithCaptureOptions): Promise<CreatePageWithCaptureResult> {
@@ -378,11 +388,18 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   const captureElapsed = startTimer();
   const { comment, onFFmpegError, profile, streamId, url } = options;
 
+  // Acquire every resource on a DisposableStack so that any throw - in capture initialization, navigation, or playback setup - disposes them structurally as the
+  // function unwinds, in last-acquired-first order (capture session before page, so the capture stream is destroyed and STOP_RECORDING fires while the browser is
+  // still connected, before the page closes). On success we move() the stack to disarm it and transfer ownership to the caller. This replaces the hand-written
+  // teardown each failure path used to repeat, and closes the navigation-path leak of the manifest interceptor.
+  using resources = new DisposableStack();
+
   // Create browser page.
   const browser = await getCurrentBrowser();
   const page = await browser.newPage();
 
   registerManagedPage(page);
+  resources.adopt(page, disposePage);
 
   await page.setBypassCSP(true);
 
@@ -395,16 +412,24 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // use DRM (avoids 15 seconds of wasted CDP overhead per tune). The await ensures the CDP session and Network domain are ready before navigation begins.
   const manifestInterception = (!options.tabReplacement && !options.skipManifestInterception) ? await installManifestInterceptor(page) : null;
 
+  if(manifestInterception) {
+
+    resources.use(manifestInterception);
+  }
+
   // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable. The
   // codec decision (H.264 vs HEVC) is delegated to the codec module, which considers the user's allowlist and GPU hardware capabilities.
   const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
   const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
 
-  // Track the output stream that will be sent to the segmenter and FFmpeg process if used. Also track the raw capture stream separately - it must be destroyed
-  // before closing the page to ensure chrome.tabCapture releases the capture.
-  let outputStream: Readable;
-  let rawCaptureStream: Nullable<Readable> = null;
-  let ffmpegProcess: Nullable<FFmpegProcess> = null;
+  // Resolve the FFmpeg binary path up front, before the raw capture stream is acquired below. resolveFFmpegPath is a memoized resolver that can sticky-reject; if its
+  // await sat between acquiring the raw capture stream and wrapping it in a CaptureSession, a rejection would strand the stream undestroyed (STOP_RECORDING never
+  // fires, leaving chrome.tabCapture active). Resolving it here keeps any rejection on a path with no capture resource yet acquired, so the CaptureSession remains
+  // the single owner from the instant the stream exists. Falls back to "ffmpeg" so spawn() defers to PATH lookup; only meaningful in FFmpeg mode.
+  const ffmpegBin = useFFmpeg ? ((await resolveFFmpegPath()) ?? "ffmpeg") : "ffmpeg";
+
+  // The capture-pipeline composite, assigned once the raw capture stream and optional FFmpeg child exist and registered on the DisposableStack the moment it is built.
+  let captureSession: CaptureSession;
 
   // Capture queue release function, hoisted here so both the try and catch blocks can access it. The promise and resolver are created together via
   // withResolvers when the queue entry is registered below. The once-guard prevents double-releasing from multiple code paths (success, catch, timeout).
@@ -501,15 +526,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     const stream = await raceWithTimeout(streamPromise, CONFIG.streaming.navigationTimeout, new Error("Stream initialization timed out."));
 
-    // Store the raw capture stream. This must be destroyed before closing the page.
-    rawCaptureStream = stream;
+    // For FFmpeg mode, spawn FFmpeg to transcode the Matroska stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC. The binary path was
+    // resolved up front (above) so no throwable await sits between acquiring the raw capture stream and wrapping it in the CaptureSession that owns it. The spawn and
+    // pipeline wiring below are synchronous, so the stream is owned the instant it exists.
+    let ffmpegProcess: Nullable<FFmpegProcess> = null;
 
-    // For FFmpeg mode, spawn FFmpeg to transcode the Matroska stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC. The resolved binary
-    // path comes from the production-cached resolver - first call probes; subsequent calls return the memoized result. Falls back to "ffmpeg" so spawn() defers
-    // to PATH lookup if the resolver couldn't find a path (matching the previous behavior; the spawn will then fail with ENOENT if PATH is also empty).
     if(useFFmpeg) {
-
-      const ffmpegBin = (await resolveFFmpegPath()) ?? "ffmpeg";
 
       const ffmpeg = spawnFFmpeg(ffmpegBin, CONFIG.streaming.audioBitsPerSecond, (error) => {
 
@@ -564,34 +586,20 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
           onFFmpegError(error instanceof Error ? error : new Error(String(error)));
         }
       });
-
-      // Use FFmpeg's stdout (fMP4 output) as the output stream for segmentation.
-      outputStream = ffmpeg.stdout;
-    } else {
-
-      // Native fMP4 mode: Use the raw capture stream directly. In this mode, rawCaptureStream and outputStream are the same object.
-      outputStream = rawCaptureStream;
     }
+
+    // Wrap the raw capture stream and optional FFmpeg child as one self-disposing pipeline unit, and register it for structural teardown. The session derives the
+    // segmenter input internally (FFmpeg's stdout in FFmpeg mode, the raw stream in native-fMP4 mode); the caller attaches the segmenter once it is created.
+    captureSession = createCaptureSession({ ffmpegProcess, rawCaptureStream: stream });
+    resources.use(captureSession);
   } catch(error) {
-
-    // Clean up on capture initialization failure. Destroy the raw capture stream first to ensure chrome.tabCapture releases the capture.
-    if(rawCaptureStream && !rawCaptureStream.destroyed) {
-
-      rawCaptureStream.destroy();
-    }
-
-    unregisterManagedPage(page);
-
-    if(!page.isClosed()) {
-
-      page.close().catch(() => { /* Fire-and-forget during error cleanup. */ });
-    }
 
     const errorMessage = formatError(error);
 
     // Stale capture state is unrecoverable. The "Cannot capture a tab with an active stream" error occurs inside puppeteer-stream's second lock section, which
     // has no try/finally. The internal mutex is permanently leaked - all subsequent getStream() calls will hang on it. Chrome restart cannot fix module-level
-    // state, so the only recourse is a full process restart. Release the capture queue so other callers aren't left hanging, then exit.
+    // state, so the only recourse is a full process restart. Release the capture queue so other callers aren't left hanging, then exit. Resource teardown (page,
+    // interceptor) is handled by the DisposableStack as this throw unwinds the function scope.
     if(errorMessage.includes("Cannot capture a tab with an active stream")) {
 
       LOG.error("Stale capture state detected. puppeteer-stream's internal capture mutex is now permanently locked. The capture system is unrecoverable. " +
@@ -604,7 +612,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       throw error;
     }
 
-    // For non-stale errors, release the capture queue so subsequent callers can proceed.
+    // For non-stale errors, release the capture queue so subsequent callers can proceed. Resource teardown is handled by the DisposableStack on unwind.
     releaseCaptureOnce();
 
     throw error;
@@ -672,26 +680,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       invalidateDirectUrl(profile);
     }
 
-    // Clean up on navigation or playback initialization failure. Destroy the raw capture stream first to ensure chrome.tabCapture releases the capture.
-    if(!rawCaptureStream.destroyed) {
-
-      rawCaptureStream.destroy();
-    }
-
-    if(ffmpegProcess) {
-
-      ffmpegProcess.kill();
-    }
-
-    unregisterManagedPage(page);
-
-    if(!page.isClosed()) {
-
-      page.close().catch(() => { /* Fire-and-forget during error cleanup. */ });
-    }
-
-    // Re-minimize the browser window. Navigation may have un-minimized it (new tab activation on macOS), and without this the window stays visible after the
-    // failed attempt. Fire-and-forget since we're about to throw.
+    // Re-minimize the browser window. Navigation may have un-minimized it (new tab activation on macOS), and without this the window stays visible after the failed
+    // attempt. Fire-and-forget since we're about to throw. Resource teardown (capture session, interceptor, page) is handled by the DisposableStack as this throw
+    // unwinds the function scope; the capture session disposes first, destroying the capture stream before the page closes, so STOP_RECORDING ordering is preserved.
     minimizeBrowserWindow().catch(() => { /* Fire-and-forget; we're about to throw. */ });
 
     throw error;
@@ -709,15 +700,17 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   LOG.debug("timing:startup", "Page with capture ready. Total: %sms.", captureElapsed());
 
+  // Success: transfer ownership of the page, interceptor, and capture session out of the scope guard. move() empties the stack so its scope-exit disposal is a no-op
+  // and the caller becomes responsible for disposing what it now holds.
+  resources.move();
+
   return {
 
-    captureStream: outputStream,
+    captureSession,
     context,
     directTune: usedDirectUrl || strategyDirectTune || !isChannelSelectionProfile(profile),
-    ffmpegProcess,
     manifestInterception,
-    page,
-    rawCaptureStream
+    page
   };
 }
 
@@ -781,13 +774,13 @@ function buildPersistResolutionCallback(canonicalKey: string, serviceTag: string
  * Sets up a stream: validates input, creates browser page, initializes capture, navigates to URL, and starts health monitoring.
  *
  * This function handles all common stream setup logic. The caller is responsible for:
- * - Connecting the returned captureStream to the appropriate output (HTTP response, FFmpeg, etc.)
+ * - Creating the segmenter and attaching it to the returned capture session (via captureSession.attachSegmenter), or upgrading to native streaming
  * - Registering the stream in the registry
  * - Triggering cleanup when the stream ends
  *
  * @param options - Stream configuration options.
  * @param onCircuitBreak - Callback invoked when the circuit breaker trips (stream unrecoverable).
- * @returns Setup result with capture stream, cleanup function, and metadata.
+ * @returns Setup result with capture session, cleanup function, and metadata.
  * @throws StreamSetupError if setup fails with appropriate status code and message.
  */
 export async function setupStream(options: StreamSetupOptions, onCircuitBreak: () => void): Promise<StreamSetupResult> {
@@ -957,7 +950,22 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.", { cause: error });
     }
 
-    const { captureStream, context, directTune, ffmpegProcess, manifestInterception, page, rawCaptureStream } = captureResult;
+    const { captureSession, context, directTune, manifestInterception, page } = captureResult;
+
+    // Hold the page, interceptor, and capture session on a scope guard so a tune-verification failure below disposes them structurally rather than repeating the
+    // teardown inline. Push order is load-bearing: the capture session is registered last so it disposes first, destroying the capture stream and firing
+    // STOP_RECORDING while the browser is still connected, ahead of the page close. On success we move() the guard and hand ownership to the cleanup closure (and,
+    // once the session is installed on the registry entry, to terminateStream).
+    using owned = new DisposableStack();
+
+    owned.adopt(page, disposePage);
+
+    if(manifestInterception) {
+
+      owned.use(manifestInterception);
+    }
+
+    owned.use(captureSession);
 
     // Tune verification. Finalize the manifest interceptor and confirm the captured master manifest URL belongs to the channel that was just tuned. This step
     // makes setupStream "verified by construction" - every consumer of StreamSetupResult (HLS preroll, HLS blocking, MPEG-TS, native proxy, capture mode) receives
@@ -965,8 +973,9 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     //
     // The verifier is a per-provider hook on ProviderModule.verifyManifestForChannel. Today only foxProvider implements it (Fox's CDN URL encodes the channel call
     // sign in the path). Verification is opportunistic: providers without a verifier and streams without a manifest interception (e.g., DRM-cached channels, tab
-    // replacements) skip the check. When a verifier returns a failure reason, we tear down the capture and throw StreamSetupError so the existing failure path
-    // marks channel health, terminates the pending registry entry, and surfaces a clear error - never silently delivers the wrong channel.
+    // replacements) skip the check. When a verifier returns a failure reason, we throw StreamSetupError so the existing failure path marks channel health, terminates
+    // the pending registry entry, and surfaces a clear error - never silently delivers the wrong channel. The scope guard disposes the capture session, interceptor,
+    // and page as the throw unwinds.
     if(manifestInterception) {
 
       manifestInterception.finalize(directTune);
@@ -982,28 +991,6 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
           const verifyError = provider.verifyManifestForChannel(interception.masterManifestUrl, profile.channelSelector);
 
           if(verifyError) {
-
-            // Verification failed. Tear down the capture before throwing so we do not leak the page, FFmpeg process, or browser-side capture session. We replicate
-            // the relevant cleanup steps inline because the cleanup() closure has not been constructed yet at this point in the function.
-            if(!rawCaptureStream.destroyed) {
-
-              rawCaptureStream.destroy();
-            }
-
-            if(ffmpegProcess) {
-
-              ffmpegProcess.kill();
-            }
-
-            unregisterManagedPage(page);
-
-            if(!page.isClosed()) {
-
-              page.close().catch((closeError: unknown) => {
-
-                LOG.debug("streaming:setup", "Page close error during verification failure cleanup: %s.", formatError(closeError));
-              });
-            }
 
             await minimizeBrowserWindow();
 
@@ -1028,7 +1015,9 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     // Start the health monitor for this stream.
     const stopMonitor = monitorPlaybackHealth(page, context, profile, url, streamId, monitorStreamInfo, onCircuitBreak, onTabReplacement);
 
-    // Cleanup function. Releases all resources associated with the stream. Idempotent - safe to call multiple times.
+    // Cleanup function. Releases all resources associated with the stream. Idempotent - safe to call multiple times. completeStreamSetup uses it as the fallback
+    // teardown when the pending entry is terminated before the capture session is installed on it; once installed, terminateStream disposes the same session
+    // (disposal is idempotent). Disposes the capture session (kill -> destroy -> stop) before closing the page so STOP_RECORDING fires while the browser is connected.
     let cleanupCompleted = false;
 
     const cleanup = async (): Promise<void> => {
@@ -1040,52 +1029,30 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
       cleanupCompleted = true;
 
-      // Stop the health monitor first.
       stopMonitor();
-
-      // Destroy the raw capture stream BEFORE closing the page. This triggers puppeteer-stream's close handler while the browser is still connected, ensuring
-      // STOP_RECORDING is called and chrome.tabCapture releases the capture. Without this, subsequent getStream() calls may hang with "active stream" errors.
-      if(!rawCaptureStream.destroyed) {
-
-        rawCaptureStream.destroy();
-      }
-
-      // Kill the FFmpeg process if using Matroska+FFmpeg mode.
-      if(ffmpegProcess) {
-
-        ffmpegProcess.kill();
-      }
-
-      // Unregister from managed pages.
-      unregisterManagedPage(page);
-
-      // Close the browser page (fire-and-forget to avoid blocking on stuck pages).
-      if(!page.isClosed()) {
-
-        page.close().catch((error: unknown) => {
-
-          LOG.debug("streaming:setup", "Page close error during cleanup: %s.", formatError(error));
-        });
-      }
+      captureSession.dispose();
+      disposePage(page);
 
       // Re-minimize the browser window.
       await minimizeBrowserWindow();
     };
 
+    // Success: transfer ownership out of the scope guard. The cleanup closure and, once the session is installed on the registry entry, terminateStream become
+    // responsible for disposing the page and capture session; the interceptor continues into tune verification and native streaming.
+    owned.move();
+
     // Return the setup result.
     return {
 
-      captureStream,
+      captureSession,
       channelName: channel?.name ?? null,
       cleanup,
       directTune,
-      ffmpegProcess,
       manifestInterception,
       numericStreamId,
       page,
       profile,
       profileName,
-      rawCaptureStream,
       serviceName,
       startTime,
       stopMonitor,
