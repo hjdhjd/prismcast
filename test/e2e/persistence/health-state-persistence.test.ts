@@ -9,7 +9,8 @@
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { createIntegrationContext, pathInDataDir, waitForHealthFlush } from "../../helpers/integration.helpers.ts";
-import { getChannelHealth, getDomainAuth, getHealthSnapshot, loadHealthState, markChannelSuccess, markDomainAuth } from "../../../src/config/health.ts";
+import { flushHealthStateNow, getChannelHealth, getDomainAuth, getHealthSnapshot, loadHealthState, markChannelSuccess,
+  markDomainAuth } from "../../../src/config/health.ts";
 import { LOG } from "../../../src/utils/index.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -261,6 +262,31 @@ describe("flushHealthState - debounced write contract", () => {
     const persisted = JSON.parse(await readFile(pathInDataDir(ctx, "health.json"), "utf8")) as Record<string, unknown>;
 
     assert.equal("migrationsApplied" in persisted, false, "migrationsApplied is omitted when the runtime has none to record");
+  });
+
+  test("flushHealthStateNow persists the pending state immediately, without the debounce wait (the shutdown flush)", async () => {
+
+    /* The debounced flush would lose a pending write if the process exited inside the FLUSH_DELAY window. flushHealthStateNow - called from graceful shutdown -
+     * cancels the pending debounce timer and performs the write awaitably, so the on-disk file reflects the mark the instant the call resolves. The distinguishing
+     * assertion from the debounce test above is the deliberate ABSENCE of waitForHealthFlush(): if flushHealthStateNow did not write immediately, the read below
+     * would observe a file missing the just-marked channel (the [24] regression this pins).
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+
+    markChannelSuccess("shutdown-flush-channel", "shutdown.test");
+
+    // No waitForHealthFlush(): flushHealthStateNow must drain the pending debounce and write synchronously-awaitable.
+    await flushHealthStateNow();
+
+    const persisted = JSON.parse(await readFile(pathInDataDir(ctx, "health.json"), "utf8")) as {
+      channels?: Record<string, unknown>;
+      domains?: Record<string, unknown>;
+    };
+
+    assert.ok(persisted.channels?.["shutdown-flush-channel"], "the pending channel mark was flushed to disk immediately by flushHealthStateNow");
+    assert.ok(persisted.domains?.["shutdown.test"], "the pending domain auth was flushed to disk immediately by flushHealthStateNow");
   });
 });
 

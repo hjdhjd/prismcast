@@ -9,6 +9,7 @@ import { LOG, claim, createMorganStream, formatError, formatTimestamp, getCurren
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
+import { flushHealthStateNow, loadHealthState } from "./config/health.ts";
 import { getDebugEnv, getLogFilePath, getServerPidFilePath } from "./config/paths.ts";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.ts";
 import { loadResumeState, saveResumeState } from "./streaming/hlsResume.ts";
@@ -29,10 +30,10 @@ import { getAllStreams } from "./streaming/registry.ts";
 import { initializeUserChannels } from "./config/userChannels.ts";
 import { initializeUserProfiles } from "./config/userProfiles.ts";
 import { installHealthBridge } from "./routes/config/channels/healthBridge.ts";
-import { loadHealthState } from "./config/health.ts";
 import morgan from "morgan";
 import { runConsistencyProbeAtStartup } from "./config/consistencyProbe.ts";
 import { setupRoutes } from "./routes/index.ts";
+import { stopPrecaching } from "./browser/precaching.ts";
 import { terminateStream } from "./streaming/lifecycle.ts";
 import { validateProfiles } from "./config/profiles.ts";
 import { verifyCaptureSystem } from "./streaming/setup.ts";
@@ -49,6 +50,14 @@ let usingConsoleLogging = false;
  */
 
 let server: Nullable<Server> = null;
+
+/* The background-service teardown stack. Each long-lived background service (stale-page sweep, browser-restart watchdog, idle cleanup, show-info/pretune polling,
+ * update check) registers its stop here at the moment it starts in startServer(); graceful shutdown disposes the stack wholesale, so a future service cannot be
+ * started without also being torn down. An AsyncDisposableStack is used (rather than the synchronous DisposableStack) so the teardown awaits each registered stop -
+ * the current six are synchronous, but a future service whose stop must complete (e.g. flushing to disk) would be silently fire-and-forgotten by a sync stack.
+ */
+
+let backgroundServices: Nullable<AsyncDisposableStack> = null;
 
 // Interval for idle stream cleanup.
 let idleCleanupInterval: Nullable<ReturnType<typeof setInterval>> = null;
@@ -107,15 +116,12 @@ function setupGracefulShutdown(): void {
     // Set the graceful shutdown flag early so that page close errors are suppressed during stream termination.
     setGracefulShutdown(true);
 
-    // Stop cleanup and polling intervals. HDHR teardown is awaited so the HTTP and UDP sockets fully release before the rest of shutdown proceeds; the other
-    // stop functions return synchronously.
+    // Tear down the background services. HDHR is torn down first and awaited so its HTTP and UDP sockets fully release before the rest of shutdown proceeds. The
+    // long-lived pollers are disposed wholesale via the DisposableStack they registered on at startup. The browser-launch-scoped precache cycle is cancelled
+    // separately - its graceful-shutdown guard has already neutralized it via setGracefulShutdown above, and this clears the pending timer.
     await stopHdhrServer();
-    stopBrowserRestartChecking();
-    stopStalePageCleanup();
-    stopIdleCleanup();
-    stopPretunePolling();
-    stopShowInfoPolling();
-    stopUpdateChecking();
+    await backgroundServices?.disposeAsync();
+    stopPrecaching();
 
     // Terminate all streams. terminateStream() handles all cleanup including page closure and registry removal.
     const streams = getAllStreams();
@@ -149,6 +155,9 @@ function setupGracefulShutdown(): void {
 
       terminateStream(stream.id, stream.info.storeKey, "server shutdown");
     }
+
+    // Flush any pending debounced health-state write so the final channel/domain health is durably persisted even when shutdown lands inside the FLUSH_DELAY window.
+    await flushHealthStateNow();
 
     // Close the browser.
     await closeBrowser();
@@ -648,23 +657,29 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // verification complete, since both require the window in a normal state.
   await minimizeBrowserWindow();
 
-  // Start stale page cleanup.
+  // Start the background services and register each one's stop on an AsyncDisposableStack the moment it starts, so graceful shutdown can dispose them all wholesale
+  // and a future service cannot be started without also being torn down. These are order-independent background loops/timers, so LIFO disposal order is immaterial.
+  // HDHR is intentionally not a member (it is torn down first in shutdown so its sockets release before the rest), and the browser-launch-scoped precache cycle is
+  // started elsewhere and stopped separately.
+  backgroundServices = new AsyncDisposableStack();
+
   startStalePageCleanup();
+  backgroundServices.defer(stopStalePageCleanup);
 
-  // Start browser restart checking.
   startBrowserRestartChecking();
+  backgroundServices.defer(stopBrowserRestartChecking);
 
-  // Start idle cleanup.
   startIdleCleanup();
+  backgroundServices.defer(stopIdleCleanup);
 
-  // Start show info polling for Channels DVR integration.
   startShowInfoPolling();
+  backgroundServices.defer(stopShowInfoPolling);
 
-  // Start pretune polling for predictive channel pretuning from Channels DVR schedule.
   startPretunePolling();
+  backgroundServices.defer(stopPretunePolling);
 
-  // Start checking for updates.
   startUpdateChecking(getPackageVersion());
+  backgroundServices.defer(stopUpdateChecking);
 
   // Build and start Express application.
   try {

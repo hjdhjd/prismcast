@@ -3,8 +3,9 @@
  * precaching.ts: Service channel lineup precaching for PrismCast.
  */
 import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
-import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.ts";
+import { getCurrentBrowser, isGracefulShutdown, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.ts";
 import { CONFIG } from "../config/index.ts";
+import type { Nullable } from "../types/index.ts";
 import { getProviderBySlug } from "./channelSelection.ts";
 import { markDomainAuth } from "../config/health.ts";
 
@@ -23,13 +24,23 @@ const PRECACHE_DELAY = 5000;
 // Guard flag preventing overlapping precache cycles. Set to true before the cycle starts, cleared in a finally block.
 let precacheInProgress = false;
 
+// Handle for the scheduled precache cycle, tracked so a graceful shutdown can cancel it before it fires. Null when no cycle is pending.
+let precacheTimer: Nullable<ReturnType<typeof setTimeout>> = null;
+
 /**
- * Starts the precaching cycle if services are configured. Called from launchBrowser() after the browser is ready. If no services are selected, or a precache cycle
- * is already in progress, returns immediately. The actual work is scheduled via setTimeout to avoid blocking browser launch.
+ * Starts the precaching cycle if services are configured. Called from launchBrowser() after the browser is ready. If no services are selected, a shutdown is in
+ * progress, or a precache cycle is already in progress, returns immediately. The actual work is scheduled via setTimeout to avoid blocking browser launch.
  */
 export function startPrecaching(): void {
 
   if(CONFIG.channels.precacheServices.length === 0) {
+
+    return;
+  }
+
+  // Never schedule a precache during graceful shutdown. launchBrowser() can be reached during teardown; without this guard the scheduled cycle would fire after the
+  // browser is closed and relaunch Chrome.
+  if(isGracefulShutdown()) {
 
     return;
   }
@@ -44,8 +55,28 @@ export function startPrecaching(): void {
   // Set the guard before scheduling so that a second call during the delay window (e.g., rapid browser crash + relaunch) sees the flag and defers.
   precacheInProgress = true;
 
-  // Schedule the precache cycle after a brief delay to let the browser settle.
-  setTimeout(() => void runPrecacheCycle(), PRECACHE_DELAY);
+  // Schedule the precache cycle after a brief delay to let the browser settle. The handle is tracked so stopPrecaching() can cancel it if shutdown begins during the
+  // delay window; the ref is cleared when the timer fires since it is then spent.
+  precacheTimer = setTimeout(() => {
+
+    precacheTimer = null;
+    void runPrecacheCycle();
+  }, PRECACHE_DELAY);
+}
+
+/**
+ * Cancels a pending precache cycle and clears the in-progress guard. Called during graceful shutdown so a precache scheduled within the startup delay cannot fire
+ * after the browser has been closed. Safe to call when no cycle is pending.
+ */
+export function stopPrecaching(): void {
+
+  if(precacheTimer) {
+
+    clearTimeout(precacheTimer);
+    precacheTimer = null;
+  }
+
+  precacheInProgress = false;
 }
 
 /**
@@ -53,6 +84,16 @@ export function startPrecaching(): void {
  * Services not in the active service filter are silently skipped when the filter is non-empty.
  */
 async function runPrecacheCycle(): Promise<void> {
+
+  // Bail if a graceful shutdown began while this cycle was queued. Discovery opens browser pages via getCurrentBrowser(), which would relaunch Chrome after shutdown
+  // closed it; this guard makes the cycle a no-op during teardown regardless of how the timer-cancellation race resolves. Reset the in-progress flag since the
+  // early return skips the finally block below.
+  if(isGracefulShutdown()) {
+
+    precacheInProgress = false;
+
+    return;
+  }
 
   const slugs = CONFIG.channels.precacheServices;
   const enabledFilter = CONFIG.channels.enabledServices;
@@ -68,6 +109,14 @@ async function runPrecacheCycle(): Promise<void> {
 
     // Services are precached sequentially - each opens a browser page and navigates to a heavy SPA, so concurrent execution would stress system resources.
     for(const slug of slugs) {
+
+      // Stop opening new discovery pages once a graceful shutdown begins mid-cycle. The entry guard above only covers a cycle that has not started; without this,
+      // a cycle already in its loop when shutdown closes the browser would call getCurrentBrowser() below and relaunch Chrome. Break rather than continue so no
+      // further service is processed; the in-flight service (if any) finishes and closes its own page via its finally.
+      if(isGracefulShutdown()) {
+
+        break;
+      }
 
       const provider = getProviderBySlug(slug);
 

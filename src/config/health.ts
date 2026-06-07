@@ -204,6 +204,20 @@ export async function loadHealthState(): Promise<void> {
 }
 
 /**
+ * Writes the current in-memory health maps to health.json via the transactional file store. Health writes always emit the full state - there is no per-key delta
+ * semantic. Shared by the debounced flushHealthState (on the timer) and the immediate flushHealthStateNow (on shutdown), so both go through one write definition.
+ * @returns A promise that resolves when the store has committed the write.
+ */
+async function writeHealthState(): Promise<void> {
+
+  await healthStore.mutate((state) => {
+
+    state.channels = Object.fromEntries(channelHealth);
+    state.domains = Object.fromEntries(domainAuth);
+  });
+}
+
+/**
  * Writes the current in-memory health state to health.json via the transactional file store. Debounced - multiple calls within FLUSH_DELAY are coalesced into a
  * single write. The store's serialization queue handles the case where a flush fires while a prior mutation is still in flight, so no in-module write-in-progress
  * tracking is needed.
@@ -219,16 +233,36 @@ function flushHealthState(): void {
 
     flushTimer = null;
 
-    void healthStore.mutate((state) => {
-
-      // Replace the on-disk state with a fresh snapshot of the in-memory maps. Health writes always emit the full state - there is no per-key delta semantic.
-      state.channels = Object.fromEntries(channelHealth);
-      state.domains = Object.fromEntries(domainAuth);
-    }).catch((error: unknown) => {
+    void writeHealthState().catch((error: unknown) => {
 
       LOG.warn("Failed to write health state: %s.", (error instanceof Error) ? error.message : String(error));
     });
   }, FLUSH_DELAY);
+}
+
+/**
+ * Flushes the health state to disk immediately, cancelling any pending debounced write and awaiting the on-disk write. Called during graceful shutdown so the final
+ * health update is durably written even when the process exits inside the FLUSH_DELAY debounce window. Writing unconditionally (rather than only when a debounce is
+ * pending) also drains any in-flight mutation behind the store's serialization queue, guaranteeing the on-disk record matches the final in-memory state.
+ * @returns A promise that resolves when the final health-state write has committed.
+ */
+export async function flushHealthStateNow(): Promise<void> {
+
+  if(flushTimer) {
+
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+
+  // Best-effort write: a store failure during shutdown is logged but must not propagate, or it would abort the rest of the shutdown teardown (the caller awaits this
+  // without its own guard). This mirrors the debounced path's .catch above - both write paths log and continue on error rather than throwing.
+  try {
+
+    await writeHealthState();
+  } catch(error) {
+
+    LOG.warn("Failed to write health state during shutdown: %s.", (error instanceof Error) ? error.message : String(error));
+  }
 }
 
 // Public API.
