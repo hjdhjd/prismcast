@@ -3,6 +3,7 @@
  * evaluate.ts: Puppeteer evaluate wrapper with abort and timeout support.
  */
 import type { Frame, Page } from "puppeteer-core";
+import { addAbortListener } from "node:events";
 import { getStreamId } from "./streamContext.ts";
 import { raceWithTimeout } from "./delay.ts";
 
@@ -138,23 +139,29 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
   // Race evaluate against timeout using the shared utility. Timer cleanup is handled by raceWithTimeout's .finally().
   const timeoutRace = raceWithTimeout(evaluatePromise, timeout, new EvaluateTimeoutError(timeout));
 
-  // If we have an abort signal, add a third racer that rejects when the abort fires.
-  if(signal) {
+  // Without a stream abort signal, the timeout race is the whole story.
+  if(!signal) {
 
-    const { promise: abortPromise, reject: rejectAbort } = Promise.withResolvers<never>();
-
-    // Check if already aborted (race condition protection).
-    if(signal.aborted) {
-
-      rejectAbort(new EvaluateAbortError());
-    } else {
-
-      signal.addEventListener("abort", () => { rejectAbort(new EvaluateAbortError()); }, { once: true });
-    }
-
-    return Promise.race([ timeoutRace, abortPromise ]);
+    return timeoutRace;
   }
 
-  return timeoutRace;
+  const { promise: abortPromise, reject: rejectAbort } = Promise.withResolvers<never>();
+
+  // Subscribe to the abort via node:events addAbortListener, which returns a Disposable and fires the listener on a microtask even if the signal aborted in the
+  // narrow window between the pre-check above and this subscription. The finally disposes the subscription on EVERY exit path - normal completion, timeout, or
+  // abort - so the listener is removed symmetrically. Without that, each evaluate call would leak one listener and its closure on the long-lived per-stream
+  // AbortSignal for the stream's entire lifetime, eventually tripping MaxListenersExceededWarning. (An explicit finally rather than a "using" declaration because
+  // the binding is consumed only for its disposal, which the unused-vars lint cannot see on a bare "using".)
+  const abortSubscription = addAbortListener(signal, () => { rejectAbort(new EvaluateAbortError()); });
+
+  try {
+
+    const result = await Promise.race([ timeoutRace, abortPromise ]);
+
+    return result;
+  } finally {
+
+    abortSubscription[Symbol.dispose]();
+  }
 }
 

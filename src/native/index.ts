@@ -376,9 +376,12 @@ export async function refreshNativeManifest(options: {
 
   try {
 
-    // Install a fresh interceptor on the page. For token refresh, the page navigates directly to the channel URL (no guide grid), so the first manifest captured is
-    // the correct one. We call finalize() after navigation to resolve immediately with whatever was captured.
-    const handle = await installManifestInterceptor(page, 20000);
+    // Install a fresh interceptor on the page, scope-bound with "using" so its CDP observer is disposed on every exit from this block. The proxy.isStopped early
+    // return after navigation, and any throw from page.goto, would otherwise leave the observer (and its 20s timeout) running with no consumer until the timeout
+    // fires. The handle self-disposes when its promise resolves, after which this scope-bound disposal is an idempotent no-op. For token refresh the page
+    // navigates directly to the channel URL (no guide grid), so the first manifest captured is the correct one; we call finalize() after navigation to resolve
+    // immediately with whatever was captured.
+    using handle = await installManifestInterceptor(page, 20000);
 
     if(!handle) {
 

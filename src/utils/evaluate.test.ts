@@ -9,6 +9,7 @@ import { EvaluateAbortError, EvaluateTimeoutError, evaluateWithAbort, getAbortCo
 import { afterEach, describe, test } from "node:test";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { runWithStreamContext } from "./streamContext.ts";
 
 // makeFakePage builds an object that satisfies the parts of Page/Frame that evaluateWithAbort touches. We type as Page to feed into the wrapper but expose a
@@ -212,14 +213,18 @@ describe("evaluateWithAbort with stream context", () => {
         () => evaluateWithAbort(page, () => "v", undefined, 5_000),
         (err: Error) => err instanceof EvaluateAbortError
       );
+
+      // Completes the listener-symmetry guarantee across all three exit paths (this is the abort path; normal completion and timeout are covered below): once the
+      // abort has fired and the call settled, no abort listener lingers on the signal.
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "the abort listener is removed after the abort fires and the call settles");
     });
   });
 
   test("rejects with EvaluateAbortError when abort fires synchronously during the inner evaluate (race-window guard)", async () => {
 
-    // The implementation has TWO abort checks: one before the listener registration (line 123) and one after (line 147). The race-window guard at line 147
-    // catches the case where abort fires between the early check and the listener registration. We exercise it by having the fake's evaluate call abort
-    // synchronously while the wrapper is still constructing the listener, so the abort lands in that narrow synchronous window.
+    // The wrapper pre-checks signal.aborted before starting the evaluate, then subscribes to the abort via node:events addAbortListener. If the signal aborts in
+    // the narrow window between that pre-check and the subscription, addAbortListener still honors the already-aborted signal by firing the listener on the next
+    // microtask, so the abort racer wins. We exercise that window by having the fake's evaluate abort synchronously during the evaluate call.
     const controller = new AbortController();
 
     registerAbortController("ctx-stream", controller);
@@ -228,8 +233,8 @@ describe("evaluateWithAbort with stream context", () => {
 
       const page = makeFakePage(() => {
 
-        // Fire abort during the synchronous evaluate callback - this happens AFTER the early-return check at line 123 but BEFORE the listener registration
-        // at line 152. The second `if(signal.aborted)` check at line 147 is the one that catches this case.
+        // Fire abort during the synchronous evaluate callback - this lands AFTER the wrapper's pre-check (which saw a non-aborted signal) but BEFORE the
+        // addAbortListener subscription. addAbortListener honors the already-aborted signal by invoking the listener on the next microtask, rejecting the abort racer.
         controller.abort();
 
         return new Promise(() => { /* hangs */ });
@@ -264,6 +269,41 @@ describe("evaluateWithAbort with stream context", () => {
     const result = await evaluateWithAbort(page, () => "fast");
 
     assert.equal(result, "fast");
+  });
+
+  test("removes its abort listener after a normal completion (no listener leak across repeated calls)", async () => {
+
+    const controller = new AbortController();
+
+    registerAbortController("ctx-stream", controller);
+
+    await runWithStreamContext({ streamId: "ctx-stream" }, async () => {
+
+      const page = makeFakePage(() => "ok");
+
+      // The pre-fix implementation added an abort listener that was removed only when the abort fired, so each normal completion leaked one listener on the long-
+      // lived per-stream signal. The finally-scoped disposal must remove it on every completion; ten concurrent runs add ten listeners at peak, all of which must
+      // be gone once they settle.
+      await Promise.all(Array.from({ length: 10 }, () => evaluateWithAbort(page, () => "ok")));
+
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listeners linger after normal completions");
+    });
+  });
+
+  test("removes its abort listener after a timeout (no listener leak on the timeout path)", async () => {
+
+    const controller = new AbortController();
+
+    registerAbortController("ctx-stream", controller);
+
+    await runWithStreamContext({ streamId: "ctx-stream" }, async () => {
+
+      const page = makeFakePage(() => new Promise(() => { /* hangs */ }));
+
+      await assert.rejects(() => evaluateWithAbort(page, () => "v", undefined, 5), (err: Error) => err instanceof EvaluateTimeoutError);
+
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listener lingers after a timeout");
+    });
   });
 });
 
