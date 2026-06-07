@@ -134,7 +134,7 @@ describe("startHdhrServer - successful start", () => {
 
   test("starts the HTTP server on an OS-assigned port without throwing", async () => {
 
-    // Port 0 lets the OS pick a free port. We can't observe the chosen port from the public API (it's stored in module-level state), but we can confirm that
+    // Port 0 lets the OS pick a free port. We can't observe the chosen port from the public API (the controller's HTTP surface owns it), but we can confirm that
     // start completes without throwing and stopHdhrServer cleanly tears it down.
     CONFIG.hdhr.enabled = true;
     CONFIG.hdhr.deviceId = generateDeviceId();
@@ -257,7 +257,7 @@ describe("stopHdhrServer", () => {
 
   test("is a no-op when called before any server was started", async () => {
 
-    // The function checks the module-level reference for null; a fresh test run has no server, so the call must resolve without rejecting.
+    // The controller's surfaces are down on a fresh test run, so the call must resolve without rejecting.
     await assert.doesNotReject(stopHdhrServer);
   });
 
@@ -271,7 +271,7 @@ describe("stopHdhrServer", () => {
 
     await stopHdhrServer();
 
-    // The reference is cleared on the first call; the second must observe null and short-circuit.
+    // The surfaces are down after the first call; the second must observe no bound socket and short-circuit.
     await assert.doesNotReject(stopHdhrServer, "second stop is a safe no-op");
   });
 
@@ -284,7 +284,7 @@ describe("stopHdhrServer", () => {
     await startHdhrServer();
     await stopHdhrServer();
 
-    // After a stop, the module is back to the no-server state; a second start should succeed identically.
+    // After a stop, the surfaces are down but reusable; a second start should succeed identically.
     await assert.doesNotReject(() => startHdhrServer(), "restart after stop must succeed");
   });
 });
@@ -385,7 +385,8 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
   test("hdhr.port live-apply rebinds the HTTP server on the new port end-to-end", async () => {
 
     // The full integration claim: after applyHdhrConfigChanges fires for hdhr.port, /discover.json is reachable on the new port and not on the old one. The
-    // test exercises the live-rebind close-then-bind sequencing - the masterclass concern that motivated awaiting Server.close in stopHdhrServer.
+    // test exercises the live-rebind close-then-bind sequencing - the masterclass concern that motivated awaiting the server close before the rebind inside
+    // HttpSurface.ensureBound.
     CONFIG.hdhr.enabled = true;
     CONFIG.hdhr.deviceId = generateDeviceId();
     CONFIG.hdhr.port = 0;

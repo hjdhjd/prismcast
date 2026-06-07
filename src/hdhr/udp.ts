@@ -3,15 +3,17 @@
  * udp.ts: HDHomeRun UDP discovery and control transport for PrismCast.
  *
  * Plex locates HDHomeRun devices on the LAN by broadcasting a Discover request to UDP port 65001 and consuming the unicast replies. The same protocol surface
- * can answer Get requests against this port for device and tuner state. This module binds the responder socket, dispatches incoming packets through the pure
- * protocol codec and getHandlers dispatch table, and composes replies whose BaseURL field points at the correct LAN-reachable interface address for the
- * requesting client. The pure logic lives elsewhere; this module owns sockets, IP selection, and CONFIG read paths. Other HDHR-aware clients can speak the
- * same protocol; their compatibility is incidental rather than supported (see hdhr/index.ts for the Channels DVR port-80 caveat in particular).
+ * can answer Get requests against this port for device and tuner state. This module owns the responder socket as a self-disposing UdpSurface node: the node
+ * binds the socket, dispatches incoming packets through the pure protocol codec and getHandlers dispatch table, and composes replies whose BaseURL field points
+ * at the correct LAN-reachable interface address for the requesting client. The pure logic lives in free functions below; the node owns the socket, the captured
+ * HTTP-port provider, and the bind/close lifecycle. Other HDHR-aware clients can speak the same protocol; their compatibility is incidental rather than supported
+ * (see hdhr/index.ts for the Channels DVR port-80 caveat in particular).
  *
- * Lifecycle is controlled from hdhr/index.ts: startHdhrUdp is invoked after the HTTP HDHR server is listening (so the BaseURL the reply advertises is actually
- * live), stopHdhrUdp is invoked during graceful shutdown and during live-toggle of hdhr.discoveryEnabled. A bind collision on port 65001 (real HDHR or another
- * emulator on the same host) is logged at warn level and treated as graceful "discovery not available" rather than a startup failure - the HTTP HDHR surface
- * keeps working in that scenario, only LAN auto-detect is lost.
+ * Lifecycle is driven by the controller in hdhr/index.ts, which owns one UdpSurface alongside the HTTP surface. The controller calls ensureUp after the HTTP
+ * server is listening (so the BaseURL the reply advertises is actually live) and ensureDown during graceful shutdown and on a live toggle of hdhr.discoveryEnabled.
+ * ensureDown is also the node's [Symbol.asyncDispose], so the surface composes uniformly with the rest of the ownership tree. A bind collision on port 65001 (real
+ * HDHR or another emulator on the same host) is logged at warn level and treated as graceful "discovery not available" rather than a startup failure - the HTTP
+ * HDHR surface keeps working in that scenario, only LAN auto-detect is lost.
  */
 import { LOG, isCategoryEnabled } from "../utils/index.ts";
 import type { NetworkInterfaceInfo, NetworkInterfaceInfoIPv4 } from "node:os";
@@ -30,19 +32,11 @@ import { resolveGet } from "./getHandlers.ts";
 // Standard HDHomeRun discovery port. All HDHR-aware clients hard-code this value, so it is not configurable.
 export const HDHR_DISCOVERY_PORT = 65001;
 
-// The active responder socket, captured at module level so stopHdhrUdp can close it during shutdown or live-toggle. Null when no socket is bound.
-let hdhrSocket: Nullable<Socket> = null;
-
-// Provider for the HTTP server's live bound port, injected by the HDHR lifecycle layer at start time. The Discover reply advertises this (not CONFIG.hdhr.port)
-// so the BaseURL always reflects where the HTTP server is actually listening - which matters in the rejected-port-change case, where HTTP stays on the prior
-// port while CONFIG holds the new one. Null until startHdhrUdp is called with a provider; falls back to CONFIG.hdhr.port when absent (e.g. in transport tests).
-let httpPortProvider: Nullable<() => Nullable<number>> = null;
-
 /**
- * Options for startHdhrUdp. Tests pass an ephemeral port (0) so the kernel picks a free port; production passes the httpPortProvider so Discover replies
+ * Options for UdpSurface.ensureUp. Tests pass an ephemeral port (0) so the kernel picks a free port; production passes the httpPortProvider so Discover replies
  * advertise the real bound HTTP port.
  */
-export interface HdhrUdpOptions {
+export interface UdpSurfaceOptions {
 
   // Address to bind the socket on. Defaults to "0.0.0.0" so the socket receives subnet broadcasts on every interface.
   readonly bindAddress?: string;
@@ -55,124 +49,149 @@ export interface HdhrUdpOptions {
 }
 
 /**
- * Binds the UDP responder and returns true on success. Returns false (without throwing) when the bind fails - typically EADDRINUSE because a real HDHR or
- * another emulator owns port 65001 on the same host. The HTTP HDHR server continues to work in that case; only LAN auto-detect is lost.
- *
- * Idempotent: calling startHdhrUdp twice without an intervening stop is a no-op the second time. Safe to invoke from both initial startup and live config-
- * change application.
- * @param options - Optional bind overrides for tests.
- * @returns true when the socket is bound and listening, false on graceful failure.
+ * A self-disposing HDHomeRun UDP discovery surface. The node owns exactly one responder socket and the captured HTTP-port provider, cycling the socket up and
+ * down via ensureUp/ensureDown as the controller reconciles CONFIG.hdhr. ensureDown is exposed as [Symbol.asyncDispose] so the surface composes with the rest of
+ * the resource-ownership tree; disposal closes the current socket but leaves the node reusable (a later ensureUp rebinds), because this is owner-bounded, not
+ * scope-bounded, disposal.
  */
-export async function startHdhrUdp(options?: HdhrUdpOptions): Promise<boolean> {
+export interface UdpSurface extends AsyncDisposable {
 
-  if(hdhrSocket !== null) {
+  // The port the responder socket is bound to, or null when the surface is down. Primarily a test seam - production uses the fixed HDHR_DISCOVERY_PORT and never
+  // needs to introspect the socket.
+  readonly boundPort: Nullable<number>;
 
-    return true;
-  }
+  // Closes the responder socket if one is bound, resolving only after the socket is fully released. A no-op when already down. Aliased as [Symbol.asyncDispose].
+  ensureDown(): Promise<void>;
 
-  // Capture the HTTP-port provider for the Discover reply's BaseURL. Set before the bind attempt; harmless if the bind then fails (no socket -> no packets).
-  httpPortProvider = options?.httpPortProvider ?? null;
-
-  const bindAddress = options?.bindAddress ?? "0.0.0.0";
-  const port = options?.port ?? HDHR_DISCOVERY_PORT;
-  const socket = createSocket({ reuseAddr: false, type: "udp4" });
-
-  socket.on("message", (msg, rinfo) => {
-
-    // Defensive: catch handler errors so a malformed packet from a buggy client cannot tear down the socket.
-    try {
-
-      handlePacket(socket, msg, rinfo);
-    } catch(error) {
-
-      LOG.debug("hdhr", "UDP responder swallowed handler error.", { error: formatError(error) });
-    }
-  });
-
-  const { promise, resolve } = Promise.withResolvers<boolean>();
-
-  // Two error handlers, attached at different phases of the socket lifecycle. The bind-failure handler is short-lived: it runs once if bind fails (typically
-  // EADDRINUSE), resolves the bind promise with false, and is removed on bind success. The runtime-error handler is long-lived: it runs for any socket error
-  // that occurs after a successful bind, clears the module-level reference so a subsequent startHdhrUdp can rebind cleanly, and closes the socket. Splitting
-  // the two paths prevents the once-handler from misclassifying a post-bind error as a bind failure (with a misleading "port is already in use" log line)
-  // and keeps hdhrSocket from pointing at a closed socket.
-  const bindFailureHandler = (error: NodeJS.ErrnoException): void => {
-
-    if(error.code === "EADDRINUSE") {
-
-      LOG.warn("HDHomeRun LAN discovery port %d is already in use. Discovery is disabled; clients can still add PrismCast manually by IP.", port);
-    } else {
-
-      LOG.warn("HDHomeRun LAN discovery failed to start: %s. Clients can still add PrismCast manually by IP.", formatError(error));
-    }
-
-    socket.close();
-    resolve(false);
-  };
-
-  const runtimeErrorHandler = (error: NodeJS.ErrnoException): void => {
-
-    LOG.warn("HDHomeRun LAN discovery encountered a socket error and is now disabled: %s.", formatError(error));
-
-    if(hdhrSocket === socket) {
-
-      hdhrSocket = null;
-    }
-
-    socket.close();
-  };
-
-  socket.once("error", bindFailureHandler);
-
-  socket.bind(port, bindAddress, () => {
-
-    const address = socket.address();
-
-    hdhrSocket = socket;
-    socket.removeListener("error", bindFailureHandler);
-    socket.on("error", runtimeErrorHandler);
-    LOG.info("HDHomeRun LAN discovery is now responding on UDP %s:%d.", bindAddress, address.port);
-    resolve(true);
-  });
-
-  return promise;
+  // Binds the responder socket, returning true on success and false on graceful bind failure (typically EADDRINUSE). Idempotent: a second call without an
+  // intervening ensureDown is a no-op success.
+  ensureUp(options?: UdpSurfaceOptions): Promise<boolean>;
 }
 
 /**
- * Closes the responder socket and resolves only after the underlying socket is fully released. Awaiting close completion matters when the caller intends to
- * immediately rebind on the same port - dgram's close callback fires after release, and skipping the await would race a fresh bind against the kernel's
- * release ordering. Safe to call when no socket is bound (the function is a no-op in that case).
+ * Creates an HDHomeRun UDP discovery surface node. The returned object fully owns its socket; nothing outside the closure touches it. ensureUp/ensureDown are the
+ * cycling verbs the controller drives; [Symbol.asyncDispose] aliases ensureDown so the surface is a well-formed async-disposable resource.
+ * @returns A UdpSurface node.
  */
-export async function stopHdhrUdp(): Promise<void> {
+export function createUdpSurface(): UdpSurface {
 
-  if(hdhrSocket === null) {
+  // The active responder socket, owned entirely by this node. Null when the surface is down.
+  let socket: Nullable<Socket> = null;
 
-    return;
+  // Provider for the HTTP server's live bound port, captured at ensureUp time. The Discover reply advertises this (not CONFIG.hdhr.port) so the BaseURL always
+  // reflects where the HTTP server is actually listening - which matters in the rejected-port-change case, where HTTP stays on the prior port while CONFIG holds
+  // the new one. Null until ensureUp is called with a provider; falls back to CONFIG.hdhr.port when absent (e.g. in transport tests).
+  let httpPortProvider: Nullable<() => Nullable<number>> = null;
+
+  async function ensureUp(options?: UdpSurfaceOptions): Promise<boolean> {
+
+    // Idempotent: an already-bound surface is a no-op success. Safe to invoke from both initial startup and live config-change application.
+    if(socket !== null) {
+
+      return true;
+    }
+
+    // Capture the HTTP-port provider for the Discover reply's BaseURL. Set before the bind attempt; harmless if the bind then fails (no socket -> no packets).
+    httpPortProvider = options?.httpPortProvider ?? null;
+
+    const bindAddress = options?.bindAddress ?? "0.0.0.0";
+    const port = options?.port ?? HDHR_DISCOVERY_PORT;
+    const candidate = createSocket({ reuseAddr: false, type: "udp4" });
+
+    candidate.on("message", (msg, rinfo) => {
+
+      // Defensive: catch handler errors so a malformed packet from a buggy client cannot tear down the socket.
+      try {
+
+        handlePacket(candidate, msg, rinfo, httpPortProvider);
+      } catch(error) {
+
+        LOG.debug("hdhr", "UDP responder swallowed handler error.", { error: formatError(error) });
+      }
+    });
+
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+
+    // Two error handlers, attached at different phases of the socket lifecycle. The bind-failure handler is short-lived: it runs once if bind fails (typically
+    // EADDRINUSE), resolves the bind promise with false, and is removed on bind success. The runtime-error handler is long-lived: it runs for any socket error
+    // that occurs after a successful bind, clears the node's socket reference so a subsequent ensureUp can rebind cleanly, and closes the socket. Splitting the
+    // two paths prevents the once-handler from misclassifying a post-bind error as a bind failure (with a misleading "port is already in use" log line) and keeps
+    // the node's socket reference from pointing at a closed socket.
+    const bindFailureHandler = (error: NodeJS.ErrnoException): void => {
+
+      if(error.code === "EADDRINUSE") {
+
+        LOG.warn("HDHomeRun LAN discovery port %d is already in use. Discovery is disabled; clients can still add PrismCast manually by IP.", port);
+      } else {
+
+        LOG.warn("HDHomeRun LAN discovery failed to start: %s. Clients can still add PrismCast manually by IP.", formatError(error));
+      }
+
+      candidate.close();
+      resolve(false);
+    };
+
+    const runtimeErrorHandler = (error: NodeJS.ErrnoException): void => {
+
+      LOG.warn("HDHomeRun LAN discovery encountered a socket error and is now disabled: %s.", formatError(error));
+
+      if(socket === candidate) {
+
+        socket = null;
+      }
+
+      candidate.close();
+    };
+
+    candidate.once("error", bindFailureHandler);
+
+    candidate.bind(port, bindAddress, () => {
+
+      const address = candidate.address();
+
+      socket = candidate;
+      candidate.removeListener("error", bindFailureHandler);
+      candidate.on("error", runtimeErrorHandler);
+      LOG.info("HDHomeRun LAN discovery is now responding on UDP %s:%d.", bindAddress, address.port);
+      resolve(true);
+    });
+
+    return promise;
   }
 
-  const socket = hdhrSocket;
-  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
-  const { promise, resolve } = Promise.withResolvers<void>();
+  async function ensureDown(): Promise<void> {
 
-  hdhrSocket = null;
+    if(socket === null) {
 
-  socket.close(() => {
+      return;
+    }
 
-    LOG.info("HDHomeRun LAN discovery is now stopped.");
-    resolve();
-  });
+    const current = socket;
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise, resolve } = Promise.withResolvers<void>();
 
-  return promise;
-}
+    // Clear the reference before the asynchronous close so a concurrent ensureUp during teardown rebinds a fresh socket rather than racing the closing one.
+    socket = null;
 
-/**
- * Returns the port the responder socket is bound to, or null when no socket is bound. Primarily a test seam - tests use an ephemeral port (0) so the kernel
- * picks a free port and the test needs to discover what it picked to address its client request. Production code uses the fixed HDHR_DISCOVERY_PORT and never
- * needs to introspect the socket.
- */
-export function getBoundHdhrUdpPort(): Nullable<number> {
+    current.close(() => {
 
-  return hdhrSocket ? hdhrSocket.address().port : null;
+      LOG.info("HDHomeRun LAN discovery is now stopped.");
+      resolve();
+    });
+
+    return promise;
+  }
+
+  return {
+
+    get boundPort(): Nullable<number> {
+
+      return socket ? socket.address().port : null;
+    },
+    ensureDown,
+    ensureUp,
+    [Symbol.asyncDispose]: ensureDown
+  };
 }
 
 /**
@@ -181,8 +200,9 @@ export function getBoundHdhrUdpPort(): Nullable<number> {
  * @param socket - The bound UDP socket, used to send replies.
  * @param msg - The raw datagram bytes.
  * @param rinfo - The sender's address info, used both to address the reply and to pick a LAN-reachable BaseURL.
+ * @param httpPortProvider - Accessor for the HTTP server's live bound port, used to build the Discover reply's BaseURL. Falls back to CONFIG.hdhr.port when null.
  */
-function handlePacket(socket: Socket, msg: Buffer, rinfo: { address: string; port: number }): void {
+function handlePacket(socket: Socket, msg: Buffer, rinfo: { address: string; port: number }, httpPortProvider: Nullable<() => Nullable<number>>): void {
 
   const parsed = parsePacket(msg);
 

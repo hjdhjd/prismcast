@@ -9,14 +9,19 @@
  * already on the network), or vice versa. Channels DVR also auto-discovers via the UDP responder but its discovery assumes port 80 for the HTTP control
  * plane, so the lineup fetch fails unless hdhr.port is set to 80; Channels DVR users typically add PrismCast manually as a Custom Channels source.
  *
+ * The lifecycle is modeled as a reconciler owning self-disposing resource nodes. An HdhrController owns one HttpSurface and one UdpSurface; each surface fully
+ * owns its socket, encapsulating its own bind/rebind/close cycling, and exposes [Symbol.asyncDispose]. The controller expresses policy ("HTTP on
+ * CONFIG.hdhr.port; UDP up iff discoveryEnabled and HTTP is bound") and never reaches into how a surface binds or closes. reconcile() drives the surfaces to the
+ * state CONFIG.hdhr calls for (boot and live-apply both route through it); [Symbol.asyncDispose] is the terminal teardown. The two surfaces are the single source
+ * of truth for "what HDHR is actually running" - there are no module-level socket globals.
+ *
  * This module additionally registers a config-change handler under the "hdhr." prefix so HDHomeRun-related settings can take effect without a server restart.
- * The handler partitions incoming changes by path and either applies them live (open/close UDP socket, rebind the HTTP port, read fresh CONFIG values) or
- * reports them as deferred so the routes layer schedules a service restart. Registration happens at module-load time as a top-level side effect: ESM modules
- * load exactly once per process, so the handler is in place before any settings-save can fire. Tests that explicitly reset the reactivity registry can re-
- * register by importing and invoking registerConfigChangeHandler("hdhr.", applyHdhrConfigChanges) directly - both symbols are exported.
+ * The handler reconciles the surfaces to the new CONFIG.hdhr once and maps each input change to an outcome. Registration happens at module-load time as a top-
+ * level side effect: ESM modules load exactly once per process, so the handler is in place before any settings-save can fire. Tests that explicitly reset the
+ * reactivity registry can re-register by importing and invoking registerConfigChangeHandler("hdhr.", applyHdhrConfigChanges) directly - both symbols are exported.
  */
 import type { ChangeOutcome, ConfigChange } from "../config/reactivity.ts";
-import { HDHR_DISCOVERY_PORT, startHdhrUdp, stopHdhrUdp } from "./udp.ts";
+import { HDHR_DISCOVERY_PORT, createUdpSurface } from "./udp.ts";
 import { generateDeviceId, validateDeviceId } from "./deviceId.ts";
 import type { AddressInfo } from "node:net";
 import { CONFIG } from "../config/index.ts";
@@ -29,54 +34,189 @@ import { mutateConfig } from "../config/userConfig.ts";
 import { registerConfigChangeHandler } from "../config/reactivity.ts";
 import { setupHdhrEndpoints } from "./discover.ts";
 
-// The HDHR HTTP server instance, used for graceful shutdown and live-toggle restarts.
-let hdhrServer: Nullable<Server> = null;
-
 /**
- * Brings the HDHomeRun emulation surfaces (HTTP + optional UDP discovery) into line with CONFIG.hdhr. Thin wrapper over reconcileHdhrSurfaces so the boot path
- * and the live-apply path share one code path - there is exactly one place that decides what "HDHR matching the configuration" means. Failures at any layer are
- * logged and treated as graceful degradation; the broader application continues to work even if HDHR emulation cannot bind.
+ * A self-disposing HDHomeRun HTTP surface. The node owns exactly one express HTTP server and the entire bind state machine: bind-to-desired, no-op when already
+ * there, close-and-rebind on a port change, and the prior-port concession (a failed rebind re-binds the previous port so a typo'd port cannot take down a working
+ * tuner). ensureDown is exposed as [Symbol.asyncDispose]; disposal closes the current server but leaves the node reusable (a later ensureBound rebinds), because
+ * this is owner-bounded, not scope-bounded, disposal.
  */
-export async function startHdhrServer(): Promise<void> {
+interface HttpSurface extends AsyncDisposable {
 
-  await reconcileHdhrSurfaces();
+  // The port the HTTP server is bound to, or null when the surface is down. The single source of truth for "what port HTTP is actually on" - read by the UDP
+  // gating decision and by the Discover reply's advertised BaseURL.
+  readonly boundPort: Nullable<number>;
+
+  // Converges the surface to listening on the given port, owning the rebind and concession internally. Returns true on success, false when the desired bind
+  // failed (the caller reports the change rejected; the concession may have kept the prior port alive).
+  ensureBound(port: number, host: string): Promise<boolean>;
+
+  // Closes the HTTP server if one is bound, resolving only after the socket is fully released. A no-op when already down. Aliased as [Symbol.asyncDispose].
+  ensureDown(): Promise<void>;
 }
 
 /**
- * Stops the HDHomeRun emulation surfaces and waits for the underlying sockets to fully release. Awaiting close completion matters when the caller intends to
- * immediately rebind on the same port - skipping the await leaves a TIME_WAIT window during which a fresh bind would race against EADDRINUSE. Idempotent: safe
- * to call when no servers are running.
+ * The HDHomeRun controller: a reconciler that owns the two emulation surfaces. reconcile() drives both surfaces to the state CONFIG.hdhr calls for and reports
+ * which surfaces failed to reach it; [Symbol.asyncDispose] is the terminal teardown that brings both down.
  */
-export async function stopHdhrServer(): Promise<void> {
+interface HdhrController extends AsyncDisposable {
 
-  await stopHdhrUdp();
+  // Drives the HTTP and UDP surfaces to match the current CONFIG.hdhr. Returns which surfaces failed to reach their desired state so a caller can translate a
+  // failure into a rejected outcome rather than a false "applied".
+  reconcile(): Promise<{ httpFailed: boolean; udpFailed: boolean }>;
+}
 
-  if(hdhrServer) {
+/**
+ * Creates an HDHomeRun HTTP surface node. The returned object fully owns its server; nothing outside the closure touches it. ensureBound is the converge-up verb
+ * (with the rebind + concession sealed inside it), ensureDown the converge-down verb, and [Symbol.asyncDispose] aliases ensureDown so the surface is a well-formed
+ * async-disposable resource.
+ * @returns An HttpSurface node.
+ */
+function createHttpSurface(): HttpSurface {
 
-    await closeHdhrHttpServer(hdhrServer);
-    hdhrServer = null;
+  // The bound HTTP server, owned entirely by this node. Null when the surface is down.
+  let server: Nullable<Server> = null;
+
+  // currentPort resolves the live bound port from the server's address, or null when down. Internal helper so both the public getter and the bind logic read one
+  // source. Uses the resolved socket address rather than the requested port so an OS-assigned port (port 0 in tests) reports its real value.
+  function currentPort(): Nullable<number> {
+
+    return server ? ((server.address() as AddressInfo | null)?.port ?? null) : null;
   }
+
+  /**
+   * Closes an HTTP server and resolves only after the underlying socket is fully released. Server.close's callback fires after the socket is gone but the public
+   * API is callback-shaped; we surface it as a Promise so callers can compose with await. The callback's error argument is ignored - the only error it can carry
+   * is ERR_SERVER_NOT_RUNNING, which cannot occur here because we only close a server we confirmed listening.
+   * @param target - The server to close.
+   */
+  async function close(target: Server): Promise<void> {
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise, resolve } = Promise.withResolvers<void>();
+
+    target.close(() => { resolve(); });
+
+    return promise;
+  }
+
+  /**
+   * Opens a fresh HDHomeRun HTTP server on the given port and host, capturing it in the node's server reference on success. Returns true once the bind is
+   * confirmed listening, false on bind failure. The low-level open primitive; ensureBound layers the rebind + concession policy on top.
+   *
+   * Detects bind success or failure through the explicit "listening" and "error" events rather than express's listen callback. The listen callback fires even
+   * when the bind fails (verified empirically: it resolves on EADDRINUSE and EADDRNOTAVAIL with a non-listening server), so it cannot be trusted to signal
+   * success - relying on it is exactly why a port conflict used to be reported as a successful start. Exactly one of "listening" or "error" fires for a given
+   * bind attempt, so the promise always settles. This mirrors the bind-vs-runtime error-handler split the UDP surface uses in udp.ts.
+   * @param port - The TCP port to bind.
+   * @param host - The host address to bind.
+   * @returns True if the server is now listening, false if the bind failed.
+   */
+  async function bind(port: number, host: string): Promise<boolean> {
+
+    const app = express();
+
+    app.set("trust proxy", true);
+
+    setupHdhrEndpoints(app);
+
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    const candidate = app.listen(port, host);
+
+    const onBindError = (error: NodeJS.ErrnoException): void => {
+
+      if(error.code === "EADDRINUSE") {
+
+        LOG.warn("HDHomeRun port %s is already in use. Check for conflicting services on this port.", port);
+      } else {
+
+        LOG.warn("Failed to start the HDHomeRun HTTP server: %s.", formatError(error));
+      }
+
+      resolve(false);
+    };
+
+    candidate.once("error", onBindError);
+
+    candidate.once("listening", (): void => {
+
+      // Bind succeeded: retire the bind-failure handler and attach a long-lived runtime handler so a later socket error is logged rather than crashing the
+      // process on an unhandled "error" event.
+      candidate.removeListener("error", onBindError);
+      candidate.on("error", (error: NodeJS.ErrnoException): void => {
+
+        LOG.warn("HDHomeRun HTTP server encountered a socket error: %s.", formatError(error));
+      });
+
+      server = candidate;
+
+      LOG.info("HDHomeRun emulation is now listening on %s:%s (DeviceID: %s).", host, currentPort() ?? port, CONFIG.hdhr.deviceId.toUpperCase());
+
+      resolve(true);
+    });
+
+    return promise;
+  }
+
+  async function ensureBound(port: number, host: string): Promise<boolean> {
+
+    // Already listening on the desired port - nothing to do (covers deviceId/friendlyName-only changes, which need no rebind).
+    if(currentPort() === port) {
+
+      return true;
+    }
+
+    // Capture the prior port before closing so a failed rebind can fall back to it (the concession: a typo'd port must not take down a working tuner).
+    const priorPort = currentPort();
+
+    await ensureDown();
+
+    if(await bind(port, host)) {
+
+      return true;
+    }
+
+    // The desired bind failed. Concession (operator-confirmed): if we were previously listening on another port, re-bind it so the tuner keeps working; the
+    // change is still reported rejected so the operator knows it did not take. If there was no prior port (boot or already-down), there is nothing to restore.
+    if(priorPort !== null) {
+
+      LOG.warn("HDHomeRun port %s is unavailable; keeping the previous port %s active. The port change was rejected.", port, priorPort);
+
+      await bind(priorPort, host);
+    }
+
+    return false;
+  }
+
+  async function ensureDown(): Promise<void> {
+
+    if(server === null) {
+
+      return;
+    }
+
+    const current = server;
+
+    // Clear the reference before the asynchronous close so a concurrent ensureBound during teardown opens a fresh server rather than racing the closing one.
+    server = null;
+
+    await close(current);
+  }
+
+  return {
+
+    get boundPort(): Nullable<number> {
+
+      return currentPort();
+    },
+    ensureBound,
+    ensureDown,
+    [Symbol.asyncDispose]: ensureDown
+  };
 }
 
 /**
- * Closes an HDHomeRun HTTP server and resolves only after the underlying socket is fully released. Wrapped here because Server.close's callback fires after
- * the socket is gone, but the public API is callback-shaped; we surface it as a Promise so callers can compose with await.
- * @param server - The server instance to close.
- */
-async function closeHdhrHttpServer(server: Server): Promise<void> {
-
-  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
-  const { promise, resolve } = Promise.withResolvers<void>();
-
-  server.close(() => { resolve(); });
-
-  return promise;
-}
-
-/**
- * Ensures CONFIG.hdhr.deviceId carries a checksum-valid value, generating and persisting a fresh one when missing or invalid. Called from startHdhrServer and
- * from the live-toggle handler when hdhr.enabled flips to true so a never-before-enabled HDHR setup gets a DeviceID on first activation rather than only at
- * process boot.
+ * Ensures CONFIG.hdhr.deviceId carries a checksum-valid value, generating and persisting a fresh one when missing or invalid. Called from reconcile before
+ * bringing the surfaces up so a never-before-enabled HDHR setup gets a DeviceID on first activation rather than only at process boot.
  */
 async function ensureDeviceId(): Promise<void> {
 
@@ -111,145 +251,86 @@ async function ensureDeviceId(): Promise<void> {
 }
 
 /**
- * Binds the HDHomeRun HTTP server on the given port and reports whether the bind succeeded. Captures the bound server in the module-level hdhrServer so
- * stopHdhrServer can close it. Handles EADDRINUSE gracefully (logs, leaves hdhrServer null, returns false) so a port collision degrades rather than crashing -
- * and, crucially, communicates the failure to its caller so the live-apply path can report a rejected outcome instead of a false "applied".
- * @param port - The TCP port to bind.
- * @returns True if the server is now listening, false if the bind failed.
+ * Creates the HDHomeRun controller. The controller owns the two surface nodes for the whole process lifetime; their sockets cycle internally as reconcile drives
+ * them. Failures at any surface are reported up, not thrown - the broader application continues to work even if HDHR emulation cannot bind.
+ * @returns An HdhrController node.
  */
-async function startHttpServer(port: number): Promise<boolean> {
+function createHdhrController(): HdhrController {
 
-  const app = express();
+  // The two HDHomeRun surfaces this controller owns. Created once and live for the controller's lifetime; the controller expresses desired state (policy) and
+  // never reaches into how a surface binds, rebinds, or closes (mechanism).
+  const http = createHttpSurface();
+  const udp = createUdpSurface();
 
-  app.set("trust proxy", true);
+  async function reconcile(): Promise<{ httpFailed: boolean; udpFailed: boolean }> {
 
-  setupHdhrEndpoints(app);
+    // Desired state "disabled": bring both surfaces down. UDP first so it stops advertising a BaseURL before the HTTP server it points at goes away. This cannot
+    // fail. The surfaces remain reusable, so a later enable rebinds them.
+    if(!CONFIG.hdhr.enabled) {
 
-  const { promise, resolve } = Promise.withResolvers<boolean>();
-  const server = app.listen(port, CONFIG.server.host);
+      await udp.ensureDown();
+      await http.ensureDown();
 
-  /* Detect bind success or failure through the explicit "listening" and "error" events rather than express's listen callback. The listen callback fires even
-   * when the bind fails (verified empirically: it resolves on EADDRINUSE and EADDRNOTAVAIL with a non-listening server), so it cannot be trusted to signal
-   * success - relying on it is exactly why a port conflict used to be reported as a successful start. Exactly one of "listening" or "error" fires for a given
-   * bind attempt, so the promise always settles. This mirrors the bind-vs-runtime error-handler split the UDP responder uses in udp.ts.
-   */
-  const onBindError = (error: NodeJS.ErrnoException): void => {
-
-    if(error.code === "EADDRINUSE") {
-
-      LOG.warn("HDHomeRun port %s is already in use. Check for conflicting services on this port.", port);
-    } else {
-
-      LOG.warn("Failed to start the HDHomeRun HTTP server: %s.", formatError(error));
+      return { httpFailed: false, udpFailed: false };
     }
 
-    resolve(false);
+    await ensureDeviceId();
+
+    const httpFailed = !(await http.ensureBound(CONFIG.hdhr.port, CONFIG.server.host));
+
+    // UDP is gated on the HTTP server actually being bound: a discovery responder must never advertise a BaseURL pointing at an HTTP port with no listener, so
+    // when HTTP is down we stop UDP regardless of the discoveryEnabled flag. The Discover reply advertises http.boundPort (not CONFIG.hdhr.port) so it always
+    // reflects reality, including the rejected-port-change concession case where HTTP stays on the prior port.
+    let udpFailed = false;
+
+    if(CONFIG.hdhr.discoveryEnabled && (http.boundPort !== null)) {
+
+      udpFailed = !(await udp.ensureUp({ httpPortProvider: () => http.boundPort }));
+    } else {
+
+      await udp.ensureDown();
+    }
+
+    return { httpFailed, udpFailed };
+  }
+
+  async function disposeAsync(): Promise<void> {
+
+    // Terminal teardown: bring both surfaces down, UDP first (stop advertising before the advertised HTTP server dies). The surfaces remain reusable afterward -
+    // a later reconcile can bring them back - because closing a socket does not poison the node; this is owner-bounded disposal, not scope-bounded.
+    await udp.ensureDown();
+    await http.ensureDown();
+  }
+
+  return {
+
+    reconcile,
+    [Symbol.asyncDispose]: disposeAsync
   };
+}
 
-  server.once("error", onBindError);
+// The process-lifetime HDHomeRun controller. Created at module load (a pure factory call - no sockets bind until reconcile runs), so the public lifecycle
+// functions and the live-apply handler share one owner of the emulation surfaces.
+const hdhrController = createHdhrController();
 
-  server.once("listening", (): void => {
+/**
+ * Brings the HDHomeRun emulation surfaces (HTTP + optional UDP discovery) into line with CONFIG.hdhr. Thin delegator to the controller's reconcile so the boot
+ * path and the live-apply path share one code path. Failures are reported through the reconcile result and logged at the surface layer; boot treats them as
+ * graceful degradation and does not propagate them.
+ */
+export async function startHdhrServer(): Promise<void> {
 
-    // Bind succeeded: retire the bind-failure handler and attach a long-lived runtime handler so a later socket error is logged rather than crashing the
-    // process on an unhandled "error" event.
-    server.removeListener("error", onBindError);
-    server.on("error", (error: NodeJS.ErrnoException): void => {
-
-      LOG.warn("HDHomeRun HTTP server encountered a socket error: %s.", formatError(error));
-    });
-
-    hdhrServer = server;
-
-    LOG.info("HDHomeRun emulation is now listening on %s:%s (DeviceID: %s).", CONFIG.server.host, port, CONFIG.hdhr.deviceId.toUpperCase());
-
-    resolve(true);
-  });
-
-  return promise;
+  await hdhrController.reconcile();
 }
 
 /**
- * Reconciles the HDHomeRun HTTP and UDP surfaces to match the current CONFIG.hdhr - the single source of truth for "what running state the configuration calls
- * for." Used by both boot (startHdhrServer) and live config-apply (applyHdhrConfigChanges), so neither path can drift from the other and there is no per-change
- * ordering to get wrong: the desired state is read whole from CONFIG and the surfaces are driven to match it. Returns which surfaces failed to reach the desired
- * state so the caller can translate a failure into a rejected outcome rather than a false "applied".
- * @returns Flags indicating whether the HTTP and/or UDP surface failed to reach its desired state.
+ * Stops the HDHomeRun emulation surfaces and waits for the underlying sockets to fully release. Awaiting close completion matters when the caller intends to
+ * immediately rebind on the same port - skipping the await leaves a TIME_WAIT window during which a fresh bind would race against EADDRINUSE. Idempotent and
+ * reusable: safe to call when nothing is running, and a later startHdhrServer rebinds cleanly.
  */
-async function reconcileHdhrSurfaces(): Promise<{ httpFailed: boolean; udpFailed: boolean }> {
+export async function stopHdhrServer(): Promise<void> {
 
-  // Desired state "disabled": tear both surfaces down. This cannot fail.
-  if(!CONFIG.hdhr.enabled) {
-
-    await stopHdhrServer();
-
-    return { httpFailed: false, udpFailed: false };
-  }
-
-  await ensureDeviceId();
-
-  const httpFailed = await reconcileHttpSurface();
-  const udpFailed = await reconcileUdpSurface();
-
-  return { httpFailed, udpFailed };
-}
-
-/**
- * Drives the HTTP surface to listen on CONFIG.hdhr.port. No-op when already bound to the desired port. On a port change whose new bind fails (EADDRINUSE), the
- * concession is to re-bind the prior port so the tuner stays alive while the change is reported as rejected - a typo'd port must not take down a working tuner.
- * @returns True if the surface failed to reach the desired port (the caller reports the change rejected), false on success.
- */
-async function reconcileHttpSurface(): Promise<boolean> {
-
-  const desiredPort = CONFIG.hdhr.port;
-  const boundPort = hdhrServer ? (hdhrServer.address() as AddressInfo | null)?.port ?? null : null;
-
-  // Already listening on the desired port - nothing to do (covers deviceId/friendlyName-only changes, which need no rebind).
-  if(boundPort === desiredPort) {
-
-    return false;
-  }
-
-  if(hdhrServer) {
-
-    await closeHdhrHttpServer(hdhrServer);
-    hdhrServer = null;
-  }
-
-  if(await startHttpServer(desiredPort)) {
-
-    return false;
-  }
-
-  // The desired bind failed. Concession (operator-confirmed): if we were previously listening on another port, re-bind it so the tuner keeps working; the
-  // change is still reported rejected so the operator knows it did not take. If there was no prior port (boot or already-down), there is nothing to restore.
-  if(boundPort !== null) {
-
-    LOG.warn("HDHomeRun port %s is unavailable; keeping the previous port %s active. The port change was rejected.", desiredPort, boundPort);
-
-    await startHttpServer(boundPort);
-  }
-
-  return true;
-}
-
-/**
- * Drives the UDP discovery surface to match CONFIG.hdhr.discoveryEnabled. UDP is gated on the HTTP server actually being bound: a discovery responder must never
- * advertise a BaseURL pointing at an HTTP port with no listener, so when HTTP is down we stop UDP regardless of the discoveryEnabled flag. The discover reply
- * advertises the HTTP server's live bound port (not CONFIG.hdhr.port) so it always reflects reality, including the rejected-port-change case above.
- * @returns True if discovery was requested but failed to bind, false otherwise.
- */
-async function reconcileUdpSurface(): Promise<boolean> {
-
-  if(CONFIG.hdhr.discoveryEnabled && hdhrServer) {
-
-    const bound = await startHdhrUdp({ httpPortProvider: () => (hdhrServer ? (hdhrServer.address() as AddressInfo | null)?.port ?? null : null) });
-
-    return !bound;
-  }
-
-  await stopHdhrUdp();
-
-  return false;
+  await hdhrController[Symbol.asyncDispose]();
 }
 
 /**
@@ -265,7 +346,7 @@ async function reconcileUdpSurface(): Promise<boolean> {
  */
 export async function applyHdhrConfigChanges(changes: readonly ConfigChange[]): Promise<readonly ChangeOutcome[]> {
 
-  const { httpFailed, udpFailed } = await reconcileHdhrSurfaces();
+  const { httpFailed, udpFailed } = await hdhrController.reconcile();
 
   return changes.map((change) => {
 
@@ -274,8 +355,8 @@ export async function applyHdhrConfigChanges(changes: readonly ConfigChange[]): 
       case "hdhr.enabled":
       case "hdhr.port": {
 
-        // These fields drive the HTTP surface. A failed bind (port in use) is surfaced as rejected; the concession in reconcileHttpSurface has already kept the
-        // prior port alive, so "rejected" accurately means "the change you saved did not take, but the tuner is still running on its previous configuration."
+        // These fields drive the HTTP surface. A failed bind (port in use) is surfaced as rejected; the concession inside HttpSurface.ensureBound has already
+        // kept the prior port alive, so "rejected" accurately means "the change you saved did not take, but the tuner is still running on its previous configuration."
         return httpFailed ?
           { kind: "rejected", path: change.path, reason: "HDHomeRun could not bind port " + String(CONFIG.hdhr.port) + " (in use); the previous port remains active." } :
           { kind: "applied", path: change.path };

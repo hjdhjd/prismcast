@@ -5,22 +5,23 @@
  *   1. selectLanAddress is exercised as a pure function against synthetic NetworkInterfaceInfo maps so the subnet-match and fallback logic is verified without
  *      relying on the host's actual interface configuration.
  *
- *   2. startHdhrUdp/stopHdhrUdp are exercised via dgram loopback on an ephemeral port: the test binds the responder on 127.0.0.1:0, sends a Discover request,
- *      and asserts that a structurally valid reply comes back. The full request-reply round-trip validates the entire path - parser, dispatcher, encoder, and
- *      socket send.
+ *   2. The UdpSurface node is exercised via dgram loopback on an ephemeral port: each test creates a surface with `await using` (so its [Symbol.asyncDispose]
+ *      tears the socket down at scope exit), binds the responder on 127.0.0.1:0, sends a Discover request, and asserts that a structurally valid reply comes
+ *      back. The full request-reply round-trip validates the entire path - parser, dispatcher, encoder, and socket send.
  *
  *   3. Get and Set request paths are exercised similarly to confirm the transport composes the correct reply type for each parsed packet.
  *
  * The integration tests run on 127.0.0.1 with an ephemeral port so they cannot collide with a real HDHomeRun device or another emulator on the developer's
- * host. Tests teardown the responder in an afterEach to prevent leakage across cases. Request packet builders (makeDiscoverRequest, makeGetRequest) and the
- * shared framing helper (sealPacket) come from protocol.helpers.ts so both test files speak the same wire format.
+ * host. `await using` disposal tears the responder down at the end of each test, so there is no afterEach to forget. Request packet builders (makeDiscoverRequest,
+ * makeGetRequest) and the shared framing helper (sealPacket) come from protocol.helpers.ts so both test files speak the same wire format.
  */
-import { HDHR_DISCOVERY_PORT, getBoundHdhrUdpPort, selectLanAddress, startHdhrUdp, stopHdhrUdp } from "./udp.ts";
+import { HDHR_DISCOVERY_PORT, createUdpSurface, selectLanAddress } from "./udp.ts";
 import { PACKET_DISCOVER_REPLY, PACKET_GET_REPLY, TLV_BASE_URL, TLV_DEVICE_ID, TLV_DEVICE_TYPE, TLV_ERROR, TLV_GETSET_NAME, TLV_GETSET_VALUE,
   TLV_TUNER_COUNT } from "./protocol.ts";
-import { afterEach, describe, test } from "node:test";
+import { describe, test } from "node:test";
 import { makeDiscoverRequest, makeGetRequest } from "./protocol.helpers.ts";
 import type { NetworkInterfaceInfo } from "node:os";
+import type { UdpSurface } from "./udp.ts";
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
 
@@ -83,12 +84,7 @@ describe("selectLanAddress", () => {
   });
 });
 
-describe("startHdhrUdp / stopHdhrUdp - round-trip", () => {
-
-  afterEach(async () => {
-
-    await stopHdhrUdp();
-  });
+describe("UdpSurface - round-trip", () => {
 
   // sendAndReceive opens a client socket, sends the request to 127.0.0.1:<port>, and resolves with the first reply (or rejects on timeout).
   async function sendAndReceive(port: number, request: Buffer): Promise<Buffer> {
@@ -129,13 +125,13 @@ describe("startHdhrUdp / stopHdhrUdp - round-trip", () => {
 
   test("Discover request elicits a Discover reply with the four required TLVs", async () => {
 
-    const ok = await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+    await using surface = createUdpSurface();
+    const ok = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
 
     assert.equal(ok, true);
 
-    // We did not pass an explicit port; the responder bound an ephemeral port. Retrieve it via the internal socket. The test reaches in to read the address;
-    // production code never does this.
-    const port = getBoundPort();
+    // We did not pass an explicit port; the responder bound an ephemeral port. Retrieve it via the node's boundPort accessor.
+    const port = requireBoundPort(surface);
     const reply = await sendAndReceive(port, wildcardDiscover());
 
     assert.equal(reply.readUInt16BE(0), PACKET_DISCOVER_REPLY);
@@ -162,9 +158,11 @@ describe("startHdhrUdp / stopHdhrUdp - round-trip", () => {
 
   test("Get request for /sys/version elicits a Get reply with name and value TLVs", async () => {
 
-    await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+    await using surface = createUdpSurface();
 
-    const port = getBoundPort();
+    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = requireBoundPort(surface);
     const reply = await sendAndReceive(port, makeGetRequest("/sys/version"));
 
     assert.equal(reply.readUInt16BE(0), PACKET_GET_REPLY);
@@ -190,9 +188,11 @@ describe("startHdhrUdp / stopHdhrUdp - round-trip", () => {
 
   test("Get request for an unknown key elicits an error reply", async () => {
 
-    await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+    await using surface = createUdpSurface();
 
-    const port = getBoundPort();
+    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = requireBoundPort(surface);
     const reply = await sendAndReceive(port, makeGetRequest("/sys/totally-not-a-real-key"));
 
     assert.equal(reply.readUInt16BE(0), PACKET_GET_REPLY);
@@ -215,24 +215,90 @@ describe("startHdhrUdp / stopHdhrUdp - round-trip", () => {
     assert.equal(tagsSeen.has(TLV_GETSET_VALUE), false, "no value TLV on error response");
   });
 
+  test("Set request is write-protected: a value-bearing request elicits an error reply", async () => {
+
+    await using surface = createUdpSurface();
+
+    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = requireBoundPort(surface);
+
+    // A Get request carrying a value TLV parses as a Set. PrismCast does not implement RTP-style Set control, so the transport must answer with an explicit
+    // "write protected" error rather than dropping the packet (a silent drop would leave the client blocked waiting for an ACK).
+    const reply = await sendAndReceive(port, makeGetRequest("/tuner0/channel", "auto:0"));
+
+    assert.equal(reply.readUInt16BE(0), PACKET_GET_REPLY);
+
+    const payloadLen = reply.readUInt16BE(2);
+    const payload = reply.subarray(4, 4 + payloadLen);
+    const values = new Map<number, Buffer>();
+    let offset = 0;
+
+    while(offset < payload.length) {
+
+      const tag = payload.readUInt8(offset);
+      const length = payload.readUInt8(offset + 1);
+
+      values.set(tag, payload.subarray(offset + 2, offset + 2 + length));
+      offset += 2 + length;
+    }
+
+    assert.ok(values.has(TLV_GETSET_NAME), "name TLV echoed in the error reply");
+    assert.ok(values.has(TLV_ERROR), "error TLV present for a write-protected Set");
+    assert.equal(values.has(TLV_GETSET_VALUE), false, "no value TLV on a write-protected Set reply");
+
+    // The error string distinguishes the Set branch from a generic unknown-key error. encodeStringTlv null-terminates the wire value, so trim the terminator.
+    const errorText = values.get(TLV_ERROR)?.toString("utf8").replace(/\0$/, "");
+
+    assert.equal(errorText, "ERROR: write protected");
+  });
+
   test("malformed packets are silently dropped (no reply at all)", async () => {
 
-    await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+    await using surface = createUdpSurface();
 
-    const port = getBoundPort();
+    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = requireBoundPort(surface);
     const garbage = Buffer.from([ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF ]);
 
     // Expect the sendAndReceive to time out because the responder drops malformed packets without replying.
     await assert.rejects(() => sendAndReceive(port, garbage), /Timed out waiting/);
   });
 
-  test("idempotent start: calling startHdhrUdp twice returns true without rebinding", async () => {
+  test("idempotent ensureUp: calling it twice returns true without rebinding", async () => {
 
-    const first = await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
-    const second = await startHdhrUdp({ bindAddress: "127.0.0.1", port: 0 });
+    await using surface = createUdpSurface();
+    const first = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
 
     assert.equal(first, true);
+
+    // Capture the bound port AFTER the first call and BEFORE the second so the no-op claim is verifiable: a second ensureUp that silently rebound would land on a
+    // different ephemeral port, which this baseline diff catches. Comparing the getter against itself would be tautological and could not detect a rebind.
+    const firstPort = requireBoundPort(surface);
+    const second = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
     assert.equal(second, true, "second call is a no-op success");
+    assert.equal(surface.boundPort, firstPort, "the bound port is unchanged by the idempotent second call");
+  });
+
+  test("ensureDown closes the socket and is reusable: a later ensureUp rebinds", async () => {
+
+    await using surface = createUdpSurface();
+
+    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    assert.notEqual(surface.boundPort, null, "surface is bound after the first ensureUp");
+
+    await surface.ensureDown();
+
+    assert.equal(surface.boundPort, null, "surface is down after ensureDown");
+
+    // The node is owner-bounded, not scope-poisoned: a fresh ensureUp must rebind cleanly.
+    const rebound = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    assert.equal(rebound, true, "a stopped surface rebinds on the next ensureUp");
+    assert.notEqual(surface.boundPort, null, "surface is bound again after the second ensureUp");
   });
 
   test("HDHR_DISCOVERY_PORT constant matches the canonical SiliconDust value", () => {
@@ -242,11 +308,11 @@ describe("startHdhrUdp / stopHdhrUdp - round-trip", () => {
   });
 });
 
-// getBoundPort wraps the responder-port accessor so each test reads as "send to the responder's port" with a load-bearing non-null assertion. A malformed
-// test setup (forgetting startHdhrUdp) surfaces as a clear failure rather than a confusing port-zero send.
-function getBoundPort(): number {
+// requireBoundPort reads the surface's bound port with a load-bearing non-null assertion so each test reads as "send to the responder's port". A malformed test
+// setup (forgetting ensureUp) surfaces as a clear failure rather than a confusing port-zero send.
+function requireBoundPort(surface: UdpSurface): number {
 
-  const port = getBoundHdhrUdpPort();
+  const port = surface.boundPort;
 
   assert.ok(port !== null, "expected responder socket to be bound before reading its port");
 
