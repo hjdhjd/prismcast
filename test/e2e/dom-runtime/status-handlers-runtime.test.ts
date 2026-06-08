@@ -37,6 +37,7 @@ import { after, before, describe, test } from "node:test";
 import type { DisposableDomTestContext } from "../../helpers/dom.helpers.ts";
 import assert from "node:assert/strict";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
+import { escapeHtml as markupEscapeHtml } from "../../../src/utils/markup.ts";
 
 /**
  * Recorded invocation log for the stubbed externals. Tests inspect this to assert that handlers delegated to the right window.* surface with the right arguments.
@@ -431,6 +432,56 @@ describe("status.handlers: getDomain (pure)", () => {
      * the literal 'localhost'. Pinning this case ensures local-development URLs don't render as 'localhost.localhost' or similar nonsense.
      */
     assert.equal(handlers.getDomain("http://localhost:5589/stream"), "localhost");
+  });
+});
+
+describe("status.handlers: escapeHtml (pure)", () => {
+
+  test("encodes the five HTML special characters as entities, leaving ordinary text untouched", () => {
+
+    /* escapeHtml is the render-boundary escaper for every untrusted value the renderers inject directly into innerHTML (show names, stream URLs). The five
+     * characters that can break out of a text context - & < > " ' - must each render as an entity. We pin the ampersand first because order matters (it must be
+     * escaped before the others so an already-entity-encoded value does not get double-encoded by a naive sweep), then the angle brackets, the double quote (the
+     * attribute-breakout vector), and the apostrophe (HTML5 numeric reference &#39;). Ordinary alphanumerics pass through verbatim.
+     */
+    assert.equal(handlers.escapeHtml("&"), "&amp;");
+    assert.equal(handlers.escapeHtml("<"), "&lt;");
+    assert.equal(handlers.escapeHtml(">"), "&gt;");
+    assert.equal(handlers.escapeHtml("\""), "&quot;");
+    assert.equal(handlers.escapeHtml("'"), "&#39;");
+    assert.equal(handlers.escapeHtml("NBC News"), "NBC News", "ordinary text must pass through unchanged");
+  });
+
+  test("encodes a script-injection payload so it cannot break out of a text context", () => {
+
+    /* The canonical XSS vector: a show name or URL carrying a <script> tag. After escaping, the angle brackets and quotes are inert entities, so the browser
+     * renders the literal text instead of executing the payload. We pin the full transformation so a regression that dropped one of the substitutions surfaces here.
+     */
+    const payload = "<img src=x onerror=\"alert(1)\">";
+
+    assert.equal(handlers.escapeHtml(payload), "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+    assert.ok(!handlers.escapeHtml(payload).includes("<"), "no raw '<' may survive escaping");
+    assert.ok(!handlers.escapeHtml(payload).includes("\""), "no raw '\"' may survive escaping");
+  });
+
+  test("is byte-identical to the markup.escapeHtml single source of truth across the full character set (drift guard)", () => {
+
+    /* The browser-emitted escaper in status.handlers.ts and the server-side escaper in utils/markup.ts must encode the same five characters to the same entities -
+     * status.handlers.ts cannot import markup.escapeHtml because its body ships to the browser verbatim via Function.prototype.toString(), so the two are necessarily
+     * separate function objects. This parity guard makes that separation safe: it asserts byte-identical output across a string that contains every special
+     * character plus surrounding text, so a future edit to either escaper that changed an entity (e.g. swapping &#39; for the XML &apos;) would fail to merge.
+     */
+    const corpus = "Tom & Jerry's <b>\"Live\" Show</b> & more — channels/streams?a=1&b=2";
+
+    assert.equal(handlers.escapeHtml(corpus), markupEscapeHtml(corpus),
+      "the emittable escaper must match markup.escapeHtml byte-for-byte");
+
+    // Sweep every special character individually to catch a single-entity divergence the combined corpus could mask.
+    for(const char of [ "&", "<", ">", "\"", "'" ]) {
+
+      assert.equal(handlers.escapeHtml(char), markupEscapeHtml(char),
+        "escapeHtml('" + char + "') must match markup.escapeHtml('" + char + "')");
+    }
   });
 });
 
@@ -938,6 +989,36 @@ describe("status.handlers: buildStreamPopoverContent (DOM mutator)", () => {
       assert.equal(showSpan.textContent, "Today");
     })();
   });
+
+  test("HTML-escapes the showName so injected markup cannot break out of the popover text context", () => {
+
+    /* The showName is external data (Channels DVR show lookups) and is concatenated directly into the popover innerHTML. An unescaped value carrying < or > would
+     * break out of the text context and inject a live element. We seed a show name with a <b> tag plus an ampersand and apostrophe and assert the raw innerHTML
+     * carries the angle brackets and ampersand as entities, with no live tag surviving. We inspect innerHTML (raw markup) rather than textContent, which would
+     * decode the entities and mask a missing escape. Note: the DOM serializer round-trips a quote/apostrophe in text content back to the literal character (both
+     * are inert there), so this DOM-level test pins the breakout-prevention invariant; the byte-exact &quot;/&#39; entity contract is pinned in the escapeHtml
+     * pure suite above.
+     */
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const harness = makeHandlerContext(asDomDocument(ctx), {
+
+        state: { streamData: { "1": makeStream({ channel: "NBC", id: "1", showName: "Tom & Jerry's <b>Live</b>" }) } }
+      });
+
+      const menu = ctx.document.getElementById("stream-popover-menu") as unknown as Element;
+
+      handlers.buildStreamPopoverContent(menu, harness.ctx);
+
+      const showSpan = menu.querySelector(".stream-popover-show");
+
+      assert.ok(showSpan, "showName must surface as a .stream-popover-show span");
+      assert.match(showSpan.innerHTML, /Tom &amp; Jerry's &lt;b&gt;Live&lt;\/b&gt;/,
+        "angle brackets and the ampersand in the show name must be entity-encoded in the rendered markup");
+      assert.equal(showSpan.querySelector("b"), null, "no live <b> element may be parsed out of the escaped show name");
+    })();
+  });
 });
 
 describe("status.handlers: updateStreamPopover (DOM mutator)", () => {
@@ -1173,6 +1254,62 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
 
       assert.match(healthyRow?.getAttribute("style") ?? "", /background-color: transparent/);
       assert.match(stalledRow?.getAttribute("style") ?? "", /background-color: var\(--stream-tint-stalled\)/);
+    })();
+  });
+
+  test("HTML-escapes the showName in the stream-show cell so injected markup cannot break out of the cell", () => {
+
+    /* The show cell is built by concatenating the show name directly into the table innerHTML. External show-name data carrying < or > must be entity-encoded so
+     * it cannot break out of the cell and inject a live element. We inspect the cell's innerHTML (raw markup) rather than textContent, which would decode the
+     * entities and hide a missing escape. The strict &quot;/&#39; entity contract is pinned in the escapeHtml pure suite; here we pin the breakout-prevention
+     * invariant that survives the DOM serializer's round-trip.
+     */
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const harness = makeHandlerContext(asDomDocument(ctx), {
+
+        state: { streamData: { "x": makeStream({ id: "x", showName: "A & B <i>X</i>" }) } }
+      });
+
+      handlers.renderStreamsTable(harness.ctx);
+
+      const showCell = ctx.document.querySelector(".stream-row[data-id=\"x\"] .stream-show");
+
+      assert.ok(showCell, "the stream-show cell must render");
+      assert.match(showCell.innerHTML, /A &amp; B &lt;i&gt;X&lt;\/i&gt;/,
+        "angle brackets and the ampersand in the show name must be entity-encoded in the cell markup");
+      assert.equal(showCell.querySelector("i"), null, "no live <i> element may be parsed out of the escaped show name");
+    })();
+  });
+
+  test("HTML-escapes the stream URL in the expanded detail panel so query-string ampersands and injected markup are inert", () => {
+
+    /* The expanded detail panel concatenates the stream URL directly into the .details-url innerHTML. Stream URLs routinely carry & in their query strings, and a
+     * user-supplied channel URL could carry markup characters. The ampersand and any angle brackets must be entity-encoded. We seed a URL with an ampersand-laden
+     * query string plus an injected angle-bracket payload and assert the raw innerHTML carries those as entities with no live element parsed out. The strict
+     * &quot;/&#39; entity contract is pinned in the escapeHtml pure suite; here we pin the breakout-prevention invariant that survives the DOM serializer.
+     */
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const harness = makeHandlerContext(asDomDocument(ctx), {
+
+        state: {
+
+          expandedStreams: { "x": true },
+          streamData: { "x": makeStream({ id: "x", url: "https://watch.example.test/play?a=1&b=2><img src=x>" }) }
+        }
+      });
+
+      handlers.renderStreamsTable(harness.ctx);
+
+      const urlEl = ctx.document.querySelector(".stream-details[data-id=\"x\"] .details-url");
+
+      assert.ok(urlEl, "the expanded detail panel must render a .details-url element");
+      assert.match(urlEl.innerHTML, /a=1&amp;b=2&gt;&lt;img src=x&gt;/,
+        "the URL's ampersand and angle brackets must be entity-encoded in the rendered markup");
+      assert.equal(urlEl.querySelector("img"), null, "no live <img> element may be parsed out of the escaped URL");
     })();
   });
 });
@@ -1995,6 +2132,7 @@ describe("status.handlers - module export inventory", () => {
     "buildStreamPopoverContent",
     "copyOverviewPlaylistUrl",
     "createInitialState",
+    "escapeHtml",
     "formatAutoRecovery",
     "formatBytes",
     "formatClients",

@@ -207,6 +207,19 @@ export const HANDLER_CONSTANTS: readonly { readonly name: string; readonly value
 
 // Pure formatters. Free of DOM and free of state; only depend on their parameters. Tests call them directly with literal inputs.
 
+// HTML-escape a string for safe innerHTML insertion. This is the render-boundary escaper for every untrusted value the renderers concatenate directly into an
+// innerHTML string (show names, stream URLs). The entity choices mirror the server-side escapeHtml single source of truth in utils/markup.ts exactly - the same
+// five characters and the same HTML5 numeric apostrophe reference (&#39;) - so the browser-emitted escaper and the server escaper never disagree. The body is
+// kept self-contained (a literal regex and an inline entity table, no module-scope helpers) because this function is emitted to the browser verbatim via
+// Function.prototype.toString() and may reference only its parameters and browser globals. The parity guard in the runtime test suite pins it byte-identical to
+// markup.escapeHtml so a future divergence cannot merge silently.
+function escapeHtml(value: string): string {
+
+  const entities: Record<string, string> = { "\"": "&quot;", "&": "&amp;", "'": "&#39;", "<": "&lt;", ">": "&gt;" };
+
+  return value.replace(/[&<>"']/g, (char) => entities[char] ?? char);
+}
+
 // Format a duration in seconds to a human-readable label. Threshold ladder: <60s -> seconds, <3600s -> minutes+seconds, otherwise hours+minutes.
 function formatDuration(seconds: number): string {
 
@@ -518,7 +531,7 @@ function buildStreamPopoverContent(menu: Element, ctx: HandlerContext): void {
     const name = (s.channel ?? "") || (s.serviceName ?? "") || getDomain(s.url);
     const dur = Math.floor((now - new Date(s.startTime).getTime()) / 1000);
     const hwBadge = s.hardwareAccelerated ? " <span title=\"Hardware accelerated\">⚡</span>" : "";
-    const showSuffix = s.showName ? " <span class=\"stream-popover-show\">" + s.showName + "</span>" : "";
+    const showSuffix = s.showName ? " <span class=\"stream-popover-show\">" + escapeHtml(s.showName) + "</span>" : "";
 
     html += "<div class=\"stream-popover-row\">";
     html += "<span class=\"status-dot\" style=\"color: " + color + ";\">&#9679;</span>";
@@ -633,7 +646,7 @@ function renderStreamsTable(ctx: HandlerContext): void {
 
     html += "<td class=\"stream-info\">" + channelDisplay + nativeBadge + " " + durationSpan + "</td>";
 
-    const showDisplay = s.showName ?? "";
+    const showDisplay = escapeHtml(s.showName ?? "");
 
     html += "<td class=\"stream-show\">" + showDisplay + "</td>";
     html += "<td class=\"stream-health\">" + renderHealthCellContent(s) + "</td>";
@@ -645,7 +658,7 @@ function renderStreamsTable(ctx: HandlerContext): void {
       html += "<td colspan=\"4\">";
       html += "<div class=\"details-content\">";
       html += "<div class=\"details-header\">";
-      html += "<div class=\"details-url\">" + s.url + "</div>";
+      html += "<div class=\"details-url\">" + escapeHtml(s.url) + "</div>";
       html += "<div class=\"details-started\">" + renderDetailStarted(s) + "</div>";
       html += "</div>";
       html += "<div class=\"details-metrics\">";
@@ -1007,6 +1020,7 @@ type EmittableFn = (...args: never[]) => unknown;
  */
 export const HANDLER_FUNCTIONS: readonly EmittableFn[] = [
 
+  escapeHtml,
   formatDuration,
   formatBytes,
   formatTime,
@@ -1048,6 +1062,7 @@ export {
 
   buildStreamPopoverContent,
   copyOverviewPlaylistUrl,
+  escapeHtml,
   formatAutoRecovery,
   formatBytes,
   formatClients,
