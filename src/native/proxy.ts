@@ -44,6 +44,58 @@ const MANIFEST_BACKOFF_BASE = 3000;
 const MANIFEST_BACKOFF_CAP = 15000;
 
 /**
+ * Computes the consecutive-failure threshold for a manifest poll based on the HTTP status of the most recent failure. Client errors (4xx) typically indicate
+ * permanent issues (auth expiry, content removed) that won't self-resolve, so they use the base threshold directly. Server errors (5xx), network errors, and
+ * timeouts are transient CDN conditions that usually recover within a few retry cycles, so they get double the attempts. A missing status (network error, DNS
+ * failure, connection reset, timeout) is treated as transient. This is the single source of truth for the 4xx-versus-else threshold decision across all four poll
+ * sites - the video and audio, success-path and catch-path failure handlers - so audio and video share identical escalation logic.
+ *
+ * @param status - The HTTP status code of the failed response, or undefined for network/timeout errors that never produced a response.
+ * @returns The consecutive-failure threshold to compare against before reporting an error.
+ */
+export function manifestFailureThreshold(status?: number): number {
+
+  const isClientError = (status !== undefined) && (status >= 400) && (status < 500);
+
+  return isClientError ? MAX_MANIFEST_FAILURES : (MAX_MANIFEST_FAILURES * 2);
+}
+
+/**
+ * Result of resolving a segment's initialization vector. A discriminated union so the malformed-IV rejection is a typed outcome the caller must branch on rather
+ * than an overloaded null that could be confused with a successfully-derived IV. The "ok" variant carries the 16-byte IV to use; the "reject" variant signals that
+ * the manifest declared an explicit IV that failed to parse and the segment must not be decrypted.
+ */
+export type SegmentIvResult = { iv: Buffer; status: "ok" } | { status: "reject" };
+
+/**
+ * Resolves the initialization vector for a segment from the manifest's explicit IV (when present) or the media sequence number (when absent), per RFC 8216
+ * Section 5.2. When the manifest provides an explicit IV in the #EXT-X-KEY tag, it is authoritative and must parse cleanly: a malformed explicit IV is rejected
+ * rather than silently substituted with the sequence-derived IV. Substituting would decrypt the segment with the wrong IV, yielding corrupted CBC output on the
+ * first block - plausible-looking but garbage video served silently. Rejecting lets the caller count a fetch failure so recovery can escalate. The genuine absence
+ * of an explicit IV (ivHex === null) is the only case that derives the IV from the sequence number.
+ *
+ * @param ivHex - The explicit IV hex string from the manifest, or null when the manifest declares no explicit IV.
+ * @param sequence - The media sequence number used to derive the IV when no explicit IV is provided.
+ * @returns An "ok" result carrying the resolved IV, or a "reject" result when an explicit IV was provided but failed to parse.
+ */
+export function resolveSegmentIv(ivHex: Nullable<string>, sequence: number): SegmentIvResult {
+
+  if(ivHex !== null) {
+
+    const explicitIv = parseExplicitIv(ivHex);
+
+    if(!explicitIv) {
+
+      return { status: "reject" };
+    }
+
+    return { iv: explicitIv, status: "ok" };
+  }
+
+  return { iv: deriveIvFromSequence(sequence), status: "ok" };
+}
+
+/**
  * Options for creating a native HLS proxy.
  */
 export interface NativeProxyOptions {
@@ -266,6 +318,7 @@ interface ProxyLifecycleState {
  */
 interface VideoTrackingState {
 
+  activeKeyUrls: Set<string>;
   consecutiveManifestFailures: number;
   fetchedSequences: Set<number>;
   highWaterSequence: number;
@@ -286,6 +339,7 @@ interface VideoTrackingState {
  */
 interface AudioTrackingState {
 
+  activeKeyUrls: Set<string>;
   consecutiveManifestFailures: number;
   fetchedSequences: Set<number>;
   highWaterSequence: number;
@@ -663,6 +717,55 @@ function buildEntryFromMetadata(filename: string, metadata: SegmentMetadata, def
 }
 
 /**
+ * Replaces the contents of a key-URL Set with the distinct AES-128 key URLs referenced by the segments of a freshly-parsed manifest. The Set is rebuilt from
+ * scratch on each poll so it always reflects exactly the keys the current manifest window references - never a stale accumulation. The video and audio paths each
+ * own one such Set; their union is the live working set the per-URL key cache prunes against at token-refresh boundaries, which bounds the cache to the keys the
+ * stream is actually using rather than every key it has ever rotated through.
+ *
+ * @param target - The Set to rebuild in place.
+ * @param segments - The parsed segments whose key URLs (when present) define the new active set.
+ */
+function refreshActiveKeyUrls(target: Set<string>, segments: ParsedSegment[]): void {
+
+  target.clear();
+
+  for(const seg of segments) {
+
+    if(seg.keyUrl !== null) {
+
+      target.add(seg.keyUrl);
+    }
+  }
+}
+
+/**
+ * Evicts decryption keys whose URL is not in the active working set, mutating the cache in place. The cache is keyed by URL because each token rotation can
+ * reference a different key URL; without this prune, the cache accumulates one dead entry per rotation indefinitely. The active set is the union of the URLs the
+ * current video and audio manifests reference, so keys still in use survive while keys that rotated out of both manifests are released. Returns the number of
+ * entries evicted so the caller can decide whether to log. Extracted as a pure module-level function (no closure capture) so the eviction invariant is unit-testable
+ * in isolation from the polling loop.
+ *
+ * @param keysByUrl - The per-URL key cache to prune in place.
+ * @param activeKeyUrls - The union of key URLs referenced by the current video and audio manifests.
+ * @returns The number of cache entries evicted.
+ */
+export function pruneKeyCache(keysByUrl: Map<string, Buffer>, activeKeyUrls: ReadonlySet<string>): number {
+
+  let evicted = 0;
+
+  for(const cachedKeyUrl of keysByUrl.keys()) {
+
+    if(!activeKeyUrls.has(cachedKeyUrl)) {
+
+      keysByUrl.delete(cachedKeyUrl);
+      evicted++;
+    }
+  }
+
+  return evicted;
+}
+
+/**
  * Prunes stale entries from a SegmentMetadata instance. Removes entries for segments that are no longer in the active segment set (evicted from the sliding window).
  * This prevents unbounded growth over hours of streaming.
  *
@@ -712,9 +815,14 @@ async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, fet
       audio.consecutiveManifestFailures++;
       ctx.stats.totalFetchErrors++;
 
-      LOG.debug("native:proxy", "Audio manifest poll failed for %s: HTTP %s.", ctx.channelName, response.status);
+      // Classify the failure via the shared threshold helper so the audio path escalates identically to the video path: 4xx uses the base threshold, 5xx and
+      // network conditions get double the attempts.
+      const effectiveThreshold = manifestFailureThreshold(response.status);
 
-      if(audio.consecutiveManifestFailures >= MAX_MANIFEST_FAILURES) {
+      LOG.debug("native:proxy", "Audio manifest poll failed for %s: HTTP %s (%s/%s).",
+        ctx.channelName, response.status, audio.consecutiveManifestFailures, effectiveThreshold);
+
+      if(audio.consecutiveManifestFailures >= effectiveThreshold) {
 
         ctx.lifecycle.errorThresholdReached = true;
         ctx.lifecycle.stopped = true;
@@ -731,12 +839,16 @@ async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, fet
     return await processAudioStream(ctx, audio, body, audio.variantUrl, fetchSegment);
   } catch(error) {
 
+    // Network errors (timeouts, DNS failures, connection resets) are transient - the threshold helper returns the doubled value for a missing status, matching the
+    // video catch path so audio and video escalate identically.
     audio.consecutiveManifestFailures++;
     ctx.stats.totalFetchErrors++;
 
-    LOG.debug("native:proxy", "Audio manifest poll failed for %s: %s.", ctx.channelName, String(error));
+    const networkThreshold = manifestFailureThreshold();
 
-    if(audio.consecutiveManifestFailures >= MAX_MANIFEST_FAILURES) {
+    LOG.debug("native:proxy", "Audio manifest poll failed for %s: %s (%s/%s).", ctx.channelName, String(error), audio.consecutiveManifestFailures, networkThreshold);
+
+    if(audio.consecutiveManifestFailures >= networkThreshold) {
 
       ctx.lifecycle.errorThresholdReached = true;
       ctx.lifecycle.stopped = true;
@@ -764,6 +876,10 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
   const { mediaSequence, segments, targetDuration } = parseVariantManifest(body, baseUrl);
 
   audio.lastTargetDuration = targetDuration;
+
+  // Record the AES-128 key URLs the current audio manifest references so the per-URL key cache can prune against the live video+audio working set on the next
+  // token refresh, rather than retaining a key per rotation indefinitely.
+  refreshActiveKeyUrls(audio.activeKeyUrls, segments);
 
   // Prune old entries from audio fetchedSequences and audio metadata on each poll cycle.
   for(const seq of audio.fetchedSequences) {
@@ -979,6 +1095,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   // Video segment and manifest tracking state.
   const video: VideoTrackingState = {
 
+    activeKeyUrls: new Set<string>(),
     consecutiveManifestFailures: 0,
     fetchedSequences: new Set<number>(),
     highWaterSequence: -1,
@@ -996,6 +1113,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   // Audio segment and manifest tracking state for streams with separate audio renditions.
   const audio: AudioTrackingState = {
 
+    activeKeyUrls: new Set<string>(),
     consecutiveManifestFailures: 0,
     fetchedSequences: new Set<number>(),
     highWaterSequence: -1,
@@ -1040,6 +1158,23 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   }
 
   /**
+   * Prunes the per-URL decryption key cache against this stream's live working set - the union of the key URLs the most recently polled video and audio manifests
+   * reference - and logs the eviction count. Called at each token-refresh boundary, this bounds the cache to the keys the stream is actually using (typically one or
+   * two) rather than retaining one dead entry per rotation. Refresh is the natural point at which the prior CDN session's keys become unreachable, so it runs here
+   * rather than on every poll. The eviction itself lives in the pure module-level pruneKeyCache so the invariant is unit-testable.
+   */
+  function pruneStreamKeyCache(): void {
+
+    const activeKeyUrls = new Set<string>([ ...video.activeKeyUrls, ...audio.activeKeyUrls ]);
+    const evicted = pruneKeyCache(keysByUrl, activeKeyUrls);
+
+    if(evicted > 0) {
+
+      LOG.debug("native:proxy", "Pruned %s stale decryption key(s) for %s (%s active).", evicted, channelName, keysByUrl.size);
+    }
+  }
+
+  /**
    * Computes the next retry delay with exponential backoff and jitter. Doubles the current backoff (capped at MANIFEST_BACKOFF_CAP) and applies +/-20% jitter.
    * @returns The jittered delay in milliseconds.
    */
@@ -1073,10 +1208,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
         video.consecutiveManifestFailures++;
         stats.totalFetchErrors++;
 
-        // Classify the error. Client errors (4xx) typically indicate permanent issues (auth expiry, content removed) that won't self-resolve. Server errors (5xx)
-        // are transient CDN issues that usually recover within a few seconds. Client errors use the base threshold; server errors get double the attempts.
+        // Classify the error via the shared threshold helper. Client errors (4xx) use the base threshold; server errors (5xx) and network conditions get double the
+        // attempts. This is the same logic the audio poll path uses, so video and audio escalate identically.
         const isClientError = (response.status >= 400) && (response.status < 500);
-        const effectiveThreshold = isClientError ? MAX_MANIFEST_FAILURES : (MAX_MANIFEST_FAILURES * 2);
+        const effectiveThreshold = manifestFailureThreshold(response.status);
 
         LOG.debug("native:proxy", "Manifest poll failed for %s: HTTP %s (%s, %s/%s).",
           channelName, response.status, isClientError ? "client" : "server", video.consecutiveManifestFailures, effectiveThreshold);
@@ -1150,14 +1285,17 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       }
     } catch(error) {
 
-      // Network errors (timeouts, DNS failures, connection resets) are transient - use the extended threshold and backoff.
+      // Network errors (timeouts, DNS failures, connection resets) are transient - use the extended threshold and backoff. The threshold helper returns the doubled
+      // value for a missing status, which is exactly the network-error case here.
       video.consecutiveManifestFailures++;
       stats.totalFetchErrors++;
 
-      LOG.debug("native:proxy", "Manifest poll failed for %s: %s (%s/%s).",
-        channelName, String(error), video.consecutiveManifestFailures, MAX_MANIFEST_FAILURES * 2);
+      const networkThreshold = manifestFailureThreshold();
 
-      if(video.consecutiveManifestFailures >= (MAX_MANIFEST_FAILURES * 2)) {
+      LOG.debug("native:proxy", "Manifest poll failed for %s: %s (%s/%s).",
+        channelName, String(error), video.consecutiveManifestFailures, networkThreshold);
+
+      if(video.consecutiveManifestFailures >= networkThreshold) {
 
         lifecycle.errorThresholdReached = true;
         lifecycle.stopped = true;
@@ -1188,6 +1326,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     const { mediaSequence, segments, targetDuration } = parseVariantManifest(body, video.variantUrl);
 
     video.lastTargetDuration = targetDuration;
+
+    // Record the AES-128 key URLs the current video manifest references so the per-URL key cache can prune against the live video+audio working set on the next
+    // token refresh, rather than retaining a key per rotation indefinitely.
+    refreshActiveKeyUrls(video.activeKeyUrls, segments);
 
     // Prune old entries from the fetchedSequences Set and segment metadata on each poll cycle. The service's media sequence window slides forward, so entries below
     // the current base sequence will never be checked again. Without pruning, these structures grow unboundedly over hours of streaming.
@@ -1358,12 +1500,21 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
         LOG.debug("native:proxy", "New decryption key cached for %s.", channelName);
       }
 
-      // Determine the IV: use explicit IV from the manifest, or derive from the media sequence number.
-      const iv = ivHex ? (parseExplicitIv(ivHex) ?? deriveIvFromSequence(sequence)) : deriveIvFromSequence(sequence);
+      // Determine the IV via the shared resolver. A malformed explicit IV is rejected rather than silently substituted with the sequence-derived IV, which would
+      // decrypt the segment with the wrong IV and serve plausible-looking but garbage video. Rejecting returns null here so the fetch tracker counts a failure and
+      // recovery can escalate.
+      const ivResult = resolveSegmentIv(ivHex, sequence);
 
-      LOG.debug("native:decrypt", "IV source for sequence %s: %s.", sequence, ivHex ? "explicit" : "sequence");
+      if(ivResult.status === "reject") {
 
-      data = decryptSegment(data, key, iv);
+        LOG.warn("Rejecting segment for %s: the manifest provided a malformed explicit IV.", channelName, { ivHex, sequence });
+
+        return null;
+      }
+
+      LOG.debug("native:decrypt", "IV source for sequence %s: %s.", sequence, (ivHex !== null) ? "explicit" : "sequence");
+
+      data = decryptSegment(data, key, ivResult.iv);
     }
 
     return data;
@@ -1631,6 +1782,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       video.fetchedSequences.clear();
       video.lastMediaSequence = -1;
       video.tokenRefreshPending = true;
+
+      // Evict decryption keys the prior CDN session referenced but the live manifests no longer do. A token rotation typically retires the old session's key URL,
+      // so without this the per-URL key cache would grow by one dead entry per refresh over the stream's lifetime.
+      pruneStreamKeyCache();
 
       LOG.debug("native:proxy", "Variant URL updated for %s. Segment tracking reset.", channelName);
     },

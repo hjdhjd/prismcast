@@ -1,16 +1,19 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * proxy.test.ts: Unit tests for the native HLS proxy factory in proxy.ts. createNativeProxy is the only export and returns a NativeProxy instance with the
- * documented surface. The polling loop, manifest parsing, segment fetching, decryption integration, and playlist generation are all encapsulated inside the
- * factory closure and are exercised end-to-end by start()ing the proxy against a live HLS source - not viable as a unit test. The tests here focus on the
- * factory's deterministic surface: initial-state contracts on every getter, stop() lifecycle, the token refresh state mutations exposed via update* methods,
- * and stat counter behavior. The full polling loop is deferred to e2e coverage with real Chrome.
+ * proxy.test.ts: Unit tests for the native HLS proxy in proxy.ts. createNativeProxy is the factory export and returns a NativeProxy instance with the documented
+ * surface. The polling loop, manifest parsing, segment fetching, decryption integration, and playlist generation are all encapsulated inside the factory closure and
+ * are exercised end-to-end by start()ing the proxy against a live HLS source - not viable as a unit test. The tests here focus on the factory's deterministic
+ * surface: initial-state contracts on every getter, stop() lifecycle, the token refresh state mutations exposed via update* methods, and stat counter behavior. The
+ * full polling loop is deferred to e2e coverage with real Chrome. The pure module-level helpers extracted from the polling loop - manifestFailureThreshold (poll
+ * failure escalation), resolveSegmentIv (explicit-versus-derived IV selection), and pruneKeyCache (per-URL key cache bounding) - are exported and tested directly,
+ * pinning the manifest-hardening invariants the closure delegates to them.
  */
+import { createNativeProxy, manifestFailureThreshold, pruneKeyCache, resolveSegmentIv } from "./proxy.ts";
 import { describe, test } from "node:test";
 import type { NativeProxyOptions } from "./proxy.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
-import { createNativeProxy } from "./proxy.ts";
+import { deriveIvFromSequence } from "./decrypt.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -330,6 +333,182 @@ describe("NativeProxy.getConsecutiveErrors aggregation", () => {
 
     assert.equal(proxy.getConsecutiveErrors(), 0, "zero across all four counters before any poll");
     proxy.stop();
+  });
+});
+
+describe("manifestFailureThreshold", () => {
+
+  // The base threshold is MAX_MANIFEST_FAILURES (3) and the extended threshold is double that (6). These are not exported, so we assert against the literal values
+  // the constant resolves to. If the constant changes, these literals must change with it - the parity property below is the structural invariant, the literals are
+  // the documented current values.
+  const BASE = 3;
+  const EXTENDED = 6;
+
+  test("returns the base threshold for every 4xx client error", () => {
+
+    // Client errors (auth expiry, content removed) are treated as permanent and use the base threshold directly so a broken stream is reported quickly rather than
+    // retried twice as long.
+    for(const status of [ 400, 401, 403, 404, 410, 429, 499 ]) {
+
+      assert.equal(manifestFailureThreshold(status), BASE, "4xx status " + String(status) + " uses the base threshold");
+    }
+  });
+
+  test("returns the extended threshold for 5xx server errors", () => {
+
+    // Server errors are transient CDN conditions that usually self-resolve, so they get double the attempts.
+    for(const status of [ 500, 502, 503, 504 ]) {
+
+      assert.equal(manifestFailureThreshold(status), EXTENDED, "5xx status " + String(status) + " uses the extended threshold");
+    }
+  });
+
+  test("returns the extended threshold for a missing status (network or timeout error)", () => {
+
+    // A failure that never produced a response (DNS failure, connection reset, AbortSignal timeout) has no status. It is transient by nature, so the helper returns
+    // the doubled threshold. This is the case the video and audio catch paths rely on.
+    assert.equal(manifestFailureThreshold(), EXTENDED, "undefined status uses the extended threshold");
+    assert.equal(manifestFailureThreshold(undefined), EXTENDED, "explicit undefined uses the extended threshold");
+  });
+
+  test("treats the 3xx and exactly-400 boundaries correctly", () => {
+
+    // Boundary: 399 is not a client error (extended), 400 is the first client error (base), 499 is the last client error (base), and 500 leaves the client range
+    // (extended). This pins the half-open [400, 500) classification the helper implements.
+    assert.equal(manifestFailureThreshold(399), EXTENDED, "399 is below the client range");
+    assert.equal(manifestFailureThreshold(400), BASE, "400 is the first client error");
+    assert.equal(manifestFailureThreshold(499), BASE, "499 is the last client error");
+    assert.equal(manifestFailureThreshold(500), EXTENDED, "500 leaves the client range");
+  });
+
+  test("audio and video poll paths share identical thresholds (finding [8] parity)", () => {
+
+    // The core property of finding [8]: there is one threshold decision, so the audio poll and the video poll escalate identically for the same failure class. We
+    // assert the helper is a pure function of the status alone - the same status yields the same threshold regardless of which path calls it. Before the fix the
+    // audio path used a flat base threshold for both 5xx and network errors; now both paths route through this single helper.
+    const networkThreshold = manifestFailureThreshold();
+    const serverThreshold = manifestFailureThreshold(503);
+    const clientThreshold = manifestFailureThreshold(403);
+
+    assert.equal(networkThreshold, serverThreshold, "network and 5xx share the extended threshold on both paths");
+    assert.notEqual(clientThreshold, serverThreshold, "4xx escalates faster than 5xx on both paths");
+  });
+});
+
+describe("resolveSegmentIv", () => {
+
+  test("derives the IV from the sequence number when no explicit IV is provided", () => {
+
+    // The genuine absence of an explicit IV (ivHex === null) is the only case that derives from the media sequence number per RFC 8216 Section 5.2. The resolver
+    // must produce exactly the same IV as deriveIvFromSequence for that sequence.
+    const result = resolveSegmentIv(null, 42);
+
+    assert.equal(result.status, "ok", "absent explicit IV resolves successfully");
+
+    // The assert.equal above narrows result to the "ok" variant, so result.iv is directly accessible without a redundant discriminant guard.
+    assert.deepEqual(result.iv, deriveIvFromSequence(42), "derived IV matches the sequence derivation");
+  });
+
+  test("returns the explicit IV verbatim when it parses cleanly", () => {
+
+    // A well-formed explicit IV (0x prefix + 32 hex digits) is authoritative and is returned as the 16-byte buffer it encodes - the sequence number is ignored.
+    const result = resolveSegmentIv("0x000102030405060708090a0b0c0d0e0f", 99);
+
+    assert.equal(result.status, "ok", "well-formed explicit IV resolves successfully");
+
+    // The assert.equal above narrows result to the "ok" variant, so result.iv is directly accessible without a redundant discriminant guard.
+    assert.deepEqual(result.iv, Buffer.from("000102030405060708090a0b0c0d0e0f", "hex"), "explicit IV bytes are used verbatim");
+  });
+
+  test("rejects a malformed explicit IV rather than substituting the sequence IV (finding [21])", () => {
+
+    // The core property of finding [21]: a present-but-malformed explicit IV must never silently fall back to the sequence-derived IV, because that decrypts the
+    // segment with the wrong IV and serves garbage video. The resolver returns the "reject" sentinel so the caller drops the segment. We exercise both malformed
+    // shapes parseExplicitIv recognizes - wrong length with and without the 0x prefix.
+    for(const malformed of [ "0xdeadbeef", "deadbeef", "0x", "0x000102030405060708090a0b0c0d0e0f00" ]) {
+
+      const result = resolveSegmentIv(malformed, 7);
+
+      assert.equal(result.status, "reject", "malformed explicit IV \"" + malformed + "\" is rejected");
+    }
+  });
+
+  test("a malformed explicit IV does not resolve to the sequence IV for the same sequence (no silent substitution)", () => {
+
+    // Regression guard: the pre-fix code computed parseExplicitIv(ivHex) ?? deriveIvFromSequence(sequence), so a malformed IV resolved to the sequence IV. This
+    // test pins that the malformed case is now structurally distinct from the no-IV case - it rejects, it does not return the sequence IV.
+    const malformed = resolveSegmentIv("0xnothex", 13);
+    const noIv = resolveSegmentIv(null, 13);
+
+    assert.equal(malformed.status, "reject", "malformed IV rejects");
+    assert.equal(noIv.status, "ok", "absent IV derives");
+    assert.notEqual(malformed.status, noIv.status, "the malformed and absent cases take different branches");
+  });
+});
+
+describe("pruneKeyCache", () => {
+
+  test("evicts entries whose URL is not in the active set and reports the count", () => {
+
+    // The bounding invariant of finding [18]: keys whose URL left the active video+audio working set are released. We seed three keys, mark one active, and assert
+    // the other two are evicted while the active one survives.
+    const keysByUrl = new Map<string, Buffer>([
+      [ "https://cdn.test/key-old-1.bin", Buffer.alloc(16, 1) ],
+      [ "https://cdn.test/key-old-2.bin", Buffer.alloc(16, 2) ],
+      [ "https://cdn.test/key-live.bin", Buffer.alloc(16, 3) ]
+    ]);
+
+    const evicted = pruneKeyCache(keysByUrl, new Set(["https://cdn.test/key-live.bin"]));
+
+    assert.equal(evicted, 2, "two stale keys evicted");
+    assert.equal(keysByUrl.size, 1, "only the live key remains");
+    assert.ok(keysByUrl.has("https://cdn.test/key-live.bin"), "the active key survives");
+  });
+
+  test("retains every entry when all URLs are still active", () => {
+
+    // When the active set covers every cached URL (no rotation has retired a key), nothing is evicted and the cache is untouched.
+    const keysByUrl = new Map<string, Buffer>([
+      [ "https://cdn.test/a.bin", Buffer.alloc(16, 1) ],
+      [ "https://cdn.test/b.bin", Buffer.alloc(16, 2) ]
+    ]);
+
+    const evicted = pruneKeyCache(keysByUrl, new Set([ "https://cdn.test/a.bin", "https://cdn.test/b.bin" ]));
+
+    assert.equal(evicted, 0, "no keys evicted");
+    assert.equal(keysByUrl.size, 2, "both keys retained");
+  });
+
+  test("empties the cache when the active set is empty", () => {
+
+    // Boundary: an empty active set means no manifest currently references any cached key, so every entry is stale. This is the worst-case rotation where the entire
+    // prior session retired at once.
+    const keysByUrl = new Map<string, Buffer>([
+      [ "https://cdn.test/a.bin", Buffer.alloc(16, 1) ],
+      [ "https://cdn.test/b.bin", Buffer.alloc(16, 2) ]
+    ]);
+
+    const evicted = pruneKeyCache(keysByUrl, new Set<string>());
+
+    assert.equal(evicted, 2, "all keys evicted");
+    assert.equal(keysByUrl.size, 0, "cache fully emptied");
+  });
+
+  test("stays bounded across repeated rotations (finding [18])", () => {
+
+    // The failure mode finding [18] addresses: one dead entry per token rotation accumulating unbounded. We simulate ten rotations, each introducing a fresh key URL
+    // and pruning against the new active set. After every rotation the cache holds exactly the live key, never growing with the rotation count.
+    const keysByUrl = new Map<string, Buffer>();
+
+    for(let rotation = 0; rotation < 10; rotation++) {
+
+      const liveUrl = "https://cdn.test/key-rotation-" + String(rotation) + ".bin";
+
+      keysByUrl.set(liveUrl, Buffer.alloc(16, rotation));
+      pruneKeyCache(keysByUrl, new Set([liveUrl]));
+
+      assert.equal(keysByUrl.size, 1, "cache holds exactly the live key after rotation " + String(rotation));
+    }
   });
 });
 
