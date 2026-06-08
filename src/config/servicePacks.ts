@@ -32,16 +32,16 @@ export interface ParseResult {
  */
 export interface ImportSummary {
 
-  // Number of channels added (0 if channel import failed or no channels in pack).
+  // Number of net-new channels added (0 if channel import failed, no channels in pack, or every channel key already existed and was overwritten).
   channelsAdded: number;
 
-  // Number of domain mappings added.
+  // Number of net-new domain mappings added (overwrites of existing domain keys are not counted).
   domainsAdded: number;
 
   // Non-fatal warnings from secondary operations (e.g., channel import failure). Empty when everything succeeds.
   errors: string[];
 
-  // Number of profiles added.
+  // Number of net-new profiles added (overwrites of existing profile keys are not counted).
   profilesAdded: number;
 
   // True if the primary import (profiles and domains) succeeded. Channel import warnings do not affect this flag.
@@ -183,6 +183,23 @@ export function parseServicePack(data: unknown): ParseResult {
 }
 
 /**
+ * Counts how many keys in the incoming record are net-new relative to the existing record - that is, keys present in incoming but absent from existing. Overwrites of
+ * already-present keys are not counted. This is the pure kernel of the import summary's net-new accounting: importServicePack invokes it inside each store mutation
+ * against the live pre-mutation state, which is the single source of truth for what already existed and avoids a separate read round-trip with its attendant
+ * time-of-check-to-time-of-use window.
+ * @param incoming - The record being merged in (e.g., the pack's profiles, domains, or channels).
+ * @param existing - The record being merged into (e.g., the store's current profiles, domains, or channels).
+ * @returns The number of keys in incoming that do not already exist in existing.
+ */
+export function countNewKeys(incoming: Record<string, unknown>, existing: Record<string, unknown>): number {
+
+  // We test own-property membership with Object.hasOwn rather than the `in` operator. Service-pack keys are user-controllable strings parsed from JSON, so a key like
+  // "constructor" or "toString" arriving in a pack would be falsely reported as pre-existing by `in` (which walks the prototype chain). Object.hasOwn counts only keys
+  // that are genuine entries in the existing record, which is exactly the net-new semantic we want.
+  return Object.keys(incoming).filter((key) => !Object.hasOwn(existing, key)).length;
+}
+
+/**
  * Imports a validated service pack by writing its contents to profiles.json and optionally channels.json. Returns a summary of what was added.
  * @param pack - The validated service pack to import.
  * @param options - Import options. Set skipChannels to true to skip importing channels even if the pack contains them.
@@ -192,12 +209,17 @@ export async function importServicePack(pack: ServicePack, options: { skipChanne
 
   const errors: string[] = [];
 
-  const profilesAdded = Object.keys(pack.profiles).length;
-  const domainsAdded = Object.keys(pack.domains ?? {}).length;
+  // We report net-new counts, not the raw pack size, so that re-importing a pack that overwrites existing keys reports zero additions rather than over-counting. The
+  // diff is computed inside each mutate callback against the live store state via countNewKeys, before Object.assign overwrites the matching keys.
+  let profilesAdded = 0;
+  let domainsAdded = 0;
 
   try {
 
     await mutateProfiles((data) => {
+
+      profilesAdded = countNewKeys(pack.profiles, data.profiles);
+      domainsAdded = countNewKeys(pack.domains ?? {}, data.domains);
 
       Object.assign(data.profiles, pack.profiles);
       Object.assign(data.domains, pack.domains ?? {});
@@ -221,10 +243,10 @@ export async function importServicePack(pack: ServicePack, options: { skipChanne
 
       await mutateChannels((data) => {
 
+        channelsAdded = countNewKeys(packChannels, data.channels);
+
         Object.assign(data.channels, packChannels);
       });
-
-      channelsAdded = Object.keys(packChannels).length;
     } catch(error) {
 
       errors.push("Failed to save channels: " + ((error instanceof Error) ? error.message : String(error)));

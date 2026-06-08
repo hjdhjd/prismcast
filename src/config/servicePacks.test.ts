@@ -4,8 +4,8 @@
  * tests cover the version gate, missing-field detection, channel sub-validation, and the legacy flag normalization that runs before profile validation.
  * exportServicePack is also exercised against the loaded user-profile state - which in unit tests is empty - so the test focuses on the null-return contract.
  */
+import { countNewKeys, exportServicePack, parseServicePack } from "./servicePacks.ts";
 import { describe, test } from "node:test";
-import { exportServicePack, parseServicePack } from "./servicePacks.ts";
 import assert from "node:assert/strict";
 
 describe("parseServicePack", () => {
@@ -289,5 +289,61 @@ describe("exportServicePack", () => {
     const result = exportServicePack([]);
 
     assert.equal(result, null);
+  });
+});
+
+describe("countNewKeys (net-new import accounting)", () => {
+
+  /* countNewKeys is the pure kernel of importServicePack's summary counts. The stateful import orchestrator (which round-trips through the profiles and channels file
+   * stores) is exercised at the integration tier, but the net-new arithmetic - the behavior the fix introduced to stop over-counting overwriting imports - is pinned
+   * here against the pure function so a regression that reverts to raw pack-size counting is caught at the unit tier.
+   */
+
+  test("counts every key as net-new when the existing record is empty", () => {
+
+    assert.equal(countNewKeys({ a: 1, b: 2, c: 3 }, {}), 3);
+  });
+
+  test("reports zero net-new when the import fully overwrites pre-existing keys", () => {
+
+    // This is the core regression guard: re-importing a pack whose keys already exist must report zero additions, not the full pack size. Differing values do not
+    // matter - net-new is keyed on key presence, since Object.assign overwrites the value regardless.
+    const existing = { a: "old-1", b: "old-2" };
+
+    assert.equal(countNewKeys({ a: "new-1", b: "new-2" }, existing), 0);
+  });
+
+  test("counts only the keys absent from the existing record on a partial overlap", () => {
+
+    // Two of the three incoming keys already exist; only the genuinely new key is counted.
+    const existing = { a: 1, b: 2 };
+
+    assert.equal(countNewKeys({ a: 9, b: 9, d: 9 }, existing), 1);
+  });
+
+  test("counts zero for an empty incoming record regardless of existing contents", () => {
+
+    assert.equal(countNewKeys({}, { a: 1, b: 2 }), 0);
+  });
+
+  test("treats a prototype-named incoming key as net-new against an empty store (own-key membership)", () => {
+
+    /* Boundary: countNewKeys uses Object.hasOwn, not the `in` operator, so it never treats inherited Object.prototype members as pre-existing. Service-pack keys are
+     * user-controllable strings parsed from JSON, so a pack could legitimately carry a profile or channel keyed "constructor" or "toString". Against an empty store
+     * such a key is genuinely net-new and must count as 1; the naive `in` operator would have falsely reported 0 because "constructor" in {} is true.
+     */
+    assert.equal(countNewKeys({ constructor: 1 }, {}), 1);
+    assert.equal(countNewKeys({ toString: 1 }, {}), 1);
+  });
+
+  test("counts a prototype-named key as pre-existing only when it is a genuine own property of the store", () => {
+
+    // The mirror of the boundary above: when the existing store really does contain a "constructor" entry as an own property, re-importing it is an overwrite, so it
+    // is not net-new.
+    const existing: Record<string, unknown> = {};
+
+    existing.constructor = "already-here";
+
+    assert.equal(countNewKeys({ constructor: 1 }, existing), 0);
   });
 });

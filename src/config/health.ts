@@ -98,6 +98,30 @@ const domainAuth = new Map<string, number>();
 // Debounce timer for flushHealthState().
 let flushTimer: Nullable<ReturnType<typeof setTimeout>> = null;
 
+/* Drops every expired entry from the in-memory maps so the maps stay bounded for the life of the process. Without this the maps would only ever grow - read paths
+ * filter expired entries out of their results but never delete them, so a channel tuned once and never revisited would linger forever. We run this at the single write
+ * chokepoint (writeHealthState) so the on-disk record never carries stale entries, and again from getHealthSnapshot so a long-lived process that stops mutating still
+ * sheds its expired state.
+ */
+const pruneExpiredEntries = (): void => {
+
+  for(const [ key, entry ] of channelHealth) {
+
+    if(isHealthExpired(entry.timestamp)) {
+
+      channelHealth.delete(key);
+    }
+  }
+
+  for(const [ key, timestamp ] of domainAuth) {
+
+    if(isHealthExpired(timestamp)) {
+
+      domainAuth.delete(key);
+    }
+  }
+};
+
 // Persistence.
 
 /* Current schema version for health.json. No migrations are required today (the v1.5.0 absent-field guards moved into the parser already cover legacy reads),
@@ -209,6 +233,10 @@ export async function loadHealthState(): Promise<void> {
  * @returns A promise that resolves when the store has committed the write.
  */
 async function writeHealthState(): Promise<void> {
+
+  // Shed expired entries before serializing so the on-disk record never carries stale state and the in-memory maps stay bounded across the process lifetime. This is
+  // the periodic chokepoint - every mark* mutation schedules a flush through here, so pruning at this point keeps both memory and disk free of expired entries.
+  pruneExpiredEntries();
 
   await healthStore.mutate((state) => {
 
@@ -337,8 +365,11 @@ export function getChannelHealth(channelKey: string, domain: string): Nullable<{
     return null;
   }
 
-  // Stale entry - older than TTL.
+  // Stale entry - older than TTL. We delete it here as well as returning null so that a key that is read but never re-marked does not linger in memory; this read path
+  // touches exactly one key, so we prune just that key rather than paying for a full-map scan.
   if(isHealthExpired(entry.timestamp)) {
+
+    channelHealth.delete(channelKey);
 
     return null;
   }
@@ -367,8 +398,11 @@ export function getDomainAuth(domain: string): Nullable<number> {
     return null;
   }
 
-  // Stale entry - older than TTL.
+  // Stale entry - older than TTL. We delete it here as well as returning null so that a domain that is read but never re-marked does not linger in memory; this read
+  // path touches exactly one key, so we prune just that key rather than paying for a full-map scan.
   if(isHealthExpired(timestamp)) {
+
+    domainAuth.delete(domain);
 
     return null;
   }
@@ -382,23 +416,21 @@ export function getDomainAuth(domain: string): Nullable<number> {
  */
 export function getHealthSnapshot(): HealthSnapshot {
 
+  // Snapshots iterate the entire map, so this is the natural read-side chokepoint to shed expired entries. A long-lived process that stops mutating still drops its
+  // stale state on the next SSE client connection, which is when snapshots are taken.
+  pruneExpiredEntries();
+
   const channels: Record<string, { domain: string; status: HealthStatus; timestamp: number }> = {};
   const domains: Record<string, number> = {};
 
   for(const [ key, entry ] of channelHealth) {
 
-    if(!isHealthExpired(entry.timestamp)) {
-
-      channels[key] = { domain: entry.domain, status: entry.status, timestamp: entry.timestamp };
-    }
+    channels[key] = { domain: entry.domain, status: entry.status, timestamp: entry.timestamp };
   }
 
   for(const [ domainKey, timestamp ] of domainAuth) {
 
-    if(!isHealthExpired(timestamp)) {
-
-      domains[domainKey] = timestamp;
-    }
+    domains[domainKey] = timestamp;
   }
 
   return { channels, domains };

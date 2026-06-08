@@ -5,9 +5,11 @@
  * via the file store framework's own tests in persistence.test.ts.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { getChannelHealth, getDomainAuth, getHealthSnapshot, markChannelFailure, markChannelSuccess, markDomainAuth, subscribeToHealth } from "./health.ts";
+import { flushHealthStateNow, getChannelHealth, getDomainAuth, getHealthSnapshot, loadHealthState, markChannelFailure, markChannelSuccess, markDomainAuth,
+  subscribeToHealth } from "./health.ts";
+import { getHealthFilePath, initializeDataDir } from "./paths.ts";
 import assert from "node:assert/strict";
-import { initializeDataDir } from "./paths.ts";
+import { readFile } from "node:fs/promises";
 import { withTempDir } from "../testing.helpers.ts";
 
 describe("markChannelSuccess", () => {
@@ -301,6 +303,140 @@ describe("subscribeToHealth", () => {
       assert.equal(calls, 1, "after unsubscribe, callback no longer fires");
 
       return Promise.resolve();
+    });
+  });
+});
+
+describe("expired-entry pruning (memory hygiene)", () => {
+
+  beforeEach(() => {
+
+    // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
+    // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+  });
+
+  afterEach(() => {
+
+    mock.timers.reset();
+  });
+
+  test("getHealthSnapshot excludes expired channel and domain entries from its result", () => {
+
+    // The snapshot is a read-side chokepoint that both filters its own result and prunes the live maps. The directly observable, isolated behavior is the result
+    // exclusion: an entry aged past the 7-day TTL must not appear in the returned snapshot. The pruning of the live maps it performs as a side effect is proven on disk
+    // by the dedicated flush tests below, which read the persisted file rather than the snapshot result.
+    const channelKey = "prune-snap-channel-" + String(Math.random());
+    const domainKey = "prune-snap-domain-" + String(Math.random());
+
+    markChannelSuccess(channelKey, domainKey);
+
+    // Age both entries one day past the 7-day TTL so the next snapshot reads them as expired and prunes them.
+    mock.timers.tick((7 * 24 * 60 * 60 * 1000) + (24 * 60 * 60 * 1000));
+
+    const expiredSnapshot = getHealthSnapshot();
+
+    assert.equal(expiredSnapshot.channels[channelKey], undefined, "expired channel excluded from snapshot");
+    assert.equal(expiredSnapshot.domains[domainKey], undefined, "expired domain excluded from snapshot");
+  });
+
+  test("an expired single-key read returns null, and the expired entry is never persisted", async () => {
+
+    /* Pins the observable [27] contract for the single-key read path: an entry aged past the TTL reads back as null and does not survive to disk. We mark, expire,
+     * read, then mark a separate fresh key and flush. Whether the touched-expired key is dropped by the read-path delete (getChannelHealth) or by the write-path
+     * prune at flush is not independently observable here - with a monotonic clock, anything expired at read time is still expired at flush time, so an on-disk read
+     * cannot isolate the two - but both enforce the same no-persist-expired guarantee. The write-path prune is pinned on its own by the flush test below.
+     */
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      // Reload clears the module-level maps from any residue left by prior tests so this assertion observes only the keys we mark below.
+      await loadHealthState();
+
+      const channelKey = "prune-single-channel-" + String(Math.random());
+      const freshChannel = "prune-single-fresh-" + String(Math.random());
+
+      markChannelSuccess(channelKey, "prune-single.com", false);
+
+      mock.timers.tick(8 * 24 * 60 * 60 * 1000);
+
+      // An expired single-key read returns null (and drops the touched key from the live map).
+      assert.equal(getChannelHealth(channelKey, "prune-single.com"), null, "expired single-key read returns null");
+
+      // Mark a fresh key inside the current (post-tick) window so the flush has a reason to write and the fresh key survives.
+      markChannelSuccess(freshChannel, "fresh.com", false);
+
+      await flushHealthStateNow();
+
+      const written = JSON.parse(await readFile(getHealthFilePath(), "utf8")) as { channels: Record<string, unknown> };
+
+      assert.equal(written.channels[channelKey], undefined, "the expired key is not persisted");
+      assert.ok(written.channels[freshChannel], "the fresh key marked after the expired read survives the flush");
+    });
+  });
+
+  test("an expired single-key domain read returns null, and the expired entry is never persisted", async () => {
+
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      await loadHealthState();
+
+      const domainKey = "prune-single-domain-" + String(Math.random());
+      const freshDomain = "prune-single-fresh-domain-" + String(Math.random());
+
+      markDomainAuth(domainKey);
+
+      mock.timers.tick(8 * 24 * 60 * 60 * 1000);
+
+      // An expired single-key domain read returns null (and drops the touched key from the live map).
+      assert.equal(getDomainAuth(domainKey), null, "expired single-key domain read returns null");
+
+      markDomainAuth(freshDomain);
+
+      await flushHealthStateNow();
+
+      const written = JSON.parse(await readFile(getHealthFilePath(), "utf8")) as { domains: Record<string, number> };
+
+      assert.equal(written.domains[domainKey], undefined, "the expired domain is not persisted");
+      assert.ok(written.domains[freshDomain], "the fresh domain marked after the expired read survives the flush");
+    });
+  });
+
+  test("flushHealthStateNow does not write expired entries to health.json", async () => {
+
+    // The write chokepoint prunes before serializing, so the on-disk record must never carry stale entries. We load a fresh in-memory state from an isolated data dir,
+    // mark one entry that will expire and one that will stay fresh, age past the TTL only for the first, then flush and read the file back. Only the fresh entry may be
+    // present on disk.
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      // Reload clears the module-level maps from any residue left by prior tests so this assertion sees only the keys we mark below.
+      await loadHealthState();
+
+      const expiredChannel = "flush-expired-channel-" + String(Math.random());
+      const freshChannel = "flush-fresh-channel-" + String(Math.random());
+      const expiredDomain = "flush-expired-domain-" + String(Math.random());
+      const freshDomain = "flush-fresh-domain-" + String(Math.random());
+
+      // Mark the soon-to-expire entries first, then advance the clock past the TTL, then mark the fresh entries so only the latter remain inside the window at flush.
+      markChannelSuccess(expiredChannel, expiredDomain);
+
+      mock.timers.tick(8 * 24 * 60 * 60 * 1000);
+
+      markChannelSuccess(freshChannel, freshDomain);
+
+      await flushHealthStateNow();
+
+      const written = JSON.parse(await readFile(getHealthFilePath(), "utf8")) as { channels: Record<string, unknown>; domains: Record<string, number> };
+
+      assert.equal(written.channels[expiredChannel], undefined, "expired channel must not be persisted");
+      assert.equal(written.domains[expiredDomain], undefined, "expired domain must not be persisted");
+      assert.ok(written.channels[freshChannel], "fresh channel persisted");
+      assert.ok(written.domains[freshDomain], "fresh domain persisted");
     });
   });
 });
