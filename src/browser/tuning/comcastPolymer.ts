@@ -4,9 +4,9 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectionStrategy, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
 import { LOG, delay, formatError } from "../../utils/index.ts";
+import { installOncePerPage, logAvailableChannels } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { logAvailableChannels } from "./shared.ts";
 
 /* Comcast's Polymer SPA (`TV-APP`) manages channel playback via an internal `channelMap` object. The `channelMap.channels` property is populated from the channelmap
  * API during page load and contains the complete channel lineup. Calling `_watchChannelEventHandler(null, { channel })` on the `TV-APP` element switches channels
@@ -624,27 +624,29 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     // Set up response interception so the channelmap API response is captured during guide page navigation.
     setupChannelmapInterception(page);
 
-    // On warm cache, intercept the channelmap API request and serve the cached response immediately. This eliminates the 3-5s network round-trip on warm tunes.
-    // We match on the exact URL captured during the cold tune - the SPA makes multiple requests to URLs matching the channelmap pattern, but only one is the
-    // channel lineup.
-    if(cachedBody && cachedUrl) {
-
-      const targetUrl = cachedUrl;
-      const body = cachedBody;
-      const headers = cachedHeaders;
+    // Install the request-interception listener that serves the cached channelmap response on warm tunes, eliminating the 3-5s network round-trip. The install is
+    // gated through installOncePerPage so a recovery re-tune on the same page does not re-enable request interception or stack a second `page.on("request")`
+    // listener - tuneToChannel is the single source of truth for both initial setup and recovery, so resolveDirectUrl runs again on the same page during recovery.
+    // The listener reads the cache through the live closure cells (cachedUrl/cachedBody/cachedHeaders) on every request rather than capturing them by value at
+    // install time. This matters because the install runs once: a copy taken here would pin the channelmap snapshot from the first tune and invalidateCachedResponse
+    // could never stop the listener from replaying stale data. Reading the live cells means a null cachedBody simply falls through to the network, so an invalidated
+    // cache self-heals on the next navigation, and a warm cache is served until it is invalidated.
+    await installOncePerPage(page, "channelmap-request-intercept", async () => {
 
       await page.setRequestInterception(true);
 
       page.on("request", (request) => {
 
-        if(request.url() === targetUrl) {
+        // Read the cache through the live closure cells so invalidateCachedResponse() is observed by this long-lived listener. When the cache is cold or has been
+        // invalidated, cachedBody/cachedUrl are null and we fall through to request.continue() below.
+        if(cachedBody && cachedUrl && (request.url() === cachedUrl)) {
 
           LOG.debug(config.debugCategory, "Channelmap API: served from cache.");
 
           void request.respond({
 
-            body,
-            headers,
+            body: cachedBody,
+            headers: cachedHeaders,
             status: 200
           }).catch(() => {
 
@@ -663,7 +665,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
           // Page closed - ignore.
         });
       });
-    }
+    });
 
     return null;
   }

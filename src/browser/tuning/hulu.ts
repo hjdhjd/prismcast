@@ -4,7 +4,7 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
-import { logAvailableChannels, normalizeChannelName, scrollAndClick } from "./shared.ts";
+import { installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName, scrollAndClick } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
 
@@ -1509,8 +1509,15 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
    * immediately. On cold tunes, the guide grid's Channels tab click triggers full API expansion, and the interceptor holds the playlist request until both
    * UUID and EAB are captured from those responses. On all tunes, it captures listing API responses to build an in-page EAB map and expands subsequent
    * details API requests, populating the UUID cache to ~123 channels on a single page load. The script runs via evaluateOnNewDocument - it executes before
-   * any page JavaScript, patching window.fetch so Hulu's module-scoped fetch reference captures the interceptor. Each stream gets its own page via
-   * createPageWithCapture(), so there's no persistence concern.
+   * any page JavaScript, patching window.fetch so Hulu's module-scoped fetch reference captures the interceptor.
+   *
+   * The install goes through installOrReplaceOnNewDocument. tuneToChannel is the single source of truth for both initial setup and recovery, so resolveHuluDirectUrl
+   * runs again on the same page during a recovery re-tune - and the UUID/EAB cache that drives this script's arguments can warm from empty (cold first tune) to
+   * populated (warm re-tune) in between. The script bakes those tokens in as evaluateOnNewDocument arguments, so re-installing each time is required to carry the
+   * CURRENT tokens; installOrReplaceOnNewDocument removes the prior script before adding the fresh one, keeping exactly one live interceptor with up-to-date
+   * arguments rather than an accumulating stack of competing window.fetch patches frozen at their respective install-time values. (Gating with installOncePerPage
+   * instead would freeze the cold first-tune's empty tokens and stall the warm recovery re-tune - the page would hold the playlist on a fast-path that the stale
+   * cold-mode script cannot complete, time out, and fall back to a full guide re-tune.)
    */
   try {
 
@@ -1518,7 +1525,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
     // inject UUID+EAB via the fast path (resolving the held playlist) or release the hold before falling through to the click path.
     const attemptDirectTune = true;
 
-    await page.evaluateOnNewDocument((
+    await installOrReplaceOnNewDocument(page, "fetch-interceptor", async () => await page.evaluateOnNewDocument((
       initialUuid: string, initialEab: string, cachedUuids: string[], cachedEabs: string[],
       targetName: string, holdPlaylist: boolean
     ): void => {
@@ -2016,7 +2023,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
         return originalFetch(input, init);
       };
-    }, cachedUuid ?? "", cachedEab ?? "", allCachedUuids, allCurrentEabs, normalizedName, attemptDirectTune);
+    }, cachedUuid ?? "", cachedEab ?? "", allCachedUuids, allCurrentEabs, normalizedName, attemptDirectTune));
   } catch(error) {
 
     LOG.debug("tuning:hulu", "Failed to install Hulu fetch interceptor: %s.", formatError(error));

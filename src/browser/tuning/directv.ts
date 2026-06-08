@@ -3,8 +3,8 @@
  * directv.ts: DirecTV Stream channel selection via webpack injection for direct tuning, with logo click fallback.
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
-import { LOG, delay, formatError } from "../../utils/index.ts";
-import { logAvailableChannels, normalizeChannelName } from "./shared.ts";
+import { LOG, cancellableTimeout, delay, formatError } from "../../utils/index.ts";
+import { installOncePerPage, logAvailableChannels, normalizeChannelName } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
 
@@ -230,7 +230,11 @@ function setupConsoleListeners(page: Page): void {
  */
 async function installDirectTuneInterceptor(page: Page, channelName: string, discoverOnly: boolean): Promise<void> {
 
-  await page.evaluateOnNewDocument((targetName: string, discoverOnlyFlag: boolean): void => {
+  // Gate the evaluateOnNewDocument install through installOncePerPage. resolveDirectvDirectUrl runs this before every navigation, and tuneToChannel is the single
+  // source of truth for both initial setup and recovery - so a recovery re-tune calls it again on the same page. Without the gate, each re-tune would stack another
+  // webpack-interceptor script; every subsequent navigation would then run multiple competing chunk-push wrappers and Redux-store polls in the same frame. The
+  // discovery path uses its own fresh page, so the single per-page key never blocks a discover-then-tune sequence on distinct pages.
+  await installOncePerPage(page, "webpack-interceptor", async () => await page.evaluateOnNewDocument((targetName: string, discoverOnlyFlag: boolean): void => {
 
     // Phase 1: Main-frame guard. The evaluateOnNewDocument script runs in every frame, including ad iframes. We only want to intercept webpack chunks in the main
     // frame where the DirecTV SPA loads.
@@ -730,7 +734,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
         console.log("[DIRECTV-TUNE-FAIL] Dispatch error: " + String(err));
       }
     }, POLL_INTERVAL);
-  }, channelName, discoverOnly);
+  }, channelName, discoverOnly));
 }
 
 /**
@@ -798,12 +802,22 @@ async function directvGridStrategy(page: Page, profile: ChannelSelectionProfile)
 
   if(tuneState) {
 
-    // Race the tune promise against a timeout. The promise maps to discriminated string results so we can distinguish "interceptor reported failure" from
-    // "no signal arrived" - critical for debugging whether the interceptor ran at all or stalled silently.
-    const result = await Promise.race([
-      tuneState.promise.then((v) => v ? "success" : "failure"),
-      delay(TUNE_TIMEOUT).then(() => "timeout")
-    ]);
+    // Race the tune promise against a cancellable timeout. The tune promise maps to discriminated string results so we can distinguish "interceptor reported
+    // failure" from "no signal arrived" - critical for debugging whether the interceptor ran at all or stalled silently. cancellableTimeout owns the underlying
+    // setTimeout; we cancel it in finally when the tune wins so the ref'd 8-second timer does not linger on the event loop after the tune has already resolved.
+    const timeout = cancellableTimeout(TUNE_TIMEOUT);
+    let result: string;
+
+    try {
+
+      result = await Promise.race([
+        tuneState.promise.then((v) => v ? "success" : "failure"),
+        timeout.promise.then(() => "timeout")
+      ]);
+    } finally {
+
+      timeout.cancel();
+    }
 
     // Clean up after resolution or timeout. In the success case the console listener already resolved the promise; in the timeout case this removes the
     // stale entry so a late-arriving console signal is a no-op.
