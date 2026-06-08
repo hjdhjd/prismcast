@@ -11,6 +11,7 @@ import type { Nullable } from "../types/index.ts";
 import type { RecoveryMetrics } from "./recovery.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
 import { clearClients } from "./clients.ts";
+import { clearPretuneSafetyTimer } from "./pretuneTimers.ts";
 import { clearShowName } from "./showInfo.ts";
 import { emitStreamRemoved } from "./statusEmitter.ts";
 import { isGracefulShutdown } from "../browser/index.ts";
@@ -192,6 +193,7 @@ export function terminateStream(streamId: number, channelName: string, reason: s
 
   unregisterStream(streamId);
   clearClients(streamId);
+  clearPretuneSafetyTimer(streamId);
   clearShowName(streamId);
   emitStreamRemoved(streamId);
   terminationInitiated.delete(streamId);

@@ -130,6 +130,28 @@ describe("resolveBaseUrl", () => {
 
     assert.match(url, /^http:\/\/.+/);
   });
+
+  test("falls back to the configured host when X-Forwarded-Host is present but whitespace-only (no empty-host URL)", () => {
+
+    // Regression: a present-but-empty X-Forwarded-Host trims its first entry to "", which is non-nullish and slipped past ?? in the old code, yielding a hostless
+    // "http:///hls/..." URL. The truthiness guard must collapse the empty case onto the configured server settings, so the origin is never empty.
+    const { req } = makeReqRes({ headers: { host: "internal:5000", "x-forwarded-host": "   " }, protocol: "http" });
+    const url = resolveBaseUrl(req);
+
+    assert.doesNotMatch(url, /^http:\/\/\//, "an empty forwarded host must not produce a hostless URL");
+    assert.match(url, /^http:\/\/.+/, "the resolved URL must carry a non-empty host");
+  });
+
+  test("falls back to the configured host when X-Forwarded-Host first entry is empty (leading comma)", () => {
+
+    // Boundary: a leading comma makes the first comma-separated entry the empty string. Trimming leaves "", which must trigger the fallback rather than emit an
+    // empty host.
+    const { req } = makeReqRes({ headers: { host: "internal:5000", "x-forwarded-host": ",public.example.test" }, protocol: "https" });
+    const url = resolveBaseUrl(req);
+
+    assert.doesNotMatch(url, /^https:\/\/\//, "a leading-comma forwarded host must not produce a hostless URL");
+    assert.match(url, /^https:\/\/.+/, "the resolved URL must carry a non-empty host");
+  });
 });
 
 describe("generatePlaylistContent", () => {

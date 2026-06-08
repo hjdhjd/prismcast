@@ -3,6 +3,7 @@
  * pretune.ts: Predictive channel pretuning from Channels DVR schedule.
  */
 import { LOG, delay, formatError } from "../utils/index.ts";
+import { clearAllPretuneSafetyTimers, forgetPretuneSafetyTimer, setPretuneSafetyTimer } from "./pretuneTimers.ts";
 import { fetchFromDvr, getDeviceMappings, getDvrHost } from "./showInfo.ts";
 import { getChannelStreamId, terminateStream } from "./lifecycle.ts";
 import { initializeStream, validateChannel } from "./hls.ts";
@@ -86,9 +87,6 @@ let pollInterval: Nullable<ReturnType<typeof setInterval>> = null;
 // Active pretune timers keyed by job ID. Used to avoid duplicate scheduling and to clear timers when jobs disappear.
 const activeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Safety timers keyed by stream ID. Used to tear down unclaimed pretuned streams after the scheduled start time.
-const safetyTimers = new Map<number, ReturnType<typeof setTimeout>>();
-
 // Public API.
 
 /**
@@ -132,13 +130,8 @@ export function stopPretunePolling(): void {
 
   activeTimers.clear();
 
-  // Clear all safety timers.
-  for(const timer of safetyTimers.values()) {
-
-    clearTimeout(timer);
-  }
-
-  safetyTimers.clear();
+  // Clear all safety timers via their owning registry.
+  clearAllPretuneSafetyTimers();
 }
 
 // Internal Functions.
@@ -323,7 +316,7 @@ async function pretuneChannel(channelId: string, jobName: string, startTimeMs: n
         const safetyDelay = Math.max(0, (startTimeMs + SAFETY_TIMEOUT_MS) - Date.now());
         const safetyTimer = setTimeout(() => {
 
-          safetyTimers.delete(streamId);
+          forgetPretuneSafetyTimer(streamId);
 
           const stream = getStream(streamId);
 
@@ -336,7 +329,7 @@ async function pretuneChannel(channelId: string, jobName: string, startTimeMs: n
           }
         }, safetyDelay);
 
-        safetyTimers.set(streamId, safetyTimer);
+        setPretuneSafetyTimer(streamId, safetyTimer);
 
         return;
       }

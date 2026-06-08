@@ -125,7 +125,12 @@ export function resolveBaseUrl(req: Request): string {
   const forwardedHost = req.get("x-forwarded-host");
   const host = forwardedHost ? (forwardedHost.split(",")[0] ?? "").trim() : req.get("host");
   const fallbackHost = CONFIG.server.host + ":" + String(CONFIG.server.port);
-  const resolvedHost = host ?? fallbackHost;
+
+  // We fall back on an empty host rather than just a nullish one. A present-but-empty X-Forwarded-Host (for example "  " or ",") trims its first entry to "", which
+  // is non-nullish and would slip past ??, producing a hostless "http:///hls/..." URL. Guarding on truthiness collapses both the undefined and empty-string cases
+  // onto the configured server settings.
+  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty-string host must fall back; ?? would let "" through and emit a hostless URL.
+  const resolvedHost = host || fallbackHost;
 
   return protocol + "://" + resolvedHost;
 }
