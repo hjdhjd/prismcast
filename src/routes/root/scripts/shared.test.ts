@@ -135,6 +135,15 @@ describe("generateSharedUtilitiesScript", () => {
     assert.match(script, /window\.imgFallback\s*=/);
   });
 
+  test("installs the single client-escape SSOT as window.escapeHtml", () => {
+
+    // The shared utilities script emits the one client-side escapeHtml (generateClientEscapeAssignment) that every client script - including this file's
+    // channelDisplayHtml/serviceIconHtml renderers - routes through. Its byte-parity with markup.escapeHtml is pinned in clientEscape.test.ts.
+    const script = generateSharedUtilitiesScript();
+
+    assert.match(script, /window\.escapeHtml\s*=\s*escapeHtml;/);
+  });
+
   test("exposes the wizard controller factory and its full method surface", () => {
 
     // createWizardController is the SSOT for stepped wizard navigation. The returned controller exposes back, close, getStep, goToStep, hide, next, open,

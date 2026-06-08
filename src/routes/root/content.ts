@@ -907,7 +907,7 @@ export function generateLogsContent(): string {
     "      renderHistoricalLogs(data.entries);",
     "    }",
     "  } catch(err) {",
-    "    logContainer.innerHTML = '<div class=\"log-error\">Error loading logs: ' + err.message + '</div>';",
+    "    logContainer.innerHTML = '<div class=\"log-error\">Error loading logs: ' + escapeHtml(err.message || '') + '</div>';",
     "  }",
     "}",
 
@@ -946,11 +946,8 @@ export function generateLogsContent(): string {
     "  if (wasAtBottom) { logContainer.scrollTop = logContainer.scrollHeight; }",
     "}",
 
-    "function escapeHtml(text) {",
-    "  var div = document.createElement('div');",
-    "  div.textContent = text;",
-    "  return div.innerHTML;",
-    "}",
+    // The escapeHtml that formatLogEntry calls is the shared client-escape SSOT installed on window by the shared utilities script, which the page emits before this
+    // log-viewer script; there is no local copy here.
 
     // Track the last time any SSE event was received from the logs stream. Used by the staleness checker below.
     "var lastLogsEventTime = 0;",

@@ -167,14 +167,8 @@ export function generateConfigSubtabScript(): string {
     "    }, 1000);",
     "  }",
 
-    // Escape HTML entities in text for safe display.
-    "  function escapeHtmlText(text) {",
-    "    const div = document.createElement('div');",
-    "    div.textContent = text;",
-    "    return div.innerHTML;",
-    "  }",
-
-    // Open the changelog modal and fetch content dynamically. Also checks whether an upgrade button should be shown.
+    // Open the changelog modal and fetch content dynamically. Also checks whether an upgrade button should be shown. Changelog items are escaped through the shared
+    // window.escapeHtml SSOT installed by the shared utilities script, which loads before this one.
     "  window.openChangelogModal = async () => {",
     "    const modal = document.getElementById('changelog-modal');",
     "    if(!modal) return;",
@@ -196,7 +190,7 @@ export function generateConfigSubtabScript(): string {
     "      if(data.items && (data.items.length > 0)) {",
     "        let html = '<ul class=\"changelog-list\">';",
     "        for(const item of data.items) {",
-    "          html += '<li>' + escapeHtmlText(item) + '</li>';",
+    "          html += '<li>' + escapeHtml(item) + '</li>';",
     "        }",
     "        html += '</ul>';",
     "        content.innerHTML = html;",
@@ -1313,9 +1307,10 @@ export function generateConfigSubtabScript(): string {
     "      chip.setAttribute('data-tag', tag);",
     "      const domainAttr = chipDomain ? ' data-domain=\"' + chipDomain + '\"' : '';",
     "      const iconAttr = chipIconUrl ? ' data-icon-url=\"' + chipIconUrl + '\"' : '';",
-    "      chip.innerHTML = '<span class=\"provider-display\"' + domainAttr + iconAttr + ' data-sm>' + label + '</span>' +",
-    "        '<button type=\"button\" class=\"chip-close\" aria-label=\"Remove ' + label +",
-    "        '\" data-click-action=\"" + ACTIONS.removeServiceChip + "\" data-tag-name=\"' + tag + '\">\\u00d7</button>';",
+    "      const safeLabel = escapeHtml(label);",
+    "      chip.innerHTML = '<span class=\"provider-display\"' + domainAttr + iconAttr + ' data-sm>' + safeLabel + '</span>' +",
+    "        '<button type=\"button\" class=\"chip-close\" aria-label=\"Remove ' + safeLabel +",
+    "        '\" data-click-action=\"" + ACTIONS.removeServiceChip + "\" data-tag-name=\"' + escapeHtml(tag) + '\">\\u00d7</button>';",
     "      container.appendChild(chip);",
     "    }",
     "    processServiceDisplays();",
@@ -1606,7 +1601,7 @@ export function generateConfigSubtabScript(): string {
     "            const conciseDomain = (parts.length > 2) ? parts.slice(-2).join('.') : urlHostname;",
     "            const matches = predefinedByDomain[conciseDomain];",
     "            if(matches && (matches.length > 0)) {",
-    "              const names = matches.map((m) => '<strong>' + esc(m.name) + '</strong> (' + m.serviceCount + ' service' +",
+    "              const names = matches.map((m) => '<strong>' + escapeHtml(m.name) + '</strong> (' + m.serviceCount + ' service' +",
     "                ((m.serviceCount === 1) ? '' : 's') + ')');",
     "              predefinedHint.innerHTML = names.join(', ') + ' available as predefined ' + ((matches.length === 1) ? 'channel' : 'channels') +",
     "                ' with multi-service support. <a href=\"#\" data-click-action=\"" + ACTIONS.openBrowseModal + "\">Browse predefined channels</a>';",

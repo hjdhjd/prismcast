@@ -4,6 +4,7 @@
  * dropdown menus, channel display rendering) are available during both initialization and event handling.
  */
 import { ACTIONS } from "../../clientActions.ts";
+import { generateClientEscapeAssignment } from "./clientEscape.ts";
 
 /**
  * Generates the shared utilities script block containing cross-tab client-side functions. Runs before all tab-specific scripts to eliminate execution order
@@ -15,6 +16,13 @@ export function generateSharedUtilitiesScript(): string {
   return [
     "<script>",
     "(function() {",
+
+    /* Client-side HTML-escape single source of truth. Installed first in the shared utilities IIFE so window.escapeHtml is defined before any client script runs:
+     * shared.ts's own channel/service renderers below, the status display, the channels wizards, the config changelog, and the inline log viewer all route their
+     * innerHTML escaping through it. The function source is generated from clientEscapeHtml in clientEscape.ts, which a byte-parity guard pins identical to the
+     * server-side markup.escapeHtml. The local const binding lets the renderers in this IIFE call escapeHtml without a global property lookup.
+     */
+    generateClientEscapeAssignment(),
 
     /* Action dispatcher. The single project-wide primitive for event handling. Subsystems register named handlers via window.registerAction(name, handler), and
      * one document-level delegated listener routes click / change / keydown / submit events to the registered handler. Triggers declare their intent on the
@@ -284,20 +292,23 @@ export function generateSharedUtilitiesScript(): string {
     "  };",
 
     // Shared channel display renderer with three modes. The mode parameter controls presentation: 'logo' (default) shows the logo with text as an onerror
-    // fallback, 'both' shows the logo and text side by side with onerror hiding the broken image, 'text' shows only the text and ignores the logo URL.
+    // fallback, 'both' shows the logo and text side by side with onerror hiding the broken image, 'text' shows only the text and ignores the logo URL. The name is
+    // escaped once through the shared escapeHtml SSOT and reused for both the text span and the title/alt attributes, so callers pass raw names and this is the one
+    // escape boundary for channel names regardless of the call site (status popover, channels table logos, browse wizard).
     "  window.channelDisplayHtml = (logoUrl, name, logoClass, textClass, mode) => {",
     "    const m = mode || 'logo';",
+    "    const safeName = escapeHtml(name);",
     "    if((m === 'text') || !logoUrl) {",
-    "      return '<span class=\"' + textClass + '\">' + name + '</span>';",
+    "      return '<span class=\"' + textClass + '\">' + safeName + '</span>';",
     "    }",
     "    if(m === 'both') {",
-    "      return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"\" title=\"' + name + '\" ' +",
+    "      return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"\" title=\"' + safeName + '\" ' +",
     "        'onerror=\"imgFallback(this)\">' +",
-    "        '<span class=\"' + textClass + '\">' + name + '</span>';",
+    "        '<span class=\"' + textClass + '\">' + safeName + '</span>';",
     "    }",
-    "    return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"' + name + '\" title=\"' + name + '\" ' +",
+    "    return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"' + safeName + '\" title=\"' + safeName + '\" ' +",
     "      'onerror=\"imgFallback(this)\">' +",
-    "      '<span class=\"' + textClass + '\" style=\"display:none\">' + name + '</span>';",
+    "      '<span class=\"' + textClass + '\" style=\"display:none\">' + safeName + '</span>';",
     "  };",
 
     // Image fallback handler. Reads pipe-separated fallback URLs from a data-fallbacks attribute and tries each in sequence on error. When all fallbacks are
@@ -316,24 +327,26 @@ export function generateSharedUtilitiesScript(): string {
     "  };",
 
     // Service icon renderer with three modes, mirroring channelDisplayHtml. The icon source chain is: iconUrl (if specified) -> Apple touch icon -> favicon.
-    // Fallback URLs are stored in a data-fallbacks attribute and processed by the shared imgFallback handler.
+    // Fallback URLs are stored in a data-fallbacks attribute and processed by the shared imgFallback handler. As with channelDisplayHtml, the name is escaped once
+    // through the shared escapeHtml SSOT and reused for the text span and the title/alt attributes, so callers pass raw service names.
     "  window.serviceIconHtml = (domain, name, iconClass, textClass, mode, iconUrl) => {",
     "    const m = mode || 'logo';",
+    "    const safeName = escapeHtml(name);",
     "    if((m === 'text') || !domain) {",
-    "      return '<span class=\"' + textClass + '\">' + name + '</span>';",
+    "      return '<span class=\"' + textClass + '\">' + safeName + '</span>';",
     "    }",
     "    const touchIcon = 'https://' + domain + '/apple-touch-icon.png';",
     "    const favicon = 'https://' + domain + '/favicon.ico';",
     "    const src = iconUrl || touchIcon;",
     "    const fallbacks = (iconUrl ? [ touchIcon, favicon ] : [ favicon ]).join('|');",
     "    if(m === 'both') {",
-    "      return '<img src=\"' + src + '\" class=\"' + iconClass + '\" alt=\"\" title=\"' + name + '\" ' +",
+    "      return '<img src=\"' + src + '\" class=\"' + iconClass + '\" alt=\"\" title=\"' + safeName + '\" ' +",
     "        'data-fallbacks=\"' + fallbacks + '\" onerror=\"imgFallback(this)\">' +",
-    "        '<span class=\"' + textClass + '\">' + name + '</span>';",
+    "        '<span class=\"' + textClass + '\">' + safeName + '</span>';",
     "    }",
-    "    return '<img src=\"' + src + '\" class=\"' + iconClass + '\" alt=\"' + name + '\" title=\"' + name + '\" ' +",
+    "    return '<img src=\"' + src + '\" class=\"' + iconClass + '\" alt=\"' + safeName + '\" title=\"' + safeName + '\" ' +",
     "      'data-fallbacks=\"' + fallbacks + '\" onerror=\"imgFallback(this)\">' +",
-    "      '<span class=\"' + textClass + '\" style=\"display:none\">' + name + '</span>';",
+    "      '<span class=\"' + textClass + '\" style=\"display:none\">' + safeName + '</span>';",
     "  };",
 
     // Process service display spans. Finds all .provider-display elements and renders them via serviceIconHtml in 'both' mode. Called on page load and after

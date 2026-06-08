@@ -36,8 +36,8 @@ import type { ClientExternals, ClientState, HandlerContext, SnapshotPayload, Str
 import { after, before, describe, test } from "node:test";
 import type { DisposableDomTestContext } from "../../helpers/dom.helpers.ts";
 import assert from "node:assert/strict";
+import { clientEscapeHtml } from "../../../src/routes/root/scripts/clientEscape.ts";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
-import { escapeHtml as markupEscapeHtml } from "../../../src/utils/markup.ts";
 
 /**
  * Recorded invocation log for the stubbed externals. Tests inspect this to assert that handlers delegated to the right window.* surface with the right arguments.
@@ -95,6 +95,10 @@ function makeHandlerContext(document: Document, options?: {
     channelTable: { applyPatch: (patch: unknown): void => { recorder.applyPatchCalls.push(patch); } },
     copyToClipboard: (text: string, message: string): void => { recorder.copyToClipboardCalls.push({ message, text }); },
     dropdowns: { close: (): void => { recorder.dropdownsCloseCount++; } },
+
+    // escapeHtml is the shared client-escape SSOT in production (window.escapeHtml installed by shared.ts). Tests wire the real clientEscapeHtml so the renderers
+    // escape exactly as they would in the browser; the escaper's byte-parity with markup.escapeHtml is pinned in clientEscape.test.ts, not duplicated here.
+    escapeHtml: clientEscapeHtml,
     updateRestartDialogStatus: (options?.updateRestartDialogStatusDefined === false) ? undefined : (): void => { recorder.updateRestartDialogStatusCount++; }
   };
 
@@ -432,56 +436,6 @@ describe("status.handlers: getDomain (pure)", () => {
      * the literal 'localhost'. Pinning this case ensures local-development URLs don't render as 'localhost.localhost' or similar nonsense.
      */
     assert.equal(handlers.getDomain("http://localhost:5589/stream"), "localhost");
-  });
-});
-
-describe("status.handlers: escapeHtml (pure)", () => {
-
-  test("encodes the five HTML special characters as entities, leaving ordinary text untouched", () => {
-
-    /* escapeHtml is the render-boundary escaper for every untrusted value the renderers inject directly into innerHTML (show names, stream URLs). The five
-     * characters that can break out of a text context - & < > " ' - must each render as an entity. We pin the ampersand first because order matters (it must be
-     * escaped before the others so an already-entity-encoded value does not get double-encoded by a naive sweep), then the angle brackets, the double quote (the
-     * attribute-breakout vector), and the apostrophe (HTML5 numeric reference &#39;). Ordinary alphanumerics pass through verbatim.
-     */
-    assert.equal(handlers.escapeHtml("&"), "&amp;");
-    assert.equal(handlers.escapeHtml("<"), "&lt;");
-    assert.equal(handlers.escapeHtml(">"), "&gt;");
-    assert.equal(handlers.escapeHtml("\""), "&quot;");
-    assert.equal(handlers.escapeHtml("'"), "&#39;");
-    assert.equal(handlers.escapeHtml("NBC News"), "NBC News", "ordinary text must pass through unchanged");
-  });
-
-  test("encodes a script-injection payload so it cannot break out of a text context", () => {
-
-    /* The canonical XSS vector: a show name or URL carrying a <script> tag. After escaping, the angle brackets and quotes are inert entities, so the browser
-     * renders the literal text instead of executing the payload. We pin the full transformation so a regression that dropped one of the substitutions surfaces here.
-     */
-    const payload = "<img src=x onerror=\"alert(1)\">";
-
-    assert.equal(handlers.escapeHtml(payload), "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
-    assert.ok(!handlers.escapeHtml(payload).includes("<"), "no raw '<' may survive escaping");
-    assert.ok(!handlers.escapeHtml(payload).includes("\""), "no raw '\"' may survive escaping");
-  });
-
-  test("is byte-identical to the markup.escapeHtml single source of truth across the full character set (drift guard)", () => {
-
-    /* The browser-emitted escaper in status.handlers.ts and the server-side escaper in utils/markup.ts must encode the same five characters to the same entities -
-     * status.handlers.ts cannot import markup.escapeHtml because its body ships to the browser verbatim via Function.prototype.toString(), so the two are necessarily
-     * separate function objects. This parity guard makes that separation safe: it asserts byte-identical output across a string that contains every special
-     * character plus surrounding text, so a future edit to either escaper that changed an entity (e.g. swapping &#39; for the XML &apos;) would fail to merge.
-     */
-    const corpus = "Tom & Jerry's <b>\"Live\" Show</b> & more — channels/streams?a=1&b=2";
-
-    assert.equal(handlers.escapeHtml(corpus), markupEscapeHtml(corpus),
-      "the emittable escaper must match markup.escapeHtml byte-for-byte");
-
-    // Sweep every special character individually to catch a single-entity divergence the combined corpus could mask.
-    for(const char of [ "&", "<", ">", "\"", "'" ]) {
-
-      assert.equal(handlers.escapeHtml(char), markupEscapeHtml(char),
-        "escapeHtml('" + char + "') must match markup.escapeHtml('" + char + "')");
-    }
   });
 });
 
@@ -996,8 +950,8 @@ describe("status.handlers: buildStreamPopoverContent (DOM mutator)", () => {
      * break out of the text context and inject a live element. We seed a show name with a <b> tag plus an ampersand and apostrophe and assert the raw innerHTML
      * carries the angle brackets and ampersand as entities, with no live tag surviving. We inspect innerHTML (raw markup) rather than textContent, which would
      * decode the entities and mask a missing escape. Note: the DOM serializer round-trips a quote/apostrophe in text content back to the literal character (both
-     * are inert there), so this DOM-level test pins the breakout-prevention invariant; the byte-exact &quot;/&#39; entity contract is pinned in the escapeHtml
-     * pure suite above.
+     * are inert there), so this DOM-level test pins the breakout-prevention invariant; the byte-exact &quot;/&#39; entity contract is pinned in the clientEscape
+     * parity suite (clientEscape.test.ts).
      */
     return (async (): Promise<void> => {
 
@@ -1261,7 +1215,7 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
 
     /* The show cell is built by concatenating the show name directly into the table innerHTML. External show-name data carrying < or > must be entity-encoded so
      * it cannot break out of the cell and inject a live element. We inspect the cell's innerHTML (raw markup) rather than textContent, which would decode the
-     * entities and hide a missing escape. The strict &quot;/&#39; entity contract is pinned in the escapeHtml pure suite; here we pin the breakout-prevention
+     * entities and hide a missing escape. The strict &quot;/&#39; entity contract is pinned in the clientEscape parity suite; here we pin the breakout-prevention
      * invariant that survives the DOM serializer's round-trip.
      */
     return (async (): Promise<void> => {
@@ -1288,7 +1242,7 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
     /* The expanded detail panel concatenates the stream URL directly into the .details-url innerHTML. Stream URLs routinely carry & in their query strings, and a
      * user-supplied channel URL could carry markup characters. The ampersand and any angle brackets must be entity-encoded. We seed a URL with an ampersand-laden
      * query string plus an injected angle-bracket payload and assert the raw innerHTML carries those as entities with no live element parsed out. The strict
-     * &quot;/&#39; entity contract is pinned in the escapeHtml pure suite; here we pin the breakout-prevention invariant that survives the DOM serializer.
+     * &quot;/&#39; entity contract is pinned in the clientEscape parity suite; here we pin the breakout-prevention invariant that survives the DOM serializer.
      */
     return (async (): Promise<void> => {
 
@@ -2132,7 +2086,6 @@ describe("status.handlers - module export inventory", () => {
     "buildStreamPopoverContent",
     "copyOverviewPlaylistUrl",
     "createInitialState",
-    "escapeHtml",
     "formatAutoRecovery",
     "formatBytes",
     "formatClients",

@@ -1400,3 +1400,67 @@ describe("shared.ts: action dispatcher modifier scoping", () => {
     assert.match(result.message ?? "", /already registered/, "error message should name the collision");
   });
 });
+
+describe("shared.ts: window.escapeHtml (client-escape SSOT) and the renderers that consume it", () => {
+
+  test("the shared utilities script installs window.escapeHtml and it encodes the special characters", async () => {
+
+    /* The shared utilities script emits the single client-escape SSOT (generateClientEscapeAssignment) near the top of its IIFE. This pins that the emitted
+     * .toString()-serialized body actually parses and installs a working window.escapeHtml in a real DOM - the runtime counterpart to the byte-parity guard in
+     * clientEscape.test.ts, which checks the source function in isolation but cannot prove the emitted-and-executed form works.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    assert.equal(ctx.evaluate("typeof window.escapeHtml"), "function", "the shared script must install window.escapeHtml");
+    assert.equal(ctx.evaluate("window.escapeHtml('<b>&\"')"), "&lt;b&gt;&amp;&quot;",
+      "window.escapeHtml must encode angle brackets, the ampersand, and the double quote");
+  });
+
+  test("channelDisplayHtml escapes the name in text mode so injected markup cannot parse out", async () => {
+
+    /* channelDisplayHtml is the single escape boundary for channel names; callers pass raw names. In text mode the name lands in a span's text content, so a value
+     * carrying a <b> tag must surface as entities with no live element. We inject the rendered HTML into the DOM and assert the span's decoded text equals the raw
+     * name (round-trips through the entities) and that no <b> element was parsed out.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate("document.body.insertAdjacentHTML('beforeend', '<div id=\"cdh-text\">' + " +
+      "window.channelDisplayHtml('', 'A & <b>C</b>', 'lc', 'tc', 'text') + '</div>')");
+
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-text b') !== null"), false, "no live <b> may be parsed out of the escaped name");
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-text span').textContent"), "A & <b>C</b>", "the span text must round-trip the raw name");
+  });
+
+  test("channelDisplayHtml escapes the name in the title attribute so a double quote cannot break out (both mode)", async () => {
+
+    /* In both/logo mode the name lands in the img title (and alt) attribute as well as a span. The double quote is the attribute-breakout vector: an unescaped " in
+     * the title would close the attribute and allow injected attributes or markup. We assert the img's decoded title equals the raw name (so the " survived as an
+     * entity and did not break the attribute) and that no injected <b> element parsed out.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate("document.body.insertAdjacentHTML('beforeend', '<div id=\"cdh-both\">' + " +
+      "window.channelDisplayHtml('http://logo/x.png', 'A \"B\" & <b>C</b>', 'lc', 'tc', 'both') + '</div>')");
+
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-both b') !== null"), false, "no live <b> may be parsed out of the escaped name");
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-both img').getAttribute('title')"), "A \"B\" & <b>C</b>",
+      "the title attribute must round-trip the raw name, proving the double quote did not break out");
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-both span').textContent"), "A \"B\" & <b>C</b>", "the span text must round-trip the raw name");
+  });
+
+  test("serviceIconHtml escapes the name in both the title attribute and the text span", async () => {
+
+    /* serviceIconHtml mirrors channelDisplayHtml: callers pass raw service names and it is the single escape boundary. We pin the same attribute-breakout and
+     * text-context invariants - the double quote survives as an entity in the title, and an injected <i> tag does not parse out.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate("document.body.insertAdjacentHTML('beforeend', '<div id=\"svc-both\">' + " +
+      "window.serviceIconHtml('example.com', 'S \"x\" & <i>y</i>', 'ic', 'tc', 'both', '') + '</div>')");
+
+    assert.equal(ctx.evaluate("document.querySelector('#svc-both i') !== null"), false, "no live <i> may be parsed out of the escaped service name");
+    assert.equal(ctx.evaluate("document.querySelector('#svc-both img').getAttribute('title')"), "S \"x\" & <i>y</i>",
+      "the title attribute must round-trip the raw service name");
+    assert.equal(ctx.evaluate("document.querySelector('#svc-both span').textContent"), "S \"x\" & <i>y</i>", "the span text must round-trip the raw service name");
+  });
+});
