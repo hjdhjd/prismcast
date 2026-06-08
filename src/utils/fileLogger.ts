@@ -54,6 +54,14 @@ let flushTimer: Nullable<ReturnType<typeof setInterval>> = null;
 // Flag indicating whether the file logger is initialized and operational.
 let isInitialized = false;
 
+/* Tail of the write-ordering chain. Every asynchronous mutation of the log file (buffer flushes and trims) is appended to this promise so that the operations run
+ * strictly one after another. Without this serialization a flush's appendFile could land between a trim's readFile and its rename, and the rename would then
+ * overwrite the just-appended lines with stale trimmed content - silently dropping log entries. Routing both paths through a single ordering primitive makes
+ * "read-modify-rename" and "append" mutually exclusive without an explicit lock. The tail never rejects: the helper that enqueues work swallows the settled
+ * outcome before chaining the next operation, so one failing operation cannot poison the chain for subsequent writes.
+ */
+let writeChain: Promise<void> = Promise.resolve();
+
 // Flag to temporarily disable logging on write errors, preventing error cascades.
 let isDisabled = false;
 
@@ -173,10 +181,31 @@ export function writeLogEntry(level: string, message: string, color: LogColor, c
   }
 }
 
+// Write Ordering.
+
+/**
+ * Serializes an asynchronous log-file mutation against every other such mutation. The supplied operation is appended to the module-scoped write chain so that
+ * flushes and trims execute one at a time, never interleaving their read/append/rename steps. The returned promise resolves when this specific operation has
+ * settled. The chain itself is advanced with the settled (caught) result so a rejecting operation cannot poison subsequent writes - each operation is responsible
+ * for its own error handling, exactly as the inline try/catch blocks did before serialization.
+ * @param operation - The async mutation to run after all previously enqueued mutations have completed.
+ */
+async function serializeWrite(operation: () => Promise<void>): Promise<void> {
+
+  // Chain this operation after the current tail, then advance the tail to a promise that always resolves so a single failure does not break ordering for the next
+  // caller. We capture the run promise to return it, while the tail intentionally swallows the outcome.
+  const run = writeChain.then(operation);
+
+  writeChain = run.then((): void => undefined, (): void => undefined);
+
+  return run;
+}
+
 // Buffer Flushing.
 
 /**
- * Flushes the write buffer to disk asynchronously. Called periodically by the flush timer.
+ * Flushes the write buffer to disk asynchronously. Called periodically by the flush timer. The append is routed through the write-ordering chain so it cannot
+ * interleave with an in-flight trim, which would otherwise discard the appended lines when the trim renames its stale snapshot over the file.
  */
 export async function flushLogBuffer(): Promise<void> {
 
@@ -185,27 +214,31 @@ export async function flushLogBuffer(): Promise<void> {
     return;
   }
 
-  // Take the current buffer and reset.
+  // Take the current buffer and reset. We snapshot the path as well so the serialized operation is not affected by a concurrent shutdown clearing logFilePath.
   const entries = writeBuffer;
+  const targetPath = logFilePath;
 
   writeBuffer = [];
 
   const content = entries.join("");
 
-  try {
+  return serializeWrite(async (): Promise<void> => {
 
-    await fsPromises.appendFile(logFilePath, content, "utf-8");
-  } catch(error) {
+    try {
 
-    // Disable logging temporarily to prevent error cascade.
-    isDisabled = true;
-    disabledAt = Date.now();
+      await fsPromises.appendFile(targetPath, content, "utf-8");
+    } catch(error) {
 
-    // Log to console as fallback.
-    // eslint-disable-next-line no-console
-    console.error("Failed to write to log file: %s. File logging disabled for %s seconds.",
-      (error instanceof Error) ? error.message : String(error), ERROR_RETRY_DELAY_MS / 1000);
-  }
+      // Disable logging temporarily to prevent error cascade.
+      isDisabled = true;
+      disabledAt = Date.now();
+
+      // Log to console as fallback.
+      // eslint-disable-next-line no-console
+      console.error("Failed to write to log file: %s. File logging disabled for %s seconds.",
+        (error instanceof Error) ? error.message : String(error), ERROR_RETRY_DELAY_MS / 1000);
+    }
+  });
 }
 
 /**
@@ -317,6 +350,9 @@ export function computeTrimmedLogContent(content: string, maxSize: number): Null
 /**
  * Trims the log file to half the maximum size, keeping only complete lines. The most recent logs are preserved. Pure cut logic lives in
  * computeTrimmedLogContent; this function is the I/O orchestration shell around it.
+ *
+ * The entire read/write/rename critical section runs inside the write-ordering chain so it is serialized against buffer flushes. This closes the trim/flush race:
+ * an appendFile cannot land between this function's readFile and its rename, so the rename never overwrites freshly appended lines with a stale snapshot.
  */
 async function trimLogFile(): Promise<void> {
 
@@ -325,29 +361,35 @@ async function trimLogFile(): Promise<void> {
     return;
   }
 
-  try {
+  // Snapshot the path so a concurrent shutdown clearing logFilePath cannot redirect the rename target mid-operation.
+  const targetPath = logFilePath;
 
-    const content = await fsPromises.readFile(logFilePath, "utf-8");
-    const trimmedContent = computeTrimmedLogContent(content, maxLogSize);
+  return serializeWrite(async (): Promise<void> => {
 
-    if(trimmedContent === null) {
+    try {
 
-      return;
+      const content = await fsPromises.readFile(targetPath, "utf-8");
+      const trimmedContent = computeTrimmedLogContent(content, maxLogSize);
+
+      if(trimmedContent === null) {
+
+        return;
+      }
+
+      // Write to temp file, then rename (atomic replace).
+      const tempPath = targetPath + ".tmp";
+
+      await fsPromises.writeFile(tempPath, trimmedContent, "utf-8");
+      await fsPromises.rename(tempPath, targetPath);
+
+      approximateSize = trimmedContent.length;
+    } catch(error) {
+
+      // Log to console but continue operating - trim will be retried on next check.
+      // eslint-disable-next-line no-console
+      console.warn("Error trimming log file: %s.", (error instanceof Error) ? error.message : String(error));
     }
-
-    // Write to temp file, then rename (atomic replace).
-    const tempPath = logFilePath + ".tmp";
-
-    await fsPromises.writeFile(tempPath, trimmedContent, "utf-8");
-    await fsPromises.rename(tempPath, logFilePath);
-
-    approximateSize = trimmedContent.length;
-  } catch(error) {
-
-    // Log to console but continue operating - trim will be retried on next check.
-    // eslint-disable-next-line no-console
-    console.warn("Error trimming log file: %s.", (error instanceof Error) ? error.message : String(error));
-  }
+  });
 }
 
 // Shutdown.
@@ -381,4 +423,7 @@ export function shutdownFileLogger(): void {
   approximateSize = 0;
   writeCount = 0;
   logFilePath = null;
+
+  // Reset the write-ordering chain so the next run starts from a fresh, already-resolved tail rather than chaining onto the previous run's last operation.
+  writeChain = Promise.resolve();
 }

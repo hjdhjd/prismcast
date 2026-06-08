@@ -10,8 +10,9 @@
  */
 import { afterEach, describe, mock, test } from "node:test";
 import { flushLogBuffer, flushLogBufferSync, initializeFileLogger, shutdownFileLogger, writeLogEntry } from "./fileLogger.ts";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
+import { initDebugFilter } from "./debugFilter.ts";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
 
@@ -329,6 +330,147 @@ describe("flushTimer interval", () => {
       const afterContent = await readFile(logPath, "utf-8");
 
       assert.match(afterContent, /Buffered entry\./, "periodic timer flushed the buffered entry to disk");
+    });
+  });
+});
+
+describe("trim/flush write-ordering (interleave race)", () => {
+
+  /* trimLogFile reads the log file, computes a trimmed snapshot, then renames a temp file over the original. flushLogBuffer appends to the same file. Without
+   * serialization, an appendFile that lands between the trim's readFile and its rename is silently discarded: the rename overwrites the file with the snapshot
+   * taken before the append, dropping those log lines. The fix routes both paths through a single write-ordering chain so a flush can never interleave with an
+   * in-flight trim. These tests pin that a flush issued concurrently with a trim is not lost.
+   */
+
+  afterEach(() => {
+
+    shutdownFileLogger();
+    initDebugFilter("");
+  });
+
+  test("a flush interleaved with an in-flight trim is not lost", async () => {
+
+    // Debug off so the debug-active gate does not suppress the trim.
+    initDebugFilter("");
+
+    await withTempDir(async (dir) => {
+
+      const logPath = path.join(dir, "race.log");
+      const maxSize = 16384;
+
+      // Pre-seed the log file with content that already exceeds maxSize. checkAndTrimFile reads the on-disk size, so the first size-check fire triggers a trim.
+      // Each seed line is a complete entry so the newline-aligned cut is deterministic.
+      const seedLine = "[2026/01/01 12:00:00.000 PM] Pre-seeded oversized history line.\n";
+      const seedContent = seedLine.repeat(400);
+
+      await writeFile(logPath, seedContent, "utf-8");
+
+      assert.ok(seedContent.length > maxSize, "seed content exceeds maxSize");
+
+      await initializeFileLogger(logPath, maxSize);
+
+      // Write 100 entries to fire the size-check modulo gate, which schedules a trim via `void checkAndTrimFile()` inside writeLogEntry. The trim begins racing
+      // its readFile/rename against any concurrent flush.
+      for(let i = 0; i < 100; i++) {
+
+        writeLogEntry("info", "Filler " + String(i), null);
+      }
+
+      // In the same turn, push a distinctive marker entry and flush it. This append is exactly the operation that could be discarded if it landed between the
+      // trim's readFile and its rename. With the write-ordering chain in place, the flush is serialized against the trim and the marker must survive.
+      const marker = "RACE_MARKER_must_survive_the_trim";
+
+      writeLogEntry("info", marker + ".", null);
+
+      // A single flush drains every buffered entry (fillers and marker) as one append. We await it to ensure the append has settled on the shared write chain.
+      await flushLogBuffer();
+
+      // Poll until the trim has actually fired (file dropped below the seeded size), proving a trim genuinely interleaved with the flush rather than the marker
+      // simply being appended to an un-trimmed file. The poll keeps the test deterministic across host timing.
+      const deadline = Date.now() + 3000;
+
+      let postTrimSize = seedContent.length;
+
+      while(Date.now() < deadline) {
+
+        // eslint-disable-next-line no-await-in-loop
+        const s = await stat(logPath);
+
+        postTrimSize = s.size;
+
+        if(postTrimSize < seedContent.length) {
+
+          break;
+        }
+
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      assert.ok(postTrimSize < seedContent.length, "a trim actually fired (file shrank below the seed size)");
+
+      // The decisive assertion: despite the concurrent trim rewriting the whole file, the marker line that was flushed during the trim is present on disk.
+      const finalContent = await readFile(logPath, "utf-8");
+
+      assert.match(finalContent, new RegExp(marker), "the flushed marker survived the concurrent trim");
+    });
+  });
+
+  test("serialized trim and flush both land regardless of enqueue order", async () => {
+
+    // Complementary pin: explicitly enqueue a flush and let a trim fire from the size check, then assert both the trimmed shape and the appended content coexist.
+    // This guards the write-ordering invariant rather than a single timing arrangement.
+    initDebugFilter("");
+
+    await withTempDir(async (dir) => {
+
+      const logPath = path.join(dir, "order.log");
+      const maxSize = 16384;
+
+      const seedLine = "[2026/01/01 12:00:00.000 PM] Seed line for ordering test.\n";
+      const seedContent = seedLine.repeat(400);
+
+      await writeFile(logPath, seedContent, "utf-8");
+      await initializeFileLogger(logPath, maxSize);
+
+      // Buffer a marker first, then fire the size check via the filler loop. The flush is issued after the loop so the trim is already enqueued ahead of it.
+      const marker = "ORDERED_MARKER_survives";
+
+      writeLogEntry("info", marker + ".", null);
+
+      for(let i = 0; i < 100; i++) {
+
+        writeLogEntry("info", "Pad " + String(i), null);
+      }
+
+      await flushLogBuffer();
+
+      // Allow the void-scheduled trim to settle behind the flush on the shared chain.
+      const deadline = Date.now() + 3000;
+
+      let postTrimSize = seedContent.length;
+
+      while(Date.now() < deadline) {
+
+        // eslint-disable-next-line no-await-in-loop
+        const s = await stat(logPath);
+
+        postTrimSize = s.size;
+
+        if(postTrimSize < seedContent.length) {
+
+          break;
+        }
+
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      assert.ok(postTrimSize < seedContent.length, "the trim fired and shrank the file");
+
+      const finalContent = await readFile(logPath, "utf-8");
+
+      assert.match(finalContent, new RegExp(marker), "the marker flushed alongside the trim survived");
     });
   });
 });
