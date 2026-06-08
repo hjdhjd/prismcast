@@ -24,16 +24,19 @@ import { parseTokenExpiry } from "./tokenExpiry.ts";
  * 4. If DRM: log the reason, return null
  * 5. If clear or AES-128: create and return the native proxy
  *
- * Token refresh: When the intercepted URL contains expiration tokens, we schedule a timer to refresh the manifest before the tokens expire. The refresh first
- * attempts a direct Node.js fetch of the master manifest URL (no browser involvement), falling back to a browser page reload when the master URL itself has expired.
- * The proxy continues serving cached segments during the refresh.
+ * Token refresh: When the intercepted URL contains expiration tokens, we schedule a SINGLE timer aimed at the next expiry boundary - the earlier of the master URL's
+ * and the polled variant URL's expirations, minus a comfortable margin. The refresh first attempts a direct Node.js fetch of the master manifest URL (no browser
+ * involvement), falling back to a browser page reload when the master URL itself has expired. Crucially, each refresh reschedules from the boundary it is aiming at,
+ * not from a shrinking-but-unchanging master expiry, so the schedule never degenerates into a per-cycle re-probe loop in the final minutes before expiry. The proxy
+ * continues serving cached segments during the refresh.
  */
 
 // Time in milliseconds before token expiry to trigger a refresh. We refresh 5 minutes early to ensure the new manifest is ready before the old one expires.
 const TOKEN_REFRESH_MARGIN = 300000;
 
-// Minimum delay in milliseconds before a token refresh fires. Prevents a refresh loop when the token lifetime is shorter than TOKEN_REFRESH_MARGIN (e.g., Fox Sports
-// tokens expire in ~118 seconds). Without this floor, the refresh delay would be Math.max(0, 118000 - 300000) = 0ms, triggering an infinite loop of page reloads.
+// Minimum delay in milliseconds before a token refresh fires. This is the absolute floor for any scheduled refresh: when a boundary lands at or in the past (an
+// already-expired or imminently-expiring token), we still wait at least this long so the timer cannot fire back-to-back and thrash. It is NOT the steady-state
+// cadence - inside the margin window we schedule a single refresh aimed at the actual expiry boundary, not a repeating MIN_REFRESH_DELAY poll (see scheduleTokenRefresh).
 const MIN_REFRESH_DELAY = 30000;
 
 // Minimum remaining token lifetime (in milliseconds) for a direct-fetched variant URL to be considered usable. If the variant URL's token expires sooner than this,
@@ -221,7 +224,8 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     variantUrl: mediaFeed.bestVariantUrl
   });
 
-  // Schedule token refresh if the URL contains expiration tokens.
+  // Schedule token refresh if either URL contains expiration tokens. We pass the variant URL the proxy will poll so the refresh boundary is the earlier of the
+  // master and variant expirations.
   scheduleTokenRefresh({
 
     channelName,
@@ -229,7 +233,8 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     page,
     proxy,
     streamIdStr,
-    url
+    url,
+    variantUrl: mediaFeed.bestVariantUrl
   });
 
   LOG.debug("timing:native", "Native streaming setup completed for %s in %sms.", channelName, elapsed());
@@ -250,29 +255,73 @@ interface TokenRefreshOptions {
   proxy: NativeProxy;
   streamIdStr: string;
   url: string;
+
+  // The variant URL the proxy is actually polling. Its token rotates independently of the master URL and may expire first, so the refresh boundary is the earlier
+  // of the two. When the master URL carries no expiry token, the variant URL still pins the boundary; when neither does, no refresh is scheduled.
+  variantUrl: string;
 }
 
 /**
- * Schedules a token refresh timer if the manifest URL contains an expiration token. The refresh occurs TOKEN_REFRESH_MARGIN milliseconds before the token expires.
- * On timer fire, the refresh first attempts a direct Node.js fetch of the master manifest URL, falling back to a browser page reload if the direct fetch fails.
+ * Computes the absolute moment (milliseconds since the Unix epoch) at which the next token refresh must occur, or null when neither URL carries an expiry token.
+ *
+ * The boundary is the earlier of the master URL's and the variant URL's expirations. The master URL governs which refresh strategy can run (a direct re-fetch is
+ * possible only while the master token is alive; once it expires only a page reload mints a new master), while the variant URL is what the proxy polls for segments.
+ * Taking the minimum guarantees the proxy never holds a dead variant URL and the refresh never tries a direct fetch against an expired master.
+ *
+ * @param masterUrl - The master manifest URL whose token gates the direct-fetch strategy.
+ * @param variantUrl - The variant URL the proxy polls for segments.
+ * @returns The earliest expiry in milliseconds since the epoch, or null when neither URL carries an expiry token.
+ */
+function computeRefreshBoundary(masterUrl: string, variantUrl: string): Nullable<number> {
+
+  const masterExpiry = parseTokenExpiry(masterUrl);
+  const variantExpiry = parseTokenExpiry(variantUrl);
+
+  if((masterExpiry === null) && (variantExpiry === null)) {
+
+    return null;
+  }
+
+  // At least one expiry exists. Default the missing one to positive infinity so Math.min selects the URL that actually constrains the boundary.
+  return Math.min(masterExpiry ?? Number.POSITIVE_INFINITY, variantExpiry ?? Number.POSITIVE_INFINITY);
+}
+
+/**
+ * Schedules a SINGLE token refresh timer aimed at the next expiry boundary - the earlier of the master URL's and the polled variant URL's expirations. There are two
+ * regimes:
+ *
+ * 1. **Comfortable margin** (more than TOKEN_REFRESH_MARGIN remains): schedule the refresh TOKEN_REFRESH_MARGIN before the boundary, so the fresh manifest is ready
+ *    well before the old one expires.
+ *
+ * 2. **Inside the margin window** (TOKEN_REFRESH_MARGIN or less remains): re-fetching the same master URL does not extend its lifetime, so re-probing it on a fixed
+ *    cadence is wasted work. We schedule exactly one refresh aimed at the boundary itself (clamped to MIN_REFRESH_DELAY so an already-expired or imminent boundary
+ *    cannot fire back-to-back). When that refresh fires the master token is spent, the direct fetch fails, and the page-reload path mints a genuinely new master URL
+ *    - once, at the boundary, not every MIN_REFRESH_DELAY for the final minutes before expiry.
+ *
+ * This is the core of the busy-loop fix: each refresh reschedules from the boundary it aims at, never from a shrinking-but-unchanging master expiry, so the cadence
+ * is a single boundary-targeted timer rather than a per-cycle re-probe.
  *
  * @param options - Token refresh options.
  */
 function scheduleTokenRefresh(options: TokenRefreshOptions): void {
 
-  const { channelName, masterUrl, page, proxy, streamIdStr, url } = options;
+  const { channelName, masterUrl, page, proxy, streamIdStr, url, variantUrl } = options;
 
-  const expiry = parseTokenExpiry(masterUrl);
+  const boundary = computeRefreshBoundary(masterUrl, variantUrl);
 
-  if(!expiry) {
+  if(boundary === null) {
 
-    LOG.debug("native:token", "No token expiry found in manifest URL for %s.", channelName);
+    LOG.debug("native:token", "No token expiry found in manifest URLs for %s.", channelName);
 
     return;
   }
 
-  const timeUntilExpiry = expiry - Date.now();
-  const refreshIn = Math.max(MIN_REFRESH_DELAY, timeUntilExpiry - TOKEN_REFRESH_MARGIN);
+  const timeUntilExpiry = boundary - Date.now();
+
+  // Outside the margin we lead the boundary by TOKEN_REFRESH_MARGIN; inside it we aim straight at the boundary so the direct fetch fails into a page reload exactly
+  // once. Either way the result is clamped to MIN_REFRESH_DELAY so a past-due or imminent boundary still yields a single, non-thrashing timer.
+  const lead = (timeUntilExpiry > TOKEN_REFRESH_MARGIN) ? TOKEN_REFRESH_MARGIN : 0;
+  const refreshIn = Math.max(MIN_REFRESH_DELAY, timeUntilExpiry - lead);
 
   LOG.debug("native:token", "Token expires in %ss for %s. Refresh scheduled in %ss.",
     Math.round(timeUntilExpiry / 1000), channelName, Math.round(refreshIn / 1000));
@@ -347,8 +396,10 @@ export async function refreshNativeManifest(options: {
 
       streamLog.debug("native:token", "Manifest refresh completed for %s via direct fetch in %sms.", channelName, refreshElapsed());
 
-      // Schedule the next refresh with the same master URL. It may still be valid for subsequent direct fetches. Once it expires, the direct fetch will fail and
-      // the page reload fallback will generate a new master URL.
+      // Schedule the next refresh aimed at the new boundary. The master URL is unchanged by a direct fetch and may still be valid for further direct fetches, but
+      // the boundary is now driven by the earlier of the (unchanging) master expiry and the freshly-fetched variant expiry. Because scheduleTokenRefresh aims at
+      // that boundary - leading it only when there is comfortable margin - the schedule does not degenerate into a per-cycle re-probe of the still-valid master.
+      // Once the master URL expires, the next refresh's direct fetch fails and the page-reload fallback generates a new master URL.
       scheduleTokenRefresh({
 
         channelName,
@@ -356,7 +407,8 @@ export async function refreshNativeManifest(options: {
         page,
         proxy,
         streamIdStr,
-        url
+        url,
+        variantUrl: directResult.bestVariantUrl
       });
 
       return true;
@@ -448,7 +500,8 @@ export async function refreshNativeManifest(options: {
 
     streamLog.debug("native:token", "Manifest refresh completed for %s via page reload in %sms.", channelName, refreshElapsed());
 
-    // Schedule the next proactive token refresh with the NEW master URL from the fresh interception. Subsequent direct fetches will use this URL until it expires.
+    // Schedule the next proactive token refresh with the NEW master URL from the fresh interception and the freshly-probed variant URL. Subsequent direct fetches
+    // will use the master URL until it expires; the boundary is the earlier of the master and variant expirations.
     scheduleTokenRefresh({
 
       channelName,
@@ -456,7 +509,8 @@ export async function refreshNativeManifest(options: {
       page,
       proxy,
       streamIdStr,
-      url
+      url,
+      variantUrl: refreshedFeed.bestVariantUrl
     });
 
     return true;

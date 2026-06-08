@@ -52,9 +52,38 @@ interface ProxyStubHooks {
 
   isStopped: boolean;
 
+  // The delay (in milliseconds) the most recently scheduled token-refresh timer was created with, or null when no refresh has been scheduled. Populated by the
+  // setTokenRefreshTimer hook by looking the received timer up in scheduledTimerDelays. Tests use this to pin the refresh CADENCE - whether the reschedule aims at
+  // the expiry boundary or degenerates into a tight MIN_REFRESH_DELAY poll.
+  lastRefreshDelayMs: number | null;
+
   setTokenRefreshTimerCalls: number;
 
   variantUrl: string;
+}
+
+/* scheduledTimerDelays records the delay every setTimeout call was scheduled with, keyed by the timer handle it produced. The spyScheduledTimers helper installs a
+ * globalThis.setTimeout spy that populates this map so the proxy stub can recover the delay of the timer handed to setTokenRefreshTimer. A WeakMap keeps the entries
+ * garbage-collectable once the handles are cleared, and survives across mock.reset (which only restores the spy, not module state).
+ */
+const scheduledTimerDelays = new WeakMap<object, number>();
+
+/* spyScheduledTimers replaces globalThis.setTimeout with a spy that records each call's delay against the timer it returns, then delegates to the real (unref'd)
+ * implementation already installed at the top of this file. Tests that need to assert on the scheduled refresh delay install this spy; mock.reset in afterEach
+ * restores the plain unref'd wrapper.
+ */
+function spyScheduledTimers(): void {
+
+  const wrapped = globalThis.setTimeout;
+
+  mock.method(globalThis, "setTimeout", ((handler: TimerHandler, timeout?: number, ...args: unknown[]): NodeJS.Timeout => {
+
+    const timer = (wrapped as unknown as (h: TimerHandler, t?: number, ...a: unknown[]) => NodeJS.Timeout)(handler, timeout, ...args);
+
+    scheduledTimerDelays.set(timer, timeout ?? 0);
+
+    return timer;
+  }) as unknown as typeof globalThis.setTimeout);
 }
 
 /* makeFakeProxy returns a NativeProxy-shaped stub paired with mutable hooks. The hooks let tests observe what the orchestrator did to the proxy without poking at
@@ -75,6 +104,10 @@ function makeFakeProxy(hooks: ProxyStubHooks): NativeProxy {
     setTokenRefreshTimer: (timer: ReturnType<typeof setTimeout>): void => {
 
       hooks.setTokenRefreshTimerCalls++;
+
+      // Recover the delay this timer was scheduled with (populated by spyScheduledTimers, if installed) so tests can pin the refresh cadence. Falls back to null
+      // when the spy is not active for this test.
+      hooks.lastRefreshDelayMs = scheduledTimerDelays.get(timer) ?? null;
 
       // Cancel the timer so the test does not leak it into the next case.
       clearTimeout(timer);
@@ -145,7 +178,7 @@ describe("refreshNativeManifest", () => {
       return new Response("should not be reached", { status: 500 });
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: true, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: true, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     const result = await refreshNativeManifest({
 
@@ -163,7 +196,7 @@ describe("refreshNativeManifest", () => {
   test("returns false when no masterUrl is provided and the page is closed (no recovery path available)", async () => {
 
     // Boundary: when the L2 recovery path runs (no masterUrl) and the page itself is closed, the function has nothing to do and returns false.
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     const result = await refreshNativeManifest({
 
@@ -192,7 +225,7 @@ describe("refreshNativeManifest", () => {
       "https://cdn.test/refresh-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("refresh-channel");
 
@@ -224,7 +257,7 @@ describe("refreshNativeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n", { status: 200 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("flip-channel");
 
@@ -253,7 +286,7 @@ describe("refreshNativeManifest", () => {
       [masterUrl]: () => new Response("server error", { status: 500 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     const result = await refreshNativeManifest({
 
@@ -288,7 +321,7 @@ describe("refreshNativeManifest", () => {
       [videoUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("refresh-dai-channel");
 
@@ -305,5 +338,130 @@ describe("refreshNativeManifest", () => {
     assert.equal(result, true, "direct refresh succeeds");
     assert.equal(hooks.variantUrl, videoUrl, "video variant URL updated");
     assert.equal(hooks.audioVariantUrl, audioUrl, "audio variant URL updated");
+  });
+
+  test("schedules a single boundary-targeted refresh, not a MIN_REFRESH_DELAY busy-loop, when the master token is inside the refresh margin", async () => {
+
+    /* Regression for the token-refresh busy-loop. A master URL whose token expires inside the 5-minute refresh margin used to reschedule at the MIN_REFRESH_DELAY
+     * floor (30s) after every successful direct fetch, re-probing the still-valid master every 30s for the final minutes before expiry. The fix aims the single
+     * reschedule at the actual expiry boundary instead. With a master expiring in ~90s and a variant carrying no token, the boundary is the master's 90s; the
+     * reschedule must fire at ~90s, NOT at the 30s floor. The 90s-vs-30s gap is precisely the difference between the fixed boundary schedule and the old busy-loop.
+     */
+    const expirySeconds = Math.floor(Date.now() / 1000) + 90;
+    const masterUrl = "https://cdn.test/inside-margin-master.m3u8?exp=" + String(expirySeconds);
+
+    makeFetchRouter({
+
+      "https://cdn.test/inside-margin-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\ninside-margin-variant.m3u8\n", { status: 200 }),
+      "https://cdn.test/inside-margin-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("inside-margin-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "inside-margin-channel",
+      masterUrl,
+      page: makeFakePage(),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "inside-margin-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "direct refresh succeeds");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "exactly one refresh is scheduled - a single boundary timer, not a poll");
+    assert.notEqual(hooks.lastRefreshDelayMs, null, "the reschedule recorded a delay");
+
+    // The boundary is the master's ~90s expiry. Assert the reschedule fires near that boundary and well above the 30s MIN_REFRESH_DELAY floor that the old
+    // busy-loop produced. A 2-second tolerance absorbs the wall-clock read inside scheduleTokenRefresh.
+    assert.ok((hooks.lastRefreshDelayMs!) > 30000, "reschedule does NOT collapse to the MIN_REFRESH_DELAY busy-loop floor");
+    assert.ok(Math.abs((hooks.lastRefreshDelayMs!) - 90000) <= 2000, "reschedule is aimed at the ~90s expiry boundary");
+  });
+
+  test("leads the boundary by TOKEN_REFRESH_MARGIN when the master token has comfortable margin", async () => {
+
+    /* The comfortable-margin regime: when far more than the 5-minute margin remains, the single reschedule fires TOKEN_REFRESH_MARGIN (300s) before the boundary so
+     * the fresh manifest is ready well ahead of expiry. With a master expiring in ~900s, the reschedule must fire at ~600s (900 - 300), confirming the margin lead
+     * is still applied outside the busy-loop window.
+     */
+    const expirySeconds = Math.floor(Date.now() / 1000) + 900;
+    const masterUrl = "https://cdn.test/comfortable-master.m3u8?exp=" + String(expirySeconds);
+
+    makeFetchRouter({
+
+      "https://cdn.test/comfortable-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\ncomfortable-variant.m3u8\n", { status: 200 }),
+      "https://cdn.test/comfortable-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("comfortable-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "comfortable-channel",
+      masterUrl,
+      page: makeFakePage(),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "comfortable-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "direct refresh succeeds");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "exactly one refresh scheduled");
+
+    // 900s boundary minus the 300s margin lead -> ~600s. A 2-second tolerance absorbs the wall-clock read.
+    assert.ok(Math.abs((hooks.lastRefreshDelayMs!) - 600000) <= 2000, "reschedule leads the boundary by TOKEN_REFRESH_MARGIN");
+  });
+
+  test("pins the refresh boundary to the variant expiry when the variant token expires before the master token", async () => {
+
+    /* The variant URL the proxy polls rotates independently of the master and can expire first. The boundary must be the earlier of the two so the proxy never holds
+     * a dead variant. With a master valid for ~900s but a variant expiring in ~120s, the boundary is the variant's 120s; the single reschedule must fire near 120s,
+     * not near the master's 900s (or its 600s margin lead).
+     */
+    const masterExpirySeconds = Math.floor(Date.now() / 1000) + 900;
+    const variantExpirySeconds = Math.floor(Date.now() / 1000) + 120;
+    const masterUrl = "https://cdn.test/variant-bound-master.m3u8?exp=" + String(masterExpirySeconds);
+    const variantPath = "variant-bound-variant.m3u8?exp=" + String(variantExpirySeconds);
+    const variantUrl = "https://cdn.test/" + variantPath;
+
+    makeFetchRouter({
+
+      "https://cdn.test/variant-bound-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\n" + variantPath + "\n", { status: 200 }),
+      "https://cdn.test/variant-bound-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("variant-bound-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "variant-bound-channel",
+      masterUrl,
+      page: makeFakePage(),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "variant-bound-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "direct refresh succeeds");
+    assert.equal(hooks.variantUrl, variantUrl, "proxy variant URL updated to the short-lived variant");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "exactly one refresh scheduled");
+
+    // The 120s variant boundary is inside the margin, so no lead is applied and the reschedule fires at ~120s. A 2-second tolerance absorbs the wall-clock read.
+    assert.ok(Math.abs((hooks.lastRefreshDelayMs!) - 120000) <= 2000, "reschedule is pinned to the earlier variant expiry, not the master expiry");
   });
 });
