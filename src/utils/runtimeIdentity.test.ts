@@ -3,22 +3,27 @@
  * runtimeIdentity.test.ts: Unit tests for the runtime-identity state machine. Each state-machine branch (free, held-live, stale-different-boot, stale-dead-pid,
  * stale-malformed) gets a dedicated test that pins the exact discriminator and (where applicable) the record payload. The file format is covered via round-trip
  * tests over serializeRecord/parseRecord. Tests use withTempDir for filesystem isolation and a hand-rolled RuntimeIdentityContext literal for deterministic
- * control over boot session ID and PID liveness - no real /proc or process.kill is exercised here.
+ * control over boot session ID, PID liveness, and process identity - no real /proc or process.kill is exercised here.
  */
 import type { IdentityRecord, RuntimeIdentityContext } from "./runtimeIdentity.ts";
 import { claim, forceRelease, inspect, parseRecord, release, serializeRecord } from "./runtimeIdentity.ts";
 import { describe, test } from "node:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
 
-/* A deterministic RuntimeIdentityContext factory. Tests parameterize the boot session ID and a live-PID predicate; the rest of the state machine is pure. */
-function makeCtx(opts: { bootId: string; livePids: ReadonlySet<number> }): RuntimeIdentityContext {
+/* A deterministic RuntimeIdentityContext factory. Tests parameterize the boot session ID, a live-PID predicate, and an optional process-identity predicate; the
+ * rest of the state machine is pure. The identity predicate defaults to "every live PID is genuinely a PrismCast process" so the common held-live path stays
+ * concise; the same-boot PID-reuse cases pass an explicit predicate that returns false (confirmed unrelated process) or null (identity indeterminate) for a PID.
+ */
+function makeCtx(opts: { bootId: string; identifyPid?: (pid: number) => Nullable<boolean>; livePids: ReadonlySet<number> }): RuntimeIdentityContext {
 
   return {
 
     getBootSessionId: () => opts.bootId,
+    isPidOurProcess: (pid: number): Nullable<boolean> => (opts.identifyPid === undefined) ? true : opts.identifyPid(pid),
     isProcessRunning: (pid: number): boolean => opts.livePids.has(pid)
   };
 }
@@ -85,6 +90,58 @@ describe("inspect state machine", () => {
       const state = inspect(filePath, ctx);
 
       assert.equal(state.kind, "stale-dead-pid");
+    });
+  });
+
+  test("stale-dead-pid: returns kind 'stale-dead-pid' when the PID is alive but recycled to a different process (same-boot PID reuse)", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const filePath = path.join(dir, "identity");
+
+      // The on-disk record matches the current boot session and its PID is alive, but the live process at that PID is NOT PrismCast - the original was SIGKILLed
+      // and the kernel reassigned the freed PID to an unrelated process within the same boot. The bootId check cannot catch this (same boot), so the
+      // process-identity probe must: isPidOurProcess returns false for PID 12345, which downgrades the slot from held-live to stale.
+      writeFileSync(filePath, serializeRecord({ bootId: "session-1", pid: 12345, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }));
+
+      const ctx = makeCtx({ bootId: "session-1", identifyPid: (pid: number): boolean => pid !== 12345, livePids: new Set([12345]) });
+      const state = inspect(filePath, ctx);
+
+      // The reused-PID-but-different-process holder is treated as NOT live: the slot is stale and the next claim() may overwrite it.
+      assert.equal(state.kind, "stale-dead-pid");
+    });
+  });
+
+  test("held-live: keeps kind 'held-live' when the PID is alive and process identity is confirmed PrismCast", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const filePath = path.join(dir, "identity");
+
+      writeFileSync(filePath, serializeRecord({ bootId: "session-1", pid: 12345, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }));
+
+      // identifyPid returns true for the holder PID: the process table confirms a genuine PrismCast process, so the slot remains held-live.
+      const ctx = makeCtx({ bootId: "session-1", identifyPid: (pid: number): boolean => pid === 12345, livePids: new Set([12345]) });
+      const state = inspect(filePath, ctx);
+
+      assert.equal(state.kind, "held-live");
+    });
+  });
+
+  test("held-live: keeps kind 'held-live' conservatively when process identity is indeterminate (null probe)", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const filePath = path.join(dir, "identity");
+
+      writeFileSync(filePath, serializeRecord({ bootId: "session-1", pid: 12345, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }));
+
+      // identifyPid returns null: the process table is unavailable on the platform or the PID is absent from it, so identity cannot be determined. We must NOT
+      // downgrade a possibly-live holder to stale on weak evidence, because the stale branch is the only one that risks two concurrent instances.
+      const ctx = makeCtx({ bootId: "session-1", identifyPid: (): Nullable<boolean> => null, livePids: new Set([12345]) });
+      const state = inspect(filePath, ctx);
+
+      assert.equal(state.kind, "held-live");
     });
   });
 
@@ -164,6 +221,29 @@ describe("claim", () => {
       const result = claim(filePath, { version: "1.10.3" }, ctx);
 
       assert.equal(result.ok, true);
+    });
+  });
+
+  test("succeeds when the holder PID is alive but recycled to a different process (same-boot PID-reuse residual)", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const filePath = path.join(dir, "identity");
+
+      // A SIGKILLed PrismCast left this record; the kernel then reassigned its PID to an unrelated live process within the same boot. Without the identity probe
+      // this would falsely report "another instance is already running". With it, the recycled PID classifies as stale and the claim succeeds.
+      writeFileSync(filePath, serializeRecord({ bootId: "session-1", pid: 12345, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }));
+
+      const ctx = makeCtx({ bootId: "session-1", identifyPid: (pid: number): boolean => pid !== 12345, livePids: new Set([ 12345, process.pid ]) });
+      const result = claim(filePath, { version: "1.10.3" }, ctx);
+
+      assert.equal(result.ok, true);
+
+      // The slot now belongs to us: the recycled holder's record was overwritten with our identity.
+      const after = inspect(filePath, ctx);
+
+      assert.equal(after.kind, "held-live");
+      assert.equal(after.record.pid, process.pid);
     });
   });
 
