@@ -5,6 +5,7 @@
  */
 import { ACTIONS } from "../../clientActions.ts";
 import { generateClientEscapeAssignment } from "./clientEscape.ts";
+import { generateClientSafeUrlAssignment } from "./clientUrl.ts";
 
 /**
  * Generates the shared utilities script block containing cross-tab client-side functions. Runs before all tab-specific scripts to eliminate execution order
@@ -17,12 +18,15 @@ export function generateSharedUtilitiesScript(): string {
     "<script>",
     "(function() {",
 
-    /* Client-side HTML-escape single source of truth. Installed first in the shared utilities IIFE so window.escapeHtml is defined before any client script runs:
-     * shared.ts's own channel/service renderers below, the status display, the channels wizards, the config changelog, and the inline log viewer all route their
-     * innerHTML escaping through it. The function source is generated from clientEscapeHtml in clientEscape.ts, which a byte-parity guard pins identical to the
-     * server-side markup.escapeHtml. The local const binding lets the renderers in this IIFE call escapeHtml without a global property lookup.
+    /* Client-side render-safety single sources of truth, installed first in the shared utilities IIFE so window.escapeHtml and window.safeUrl are defined before any
+     * client script runs: shared.ts's own channel/service renderers below, the status display, the channels wizards, the config changelog, and the inline log viewer
+     * all route their escaping through them. escapeHtml encodes a value for an HTML text or attribute context (generated from clientEscapeHtml, which a byte-parity
+     * guard pins identical to the server-side markup.escapeHtml); safeUrl vets a URL's scheme before it is placed in a URL-bearing attribute (generated from
+     * clientSafeUrl). They are orthogonal and composable - escapeHtml(safeUrl(url)) for a URL attribute. The local const bindings let the renderers in this IIFE
+     * call them without a global property lookup.
      */
     generateClientEscapeAssignment(),
+    generateClientSafeUrlAssignment(),
 
     /* Action dispatcher. The single project-wide primitive for event handling. Subsystems register named handlers via window.registerAction(name, handler), and
      * one document-level delegated listener routes click / change / keydown / submit events to the registered handler. Triggers declare their intent on the
@@ -301,12 +305,13 @@ export function generateSharedUtilitiesScript(): string {
     "    if((m === 'text') || !logoUrl) {",
     "      return '<span class=\"' + textClass + '\">' + safeName + '</span>';",
     "    }",
+    "    const safeLogo = escapeHtml(safeUrl(logoUrl));",
     "    if(m === 'both') {",
-    "      return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"\" title=\"' + safeName + '\" ' +",
+    "      return '<img src=\"' + safeLogo + '\" class=\"' + logoClass + '\" alt=\"\" title=\"' + safeName + '\" ' +",
     "        'onerror=\"imgFallback(this)\">' +",
     "        '<span class=\"' + textClass + '\">' + safeName + '</span>';",
     "    }",
-    "    return '<img src=\"' + logoUrl + '\" class=\"' + logoClass + '\" alt=\"' + safeName + '\" title=\"' + safeName + '\" ' +",
+    "    return '<img src=\"' + safeLogo + '\" class=\"' + logoClass + '\" alt=\"' + safeName + '\" title=\"' + safeName + '\" ' +",
     "      'onerror=\"imgFallback(this)\">' +",
     "      '<span class=\"' + textClass + '\" style=\"display:none\">' + safeName + '</span>';",
     "  };",
@@ -339,13 +344,18 @@ export function generateSharedUtilitiesScript(): string {
     "    const favicon = 'https://' + domain + '/favicon.ico';",
     "    const src = iconUrl || touchIcon;",
     "    const fallbacks = (iconUrl ? [ touchIcon, favicon ] : [ favicon ]).join('|');",
+    // The src is scheme-vetted (an iconUrl can be an arbitrary configured URL) and then escaped; the fallback list is built from the domain over a hardcoded https
+    // scheme so it only needs escaping for the attribute. imgFallback reads the decoded data-fallbacks values back into img.src, so escaping here keeps the attribute
+    // safe without altering the URLs imgFallback ultimately loads.
+    "    const safeSrc = escapeHtml(safeUrl(src));",
+    "    const safeFallbacks = escapeHtml(fallbacks);",
     "    if(m === 'both') {",
-    "      return '<img src=\"' + src + '\" class=\"' + iconClass + '\" alt=\"\" title=\"' + safeName + '\" ' +",
-    "        'data-fallbacks=\"' + fallbacks + '\" onerror=\"imgFallback(this)\">' +",
+    "      return '<img src=\"' + safeSrc + '\" class=\"' + iconClass + '\" alt=\"\" title=\"' + safeName + '\" ' +",
+    "        'data-fallbacks=\"' + safeFallbacks + '\" onerror=\"imgFallback(this)\">' +",
     "        '<span class=\"' + textClass + '\">' + safeName + '</span>';",
     "    }",
-    "    return '<img src=\"' + src + '\" class=\"' + iconClass + '\" alt=\"' + safeName + '\" title=\"' + safeName + '\" ' +",
-    "      'data-fallbacks=\"' + fallbacks + '\" onerror=\"imgFallback(this)\">' +",
+    "    return '<img src=\"' + safeSrc + '\" class=\"' + iconClass + '\" alt=\"' + safeName + '\" title=\"' + safeName + '\" ' +",
+    "      'data-fallbacks=\"' + safeFallbacks + '\" onerror=\"imgFallback(this)\">' +",
     "      '<span class=\"' + textClass + '\" style=\"display:none\">' + safeName + '</span>';",
     "  };",
 

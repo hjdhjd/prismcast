@@ -95,10 +95,6 @@ function makeHandlerContext(document: Document, options?: {
     channelTable: { applyPatch: (patch: unknown): void => { recorder.applyPatchCalls.push(patch); } },
     copyToClipboard: (text: string, message: string): void => { recorder.copyToClipboardCalls.push({ message, text }); },
     dropdowns: { close: (): void => { recorder.dropdownsCloseCount++; } },
-
-    // escapeHtml is the shared client-escape SSOT in production (window.escapeHtml installed by shared.ts). Tests wire the real clientEscapeHtml so the renderers
-    // escape exactly as they would in the browser; the escaper's byte-parity with markup.escapeHtml is pinned in clientEscape.test.ts, not duplicated here.
-    escapeHtml: clientEscapeHtml,
     updateRestartDialogStatus: (options?.updateRestartDialogStatusDefined === false) ? undefined : (): void => { recorder.updateRestartDialogStatusCount++; }
   };
 
@@ -133,10 +129,21 @@ function makeStream(overrides?: Partial<StreamSummary>): StreamSummary {
   };
 }
 
-/* requestAnimationFrame stub. Node does not provide rAF; the schedulers in status.handlers.ts reference it as a free identifier (it resolves up the scope chain
- * to globalThis.requestAnimationFrame). Synchronous-fire is the simplest model: the scheduled callback runs inline so the test's next assertion sees post-rAF
- * state. The before/after pair scopes the install to this test file; we restore the original (typically undefined) on teardown so other test files are unaffected.
+/* Global stubs. Two browser globals that the handlers reference as free identifiers must be seeded on globalThis for the duration of this file:
+ *
+ *   - requestAnimationFrame: Node does not provide it; the schedulers in status.handlers.ts reference it as a free identifier. Synchronous-fire is the simplest
+ *     model so the scheduled callback runs inline and the test's next assertion sees post-rAF state.
+ *   - escapeHtml: the shared client-escape SSOT. Production installs window.escapeHtml via shared.ts and the handlers and pure formatters reference it as a bare
+ *     global (it is intentionally not a context port - see the ClientExternals doc in status.handlers.ts). The suite provides the real clientEscapeHtml so the
+ *     formatters escape exactly as they do in the browser.
+ *
+ * The before/after pair scopes both installs to this file; we restore the originals (typically undefined) on teardown so other test files are unaffected.
  */
+interface EscapeHtmlGlobal {
+
+  escapeHtml?: (value: string) => string;
+}
+
 let originalRaf: typeof globalThis.requestAnimationFrame | undefined;
 
 before(() => {
@@ -149,6 +156,8 @@ before(() => {
 
     return 0;
   };
+
+  (globalThis as EscapeHtmlGlobal).escapeHtml = clientEscapeHtml;
 });
 
 after(() => {
@@ -160,6 +169,8 @@ after(() => {
 
     globalThis.requestAnimationFrame = originalRaf;
   }
+
+  delete (globalThis as EscapeHtmlGlobal).escapeHtml;
 });
 
 /**
@@ -2067,6 +2078,70 @@ describe("status.handlers: render schedulers (rAF gates)", () => {
 
       globalThis.requestAnimationFrame = previousRaf;
     }
+  });
+});
+
+describe("status.handlers: status-field render-boundary escaping", () => {
+
+  /* These fields are server-provided and today constrained (captureCodec is a two-value enum, nativeResolution is regex-sanitized to digits-x-digits at the probe,
+   * lastIssueType and client types are internal enums), so they carry no live attacker vector now. The render boundary escapes them anyway, uniformly, so the
+   * status display's safety does not depend on a provenance argument that could silently break if a source loosened (nativeResolution, for instance, derives from
+   * the upstream HLS manifest). Each test feeds a crafted value and asserts it survives as entities with no live element parsed out.
+   */
+
+  test("renderDetailCodec entity-encodes the captureCodec", () => {
+
+    const out = handlers.renderDetailCodec(makeStream({ captureCodec: "<b>x</b>", hardwareAccelerated: true }));
+
+    assert.match(out, /&lt;b&gt;x&lt;\/b&gt;/, "the codec must be entity-encoded in the codec line");
+    assert.doesNotMatch(out, /<b>/, "no raw tag may survive in the codec line");
+  });
+
+  test("renderDetailCodec entity-encodes the nativeResolution fallback when the height is not a known label", () => {
+
+    const out = handlers.renderDetailCodec(makeStream({ nativeBandwidth: 5000000, nativeResolution: "<script>evil</script>", streamingMode: "native" }));
+
+    assert.match(out, /&lt;script&gt;evil&lt;\/script&gt;/, "the unmapped resolution must fall back to the entity-encoded raw value");
+    assert.doesNotMatch(out, /<script>/, "no raw tag may survive in the codec line");
+  });
+
+  test("formatLastIssue entity-encodes the lastIssueType", () => {
+
+    const out = handlers.formatLastIssue(makeStream({ lastIssueTime: new Date().toISOString(), lastIssueType: "<i>nav</i>" }));
+
+    assert.match(out, /&lt;i&gt;nav&lt;\/i&gt;/, "the issue label must be entity-encoded");
+    assert.doesNotMatch(out, /<i>/, "no raw tag may survive in the issue label");
+  });
+
+  test("formatClients entity-encodes an unrecognized client type", () => {
+
+    const out = handlers.formatClients(makeStream({ clientCount: 2, clients: [{ count: 2, type: "<img src=x onerror=alert(1)>" }] }));
+
+    assert.match(out, /&lt;img/, "an unmapped client type must be entity-encoded");
+    assert.doesNotMatch(out, /<img/, "no raw tag may survive in the client breakdown");
+  });
+
+  test("renderStreamsTable entity-encodes the captureCodec in the hardware-accelerated badge", () => {
+
+    /* The native badge in the table concatenates captureCodec into innerHTML. We render a crafted hardware-accelerated stream and assert the badge markup carries
+     * the codec as entities with no live element parsed out of the table.
+     */
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const harness = makeHandlerContext(asDomDocument(ctx), {
+
+        state: { streamData: { "x": makeStream({ captureCodec: "<svg onload=alert(1)>", hardwareAccelerated: true, id: "x" }) } }
+      });
+
+      handlers.renderStreamsTable(harness.ctx);
+
+      const badge = ctx.document.querySelector(".stream-row[data-id=\"x\"] .native-badge");
+
+      assert.ok(badge, "the hardware-accelerated badge must render");
+      assert.match(badge.innerHTML, /&lt;svg/, "the codec must be entity-encoded in the badge markup");
+      assert.equal(ctx.document.querySelector(".stream-row[data-id=\"x\"] svg"), null, "no live <svg> may be parsed out of the escaped codec");
+    })();
   });
 });
 

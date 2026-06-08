@@ -38,11 +38,12 @@ export function generateStatusScript(): string {
   const handlerSources = HANDLER_FUNCTIONS.map((fn) => fn.toString()).join("\n\n");
 
   // Section 3: the IIFE. Wires the runtime side - constructs the state and externals, opens the EventSource, dispatches events, attaches window.* trampolines,
-  // starts the timers. The handler-side state mutations all go through the ctx that is built here. The shared sibling-script values (channelDisplayHtml,
-  // channelTable, copyToClipboard, dropdowns, escapeHtml) are referenced as bare identifiers, matching the existing client-side idiom - shared.ts assigns them via
-  // window.X = ... before this script loads, and bare identifiers in non-strict script-tag scope resolve through the global object. updateRestartDialogStatus
-  // is wrapped in a typeof guard inside a getter because config.ts loads after status.ts; a streamRemoved event arriving before config.ts has registered the
-  // callback must not throw.
+  // starts the timers. The handler-side state mutations all go through the ctx that is built here. The shared sibling-script collaborators (channelDisplayHtml,
+  // channelTable, copyToClipboard, dropdowns) are wired into ctx.externals via bare identifiers, matching the existing client-side idiom - shared.ts assigns them via
+  // window.X = ... before this script loads, and bare identifiers in non-strict script-tag scope resolve through the global object. The shared escapeHtml SSOT is NOT
+  // wired through externals: the handler bodies reference it directly as a bare global (like Date or requestAnimationFrame), resolving to the window.escapeHtml that
+  // shared.ts installs, so it needs no entry here. updateRestartDialogStatus is wrapped in a typeof guard inside a getter because config.ts loads after status.ts; a
+  // streamRemoved event arriving before config.ts has registered the callback must not throw.
   //
   // Trampoline capture: the handlers toggleStreamPopover, toggleStreamDetails, and copyOverviewPlaylistUrl share names with the window.* properties we bind
   // them to. In classic-script scope, function declarations live as properties of the global object, so assigning window.toggleStreamPopover = ... would
@@ -65,7 +66,6 @@ export function generateStatusScript(): string {
     "    channelTable: channelTable,",
     "    copyToClipboard: copyToClipboard,",
     "    dropdowns: dropdowns,",
-    "    escapeHtml: escapeHtml,",
     "    get updateRestartDialogStatus() { return (typeof updateRestartDialogStatus !== 'undefined') ? updateRestartDialogStatus : undefined; }",
     "  };",
     "  const ctx = { document: document, externals: externals, state: state };",

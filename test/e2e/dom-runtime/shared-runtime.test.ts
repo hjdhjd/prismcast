@@ -1464,3 +1464,61 @@ describe("shared.ts: window.escapeHtml (client-escape SSOT) and the renderers th
     assert.equal(ctx.evaluate("document.querySelector('#svc-both span').textContent"), "S \"x\" & <i>y</i>", "the span text must round-trip the raw service name");
   });
 });
+
+describe("shared.ts: window.safeUrl (URL-safety SSOT) and renderer URL handling", () => {
+
+  test("the shared utilities script installs window.safeUrl and it gates schemes", async () => {
+
+    /* The shared utilities script emits the client URL-safety SSOT (generateClientSafeUrlAssignment) alongside the escaper. This pins that the emitted, executed
+     * form works: http/https/relative pass through and a javascript: scheme collapses to the empty string.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    assert.equal(ctx.evaluate("typeof window.safeUrl"), "function", "the shared script must install window.safeUrl");
+    assert.equal(ctx.evaluate("window.safeUrl('https://logo.example/x.png')"), "https://logo.example/x.png", "https URLs must pass through");
+    assert.equal(ctx.evaluate("window.safeUrl('/relative.png')"), "/relative.png", "relative URLs must pass through");
+    assert.equal(ctx.evaluate("window.safeUrl('javascript:alert(1)')"), "", "a javascript: URL must collapse to the empty string");
+  });
+
+  test("channelDisplayHtml neutralizes a dangerous-scheme logo URL to an empty src", async () => {
+
+    /* A logo URL with a javascript: scheme must not survive into the img src. safeUrl collapses it to "", so the rendered src is empty (the onerror fallback then
+     * reveals the text). We assert the src is empty and that the crafted scheme string does not appear anywhere in the rendered markup.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate("document.body.insertAdjacentHTML('beforeend', '<div id=\"cdh-js\">' + " +
+      "window.channelDisplayHtml('javascript:alert(1)', 'NBC', 'lc', 'tc', 'both') + '</div>')");
+
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-js img').getAttribute('src')"), "", "a javascript: logo URL must render as an empty src");
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-js').innerHTML.indexOf('javascript:')"), -1, "the dangerous scheme must not appear in the markup");
+  });
+
+  test("channelDisplayHtml escapes a double quote in the logo URL so it cannot break out of the src attribute", async () => {
+
+    /* Even a scheme-valid URL must be attribute-escaped: a double quote in an https URL would otherwise close the src attribute and inject markup. We assert the
+     * img's decoded src round-trips the raw URL (so the quote survived as an entity) and that no injected element parsed out.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate("document.body.insertAdjacentHTML('beforeend', '<div id=\"cdh-q\">' + " +
+      "window.channelDisplayHtml('https://logo.example/x.png?a=1\\\"><img id=pwned src=y>', 'NBC', 'lc', 'tc', 'both') + '</div>')");
+
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-q #pwned')"), null, "no injected element may parse out of the escaped src");
+    assert.equal(ctx.evaluate("document.querySelector('#cdh-q img').getAttribute('src')"), "https://logo.example/x.png?a=1\"><img id=pwned src=y>",
+      "the src attribute must round-trip the raw URL, proving the double quote did not break out");
+  });
+
+  test("serviceIconHtml neutralizes a dangerous-scheme icon URL to an empty src", async () => {
+
+    /* serviceIconHtml accepts an explicit iconUrl that becomes the src; a javascript: value must be collapsed to "" by safeUrl just like channelDisplayHtml's logo.
+     */
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate("document.body.insertAdjacentHTML('beforeend', '<div id=\"svc-js\">' + " +
+      "window.serviceIconHtml('example.com', 'Svc', 'ic', 'tc', 'both', 'javascript:alert(1)') + '</div>')");
+
+    assert.equal(ctx.evaluate("document.querySelector('#svc-js img').getAttribute('src')"), "", "a javascript: icon URL must render as an empty src");
+    assert.equal(ctx.evaluate("document.querySelector('#svc-js').innerHTML.indexOf('javascript:')"), -1, "the dangerous scheme must not appear in the markup");
+  });
+});

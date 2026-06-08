@@ -19,9 +19,9 @@
  * Single source of truth. Every function defined here is consumed twice - once by Node tests that import and call it directly, and once by the browser via
  * Function.prototype.toString() concatenation in generateStatusScript(). The TypeScript function IS the source; there is no parallel hand-mirrored implementation
  * to drift away from it. The constraint this places on function bodies is that they may reference only their parameters, browser globals (document, JSON, Date,
- * Math, URL, Object, Number, requestAnimationFrame, setInterval, EventSource, window, CustomEvent), or sibling functions that are also emitted. No imports, no
- * closures over module-scope TS variables, no Node-only APIs. The constants are emitted via JSON.stringify so handler bodies can reference them by their TS-side
- * identifier.
+ * Math, URL, Object, Number, requestAnimationFrame, setInterval, EventSource, window, CustomEvent, and escapeHtml - the shared client-escape SSOT installed on
+ * window by shared.ts, treated here as a platform-like global), or sibling functions that are also emitted. No imports, no closures over module-scope TS variables,
+ * no Node-only APIs. The constants are emitted via JSON.stringify so handler bodies can reference them by their TS-side identifier.
  */
 
 /**
@@ -101,9 +101,15 @@ export interface ClientState {
 
 /**
  * Readonly handle to sibling-script window.* APIs. Resolved at IIFE construction time; tests pass stub literals. updateRestartDialogStatus is read via a getter
- * in the IIFE so the streamRemoved handler picks up later registration from config.ts (the script that defines it loads after status.ts in the page). escapeHtml is
- * the shared client-escape SSOT installed on window by shared.ts; it is consumed through this port (rather than as a sibling .toString()-emitted function) so the
- * status display has exactly one escaper, shared with every other client script.
+ * in the IIFE so the streamRemoved handler picks up later registration from config.ts (the script that defines it loads after status.ts in the page).
+ *
+ * What belongs here versus a bare global: ClientExternals holds the collaborators tests need to stub or observe - the channelTable patch sink, the channelDisplayHtml
+ * renderer (asserted for delegation), dropdowns.close, copyToClipboard, the optional config.ts trampoline. The shared client-escape SSOT (window.escapeHtml,
+ * installed by shared.ts) is deliberately NOT here: it is a pure, stateless primitive that is always used for real, never stubbed, and it is needed by the pure
+ * formatters below (renderDetailCodec, formatLastIssue, formatClients) which take only their StreamSummary - threading a context into them just to reach an escaper
+ * would violate the "pure formatters, literal inputs, no externals plumbing" rule. So escapeHtml is referenced as a bare browser global, exactly like Date, Math,
+ * and requestAnimationFrame; production resolves it to window.escapeHtml and the test seeds globalThis.escapeHtml. This keeps one access path for the escaper across
+ * both renderers and formatters.
  */
 export interface ClientExternals {
 
@@ -111,7 +117,6 @@ export interface ClientExternals {
   readonly channelTable: { readonly applyPatch: (patch: unknown) => void };
   readonly copyToClipboard: (text: string, message: string) => void;
   readonly dropdowns: { readonly close: () => void };
-  readonly escapeHtml: (value: string) => string;
   readonly updateRestartDialogStatus: (() => void) | undefined;
 }
 
@@ -207,6 +212,13 @@ export const HANDLER_CONSTANTS: readonly { readonly name: string; readonly value
   { name: "nativeResolutionLabels", value: nativeResolutionLabels },
   { name: "rowTints", value: rowTints }
 ];
+
+/* Ambient declaration for the shared client-escape SSOT. escapeHtml is installed on window by shared.ts and referenced here as a bare global (see the ClientExternals
+ * doc above for why it is a global rather than a context port). This declaration gives TypeScript its type without an import - an import binding would be undefined in
+ * the browser, since only the function bodies ship there via .toString(). Production resolves the bare reference to window.escapeHtml; the DOM-runtime test seeds
+ * globalThis.escapeHtml. It is scoped to this module deliberately: the global exists only in the browser client, never in server code.
+ */
+declare const escapeHtml: (value: string) => string;
 
 // Pure formatters. Free of DOM and free of state; only depend on their parameters. Tests call them directly with literal inputs.
 
@@ -354,7 +366,7 @@ function formatLastIssue(s: StreamSummary): string {
     return "None";
   }
 
-  const issueLabel = s.lastIssueType.charAt(0).toUpperCase() + s.lastIssueType.slice(1);
+  const issueLabel = escapeHtml(s.lastIssueType.charAt(0).toUpperCase() + s.lastIssueType.slice(1));
   const timeStr = formatTime(new Date(s.lastIssueTime).toISOString());
   const status = (s.health === "healthy") ? " (recovered)" : " (recovering)";
 
@@ -394,7 +406,7 @@ function formatClients(s: StreamSummary): string {
 
   for(const c of s.clients) {
 
-    parts.push(String(c.count) + " " + (clientTypeLabels[c.type] ?? c.type));
+    parts.push(String(c.count) + " " + (clientTypeLabels[c.type] ?? escapeHtml(c.type)));
   }
 
   return parts.join(", ");
@@ -420,7 +432,8 @@ function renderHealthCellContent(s: StreamSummary): string {
 // the lightning bolt; native HLS without a captureCodec fills "Native HLS" instead.
 function renderDetailCodec(s: StreamSummary): string {
 
-  const codecLabel = s.captureCodec ? (s.hardwareAccelerated ? "⚡ " + s.captureCodec : s.captureCodec) :
+  const codec = s.captureCodec ? escapeHtml(s.captureCodec) : "";
+  const codecLabel = s.captureCodec ? (s.hardwareAccelerated ? "⚡ " + codec : codec) :
     (s.streamingMode === "native" ? "Native HLS" : "Unknown");
   const modeLabel = s.streamingMode === "native" ? "Native HLS" : "Capture";
   let qualitySuffix = "";
@@ -438,7 +451,7 @@ function renderDetailCodec(s: StreamSummary): string {
 
       const h = s.nativeResolution.split("x")[1];
 
-      qParts.push((h ? nativeResolutionLabels[h] : undefined) ?? s.nativeResolution);
+      qParts.push((h ? nativeResolutionLabels[h] : undefined) ?? escapeHtml(s.nativeResolution));
     }
 
     if(qParts.length > 0) {
@@ -521,7 +534,7 @@ function buildStreamPopoverContent(menu: Element, ctx: HandlerContext): void {
     const name = (s.channel ?? "") || (s.serviceName ?? "") || getDomain(s.url);
     const dur = Math.floor((now - new Date(s.startTime).getTime()) / 1000);
     const hwBadge = s.hardwareAccelerated ? " <span title=\"Hardware accelerated\">⚡</span>" : "";
-    const showSuffix = s.showName ? " <span class=\"stream-popover-show\">" + ctx.externals.escapeHtml(s.showName) + "</span>" : "";
+    const showSuffix = s.showName ? " <span class=\"stream-popover-show\">" + escapeHtml(s.showName) + "</span>" : "";
 
     html += "<div class=\"stream-popover-row\">";
     html += "<span class=\"status-dot\" style=\"color: " + color + ";\">&#9679;</span>";
@@ -629,14 +642,14 @@ function renderStreamsTable(ctx: HandlerContext): void {
       nativeBadge = " <span class=\"native-badge\" title=\"Native HLS\">Native</span>";
     } else if(s.hardwareAccelerated) {
 
-      nativeBadge = " <span class=\"native-badge\" title=\"Hardware accelerated\">" + hwIcon + (s.captureCodec ?? "") + "</span>";
+      nativeBadge = " <span class=\"native-badge\" title=\"Hardware accelerated\">" + hwIcon + escapeHtml(s.captureCodec ?? "") + "</span>";
     }
 
     const durationSpan = "<span class=\"stream-duration\" id=\"duration-" + id + "\">· " + formatDuration(s.duration) + "</span>";
 
     html += "<td class=\"stream-info\">" + channelDisplay + nativeBadge + " " + durationSpan + "</td>";
 
-    const showDisplay = ctx.externals.escapeHtml(s.showName ?? "");
+    const showDisplay = escapeHtml(s.showName ?? "");
 
     html += "<td class=\"stream-show\">" + showDisplay + "</td>";
     html += "<td class=\"stream-health\">" + renderHealthCellContent(s) + "</td>";
@@ -648,7 +661,7 @@ function renderStreamsTable(ctx: HandlerContext): void {
       html += "<td colspan=\"4\">";
       html += "<div class=\"details-content\">";
       html += "<div class=\"details-header\">";
-      html += "<div class=\"details-url\">" + ctx.externals.escapeHtml(s.url) + "</div>";
+      html += "<div class=\"details-url\">" + escapeHtml(s.url) + "</div>";
       html += "<div class=\"details-started\">" + renderDetailStarted(s) + "</div>";
       html += "</div>";
       html += "<div class=\"details-metrics\">";
