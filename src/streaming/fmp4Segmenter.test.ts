@@ -1,13 +1,14 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * fmp4Segmenter.test.ts: Unit tests for the formatter helpers in the fMP4 segmenter module. fmp4Segmenter.ts has three exports - createFMP4Segmenter,
- * formatKeyframeStatsSummary, and formatSessionStatsSummary. The two formatters are pure string-builders that earn full coverage here. createFMP4Segmenter pipes a
- * Readable input through createMP4BoxParser, accumulates fragments, stores them via hlsSegments.storeSegment, and emits playlists via hlsSegments.updatePlaylist;
- * its happy path requires real fMP4 fixtures from a Chrome MediaRecorder capture and is deferred to e2e.
+ * fmp4Segmenter.test.ts: Unit tests for the pure helpers in the fMP4 segmenter module. The two formatters (formatKeyframeStatsSummary, formatSessionStatsSummary) are
+ * pure string-builders that earn full coverage here. The two discontinuity-sequence helpers (pruneDiscontinuityIndices, computeDiscontinuitySequence) are the SSOT for
+ * keeping discontinuityIndices bounded over a long stream while preserving a correct, monotonic #EXT-X-DISCONTINUITY-SEQUENCE across the prune boundary - the tests pin
+ * both invariants. createFMP4Segmenter pipes a Readable input through createMP4BoxParser, accumulates fragments, stores them via hlsSegments.storeSegment, and emits
+ * playlists via hlsSegments.updatePlaylist; its happy path requires real fMP4 fixtures from a Chrome MediaRecorder capture and is deferred to e2e.
  */
 import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.ts";
+import { computeDiscontinuitySequence, formatKeyframeStatsSummary, formatSessionStatsSummary, pruneDiscontinuityIndices } from "./fmp4Segmenter.ts";
 import { describe, test } from "node:test";
-import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 
@@ -248,5 +249,150 @@ describe("formatSessionStatsSummary", () => {
     });
 
     assert.match(formatSessionStatsSummary(stats, 1), /mean 11\.2ms/);
+  });
+});
+
+describe("pruneDiscontinuityIndices", () => {
+
+  test("removes indices strictly below the threshold and returns the count removed", () => {
+
+    // Indices 0, 5, 10 are below the threshold of 12; 12 and 20 are kept (12 is not strictly below).
+    const indices = new Set<number>([ 0, 5, 10, 12, 20 ]);
+
+    const removed = pruneDiscontinuityIndices(indices, 12);
+
+    assert.equal(removed, 3);
+    assert.deepEqual([...indices].sort((a, b) => a - b), [ 12, 20 ]);
+  });
+
+  test("is a no-op returning zero when no index falls below the threshold", () => {
+
+    const indices = new Set<number>([ 30, 31, 99 ]);
+
+    assert.equal(pruneDiscontinuityIndices(indices, 30), 0);
+    assert.equal(indices.size, 3);
+  });
+
+  test("empties the set and returns the full count when every index is below the threshold", () => {
+
+    const indices = new Set<number>([ 1, 2, 3 ]);
+
+    assert.equal(pruneDiscontinuityIndices(indices, 100), 3);
+    assert.equal(indices.size, 0);
+  });
+});
+
+describe("computeDiscontinuitySequence", () => {
+
+  test("returns undefined when the stream has no discontinuity history", () => {
+
+    // No tracked and no pruned discontinuities means the tag must be omitted entirely - the undefined contract signals that to the playlist builder.
+    assert.equal(computeDiscontinuitySequence({ discontinuityIndices: new Set(), prunedDiscontinuityCount: 0, startIndex: 50 }), undefined);
+  });
+
+  test("returns 0 when discontinuities exist but none have scrolled below the window start", () => {
+
+    // Discontinuities exist in the window, so the tag is emitted, but its value is 0 because none precede the window start. This is distinct from undefined.
+    assert.equal(computeDiscontinuitySequence({ discontinuityIndices: new Set([ 12, 18 ]), prunedDiscontinuityCount: 0, startIndex: 10 }), 0);
+  });
+
+  test("counts only tracked indices strictly below the window start", () => {
+
+    // Indices 3 and 8 precede startIndex 10; 10 and 14 do not (10 is not strictly below).
+    assert.equal(computeDiscontinuitySequence({ discontinuityIndices: new Set([ 3, 8, 10, 14 ]), prunedDiscontinuityCount: 0, startIndex: 10 }), 2);
+  });
+
+  test("adds the pruned count to the tracked-below-start count", () => {
+
+    // Five discontinuities already scrolled off and were pruned; two more are tracked below the window start - the sequence is the sum, 7.
+    assert.equal(computeDiscontinuitySequence({ discontinuityIndices: new Set([ 30, 33, 90 ]), prunedDiscontinuityCount: 5, startIndex: 40 }), 7);
+  });
+
+  test("emits a value (not undefined) when only pruned discontinuities remain in the history", () => {
+
+    // The set is empty but discontinuities have been pruned, so the history is non-empty and the tag must still be emitted with the pruned count.
+    assert.equal(computeDiscontinuitySequence({ discontinuityIndices: new Set(), prunedDiscontinuityCount: 4, startIndex: 200 }), 4);
+  });
+});
+
+describe("discontinuity-sequence bounded growth and prune-boundary correctness", () => {
+
+  // This integrated test replays the outputSegment() prune loop and the generatePlaylist() sequence computation over a long synthetic stream, asserting two invariants
+  // simultaneously: (1) discontinuityIndices stays bounded by the sliding window size, and (2) the emitted DISCONTINUITY-SEQUENCE matches an unbounded oracle at every
+  // step - including across the prune boundary where indices begin scrolling out of the set. The oracle reproduces the original unbounded behavior (a full set counted
+  // with idx < startIndex), so any divergence after pruning would surface immediately.
+  test("stays bounded while reproducing the unbounded discontinuity-sequence oracle at every step", () => {
+
+    const maxSegments = 6;
+    const totalSegments = 500;
+
+    // A discontinuity is recorded on every fourth segment, dense enough to keep entries flowing through the window and across the prune boundary repeatedly.
+    const discontinuityEvery = 4;
+
+    // Bounded production state mirrors SegmenterState: a pruned set plus a running pruned counter.
+    const boundedIndices = new Set<number>();
+
+    let prunedDiscontinuityCount = 0;
+
+    // Oracle state mirrors the original unbounded implementation: a set that is never pruned.
+    const oracleIndices = new Set<number>();
+
+    // The maximum size discontinuityIndices ever reaches under bounded pruning. A correct prune keeps this at or below the window span.
+    let maxBoundedSize = 0;
+
+    for(let segmentIndex = 0; segmentIndex < totalSegments; segmentIndex++) {
+
+      // Record a discontinuity at this index in both the bounded set and the unbounded oracle.
+      if((segmentIndex % discontinuityEvery) === 0) {
+
+        boundedIndices.add(segmentIndex);
+        oracleIndices.add(segmentIndex);
+      }
+
+      // Advance to the next index exactly as outputSegment() does after storing a segment, then prune to the window floor.
+      const nextSegmentIndex = segmentIndex + 1;
+      const pruneThreshold = Math.max(0, nextSegmentIndex - maxSegments);
+
+      prunedDiscontinuityCount += pruneDiscontinuityIndices(boundedIndices, pruneThreshold);
+
+      if(boundedIndices.size > maxBoundedSize) {
+
+        maxBoundedSize = boundedIndices.size;
+      }
+
+      // Compute the window start the same way generatePlaylist() does for a mature stream (realSegmentCount >= maxSegments), which equals the prune threshold. This is
+      // the boundary case the fix must get right: startIndex never dips below the prune threshold, so pruned indices are always strictly below startIndex.
+      const startIndex = Math.max(0, nextSegmentIndex - maxSegments);
+
+      const bounded = computeDiscontinuitySequence({ discontinuityIndices: boundedIndices, prunedDiscontinuityCount, startIndex });
+
+      // The oracle: the original unbounded computation - undefined when no discontinuity history exists, otherwise the count of all indices below startIndex.
+      let oracle: number | undefined;
+
+      if(oracleIndices.size > 0) {
+
+        let count = 0;
+
+        for(const idx of oracleIndices) {
+
+          if(idx < startIndex) {
+
+            count++;
+          }
+        }
+
+        oracle = count;
+      }
+
+      assert.equal(bounded, oracle, "bounded sequence must equal the unbounded oracle at segment " + String(segmentIndex));
+    }
+
+    // Bounded growth: a correct prune never lets the set exceed the number of indices that can coexist within one window span. With a discontinuity every fourth
+    // segment and a six-segment window, at most two indices are ever resident, far below the 125 a never-pruned set would accumulate.
+    assert.ok(maxBoundedSize <= maxSegments, "discontinuityIndices must stay bounded by the window span, saw " + String(maxBoundedSize));
+    assert.equal(oracleIndices.size, Math.ceil(totalSegments / discontinuityEvery), "oracle accumulated every discontinuity, confirming the unbounded baseline");
+
+    // The pruned counter must have absorbed every discontinuity that scrolled out, leaving only the still-resident ones in the bounded set.
+    assert.equal(prunedDiscontinuityCount + boundedIndices.size, oracleIndices.size, "pruned count plus resident indices must equal the total discontinuity history");
   });
 });

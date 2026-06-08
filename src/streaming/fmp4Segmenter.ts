@@ -235,6 +235,12 @@ interface SegmenterState {
   // Whether the next segment should have a discontinuity marker (consumed when first segment is output).
   pendingDiscontinuity: boolean;
 
+  // Running count of discontinuities whose segment index has scrolled below the sliding-window floor and been pruned from discontinuityIndices. The HLS
+  // #EXT-X-DISCONTINUITY-SEQUENCE header is the number of #EXT-X-DISCONTINUITY tags that have been removed from the front of the playlist, so as soon as we prune a
+  // discontinuity index to keep the set bounded we must carry its contribution here. generatePlaylist() adds this to the count of still-tracked discontinuities below
+  // the window start, keeping the emitted sequence correct and monotonic across the prune boundary. Monotonic by construction - it only ever increases.
+  prunedDiscontinuityCount: number;
+
   // The base URL for absolute preroll segment URIs in the composite playlist. Null when no preroll is active for this segmenter. Set at construction and never
   // modified - the preroll content is generated once at startup and shared across all streams.
   readonly prerollBaseUrl: Nullable<string>;
@@ -409,6 +415,69 @@ export function formatSessionStatsSummary(stats: SessionStats, segmentCount: num
   return parts.join("");
 }
 
+// Discontinuity Sequence.
+
+/**
+ * Prunes discontinuity indices that have scrolled below the sliding-window floor, returning how many were removed. Keeping the set bounded over a long stream is the
+ * whole point of pruning, but the removed indices still contributed to the HLS #EXT-X-DISCONTINUITY-SEQUENCE (the count of discontinuity tags removed from the front
+ * of the playlist), so the caller folds the returned count into a running prunedDiscontinuityCount that computeDiscontinuitySequence() adds back. Every index below the
+ * threshold has, by construction, also scrolled below every possible playlist window start (the prune threshold is segmentIndex - maxSegments, which is never greater
+ * than any window start the generator computes), so removing it can never drop a discontinuity that is still visible.
+ *
+ * @param indices - The set of segment indices carrying a discontinuity marker. Mutated in place to remove entries below the threshold.
+ * @param threshold - The sliding-window floor index. Indices strictly below this have scrolled out of every possible playlist window.
+ * @returns The number of indices removed from the set.
+ */
+export function pruneDiscontinuityIndices(indices: Set<number>, threshold: number): number {
+
+  let prunedCount = 0;
+
+  for(const idx of indices) {
+
+    if(idx < threshold) {
+
+      indices.delete(idx);
+      prunedCount++;
+    }
+  }
+
+  return prunedCount;
+}
+
+/**
+ * Computes the #EXT-X-DISCONTINUITY-SEQUENCE value for a playlist window, or undefined when no discontinuities exist in the stream's history (in which case the builder
+ * omits the tag entirely). The value is the total number of discontinuities that have scrolled off the front of the playlist: those still tracked in the set at indices
+ * below the window start, plus those already pruned from the set (prunedDiscontinuityCount). Because pruned indices are always below the window start, this sum exactly
+ * reproduces the never-pruned count of "discontinuities below startIndex" while staying bounded, and it is monotonic since prunedDiscontinuityCount only ever grows.
+ *
+ * @param options - The discontinuity index set, the running pruned count, and the window start index.
+ * @returns The discontinuity-sequence value, or undefined when the stream has no discontinuity history.
+ */
+export function computeDiscontinuitySequence(options: { discontinuityIndices: Set<number>; prunedDiscontinuityCount: number; startIndex: number }): number | undefined {
+
+  const { discontinuityIndices, prunedDiscontinuityCount, startIndex } = options;
+
+  // When neither a tracked nor a pruned discontinuity exists, the stream has never had one - signal "omit the tag" with undefined.
+  if((discontinuityIndices.size === 0) && (prunedDiscontinuityCount === 0)) {
+
+    return undefined;
+  }
+
+  // Count discontinuities still tracked in the set that have scrolled below the window start, then add those already pruned (all of which were below the start when
+  // they were removed). The result equals what an unbounded set would have counted as "indices below startIndex".
+  let discSeq = prunedDiscontinuityCount;
+
+  for(const idx of discontinuityIndices) {
+
+    if(idx < startIndex) {
+
+      discSeq++;
+    }
+  }
+
+  return discSeq;
+}
+
 // Segmenter Implementation.
 
 /**
@@ -445,6 +514,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     prerollBaseUrl: prerollBaseUrl ?? null,
     prerollCodec: prerollCodec ?? "h264",
     prerollSegmentCount: prerollSegmentCount ?? 0,
+    prunedDiscontinuityCount: 0,
     segmentDurations: new Map(),
     segmentFirstMoofChecked: false,
     segmentIndex: startingSegmentIndex ?? 0,
@@ -551,24 +621,16 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       realEntries.push(entry);
     }
 
-    // Compute DISCONTINUITY-SEQUENCE: the count of discontinuities that have scrolled off the beginning of the playlist window. Only provided when discontinuities
-    // exist in the stream's history - when undefined, the builder omits the tag entirely.
-    let discontinuitySequence: number | undefined;
+    // Compute DISCONTINUITY-SEQUENCE: the count of discontinuities that have scrolled off the beginning of the playlist window. This counts both discontinuities still
+    // tracked in discontinuityIndices below the window start and those already pruned from the set as their segments aged out, so the emitted value stays correct and
+    // monotonic even though the set is bounded. Returns undefined when the stream has no discontinuity history, in which case the builder omits the tag entirely.
+    const discontinuitySequence = computeDiscontinuitySequence({
 
-    if(state.discontinuityIndices.size > 0) {
 
-      let discSeq = 0;
-
-      for(const idx of state.discontinuityIndices) {
-
-        if(idx < startIndex) {
-
-          discSeq++;
-        }
-      }
-
-      discontinuitySequence = discSeq;
-    }
+      discontinuityIndices: state.discontinuityIndices,
+      prunedDiscontinuityCount: state.prunedDiscontinuityCount,
+      startIndex
+    });
 
     // Determine the initial MAP URI. When the window starts with preroll entries, use the preroll init segment. Otherwise, use the real init segment. The
     // prerollBaseUrl is guaranteed non-null when prerollEntries is non-empty (guarded by the conditional above).
@@ -717,6 +779,11 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         state.segmentTimestamps.delete(idx);
       }
     }
+
+    // Prune discontinuity indices that have scrolled below the same window floor, folding each removed entry into prunedDiscontinuityCount so the
+    // #EXT-X-DISCONTINUITY-SEQUENCE generatePlaylist() emits still accounts for every discontinuity that has left the front of the playlist. Without this carry, a long
+    // stream would both leak the set unbounded and, once pruned, under-report the sequence and violate HLS monotonicity.
+    state.prunedDiscontinuityCount += pruneDiscontinuityIndices(state.discontinuityIndices, pruneThreshold);
 
     // Clear the fragment buffer and reset segment-level tracking for the next segment.
     resetSegmentTracking();
