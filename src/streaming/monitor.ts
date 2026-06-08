@@ -52,8 +52,9 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
  * 5. Circuit breaker: If too many failures occur within a time window (default: 10 failures in 5 minutes), the stream is considered fundamentally broken and the
  *    circuit breaker trips, terminating the stream. This prevents endless recovery attempts that consume resources.
  *
- * 6. Escalation reset: After SUSTAINED_PLAYBACK_REQUIRED (60 seconds) of healthy playback, the escalation level resets to 0, the source reload tracking clears,
- *    and the circuit breaker resets. This allows a stream that recovered to start fresh, rather than immediately escalating to aggressive recovery on the next issue.
+ * 6. Escalation reset: After SUSTAINED_PLAYBACK_REQUIRED (60 seconds) of healthy playback, the escalation level resets to 0, the source reload tracking clears, every
+ *    failure counter (including the consecutive navigation-failure tally) clears, and the circuit breaker resets. This allows a stream that recovered to start fresh,
+ *    rather than immediately escalating to aggressive recovery on the next issue.
  *
  * 7. Window re-minimize: Recovery actions (especially fullscreen) can cause the browser window to un-minimize. After the recovery grace period passes and the first
  *    healthy check occurs, the window is re-minimized to reduce GPU usage. This happens sooner than the escalation reset (~5-10 seconds vs 60 seconds) because we
@@ -386,10 +387,8 @@ export function monitorPlaybackHealth(
       nativeHealthState.issueType = "proxy error";
       nativeHealthState.issueTime = now;
 
-      void runWithStreamContext(streamContext, async () => {
-
-        await executeNativeL3Fallback(entry);
-      });
+      // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
+      void executeNativeL3Fallback(entry);
 
       return;
     }
@@ -453,10 +452,8 @@ export function monitorPlaybackHealth(
 
         nativeHealthState.recoveryAttempts++;
 
-        void runWithStreamContext(streamContext, async () => {
-
-          await executeNativeL2Recovery(entry);
-        });
+        // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
+        void executeNativeL2Recovery(entry);
 
         return;
       }
@@ -466,10 +463,8 @@ export function monitorPlaybackHealth(
 
         LOG.warn("Falling back to capture mode for %s: native streaming stalled after recovery attempt.", storeKey);
 
-        void runWithStreamContext(streamContext, async () => {
-
-          await executeNativeL3Fallback(entry);
-        });
+        // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
+        void executeNativeL3Fallback(entry);
 
         return;
       }
@@ -1811,7 +1806,13 @@ export function monitorPlaybackHealth(
 
     if(nativeEntry?.streamingMode === "native") {
 
-      checkNativeStreamHealth(nativeEntry);
+      // Re-establish stream context for this interval tick before running the native health check. AsyncLocalStorage context is lost when entering setInterval
+      // callbacks, so without this wrapper the native path's non-debug warnings would emit without the stream-ID prefix. This mirrors the capture-mode branch below.
+      // eslint-disable-next-line @typescript-eslint/require-await -- runWithStreamContext requires a promise-returning callback; checkNativeStreamHealth is synchronous.
+      void runWithStreamContext(streamContext, async () => {
+
+        checkNativeStreamHealth(nativeEntry);
+      });
 
       return;
     }
@@ -2062,8 +2063,11 @@ export function monitorPlaybackHealth(
             // even during healthy playback. Since we have confirmed 60 seconds of progression, the stream is definitively not buffering.
             bufferingStartTime = null;
 
-            // Reset escalation, segment tracking, and circuit breaker. Sustained healthy playback confirms the stream works.
+            // Reset escalation, failure counters, segment tracking, and circuit breaker. Sustained healthy playback confirms the stream works, so we clear every
+            // failure tally for a true fresh start. Without resetting the counters here, a stale consecutiveNavigationFailures count could carry across the healthy
+            // window and prematurely escalate a future L3 episode, defeating the purpose of the 60-second reset.
             resetEscalationState();
+            resetRecoveryCounters();
             resetSegmentMonitoringState();
             resetCircuitBreaker(circuitBreaker);
           }
