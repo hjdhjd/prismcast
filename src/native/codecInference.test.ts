@@ -368,6 +368,89 @@ describe("inferMediaCodec (async orchestrator)", () => {
     assert.equal(result.codec, "H264");
   });
 
+  test("caps the read at 32 KB when the CDN ignores Range and streams the full segment (HTTP 200)", async () => {
+
+    /* Finding [19]: when a CDN ignores the Range header it responds 200 OK and streams the entire segment, which can be several megabytes. The orchestrator must
+     * read only the documented 32 KB prefix regardless, draining just enough of the body to parse the PAT/PMT and then cancelling the rest. We prove the cap holds
+     * by serving a ReadableStream whose first chunk carries the valid TS fixture and whose tail is a multi-megabyte flood emitted in small chunks. The stream counts
+     * how many bytes the consumer pulled and whether it was cancelled. A consumer that buffered the whole body (the old arrayBuffer() path) would pull every byte;
+     * the capped consumer must stop within one chunk of the 32 KB bound and cancel.
+     */
+    const ts = buildTsFixture([{ pid: 0x101, streamType: 0x1B }]);
+    const segUrl = "https://cdn.test/path/seg.ts";
+    const cap = 32 * 1024;
+    const chunkSize = 4 * 1024;
+    const tailBytes = 4 * 1024 * 1024;
+
+    let pulledBytes = 0;
+    let cancelled = false;
+
+    mock.method(globalThis, "fetch", async (url: string | URL): Promise<Response> => {
+
+      if(url.toString() !== segUrl) {
+
+        return new Response("not found", { status: 404 });
+      }
+
+      let emitted = 0;
+
+      const body = new ReadableStream<Uint8Array>({
+
+        cancel(): void {
+
+          cancelled = true;
+        },
+
+        pull(controller): void {
+
+          // First pull delivers the TS fixture so the parser can read the PAT/PMT from the prefix.
+          if(emitted === 0) {
+
+            const head = new Uint8Array(ts);
+
+            pulledBytes += head.length;
+            emitted += head.length;
+            controller.enqueue(head);
+
+            return;
+          }
+
+          // Subsequent pulls deliver the multi-megabyte tail in small chunks. A capped consumer stops requesting these well before the tail is exhausted.
+          if(emitted >= (ts.length + tailBytes)) {
+
+            controller.close();
+
+            return;
+          }
+
+          const chunk = new Uint8Array(chunkSize);
+
+          pulledBytes += chunk.length;
+          emitted += chunk.length;
+          controller.enqueue(chunk);
+        }
+      });
+
+      // Status 200 (not 206) signals the CDN ignored the Range header and is streaming the whole segment.
+      return new Response(body, { status: 200 });
+    });
+
+    const result = await inferMediaCodec({
+
+      baseUrl: "https://cdn.test/path/playlist.m3u8",
+      playlistBody: "#EXTM3U\n#EXTINF:2,\nseg.ts\n"
+    });
+
+    // The codec is still inferred from the prefix that did arrive.
+    assert.equal(result.codec, "H264");
+
+    // The consumer must not have drained the whole body - it stops near the cap and cancels the rest, nowhere near the multi-megabyte tail. We allow up to cap +
+    // two chunks of slack: one for the chunk that straddles the cap boundary (accepted in part), and one for the stream's default highWaterMark=1 pull-ahead, which
+    // refills the queue with one more chunk after the satisfying read before the cancel lands.
+    assert.ok(pulledBytes <= (cap + (2 * chunkSize)), "consumer pulled at most the 32 KB prefix plus a straddling chunk and one pull-ahead, not the multi-megabyte tail");
+    assert.equal(cancelled, true, "consumer cancelled the stream once it had the prefix");
+  });
+
   test("returns codec=null when the segment fetch returns a non-2xx response", async () => {
 
     // Negative path: the CDN may reject the segment fetch (token expired between probe and inference). Codec inference must fail gracefully because the

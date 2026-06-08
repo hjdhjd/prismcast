@@ -62,6 +62,17 @@ const MIN_HEADER_SIZE = 8;
 // Extended header size: 4 bytes size (==1) + 4 bytes type + 8 bytes extended size.
 const EXTENDED_HEADER_SIZE = 16;
 
+/* Sane ceiling on a single declared box size, and by extension on the pending (un-emitted) buffer. fMP4 fragments captured from Chrome's MediaRecorder are
+ * kilobytes to low-megabytes (a moof + mdat for a couple of seconds of 1080p video), so a box claiming to be larger than this is corrupt framing rather than
+ * legitimate media. This ceiling is the single mechanism that bounds memory: processBuffer() only parks bytes while it waits for the rest of an in-progress box,
+ * and it refuses to wait for any box whose declared size exceeds the ceiling - so the resident buffer can never exceed this ceiling plus one inbound chunk.
+ * Resyncing (the malformed-size paths below) only ever shrinks the buffer, so there is no second accumulation path to guard against. Without this ceiling a single
+ * malformed size field (e.g., a bit-flip that turns a 0x0000XXXX size into 0x40000000) would make the parser buffer incoming chunks toward a box that never
+ * completes, leaking memory for the lifetime of the stream. When a declared size exceeds the ceiling we treat the framing as lost and resync one byte at a time,
+ * exactly as we do for the other malformed-size cases below.
+ */
+const MAX_BOX_SIZE = 64 * 1024 * 1024;
+
 // Streaming Parser.
 
 /**
@@ -135,6 +146,15 @@ export function createMP4BoxParser(onBox: MP4BoxCallback): MP4BoxParser {
         continue;
       }
 
+      // Sanity check: a box larger than MAX_BOX_SIZE is corrupt framing, not legitimate media. Without this guard the parser would buffer incoming chunks toward
+      // the declared size indefinitely, waiting for a box that never completes. Treat the framing as lost and resync one byte at a time.
+      if(boxSize > MAX_BOX_SIZE) {
+
+        buffer = buffer.subarray(1);
+
+        continue;
+      }
+
       // Check if we have the complete box.
       if(buffer.length < boxSize) {
 
@@ -172,7 +192,8 @@ export function createMP4BoxParser(onBox: MP4BoxCallback): MP4BoxParser {
       // Append the new chunk to our buffer.
       buffer = Buffer.concat([ buffer, chunk ]);
 
-      // Try to parse complete boxes.
+      // Try to parse complete boxes. The pending buffer is bounded by MAX_BOX_SIZE: processBuffer() never parks bytes toward a box larger than that ceiling, so the
+      // resident buffer stays within MAX_BOX_SIZE plus this single chunk regardless of how long a source streams without completing a box.
       processBuffer();
     }
   };

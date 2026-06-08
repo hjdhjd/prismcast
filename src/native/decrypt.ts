@@ -85,9 +85,13 @@ export function deriveIvFromSequence(mediaSequence: number): Buffer {
 
   const iv = Buffer.alloc(16);
 
-  // Write the sequence number as a big-endian 32-bit integer in the last 4 bytes. This matches the HLS spec: the sequence number occupies the least significant
-  // bytes of the 128-bit IV.
-  iv.writeUInt32BE(mediaSequence, 12);
+  // Write the sequence number as a big-endian 64-bit integer across the low 8 bytes. The spec places the sequence in the least significant bytes of the 128-bit IV;
+  // a 32-bit write would throw a RangeError once a long-running stream's media sequence crosses 2^32, so we split the value into two 32-bit words via BigInt and
+  // write both. For any sequence below 2^32 the high word is zero, so bytes 8-11 stay zero and bytes 12-15 carry the value exactly as a 32-bit write would.
+  const sequence = BigInt(mediaSequence);
+
+  iv.writeUInt32BE(Number((sequence >> 32n) & 0xFFFFFFFFn), 8);
+  iv.writeUInt32BE(Number(sequence & 0xFFFFFFFFn), 12);
 
   return iv;
 }

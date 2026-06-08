@@ -267,6 +267,58 @@ describe("deriveIvFromSequence", () => {
     assert.notDeepEqual(a, b, "consecutive sequences must yield distinct IVs");
   });
 
+  test("does not throw and produces a correct 16-byte IV at exactly 2^32 (the 32-bit boundary)", () => {
+
+    /* Finding [20]: a long-running stream's media sequence can cross 2^32. A 32-bit-only write throws a RangeError at this boundary; the 64-bit-safe derivation
+     * must place the value across the low 8 bytes instead. At exactly 2^32 the high 32-bit word is 1 and the low word is 0, so bytes 8-11 read 00 00 00 01 and
+     * bytes 12-15 are all zero.
+     */
+    const iv = deriveIvFromSequence(2 ** 32);
+
+    assert.equal(iv.length, 16, "produces a 16-byte buffer at the 2^32 boundary");
+
+    // Bytes 0-7 remain zero (the value fits in the low 64 bits, well within the low 8 bytes).
+    for(let i = 0; i < 8; i++) {
+
+      assert.equal(iv[i], 0, "high byte " + String(i) + " is zero");
+    }
+
+    // Bytes 8-11 carry the high 32-bit word (0x00000001).
+    assert.equal(iv[8], 0x00, "byte 8 = 0x00");
+    assert.equal(iv[9], 0x00, "byte 9 = 0x00");
+    assert.equal(iv[10], 0x00, "byte 10 = 0x00");
+    assert.equal(iv[11], 0x01, "byte 11 = 0x01 (high word of 2^32)");
+
+    // Bytes 12-15 (the low 32-bit word) are zero.
+    assert.equal(iv[12], 0x00, "byte 12 = 0x00");
+    assert.equal(iv[13], 0x00, "byte 13 = 0x00");
+    assert.equal(iv[14], 0x00, "byte 14 = 0x00");
+    assert.equal(iv[15], 0x00, "byte 15 = 0x00");
+  });
+
+  test("places a sequence above 2^32 across both 32-bit words in big-endian order", () => {
+
+    // Boundary: a value with both the high and low words populated must split correctly. We use 0x0000000100000002 (2^32 + 2): high word 0x00000001 lands in bytes
+    // 8-11, low word 0x00000002 lands in bytes 12-15. This is a value beyond the reach of a single writeUInt32BE.
+    const iv = deriveIvFromSequence((2 ** 32) + 2);
+
+    assert.equal(iv.length, 16, "16-byte buffer for a sequence above 2^32");
+    assert.equal(iv[11], 0x01, "byte 11 = high word low byte = 0x01");
+    assert.equal(iv[15], 0x02, "byte 15 = low word low byte = 0x02");
+  });
+
+  test("does not throw at a large sequence near the safe-integer ceiling", () => {
+
+    // Boundary: the derivation must remain total across the entire range of representable media sequence numbers, not just the 2^32 neighborhood. A value with bits
+    // set high in the 53-bit safe-integer range must still yield a 16-byte IV without throwing.
+    const iv = deriveIvFromSequence(2 ** 48);
+
+    assert.equal(iv.length, 16, "16-byte buffer near the safe-integer ceiling");
+
+    // 2^48 sets bit 48: the high 32-bit word is 0x00010000, so byte 9 carries the 0x01.
+    assert.equal(iv[9], 0x01, "byte 9 = 0x01 (bit 48 lands in the high word)");
+  });
+
   test("returns a fresh Buffer on each call (no shared reference)", () => {
 
     // Boundary: callers must not see aliasing if the function memoizes by accident. We mutate one buffer and assert the other is unaffected.

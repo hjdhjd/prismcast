@@ -201,6 +201,70 @@ describe("createMP4BoxParser", () => {
     // No boxes should be emitted (the parser advances by 1 byte trying to resync).
     assert.equal(seen.length, 0, "corrupt small-size box rejected");
   });
+
+  test("does not park toward an impossibly large declared box size; resyncs to the next valid box", () => {
+
+    /* Finding [17]: a corrupt header that declares a box larger than the sane ceiling (64 MB) must not make the parser buffer incoming chunks indefinitely waiting
+     * for a payload that never arrives. The parser must treat the framing as lost and resync one byte at a time. We prove this is observable: a valid ftyp box that
+     * follows the corrupt header emits immediately - it could only do so if the parser refused to wait for the impossible box and resynced past it. The corrupt
+     * header's four type bytes are zero so the resync walks cleanly (each zero is a size-0 marker the parser skips one byte at a time) straight onto the ftyp.
+     */
+    const seen: string[] = [];
+    const parser = createMP4BoxParser((box) => seen.push(box.type));
+
+    // 8-byte header declaring a 256 MB box (0x10000000), well past the 64 MB ceiling, with zero type bytes, followed by a real ftyp box.
+    const corrupt = Buffer.alloc(8);
+
+    corrupt.writeUInt32BE(0x10000000, 0);
+
+    parser.push(Buffer.concat([ corrupt, makeBox("ftyp") ]));
+
+    assert.ok(seen.includes("ftyp"), "parser resynced past the impossibly large box and emitted the following ftyp");
+  });
+
+  test("emits a legitimately large box whose declared size sits at the ceiling", () => {
+
+    // Boundary symmetric with the rejection test above: a box declaring exactly the ceiling size is valid framing and must still be emitted once its bytes arrive.
+    // This guards against an off-by-one that would wrongly reject the largest permitted box. We use a small payload but a header that declares the ceiling, then
+    // supply exactly that many bytes so the box completes.
+    const seen: string[] = [];
+    const parser = createMP4BoxParser((box) => seen.push(box.type));
+    const ceiling = 64 * 1024 * 1024;
+    const box = Buffer.alloc(ceiling);
+
+    box.writeUInt32BE(ceiling, 0);
+    box.write("mdat", 4, 4, "ascii");
+
+    parser.push(box);
+
+    assert.deepEqual(seen, ["mdat"], "a box declared at exactly the ceiling is accepted and emitted");
+  });
+
+  test("does not park indefinitely toward a never-completing oversized box; later valid boxes still flow", () => {
+
+    /* Finding [17]: the pending buffer must stay bounded even when a misbehaving source streams chunk after chunk that belongs to a box that never completes. The
+     * unbounded case is precisely an oversized declared size: the box ceiling rejects it so the parser never parks the incoming flood. We prove the parser keeps
+     * working under this flood by interleaving valid boxes between oversized headers and asserting every valid box still emits - the parser cannot be stuck waiting
+     * on the impossible box, because the ceiling forced a resync each time.
+     */
+    const seen: string[] = [];
+    const parser = createMP4BoxParser((box) => seen.push(box.type));
+
+    // An 8-byte header declaring a 1 GB box (0x40000000), far past the 64 MB ceiling, with zero type bytes so the resync walks cleanly to the box that follows. On
+    // its own this is exactly the framing that would otherwise grow the buffer without bound as more chunks arrive.
+    const oversized = Buffer.alloc(8);
+
+    oversized.writeUInt32BE(0x40000000, 0);
+
+    // Push three rounds of [oversized header, valid box]. The oversized header forces a resync past its bytes; the very next valid box must emit, proving the
+    // oversized declaration never trapped the parser into an unbounded wait for a payload that would never arrive.
+    for(let i = 0; i < 3; i++) {
+
+      parser.push(Buffer.concat([ oversized, makeBox("moof") ]));
+    }
+
+    assert.equal(seen.filter((type) => type === "moof").length, 3, "every valid box emitted despite repeated oversized-box framing");
+  });
 });
 
 describe("iterateChildBoxes", () => {

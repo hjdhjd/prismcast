@@ -382,9 +382,64 @@ export function inferCodecFromTsBuffer(buffer: Buffer): Nullable<string> {
 }
 
 /**
+ * Drains a fetch Response body and returns at most limit bytes. The reader is cancelled as soon as the limit is reached, so a CDN that ignored the Range header
+ * and is streaming a multi-megabyte segment is stopped after the prefix rather than fully buffered. When the body is not a readable stream (some runtimes and test
+ * doubles expose only arrayBuffer()), we fall back to reading the whole body and truncating, which still honors the byte cap on the returned Buffer.
+ *
+ * @param response - The fetch Response whose body holds the segment bytes.
+ * @param limit - The maximum number of bytes to retain.
+ * @returns A Buffer of at most limit bytes.
+ */
+async function readStreamPrefix(response: Response, limit: number): Promise<Buffer> {
+
+  const body = response.body;
+
+  // Fall back to arrayBuffer() when there is no readable stream to iterate. We still enforce the cap by truncating the result, so the returned Buffer never exceeds
+  // the documented bound even though the full body was buffered.
+  if(!body) {
+
+    return Buffer.from(await response.arrayBuffer()).subarray(0, limit);
+  }
+
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+
+  let total = 0;
+
+  try {
+
+    while(total < limit) {
+
+      // The body is consumed sequentially from a single reader: each read resolves the next chunk in order and depends on the prior one, so it cannot be parallelized.
+      // eslint-disable-next-line no-await-in-loop -- sequential single-reader stream consumption.
+      const { done, value } = await reader.read();
+
+      if(done) {
+
+        break;
+      }
+
+      // Append only as many bytes as remain under the cap. A single chunk can overshoot the limit, so we slice it to the exact remaining budget and stop reading.
+      const remaining = limit - total;
+      const slice = value.byteLength > remaining ? Buffer.from(value.subarray(0, remaining)) : Buffer.from(value);
+
+      chunks.push(slice);
+      total += slice.length;
+    }
+  } finally {
+
+    // Cancel the stream so the underlying connection is released once we have the prefix. We await the cancellation so the source's cancel callback runs before we
+    // return - both to release the connection deterministically and to stop any further pulls. Cancellation is best-effort; ignore any rejection.
+    await reader.cancel().catch(() => undefined);
+  }
+
+  return Buffer.concat(chunks, total);
+}
+
+/**
  * Fetches the prefix of a TS segment so the caller can parse its PAT/PMT. Sends a Range header asking the CDN for the first MAX_SEGMENT_PROBE_BYTES; CDNs that
- * ignore Range fall through to returning the full segment, which still works because the parser only reads the prefix. Returns null on any HTTP or fetch error
- * so the inference can fail gracefully back to a null codec label.
+ * ignore Range and return the full segment are still bounded because readStreamPrefix() drains only the prefix and cancels the rest. Returns null on any HTTP or
+ * fetch error so the inference can fail gracefully back to a null codec label.
  *
  * @param url - The absolute segment URL.
  * @returns The fetched prefix, or null on failure.
@@ -407,7 +462,12 @@ async function fetchSegmentPrefix(url: string): Promise<Nullable<Buffer>> {
       return null;
     }
 
-    return Buffer.from(await response.arrayBuffer());
+    // Read at most MAX_SEGMENT_PROBE_BYTES regardless of what the server sent. A 206 honors the Range header and returns just the prefix, but a 200 means the CDN
+    // ignored Range and is streaming the entire segment (often several megabytes). Buffering the whole body via arrayBuffer() would contradict the documented bound
+    // and waste memory and bandwidth, so we drain the response stream chunk by chunk, stop once we have the prefix the parser needs, and cancel the rest.
+    const prefix = await readStreamPrefix(response, MAX_SEGMENT_PROBE_BYTES);
+
+    return prefix;
   } catch(error) {
 
     LOG.debug("native:codec", "Segment prefix fetch error: %s.", String(error));
