@@ -192,6 +192,42 @@ export function sendValidationError(validation: { body: Record<string, string> |
   }
 }
 
+// Capacity Reservation.
+
+/**
+ * Pure predicate for the concurrent-stream capacity decision. Returns true when a new stream may be admitted given the current active count and the configured
+ * limit. Extracted as a standalone function so the boundary arithmetic - the off-by-one that previously double-counted a stream against its own slot - is pinned
+ * by a unit test without driving a browser. The count passed in must be the count BEFORE the new stream's pending entry is registered, so the new stream is
+ * naturally excluded from its own capacity check; admitting the final slot (active === maxConcurrent - 1) returns true.
+ * @param activeCount - Number of streams currently registered, excluding the stream being admitted.
+ * @param maxConcurrent - The configured concurrent-stream limit.
+ * @returns True if a slot is available for the new stream.
+ */
+export function hasStreamCapacity(activeCount: number, maxConcurrent: number): boolean {
+
+  return activeCount < maxConcurrent;
+}
+
+/**
+ * Reserves a concurrent-stream slot at the registration site - the single source of truth for the capacity decision across both the preroll path
+ * (ensureChannelStream) and the blocking path (initializeStream). It evaluates capacity against the current registry count BEFORE the new stream's pending entry is
+ * registered, so the new stream is excluded from its own check. This eliminates the double-count that occurred when setupStream re-checked capacity after the
+ * pending entry was already registered: at the boundary (one slot free) the registration-site gate admits the stream, and no subsequent self-counting check may
+ * reject it. When the limit is reached, a single idle stream is reclaimed to free a slot; reservation succeeds when either a slot was already free or one was
+ * reclaimed.
+ * @returns True if a slot was reserved (room existed or an idle stream was reclaimed), false if the limit is reached and no idle stream could be reclaimed.
+ */
+function reserveStreamSlot(): boolean {
+
+  if(hasStreamCapacity(getStreamCount(), CONFIG.streaming.maxConcurrentStreams)) {
+
+    return true;
+  }
+
+  // At capacity. Reclaim the longest-idle stream to make room; reservation succeeds only if one was actually freed.
+  return reclaimIdleStream();
+}
+
 // Public Endpoint Handlers.
 
 /**
@@ -238,18 +274,17 @@ export async function ensureChannelStream(channelName: string, req: Request, res
 
   if(isPrerollReady(prerollCodec)) {
 
-    // Check capacity before registering the pending entry. The pending entry occupies a registry slot, so registering it at max capacity would cause setupStream's
-    // capacity check to reject - after we've already returned a preroll playlist to the client. By gating here, we can still send a proper 503 error response.
-    if(getStreamCount() >= CONFIG.streaming.maxConcurrentStreams) {
+    // Reserve a capacity slot before registering the pending entry. The pending entry occupies a registry slot the instant it is registered, so the capacity
+    // decision must happen here - while the new stream is still excluded from the count - to avoid a later self-counting check rejecting it after the client has
+    // already received a preroll playlist. reserveStreamSlot is the single source of truth for this decision and reclaims an idle stream when at the limit. On
+    // failure we send a proper 503 here, before any registration or preroll response.
+    if(!reserveStreamSlot()) {
 
-      if(!reclaimIdleStream()) {
+      res.setHeader("Retry-After", "10");
+      res.setHeader("X-HDHomeRun-Error", "All Tuners In Use");
+      res.status(503).send("Maximum concurrent streams (" + String(CONFIG.streaming.maxConcurrentStreams) + ") reached. Try again later.");
 
-        res.setHeader("Retry-After", "10");
-        res.setHeader("X-HDHomeRun-Error", "All Tuners In Use");
-        res.status(503).send("Maximum concurrent streams (" + String(CONFIG.streaming.maxConcurrentStreams) + ") reached. Try again later.");
-
-        return null;
-      }
+      return null;
     }
 
     const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
@@ -853,6 +888,19 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
 
   const { channel, channelName, url } = options;
 
+  // Reserve a capacity slot before registering the pending entry. This is the same single-source-of-truth gate used by the preroll path, applied here so the
+  // blocking callers (pretune, MPEG-TS, ad-hoc play) gate capacity at the registration site - while the new stream is still excluded from the count - rather than
+  // relying on a downstream self-counting check that would double-count this stream against its own slot and spuriously reject the final slot. On failure we throw
+  // the same StreamSetupError(503) the callers already handle, so their error responses and HDHomeRun headers are unchanged.
+  if(!reserveStreamSlot()) {
+
+    throw new StreamSetupError(
+      "Concurrent stream limit reached.",
+      503,
+      "Maximum concurrent streams (" + String(CONFIG.streaming.maxConcurrentStreams) + ") reached. Try again later."
+    );
+  }
+
   // Allocate stream IDs. For predefined channels, use the channel name for the stream ID prefix. For ad-hoc streams, omit it so generateStreamId derives a prefix
   // from the URL (e.g., "foxsports-abc123"), which is more informative in logs.
   const numericStreamId = getNextStreamId();
@@ -1144,6 +1192,12 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
   // disposal kills the FFmpeg child and destroys the capture stream.
   setup.captureSession.dispose();
 
+  // Consume the persisted capture-mode resume data for this channel. Resume data seeds an fMP4 segmenter's starting sequence and init segment for capture continuity
+  // across restarts; createCaptureSegmenter consumes it on the capture path. On this native-upgrade path that segmenter is never created, so without this delete the
+  // resume entry would linger until TTL and could be mis-applied to a later capture-mode stream for the same channel. Native streaming carries its own MPEG-TS
+  // sequencing, so the capture resume state is obsolete the moment we commit to native.
+  deleteResumeData(channelName);
+
   // Update the registry entry to reflect native mode. For streams with separate audio, clear preroll state - preroll is muxed video+audio and can't be
   // split into separate renditions. For muxed-audio streams, preserve preroll state so the proxy can build composite playlists with preroll entries.
   currentStream.captureSession = null;
@@ -1295,11 +1349,10 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
     return createTabReplacementHandler(numericStreamId, streamId, channelName, url, profile, metadataComment, onCircuitBreak);
   };
 
-  // If at capacity, try to reclaim an idle stream before starting setup. This avoids rejecting new requests when idle streams can be freed.
-  if(getStreamCount() >= CONFIG.streaming.maxConcurrentStreams) {
-
-    reclaimIdleStream();
-  }
+  // Capacity was already reserved at the registration site (reserveStreamSlot in ensureChannelStream for the preroll path, and in initializeStream for the blocking
+  // path) before this stream's pending entry was registered, so the new stream is excluded from its own capacity check. We deliberately do NOT re-check or reclaim
+  // here: the pending entry is now counted, so a count-based check would double-count this stream against its own slot and could evict a healthy peer at the
+  // legitimate boundary. The registration-site reservation is the single source of truth for the capacity decision.
 
   // Pass the pre-allocated IDs to setupStream so it uses them instead of generating new ones. This ensures the abort controller, health monitor, and tab replacement
   // handler all reference the same stream identity as the pending registry entry. Pass channelName only for predefined channels - for ad-hoc streams, omitting it

@@ -8,7 +8,6 @@ import { LOG, delay, extractDomain, formatError, raceWithTimeout, registerAbortC
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
 import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.ts";
-import { getNextStreamId, getStreamCount } from "./registry.ts";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.ts";
 import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
 import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
@@ -24,6 +23,7 @@ import { getCachedEncryption } from "../native/probe.ts";
 import { getCaptureMimeType } from "./codec.ts";
 import { getDomainConfig } from "../config/sites.ts";
 import { getEffectiveViewport } from "../config/presets.ts";
+import { getNextStreamId } from "./registry.ts";
 import { getServiceDisplayName } from "../config/services.ts";
 import { installManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
@@ -890,17 +890,11 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       );
     }
 
-    // Check concurrent stream limit.
-    if(getStreamCount() >= CONFIG.streaming.maxConcurrentStreams) {
-
-      LOG.warn("Concurrent stream limit reached (%s/%s). Rejecting request.", getStreamCount(), CONFIG.streaming.maxConcurrentStreams);
-
-      throw new StreamSetupError(
-        "Concurrent stream limit reached.",
-        503,
-        "Maximum concurrent streams (" + String(CONFIG.streaming.maxConcurrentStreams) + ") reached. Try again later."
-      );
-    }
+    // Concurrent-stream capacity is reserved upstream at the registration site (reserveStreamSlot in hls.ts) before this stream's pending entry is registered, so
+    // the new stream is excluded from its own check. We deliberately do NOT re-check here: by the time setupStream runs, getStreamCount() already includes this
+    // stream's pending entry, so a count-based check would double-count it against its own slot and reject at the legitimate boundary - after the client has
+    // already received a preroll playlist. reserveStreamSlot is the single source of truth for the capacity decision; setupStream's sole caller (completeStreamSetup)
+    // always reserves before reaching here.
 
     // Create page and start capture using the shared function. This handles browser page creation, capture initialization, FFmpeg spawning, and navigation with retry.
     let captureResult: CreatePageWithCaptureResult;
