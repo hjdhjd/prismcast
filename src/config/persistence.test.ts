@@ -10,9 +10,9 @@
  */
 import { FileStoreParseError, createFileStore } from "./persistence.ts";
 import { describe, test } from "node:test";
+import { makeMemoryStorageBackend, makeMemoryStore, makeStore } from "./persistence.helpers.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
-import { makeStore } from "./persistence.helpers.ts";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
 
@@ -336,5 +336,108 @@ describe("FileStore.mutate - core paths", () => {
 
       assert.equal(parsed.value, 7, "post-write readback contract: file content matches what we wrote");
     });
+  });
+});
+
+describe("FileStore.mutate - corrupt-main rotation guard", () => {
+
+  test("a mutate that follows a failed .bak restore does not rotate the corrupt main into .bak (good copy survives)", async () => {
+
+    /* This pins the layered protection for the catastrophic data-loss window: when the main file is corrupt and read() recovers from .bak in memory but the
+     * on-disk restore-write fails, the .bak holds the ONLY good copy. A subsequent mutate's pre-write backup step must NOT copy the still-corrupt main over
+     * .bak - doing so would destroy that last good copy.
+     *
+     * We force the restore-write to fail by overriding rename for the recovery's temp-to-main path, leaving main corrupt on disk. The recovery still surfaces
+     * recovered=true with the .bak's content, so the in-memory state the mutate operates on is good. We then assert that after the mutate: .bak still holds the
+     * original good content (it was NOT clobbered by the corrupt main) and main holds the freshly-mutated good content (the atomic write replaced it).
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/rotation-guard.json";
+    const goodBakContent = "{\"value\":99}\n";
+
+    // Seed: corrupt main, valid .bak. read() detects the corrupt main, recovers from .bak, and attempts to restore main.
+    backend.files.set(filePath, "{not valid json");
+    backend.mtimes.set(filePath, 1);
+    backend.files.set(filePath + ".bak", goodBakContent);
+    backend.mtimes.set(filePath + ".bak", 2);
+
+    // Fail the recovery restore-write. tryRecoverFromBackup restores via <filePath>.recover.tmp -> filePath; we trip exactly that rename so main stays corrupt
+    // on disk. The post-mutate atomic rename (<filePath>.tmp -> filePath) flows through the default so the user's mutation still lands.
+    const realRename = backend.rename;
+
+    backend.rename = async (source: string, destination: string): Promise<void> => {
+
+      if((source === (filePath + ".recover.tmp")) && (destination === filePath)) {
+
+        throw new Error("synthetic-restore-rename-failure");
+      }
+
+      return realRename(source, destination);
+    };
+
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
+
+      defaultValue: () => ({ value: 0 })
+    });
+
+    // The mutate reads (recovering from .bak in memory), applies the change, and writes. The corrupt main must never be rotated into .bak.
+    await store.mutate((data) => { data.value = 1234; });
+
+    // The good .bak survived: it still holds the original recovered content, NOT the corrupt main. This is the heart of the data-loss guard.
+    assert.equal(backend.files.get(filePath + ".bak"), goodBakContent, ".bak retains the only good copy - the corrupt main was never rotated into it");
+
+    // The atomic write replaced the corrupt main with the freshly-mutated good data.
+    const mainParsed = JSON.parse(backend.files.get(filePath) ?? "") as { value: number };
+
+    assert.equal(mainParsed.value, 1234, "main file holds the freshly-mutated good data after the atomic write");
+  });
+});
+
+describe("FileStore - recovery and mutate use distinct temp paths", () => {
+
+  test("a read-triggered recovery writes to a recovery-specific temp path, distinct from the mutate temp path", async () => {
+
+    /* read() does not acquire the mutate serialization lock, so a read-triggered recovery can overlap an in-flight mutate. If recovery and mutate both wrote
+     * the SAME <filePath>.tmp, the recovery's write or rename could clobber the mutate's in-flight temp before the mutate's rename. The framework gives recovery
+     * a distinct suffix (.recover.tmp) so the two write paths never collide.
+     *
+     * We pin the contract directly: drive a recovery (corrupt main, valid .bak) and a normal write (a subsequent mutate), recording every temp path the
+     * framework writes. The recovery must use <filePath>.recover.tmp and the mutate must use <filePath>.tmp - two distinct keys that can never overwrite one
+     * another.
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/distinct-temp.json";
+
+    // Seed: corrupt main, valid .bak so the first read triggers recovery (which writes its restore temp), and the subsequent mutate writes its own atomic temp.
+    backend.files.set(filePath, "{not valid json");
+    backend.mtimes.set(filePath, 1);
+    backend.files.set(filePath + ".bak", "{\"value\":7}\n");
+    backend.mtimes.set(filePath + ".bak", 2);
+
+    // Record every temp-family write target so we can assert the recovery and the mutate used distinct suffixes.
+    const tempWrites: string[] = [];
+    const realWriteFile = backend.writeFile;
+
+    backend.writeFile = async (p: string, content: string): Promise<void> => {
+
+      if(p.endsWith(".tmp")) {
+
+        tempWrites.push(p);
+      }
+
+      return realWriteFile(p, content);
+    };
+
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
+
+      defaultValue: () => ({ value: 0 })
+    });
+
+    // The mutate's internal read recovers from .bak (restore-write to .recover.tmp), then the atomic write lands the mutation via .tmp.
+    await store.mutate((data) => { data.value = 11; });
+
+    assert.ok(tempWrites.includes(filePath + ".recover.tmp"), "recovery restore-write targets the recovery-specific temp path");
+    assert.ok(tempWrites.includes(filePath + ".tmp"), "the atomic mutate-write targets the plain temp path");
+    assert.notEqual(filePath + ".recover.tmp", filePath + ".tmp", "recovery and mutate temp paths are distinct - they can never clobber each other");
   });
 });

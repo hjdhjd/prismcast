@@ -397,8 +397,14 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
   /**
    * Attempts to recover from .bak when the main file fails to parse. Reads .bak, parses it, and on success restores the main file from .bak via atomic temp+
-   * rename so the next backup-and-write cycle does not rotate the corrupt main file into .bak (which would destroy the only good copy). Returns the parsed
-   * recovered data, or null if .bak is missing or also unparseable.
+   * rename. Returns the parsed recovered data, or null if .bak is missing or also unparseable.
+   *
+   * The restore-write is best-effort - the in-memory recovered data is what callers act on, and a failed restore leaves the main file corrupt on disk without
+   * losing the good copy. The actual protection against rotating a corrupt main into .bak lives in doMutate, which skips the main->bak rotation whenever read()
+   * reports recoveredFromBackup; this function's restore is the convenience that lets a subsequent clean read see a non-corrupt main once the write succeeds.
+   *
+   * The restore uses a recovery-specific temp suffix (.recover.tmp) distinct from doMutate's .tmp. Because read() runs outside the mutate serialization lock,
+   * a read-triggered recovery can overlap an in-flight mutate; distinct suffixes guarantee the recovery never clobbers the mutate's temp before its rename.
    */
   async function tryRecoverFromBackup(filePath: string): Promise<T | null> {
 
@@ -426,7 +432,11 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     // Restore main from .bak via atomic temp+rename. Best-effort: if the restore write fails, we still return the recovered data so the caller can proceed
     // with valid in-memory state. A subsequent read would attempt recovery again and produce the same result.
-    const tmpPath = filePath + ".tmp";
+    //
+    // The restore uses a recovery-specific temp suffix (.recover.tmp) rather than the .tmp suffix doMutate uses. read() does NOT acquire the mutate
+    // serialization lock, so a read-triggered recovery can run concurrently with an in-flight mutate. Sharing the .tmp path would let a recovery's write or
+    // rename clobber a mutate's in-flight temp file before the mutate renames it into place. Distinct suffixes keep the two write paths from ever colliding.
+    const tmpPath = filePath + ".recover.tmp";
 
     try {
 
@@ -690,16 +700,25 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     }
 
     // Backup: copy the current file to .bak before overwriting. Swallow ENOENT (file does not exist yet on first write).
+    //
+    // We skip the rotation entirely when read() recovered the in-memory state from .bak. recoveredFromBackup being true means the main file on disk was
+    // unparseable and the good copy is the existing .bak - so .bak already holds the prior good state. Had tryRecoverFromBackup's restore-write to main failed,
+    // the main file on disk is still corrupt; copying it over .bak would destroy the only good copy. Had the restore succeeded, main now equals .bak and the
+    // upcoming atomic write overwrites it with the mutated good data while .bak keeps the prior good state. Either way, rotating is at best redundant and at
+    // worst destructive, so we leave the known-good .bak untouched and let the atomic write below replace the (recovered) main.
     const bakPath = filePath + ".bak";
 
-    try {
+    if(!result.recoveredFromBackup) {
 
-      await backend.copyFile(filePath, bakPath);
-    } catch(backupError) {
+      try {
 
-      if((backupError as NodeJS.ErrnoException).code !== "ENOENT") {
+        await backend.copyFile(filePath, bakPath);
+      } catch(backupError) {
 
-        LOG.warn("Failed to back up %s: %s.", filePath, (backupError instanceof Error) ? backupError.message : String(backupError));
+        if((backupError as NodeJS.ErrnoException).code !== "ENOENT") {
+
+          LOG.warn("Failed to back up %s: %s.", filePath, (backupError instanceof Error) ? backupError.message : String(backupError));
+        }
       }
     }
 

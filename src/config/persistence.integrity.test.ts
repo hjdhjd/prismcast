@@ -274,13 +274,14 @@ describe("FileStore.mutate - tryRecoverFromBackup restore-write failure", () => 
     backend.files.set(filePath + ".bak", "{\"value\":99}\n");
     backend.mtimes.set(filePath + ".bak", 2);
 
-    // Override rename to fail when called against the .tmp-to-main restore path. We detect by source matching `<filePath>.tmp` and destination matching
+    // Override rename to fail when called against the recovery restore path. tryRecoverFromBackup restores main via a recovery-specific temp suffix (.recover.tmp,
+    // distinct from doMutate's .tmp so the two write paths never collide), so we detect by source matching `<filePath>.recover.tmp` and destination matching
     // `filePath`. Other rename calls (e.g., the post-mutate atomic rename) flow through the default.
     const realRename = backend.rename;
 
     backend.rename = async (source: string, destination: string): Promise<void> => {
 
-      if((source === (filePath + ".tmp")) && (destination === filePath)) {
+      if((source === (filePath + ".recover.tmp")) && (destination === filePath)) {
 
         throw new Error("synthetic-rename-failure");
       }
