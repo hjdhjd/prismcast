@@ -3,7 +3,7 @@
  * recovery.test.ts: Unit tests for the issue-classification primitives in recovery.ts - RECOVERY_METHODS sentinel, getIssueDescription, getRecoveryMethod,
  * formatIssueType, and getIssueCategory. Metrics tracking lives in recovery.metrics.test.ts; circuit-breaker primitives live in recovery.circuitBreaker.test.ts.
  */
-import { RECOVERY_METHODS, formatIssueType, getIssueCategory, getIssueDescription, getRecoveryMethod } from "./recovery.ts";
+import { RECOVERY_METHODS, formatIssueType, getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError } from "./recovery.ts";
 import { describe, test } from "node:test";
 import type { VideoState } from "../types/index.ts";
 import assert from "node:assert/strict";
@@ -176,5 +176,38 @@ describe("getIssueCategory", () => {
 
     // The order in the function is: error/ended -> buffering -> stalled+lowReady -> paused. So buffering is checked first and short-circuits.
     assert.equal(getIssueCategory(makeVideoState({ paused: true }), false, true), "buffering");
+  });
+});
+
+describe("isCaptureInfrastructureError", () => {
+
+  test("matches each capture-infrastructure signature", () => {
+
+    // The three signatures the classifier owns - the SSOT consumed by both the 503 back-off decision and the browser supervisor's readiness detection.
+    assert.equal(isCaptureInfrastructureError(new Error("Cannot capture a tab with an active stream")), true);
+    assert.equal(isCaptureInfrastructureError(new Error("Capture queue wait timed out.")), true);
+    assert.equal(isCaptureInfrastructureError(new Error("Stream initialization timed out.")), true);
+  });
+
+  test("accepts either an Error or a bare string", () => {
+
+    // setup.ts passes a pre-extracted message string; the supervisor may pass an Error. Both normalize to the same judgment.
+    assert.equal(isCaptureInfrastructureError("Capture queue wait timed out."), true);
+    assert.equal(isCaptureInfrastructureError(new Error("Capture queue wait timed out.")), true);
+  });
+
+  test("does not match site- or stream-specific failures", () => {
+
+    // A navigation or page error is not a capture-infrastructure fault; it must classify as non-capture so the setup path returns 500, not 503.
+    assert.equal(isCaptureInfrastructureError(new Error("net::ERR_NAME_NOT_RESOLVED")), false);
+    assert.equal(isCaptureInfrastructureError(new Error("Video element not found.")), false);
+    assert.equal(isCaptureInfrastructureError(""), false);
+  });
+
+  test("the stale-mutex error is also classified capture-infrastructure (layered, not exclusive)", () => {
+
+    // The narrower "Cannot capture a tab with an active stream" stale-mutex case triggers a process exit at its own call sites; it is still a
+    // capture-infrastructure error here, so the two predicates are layered rather than mutually exclusive.
+    assert.equal(isCaptureInfrastructureError(new Error("Cannot capture a tab with an active stream")), true);
   });
 });

@@ -26,6 +26,7 @@ import { getEffectiveViewport } from "../config/presets.ts";
 import { getNextStreamId } from "./registry.ts";
 import { getServiceDisplayName } from "../config/services.ts";
 import { installManifestInterceptor } from "../browser/manifestInterceptor.ts";
+import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
 import { mutateChannels } from "../config/userChannels.ts";
@@ -937,9 +938,9 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       }
 
       // Capture infrastructure errors should return 503 to signal Channels DVR to back off. These include Chrome capture state issues, queue timeouts, and stream
-      // initialization failures. Using 503 with Retry-After prevents retry storms when there's a systemic issue.
-      const captureErrorPatterns = [ "Cannot capture", "timed out", "Capture queue" ];
-      const isCaptureError = captureErrorPatterns.some((pattern) => errorMessage.includes(pattern));
+      // initialization failures. Using 503 with Retry-After prevents retry storms when there's a systemic issue. isCaptureInfrastructureError (recovery.ts) is the
+      // single source of truth for this classification, shared with the browser supervisor's readiness detection.
+      const isCaptureError = isCaptureInfrastructureError(errorMessage);
 
       throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.", { cause: error });
     }

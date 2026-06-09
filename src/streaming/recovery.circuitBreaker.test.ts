@@ -3,10 +3,10 @@
  * recovery.circuitBreaker.test.ts: Unit tests for the circuit-breaker primitives in recovery.ts - checkCircuitBreaker and resetCircuitBreaker. Issue
  * classification helpers live in recovery.test.ts; metrics tracking lives in recovery.metrics.test.ts.
  */
-import { checkCircuitBreaker, resetCircuitBreaker } from "./recovery.ts";
+import type { CircuitBreakerState, FailureWindowState } from "./recovery.ts";
+import { checkCircuitBreaker, recordFailure, resetCircuitBreaker, resetFailureWindow } from "./recovery.ts";
 import { describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
-import type { CircuitBreakerState } from "./recovery.ts";
 import assert from "node:assert/strict";
 
 describe("checkCircuitBreaker", () => {
@@ -118,6 +118,92 @@ describe("resetCircuitBreaker", () => {
     const state: CircuitBreakerState = { firstFailureTime: null, totalFailureCount: 0 };
 
     resetCircuitBreaker(state);
+
+    assert.equal(state.firstFailureTime, null);
+    assert.equal(state.totalFailureCount, 0);
+  });
+});
+
+describe("recordFailure (failure-window primitive)", () => {
+
+  // recordFailure is the SSOT the circuit breaker delegates to. These tests pass explicit bounds (not CONFIG) to pin the parameterized contract the browser
+  // supervisor will rely on - the same primitive must serve consumers with different tolerances. `now` is a parameter, so no timer mocking is needed.
+  const OPTIONS = { threshold: 3, windowMs: 1000 };
+
+  function freshState(): FailureWindowState {
+
+    return { firstFailureTime: null, totalFailureCount: 0 };
+  }
+
+  test("does not trip below the threshold within the window", () => {
+
+    const state = freshState();
+    const r1 = recordFailure(state, 0, OPTIONS);
+    const r2 = recordFailure(state, 100, OPTIONS);
+
+    assert.equal(r1.tripped, false);
+    assert.equal(r2.tripped, false);
+    assert.equal(r2.totalCount, 2);
+    assert.equal(r2.withinWindow, true);
+  });
+
+  test("trips exactly when the threshold count is reached within the window", () => {
+
+    const state = freshState();
+
+    recordFailure(state, 0, OPTIONS);
+    recordFailure(state, 100, OPTIONS);
+
+    const r3 = recordFailure(state, 200, OPTIONS);
+
+    assert.equal(r3.tripped, true);
+    assert.equal(r3.totalCount, 3);
+  });
+
+  test("restarts the window when a failure arrives after it has lapsed", () => {
+
+    const state = freshState();
+
+    recordFailure(state, 0, OPTIONS);
+    recordFailure(state, 100, OPTIONS);
+
+    // This failure is outside the 1000ms window anchored at t=0, so the window restarts from it.
+    const lapsed = recordFailure(state, 1500, OPTIONS);
+
+    assert.equal(lapsed.withinWindow, false, "the lapsed failure is outside the prior window");
+    assert.equal(lapsed.tripped, false, "a restarted window cannot trip on its first failure");
+    assert.equal(state.totalFailureCount, 1, "the window restarts from this failure");
+    assert.equal(state.firstFailureTime, 1500, "the window re-anchors to this failure");
+  });
+
+  test("honors the supplied bounds rather than any single config value (the reuse contract)", () => {
+
+    // The same two-failure sequence trips a strict window but not a tolerant one - proving the primitive is parameterized for consumers with different tolerances
+    // (the per-stream breaker vs. the browser supervisor), not hard-wired to CONFIG.recovery.
+    const strict = freshState();
+    const tolerant = freshState();
+
+    recordFailure(strict, 0, { threshold: 2, windowMs: 1000 });
+
+    const strictTrip = recordFailure(strict, 100, { threshold: 2, windowMs: 1000 });
+
+    assert.equal(strictTrip.tripped, true, "the strict window trips at 2");
+
+    recordFailure(tolerant, 0, { threshold: 5, windowMs: 1000 });
+
+    const tolerantNoTrip = recordFailure(tolerant, 100, { threshold: 5, windowMs: 1000 });
+
+    assert.equal(tolerantNoTrip.tripped, false, "the tolerant window does not trip at 2");
+  });
+});
+
+describe("resetFailureWindow", () => {
+
+  test("clears the count and the first-failure timestamp", () => {
+
+    const state: FailureWindowState = { firstFailureTime: 42, totalFailureCount: 7 };
+
+    resetFailureWindow(state);
 
     assert.equal(state.firstFailureTime, null);
     assert.equal(state.totalFailureCount, 0);

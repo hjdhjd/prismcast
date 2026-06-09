@@ -314,17 +314,90 @@ export function formatRecoveryMetricsSummary(metrics: RecoveryMetrics): string {
 }
 
 /**
- * Circuit breaker state for tracking failures within a time window. The circuit breaker prevents endless recovery attempts on fundamentally broken streams by
- * terminating after a threshold of failures within a configured window.
+ * State for failure accrual within a sliding time window. This is the single failure-counting primitive in PrismCast: the per-stream circuit breaker below and the
+ * browser supervisor (browser/index.ts) both judge "have there been too many failures recently?" through it, differing only in the policy bounds they pass and what
+ * they do when the window trips. The state is a plain record the caller owns and persists across calls; the bounds are supplied per call so one primitive serves
+ * consumers with different tolerances without hard-coding any single config value.
  */
-export interface CircuitBreakerState {
+export interface FailureWindowState {
 
-  // Timestamp of the first failure in the current window. Used to determine if failures are within the window.
+  // Timestamp of the first failure in the current window, or null when no failure has been recorded since the last reset. Anchors the window.
   firstFailureTime: Nullable<number>;
 
-  // Total number of failures within the circuit breaker window.
+  // Number of failures recorded within the current window.
   totalFailureCount: number;
 }
+
+/**
+ * Policy bounds for a failure window: how long the window lasts and how many failures within it constitute a trip.
+ */
+export interface FailureWindowOptions {
+
+  // Number of failures within windowMs that constitutes a trip.
+  readonly threshold: number;
+
+  // Sliding window duration in milliseconds.
+  readonly windowMs: number;
+}
+
+/**
+ * Result of recording one failure against a window.
+ */
+export interface FailureWindowResult {
+
+  // Total failures now recorded in the current window.
+  readonly totalCount: number;
+
+  // Whether the window tripped - the threshold was reached within the window. What a consumer does on a trip is its own concern: the stream breaker terminates the
+  // stream; the browser supervisor opens its breaker.
+  readonly tripped: boolean;
+
+  // Whether this failure fell within the window anchored by the first failure. False means the window had lapsed and was restarted from this failure.
+  readonly withinWindow: boolean;
+}
+
+/**
+ * Records a failure against a sliding window and reports whether the window has tripped. Pure over (state, now, options): it mutates the supplied state in place and
+ * returns the decision plus diagnostics. When a failure arrives after the window has lapsed, the window restarts from it (count resets to 1) so accrual reflects
+ * only the recent window. This is the single source of truth for failure accrual; consumers differ only in the bounds they pass and what a trip means to them.
+ * @param state - The failure-window state to update.
+ * @param now - The current timestamp in milliseconds.
+ * @param options - The window duration and trip threshold.
+ * @returns The trip decision and diagnostics.
+ */
+export function recordFailure(state: FailureWindowState, now: number, options: FailureWindowOptions): FailureWindowResult {
+
+  state.totalFailureCount++;
+  state.firstFailureTime ??= now;
+
+  const withinWindow = (now - state.firstFailureTime) < options.windowMs;
+  const tripped = withinWindow && (state.totalFailureCount >= options.threshold);
+
+  // When the window has lapsed, restart it from this failure so accrual reflects only the recent window.
+  if(!withinWindow) {
+
+    state.totalFailureCount = 1;
+    state.firstFailureTime = now;
+  }
+
+  return { totalCount: state.totalFailureCount, tripped, withinWindow };
+}
+
+/**
+ * Resets a failure window to its empty state. Called when sustained health is achieved (the stream recovered; the browser is durably ready).
+ * @param state - The failure-window state to reset.
+ */
+export function resetFailureWindow(state: FailureWindowState): void {
+
+  state.firstFailureTime = null;
+  state.totalFailureCount = 0;
+}
+
+/**
+ * The per-stream circuit breaker's state is a failure window. The alias keeps the breaker's vocabulary at its call sites while there is exactly one underlying state
+ * type and one accrual implementation.
+ */
+export type CircuitBreakerState = FailureWindowState;
 
 /**
  * Result from checking circuit breaker state.
@@ -342,32 +415,18 @@ export interface CircuitBreakerResult {
 }
 
 /**
- * Records a failure and checks whether the circuit breaker should trip. This is the single entry point for circuit breaker decisions across every recovery
- * path - any code that wants to count a failure goes through this function. Updates the state in place and returns the trip decision along with diagnostic info.
+ * Records a failure and checks whether the per-stream circuit breaker should trip. This is the single entry point for circuit breaker decisions across every
+ * recovery path - any code that wants to count a stream failure goes through this function. It is the stream-scoped policy binding of recordFailure: the window and
+ * threshold come from CONFIG.recovery, and a trip means "terminate the stream."
  * @param state - The circuit breaker state to update.
  * @param now - The current timestamp.
  * @returns Result indicating whether the circuit breaker should trip and diagnostic info.
  */
 export function checkCircuitBreaker(state: CircuitBreakerState, now: number): CircuitBreakerResult {
 
-  // Record this failure.
-  state.totalFailureCount++;
-  state.firstFailureTime ??= now;
+  const result = recordFailure(state, now, { threshold: CONFIG.recovery.circuitBreakerThreshold, windowMs: CONFIG.recovery.circuitBreakerWindow });
 
-  // Check if we're within the failure window.
-  const withinWindow = (now - state.firstFailureTime) < CONFIG.recovery.circuitBreakerWindow;
-
-  // Determine if we should trip.
-  const shouldTrip = withinWindow && (state.totalFailureCount >= CONFIG.recovery.circuitBreakerThreshold);
-
-  // Reset the window if we're outside it (start fresh count).
-  if(!withinWindow) {
-
-    state.totalFailureCount = 1;
-    state.firstFailureTime = now;
-  }
-
-  return { shouldTrip, totalCount: state.totalFailureCount, withinWindow };
+  return { shouldTrip: result.tripped, totalCount: result.totalCount, withinWindow: result.withinWindow };
 }
 
 /**
@@ -376,8 +435,7 @@ export function checkCircuitBreaker(state: CircuitBreakerState, now: number): Ci
  */
 export function resetCircuitBreaker(state: CircuitBreakerState): void {
 
-  state.firstFailureTime = null;
-  state.totalFailureCount = 0;
+  resetFailureWindow(state);
 }
 
 /**
@@ -479,4 +537,26 @@ export function getIssueCategory(state: VideoState, isStalled: boolean, isBuffer
   }
 
   return "other";
+}
+
+/* Capture-infrastructure error signatures. These indicate a fault in Chrome's capture pipeline itself - the puppeteer-stream tabCapture extension, the serialized
+ * capture queue, or stream initialization - rather than a site- or stream-specific problem. They are the faults that warrant backing a client off (HTTP 503) and,
+ * for the browser supervisor, treating a setup failure as evidence the browser itself may no longer be capture-ready.
+ */
+const CAPTURE_INFRASTRUCTURE_PATTERNS = [ "Cannot capture", "Capture queue", "timed out" ] as const;
+
+/**
+ * Classifies whether an error originates in Chrome's capture infrastructure (the extension, the capture queue, or stream initialization) rather than in a specific
+ * site or stream. This is the single source of truth for that judgment: the stream-setup path uses it to decide a 503 back-off, and the browser supervisor uses it
+ * to decide whether a setup failure is evidence the browser may no longer be capture-ready. It is layered with, not exclusive of, the narrower "Cannot capture a tab
+ * with an active stream" stale-mutex predicate handled at its own call sites: a stale-mutex error is also a capture-infrastructure error (so this matches it too),
+ * but the process-exit decision that the stale-mutex case alone warrants stays a distinct check.
+ * @param error - The error or message to classify.
+ * @returns True when the message carries a capture-infrastructure signature.
+ */
+export function isCaptureInfrastructureError(error: unknown): boolean {
+
+  const message = (error instanceof Error) ? error.message : String(error);
+
+  return CAPTURE_INFRASTRUCTURE_PATTERNS.some((pattern) => message.includes(pattern));
 }
