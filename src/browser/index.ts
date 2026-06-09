@@ -3,7 +3,7 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { LOG, cancellableTimeout, delay, evaluateWithAbort, formatError, isProcessRunning, listProcesses, startTimer } from "../utils/index.ts";
+import { LOG, cancellableTimeout, delay, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount } from "../streaming/registry.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
@@ -11,12 +11,15 @@ import { getEffectivePreset, getPresetViewport } from "../config/presets.ts";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.ts";
 import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.ts";
+import type { BrowserLifecycle } from "./browserSupervisor.ts";
 import { CONFIG } from "../config/index.ts";
 import type { GpuCapabilities } from "./display.ts";
+import type { LaunchGovernorPolicy } from "./launchGovernor.ts";
 import type { Nullable } from "../types/index.ts";
 import type { ProcessInfo } from "../utils/index.ts";
 import type { SystemStatus } from "../streaming/statusEmitter.ts";
 import { clearChannelSelectionCaches } from "./channelSelection.ts";
+import { createBrowserSupervisor } from "./browserSupervisor.ts";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.ts";
 import fs from "node:fs";
 import path from "node:path";
@@ -30,8 +33,12 @@ const { promises: fsPromises } = fs;
 /* Global variables maintain the application's runtime state across all operations. We minimize global state where possible, but some values must be shared across
  * the application lifecycle:
  *
- * - currentBrowser: The shared browser instance. All streaming sessions use a single Chrome process to avoid the overhead of launching multiple browsers. This is
- *   created on first stream request (or during warmup) and persists until the application shuts down or the browser crashes.
+ * - supervisor: The browser capture-readiness supervisor. It is the single source of truth for the shared Chrome instance and its lifecycle (absent / launching /
+ *   ready / degraded / trialing), so all streaming sessions use one Chrome process via supervisor.acquire(). It subsumes what used to be three scattered fields
+ *   (the browser reference, its launch timestamp, and the launch mutex) into one discriminated-union state, and routes every relaunch through one loop-safe governor.
+ *
+ * - currentChromeVersion: The one piece of per-browser metadata the adapter still holds directly, captured when the browser becomes ready and surfaced by the
+ *   health endpoint.
  *
  * - dataDir: The filesystem location for persistent data (Chrome profile, extension files). Resolved via config/paths.ts, which is created on startup if it doesn't
  *   exist.
@@ -39,21 +46,70 @@ const { promises: fsPromises } = fs;
  * Stream tracking and ID generation live in streaming/registry.ts for unified stream management across all output types (HLS, MPEG-TS, etc.).
  */
 
-// The shared browser instance used by all streaming sessions. Created on first stream request or during warmup. Set to null when the browser is not running or
-// has disconnected.
-let currentBrowser: Nullable<Browser> = null;
-
-// The Chrome version string (e.g., "Chrome/144.0.7559.110") captured when the browser launches. Cleared when the browser disconnects. Used by the
-// health endpoint to report the active Chrome version.
+// The Chrome version string (e.g., "Chrome/144.0.7559.110") captured when the browser becomes capture-ready in launchReadyBrowser. Cleared when the browser
+// disconnects or is closed. This is the one piece of per-browser metadata the adapter still holds directly; the browser instance, its launch timestamp, and the
+// launch mutex now live inside the supervisor's lifecycle state, which is the single source of truth for "what is the browser doing, and is it usable?".
 let currentChromeVersion: Nullable<string> = null;
 
-// Timestamp (Date.now()) when the current browser instance was launched. Used by the opportunistic restart check to determine browser age. Cleared when the
-// browser disconnects.
-let browserLaunchTime: Nullable<number> = null;
+/* The browser relaunch governor's policy. Conservative and biased eager-for-the-first-failure: the first relaunch failures cost no cooldown (the common transient
+ * recovers in seconds), and only repeated failures within the window trip the governor into an escalating cooldown. These named constants are lifted to recovery.*
+ * configuration in a later increment; defining them here keeps the supervisor wiring complete and tunable in one place meanwhile.
+ */
+const RELAUNCH_POLICY: LaunchGovernorPolicy = {
 
-// Launch mutex. When a browser launch is in progress, this holds the pending promise so that concurrent callers piggyback on the same launch instead of
-// starting a second Chrome process. Cleared in a finally block once the launch settles.
-let browserLaunchPromise: Nullable<Promise<Browser>> = null;
+  // Escalating cooldown ladder: 5 minutes, then 15, then 60. Each successive trip cools down for the next-longer duration; the final rung is the ceiling.
+  cooldownLadderMs: [ 5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 1000 ],
+
+  // Trip into a cooldown after three failed relaunches within the window.
+  failureThreshold: 3,
+
+  // The five-minute window over which relaunch failures accrue toward a trip.
+  failureWindowMs: 5 * 60 * 1000,
+
+  // Two minutes of continuous capture-readiness resets the governor to its normal state, so a brief flap cannot wipe out accrued failures.
+  healthHoldMs: 2 * 60 * 1000
+};
+
+/* The one browser capture-readiness supervisor for the process lifetime. It owns the lifecycle state (absent/launching/ready/degraded/trialing) that subsumes the
+ * former currentBrowser + browserLaunchPromise + browserLaunchTime trio, and routes every relaunch through one loop-safe governor. The adapter injects the impure
+ * ports: launchReadyBrowser (spawn Chrome and run the readiness gate), closeBrowserInstance (teardown), realClock.now (time), and onSupervisorStateChange (the loud
+ * degraded alarm and the recovery notice). All browser access flows through it: getCurrentBrowser is acquire(); the non-launching reads derive from current() and
+ * currentLaunchTime(). The injected ports are hoisted function declarations, so referencing them here is safe even though they are defined further down the module.
+ */
+const supervisor = createBrowserSupervisor({ close: closeBrowserInstance, launch: launchReadyBrowser, now: realClock.now, onStateChange: onSupervisorStateChange,
+  policy: RELAUNCH_POLICY });
+
+/**
+ * Observes supervisor lifecycle transitions purely for operator-visible signals; it never affects the transition (the supervisor treats it as best-effort, so a
+ * throwing logger cannot corrupt the lifecycle). It raises the loud degraded alarm when the relaunch governor trips, an info notice when capture readiness is
+ * restored after a degraded period, and emits the SSE system status whenever a ready browser is published.
+ * @param next - The state being entered.
+ * @param previous - The state being left.
+ */
+function onSupervisorStateChange(next: BrowserLifecycle, previous: BrowserLifecycle): void {
+
+  // The governor just tripped: relaunches are paused while the browser's capture system cools down. We log loudly at ERROR with the cooldown horizon so the
+  // condition is never invisible - the enforceable form of "it is impossible to be silently un-tunable."
+  if((next.kind === "degraded") && (previous.kind !== "degraded")) {
+
+    const cooldownMinutes = Math.max(1, Math.round((next.until - realClock.now()) / 60000));
+
+    LOG.error("The browser capture system has degraded and the relaunch governor has tripped: %s Relaunches are paused for approximately %d minute(s) while it " +
+      "cools down; new stream requests will receive a 503 back-off until it recovers.", next.reason, cooldownMinutes);
+  } else if((next.kind === "ready") && ((previous.kind === "trialing") || (previous.kind === "degraded"))) {
+
+    // Capture readiness was restored by a successful trial after a degraded period. The ordinary first launch (absent -> launching -> ready) is intentionally
+    // silent; only a recovery from trialing/degraded is worth an operator notice.
+    LOG.info("The browser capture system has recovered and is serving captures again.");
+  }
+
+  // The browser's connectivity is part of the SSE system status, so emit when a ready browser is published. Readiness-loss emits are owned by handleBrowserDisconnect
+  // (genuine disconnect) and the shutdown path; emitSystemStatusChanged dedupes, so a redundant emit is a cheap no-op.
+  if(next.kind === "ready") {
+
+    void emitCurrentSystemStatus();
+  }
+}
 
 // The data directory stores Chrome's profile data and the streaming extension files. Path resolution is centralized in config/paths.ts.
 
@@ -129,6 +185,11 @@ const potentiallyStalePages = new Map<string, number>();
 export { clearLoginState, isLoginModeActive };
 export { type LoginStatus, endLoginMode, getLoginPage, getLoginStatus, startLoginMode } from "./login.ts";
 
+// Re-export the supervisor's acquire() rejection classes through the browser surface so the stream-setup layer can map them to a 503 back-off without reaching into
+// the supervisor module directly. Both signal a transient "retry me" condition: BrowserUnavailableError while the relaunch governor is cooling, BrowserSupersededError
+// when a launch was abandoned mid-flight by a readiness-loss.
+export { BrowserSupersededError, BrowserUnavailableError } from "./browserSupervisor.ts";
+
 // Inject browser accessors into the login module. This breaks the circular dependency (login needs getBrowserInstance/minimizeBrowserWindow, index needs login
 // functions) using the same setter/getter pattern as setChromeUserAgent in chromeFetch.ts. Function declarations are hoisted, so both accessors are available here.
 setBrowserAccessors({ getBrowserInstance, minimizeBrowserWindow });
@@ -140,11 +201,15 @@ export async function emitCurrentSystemStatus(): Promise<void> {
 
   let pageCount = 0;
 
+  // The published browser, or null when the supervisor is not in its ready state. Connectivity and page count derive from it - there is no separate browser
+  // reference to consult.
+  const browser = supervisor.current();
+
   try {
 
-    if(currentBrowser?.connected) {
+    if(browser?.connected) {
 
-      const pages = await currentBrowser.pages();
+      const pages = await browser.pages();
 
       pageCount = pages.length;
     }
@@ -159,7 +224,7 @@ export async function emitCurrentSystemStatus(): Promise<void> {
 
     browser: {
 
-      connected: !!currentBrowser && currentBrowser.connected,
+      connected: !!browser && browser.connected,
       pageCount
     },
     memory: {
@@ -972,19 +1037,22 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
  *
  * When the browser disconnects, all pages (tabs) within it are immediately invalid and cannot be used. Any active streams using those pages will fail if they try
  * to interact with them. We proactively clean up by:
- * 1. Setting currentBrowser to null so the next stream request will launch a fresh browser
+ * 1. Telling the supervisor readiness was lost (it transitions to absent), so the next stream request launches a fresh browser through the gate and governor
  * 2. Stopping all health monitors (they would fail trying to check page state)
  * 3. Removing all entries from activeStreams (the pages are gone)
  *
- * This ensures streams fail gracefully rather than hanging indefinitely trying to use closed pages.
+ * This ensures streams fail gracefully rather than hanging indefinitely trying to use closed pages. It runs only for a genuine, unsolicited disconnect; every
+ * intentional teardown removes this listener via closeBrowserInstance first.
  */
 function handleBrowserDisconnect(): void {
 
-  // Clear the browser reference, launch timestamp, cached version, and user agent so getCurrentBrowser() will launch a new instance on the next call. We do not
-  // track Chrome's PID directly anymore - killStaleChrome discovers orphans via the OS process table on the next startup, which removes a class of state that
-  // could go stale.
-  currentBrowser = null;
-  browserLaunchTime = null;
+  // Readiness is lost. Tell the supervisor first: this supersedes any launch in flight, clears the governor's health anchor, and transitions the lifecycle to
+  // absent, so getCurrentBrowser() relaunches through the gate and governor on the next call. This handler only ever runs for a genuine, unsolicited disconnect -
+  // closeBrowserInstance removes this listener before every intentional teardown, so a scheduled restart or orphan close never reaches here.
+  supervisor.noteReadinessLost();
+
+  // Clear the adapter-held Chrome version and the cached user agent so stale values are not served between now and the next ready browser. We do not track Chrome's
+  // PID directly - killStaleChrome discovers orphans via the OS process table on the next startup, which removes a class of state that could go stale.
   currentChromeVersion = null;
   setChromeUserAgent(null);
 
@@ -1028,97 +1096,62 @@ function handleBrowserDisconnect(): void {
 }
 
 /**
- * Provides access to the shared browser instance, launching one if needed. The browser is a shared resource used by all streaming sessions. This function handles:
- *
- * - Returning the existing browser if it's still connected
- * - Launching a new browser if none exists or the previous one disconnected
- * - Serializing concurrent callers so only one launch occurs at a time
- * - Waiting for the puppeteer-stream extension to initialize
- * - Setting up disconnect handlers for crash recovery
- * @returns The browser instance.
- * @throws If the browser cannot be launched.
+ * Provides access to the capture-ready browser, launching one if needed. This is the single gated entry point for all browser access: it delegates to the
+ * supervisor's acquire(), which returns the ready browser, joins an in-flight launch (single-flight, so concurrent callers never contend on Chrome's profile lock),
+ * lazily launches when absent, or - while the relaunch governor is cooling after repeated failures - rejects fast with a BrowserUnavailableError WITHOUT spawning
+ * Chrome (the loop bound). The launch it drives runs the readiness gate, so a returned browser is verified capture-ready, not merely connected.
+ * @returns The capture-ready browser instance.
+ * @throws BrowserUnavailableError while the governor is cooling, BrowserSupersededError if an in-flight launch was abandoned by a readiness-loss, or the underlying
+ *   launch error when a launch attempt fails.
  */
 export async function getCurrentBrowser(): Promise<Browser> {
 
-  // Fast path: if we have a browser and it's still connected, return it immediately. The connected property verifies the DevTools Protocol connection is
-  // still alive.
-  if(currentBrowser?.connected) {
-
-    return currentBrowser;
-  }
-
-  // If a launch is already in progress (e.g., from the restart path or a concurrent stream request), piggyback on that promise instead of starting a second
-  // Chrome process. Two concurrent launches with the same profile directory would contend on Chrome's profile lock.
-  if(browserLaunchPromise) {
-
-    return browserLaunchPromise;
-  }
-
-  // We need to launch a new browser. Store the promise so concurrent callers can piggyback on this launch.
-  browserLaunchPromise = launchBrowser();
-
-  try {
-
-    return await browserLaunchPromise;
-  } finally {
-
-    browserLaunchPromise = null;
-  }
+  return supervisor.acquire();
 }
 
 /**
- * Launches a new browser instance and performs post-launch initialization (extension readiness, display detection, version capture). This is the inner launch
- * function called by getCurrentBrowser() and serialized by the browserLaunchPromise mutex.
- * @returns The browser instance.
- * @throws If the browser cannot be launched.
+ * The supervisor's `launch` port: spawns Chrome, runs the readiness gate, performs post-launch initialization (display detection, version/UA capture, precaching),
+ * and resolves ONLY with a capture-ready browser. It builds into a local instance and publishes nothing - the supervisor owns publication and transitions to
+ * "ready" only after this resolves. A launch that fails the gate tears down its own Chrome here and throws, so a broken instance is never handed up; the supervisor
+ * counts the failure and decides whether to relaunch immediately or cool down. This is the fix for the original outage, where a failed extension load was logged as
+ * a warning and the broken browser served anyway.
+ * @returns The capture-ready browser instance.
+ * @throws If the launch or the readiness gate fails.
  */
-async function launchBrowser(): Promise<Browser> {
+async function launchReadyBrowser(): Promise<Browser> {
 
   const browserElapsed = startTimer();
 
-  // This happens on first stream request, after a browser crash, during server warmup, or during an opportunistic restart.
+  // The launch function from puppeteer-stream wraps standard Puppeteer launch to inject the streaming extension. We pass our custom launch function that handles
+  // packaged-executable extension paths. This happens on first stream request, after a browser crash, during server warmup, or during a governed relaunch.
+  const browser = await launch({ launch: launchWithCustomArgs }, buildLaunchOptions());
+
   try {
-
-    const options = buildLaunchOptions();
-
-    // The launch function from puppeteer-stream wraps standard Puppeteer launch to inject the streaming extension. We pass our custom launch function that
-    // handles packaged executable extension paths.
-    currentBrowser = await launch({ launch: launchWithCustomArgs }, options);
-
-    // Register a handler for browser disconnection. This ensures we clean up properly if the browser crashes or is closed unexpectedly.
-    currentBrowser.on("disconnected", handleBrowserDisconnect);
 
     LOG.debug("timing:browser", "Chrome process spawned. (+%sms)", browserElapsed());
 
-    // Poll for the puppeteer-stream extension to finish initializing. The extension injects a START_RECORDING function into its options page context. We poll
-    // for this function's existence rather than using a fixed delay, so the browser is ready as soon as the extension loads - typically 200-500ms rather than the
-    // full configured timeout. Uses getExtensionPage() from puppeteer-stream to locate the extension's options page.
-    try {
+    // Readiness gate, handshake tier. Poll for the puppeteer-stream extension to finish initializing - it injects a START_RECORDING function into its options page
+    // context, so its presence is the extension's own readiness signal. We poll rather than fixed-delay so the browser is ready as soon as the extension loads
+    // (typically 200-500ms). On failure this now THROWS rather than warning-and-proceeding: an unregistered extension means chrome.tabs is undefined and every
+    // getStream() would hang, so the instance is not capture-ready and must not be published. (A later increment escalates this gate to the full verifyCaptureSystem
+    // capture probe, which exercises the exact getStream path.)
+    const extensionPage = await getExtensionPage(browser);
 
-      const extensionPage = await getExtensionPage(currentBrowser);
-
-      await extensionPage.waitForFunction("typeof START_RECORDING === 'function'", { timeout: CONFIG.browser.initTimeout });
-    } catch {
-
-      // If the extension page isn't found or START_RECORDING doesn't appear within the timeout, log a warning and proceed. The per-stream
-      // assertExtensionLoaded() in puppeteer-stream will retry before each capture attempt, so this isn't fatal.
-      LOG.warn("Extension did not initialize within %d ms. Streams may need additional time to start.", CONFIG.browser.initTimeout);
-    }
+    await extensionPage.waitForFunction("typeof START_RECORDING === 'function'", { timeout: CONFIG.browser.initTimeout });
 
     LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
 
-    // Detect display dimensions to determine maximum supported viewport. This must happen before we start streaming so the preset system can degrade to a
-    // smaller preset if needed.
-    await detectDisplayDimensions(currentBrowser);
+    // Detect display dimensions to determine the maximum supported viewport. This must happen before streaming so the preset system can degrade to a smaller preset
+    // if needed.
+    await detectDisplayDimensions(browser);
 
     LOG.debug("timing:browser", "Display detection complete. (+%sms)", browserElapsed());
 
-    // Log the Chrome version for diagnostic reference. This helps correlate browser behavior changes (tab unresponsiveness, memory pressure, capture issues)
-    // with specific Chrome releases. We also capture the User-Agent string so that server-side fetch() calls to service CDNs can match Chrome's identity.
-    const chromeVersion = await currentBrowser.version();
-    const userAgent = await currentBrowser.userAgent();
+    // Capture the Chrome version and User-Agent. The version is logged for diagnostics (correlating browser behavior changes with specific Chrome releases) and
+    // surfaced by the health endpoint; the User-Agent lets server-side fetch() calls to service CDNs match Chrome's identity.
+    const chromeVersion = await browser.version();
+    const userAgent = await browser.userAgent();
 
-    browserLaunchTime = Date.now();
     currentChromeVersion = chromeVersion;
     setChromeUserAgent(userAgent);
 
@@ -1129,26 +1162,33 @@ async function launchBrowser(): Promise<Browser> {
 
     LOG.debug("timing:browser", "Browser ready. Total: %sms.", browserElapsed());
 
-    // Emit system status update for SSE subscribers.
-    await emitCurrentSystemStatus();
-
-    // Start background precaching of selected service channel lineups. Fire-and-forget - the setTimeout inside startPrecaching() ensures the actual work is fully
-    // async and non-blocking.
+    // Start background precaching of selected service channel lineups. Fire-and-forget - the setTimeout inside startPrecaching() defers the work until after this
+    // launch settles and the supervisor has published the ready browser, so its getCurrentBrowser() resolves immediately rather than re-entering this launch.
     startPrecaching();
+
+    // Arm the disconnect handler only now, as the very last step before the supervisor publishes this browser as ready. It is deliberately NOT armed earlier: during
+    // the gate/init window above, a Chrome crash surfaces as a thrown init step (CDP and waitForFunction reject on a dead browser), which the supervisor counts as a
+    // launch failure and feeds to the governor - keeping the relaunch loop bounded even if Chrome dies repeatedly during init. Arming the handler earlier would let
+    // its noteReadinessLost() bump the supervisor's launch generation and the launch would be treated as superseded (uncounted), defeating the loop bound. There is
+    // no gap: every statement from the last await to this return is synchronous, so a disconnect cannot be delivered between this registration and publication.
+    browser.on("disconnected", handleBrowserDisconnect);
+
+    return browser;
   } catch(error) {
 
     LOG.error("Failed to launch browser: %s.", formatError(error));
 
-    // Clear the browser reference, launch timestamp, cached version, and user agent on failure so the next call will attempt to launch again.
-    currentBrowser = null;
-    browserLaunchTime = null;
+    // The gate (or post-launch init) failed. Clear the adapter-held metadata and tear down the Chrome instance we just spawned before propagating, so a failed
+    // launch never leaks a process and the next governed relaunch starts from a clean profile. The disconnect handler is not yet armed on this instance (it is armed
+    // only on the success path above), so this teardown never re-enters handleBrowserDisconnect - which is exactly what lets the supervisor count this as a launch
+    // failure rather than a supersession.
     currentChromeVersion = null;
     setChromeUserAgent(null);
 
+    await closeBrowserInstance(browser);
+
     throw error;
   }
-
-  return currentBrowser;
 }
 
 /**
@@ -1167,7 +1207,7 @@ export function getChromeVersion(): Nullable<string> {
  */
 export function getBrowserInstance(): Nullable<Browser> {
 
-  return currentBrowser;
+  return supervisor.current();
 }
 
 /**
@@ -1176,7 +1216,9 @@ export function getBrowserInstance(): Nullable<Browser> {
  */
 export function isBrowserConnected(): boolean {
 
-  return !!currentBrowser && currentBrowser.connected;
+  const browser = supervisor.current();
+
+  return !!browser && browser.connected;
 }
 
 /**
@@ -1190,7 +1232,9 @@ export function isBrowserConnected(): boolean {
 export async function minimizeBrowserWindow(): Promise<void> {
 
   // Guard against calling this when no browser is running.
-  if(!currentBrowser?.connected) {
+  const browser = supervisor.current();
+
+  if(!browser?.connected) {
 
     return;
   }
@@ -1201,13 +1245,13 @@ export async function minimizeBrowserWindow(): Promise<void> {
   try {
 
     // Try to use an existing page first. Creating a new page can cause the window to restore/activate on macOS, which defeats the purpose of minimizing.
-    const existingPages = await currentBrowser.pages();
+    const existingPages = await browser.pages();
     let targetPage: Nullable<Page> = existingPages.find((p) => !p.isClosed()) ?? null;
 
     // If no existing pages, we must create a temporary one. This is less ideal but necessary to get a CDP session target.
     if(!targetPage) {
 
-      tempPage = await currentBrowser.newPage();
+      tempPage = await browser.newPage();
       usingTempPage = true;
 
       // Register the temp page so stale cleanup knows it's ours.
@@ -1253,15 +1297,17 @@ export async function minimizeBrowserWindow(): Promise<void> {
  */
 export async function getBrowserPages(): Promise<Page[]> {
 
-  // Guard against calling this when no browser is running.
-  if(!currentBrowser?.connected) {
+  // Guard against calling this when no ready browser is running.
+  const browser = supervisor.current();
+
+  if(!browser?.connected) {
 
     return [];
   }
 
   try {
 
-    return await currentBrowser.pages();
+    return await browser.pages();
   } catch(_error) {
 
     // If getting pages fails (browser disconnecting, etc.), return empty array rather than throwing.
@@ -1270,41 +1316,33 @@ export async function getBrowserPages(): Promise<Page[]> {
 }
 
 /**
- * Closes the browser and cleans up resources. This is called during graceful shutdown to ensure Chrome exits cleanly. After this call, the browser reference is
- * cleared and any subsequent stream requests will launch a fresh browser.
+ * Tears down a specific Chrome instance and is the single teardown primitive: the supervisor's `close` port (for disposing an orphaned superseded launch), the
+ * launch-failure cleanup in launchReadyBrowser, the scheduled-restart teardown in executeBrowserRestart, and the full-server closeBrowser all route through it. It
+ * owns no lifecycle state - the supervisor is the single source of truth for that. It first removes the disconnect listener so this intentional teardown does not
+ * trip handleBrowserDisconnect: the SIGTERM-induced "disconnected" event can arrive after this function returns, and without the removal it could supersede a fresh
+ * launch the caller has already started (the late-disconnect race).
  *
  * Chrome termination uses Puppeteer's ChildProcess handle and its `exit` event for detection:
  *
- * - browserRef.close() sends CDP Browser.close and waits for WebSocket teardown, which hangs 3-5 seconds even after Chrome exits.
- * - browserRef.disconnect() drops the WebSocket instantly but orphans Chrome as a Node child process, creating a zombie that process.kill(pid, 0) cannot detect.
+ * - browser.close() sends CDP Browser.close and waits for WebSocket teardown, which hangs 3-5 seconds even after Chrome exits.
+ * - browser.disconnect() drops the WebSocket instantly but orphans Chrome as a Node child process, creating a zombie that process.kill(pid, 0) cannot detect.
  * - Synchronous polling (Atomics.wait) blocks the event loop, preventing Node from processing SIGCHLD to reap the child - Chrome becomes a zombie regardless
  *   of how SIGTERM was sent.
  *
- * Instead, we send SIGTERM through the ChildProcess handle and listen for the `exit` event. This keeps the event loop running so Node can process SIGCHLD and
- * reap Chrome properly. The exit event fires only after the process is fully reaped - no zombies, no polling, no event loop blocking.
+ * Instead, we send SIGTERM through the ChildProcess handle and listen for the `exit` event. This keeps the event loop running so Node can process SIGCHLD and reap
+ * Chrome properly. The exit event fires only after the process is fully reaped - no zombies, no polling, no event loop blocking. The await on the exit event is what
+ * lets the caller relaunch immediately afterward without contending on Chrome's profile lock.
+ * @param browser - The Chrome instance to terminate.
  */
-export async function closeBrowser(): Promise<void> {
+async function closeBrowserInstance(browser: Browser): Promise<void> {
 
-  // Ensure the flag is set so the disconnect handler knows this is intentional. Normally set earlier by app.ts shutdown(), but set here as a fallback for direct
-  // calls to closeBrowser().
-  setGracefulShutdown(true);
+  // Remove the disconnect handler before signalling. Every call here is an intentional teardown, so the resulting "disconnected" event must not invoke the
+  // unexpected-disconnect handler - which would clear caches, log an error, and (critically) call noteReadinessLost(), superseding any launch the caller starts next.
+  browser.off("disconnected", handleBrowserDisconnect);
 
-  const browserRef = currentBrowser;
-
-  // Clear the reference, launch timestamp, cached version, and user agent early to prevent any new operations from using it.
-  currentBrowser = null;
-  browserLaunchTime = null;
-  currentChromeVersion = null;
-  setChromeUserAgent(null);
-
-  if(!browserRef) {
-
-    return;
-  }
-
-  // Send SIGTERM through Puppeteer's ChildProcess handle and wait for the `exit` event. The ChildProcess handle is only available when Puppeteer launched
-  // Chrome (not when connecting to an existing browser), but PrismCast always launches Chrome directly.
-  const chromeProcess = browserRef.process();
+  // Send SIGTERM through Puppeteer's ChildProcess handle and wait for the `exit` event. The ChildProcess handle is only available when Puppeteer launched Chrome
+  // (not when connecting to an existing browser), but PrismCast always launches Chrome directly.
+  const chromeProcess = browser.process();
 
   if(chromeProcess?.pid && !chromeProcess.killed) {
 
@@ -1344,16 +1382,47 @@ export async function closeBrowser(): Promise<void> {
     }
   }
 
-  // Disconnect the Puppeteer WebSocket after Chrome has exited. This cleans up Puppeteer's internal state (event listeners, pending CDP calls) without
-  // waiting for the WebSocket close handshake to complete on a dead connection.
-  if(browserRef.connected) {
+  // Disconnect the Puppeteer WebSocket after Chrome has exited. This cleans up Puppeteer's internal state (event listeners, pending CDP calls) without waiting for
+  // the WebSocket close handshake to complete on a dead connection. We catch the rejection: disconnect() on a connection whose underlying transport already died of
+  // an unclean Chrome exit can reject, and an unhandled rejection on this fire-and-forget call would crash the process during an otherwise-successful teardown.
+  if(browser.connected) {
 
-    void browserRef.disconnect();
+    browser.disconnect().catch((error: unknown) => {
+
+      LOG.debug("browser:lifecycle", "Ignoring browser disconnect error during teardown: %s.", formatError(error));
+    });
   }
 
   // Remove stale Chrome profile lock files left behind by the disconnected browser. No per-PID state to clear here - killStaleChrome on the next launch will
   // discover any leftover Chrome via the OS process table.
   cleanStaleProfileFiles(getChromeDataDir(CONFIG));
+}
+
+/**
+ * Closes the browser and cleans up resources during full server shutdown. After this call the supervisor reports absent and any subsequent stream request launches
+ * a fresh browser. It retires the current instance from the lifecycle (so an in-flight launch is superseded and the metadata is cleared), then delegates the actual
+ * Chrome teardown to closeBrowserInstance. The graceful-shutdown flag is set so handleBrowserDisconnect, if it runs for any reason, stays quiet.
+ */
+export async function closeBrowser(): Promise<void> {
+
+  // Ensure the flag is set so the disconnect handler stays quiet. Normally set earlier by app.ts shutdown(), but set here as a fallback for direct calls.
+  setGracefulShutdown(true);
+
+  // Capture the ready browser before retiring it from the lifecycle. noteReadinessLost() supersedes any launch in flight and transitions to absent; we then clear
+  // the adapter-held metadata so nothing stale is served.
+  const browser = supervisor.current();
+
+  supervisor.noteReadinessLost();
+
+  currentChromeVersion = null;
+  setChromeUserAgent(null);
+
+  if(!browser) {
+
+    return;
+  }
+
+  await closeBrowserInstance(browser);
 }
 
 /* Over time, browser pages (tabs) may accumulate if cleanup fails during stream termination. This can happen due to race conditions, errors during cleanup, or
@@ -1385,15 +1454,17 @@ export async function closeBrowser(): Promise<void> {
  */
 export async function cleanupStalePages(): Promise<void> {
 
-  // Guard against calling this when no browser is running.
-  if(!currentBrowser?.connected) {
+  // Guard against calling this when no ready browser is running.
+  const browser = supervisor.current();
+
+  if(!browser?.connected) {
 
     return;
   }
 
   try {
 
-    const pages = await currentBrowser.pages();
+    const pages = await browser.pages();
 
     // If there's only one page or fewer, we must preserve it to keep the browser alive. Don't attempt cleanup.
     if(pages.length <= 1) {
@@ -1550,19 +1621,37 @@ export function stopStalePageCleanup(): void {
 
 /**
  * Checks whether the browser qualifies for an opportunistic restart. Called periodically by the restart check interval. The check skips when any of these
- * conditions hold: graceful shutdown in progress, login mode active, browser not connected, browser age below threshold. If active streams exist, any pending
- * quiet timer is cancelled (streams started during the quiet period reset the countdown). Otherwise a quiet timer is started if one is not already running.
+ * conditions hold: graceful shutdown in progress, login mode active, browser not ready, browser age below threshold. On every eligible tick it also drives the
+ * supervisor's health-gated governor reset. If active streams exist, any pending quiet timer is cancelled (streams started during the quiet period reset the
+ * countdown). Otherwise a quiet timer is started if one is not already running.
  */
 function checkBrowserRestart(): void {
 
-  // Skip if the server is shutting down, login mode is active, or the browser is not connected.
-  if(gracefulShutdownInProgress || isLoginModeActive() || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
+  // Skip if the server is shutting down or login mode is active.
+  if(gracefulShutdownInProgress || isLoginModeActive()) {
 
     return;
   }
 
+  // Read the ready browser and its launch time from the supervisor. Both are non-null only in the ready state, so a single guard covers "no ready browser." The
+  // launch time is on the supervisor's clock (realClock.now), so age must be measured against the same clock - not Date.now() - or the units would not match.
+  const browser = supervisor.current();
+  const launchTime = supervisor.currentLaunchTime();
+
+  if(!browser?.connected || (launchTime === null)) {
+
+    return;
+  }
+
+  // Health-gated governor reset. On every eligible tick, tell the supervisor the browser is still ready; once it has been continuously ready for the policy's
+  // hold, this resets the relaunch governor to its normal state and returns true, so we log the recovery exactly once.
+  if(supervisor.noteSustainedHealth()) {
+
+    LOG.info("Browser capture readiness has been sustained; the relaunch governor has reset to its normal state.");
+  }
+
   // Skip if the browser has not exceeded the maximum age.
-  const age = Date.now() - browserLaunchTime;
+  const age = realClock.now() - launchTime;
 
   if(age < BROWSER_MAX_AGE) {
 
@@ -1605,16 +1694,19 @@ async function executeBrowserRestart(): Promise<void> {
   // Clear the timer handle.
   restartQuietTimer = null;
 
-  // Final guard: re-check all preconditions. Conditions may have changed during the quiet period (e.g., a stream started just before the timer fired, login
-  // mode was activated, or the browser disconnected on its own).
-  if(gracefulShutdownInProgress || isLoginModeActive() || (getStreamCount() > 0) || !currentBrowser || !currentBrowser.connected || !browserLaunchTime) {
+  // Final guard: re-check all preconditions. Conditions may have changed during the quiet period (e.g., a stream started just before the timer fired, login mode
+  // was activated, or the browser disconnected on its own). Reading current()/currentLaunchTime() together keeps the ready-state check and the age source consistent.
+  const browser = supervisor.current();
+  const launchTime = supervisor.currentLaunchTime();
+
+  if(gracefulShutdownInProgress || isLoginModeActive() || (getStreamCount() > 0) || !browser?.connected || (launchTime === null)) {
 
     LOG.debug("browser:lifecycle", "Browser restart aborted - preconditions no longer met.");
 
     return;
   }
 
-  const age = Date.now() - browserLaunchTime;
+  const age = realClock.now() - launchTime;
   const hours = Math.floor(age / 3600000);
   const minutes = Math.floor((age % 3600000) / 60000);
 
@@ -1622,11 +1714,12 @@ async function executeBrowserRestart(): Promise<void> {
 
   try {
 
-    // closeBrowser() sets gracefulShutdownInProgress = true internally and performs SIGTERM-based Chrome termination.
-    await closeBrowser();
+    // Retire the current instance from the lifecycle, tear it down, then acquire a fresh one through the supervisor. We do NOT touch the graceful-shutdown flag (the
+    // server is not shutting down): closeBrowserInstance removes the disconnect listener, which is what makes this intentional teardown quiet. acquire() publishes
+    // "ready" only after the readiness gate passes, so the completion log below is finally truthful - unlike the prior liveness-only "ready" claim the outage exposed.
+    supervisor.noteReadinessLost();
 
-    // Reset the flag since the server is NOT shutting down - only the browser is restarting.
-    setGracefulShutdown(false);
+    await closeBrowserInstance(browser);
 
     // Launch a fresh browser instance so it is ready for the next stream request.
     await getCurrentBrowser();
@@ -1638,9 +1731,6 @@ async function executeBrowserRestart(): Promise<void> {
   } catch(error) {
 
     LOG.error("Browser restart failed: %s.", formatError(error));
-
-    // Ensure the graceful shutdown flag is cleared even on failure so new stream requests can still launch a browser.
-    setGracefulShutdown(false);
   }
 }
 

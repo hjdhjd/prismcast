@@ -151,15 +151,27 @@ export function noteReadinessLost(state: LaunchGovernorState): void {
 }
 
 /**
- * Resets the governor to CLOSED if the browser has been continuously ready for at least healthHoldMs. Called on the supervisor's periodic health tick. Returns
- * whether it just reset, so the caller can log the recovery. The hold is what makes the reset health-gated rather than success-gated: only sustained readiness -
- * not a brief success between failures - clears the accrued failures and the cooldown escalation.
+ * Resets the governor to CLOSED if the browser has been continuously ready for at least healthHoldMs and there is something to reset. Called on the supervisor's
+ * periodic health tick. Returns whether this call performed the reset, so the caller can log the recovery exactly once. The hold is what makes the reset
+ * health-gated rather than success-gated: only sustained readiness - not a brief success between failures - clears the accrued failures and the cooldown escalation.
+ *
+ * The "something to reset" guard is what makes the return idempotent. Because readySince stays anchored for the browser's whole ready life, without the guard the
+ * hold would stay satisfied on every subsequent tick and the function would keep returning true - spamming the caller's recovery log every tick, including in the
+ * common case of a browser that simply launched cleanly and never degraded. Once the governor is back to its default CLOSED shape (no accrued failures, no cooldown
+ * escalation, not cooling), there is nothing to reset, so the function returns false and the recovery is reported exactly once per degradation-and-recovery cycle.
  * @param state - The governor state to update.
  * @param now - The current timestamp in milliseconds.
  * @param policy - The policy bounds.
- * @returns True when this call reset the governor to CLOSED.
+ * @returns True when this call reset the governor from a non-CLOSED state back to CLOSED.
  */
 export function noteSustainedHealth(state: LaunchGovernorState, now: number, policy: LaunchGovernorPolicy): boolean {
+
+  // Nothing to reset: the governor is already in its default CLOSED shape. Returning false here is what makes the reset, and the caller's recovery log, fire exactly
+  // once rather than on every tick once the hold has elapsed.
+  if((state.cooldownLevel === 0) && (state.cooldownUntil === null) && (state.failure.totalFailureCount === 0)) {
+
+    return false;
+  }
 
   if((state.readySince === null) || ((now - state.readySince) < policy.healthHoldMs)) {
 

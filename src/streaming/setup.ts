@@ -2,12 +2,13 @@
  *
  * setup.ts: Common stream setup logic for PrismCast.
  */
+import { BrowserSupersededError, BrowserUnavailableError, getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage,
+  unregisterManagedPage } from "../browser/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import { LOG, delay, extractDomain, formatError, raceWithTimeout, registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext,
   spawnFFmpeg, startTimer } from "../utils/index.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
-import { getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.ts";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.ts";
 import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
 import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
@@ -925,6 +926,17 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         url
       });
     } catch(error) {
+
+      // The browser supervisor's acquire() rejects with these while the capture system is recovering: BrowserUnavailableError when the relaunch governor is cooling
+      // (degraded), BrowserSupersededError when an in-flight launch was abandoned by a readiness-loss. Both are transient "retry me" conditions, so they map to a 503
+      // back-off (Channels DVR honors the Retry-After the route attaches to a 503). We handle them first and WITHOUT an error log: the supervisor raises the loud
+      // degraded alarm once on the transition, so the per-request 503s during the cooldown must stay quiet rather than spam an error on every Channels DVR retry.
+      // Their messages carry no capture-infrastructure signature, so without this explicit branch the classifier below would make them a 500 the client never backs
+      // off from. This must precede isCaptureInfrastructureError.
+      if((error instanceof BrowserUnavailableError) || (error instanceof BrowserSupersededError)) {
+
+        throw new StreamSetupError("Browser temporarily unavailable.", 503, "The capture system is recovering. Please retry shortly.", { cause: error });
+      }
 
       // createPageWithCapture handles its own cleanup on failure (closes page, kills FFmpeg).
       const errorMessage = formatError(error);

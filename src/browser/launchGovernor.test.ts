@@ -113,6 +113,33 @@ describe("launchGovernor: health-gated reset", () => {
     assert.equal(canAttemptLaunch(state, 1500 + 30000), true);
   });
 
+  test("reports the reset exactly once - a second tick after the reset returns false", () => {
+
+    // Regression: readySince stays anchored for the browser's whole ready life, so without the "nothing to reset" guard every tick after the hold would keep
+    // returning true and the adapter would log the recovery on every 30-second check. The reset must be reported exactly once per recovery.
+    const state = createLaunchGovernorState();
+
+    noteLaunchFailure(state, 0, POLICY);
+    noteLaunchFailure(state, 100, POLICY);
+    noteLaunchFailure(state, 200, POLICY);
+    noteLaunchSuccess(state, 1500);
+
+    assert.equal(noteSustainedHealth(state, 1500 + 30000, POLICY), true, "the tick that performs the reset reports true");
+    assert.equal(noteSustainedHealth(state, 1500 + 60000, POLICY), false, "a now-CLOSED governor reports no further reset");
+    assert.equal(noteSustainedHealth(state, 1500 + 90000, POLICY), false, "and keeps reporting false on later ticks");
+  });
+
+  test("a healthy governor that never degraded never reports a reset, however long it stays ready", () => {
+
+    // The common case: a browser launches cleanly and stays ready. noteSustainedHealth must stay false the whole time so the adapter never logs a spurious recovery.
+    const state = createLaunchGovernorState();
+
+    noteLaunchSuccess(state, 0);
+
+    assert.equal(noteSustainedHealth(state, 30000, POLICY), false, "no prior degradation means nothing to reset");
+    assert.equal(noteSustainedHealth(state, 600000, POLICY), false, "still nothing to reset after ten minutes of continuous health");
+  });
+
   test("a momentary success does not reset - flapping accrues and escalates", () => {
 
     const state = createLaunchGovernorState();
