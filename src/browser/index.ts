@@ -1058,60 +1058,45 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
 }
 
 /**
- * Handles browser disconnection events by cleaning up all active streams and resetting browser state. This function is called when the browser crashes, is closed
- * manually, or loses its connection for any other reason.
- *
- * When the browser disconnects, all pages (tabs) within it are immediately invalid and cannot be used. Any active streams using those pages will fail if they try
- * to interact with them. We proactively clean up by:
- * 1. Telling the supervisor readiness was lost (it transitions to absent), so the next stream request launches a fresh browser through the gate and governor
- * 2. Stopping all health monitors (they would fail trying to check page state)
- * 3. Removing all entries from activeStreams (the pages are gone)
- *
- * This ensures streams fail gracefully rather than hanging indefinitely trying to use closed pages. It runs only for a genuine, unsolicited disconnect; every
- * intentional teardown removes this listener via closeBrowserInstance first.
+ * Relinquishes the current browser's capture readiness and tears down everything that depended on it. This is the single source of truth for "the published browser
+ * is no longer usable" - shared by the disconnect handler (the browser crashed) and by invalidateBrowser (the browser is alive but capture-dead). It drops the
+ * supervisor's readiness first (which supersedes any launch in flight, clears the governor's health anchor, and transitions the lifecycle to absent so the next
+ * request relaunches through the gate and governor), clears the adapter-held metadata and caches, ends login mode, terminates every active stream (they were
+ * capturing on the now-unusable browser), and emits status. Callers log the specific cause; the alive-but-dead caller additionally closes the Chrome instance.
+ * @param streamTerminationReason - The reason recorded against each terminated stream, for the stream-end logs.
  */
-function handleBrowserDisconnect(): void {
+function relinquishBrowserReadiness(streamTerminationReason: string): void {
 
-  // Readiness is lost. Tell the supervisor first: this supersedes any launch in flight, clears the governor's health anchor, and transitions the lifecycle to
-  // absent, so getCurrentBrowser() relaunches through the gate and governor on the next call. This handler only ever runs for a genuine, unsolicited disconnect -
-  // closeBrowserInstance removes this listener before every intentional teardown, so a scheduled restart or orphan close never reaches here.
+  // Drop readiness first: supersede any in-flight launch, clear the governor's health anchor, and move the lifecycle to absent.
   supervisor.noteReadinessLost();
 
-  // Clear the adapter-held Chrome version and the cached user agent so stale values are not served between now and the next ready browser. We do not track Chrome's
-  // PID directly - killStaleChrome discovers orphans via the OS process table on the next startup, which removes a class of state that could go stale.
+  // Clear the adapter-held Chrome version and the cached user agent so stale values are not served before the next ready browser. We do not track Chrome's PID
+  // directly - killStaleChrome discovers orphans via the OS process table on the next startup, which removes a class of state that could go stale.
   currentChromeVersion = null;
   setChromeUserAgent(null);
 
-  // Cancel any pending restart quiet timer since the browser is already gone.
+  // Cancel any pending scheduled-restart quiet timer since the browser this readiness applied to is gone.
   if(restartQuietTimer) {
 
     clearTimeout(restartQuietTimer);
     restartQuietTimer = null;
   }
 
-  // Clear all channel selection caches. Cached state (guide row positions, discovered page URLs) may be stale in a new browser session.
+  // Clear all channel selection caches. Cached state (guide row positions, discovered page URLs) belongs to the old browser session.
   clearChannelSelectionCaches();
 
-  // Clear login state if login mode was active. We use clearLoginState() rather than endLoginMode() because the browser is already gone and we don't want to
-  // attempt any browser operations (page close, window minimize).
+  // End login mode if it was active. We use clearLoginState() rather than endLoginMode() because the browser may already be gone and we do not want to attempt any
+  // browser operations (page close, window minimize).
   if(clearLoginState() && !gracefulShutdownInProgress) {
 
-    LOG.info("Login mode ended due to browser disconnect.");
+    LOG.info("Login mode ended due to browser readiness loss.");
   }
 
-  // Only log the error for unexpected disconnects. During graceful shutdown, closeBrowser() set the flag and this disconnect is intentional.
-  if(!gracefulShutdownInProgress) {
+  // Terminate every active stream using the authoritative terminateStream for consistent cleanup. Kept even during graceful shutdown as a defensive measure -
+  // terminateStream() is idempotent, so if streams were already terminated by the caller, this harmlessly iterates an empty array.
+  for(const streamInfo of getAllStreams()) {
 
-    LOG.error("Browser disconnected unexpectedly. All active streams will be terminated.");
-  }
-
-  // Clean up all active streams using the authoritative terminateStream function for consistent cleanup. This is kept even during graceful shutdown as a defensive
-  // measure - terminateStream() is idempotent, so if streams were already terminated by the caller, this harmlessly iterates an empty array.
-  const streams = getAllStreams();
-
-  for(const streamInfo of streams) {
-
-    terminateStream(streamInfo.id, streamInfo.info.storeKey, "browser disconnect");
+    terminateStream(streamInfo.id, streamInfo.info.storeKey, streamTerminationReason);
   }
 
   // Emit system status after stream cleanup. Skip during graceful shutdown since no clients are listening and the process is exiting.
@@ -1119,6 +1104,53 @@ function handleBrowserDisconnect(): void {
 
     void emitCurrentSystemStatus();
   }
+}
+
+/**
+ * Handles browser disconnection events by relinquishing readiness and terminating all active streams. Called when the browser crashes, is closed externally, or
+ * otherwise loses its connection. It runs only for a genuine, unsolicited disconnect: every intentional teardown removes this listener via closeBrowserInstance
+ * first, so a scheduled restart, an orphan close, or an invalidation never reaches here. The browser is already gone, so there is nothing to close - relinquish
+ * readiness and the next request relaunches a fresh, gate-verified browser.
+ */
+function handleBrowserDisconnect(): void {
+
+  // Announce the unexpected disconnect before tearing down (the message says streams will be terminated, which relinquish then does). Suppressed during a full
+  // server shutdown, where closeBrowser() set the flag and the disconnect is intentional.
+  if(!gracefulShutdownInProgress) {
+
+    LOG.error("Browser disconnected unexpectedly. All active streams will be terminated.");
+  }
+
+  relinquishBrowserReadiness("browser disconnect");
+}
+
+/**
+ * Invalidates a specific browser that is still connected but can no longer capture - a mid-life capture death that no "disconnected" event would surface. It is the
+ * §3.5 single recovery action generalized to the alive-but-incapable case: relinquish readiness and terminate the browser's streams (exactly as a disconnect does),
+ * then additionally close the still-running Chrome so a leaked process is not left behind. The lifecycle is already absent after relinquish, so the next request
+ * relaunches a fresh, gate-verified browser through the supervisor. Exported for the streaming layer's passive mid-life detector to call once its probe confirms the
+ * browser cannot capture. noteReadinessLost stays internal: callers signal intent through this function, never the supervisor directly.
+ *
+ * The caller passes the exact instance it verified, and we invalidate only if it is still the published browser. The detector's probe runs in the background for
+ * seconds, during which the verified browser could have disconnected and been replaced by a fresh relaunch; without this identity guard we would tear down that
+ * new, healthy browser on the strength of a probe against the old, dead one.
+ * @param browser - The specific browser instance the caller verified as unable to capture.
+ * @param reason - A short description of why the browser is being invalidated, for the alarm log.
+ */
+export async function invalidateBrowser(browser: Browser, reason: string): Promise<void> {
+
+  // Only invalidate if this is still the published browser. If it was already superseded (a disconnect plus relaunch raced the caller's probe), there is nothing to
+  // do - the readiness loss was handled, and tearing down the current browser would wrongly disrupt a healthy, freshly-relaunched one.
+  if(supervisor.current() !== browser) {
+
+    return;
+  }
+
+  LOG.error("The browser is connected but can no longer capture (%s). Invalidating it for a governed relaunch.", reason);
+
+  relinquishBrowserReadiness("capture system failure");
+
+  await closeBrowserInstance(browser);
 }
 
 /**

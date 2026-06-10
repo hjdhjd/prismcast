@@ -3,12 +3,13 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserSupersededError, BrowserUnavailableError, getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, setCaptureProbe,
-  unregisterManagedPage } from "../browser/index.ts";
+import { BrowserSupersededError, BrowserUnavailableError, getBrowserInstance, getCurrentBrowser, getStream, invalidateBrowser, minimizeBrowserWindow,
+  registerManagedPage, setCaptureProbe, unregisterManagedPage } from "../browser/index.ts";
 import { LOG, delay, extractDomain, formatError, raceWithTimeout, registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext,
   spawnFFmpeg, startTimer } from "../utils/index.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
+import { getAllStreams, getNextStreamId } from "./registry.ts";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.ts";
 import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
 import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
@@ -24,7 +25,6 @@ import { getCachedEncryption } from "../native/probe.ts";
 import { getCaptureMimeType } from "./codec.ts";
 import { getDomainConfig } from "../config/sites.ts";
 import { getEffectiveViewport } from "../config/presets.ts";
-import { getNextStreamId } from "./registry.ts";
 import { getServiceDisplayName } from "../config/services.ts";
 import { installManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
@@ -71,9 +71,75 @@ let captureQueueDepth = 0;
 // many simultaneous stream requests competing for Chrome's single-threaded capture initialization.
 const CAPTURE_QUEUE_DEPTH_WARNING = 5;
 
+/**
+ * A reserved position in the capture-initialization queue. The caller awaits `ready` (the predecessor has cleared), runs its getStream init, then calls `release`
+ * so the next waiter may proceed. The caller chooses WHEN to release, which is the whole point: a real stream releases as soon as getStream settles, so the next
+ * init overlaps its post-init setup; the readiness probe releases only after its full teardown, so STOP_RECORDING settles before the next init starts.
+ */
+interface CaptureQueueSlot {
+
+  // Resolves once the predecessor capture has cleared, bounded by navigationTimeout so a single wedged getStream cannot block the queue forever. Rejects with
+  // "Capture queue wait timed out." on that timeout, having already released this slot so a timed-out waiter never wedges the queue for the next caller.
+  readonly ready: Promise<void>;
+
+  // Releases the slot for the next waiter. Idempotent (release-once), so the success path, the catch, and the timeout self-release can all call it safely.
+  readonly release: () => void;
+}
+
+/**
+ * Reserves the next position in the capture-initialization queue. This is the single place that advances `captureQueue`: every getStream initialization - real
+ * streams in createPageWithCapture and the mid-life readiness probe alike - serializes through it, because Chrome's tabCapture extension rejects concurrent
+ * getStream() initialization with "Cannot capture a tab with an active stream." The slot owns the queue mechanics (advance, depth accounting, bounded predecessor
+ * wait, release-once); the caller owns only the release timing.
+ * @returns The reserved slot.
+ */
+function acquireCaptureQueueSlot(): CaptureQueueSlot {
+
+  const previous = captureQueue;
+
+  captureQueueDepth++;
+
+  if(captureQueueDepth >= CAPTURE_QUEUE_DEPTH_WARNING) {
+
+    LOG.warn("Capture queue depth is %d. Multiple stream requests are competing for Chrome's capture initialization.", captureQueueDepth);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+  const { promise, resolve } = Promise.withResolvers<void>();
+
+  captureQueue = promise;
+
+  let released = false;
+
+  const release = (): void => {
+
+    if(!released) {
+
+      released = true;
+      captureQueueDepth--;
+      resolve();
+    }
+  };
+
+  // Bound the predecessor wait so a single stuck getStream cannot block all future captures indefinitely; on timeout we release this slot before surfacing the error
+  // so the next waiter is not blocked by our failure.
+  const ready = raceWithTimeout(previous, CONFIG.streaming.navigationTimeout, new Error("Capture queue wait timed out.")).catch((error: unknown) => {
+
+    release();
+
+    throw error;
+  });
+
+  return { ready, release };
+}
+
 // Maximum number of times createPageWithCapture() will retry when it detects that the page was closed while waiting in the capture queue (e.g., due to a browser
 // crash). An explicit guard prevents unbounded recursion.
 const MAX_PAGE_CLOSED_RETRIES = 3;
+
+// Maximum time in milliseconds to wait for a single capture probe's getStream() to respond. Shared by the launch-gate verification (verifyCaptureSystem) and the
+// mid-life re-verification, so both tiers exercise the capture path with the same bound.
+const CAPTURE_PROBE_TIMEOUT_MS = 5000;
 
 // Wire the capture-readiness probe into the browser launch gate. setup.ts owns getStream and the unrecoverable stale-mutex process.exit decision; browser/index.ts
 // owns the launch lifecycle. Injecting verifyCaptureSystem here (setup.ts already depends on browser/index.ts) keeps the dependency one-directional and breaks the
@@ -438,20 +504,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // The capture-pipeline composite, assigned once the raw capture stream and optional FFmpeg child exist and registered on the DisposableStack the moment it is built.
   let captureSession: CaptureSession;
 
-  // Capture queue release function, hoisted here so both the try and catch blocks can access it. The promise and resolver are created together via
-  // withResolvers when the queue entry is registered below. The once-guard prevents double-releasing from multiple code paths (success, catch, timeout).
-  let captureQueueReleased = false;
-  let releaseCaptureQueue: () => void;
-
-  const releaseCaptureOnce = (): void => {
-
-    if(!captureQueueReleased) {
-
-      captureQueueReleased = true;
-      captureQueueDepth--;
-      releaseCaptureQueue();
-    }
-  };
+  // Reserve our turn in the capture-initialization queue up front, so the catch can release it on any failure. The slot owns the queue mechanics; we choose when to
+  // release - here, as soon as getStream settles (below), so the next caller's init can overlap this stream's remaining setup.
+  const slot = acquireCaptureQueueSlot();
 
   // Initialize media stream capture.
   try {
@@ -477,42 +532,15 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       }
     } as unknown as Parameters<typeof getStream>[1];
 
-    // Serialize capture initialization. Wait for any previous capture to finish before calling getStream(), because Chrome's tabCapture extension rejects
-    // concurrent initialization attempts. On success, the lock is released immediately so the next caller can proceed. On failure, the lock is held until the
-    // catch block decides what to do - the catch block releases the lock after handling the error.
-    const previousCapture = captureQueue;
-
-    captureQueueDepth++;
-
-    if(captureQueueDepth >= CAPTURE_QUEUE_DEPTH_WARNING) {
-
-      LOG.warn("Capture queue depth is %d. Multiple stream requests are competing for Chrome's capture initialization.", captureQueueDepth);
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
-    const queued = Promise.withResolvers<void>();
-
-    captureQueue = queued.promise;
-    releaseCaptureQueue = queued.resolve;
-
-    // Guard against a permanently hung predecessor. If the previous capture doesn't complete within the navigation timeout, release our queue position and let the
-    // caller's error handling deal with it. This prevents a single stuck getStream() from blocking all future captures indefinitely.
-    try {
-
-      await raceWithTimeout(previousCapture, CONFIG.streaming.navigationTimeout, new Error("Capture queue wait timed out."));
-    } catch(error) {
-
-      // Release our queue position so subsequent captures aren't blocked by our failure.
-      releaseCaptureOnce();
-
-      throw error;
-    }
+    // Serialize capture initialization: wait for our turn before calling getStream(), because Chrome's tabCapture extension rejects concurrent initialization. The
+    // slot bounds this wait and self-releases on a wedged-predecessor timeout, so the resulting "Capture queue wait timed out." flows straight to the catch below.
+    await slot.ready;
 
     // After the queue wait, verify our page is still connected. If Chrome crashed while we were waiting, our page is dead and we need to start over with a
     // fresh page on the new browser. Release our queue position first so subsequent callers aren't blocked.
     if(page.isClosed()) {
 
-      releaseCaptureOnce();
+      slot.release();
       unregisterManagedPage(page);
 
       const retryCount = options._pageClosedRetries ?? 0;
@@ -527,9 +555,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     const streamPromise = getStream(page, streamOptions);
 
-    // Release the queue on success only. On failure, the catch block handles the release. The rejection handler is a no-op to suppress unhandled rejection
-    // warnings; the actual error handling happens in the catch block below.
-    void streamPromise.then(() => { releaseCaptureOnce(); }, () => { /* Suppress unhandled rejection; actual error handling is in the catch block below. */ });
+    // Release the slot as soon as getStream settles successfully, so the next caller's init can overlap this stream's remaining setup. On failure the catch block
+    // releases instead; the rejection handler is a no-op to suppress the unhandled-rejection warning, since the actual error handling happens in the catch below.
+    void streamPromise.then(() => { slot.release(); }, () => { /* Suppress unhandled rejection; actual error handling is in the catch block below. */ });
 
     const stream = await raceWithTimeout(streamPromise, CONFIG.streaming.navigationTimeout, new Error("Stream initialization timed out."));
 
@@ -612,15 +640,15 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       LOG.error("Stale capture state detected. puppeteer-stream's internal capture mutex is now permanently locked. The capture system is unrecoverable. " +
         "Exiting so the service manager can restart with a clean module state.");
 
-      releaseCaptureOnce();
+      slot.release();
 
       setTimeout(() => process.exit(1), 100);
 
       throw error;
     }
 
-    // For non-stale errors, release the capture queue so subsequent callers can proceed. Resource teardown is handled by the DisposableStack on unwind.
-    releaseCaptureOnce();
+    // For non-stale errors, release our queue slot so subsequent callers can proceed. Resource teardown is handled by the DisposableStack on unwind.
+    slot.release();
 
     throw error;
   }
@@ -959,6 +987,14 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       // single source of truth for this classification, shared with the browser supervisor's readiness detection.
       const isCaptureError = isCaptureInfrastructureError(errorMessage);
 
+      // A capture-infrastructure failure may mean the browser, though still connected, can no longer capture. Hand it to the passive mid-life detector, which (guarded
+      // and single-flight, in the background) re-verifies capture readiness and invalidates the browser for a governed relaunch if confirmed. Fire-and-forget: it must
+      // never delay this response.
+      if(isCaptureError) {
+
+        noteCaptureInfrastructureFailure(numericStreamId);
+      }
+
       throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.", { cause: error });
     }
 
@@ -1096,12 +1132,11 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
 
   const PROBE_MAX_ATTEMPTS = 3;
   const PROBE_RETRY_DELAY = 5000;
-  const PROBE_TIMEOUT = 5000;
 
   for(let attempt = 1; attempt <= PROBE_MAX_ATTEMPTS; attempt++) {
 
     // eslint-disable-next-line no-await-in-loop -- Sequential retries are intentional; each probe must complete before deciding whether to retry.
-    const result = await attemptCaptureProbe(browser, PROBE_TIMEOUT);
+    const result = await attemptCaptureProbe(browser, CAPTURE_PROBE_TIMEOUT_MS);
 
     // Probe succeeded.
     if(result === null) {
@@ -1208,4 +1243,104 @@ async function attemptCaptureProbe(browser: Browser, timeout: number): Promise<N
 
     return errorMessage;
   }
+}
+
+// Passive Mid-Life Capture-Death Detection.
+
+/* A browser can be capture-ready at launch and lose its capture capability later - the extension wedges, tabCapture stalls - without ever firing a "disconnected"
+ * event, so neither the launch gate nor the disconnect handler would catch it. This detector rides a signal that is already happening: a stream-setup failure
+ * carrying a capture-infrastructure signature. It is deliberately conservative. The guard (the failing stream is the only active stream) preserves per-stream
+ * isolation - if any other stream is active, the browser is either demonstrably capturing or those streams will trip their own circuit breakers and drain. The probe
+ * is the authoritative arbiter, serialized through the capture queue so it can never race a real stream's getStream init, and it runs in the background, single-flight,
+ * so it never delays a response or stacks up. On a confirmed failure, the one recovery action runs: invalidate the browser for a governed relaunch.
+ */
+
+// At most one mid-life re-verification runs at a time across the process, so a burst of capture-infrastructure failures triggers a single probe, not a storm.
+let captureReverificationInProgress = false;
+
+/**
+ * Runs one capture probe serialized through the capture queue, so it cannot race a concurrent getStream initialization (which would draw a spurious "Cannot capture
+ * a tab with an active stream"). It holds the queue slot across the probe's full teardown - getStream plus the STOP_RECORDING settle inside attemptCaptureProbe - so
+ * the next initialization does not start until the probe's capture is fully released.
+ * @param browser - The Chrome instance to probe.
+ * @param timeout - Maximum time in milliseconds to wait for the probe's getStream() to respond.
+ * @returns Null when the browser captured successfully, or an error message when it could not (including a wedged-queue timeout).
+ */
+async function probeCaptureSerialized(browser: Browser, timeout: number): Promise<Nullable<string>> {
+
+  const slot = acquireCaptureQueueSlot();
+
+  try {
+
+    await slot.ready;
+
+    return await attemptCaptureProbe(browser, timeout);
+  } catch(error) {
+
+    // The only throw here is a wedged-predecessor queue-wait timeout; attemptCaptureProbe returns its own failures as strings. A jammed capture queue is itself
+    // evidence the browser cannot capture, so surface it as a probe failure.
+    return formatError(error);
+  } finally {
+
+    slot.release();
+  }
+}
+
+/**
+ * Passive mid-life capture-death detection, called from the stream-setup failure path when the failure carries a capture-infrastructure signature. If the failing
+ * stream is the only active stream, it re-verifies the browser's capture capability with a queue-serialized probe in the background and, on confirmed failure,
+ * invalidates the browser for a governed relaunch - catching a browser that is still connected (no "disconnected" event) but can no longer capture. Fire-and-forget
+ * so the failing request's response is not delayed; single-flight so a burst of failures triggers at most one probe.
+ * @param failingStreamId - The numeric id of the stream whose setup just failed, excluded from the active-stream guard.
+ */
+function noteCaptureInfrastructureFailure(failingStreamId: number): void {
+
+  // Single-flight: a re-verification is already deciding the browser's fate; do not stack another.
+  if(captureReverificationInProgress) {
+
+    return;
+  }
+
+  // Isolation guard: only re-verify when the failing stream is the only active stream. Any other active stream means either the browser is demonstrably capturing
+  // (so this failure is stream-specific - never invalidate) or those streams will trip their own circuit breakers and drain, after which a later failure reaches
+  // this zero-other case. We never tear down a browser other streams are using.
+  if(getAllStreams().some((entry) => entry.id !== failingStreamId)) {
+
+    return;
+  }
+
+  // A readiness probe needs a connected browser to exercise. If none is published, a disconnect already handled the readiness loss.
+  const browser = getBrowserInstance();
+
+  if(!browser) {
+
+    return;
+  }
+
+  captureReverificationInProgress = true;
+
+  // Run in the background so the failing request's 503 response is not delayed by the probe, which can take up to the probe timeout.
+  void (async (): Promise<void> => {
+
+    try {
+
+      const failure = await probeCaptureSerialized(browser, CAPTURE_PROBE_TIMEOUT_MS);
+
+      if(failure !== null) {
+
+        // The probe confirmed the browser cannot capture though it is still connected. invalidateBrowser is the single recovery action - relinquish readiness,
+        // terminate the now-doomed streams, and close Chrome - so the next request relaunches a fresh, gate-verified browser. We pass the exact instance we probed:
+        // invalidateBrowser no-ops if it was already superseded by a disconnect-and-relaunch during the probe, so we never tear down a healthy replacement. A
+        // genuinely leaked module mutex, if that was the cause, surfaces again at the relaunch's gate probe and exits there; a merely-slow getStream that finally
+        // settles instead lets the relaunch recover.
+        await invalidateBrowser(browser, "a capture probe failed after a stream setup failure with no other active streams");
+      }
+    } catch(error) {
+
+      LOG.debug("streaming:setup", "Mid-life capture re-verification aborted: %s.", formatError(error));
+    } finally {
+
+      captureReverificationInProgress = false;
+    }
+  })();
 }
