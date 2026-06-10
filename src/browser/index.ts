@@ -111,6 +111,32 @@ function onSupervisorStateChange(next: BrowserLifecycle, previous: BrowserLifecy
   }
 }
 
+/* The capture-readiness probe is the capability tier of the launch gate: a real getStream against a throwaway page on the instance being launched - the authoritative
+ * "can this browser actually capture?" predicate that the original outage proved must run at every (re)launch, not only boot. It lives in streaming/setup.ts (which
+ * owns getStream and the unrecoverable stale-mutex process.exit precedent) and is injected here via setCaptureProbe, because setup.ts already depends on this module:
+ * injecting the function rather than importing it keeps the dependency one-directional and breaks the cycle, mirroring the browserAccessors seam between login.ts and
+ * index.ts. The probe must also take the local instance as a parameter rather than re-entering getCurrentBrowser, since launchReadyBrowser IS the in-flight launch -
+ * re-entering acquire() would join its own pending promise and deadlock.
+ */
+type CaptureProbe = (browser: Browser) => Promise<void>;
+
+/* The capture-readiness probe (capability tier of the launch gate). Null until streaming/setup.ts injects the real getStream probe at module load, which the import
+ * order guarantees runs before any launch: app.ts imports the streaming layer, whose module bodies evaluate during import resolution, before startServer's warm-up.
+ * launchReadyBrowser refuses to publish a browser if it is somehow still null (see the call site), rather than serving an unverified one.
+ */
+let captureProbe: Nullable<CaptureProbe> = null;
+
+/**
+ * Injects the capture-readiness probe used as the capability tier of the launch gate. Called once from streaming/setup.ts at module load (which always precedes any
+ * launch, since the streaming layer is imported during server startup). Separating the wiring from the call keeps browser/index.ts free of a streaming-layer import.
+ * @param probe - The probe to run against a freshly-launched browser; it resolves when the browser can capture and rejects otherwise (or exits the process for the
+ *   unrecoverable stale-mutex case).
+ */
+export function setCaptureProbe(probe: CaptureProbe): void {
+
+  captureProbe = probe;
+}
+
 // The data directory stores Chrome's profile data and the streaming extension files. Path resolution is centralized in config/paths.ts.
 
 // The stale page cleanup interval handle, stored so we can clear it during graceful shutdown. The interval periodically checks for browser pages that are not
@@ -1130,16 +1156,40 @@ async function launchReadyBrowser(): Promise<Browser> {
 
     LOG.debug("timing:browser", "Chrome process spawned. (+%sms)", browserElapsed());
 
-    // Readiness gate, handshake tier. Poll for the puppeteer-stream extension to finish initializing - it injects a START_RECORDING function into its options page
-    // context, so its presence is the extension's own readiness signal. We poll rather than fixed-delay so the browser is ready as soon as the extension loads
-    // (typically 200-500ms). On failure this now THROWS rather than warning-and-proceeding: an unregistered extension means chrome.tabs is undefined and every
-    // getStream() would hang, so the instance is not capture-ready and must not be published. (A later increment escalates this gate to the full verifyCaptureSystem
-    // capture probe, which exercises the exact getStream path.)
-    const extensionPage = await getExtensionPage(browser);
+    // Readiness gate, handshake tier (cheap, on-suspicion). Poll for the puppeteer-stream extension to finish initializing - it injects a START_RECORDING function
+    // into its options page context, so its presence is the extension's own readiness signal. We poll rather than fixed-delay so the browser is ready as soon as the
+    // extension loads (typically 200-500ms). On failure this THROWS rather than warning-and-proceeding: an unregistered extension means chrome.tabs is undefined and
+    // every getStream() would hang, so the instance is not capture-ready and must not be published. We reclassify the raw waitForFunction timeout into a
+    // capture-infrastructure error carrying "timed out" so the setup layer maps it to a 503 back-off (the same as the capability-tier probe failure), rather than a
+    // 500 the client would not back off from - an unregistered extension is a capture-infrastructure fault, and a fresh relaunch usually clears it.
+    try {
 
-    await extensionPage.waitForFunction("typeof START_RECORDING === 'function'", { timeout: CONFIG.browser.initTimeout });
+      const extensionPage = await getExtensionPage(browser);
+
+      await extensionPage.waitForFunction("typeof START_RECORDING === 'function'", { timeout: CONFIG.browser.initTimeout });
+    } catch(handshakeError) {
+
+      throw new Error("The capture extension handshake timed out after " + String(CONFIG.browser.initTimeout) + " ms.", { cause: handshakeError });
+    }
 
     LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
+
+    // Readiness gate, capability tier (the authoritative arbiter). Run the injected capture probe - a real getStream against a throwaway page on THIS instance - so
+    // "ready" means "really captured," not merely "the extension handshake responded." This is the predicate the original outage proved must run at every (re)launch:
+    // it exercises the exact getStream path that hangs when the extension is unregistered. A probe failure throws, so the supervisor counts the launch failure and the
+    // browser is never published; the unrecoverable stale-mutex case exits the process from inside the probe, since a Chrome restart cannot fix a leaked module mutex.
+    //
+    // If the probe is not wired (the seam left unset by a refactor - impossible in the normal import order, which always wires it before any launch), we reject the
+    // launch rather than publish a handshake-only browser: serving an unverified browser would be the "proceed and hope" path this design eliminates. The supervisor
+    // counts the rejected launch and, on repetition, degrades loudly.
+    if(!captureProbe) {
+
+      throw new Error("The capture-readiness probe is not wired; refusing to publish a browser whose capture capability was not verified.");
+    }
+
+    await captureProbe(browser);
+
+    LOG.debug("timing:browser", "Capture probe complete. (+%sms)", browserElapsed());
 
     // Detect display dimensions to determine the maximum supported viewport. This must happen before streaming so the preset system can degrade to a smaller preset
     // if needed.

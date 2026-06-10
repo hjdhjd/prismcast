@@ -2,9 +2,9 @@
  *
  * setup.ts: Common stream setup logic for PrismCast.
  */
-import { BrowserSupersededError, BrowserUnavailableError, getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage,
+import type { Browser, Frame, Page } from "puppeteer-core";
+import { BrowserSupersededError, BrowserUnavailableError, getCurrentBrowser, getStream, minimizeBrowserWindow, registerManagedPage, setCaptureProbe,
   unregisterManagedPage } from "../browser/index.ts";
-import type { Frame, Page } from "puppeteer-core";
 import { LOG, delay, extractDomain, formatError, raceWithTimeout, registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext,
   spawnFFmpeg, startTimer } from "../utils/index.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
@@ -74,6 +74,11 @@ const CAPTURE_QUEUE_DEPTH_WARNING = 5;
 // Maximum number of times createPageWithCapture() will retry when it detects that the page was closed while waiting in the capture queue (e.g., due to a browser
 // crash). An explicit guard prevents unbounded recursion.
 const MAX_PAGE_CLOSED_RETRIES = 3;
+
+// Wire the capture-readiness probe into the browser launch gate. setup.ts owns getStream and the unrecoverable stale-mutex process.exit decision; browser/index.ts
+// owns the launch lifecycle. Injecting verifyCaptureSystem here (setup.ts already depends on browser/index.ts) keeps the dependency one-directional and breaks the
+// cycle, mirroring the browserAccessors seam between login.ts and index.ts. It runs once at module load, before any browser launch.
+setCaptureProbe(verifyCaptureSystem);
 
 // Types.
 
@@ -1069,23 +1074,25 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
   });
 }
 
-// Startup Capture Verification.
+// Capture Readiness Verification.
 
 /**
- * Verifies that Chrome's capture system is functional before the server starts accepting requests. This detects stale tabCapture state left over from a previous
- * Chrome process - common during quick service restarts where the old process hasn't fully exited before the new one launches. Without this probe, the first stream
- * request would trigger the runtime stale capture handler, which exits the process because the puppeteer-stream mutex is permanently leaked.
+ * Verifies that a freshly-launched Chrome instance can actually capture, by running a real getStream against a throwaway page on it. This is the capability tier of
+ * the browser launch gate: browser/index.ts injects it via setCaptureProbe and runs it inside launchReadyBrowser, so a browser is published as ready only after its
+ * capture capability is verified - at boot AND at every relaunch, not just startup. It exercises the exact getStream path that hangs when the puppeteer-stream
+ * extension is unregistered, so it would have detected the original outage's dead extension immediately.
  *
- * The probe creates a temporary page, attempts a short capture, and tears down both cleanly. A 500ms delay after destroying the capture stream allows
- * puppeteer-stream's fire-and-forget STOP_RECORDING chain to complete before closing the page, preventing the stale capture cascade on the first real request.
+ * Each attempt creates a temporary page, attempts a short capture, and tears down both cleanly. A 500ms delay after destroying the capture stream allows
+ * puppeteer-stream's fire-and-forget STOP_RECORDING chain to complete before closing the page, preventing a stale capture cascade on the first real request.
  *
- * After a system reboot, Chrome's display stack or capture extension may not be ready when the service manager starts PrismCast. The probe retries up to
- * PROBE_MAX_ATTEMPTS times with a delay between attempts, giving the system time to settle before giving up. This prevents a rapid restart storm where the service
- * manager relaunches PrismCast repeatedly, each attempt orphaning a Chrome process and degrading the environment further.
+ * After a system reboot or a fresh relaunch, Chrome's display stack or capture extension may not be ready immediately. The probe retries up to PROBE_MAX_ATTEMPTS
+ * times with a delay between attempts, giving the system time to settle before giving up. At boot this prevents a rapid restart storm where the service manager
+ * relaunches PrismCast repeatedly, each attempt orphaning a Chrome process; at relaunch it provides in-launch settling before the supervisor counts a launch failure.
  *
- * If stale capture state is detected, the process exits immediately - Chrome restart cannot fix the leaked mutex, only a fresh process can.
+ * If stale capture state is detected, the process exits immediately - a Chrome restart cannot fix the leaked module-level mutex, only a fresh process can.
+ * @param browser - The Chrome instance to verify (the local instance being launched, passed in rather than re-acquired to avoid re-entering the launch in flight).
  */
-export async function verifyCaptureSystem(): Promise<void> {
+export async function verifyCaptureSystem(browser: Browser): Promise<void> {
 
   const PROBE_MAX_ATTEMPTS = 3;
   const PROBE_RETRY_DELAY = 5000;
@@ -1094,7 +1101,7 @@ export async function verifyCaptureSystem(): Promise<void> {
   for(let attempt = 1; attempt <= PROBE_MAX_ATTEMPTS; attempt++) {
 
     // eslint-disable-next-line no-await-in-loop -- Sequential retries are intentional; each probe must complete before deciding whether to retry.
-    const result = await attemptCaptureProbe(PROBE_TIMEOUT);
+    const result = await attemptCaptureProbe(browser, PROBE_TIMEOUT);
 
     // Probe succeeded.
     if(result === null) {
@@ -1107,7 +1114,7 @@ export async function verifyCaptureSystem(): Promise<void> {
     // restart with a clean process.
     if(result.includes("Cannot capture a tab with an active stream")) {
 
-      LOG.error("Startup probe detected stale capture state. puppeteer-stream's internal capture mutex is now permanently locked. Exiting so the service " +
+      LOG.error("The capture probe detected stale capture state. puppeteer-stream's internal capture mutex is now permanently locked. Exiting so the service " +
         "manager can restart with a clean module state.");
 
       process.exit(1);
@@ -1128,13 +1135,13 @@ export async function verifyCaptureSystem(): Promise<void> {
 }
 
 /**
- * Executes a single capture probe attempt. Creates a temporary page, tries to start a capture stream, and tears everything down cleanly.
+ * Executes a single capture probe attempt. Creates a temporary page on the given browser, tries to start a capture stream, and tears everything down cleanly.
+ * @param browser - The Chrome instance to probe.
  * @param timeout - Maximum time in milliseconds to wait for getStream() to respond.
  * @returns Null on success, or an error message string on failure.
  */
-async function attemptCaptureProbe(timeout: number): Promise<Nullable<string>> {
+async function attemptCaptureProbe(browser: Browser, timeout: number): Promise<Nullable<string>> {
 
-  const browser = await getCurrentBrowser();
   const page = await browser.newPage();
 
   registerManagedPage(page);

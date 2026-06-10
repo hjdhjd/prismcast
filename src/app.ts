@@ -36,7 +36,6 @@ import { setupRoutes } from "./routes/index.ts";
 import { stopPrecaching } from "./browser/precaching.ts";
 import { terminateStream } from "./streaming/lifecycle.ts";
 import { validateProfiles } from "./config/profiles.ts";
-import { verifyCaptureSystem } from "./streaming/setup.ts";
 
 /* The logging mode is set at startup based on the --console CLI flag. When console logging is enabled, the four standard console methods are wrapped to prepend a
  * formatTimestamp() prefix so console output matches the file logger's timestamp format. When file logging is used (the default), output goes to the configured
@@ -625,7 +624,9 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   killStaleChrome();
 
-  // Warm up browser.
+  // Warm up the browser. getCurrentBrowser() launches Chrome through the capture-readiness supervisor, whose launch gate now runs the real capture probe (the
+  // capability tier) at every launch - including this one. So a successful warm-up means capture has already been verified; there is no separate verification step.
+  // A stale-capture mutex exits the process from inside the probe, and any other gate failure rejects here and aborts startup, just as the old explicit probe did.
   try {
 
     await getCurrentBrowser();
@@ -640,21 +641,9 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // getEffectiveViewport() returns the true dimensions - ensuring the preroll resolution matches what Chrome MediaRecorder will actually produce.
   await generatePreroll();
 
-  // Verify the capture system works before accepting requests. This detects stale tabCapture state from a previous Chrome process and exits immediately if
-  // found, since the puppeteer-stream mutex would be permanently leaked. The probe also ensures the STOP_RECORDING cleanup chain completes before returning.
-  try {
-
-    await verifyCaptureSystem();
-  } catch(error) {
-
-    LOG.error("Capture system verification failed during startup: %s.", formatError(error));
-
-    throw error;
-  }
-
   // Minimize the browser window to reduce GPU usage and desktop clutter. The browser must be visible (not headless) for capture to work, but minimizing it reduces
-  // resource consumption. CDP allows us to control window state without affecting capture. We defer minimization until after display detection and capture
-  // verification complete, since both require the window in a normal state.
+  // resource consumption. CDP allows us to control window state without affecting capture. We defer minimization until after display detection and the launch-gate
+  // capture probe complete, since both require the window in a normal state.
   await minimizeBrowserWindow();
 
   // Start the background services and register each one's stop on an AsyncDisposableStack the moment it starts, so graceful shutdown can dispose them all wholesale
