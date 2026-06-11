@@ -41,7 +41,7 @@ function makeHarness(): {
     },
     now: (): number => env.clock,
     onStateChange: (next): void => { transitions.push(next.kind); },
-    policy: POLICY
+    policy: (): LaunchGovernorPolicy => POLICY
   };
 
   return { env, sup: createBrowserSupervisor(ports), transitions };

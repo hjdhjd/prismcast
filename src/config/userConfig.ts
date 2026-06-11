@@ -462,6 +462,42 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
     },
     {
 
+      description: "Failed browser relaunches within the window that trip the relaunch governor into a cooldown. The first failures relaunch immediately.",
+      envVar: "RELAUNCH_FAILURE_THRESHOLD",
+      label: "Relaunch Failure Threshold",
+      max: 20,
+      min: 1,
+      path: "recovery.relaunchFailureThreshold",
+      type: "integer"
+    },
+    {
+
+      description: "Time window for counting failed browser relaunches toward the governor trip.",
+      displayDivisor: 60000,
+      displayUnit: "minutes",
+      envVar: "RELAUNCH_FAILURE_WINDOW",
+      label: "Relaunch Failure Window",
+      max: 3600000,
+      min: 60000,
+      path: "recovery.relaunchFailureWindow",
+      type: "integer",
+      unit: "ms"
+    },
+    {
+
+      description: "Continuous capture-readiness required before the relaunch governor resets to its normal state.",
+      displayDivisor: 60000,
+      displayUnit: "minutes",
+      envVar: "RELAUNCH_HEALTH_HOLD",
+      label: "Relaunch Health Hold",
+      max: 600000,
+      min: 60000,
+      path: "recovery.relaunchHealthHold",
+      type: "integer",
+      unit: "ms"
+    },
+    {
+
       description: "Interval between stale page cleanup runs. Identifies and closes orphaned browser pages.",
       displayDivisor: 1000,
       displayUnit: "seconds",
@@ -685,6 +721,9 @@ export interface UserRecoveryConfig {
   circuitBreakerThreshold?: number;
   circuitBreakerWindow?: number;
   maxBackoffDelay?: number;
+  relaunchFailureThreshold?: number;
+  relaunchFailureWindow?: number;
+  relaunchHealthHold?: number;
   stalePageCleanupInterval?: number;
   stalePageGracePeriod?: number;
 }
@@ -1134,6 +1173,9 @@ export const DEFAULTS: Config = {
     circuitBreakerThreshold: 10,
     circuitBreakerWindow: 300000,
     maxBackoffDelay: 3000,
+    relaunchFailureThreshold: 3,
+    relaunchFailureWindow: 300000,
+    relaunchHealthHold: 120000,
     stalePageCleanupInterval: 60000,
     stalePageGracePeriod: 30000
   },

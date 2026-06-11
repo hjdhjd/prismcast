@@ -51,33 +51,39 @@ const { promises: fsPromises } = fs;
 // launch mutex now live inside the supervisor's lifecycle state, which is the single source of truth for "what is the browser doing, and is it usable?".
 let currentChromeVersion: Nullable<string> = null;
 
-/* The browser relaunch governor's policy. Conservative and biased eager-for-the-first-failure: the first relaunch failures cost no cooldown (the common transient
- * recovers in seconds), and only repeated failures within the window trip the governor into an escalating cooldown. These named constants are lifted to recovery.*
- * configuration in a later increment; defining them here keeps the supervisor wiring complete and tunable in one place meanwhile.
+/* The browser relaunch governor's escalating cooldown ladder: 5 minutes, then 15, then 60. This is the escalation SHAPE - a design constant - rather than an
+ * operational tolerance, so it stays in code while the scalar tolerances (failure threshold, window, health hold) are operator-tunable via CONFIG.recovery. Each
+ * successive trip cools down for the next-longer rung; the final rung is the ceiling.
  */
-const RELAUNCH_POLICY: LaunchGovernorPolicy = {
+const RELAUNCH_COOLDOWN_LADDER_MS: readonly number[] = [ 5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 1000 ];
 
-  // Escalating cooldown ladder: 5 minutes, then 15, then 60. Each successive trip cools down for the next-longer duration; the final rung is the ceiling.
-  cooldownLadderMs: [ 5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 1000 ],
+/**
+ * Builds the browser relaunch governor's policy from live configuration. The supervisor's policy port is a getter, so this is read fresh at each governor decision -
+ * an operator's change to the recovery.relaunch* settings takes effect without reconstructing the supervisor (and a deferred config reload that restarts the server
+ * applies it too). The scalar tolerances come from CONFIG.recovery (conservative, biased eager-for-the-first-failure: the first failures cost no cooldown; only
+ * repeated failures within the window trip the escalating cooldown); the cooldown ladder is the fixed escalation shape above.
+ * @returns The current launch governor policy.
+ */
+function buildRelaunchPolicy(): LaunchGovernorPolicy {
 
-  // Trip into a cooldown after three failed relaunches within the window.
-  failureThreshold: 3,
+  return {
 
-  // The five-minute window over which relaunch failures accrue toward a trip.
-  failureWindowMs: 5 * 60 * 1000,
-
-  // Two minutes of continuous capture-readiness resets the governor to its normal state, so a brief flap cannot wipe out accrued failures.
-  healthHoldMs: 2 * 60 * 1000
-};
+    cooldownLadderMs: RELAUNCH_COOLDOWN_LADDER_MS,
+    failureThreshold: CONFIG.recovery.relaunchFailureThreshold,
+    failureWindowMs: CONFIG.recovery.relaunchFailureWindow,
+    healthHoldMs: CONFIG.recovery.relaunchHealthHold
+  };
+}
 
 /* The one browser capture-readiness supervisor for the process lifetime. It owns the lifecycle state (absent/launching/ready/degraded/trialing) that subsumes the
  * former currentBrowser + browserLaunchPromise + browserLaunchTime trio, and routes every relaunch through one loop-safe governor. The adapter injects the impure
- * ports: launchReadyBrowser (spawn Chrome and run the readiness gate), closeBrowserInstance (teardown), realClock.now (time), and onSupervisorStateChange (the loud
- * degraded alarm and the recovery notice). All browser access flows through it: getCurrentBrowser is acquire(); the non-launching reads derive from current() and
- * currentLaunchTime(). The injected ports are hoisted function declarations, so referencing them here is safe even though they are defined further down the module.
+ * ports: launchReadyBrowser (spawn Chrome and run the readiness gate), closeBrowserInstance (teardown), realClock.now (time), buildRelaunchPolicy (live config
+ * bounds), and onSupervisorStateChange (the loud degraded alarm and the recovery notice). All browser access flows through it: getCurrentBrowser is acquire(); the
+ * non-launching reads derive from current() and currentLaunchTime(). The injected ports are hoisted function declarations, so referencing them here is safe even
+ * though they are defined further down the module.
  */
 const supervisor = createBrowserSupervisor({ close: closeBrowserInstance, launch: launchReadyBrowser, now: realClock.now, onStateChange: onSupervisorStateChange,
-  policy: RELAUNCH_POLICY });
+  policy: buildRelaunchPolicy });
 
 /**
  * Observes supervisor lifecycle transitions purely for operator-visible signals; it never affects the transition (the supervisor treats it as best-effort, so a

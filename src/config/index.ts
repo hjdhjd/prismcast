@@ -453,6 +453,11 @@ function collectHardErrors(config: Config): string[] {
   // Circuit breaker threshold.
   check(validatePositiveInt("CIRCUIT_BREAKER_THRESHOLD", config.recovery.circuitBreakerThreshold, 1, 100));
 
+  // Browser relaunch governor bounds.
+  check(validatePositiveInt("RELAUNCH_FAILURE_THRESHOLD", config.recovery.relaunchFailureThreshold, 1, 20));
+  check(validatePositiveInt("RELAUNCH_FAILURE_WINDOW", config.recovery.relaunchFailureWindow, 60000, 3600000));
+  check(validatePositiveInt("RELAUNCH_HEALTH_HOLD", config.recovery.relaunchHealthHold, 60000, 600000));
+
   // Stall threshold (float).
   check(validatePositiveNumber("STALL_THRESHOLD", config.playback.stallThreshold, 0.01, 5));
 
@@ -616,6 +621,8 @@ export function displayConfiguration(): void {
   printConfigRow("Max concurrent streams", CONFIG.streaming.maxConcurrentStreams);
   displayLine("  Circuit breaker threshold: %s failures in %s minutes",
     CONFIG.recovery.circuitBreakerThreshold, Math.round(CONFIG.recovery.circuitBreakerWindow / 60000));
+  displayLine("  Browser relaunch governor: trips at %s failures in %s minutes, %s minute health hold",
+    CONFIG.recovery.relaunchFailureThreshold, Math.round(CONFIG.recovery.relaunchFailureWindow / 60000), Math.round(CONFIG.recovery.relaunchHealthHold / 60000));
   printConfigRow("Chrome executable", CONFIG.browser.executablePath ?? "autodetect");
   displayLine("  HLS segment duration: %ss, max segments: %s", CONFIG.hls.segmentDuration, CONFIG.hls.maxSegments);
   printConfigRow("HDHomeRun emulation", CONFIG.hdhr.enabled ? "enabled (port " + String(CONFIG.hdhr.port) + ")" : "disabled");

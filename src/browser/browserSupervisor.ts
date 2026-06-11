@@ -32,8 +32,9 @@ export type BrowserLifecycle =
 
 /**
  * The injected dependencies. `launch` performs the real, gated launch - it must resolve only with a capture-ready browser and reject otherwise (the adapter runs
- * the readiness gate inside it). `now` is the time source (realClock.now in production, a fake in tests). `policy` bounds the governor. `onStateChange` is an
- * optional observer the adapter uses to log transitions and raise the loud degraded alarm; the supervisor itself stays log-free.
+ * the readiness gate inside it). `now` is the time source (realClock.now in production, a fake in tests). `policy` bounds the governor; it is a getter, read fresh
+ * at each governor decision, so the adapter can source the bounds from live configuration and an operator's change takes effect without reconstructing the
+ * supervisor. `onStateChange` is an optional observer the adapter uses to log transitions and raise the loud degraded alarm; the supervisor itself stays log-free.
  */
 export interface BrowserSupervisorPorts {
 
@@ -44,7 +45,7 @@ export interface BrowserSupervisorPorts {
   readonly launch: () => Promise<Browser>;
   readonly now: () => number;
   readonly onStateChange?: (next: BrowserLifecycle, previous: BrowserLifecycle) => void;
-  readonly policy: LaunchGovernorPolicy;
+  readonly policy: () => LaunchGovernorPolicy;
 }
 
 /**
@@ -149,7 +150,7 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
       // the state), and a superseded launch must not count a governor failure or move the state - the caller's request will retry.
       if(launchGeneration === generation) {
 
-        const outcome = noteLaunchFailure(governor, ports.now(), ports.policy);
+        const outcome = noteLaunchFailure(governor, ports.now(), ports.policy());
 
         // A trip moves us to degraded (cooling, no launches until the cooldown elapses); below the threshold we return to absent so the next request relaunches
         // immediately - the common transient costs no cooldown.
@@ -277,7 +278,7 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
       return false;
     }
 
-    return noteSustainedHealth(governor, ports.now(), ports.policy);
+    return noteSustainedHealth(governor, ports.now(), ports.policy());
   }
 
   return { acquire, current, currentLaunchTime, inspect: () => state, noteReadinessLost: handleReadinessLost, noteSustainedHealth: noteSustainedHealthTick };

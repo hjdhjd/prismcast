@@ -127,6 +127,20 @@ export interface RecoveryConfig {
   // The actual delay is: min(1000 * 2^attempt, maxBackoffDelay) + random(0, backoffJitter). Environment variable: MAX_BACKOFF_DELAY. Default: 3000ms.
   maxBackoffDelay: number;
 
+  // Number of failed browser relaunches within relaunchFailureWindow that trips the browser relaunch governor into a cooldown. Below this, the first relaunch
+  // failures retry immediately (no penalty for the common transient); at it, the governor backs off along an escalating cooldown so a persistently-broken browser
+  // stops thrashing Chrome. Biased eager-for-the-first-failure. Environment variable: RELAUNCH_FAILURE_THRESHOLD. Default: 3 failures.
+  relaunchFailureThreshold: number;
+
+  // Time window in milliseconds for counting failed browser relaunches toward relaunchFailureThreshold. Failures outside this window do not count, so isolated
+  // failures over a long period never trip the governor while a rapid burst does. Environment variable: RELAUNCH_FAILURE_WINDOW. Default: 300000ms (5 minutes).
+  relaunchFailureWindow: number;
+
+  // Continuous capture-readiness in milliseconds required before the browser relaunch governor resets to its normal state. The reset is health-gated rather than
+  // success-gated: only sustained readiness clears the accrued failures and the cooldown escalation, so a flapping browser (briefly ready, then dead) still accrues
+  // toward a trip. Environment variable: RELAUNCH_HEALTH_HOLD. Default: 120000ms (2 minutes).
+  relaunchHealthHold: number;
+
   // Interval in milliseconds between stale page cleanup runs. Browser pages can accumulate if cleanup fails during stream termination. This periodic cleanup
   // identifies and closes pages not associated with active streams, preventing memory exhaustion. Environment variable: STALE_PAGE_CLEANUP_INTERVAL. Default:
   // 60000ms (1 minute).
