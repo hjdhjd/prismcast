@@ -7,6 +7,7 @@ import { LOG, delay, formatError } from "../../utils/index.ts";
 import { installOncePerPage, logAvailableChannels } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
+import { logAutoDismiss } from "../consent.ts";
 
 /* Comcast's Polymer SPA (`TV-APP`) manages channel playback via an internal `channelMap` object. The `channelMap.channels` property is populated from the channelmap
  * API during page load and contains the complete channel lineup. Calling `_watchChannelEventHandler(null, { channel })` on the `TV-APP` element switches channels
@@ -80,10 +81,10 @@ const CALLSIGN_SUFFIXES =
     ...BASE_SUFFIXES
   ])].sort((a, b) => (b.length - a.length) || a.localeCompare(b));
 
-// Duration in milliseconds to poll for the Watch Now modal button. Matches the dismiss poll constants in video.ts.
+// Duration in milliseconds to poll for the Watch Now modal button, after which the modal is assumed not to be coming for this channel.
 const WATCH_NOW_POLL_DURATION = 5000;
 
-// Interval in milliseconds between Watch Now modal poll checks. Matches the dismiss poll constants in video.ts.
+// Interval in milliseconds between Watch Now modal poll checks. Mirrors the overlay-handling poll cadence in browser/consent.ts (OVERLAY_POLL_INTERVAL).
 const WATCH_NOW_POLL_INTERVAL = 500;
 
 // Unified channel cache entry combining discovery metadata and tuning data.
@@ -717,7 +718,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
         if(clicked) {
 
-          LOG.debug(config.debugCategory, "Watch Now modal dismissed.");
+          logAutoDismiss("modal", { label: "Watch Now" });
 
           return;
         }

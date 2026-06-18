@@ -213,6 +213,7 @@ export interface DebugCategory {
  */
 export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
 
+  { category: "browser:consent", description: "Automatic consent/overlay handling: cookie-banner rejects, embed-gate accepts, per-site modal dismissals." },
   { category: "browser:lifecycle", description: "Browser lifecycle: launch, close, stale page cleanup, restart." },
   { category: "browser:video", description: "Video context, fullscreen, volume locking, playback." },
   { category: "cdp", description: "Enables the Chrome DevTools Protocol proxy at /cdp. Feature gate, not a log filter - observable via its HTTP/WS surface." },

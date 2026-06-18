@@ -5,6 +5,7 @@
 import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError, raceWithTimeout, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.ts";
+import { consentOverlayPresent, startOverlayHandling } from "./consent.ts";
 import { invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
 import { CONFIG } from "../config/index.ts";
 
@@ -434,6 +435,33 @@ export async function navigateToPage(page: Page, url: string, profile: ResolvedS
 }
 
 /**
+ * Reloads the current page, mirroring navigateToPage's wait strategy. Used after an embedded-player consent gate is accepted: the gate's acceptance only creates
+ * the player iframe on a fresh load, so a single reload re-renders the page with consent now persisted, and the video resolves on the second pass.
+ * @param page - The Puppeteer page object.
+ * @param profile - The site profile, whose waitForNetworkIdle flag selects the reload wait condition.
+ */
+async function reloadPage(page: Page, profile: ResolvedSiteProfile): Promise<void> {
+
+  const waitUntil = profile.waitForNetworkIdle ? "networkidle2" : "load";
+
+  try {
+
+    await page.reload({ timeout: CONFIG.streaming.navigationTimeout, waitUntil });
+  } catch(error) {
+
+    // A reload timeout is often non-fatal - the player may already be present even if some background requests never settled. Mirror navigateToPage: warn and
+    // continue on timeout, propagate other errors.
+    if(error && ((error as Error).name === "TimeoutError")) {
+
+      LOG.warn("Page reload timed out after %sms.", CONFIG.streaming.navigationTimeout);
+    } else {
+
+      throw error;
+    }
+  }
+}
+
+/**
  * Finds the appropriate context (frame or page) containing the video element. Some streaming sites embed their video player in an iframe, which creates a
  * separate document context. We need to find this iframe and operate within it to access the video element.
  *
@@ -515,9 +543,11 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
     }
   }
 
-  // If no iframe contains a video, fall back to the main page. This is a potential issue for iframe-handling profiles since we expected the video to be in an
-  // iframe. Log a warning and verify the main page actually has a video element.
-  LOG.warn("No iframe contained video element. Falling back to main page context (searched %s frames).", Math.max(0, lastFrameCount - 1));
+  // No iframe contained a video, so fall back to the main page. This is a designed branch of the function's contract, not an error: it is reached transiently and
+  // recoverably whenever the embedded player has not loaded yet - most commonly on a consent-gated site's first pass, where the player iframe is withheld until the
+  // overlay handler accepts the consent and reloads. The authoritative failure signal, if the context genuinely has no playable video, is waitForVideoReady's
+  // timeout downstream; this fallback notice is therefore a DEBUG breadcrumb under browser:video rather than a WARN that would cry wolf on every gated tune.
+  LOG.debug("browser:video", "No iframe contained a video element; falling back to the main page context (searched %s frames).", Math.max(0, lastFrameCount - 1));
 
   // Check if the main page actually contains a video element.
   try {
@@ -529,7 +559,7 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
 
     if(!mainPageHasVideo) {
 
-      LOG.warn("Main page fallback: no video element found in main page either.");
+      LOG.debug("browser:video", "Main page fallback: no video element found in the main page either.");
     }
   } catch(_error) {
 
@@ -554,13 +584,14 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile with video selection preferences.
  */
-export async function waitForVideoReady(context: Frame | Page, profile: ResolvedSiteProfile): Promise<void> {
+export async function waitForVideoReady(context: Frame | Page, profile: ResolvedSiteProfile, signal?: AbortSignal): Promise<void> {
 
   // Use the per-domain video timeout if configured, otherwise fall back to the global default.
   const timeout = profile.videoTimeout ?? CONFIG.streaming.videoTimeout;
 
-  // First, wait for any video element to appear in the DOM. This catches cases where the video element is created dynamically by JavaScript.
-  await context.waitForSelector("video", { timeout });
+  // First, wait for any video element to appear in the DOM. This catches cases where the video element is created dynamically by JavaScript. The optional abort
+  // signal lets a caller abandon the wait cleanly - used when an embedded-player consent gate is accepted and the page is about to be reloaded.
+  await context.waitForSelector("video", { signal, timeout });
 
   // Scroll the video into view to satisfy Chrome's Intersection Observer autoplay policy. Chrome suppresses autoplay for offscreen videos, preventing them from
   // buffering and reaching readyState >= 3. Scrolling the video into the viewport unblocks autoplay. This is a no-op when the video is already visible.
@@ -599,7 +630,7 @@ export async function waitForVideoReady(context: Frame | Page, profile: Resolved
             return v.readyState >= 3;
           });
         },
-        { timeout }
+        { signal, timeout }
       );
     } else {
 
@@ -611,10 +642,17 @@ export async function waitForVideoReady(context: Frame | Page, profile: Resolved
 
           return !!video && (video.readyState >= 3);
         },
-        { timeout }
+        { signal, timeout }
       );
     }
   } catch(error) {
+
+    // An aborted wait is not a genuine readiness failure - the caller deliberately abandoned it (for example, after accepting an embedded-player consent gate that
+    // triggers a reload). Rethrow without the misleading timeout diagnostics so it can be ignored upstream.
+    if(signal?.aborted) {
+
+      throw error;
+    }
 
     // Capture the video element's state at the moment of timeout to aid diagnosis.
     const timeoutState = await context.evaluate((): string => {
@@ -1339,64 +1377,6 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
   }
 }
 
-// Maximum duration in milliseconds for the dismiss modal poll. The poll checks for the modal element at regular intervals during the first few seconds of the
-// video wait. If the modal hasn't appeared within this window, it's not coming.
-const DISMISS_POLL_DURATION = 5000;
-
-// Interval in milliseconds between dismiss modal poll checks.
-const DISMISS_POLL_INTERVAL = 500;
-
-/**
- * Polls for an intermittent modal element and clicks it if found. Runs as a fire-and-forget background task alongside waitForVideoReady() to catch modals that
- * render after page load but before video starts playing. The first check is immediate (zero-wait), followed by up to DISMISS_POLL_DURATION of periodic rechecks.
- * Once the modal is found and clicked (or the poll window expires), the function resolves silently - it never throws.
- * @param page - The Puppeteer page object.
- * @param selector - The CSS selector for the modal element to dismiss.
- */
-async function dismissModalPoll(page: Page, selector: string): Promise<void> {
-
-  const checks = Math.ceil(DISMISS_POLL_DURATION / DISMISS_POLL_INTERVAL);
-
-  for(let i = 0; i < checks; i++) {
-
-    // Delay between checks, but not before the first one - the first check is immediate.
-    if(i > 0) {
-
-      // eslint-disable-next-line no-await-in-loop
-      await delay(DISMISS_POLL_INTERVAL);
-    }
-
-    try {
-
-      // eslint-disable-next-line no-await-in-loop
-      const dismissed = await page.evaluate((sel: string): boolean => {
-
-        const el = document.querySelector(sel);
-
-        if(el) {
-
-          (el as HTMLElement).click();
-
-          return true;
-        }
-
-        return false;
-      }, selector);
-
-      if(dismissed) {
-
-        LOG.debug("browser:video", "Dismissed modal via '%s'.", selector);
-
-        return;
-      }
-    } catch {
-
-      // Page may have navigated or closed during the poll. Silently stop polling.
-      return;
-    }
-  }
-}
-
 /**
  * Optional behaviors for initializePlayback(). All fields are optional; an empty options object preserves the default tune flow.
  */
@@ -1473,7 +1453,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
   // Find the video context, which may be an iframe for embedded players. Some streaming sites embed their video player in an iframe, requiring us to search
   // through frames to find the one containing the video element.
-  const context = await findVideoContext(page, profile);
+  let context = await findVideoContext(page, profile);
 
   LOG.debug("timing:tune", "Video context found. (+%sms)", elapsed());
 
@@ -1496,15 +1476,67 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
     }
   }
 
-  // Wait for video to be ready (readyState >= 3). This ensures enough data is buffered for playback to begin smoothly. If a dismissSelector is configured, launch
-  // a background poll that checks for the modal during the first 5 seconds of the video wait. The poll is fire-and-forget - it never blocks the video wait. If the
-  // modal appears and is clicked, the video becomes unblocked and waitForVideoReady resolves normally.
-  if(profile.dismissSelector) {
+  // Wait for the video to become playable (readyState >= 3), while a fire-and-forget overlay-handling poll runs concurrently to reject cookie-consent banners,
+  // accept embedded-player consent gates, and dismiss the profile's per-site modal. The poll never blocks the wait. If it accepts an embed gate, the in-flight wait
+  // is abandoned and the page is reloaded once so the now-permitted player iframe is created and the video resolves on the second pass. If the wait fails with a
+  // consent prompt still blocking the page, an actionable detect-and-guide error replaces the cryptic selector timeout.
+  // Signals an embed-gate acceptance, so the video wait below can be raced against it. The gate resolves to "gate"; the video wait resolves to "video".
+  const embedGate = Promise.withResolvers<"gate">();
 
-    void dismissModalPoll(page, profile.dismissSelector);
+  // Stops the overlay poll once the wait settles, so it does not keep interacting with a page that is already done.
+  const overlayController = new AbortController();
+
+  // Abandons the in-flight video wait when an embed gate is accepted, so the superseded wait rejects silently instead of logging a misleading readiness timeout.
+  const waitController = new AbortController();
+
+  void startOverlayHandling(page, profile, {
+
+    onEmbedGateAccepted: (): void => {
+
+      embedGate.resolve("gate");
+    },
+    signal: overlayController.signal
+  });
+
+  try {
+
+    // Race the video wait against an embed-gate acceptance. A present gate is accepted within a few seconds, so it reliably wins against the much longer video
+    // timeout; a plain successful tune resolves "video" with the overlay poll a cheap no-op. A genuine readiness timeout rejects the race and is handled below.
+    const outcome = await Promise.race([ waitForVideoReady(context, profile, waitController.signal).then((): "video" => "video"), embedGate.promise ]);
+
+    if(outcome === "gate") {
+
+      // The site withheld the player iframe behind a consent gate that we accepted; consent now persists, so a single reload re-renders the page with the player
+      // present and the video resolves on the second pass. Abandon the now-superseded first wait so it does not log a spurious timeout as the page reloads.
+      LOG.debug("browser:consent", "Embedded-player consent gate accepted; reloading to resolve the player.");
+
+      waitController.abort();
+
+      await reloadPage(page, profile);
+
+      context = await findVideoContext(page, profile);
+
+      // The consent granted on the first pass persists, so the reload re-renders the page with the player iframe present and the video resolves. We intentionally do
+      // NOT run a fresh overlay poll alongside this second wait: the embed-gate heuristic would re-detect unrelated consent overlays elsewhere on the page (e.g.
+      // carousel video tiles on a site like france24), scroll one into view, and click it - yanking the main player offscreen and suppressing its autoplay. A consent
+      // overlay that genuinely persists past the reload falls through to the detect-and-guide path below.
+      await waitForVideoReady(context, profile);
+    }
+  } catch(videoError) {
+
+    // Playback never became ready. If a consent or cookie prompt is still blocking the page, surface actionable guidance in place of the cryptic selector timeout -
+    // the viewer dismisses it once in setup or login mode and the choice persists. Otherwise propagate the original error unchanged.
+    if(await consentOverlayPresent(page)) {
+
+      throw new Error("This site is displaying a consent or cookie prompt that is blocking playback. Open it once in setup or login mode and dismiss the prompt - " +
+        "your choice is remembered.");
+    }
+
+    throw videoError;
+  } finally {
+
+    overlayController.abort();
   }
-
-  await waitForVideoReady(context, profile);
 
   LOG.debug("timing:tune", "Video ready. (+%sms)", elapsed());
 
