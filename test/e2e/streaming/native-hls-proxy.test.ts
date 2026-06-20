@@ -13,13 +13,12 @@
  *
  * What is intentionally out of scope:
  *
- *   1. CDP-dependent paths in src/native/intercept.ts. Manifest URL interception requires a real Chrome via puppeteer-stream; that is e2e-with-browser
- *      territory and is not tested here. The proxy's stop() invokes removeManifestInterceptor on the supplied CDPSession, so the test passes a minimal fake
- *      that satisfies the three methods removeManifestInterceptor calls (removeAllListeners, send, detach). The fake is not pretending to be a real CDP
- *      session - it is the smallest object the production cleanup path can call without throwing.
+ *   1. CDP-dependent manifest URL interception. Capturing a service's manifest URL requires a real Chrome via puppeteer-stream and the CDP listener wiring in
+ *      browser/manifestInterceptor.ts; that is e2e-with-browser territory and is not tested here. The proxy itself does not consume a CDP session - its
+ *      NativeProxyOptions surface carries no cdpSession field, and its stop() simply flips lifecycle.stopped and cancels the token-refresh timer.
  *
- *   2. Token refresh and audio-only renditions. updateVariantUrl / updateAudioVariantUrl / updateCdpSession are post-startup tokenization paths driven by
- *      higher-layer recovery code. They are not exercised here; their unit-tier coverage lives elsewhere or warrants a future suite.
+ *   2. Token refresh and audio-only renditions. updateVariantUrl / updateAudioVariantUrl are post-startup tokenization paths driven by higher-layer recovery
+ *      code. They are not exercised here; their unit-tier coverage lives elsewhere or warrants a future suite.
  *
  *   3. Composite preroll playlists. prerollSegmentCount > 0 produces a different playlist shape; that path overlaps with the preroll subsystem and is
  *      tested at the preroll boundary.
@@ -28,7 +27,6 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import { bootStubServer, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { createCipheriv, randomBytes } from "node:crypto";
 import { getStream, registerStream, unregisterStream } from "../../../src/streaming/registry.ts";
-import type { CDPSession } from "puppeteer-core";
 import type { Clock } from "../../../src/utils/clock.ts";
 import type { NativeProxy } from "../../../src/native/proxy.ts";
 import assert from "node:assert/strict";
@@ -37,23 +35,6 @@ import { delay } from "../../../src/utils/delay.ts";
 import { deriveIvFromSequence } from "../../../src/native/decrypt.ts";
 import { makeFakeClock } from "../../../src/utils/clock.helpers.ts";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
-
-/* makeFakeCdpSession returns the smallest object that satisfies removeManifestInterceptor's call surface (removeAllListeners, send, detach). The proxy stores
- * this reference and invokes it on stop(); we do not pretend to model a real CDPSession because the integration boundary tested here is HTTP, not CDP.
- */
-function makeFakeCdpSession(): CDPSession {
-
-  // The fake is self-referential (removeAllListeners returns the same object so production code can chain). We cast to unknown then to CDPSession at the
-  // boundary to bypass the structural-subset check - the surface tested here is the three methods removeManifestInterceptor calls.
-  const fake: { detach: () => Promise<void>; removeAllListeners: () => unknown; send: () => Promise<void> } = {
-
-    detach: async (): Promise<void> => undefined,
-    removeAllListeners: (): unknown => fake,
-    send: async (): Promise<void> => undefined
-  };
-
-  return fake as unknown as CDPSession;
-}
 
 /* aes128Encrypt produces an encrypted segment matching the proxy's decryption contract: AES-128-CBC with PKCS7 padding (Node's default), key as a 16-byte
  * Buffer, IV derived from the media sequence number when no explicit IV is in the manifest. Returning the ciphertext bytes plus the plaintext lets tests
@@ -157,7 +138,6 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     const proxy = createNativeProxy({
 
       audioVariantUrl: null,
-      cdpSession: makeFakeCdpSession(),
       channelName: "stub-clear",
       encryption: "clear",
       keyUrl: null,
@@ -243,7 +223,6 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     const proxy = createNativeProxy({
 
       audioVariantUrl: null,
-      cdpSession: makeFakeCdpSession(),
       channelName: "stub-aes128",
       encryption: "aes128",
       keyUrl: stub.urlFor("/key"),
@@ -333,7 +312,6 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     const proxy = createNativeProxy({
 
       audioVariantUrl: null,
-      cdpSession: makeFakeCdpSession(),
       channelName: "stub-refresh",
       encryption: "clear",
       keyUrl: null,
@@ -366,8 +344,8 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
   test("stop() halts the polling loop so no further upstream traffic flows after termination", async () => {
 
-    /* The shutdown contract: stop() flips the stopped flag and detaches the CDP session. After stop() returns, no further fetch should hit the upstream stub.
-     * A regression that left the polling loop running would surface as continued upstream load on a stream the operator believed was terminated - with
+    /* The shutdown contract: stop() flips lifecycle.stopped and cancels the pending token-refresh timer. After stop() returns, no further fetch should hit the
+     * upstream stub. A regression that left the polling loop running would surface as continued upstream load on a stream the operator believed was terminated - with
      * bandwidth and rate-limit consequences in production.
      *
      * Architecture under test. The proxy's polling cadence routes through the Clock port (utils/clock.ts) so the test injects a fake clock whose sleep returns
@@ -430,7 +408,6 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     const proxy = createNativeProxy({
 
       audioVariantUrl: null,
-      cdpSession: makeFakeCdpSession(),
       channelName: "stub-stop",
       clock,
       encryption: "clear",
