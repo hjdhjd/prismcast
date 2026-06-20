@@ -138,8 +138,9 @@ describe("consistency probe - dangling-domain-profile detection", () => {
 
   test("a user domain mapping pointing at a missing profile surfaces a warn-level issue", async () => {
 
-    /* The check walks getUserDomains() and, for each domain carrying a profile reference, verifies the profile exists as a built-in. (User-defined profiles
-     * are accepted via the same registry, but built-in resolution is the relevant path here - the test mapping points at a profile that exists in neither.)
+    /* The check walks getUserDomains() and, for each domain carrying a profile reference, resolves it against both getBuiltinProfile() and the user-defined
+     * profile store (getUserProfiles). A domain surfaces as dangling only when its profile exists in neither table, so the test mapping points at a key that
+     * exists in no profile table at all.
      */
     const { logger, lines } = capturingLog();
 
@@ -169,6 +170,36 @@ describe("consistency probe - dangling-domain-profile detection", () => {
     const errors = lines().filter((line: CapturedLogLine) => (line.level === "error") && line.message.includes("dangling-domain-profile"));
 
     assert.equal(errors.length, 0, "dangling-domain-profile is warn-only by design");
+  });
+
+  test("a user domain mapping pointing at a user-defined profile is NOT flagged as dangling", async () => {
+
+    // Regression guard for the dual-table lookup: checkDomainProfiles resolves each domain's profile against builtin profiles AND the user-defined profile store
+    // (getUserProfiles), so mapping a domain onto a profile the user created is a valid configuration the save-path validator accepts and the probe must not warn
+    // about. Before the fix, the probe consulted only builtins and raised a false "dangling-domain-profile" for this exact case.
+    const { logger, lines } = capturingLog();
+
+    activeLogger = logger;
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    // Seed a user-defined profile and a domain mapping that points at it - both land in the user profile store, exactly what building a custom profile produces.
+    await mutateProfiles((data) => {
+
+      data.profiles["custom-profile-w7x2"] = { description: "user-defined regression profile" };
+      data.domains["test-domain-w7x2.example"] = { profile: "custom-profile-w7x2" };
+    });
+
+    await runConsistencyProbeAtStartup();
+
+    const danglingForOurDomain = lines().filter((line: CapturedLogLine) => {
+
+      return line.message.includes("dangling-domain-profile") && line.message.includes("test-domain-w7x2.example");
+    });
+
+    assert.equal(danglingForOurDomain.length, 0, "a domain mapped to a user-defined profile must not surface as a dangling reference");
   });
 });
 
@@ -212,12 +243,12 @@ describe("consistency probe - auto-fix exception swallow", () => {
     await writeFile(pathInDataDir(ctx, "config.json"), "{ this is not valid json", "utf-8");
     await writeFile(pathInDataDir(ctx, "config.json.bak"), "{ neither is this", "utf-8");
 
-    // The probe must complete without rejecting - the catch path swallows the autoFix failure and lets startup proceed.
+    // The probe must complete without rejecting - the per-settlement rejection inspection over Promise.allSettled logs the failure and lets startup proceed.
     await assert.doesNotReject(() => runConsistencyProbeAtStartup(),
       "the probe must complete cleanly even when an autoFix throws - the catch is the safety net for partial-progress startup");
 
-    // The catch path's diagnostic surfaces the failed category for operator triage. The exact log shape is "Consistency probe auto-fix failed for %s: %s." with
-    // the category as the first argument.
+    // The rejected-settlement branch surfaces the failed category for operator triage. The exact log shape is "Consistency probe auto-fix failed for %s: %s."
+    // with the category as the first argument.
     const swallowed = lines().filter((line: CapturedLogLine) => (line.level === "warn") && line.message.includes("Consistency probe auto-fix failed"));
 
     assert.ok(swallowed.length >= 1, "the swallowed autoFix failure is logged at warn level");

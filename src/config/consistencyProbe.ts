@@ -17,12 +17,12 @@
  */
 import { LOG, formatError } from "../utils/index.ts";
 import { getAllServiceTags, mutateEnabledServices } from "./services.ts";
+import { getUserDomains, getUserProfiles } from "./userProfiles.ts";
 import { CONFIG } from "./index.ts";
 import type { Channel } from "../types/index.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import { getBuiltinProfile } from "./sites.ts";
 import { getStoredUserChannels } from "./userChannels.ts";
-import { getUserDomains } from "./userProfiles.ts";
 
 /**
  * A single consistency issue detected by the probe. Each carries enough metadata for the probe runner to log uniformly and apply auto-fixes when present.
@@ -111,12 +111,13 @@ function checkVariantCanonicals(): ConsistencyIssue[] {
 }
 
 /**
- * Validates that every user domain mapping references a profile that exists either as a builtin or user-defined profile.
+ * Validates that every user domain mapping references a profile that exists - either a builtin profile (getBuiltinProfile) or a user-defined one (getUserProfiles).
  */
 function checkDomainProfiles(): ConsistencyIssue[] {
 
   const issues: ConsistencyIssue[] = [];
   const userDomains = getUserDomains();
+  const userProfiles = getUserProfiles();
 
   for(const [ domain, config ] of Object.entries(userDomains)) {
 
@@ -127,7 +128,9 @@ function checkDomainProfiles(): ConsistencyIssue[] {
       continue;
     }
 
-    if(getBuiltinProfile(profileKey)) {
+    // A domain mapping may target either a builtin profile or a user-defined one - the save-path validator (validateDomain) accepts both - so we consult both
+    // tables here. Checking only builtins would raise a false "missing profile" warning for a perfectly valid mapping onto a user-created profile.
+    if(getBuiltinProfile(profileKey) || userProfiles[profileKey]) {
 
       continue;
     }
