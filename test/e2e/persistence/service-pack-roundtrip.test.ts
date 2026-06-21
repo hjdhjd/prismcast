@@ -14,9 +14,11 @@
  *      byte-level diff.
  *   2. Merge contract on dirty state. importServicePack uses Object.assign to merge profiles, domains, and channels into the existing maps - import-takes-
  *      precedence on key collision; existing keys not in the pack survive untouched. A regression that wholesale-replaced state would lose the unrelated
- *      pre-existing entries. (Verified contract: src/config/servicePacks.ts:202-203, 224.)
- *   3. Malformed pack rejection produces a 400 envelope and writes nothing. The route handler at services.ts:550-557 calls parseServicePack first; on validation
- *      failure it short-circuits with status 400 before mutateProfiles or mutateChannels is ever called. profiles.json and channels.json must be byte-identical
+ *      pre-existing entries. (Verified contract: the Object.assign merges in importServicePack - src/config/servicePacks.ts:225-226 for profiles/domains, :249 for
+ *      channels.)
+ *   3. Malformed pack rejection produces a 400 envelope and writes nothing. The route handler at services.ts:549-564 calls parseServicePack first; on validation
+ *      failure it short-circuits with status 400 (the sendValidationError call at services.ts:561) before mutateProfiles or mutateChannels is ever called.
+ *      profiles.json and channels.json must be byte-identical
  *      pre/post.
  *   4. Export determinism. Two consecutive GET requests for the same profile produce byte-identical bodies - a property the persistence layer's stringifySorted
  *      provides for files but the export endpoint must equally provide for HTTP responses, since the export body is what gets re-imported elsewhere.
@@ -25,9 +27,9 @@
  * content-type and body parsing happen, and where the validation-rejection envelope shape is determined. A unit-level call to importServicePack would skip
  * all three. Tests 1, 2, and 3 specifically exercise behaviors that can only be observed through the wire surface.
  *
- * Merge contract investigation (per the roadmap's "PAUSE POINT LIKELY" note for this suite): src/config/servicePacks.ts:200-225 reads cleanly. Profiles
- * and domains are merged via Object.assign(data.profiles, pack.profiles) inside mutateProfiles; channels via Object.assign(data.channels, packChannels) inside
- * mutateChannels. Import-takes-precedence on key collision; pre-existing keys not in the pack survive. The contract is documented through the code shape,
+ * Merge contract investigation: src/config/servicePacks.ts:209-265 reads cleanly. Profiles and domains are merged via Object.assign(data.profiles, pack.profiles)
+ * inside mutateProfiles (servicePacks.ts:225-226); channels via Object.assign(data.channels, packChannels) inside mutateChannels (servicePacks.ts:249).
+ * Import-takes-precedence on key collision; pre-existing keys not in the pack survive. The contract is documented through the code shape,
  * not through a doc comment; pinning it here makes the contract explicit and catches a regression that flipped the merge to a wholesale replace.
  */
 import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
@@ -144,8 +146,8 @@ describe("service pack round-trip - export then import recovers state byte-ident
     assert.equal(profilesAfter, profilesBefore, "profiles.json must be byte-identical pre-export and post-import-after-wipe");
     assert.equal(channelsAfter, channelsBefore, "channels.json must be byte-identical pre-export and post-import-after-wipe");
 
-    // Sanity reassertion: the seeded keys are present in the post-import state. (If the file bytes match but somehow neither contained the seeded keys, the
-    // earlier assertions would have already failed - so this is belt-and-suspenders documentation of what the byte equality entails.)
+    // The byte-equality assertions above are the full correctness check; domainKey is destructured for documentation symmetry with the other seeded keys but is
+    // not referenced again in this test, so we void it to suppress the unused-variable lint warning.
     void domainKey;
   });
 });
@@ -154,8 +156,8 @@ describe("service pack import - merge contract on dirty state", () => {
 
   test("import merges into existing state with import-takes-precedence on key collision; unrelated existing keys survive untouched", async () => {
 
-    /* The merge contract. importServicePack at servicePacks.ts:200-225 uses Object.assign(data.profiles, pack.profiles) inside mutateProfiles - import-takes-
-     * precedence on collision; entries not in the pack are left intact. The same shape applies to domains and channels.
+    /* The merge contract. importServicePack at servicePacks.ts:209-265 uses Object.assign(data.profiles, pack.profiles) inside mutateProfiles (servicePacks.ts:225) -
+     * import-takes-precedence on collision; entries not in the pack are left intact. The same shape applies to domains and channels.
      *
      * Test design: build state A (profile "shared" with description "version A", profile "a-only", channel "a-channel"), capture as a pack via the export
      * endpoint, wipe, then seed state B (profile "shared" with description "version B", profile "b-only", channel "b-channel"), then import A's pack on top of
@@ -246,7 +248,8 @@ describe("service pack import - validation rejection", () => {
   test("a malformed pack body returns a 400 envelope and writes nothing to disk", async () => {
 
     /* Validation rejections must be transactional in the disk sense: a 400 response means profiles.json and channels.json are byte-identical pre/post. The
-     * route handler at services.ts:550-557 short-circuits with status 400 when parseServicePack returns errors, before either mutateProfiles or mutateChannels
+     * route handler at services.ts:549-564 short-circuits with status 400 (the sendValidationError call at services.ts:561) when parseServicePack returns errors,
+     * before either mutateProfiles or mutateChannels
      * is invoked. A regression that called the mutators before validating - or that partial-saved profiles before failing on channels - would corrupt state on
      * every malformed POST.
      *
@@ -302,7 +305,8 @@ describe("service pack export - determinism", () => {
 
   test("two consecutive exports of the same profile produce byte-identical response bodies", async () => {
 
-    /* The export endpoint emits via stringifySorted (services.ts:649) - the same sorted-keys serializer the persistence layer uses for byte-identity on file
+    /* The export endpoint emits via stringifySorted (the res.send(stringifySorted(pack) + "\n") call in the GET /config/profiles/export handler in services.ts) -
+     * the same sorted-keys serializer the persistence layer uses for byte-identity on file
      * writes. Two consecutive GETs of the same export must produce byte-identical response bodies; otherwise users sharing pack files between deployments would
      * see spurious diffs in version control or hash mismatches in distribution scenarios. The same property the persistence layer guarantees for files must hold
      * for the HTTP response that IS the file's distribution form.
@@ -331,9 +335,9 @@ describe("service pack export - determinism", () => {
 describe("importServicePack and exportServicePack - direct orchestrator coverage", () => {
 
   /* The roundtrip suite above drives import/export through the HTTP routes. Here we exercise the orchestrator functions directly so the coverage protocol's
-   * "every public API line is exercised" axis is closed for the orchestrator surface as well as for the route surface. The audit's S4-C7 / S4-C8 finding
-   * called out that importServicePack's options.skipChannels and "no channels" branches plus exportServicePack's matchedProfiles loop, includeDomains filter,
-   * includeChannels filter, and hdhrEnabled stripping all have no direct coverage; this block lands the missing assertions.
+   * "every public API line is exercised" axis is closed for the orchestrator surface as well as for the route surface. These orchestrator branches have no
+   * direct coverage through the HTTP route - importServicePack's options.skipChannels and "no channels" branches plus exportServicePack's matchedProfiles loop,
+   * includeDomains filter, includeChannels filter, and hdhrEnabled stripping; this block lands the missing assertions.
    */
   test("exportServicePack happy path: matched profiles, included domains, included channels, and hdhrEnabled stripped", async () => {
 

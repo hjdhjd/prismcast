@@ -48,8 +48,8 @@ const CHANNELMAP_API_PATTERN = "xtvapi.cloudtv.comcast.net/channelmap";
 // Polling interval for cold-cache wait. 200ms balances responsiveness against CPU overhead.
 const CACHE_POLL_INTERVAL = 200;
 
-// Broadcast network verbose names from callSignVoiceOverHint, mapped to standard abbreviations. Used to identify local affiliates and set the channelSelector to the
-// network abbreviation rather than the verbose name or callSign.
+// Broadcast network verbose names from callSignVoiceOverHint, mapped to standard abbreviations. Used to identify local affiliates and set the display name and
+// affiliate to the network abbreviation rather than the verbose name; the channelSelector always remains the raw callSign for guaranteed uniqueness.
 const BROADCAST_HINTS: Record<string, string> = {
 
   "american broadcasting company": "ABC",
@@ -1000,6 +1000,8 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     guideUrl: config.guideUrl,
     handlesOwnNavigation: true,
     label: config.label,
+    // This Polymer SPA has no cacheable direct watch URL - every tune is a full guide-page SPA load with in-page channel switching - so it opts out of the
+    // direct-URL tuning optimization; the UI uses this to emit slow-initialization warnings and omit it from the "later tunes skip the guide" description.
     noDirectTuneOptimization: true,
 
     // Profile for Comcast Polymer SPA live channels. The channelmap API at xtvapi.cloudtv.comcast.net returns the complete channel lineup. Tuning uses in-page SPA
@@ -1023,6 +1025,8 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
       resolveDirectUrl
     },
     strategyName: config.strategyName,
+    // Consecutive below-size-threshold ("tiny") segments tolerated before tab-replacement recovery, raised well above the default 10 (~20 seconds) because the
+    // Comcast Polymer SPA serves long static commercial placeholder frames; 150 (~5 minutes at two-second segments) avoids false-positive replacements.
     tinySegmentThreshold: 150
   };
 }

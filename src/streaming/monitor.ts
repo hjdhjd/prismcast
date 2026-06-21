@@ -248,8 +248,9 @@ export function monitorPlaybackHealth(
   const SEGMENT_STALL_TIMEOUT = 10_000;
 
   // Tiny segment detection thresholds. Used for continuous segment size monitoring to detect dead capture pipelines. When video capture dies but audio continues,
-  // segments contain only audio data. Audio is transcoded at a controlled bitrate (max 512Kbps), so audio-only segments are at most ~192KB for 3-second segments.
-  // The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset (480p/3Mbps ~ 750KB/segment).
+  // segments contain only audio data. Audio is transcoded at a controlled bitrate (max 512Kbps), so audio-only segments are at most ~128KB for 2-second segments (the
+  // default hls.segmentDuration). The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset
+  // (480p/3Mbps ~ 750KB/segment, also a 2-second basis).
   // The default count trigger (10) requires roughly 20 seconds of consecutive tiny segments before action is taken, balancing responsiveness against false positives.
   const TINY_SEGMENT_THRESHOLD = 512_000;
   const TINY_SEGMENT_COUNT_TRIGGER = 10;
@@ -338,8 +339,8 @@ export function monitorPlaybackHealth(
     recoveryAttempts: 0
   };
 
-  // Resolution degradation monitoring. Separate from the recovery escalation (L1-L4) which handles broken playback. Resolution degradation is a quality issue - the
-  // stream works but at lower-than-expected resolution. Uses its own tracking and two-step escalation: page reload, then tab replacement.
+  // Resolution degradation monitoring. Separate from the recovery escalation (L1-L3 plus tab replacement) which handles broken playback. Resolution degradation is a
+  // quality issue - the stream works but at lower-than-expected resolution. Uses its own tracking and two-step escalation: page reload, then tab replacement.
   const resolutionState: ResolutionState = {
 
     consecutiveDegradedReadings: 0,
@@ -1001,8 +1002,8 @@ export function monitorPlaybackHealth(
   }
 
   /**
-   * Performs page navigation recovery with validation. This is the single recovery function used by both the "video not found" and "escalation level 4" code paths,
-   * ensuring consistent behavior. The function:
+   * Performs page navigation recovery with validation. This is the single recovery function used by both the "video not found" and "escalation level 3" (page
+   * navigation) code paths, ensuring consistent behavior. The function:
    * 1. Calls tuneToChannel to reinitialize playback
    * 2. Checks for unexpected new tabs
    * 3. Validates the page URL

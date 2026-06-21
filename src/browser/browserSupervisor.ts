@@ -50,7 +50,7 @@ export interface BrowserSupervisorPorts {
 
 /**
  * The supervisor surface. acquire() is the lazy, gated launcher (the getCurrentBrowser core); current()/currentLaunchTime() are non-launching reads; the note*
- * methods feed lifecycle events; healthTick() drives the health-gated governor reset; inspect() exposes the state for the adapter and tests.
+ * methods feed lifecycle events; noteSustainedHealth() drives the health-gated governor reset; inspect() exposes the state for the adapter and tests.
  */
 export interface BrowserSupervisor {
 

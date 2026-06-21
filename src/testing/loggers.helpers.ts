@@ -32,9 +32,10 @@ export interface CapturedLogLine {
 }
 
 /**
- * No-op used as the implementation behind every silentLog method. Declared as a named function so it satisfies @typescript-eslint/no-empty-function (the rule
- * permits empty functions when the body intent is documented in the name) and so the same reference is shared by every method - micro-optimization, but it also
- * makes silentLog cheap to instantiate per test.
+ * No-op used as the implementation behind every silentLog method. It satisfies @typescript-eslint/no-empty-function because the body carries an explanatory
+ * comment, which is the rule's standard escape hatch for a deliberately empty function. The same reference is shared by every method so silentLog stays cheap to
+ * instantiate per test. This parallels the canonical noop exported from fn.helpers.ts; we keep a local copy here so the logger doubles carry no cross-helper
+ * import and the shared-reference shape lives next to the silentLog/silentBound consumers that depend on it.
  */
 function noop(): void {
 

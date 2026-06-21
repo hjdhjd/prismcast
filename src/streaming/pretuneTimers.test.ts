@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * pretuneTimers.test.ts: Unit tests for the pretune safety-timer registry. This is the leaf module that owns the per-stream reaper timers; it has no browser or CDP
- * dependency, so the cancel-a-real-pending-timer property at the heart of finding [31] - dropping a claimed pretuned stream's safety timer so it does not linger and
+ * dependency, so the cancel-a-real-pending-timer property - dropping a claimed pretuned stream's safety timer so it does not linger and
  * fire against an already-gone stream - is pinned directly here with node:test fake timers. A regression that removed the clearTimeout from clearPretuneSafetyTimer
- * (reintroducing the exact leak [31] eliminates) would fail the first test below.
+ * (reintroducing that exact leak) would fail the first test below.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearAllPretuneSafetyTimers, clearPretuneSafetyTimer, forgetPretuneSafetyTimer, setPretuneSafetyTimer } from "./pretuneTimers.ts";

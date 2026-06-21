@@ -310,7 +310,7 @@ describe("applyLoggingConfigChanges", () => {
 
   test("reports debugFilter as applied (live, no restart) and other logging fields as deferred", async () => {
 
-    // applyConfigNormalizations applies the debug filter live during reload, so the handler reports it applied and triggers no restart. httpLogLevel and maxSize
+    // commitDebugFilter applies the debug filter live during reload, so the handler reports it applied and triggers no restart. httpLogLevel and maxSize
     // are wired at startup, so they defer to a restart.
     const outcomes = await applyLoggingConfigChanges([
       { current: "tuning:hulu", path: "logging.debugFilter", previous: "" },

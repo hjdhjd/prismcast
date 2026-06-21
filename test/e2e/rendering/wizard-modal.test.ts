@@ -9,12 +9,12 @@
  * transitions), single-step dialog mode (no step indicator), and idempotency (same input -> same output). The controller's runtime navigation behavior is
  * client-side; tests pin the SURFACE the controller mounts to, not the controller itself - if the shell is correct, the controller has what it needs.
  *
- * Investigation finding (Suite 32): the WizardModalOptions interface has no `activeStep` parameter. The server always renders the first step as active; step
- * transitions are client-side via createWizardController(). The roadmap's Test 2 framing assumed the server emitted transitions; it does not. The test below
- * pins the actual contract: server marks step 1 active, all other steps non-active. A future refactor that adds server-side step rendering would intentionally
- * fail this test, signalling the contract change.
+ * The WizardModalOptions interface has no `activeStep` parameter. The server always renders the first step as active; step transitions are client-side via
+ * createWizardController(). The test below pins the actual contract: server marks step 1 active, all other steps non-active. A future refactor that adds
+ * server-side step rendering would intentionally fail this test, signalling the contract change.
  *
- * No harness required. generateWizardModal is a pure string-producing function with a single dependency on escapeHtml; tests assert directly against returned
+ * No harness required. generateWizardModal is a pure string-producing function whose only collaborators are the markup helpers escapeHtml and serializeAttrs
+ * (the latter also reached via generateWizardButton); tests assert directly against returned
  * HTML via regex/substring scans rather than booting the integration harness. This mirrors the rendering-tier pattern for pure renderers (channels-table.test.ts
  * does carry the harness because its renderer depends on the channel state initialized by initializePersistence; the wizard shell has no such dependency).
  */
@@ -62,7 +62,8 @@ describe("generateWizardModal - shell HTML structure", () => {
     // Header with title and the X close button.
     assert.match(html, /<div class="wizard-header[^"]*">/, "header carries the wizard-header class");
     assert.match(html, /<h3>Test Wizard<\/h3>/, "header includes the title in an h3");
-    // Attribute order is alphabetical via serializeAttrs, so we slice the button tag and check attributes independently.
+    // Attribute order follows the object-literal key order serializeAttrs preserves (alphabetical here by house style, not enforced by the helper), so rather
+    // than asserting an exact byte sequence we slice the button tag and check attributes independently.
     const closeMatch = /<button [^>]*class="wizard-close"[^>]*>✕<\/button>/.exec(html);
 
     assert.ok(closeMatch, "X close button is rendered");
@@ -83,7 +84,7 @@ describe("generateWizardModal - shell HTML structure", () => {
 
   test("step indicator: server renders step 1 as active and every other step without the active marker (client manages transitions)", async () => {
 
-    /* Investigation finding pinned. The server has no `activeStep` parameter on WizardModalOptions; it always emits step 1 active. The wizard controller in
+    /* The server has no `activeStep` parameter on WizardModalOptions; it always emits step 1 active. The wizard controller in
      * shared.ts is responsible for runtime step transitions - removing/adding `active` on data-step elements as the user clicks Next or Back. This test pins the
      * server-side contract: regardless of which step the user is currently on, the initially-rendered HTML marks ONLY step 1 as active.
      *

@@ -6,11 +6,11 @@
  * regardless of the active filter, leaving users to select services they never enabled. The unit suite for services.ts pins isServiceTagEnabled in isolation;
  * this suite pins the renderer's actual emission of `hidden` against a real channel listing assembled by the production buildServiceGroups pipeline.
  *
- * Test 4 reaches into a behavior that the audit flagged as worth verifying directly rather than guessing - what the dropdown renders as `selected` when the
- * user's stored selection points at a service that is currently filtered out. resolveServiceKey() in services.ts:969-991 falls back via findFirstEnabledVariant
- * to the first variant whose tag is enabled; this is the documented behavior, and the test pins it. Note: a regression that re-shapes that fallback (e.g., to
- * "leave the stored selection selected even when filtered" or to "fall back to the canonical key without consulting the filter") would surface here as a
- * different option carrying `selected`. The narrative comment in Test 4 documents the contract so a future reader knows the assertion is by design, not chance.
+ * Test 4 verifies directly (rather than assuming) what the dropdown renders as `selected` when the user's stored selection points at a service that is currently
+ * filtered out. resolveServiceKey() in services.ts:969-991 falls back via findFirstEnabledVariant to the first variant whose tag is enabled; this is the
+ * documented behavior, and the test pins it. Note: a regression that re-shapes that fallback (e.g., to "leave the stored selection selected even when filtered"
+ * or to "fall back to the canonical key without consulting the filter") would surface here as a different option carrying `selected`. The narrative comment in
+ * Test 4 documents the contract so a future reader knows the assertion is by design, not chance.
  *
  * Why no harness `bootApp`: the dropdown rendering is a pure server-side string-producing function (generateChannelRowHtml), exactly like channels-table.test.ts.
  * Booting an HTTP listener would obscure the surface under test - we want to see the renderer's output, not Express's response shape.
@@ -130,8 +130,8 @@ describe("variant dropdown rendering under the service filter", () => {
 
   test("the direct tag is never hidden even when enabledServices excludes everything else", async () => {
 
-    /* By-design behavior pinned in Suite 11.2 (resolved with user 2026-05-04): isServiceTagEnabled returns true for tag "direct" regardless of enabledServices,
-     * because direct-streaming sources (network-owned site URLs like abc.com) do not require a subscription and should always be available. abc has a site
+    /* By-design behavior: isServiceTagEnabled returns true for tag "direct" regardless of enabledServices, because direct-streaming sources (network-owned site
+     * URLs like abc.com) do not require a subscription and should always be available. abc has a site
      * variant alongside its cox/directv/hulu/etc. variants; the site variant carries the `direct` tag. Even with enabledServices = [hulu] - which would
      * otherwise hide every option - the `direct` option must render without hidden.
      *
@@ -166,9 +166,10 @@ describe("variant dropdown rendering under the service filter", () => {
      * refactor that changed either side independently (e.g., a renderer that ignored resolveServiceKey, or a resolver that returned the stale selection) would
      * surface the divergence.
      *
-     * Variant-iteration order: buildServiceGroups assembles variants in a pass that follows the source-order of the services declaration. For abcnews
-     * (services declared in order: cox, directv, hulu, sling, xfinity, yttv), with enabledServices = [hulu], findFirstEnabledVariant scans the variants array
-     * and returns the first one whose tag is in enabledServices. The asserted fallback is therefore the hulu variant (abcnews-hulu).
+     * Variant-iteration order: buildServiceGroups pushes the canonical entry first, then appends the remaining variant keys sorted alphabetically
+     * (services.ts:453, variantKeys.sort()). For abcnews the canonical is the cox entry (keyed as bare abcnews) followed by abcnews-directv, abcnews-hulu,
+     * abcnews-sling, abcnews-xfinity, abcnews-yttv. With enabledServices = [hulu], findFirstEnabledVariant scans the variants array and returns the first one
+     * whose tag is in enabledServices. The asserted fallback is therefore the hulu variant (abcnews-hulu).
      */
     await using ctx = await createIntegrationContext();
 
@@ -199,8 +200,8 @@ describe("variant dropdown rendering under the service filter", () => {
 
 describe("variant fallback contract under service filter", () => {
 
-  /* Phase 2.5 Suite 37 extends variant-display.test.ts with four tests that pin the variant fallback CONTRACT - the rule the renderer uses when the user's stored
-   * selection (or the canonical's own service tag) lands outside the active enabledServices filter. The contract is implemented in src/config/services.ts:
+  /* These four tests pin the variant fallback CONTRACT - the rule the renderer uses when the user's stored selection (or the canonical's own service tag) lands
+   * outside the active enabledServices filter. The contract is implemented in src/config/services.ts:
    * resolveServiceKey() returns findFirstEnabledVariant(canonicalKey) when the resolved service tag is filtered out, and falls through to the canonical/selection
    * when no variant is enabled (services.ts:969-991, 999-1019). The renderer at table.ts:943 passes the resolveServiceKey output to mark `selected` on the matching
    * <option>. The cumulative observation: the variant cell does NOT emit any cell-level indicator (banner, pill, "unavailable" badge) - the only signal of fallback
@@ -214,20 +215,21 @@ describe("variant fallback contract under service filter", () => {
    *   3. Canonical-tag-filtered, no user selection: alphabetically-first enabled variant wins (the resolveServiceKey "no selection + canonical filtered" branch).
    *   4. Direct-as-fallback - with a filter that excludes every non-direct tag, the canonical's `direct` tag is always enabled and wins as the fallback.
    *
-   * Test 1 is the investigation deliverable: rather than guessing whether the cell emits an "unavailable" badge, this test confirms the renderer does NOT add one.
-   * If a future redesign adds a badge, the assertion fails and the renderer's contract change must be intentional (the test is updated alongside the renderer).
+   * Test 1 confirms directly that the cell does NOT emit an "unavailable" badge. If a future redesign adds a badge, the assertion fails and the renderer's
+   * contract change must be intentional (the test is updated alongside the renderer).
    *
-   * No production gap surfaced during investigation: the renderer's behavior matches the user's stated design intent (binding follows service filter; identity
-   * persists). The "unavailable" framing in the roadmap was a possible-design probe, not an existing artifact.
+   * The renderer's behavior matches the design intent: binding follows the service filter while identity persists. There is no cell-level "unavailable"
+   * indicator - the dropdown's `selected` and `hidden` flags are the only signal.
    */
 
   test("no cell-level unavailable indicator: variant cell renders only the dropdown when stored selection is filtered out", async () => {
 
     /* Investigation pin. With the user's stored selection on yttv and enabledServices = [hulu], the variant cell <td> emits the dropdown <select>...</select> and
      * a "no available services" <em> placeholder (always present, hidden when isAvailableByService is true), but NO additional badge, banner, or text node
-     * indicating "your selection is unavailable." We assert this by counting the children of the variant <td>: exactly one <select> (the dropdown), one <em>
-     * (the placeholder), and no other elements. A future renderer that adds an "unavailable" indicator would change this count and require the test to be
-     * updated alongside the renderer change - which is the point: changes to the cell-level contract should be deliberate.
+     * indicating "your selection is unavailable." We assert this with negative substring checks on the sliced variant <td>: no class="unavailable", no
+     * class="fallback-", and no static <span class="provider-name"> - any of which would signal a cell-level indicator. A future renderer that adds an
+     * "unavailable" indicator would trip one of these checks and require the test to be updated alongside the renderer change - which is the point: changes to
+     * the cell-level contract should be deliberate.
      */
     await using ctx = await createIntegrationContext();
 
@@ -239,10 +241,10 @@ describe("variant fallback contract under service filter", () => {
 
     const { displayRow } = generateChannelRowHtml("abcnews", getProfiles());
 
-    /* Slice out the service column from the row. The display row's columns are emitted in fixed order (key, name, service, ...); we find the service <td> by
-     * its data-sort-value attribute which, for abcnews under [hulu] filter, sorts to a service name. Rather than slicing on the unstable display string we
-     * locate the column by the immediately-preceding <td> closure followed by the <select class="provider-select"...>. Using the select's class as a structural
-     * landmark keeps this resilient to incidental column-content changes elsewhere in the row.
+    /* Slice out the service column from the row. We locate the <td> that contains the provider-select element, using the select's class="provider-select" as
+     * the structural landmark. The tempered pattern - (?:[^<]|<(?!\/td>))*? on each side - matches anything except a closing </td>, ensuring the slice stays
+     * within a single <td>...</td> boundary and never crosses into an adjacent column. Anchoring on the select's class keeps this resilient to incidental
+     * column-content changes elsewhere in the row.
      */
     const selectMatch = /<td[^>]*>(?:[^<]|<(?!\/td>))*?<select class="provider-select"[^>]*>[\s\S]*?<\/select>(?:[^<]|<(?!\/td>))*?<\/td>/.exec(displayRow);
 
@@ -275,8 +277,9 @@ describe("variant fallback contract under service filter", () => {
      * flag must land on abcnews-hulu, not on any other variant. This pins the "fallback only fires when the stored selection is filtered out" branch of
      * resolveServiceKey - if the resolver erroneously fell back even when the selection was enabled, this test would fail loudly.
      *
-     * Using the same channel and the same enabledServices as the canonical-fallback test (test 1) - only the stored selection differs. The dropdown rendering
-     * is otherwise identical, so the contract pin is precise: selection-enabled vs selection-filtered is the single variable.
+     * Using the same channel and the same enabledServices as the canonical-fallback test (the "no user selection + canonical's tag filtered out" test,
+     * enumerated as #3 in the suite header) - only the stored selection differs. The dropdown rendering is otherwise identical, so the contract pin is precise:
+     * selection-enabled vs selection-filtered is the single variable.
      */
     await using ctx = await createIntegrationContext();
 
@@ -298,13 +301,13 @@ describe("variant fallback contract under service filter", () => {
   test("no user selection + canonical's tag filtered out: alphabetically-first enabled variant wins", async () => {
 
     /* The "no selection" branch of resolveServiceKey: when serviceSelections.get(canonicalKey) is undefined and the canonical's own tag is filtered out, the
-     * resolver returns findFirstEnabledVariant(canonicalKey). For abcnews (no site entry), the canonical's URL is the cox URL (per Suite 24's alphabetically-first
-     * resolution); its tag is "cox". With enabledServices = [hulu], the canonical is filtered out. findFirstEnabledVariant scans the group's variants in
-     * alphabetical order (set by buildServiceGroups at services.ts:453) and returns the first whose tag is in enabledServices.
+     * resolver returns findFirstEnabledVariant(canonicalKey). For abcnews (no site entry), the canonical's URL is the cox URL (cox is the alphabetically-first
+     * service among abcnews's variants); its tag is "cox". With enabledServices = [hulu], the canonical is filtered out. findFirstEnabledVariant scans the
+     * group's variants in alphabetical order (set by buildServiceGroups at services.ts:453) and returns the first whose tag is in enabledServices.
      *
-     * The variants for abcnews are: abcnews (canonical, cox tag), then abcnews-cox, abcnews-directv, abcnews-hulu, abcnews-sling, abcnews-xfinity, abcnews-yttv.
-     * Iteration encounters abcnews first (cox - filtered), then abcnews-cox (cox - filtered), then abcnews-directv (filtered), then abcnews-hulu (enabled).
-     * Therefore the dropdown's `selected` lands on abcnews-hulu.
+     * The variants for abcnews are: abcnews (canonical, cox tag - cox is the alphabetically-first service so it keys the bare canonical and emits no
+     * abcnews-cox variant), then abcnews-directv, abcnews-hulu, abcnews-sling, abcnews-xfinity, abcnews-yttv. Iteration encounters abcnews first (cox -
+     * filtered), then abcnews-directv (filtered), then abcnews-hulu (enabled). Therefore the dropdown's `selected` lands on abcnews-hulu.
      *
      * Note: this test uses no setServiceSelection call; serviceSelections is empty for abcnews. The resolver branches on the absence of a selection, not on the
      * filter status of an explicit selection - distinct from test 1's "selection-filtered" branch.
@@ -327,7 +330,7 @@ describe("variant fallback contract under service filter", () => {
 
   test("direct-as-fallback: when the filter excludes every non-direct tag, the canonical's direct tag wins", async () => {
 
-    /* The interaction between the always-on `direct` invariant (Suite 11.2 / Suite 23 test 3) and the fallback resolver. abc has a site URL on its canonical
+    /* The interaction between the always-on `direct` invariant and the fallback resolver. abc has a site URL on its canonical
      * (tag = direct), and the direct tag is enabled regardless of enabledServices content (isServiceTagEnabled returns true for "direct" unconditionally). With a
      * filter that names a tag matching no abc variant (e.g., "nonexistent"), every non-direct variant is filtered out but the canonical (direct) is not. With the
      * user's stored selection on a filtered tag (abc-yttv), resolveServiceKey returns findFirstEnabledVariant which scans alphabetically and returns the canonical

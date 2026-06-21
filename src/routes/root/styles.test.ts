@@ -114,7 +114,7 @@ describe("generateLandingPageStyles", () => {
 
   test("includes responsive media queries for narrow viewports", () => {
 
-    // Two @media (max-width: 768px) blocks are documented in the source: one for column hiding, one for toolbar stacking.
+    // The source defines at least two @media (max-width: 768px) blocks (column hiding, toolbar stacking, toast-container layout), so the assertion floors at two.
     const css = generateLandingPageStyles();
 
     const mediaQueries = css.match(/@media\s*\(max-width:\s*768px\)/g) ?? [];

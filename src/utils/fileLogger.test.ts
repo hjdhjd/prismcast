@@ -267,7 +267,8 @@ describe("initializeFileLogger - existing-file branch", () => {
   test("preserves existing file content when the log file already exists", async () => {
 
     // Boundary: when the log file already has content from a previous run, init must NOT truncate it - it should stat the existing size and append new entries
-    // alongside what was already there. This pins the stat-existing-file branch (line 97-99 in fileLogger.ts).
+    // alongside what was already there. This pins the stat-existing-file branch of initializeFileLogger in fileLogger.ts (the case where stat succeeds and
+    // approximateSize is seeded from the existing file size rather than the ENOENT create-empty path).
     await withTempDir(async (dir) => {
 
       const logPath = path.join(dir, "test.log");

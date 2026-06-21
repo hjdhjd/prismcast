@@ -1,12 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * registry.helpers.ts: Test-only helper for constructing StreamRegistryEntry fixtures. Co-located with the registry module. Used across streaming/{clients,
- * lifecycle, registry, hlsSegments}.test.ts and hdhr/discover.test.ts to build entries with sensible defaults that any single test can override.
+ * registry.helpers.ts: Test-only helper for constructing StreamRegistryEntry fixtures. Co-located with the registry module. Consumed across the streaming/ and
+ * hdhr/ test suites to build entries with sensible defaults that any single test can override.
  *
- * Before this helper, five test files each had their own makeRegistryEntry/makeStreamEntry/makeStream variant. Defaults differed subtly between them
- * (channelName: null vs. "test-channel", hls: createHLSState() vs. {} as cast, id sources, etc.) which made it harder to reason about test-data invariants
- * across files. This helper unifies the defaults; every test that needs an entry imports the same factory and overrides only the fields its scenario cares
- * about.
+ * This factory is the single source of test-data defaults, so every dependent suite reasons about the same StreamRegistryEntry invariants. Every test that
+ * needs an entry imports the same factory and overrides only the fields its scenario cares about, rather than maintaining a per-file variant whose defaults
+ * could drift subtly out of agreement.
  *
  * The streamIdStr default uses the production formatter (generateStreamId in setup.ts) so the fixture shape stays in lockstep with what production actually
  * writes. If production changes the format - e.g., a different request-id length or prefix shape - tests pick up the change automatically rather than asserting

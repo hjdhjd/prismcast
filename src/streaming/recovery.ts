@@ -62,7 +62,9 @@ export interface MonitorHandle extends Disposable {
   readonly [Symbol.dispose]: () => void;
 }
 
-// Recovery method names used in logging. Centralized to ensure consistency across start, success, and failure messages.
+// Recovery method names. These are the single source of truth for recovery methods: they serve as the log labels in start, success, and failure messages, as the
+// computed keys into the ATTEMPT_FIELDS and SUCCESS_FIELDS metrics-counter maps below, and as the return values of getRecoveryMethod. Changing a value here changes
+// all three in lockstep, so they are not free to edit for log cosmetics - editing one silently re-routes (or breaks) the corresponding metrics counter.
 export const RECOVERY_METHODS = {
 
   pageNavigation: "page navigation",

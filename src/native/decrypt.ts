@@ -10,8 +10,8 @@ import { createDecipheriv } from "node:crypto";
  * initialization vector (IV) is either explicitly provided in the #EXT-X-KEY tag or derived from the media sequence number per the HLS specification (RFC 8216
  * Section 5.2).
  *
- * This module contains pure functions with no module-level state. Key caching is handled per-stream by the proxy's own currentKey/currentKeyUrl variables, which
- * avoids cross-stream interference when multiple native streams run simultaneously with different keys.
+ * This module contains pure functions with no module-level state. Key caching is handled per-stream by the proxy's per-URL key cache (the keysByUrl Map), which
+ * avoids cross-stream interference when multiple native streams run simultaneously with different keys and supports mid-stream key rotation.
  */
 
 // Timeout for key fetch requests.

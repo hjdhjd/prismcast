@@ -181,7 +181,8 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
  * to PRESERVED_FIELDS without a matching seed here fails the suite loudly before any sub-test runs, and any orphan seed without a matching registry entry fails
  * the same way.
  *
- * Each value is chosen to differ from its DEFAULTS counterpart so filterDefaults preserves it (Gotcha #2 in the roadmap). schemaVersion and migrationsApplied
+ * Each value is chosen to differ from its DEFAULTS counterpart so filterDefaults preserves it (the seed must differ from the default to survive default-filtering).
+ * schemaVersion and migrationsApplied
  * are framework-managed metadata; the values used here mirror what the runtime would already write (current schema version 3 / a synthetic migration-applied
  * marker), so they round-trip without colliding with the file-store framework's migration runner.
  */

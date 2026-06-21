@@ -174,7 +174,8 @@ describe("installOrReplaceOnNewDocument", () => {
   test("removes the prior script before installing a fresh one on each subsequent call (never stacks)", async () => {
 
     // This is the core of the Hulu fix: re-tuning the same page with drifting arguments must run exactly one interceptor carrying current values. Each call removes
-    // the script installed by the previous call, then installs anew. A regression that dropped the removal would let scripts stack - the bug [14] this replaces.
+    // the script installed by the previous call, then installs anew. A regression that dropped the removal would let stale interceptor scripts stack and run
+    // competing window.fetch patches frozen at old argument values.
     const { page, removed } = makeReplacePage();
     const { install } = makeInstall();
 

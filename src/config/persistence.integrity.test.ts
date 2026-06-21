@@ -11,8 +11,9 @@
  *
  * Why mock.module + dynamic import. The validator-severity tests assert on LOG output. persistence.ts captures its LOG reference at static-import time; without
  * a mock seam the test cannot observe what the framework logged. The before() block below installs a mock.module on `../utils/index.ts` whose LOG is a proxy
- * that forwards to a per-test capturer, then dynamically imports persistence.ts so its captured LOG resolves to the proxy. The pattern follows health.test.ts
- * and pretune.test.ts precedent.
+ * that forwards to a per-test capturer, then dynamically imports persistence.ts so its captured LOG resolves to the proxy. The mock.module-then-dynamic-import
+ * mechanism follows the index.reload.test.ts and routes/health.test.ts precedent (both swap a module's exports via mock.module, then dynamically import the
+ * module under test so it binds the mocked dependency); the LOG-proxy that forwards each call to a per-test active logger is the variant this file adds.
  */
 import type * as PersistenceHelpers from "./persistence.helpers.ts";
 import type { CapturedLogLine, TestLogger } from "../testing.helpers.ts";

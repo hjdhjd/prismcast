@@ -81,7 +81,7 @@ describe("setupAssetEndpoints - GET /favicon.svg", () => {
 
   test("sets a one-day Cache-Control header", () => {
 
-    // The cache-control value is documented as "public, max-age=86400" (24 hours). Locking it.
+    // The cache-control value is documented as "public, max-age=86400" (24 hours). This test locks that value.
     return fetch(urlFor("/favicon.svg")).then(async (res) => {
 
       // Drain the body so the connection can be reused (or torn down) cleanly.

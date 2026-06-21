@@ -113,9 +113,9 @@ export interface UpgradeLifecycleStrategy {
 }
 
 /**
- * The PowerShell helper that the Windows handoff strategy spawns. Reads four positional parameters: the parent process ID, the optional service task name
- * (empty string when no service is registered), the upgrade command exactly as detection.ts produced it, and the optional working directory for npm-local
- * installs (empty string for npm-global).
+ * The PowerShell helper that the Windows handoff strategy spawns. Reads five positional parameters: the parent process ID, the optional service task name
+ * (empty string when no service is registered), the upgrade command exactly as detection.ts produced it, the optional working directory for npm-local
+ * installs (empty string for npm-global), and the log path the helper appends its progress to.
  *
  * Sequence:
  *

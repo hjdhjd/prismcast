@@ -15,9 +15,10 @@ describe("clientEscapeHtml", () => {
 
   test("encodes the five HTML special characters as entities, leaving ordinary text untouched", () => {
 
-    /* The five characters that can break out of a text or attribute context - & < > " ' - must each render as an entity. We pin the ampersand first because order
-     * matters (it must be escaped before the others so an already-entity-encoded value is not double-encoded by a naive sweep), then the angle brackets, the double
-     * quote (the attribute-breakout vector), and the apostrophe (HTML5 numeric reference &#39;). Ordinary alphanumerics pass through verbatim.
+    /* The five characters that can break out of a text or attribute context - & < > " ' - must each render as an entity. We pin each character to its entity: the
+     * ampersand, the angle brackets, the double quote (the attribute-breakout vector), and the apostrophe (HTML5 numeric reference &#39;). Assertion order is
+     * presentational, not load-bearing: the escaper is a single character-class regex pass that matches and replaces each character exactly once, so escaping order
+     * is irrelevant to correctness. Ordinary alphanumerics pass through verbatim.
      */
     assert.equal(clientEscapeHtml("&"), "&amp;");
     assert.equal(clientEscapeHtml("<"), "&lt;");

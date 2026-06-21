@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module. setup.ts has three pure exports - StreamSetupError, generateStreamId,
- * and validateStreamUrl - all of which earn full coverage here. The async exports (createPageWithCapture, setupStream, verifyCaptureSystem) drive a real Chrome
- * browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are deferred to e2e. Setup.ts has 10 throw sites in total -
- * we cover every throw reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
+ * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module. setup.ts has three synchronously testable pure exports -
+ * StreamSetupError, generateStreamId, and validateStreamUrl - all of which earn full coverage here. The async exports (createPageWithCapture, setupStream,
+ * verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are deferred to e2e.
+ * We cover every throw reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
  */
 import { StreamSetupError, generateStreamId, validateStreamUrl } from "./setup.ts";
 import { describe, test } from "node:test";

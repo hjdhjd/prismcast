@@ -5,13 +5,15 @@
  * path - a stale path resolver, a misrouted .bak, a write that targets the wrong file - would silently corrupt unrelated state.
  *
  * Why integration coverage adds value here: persistence.test.ts (unit tier) verifies the file-store framework primitives in isolation against synthetic stores.
- * It does not verify that the real production stores - each with their own beforeWrite/validate/migrations - coexist correctly. The historical bug 4afa8a0
- * (settings save wiping disabled-channel list, service filter, HDHomeRun device ID) was structurally a cross-store concern: a config save reached into channels-
- * adjacent state and lost it. Tests at this tier guard against that class of regression.
+ * It does not verify that the real production stores - each with their own beforeWrite/validate/migrations - coexist correctly. A historical settings-save bug
+ * reached into channels-adjacent state - the disabled-channel list, the service filter, and the HDHomeRun device ID - and lost it. That was structurally a
+ * cross-store concern: a config save reached into channels-adjacent state and lost it. Tests at this tier guard against that class of regression.
  *
  * The mutations below use the public mutator surface of each module (mutateChannels, mutateConfig, mutateProfiles) rather than reaching into the private file
  * stores - this exercises every layer above the framework (validators, beforeWrite transforms, post-write cache hydration, side effects) exactly as production
- * hits them. Health is excluded because it persists via a debounced timer; its isolation is covered separately by the health-state suite.
+ * hits them. The first describe block excludes health from its byte-comparison assertions because health persists via a debounced timer, which makes
+ * immediate byte snapshots timing-sensitive. Health's cross-store isolation is instead covered by this file's second describe block
+ * ("health.json cross-store isolation"), which waits on the documented flush window before snapshotting.
  *
  * The on-disk shape of channels.json is flattened by prepareChannelsForWrite: schemaVersion, migrationsApplied, and channel entries are top-level keys
  * (channels are NOT nested under a "channels" property). Assertions therefore read raw bytes or operate on the flattened top-level keys rather than assuming
@@ -26,7 +28,7 @@ import { mutateConfig } from "../../../src/config/userConfig.ts";
 import { mutateProfiles } from "../../../src/config/userProfiles.ts";
 import { readFile } from "node:fs/promises";
 
-// Files this suite cares about. Each entry is a (main, .bak) pair the captureAllFiles helper reads.
+// Files this suite cares about. captureAllFiles reads each entry's main file and its .bak counterpart.
 const PERSISTED_FILES = [ "channels.json", "config.json", "profiles.json" ] as const;
 
 /**

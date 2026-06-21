@@ -23,8 +23,8 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin invariants, not historical incidents. "renderStreamsTable emits a row per stream with the data-id attribute" is the contract; "the d2ee7be regression
- *     where rows lost their data-id" is a symptom to derive coverage from but not the test name.
+ *   - Pin invariants, not historical incidents. "renderStreamsTable emits a row per stream with the data-id attribute" is the contract; a regression that dropped
+ *     the data-id attribute from rendered rows is a symptom to derive coverage from but not the test name.
  *   - For pure functions, prefer literal inputs and direct return-value assertions. No DOM context, no externals plumbing.
  *   - For DOM mutators, build the HandlerContext via the file-local makeHandlerContext factory and let createDomTestContext provide the rendered page fixtures.
  *   - For SSE handlers, the assertion targets are state mutations, recorded externals invocations, and DOM side effects.
@@ -175,8 +175,9 @@ after(() => {
 
 /**
  * Helper: cast the happy-dom Document to lib.dom Document. The structural compatibility is high enough that handler code runs cleanly against happy-dom's
- * Document, but the TS types diverge (happy-dom has its own Document class). The cast is unsafe-by-types and safe-by-runtime, which is the standard pattern in
- * this tier - the same cast appears in shared-runtime/config-runtime style assertions on .style.display via evaluate().
+ * Document, but the TS types diverge (happy-dom has its own Document class). The cast is unsafe-by-types and safe-by-runtime. It is specific to this suite because
+ * we import the handlers as TypeScript and call them with a happy-dom Document directly; the sibling shared/channels/config runtime suites take a structurally
+ * different approach (executing emitted script strings via runScripts) and so do not need this Document cast at all.
  */
 function asDomDocument(ctx: DisposableDomTestContext): Document {
 
@@ -187,9 +188,10 @@ describe("status.handlers: createInitialState", () => {
 
   test("returns the canonical empty state with rAF gates open and watchdog timestamps zeroed", () => {
 
-    /* The IIFE in status.ts uses createInitialState as the seed for its module-scope state; tests use it as the default for HandlerContext fixtures. The shape
-     * has to stay stable: any new field added here must also flow through the IIFE's literal in status.ts (the comment in createInitialState calls this out).
-     * We pin every field so a regression that drops or renames any of them surfaces here.
+    /* The IIFE in status.ts does NOT call createInitialState; it hand-mirrors this shape as its own `const state` object literal (status.ts:55-63), while the tests
+     * use createInitialState as the default for HandlerContext fixtures. The two are parallel definitions kept in sync by hand, so the field shape has to stay
+     * stable: any new field added here must also be added to the IIFE's literal in status.ts, and vice versa. This assertion is exactly the drift guard - we pin
+     * every field so a regression that drops or renames any of them surfaces here.
      */
     const state = handlers.createInitialState();
 
@@ -425,7 +427,7 @@ describe("status.handlers: getDomain (pure)", () => {
 
   test("returns the last two hostname parts for multi-segment hostnames", () => {
 
-    /* The display label collapses watch.example.com to example.com so the popover stays scannable. We pin the multi-segment, two-segment, and IP-address cases
+    /* The display label collapses watch.example.com to example.com so the popover stays scannable. We pin the multi-segment, two-segment, and 5+-segment cases
      * so a regression that switched the slice direction (which would render 'watch.example' for watch.example.com) surfaces here.
      */
     assert.equal(handlers.getDomain("https://watch.example.com/path"), "example.com");
@@ -666,7 +668,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
 
   test("hardware-accelerated capture prefixes the lightning bolt", () => {
 
-    /* The hardware-accelerated branch prepends the bolt; non-accelerated does not. The bolt is &#9889; (lightning bolt emoji is "⚡") - we pin its presence.
+    /* The hardware-accelerated branch prepends the literal lightning-bolt character (⚡, U+26A1); non-accelerated does not - we pin its presence.
      */
     const html = handlers.renderDetailCodec(makeStream({ captureCodec: "h264", hardwareAccelerated: true }));
 

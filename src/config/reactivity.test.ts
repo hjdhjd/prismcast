@@ -275,7 +275,7 @@ describe("applyConfigChanges", () => {
     let aResolve: (() => void) | undefined;
     let bResolve: (() => void) | undefined;
 
-    // Both handlers block until the test releases them. Promise.all in applyConfigChanges should hold open until both resolve.
+    // Both handlers block until the test releases them. Promise.allSettled in applyConfigChanges should hold open until both resolve.
     const aGate = new Promise<void>((resolve) => { aResolve = resolve; });
     const bGate = new Promise<void>((resolve) => { bResolve = resolve; });
 

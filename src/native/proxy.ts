@@ -38,7 +38,7 @@ const MAX_MANIFEST_FAILURES = 3;
 // Maximum consecutive segment fetch failures before reporting an error.
 const MAX_SEGMENT_FAILURES = 5;
 
-// Manifest poll backoff base delay and cap. On success, the poll interval returns to the base delay (half the target duration, typically ~3s). On failure, the delay
+// Manifest poll backoff base delay and cap. On success, the poll interval returns to the base delay (a fixed 3000ms, ~half a typical 6s segment). On failure, the delay
 // doubles on each consecutive failure up to the cap. Jitter of +/-20% prevents multiple streams from retrying in lockstep after a shared CDN outage.
 const MANIFEST_BACKOFF_BASE = 3000;
 const MANIFEST_BACKOFF_CAP = 15000;

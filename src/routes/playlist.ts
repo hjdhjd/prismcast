@@ -193,7 +193,8 @@ export function generatePlaylistContent(baseUrl: string, serviceFilter?: Include
       }
     }
 
-    // We use the channel key as the channel-id and the guide title (falling back to channel name) for display. HLS URLs are used for Channels DVR compatibility.
+    // We use the channel key as the channel-id and the guide title, falling back to the channel name and then to the channel key, for display. HLS URLs are used
+    // for Channels DVR compatibility.
     const displayName = channel.guideTitle ?? channel.name ?? name;
     const streamUrl = baseUrl + "/hls/" + name + "/stream.m3u8";
 

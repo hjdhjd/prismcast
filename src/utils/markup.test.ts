@@ -1,8 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * markup.test.ts: Unit tests for the markup-escape primitives in markup.ts. The two surface functions (escapeHtml, escapeXml) share an internal regex callback;
- * the suite pins the exact entity mapping for each metacharacter for both flavors, locks surrounding-text passthrough, and asserts the apostrophe entity differs
- * between HTML5 (&#39;) and XML (&apos;) so a future regression in either entity table or the shared regex surfaces immediately.
+ * markup.test.ts: Unit tests for the markup-escape primitives in markup.ts. This suite covers the escape functions (escapeHtml, escapeXml), which share an
+ * internal regex callback; it pins the exact entity mapping for each metacharacter for both flavors, locks surrounding-text passthrough, and asserts the apostrophe
+ * entity differs between HTML5 (&#39;) and XML (&apos;) so a future regression in either entity table or the shared regex surfaces immediately. The module's third
+ * export, serializeAttrs, is the attribute serializer; it delegates value encoding to escapeHtml and is intentionally out of scope here, exercised through its
+ * renderer callers rather than this primitive suite.
  */
 import { describe, test } from "node:test";
 import { escapeHtml, escapeXml } from "./markup.ts";

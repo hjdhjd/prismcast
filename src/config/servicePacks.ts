@@ -49,7 +49,8 @@ export interface ImportSummary {
 }
 
 /**
- * Parses and validates a raw service pack import. Checks the version field, validates profiles and domains via the userProfiles validation functions.
+ * Parses and validates a raw service pack import. Checks the version field, validates profiles and domains via the userProfiles validation functions, validates
+ * channel structure (each channel requires 'name' and 'url'), and sanitizes the pack name and channel string fields to strip non-printable characters.
  * @param data - The raw JSON data to parse.
  * @returns Parse result with validated pack or errors.
  */

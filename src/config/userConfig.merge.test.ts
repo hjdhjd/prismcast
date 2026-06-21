@@ -1,6 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userConfig.merge.test.ts: Unit tests for the env- and CLI-aware portions of the user-config layer - mergeConfiguration, getEnvOverrides, and filterDefaults.
+ * userConfig.merge.test.ts: Unit tests for the env- and CLI-aware portions of the user-config layer - mergeConfiguration, getEnvOverrides, filterDefaults, and the
+ * boot-time hydration registry (the PRESERVED_FIELDS / HYDRATED_FIELDS / PERSISTENCE_ONLY_FIELDS partition and channelsDvr.host hydration into runtime CONFIG).
  * Split out from userConfig.test.ts to keep both files under the conventions' 500-line guidance and to isolate the tests that mutate process.env from the
  * pure-function tests in the sibling suite.
  */
@@ -100,8 +101,8 @@ describe("mergeConfiguration", () => {
 
   test("non-string sortField values are ignored (defensive)", () => {
 
-    // The merge guards `if((typeof userConfig.channels?.channelSortField === "string") && (userConfig.channels.channelSortField.length > 0))`. A non-string
-    // value falls through and the default is preserved.
+    // channelSortField is hydrated via the HYDRATED_FIELDS registry using the isNonEmptyString predicate, which rejects non-string (and empty-string) values.
+    // A non-string value fails the predicate and the default is preserved.
     const userConfig = { channels: { channelSortField: 123 as unknown as string } } as UserConfig;
     const result = mergeConfiguration(userConfig);
 
@@ -124,7 +125,7 @@ describe("mergeConfiguration", () => {
     assert.equal(result.server.port, DEFAULTS.server.port, "invalid env var ignored, default preserved");
   });
 
-  test("boolean env vars accept '1', 'true', 'yes' (lower case)", () => {
+  test("boolean env vars accept 'yes'/'1' as true and 'false' as false", () => {
 
     process.env["HDHR_ENABLED"] = "yes";
     assert.equal(mergeConfiguration({}).hdhr.enabled, true);
@@ -168,10 +169,10 @@ describe("mergeConfiguration", () => {
 
   test("env var that parses as zero is honored (no truthiness gate on parsed values)", () => {
 
-    /* Boundary: parseEnvValue returns numeric 0 for "0", and the merge writes through any defined value (the guard is `parsedValue !== undefined`, NOT a
-     * truthy check). Pinning zero ensures a regression to a truthy-only gate doesn't silently drop legitimate zero overrides for fields whose semantics
-     * permit zero. We cannot use a real CONFIG_METADATA integer field set to zero (validateConfiguration would reject it later), so we exercise via the
-     * checkboxList type which has no positivity gate at the merge layer.
+    /* Boundary: the merge writes through any defined parsed value (the guard is `parsedValue !== undefined`, NOT a truthy check). This pins that a single
+     * non-empty checkboxList override survives the merge with no truthiness filter applied to the array contents, so a parsed value that is defined-but-falsy
+     * for a permissive field is not silently dropped. The checkboxList type carries no positivity gate at the merge layer, which makes it the clean vehicle for
+     * exercising the defined-value path here.
      */
     process.env["CAPTURE_CODECS"] = "h264";
 
@@ -182,8 +183,8 @@ describe("mergeConfiguration", () => {
 
   test("CLI override with a non-undefined object value is written through", () => {
 
-    /* The CLI overrides loop writes any non-undefined value into CONFIG via setNestedValue. Object values reach the same path - useful for testing future CLI
-     * flags that pass structured values. We pin the contract that the loop accepts an object reference unchanged; setNestedValue places it at the dotted path.
+    /* The CLI overrides loop writes any non-undefined value into CONFIG via setNestedValue. Here we exercise a string-valued override and pin that the loop
+     * accepts it unchanged; setNestedValue places it at the dotted path so the value reaches runtime CONFIG.
      */
     const result = mergeConfiguration({}, { "paths.chromeDataDir": "/tmp/explicit/chrome-data-override" });
 
@@ -284,7 +285,8 @@ describe("filterDefaults", () => {
 
   test("preserves non-empty array fields even when all entries match defaults set elsewhere", () => {
 
-    // disabledPredefined has explicit array preservation logic - non-empty arrays survive even if string-coercion would call them "default-equal".
+    // disabledPredefined is not in CONFIG_METADATA, so the metadata loop never compares it; it is preserved by the isNonEmptyArray predicate in PRESERVED_FIELDS,
+    // which keeps a non-empty user list while letting an empty list (identical to the empty-array default) collapse.
     const filtered = filterDefaults({ channels: { disabledPredefined: ["nbc"] } });
 
     assert.deepEqual(getNestedValue(filtered, "channels.disabledPredefined"), ["nbc"]);
@@ -328,8 +330,8 @@ describe("filterDefaults", () => {
 
   test("captureCodecs equal to default in same order is dropped", () => {
 
-    // The standard isEqualToDefault loop fires first; it uses String() coercion. A user list identical to the default (same elements, same order) coerces to
-    // the same comma string and is treated as default. Order-permuted lists hit a different code path and are tested separately by the production code.
+    // captureCodecs is skipped in the metadata loop, so the differsFromSortedArrayDefault predicate is the sole arbiter. A user list identical to the default
+    // (same elements, same order) sorts equal to the default and is therefore not preserved.
     const filtered = filterDefaults({ streaming: { captureCodecs: [...DEFAULTS.streaming.captureCodecs] } });
 
     assert.equal(getNestedValue(filtered, "streaming.captureCodecs"), undefined, "default-equal captureCodecs is dropped");
@@ -354,7 +356,8 @@ describe("filterDefaults", () => {
   test("captureCodecs with a different content set is preserved (not just reorder)", () => {
 
     /* Boundary on the sorted-equality predicate: a user list missing one of the default codecs is a real customization; it must survive the filter even when
-     * the survivor codec appears in the default. Pins that the predicate compares sets, not just multiset equality.
+     * the survivor codec appears in the default. The predicate compares the two arrays as sorted sequences (multiset equality via toSorted + isDeepStrictEqual),
+     * so any difference in the element multiset is preserved.
      */
     const filtered = filterDefaults({ streaming: { captureCodecs: ["h264"] } });
 
@@ -408,9 +411,9 @@ describe("hydration registry parity", () => {
    * owned by the file-store framework). The two registries partition PRESERVED_FIELDS exactly: every preserved path appears in one set or the other, and the
    * sets are disjoint. A new preservation entry added without an explicit hydration classification fails this single assertion before any per-field test runs.
    *
-   * This is the read-side analogue of Suite 17's drift check on PRESERVED_FIELDS itself: if filterDefaults preserves a value but mergeConfiguration never
-   * brings it back, the persisted bytes are wasted (or worse, the runtime CONFIG silently drifts from the on-disk state, as Finding #6 documented for
-   * channelsDvr.host before this registry existed).
+   * This is the read-side analogue of the drift check on PRESERVED_FIELDS itself: if filterDefaults preserves a value but mergeConfiguration never brings it
+   * back, the persisted bytes are wasted (or worse, the runtime CONFIG silently drifts from the on-disk state, as channelsDvr.host did before this registry
+   * existed).
    */
   test("PRESERVED_FIELDS partitions exactly into HYDRATED_FIELDS and PERSISTENCE_ONLY_FIELDS, with no overlap", () => {
 
@@ -429,10 +432,10 @@ describe("hydration registry parity", () => {
 
   test("hydrates channelsDvr.host from persisted UserConfig into runtime CONFIG", () => {
 
-    /* The Finding #6 regression test. Before HYDRATED_FIELDS, mergeConfiguration only carried CONFIG_METADATA-listed fields and the inline-block fields into
-     * runtime CONFIG; channelsDvr.host (auto-discovered by showInfo.persistDvrHost) was preserved on disk via PRESERVED_FIELDS but invisible to runtime CONFIG
-     * between boot and the first DVR discovery cycle. The registry-driven hydration closes that gap: a host on disk now reaches runtime CONFIG immediately on
-     * boot, eliminating the "blank between boot and first discovery" window the persistence layer was meant to bridge.
+    /* Regression test for the channelsDvr.host hydration gap. Before HYDRATED_FIELDS, mergeConfiguration only carried CONFIG_METADATA-listed fields and the
+     * inline-block fields into runtime CONFIG; channelsDvr.host (auto-discovered by showInfo.persistDvrHost) was preserved on disk via PRESERVED_FIELDS but
+     * invisible to runtime CONFIG between boot and the first DVR discovery cycle. The registry-driven hydration closes that gap: a host on disk now reaches
+     * runtime CONFIG immediately on boot, eliminating the "blank between boot and first discovery" window the persistence layer was meant to bridge.
      */
     const userConfig: UserConfig = { channelsDvr: { host: "192.168.1.50" } };
     const result = mergeConfiguration(userConfig);

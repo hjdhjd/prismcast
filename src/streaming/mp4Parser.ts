@@ -468,7 +468,7 @@ function extractFirstSampleFlags(data: Buffer, offset: number, size: number, def
   // composition_time_offset (0x800). We skip duration and size to reach the flags field of the first entry.
   if(trunFlags & 0x400) {
 
-    // Skip first_sample_flags field position (it's not present since we checked 0x004 above, but the pos is already past it).
+    // Skip the per-sample duration field (0x100) when present, to reach the flags field of the first entry.
     if(trunFlags & 0x100) {
 
       pos += 4;

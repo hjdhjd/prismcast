@@ -74,7 +74,7 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
      * and assert the filter is STILL active when the panel renders. This pins the absence of any side-effect coupling in mutateChannelDisplayPrefs that would
      * accidentally clear enabledServices.
      *
-     * The mutateChannelDisplayPrefs implementation in userChannels.ts:2301 reads CONFIG.channels.* for absent fields and writes the merged result; if the merge
+     * The mutateChannelDisplayPrefs implementation in userChannels.ts reads CONFIG.channels.* for absent fields and writes the merged result; if the merge
      * accidentally projected enabledServices through and reset it, this test would fail.
      */
     await using ctx = await createIntegrationContext();

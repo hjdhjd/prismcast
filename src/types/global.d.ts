@@ -5,8 +5,8 @@
 
 declare global {
 
-  // Video selector helper injected into the browser context via page.evaluateOnNewDocument. Used by browser/video.ts to avoid duplicating the video element
-  // selection pattern in every evaluateWithAbort call.
+  // This is the video selector helper that is injected into the browser context via page.evaluateOnNewDocument. It is used by browser/video.ts to avoid
+  // duplicating the video element selection pattern in every evaluateWithAbort call.
   interface Window {
 
     __prismcastSelectVideo?: (type: string) => HTMLVideoElement | null;

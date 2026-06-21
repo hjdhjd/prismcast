@@ -55,7 +55,7 @@ export interface RetryOptions<T> {
  * Implements a generic retry mechanism with exponential backoff and jitter. This function attempts an operation multiple times, waiting progressively longer between
  * attempts to avoid overwhelming failing services. The exponential backoff with jitter prevents thundering herd problems where many clients retry simultaneously.
  * @param options - Retry configuration including the operation, attempt limits, timeouts, and optional backoff tuning.
- * @returns The result of the operation if successful.
+ * @returns The result of the operation if successful, or undefined when earlySuccessCheck reports the operation already succeeded after a timeout-shaped error.
  * @throws The last error encountered if all attempts fail.
  */
 export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | undefined> {
@@ -118,6 +118,7 @@ export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | u
       // Between retry attempts, wait with exponential backoff plus random jitter.
       if(attempt < maxAttempts) {
 
+        // The progression seeds at one second (1000ms) and doubles each attempt - 1s, 2s, 4s, ... - capped at maxBackoffDelay so growth never exceeds the ceiling.
         const baseDelay = Math.min(1000 * (2 ** (attempt - 1)), maxBackoffDelay);
         const jitter = Math.random() * backoffJitter;
 
@@ -127,5 +128,7 @@ export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | u
     }
   }
 
+  // When maxAttempts < 1 the loop body never runs and lastError is still its initial null; throwing it here is the intentional, predictable failure mode for an
+  // out-of-contract maxAttempts.
   throw lastError;
 }

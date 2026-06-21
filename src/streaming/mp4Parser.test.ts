@@ -204,7 +204,7 @@ describe("createMP4BoxParser", () => {
 
   test("does not park toward an impossibly large declared box size; resyncs to the next valid box", () => {
 
-    /* Finding [17]: a corrupt header that declares a box larger than the sane ceiling (64 MB) must not make the parser buffer incoming chunks indefinitely waiting
+    /* A corrupt header that declares a box larger than the sane ceiling (64 MB) must not make the parser buffer incoming chunks indefinitely waiting
      * for a payload that never arrives. The parser must treat the framing as lost and resync one byte at a time. We prove this is observable: a valid ftyp box that
      * follows the corrupt header emits immediately - it could only do so if the parser refused to wait for the impossible box and resynced past it. The corrupt
      * header's four type bytes are zero so the resync walks cleanly (each zero is a size-0 marker the parser skips one byte at a time) straight onto the ftyp.
@@ -225,8 +225,8 @@ describe("createMP4BoxParser", () => {
   test("emits a legitimately large box whose declared size sits at the ceiling", () => {
 
     // Boundary symmetric with the rejection test above: a box declaring exactly the ceiling size is valid framing and must still be emitted once its bytes arrive.
-    // This guards against an off-by-one that would wrongly reject the largest permitted box. We use a small payload but a header that declares the ceiling, then
-    // supply exactly that many bytes so the box completes.
+    // This guards against an off-by-one that would wrongly reject the largest permitted box. We allocate the full ceiling-sized buffer (64 MB) with a header
+    // declaring exactly the ceiling, then push it so the box completes and must be emitted.
     const seen: string[] = [];
     const parser = createMP4BoxParser((box) => seen.push(box.type));
     const ceiling = 64 * 1024 * 1024;
@@ -242,7 +242,7 @@ describe("createMP4BoxParser", () => {
 
   test("does not park indefinitely toward a never-completing oversized box; later valid boxes still flow", () => {
 
-    /* Finding [17]: the pending buffer must stay bounded even when a misbehaving source streams chunk after chunk that belongs to a box that never completes. The
+    /* The pending buffer must stay bounded even when a misbehaving source streams chunk after chunk that belongs to a box that never completes. The
      * unbounded case is precisely an oversized declared size: the box ceiling rejects it so the parser never parks the incoming flood. We prove the parser keeps
      * working under this flood by interleaving valid boxes between oversized headers and asserting every valid box still emits - the parser cannot be stuck waiting
      * on the impossible box, because the ceiling forced a resync each time.
@@ -380,9 +380,3 @@ describe("MP4BoxCallback", () => {
     parser.push(makeBox("ftyp"));
   });
 });
-
-/* The parseMoovCodecConfig fixture builders construct a synthetic moov > trak > mdia > minf > stbl > stsd > {avc1+avcC, mp4a+esds} hierarchy. Each helper layers
- * the next box level around its child(ren), so a complete moov is assembled by composing the builders bottom-up. Reserved-region offsets match the production
- * parser's expectations: avc1 reserves 78 bytes between its header and child boxes (86 - 8); mp4a reserves 28 bytes (36 - 8); stsd is a FullBox with a 4-byte
- * version/flags region followed by a 4-byte entry_count.
- */

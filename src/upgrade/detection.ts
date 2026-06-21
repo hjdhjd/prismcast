@@ -86,7 +86,7 @@ interface InstallStrategyBase<M extends string = string> {
 
   // Optional resolver for context-derived fields. Called only when matches() returns true. Returns a ResolvableFields object whose entries are layered into
   // the final InstallInfo before the strategy's constants are overlaid - the dispatcher orders the spread so constants always win, making this hook
-  // structurally incapable of overriding id, displayName, or upgradeCommand.
+  // structurally incapable of overriding method, displayName, or upgradeCommand.
   readonly resolve?: (ctx: DetectionContext) => ResolvableFields;
 
   // The shell command the user (or the tool) would run to upgrade. For upgradeable strategies the runner executes it; for non-upgradeable strategies the
@@ -239,7 +239,7 @@ export const INSTALL_STRATEGIES: readonly InstallStrategy<RegisteredMethod>[] = 
 
 /**
  * The full install-method discriminator. Adds the unknown sentinel that the dispatcher returns when no strategy in the registry matches; everything else is
- * registered. Consumers (e.g., commands.ts's switch on info.method) that need exhaustive coverage get it via this type.
+ * registered. Consumers that need exhaustive coverage over the full method set get it via this type.
  */
 export type InstallMethod = RegisteredMethod | "unknown";
 
@@ -304,8 +304,8 @@ export const UNKNOWN_INSTALL: NonUpgradeableInstallInfo = {
 
 /**
  * Detects the installation method. Walks INSTALL_STRATEGIES in priority order; on the first match, builds an InstallInfo by composing the strategy's optional
- * resolver output with the strategy's constant fields. The resolver's return type is restricted to ResolvableFields, so it cannot override id, displayName,
- * upgradeCommand, or upgradeable; the spread order also places constants after the resolved fields as belt-and-suspenders. The strategy's `upgradeable`
+ * resolver output with the strategy's constant fields. The resolver's return type is restricted to ResolvableFields, so it cannot override method, displayName,
+ * or upgradeCommand; the spread order also places constants after the resolved fields as belt-and-suspenders. The strategy's `upgradeable`
  * discriminator selects which InstallInfo variant the dispatcher emits, carrying manualUpgradeMessage through for the non-upgradeable case.
  *
  * Pure function of DetectionContext - all I/O happens inside the context's runCommand and fileExists callbacks, which the default adapter wires to real system

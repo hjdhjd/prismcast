@@ -6,15 +6,19 @@ import type { ChannelSelectionStrategy, ResolvedSiteProfile, SiteProfile } from 
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable } from "./shared.ts";
 
-// Narrowed profile type for strategy functions. When selectChannel() validates that channelSelector is non-null, it narrows the profile to this type so
-// strategy functions receive a guaranteed non-null channelSelector without needing non-null assertions.
+/**
+ * Narrowed profile type for strategy functions. When selectChannel() validates that channelSelector is non-null, it narrows the profile to this type so
+ * strategy functions receive a guaranteed non-null channelSelector without needing non-null assertions.
+ */
 export interface ChannelSelectionProfile extends ResolvedSiteProfile {
 
   channelSelector: string;
 }
 
-// Type guard that proves channelSelector is a non-empty string. Matches the original !channelSelector truthiness check, which rejects both null and empty string.
-// Used by the coordinator before dispatching to strategy functions.
+/**
+ * Type guard that proves channelSelector is a non-empty string, rejecting both null and empty string. Used by the coordinator before dispatching to strategy
+ * functions.
+ */
 export function isChannelSelectionProfile(profile: ResolvedSiteProfile): profile is ChannelSelectionProfile {
 
   return (profile.channelSelector !== null) && (profile.channelSelector.length > 0);
@@ -80,9 +84,9 @@ export interface DiscoveredChannel {
   // applicable.
   affiliate?: string;
 
-  // Category-selector membership. When the discovered channel belongs to a category that the provider declares in ProviderModule.categorySelectors, this field
+  // Category-selector membership. When the discovered channel belongs to a category that the provider declares in ProviderModule.categoryResolution.selectors, this field
   // names which category selector value the channel belongs to (one of the strings in that array) - e.g., "FOXD2C" for every Fox-owned local affiliate Fox.com
-  // surfaces in the user's market. The field name intentionally mirrors ProviderModule.categorySelectors (singular vs plural) to make the relationship explicit:
+  // surfaces in the user's market. The membership names one of the strings in the provider's categoryResolution.selectors catalog, making the relationship explicit:
   // the catalog lives on the provider, the membership lives on each discovered channel. Consumed by the resolver (to find the user's specific instance of a
   // category) and the verifier (to confirm a captured URL's call sign belongs to the expected category set). Omitted for entries that are not category members.
   categorySelector?: string;

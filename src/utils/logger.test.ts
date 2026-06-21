@@ -598,8 +598,8 @@ describe("LOG console mode output", () => {
 
   test("info-level output in console mode is NOT styled (color=null path)", () => {
 
-    // The info color is null, which takes the unstyled branch (line 166: consoleMethod(logMessage)). We assert the absence of the SGR sequence so a future
-    // change that accidentally styled info messages surfaces here.
+    // The info color is null, which takes the unstyled else-branch that calls consoleMethod(logMessage) directly. We assert the absence of the SGR sequence so a
+    // future change that accidentally styled info messages surfaces here.
     LOG.info("plain info");
 
     const captured = typeof logCalls[0]?.[0] === "string" ? logCalls[0][0] : "";

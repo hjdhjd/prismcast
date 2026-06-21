@@ -163,9 +163,9 @@ describe("resolveVariant", () => {
 
   test("user stored delta overrides binding fields on the predefined variant", () => {
 
-    /* The original .mjs version of this test asserted that a user stored delta could also override identity (stationId) on a variant. The current architecture
-     * silently drops identity from variant overlays - identity always inherits from the canonical and per-affiliate identity is expressed via the standalone
-     * classification path. We assert the binding-override behavior here; identity-on-variant overrides have a dedicated skipped test in the migration suite.
+    /* A user stored delta overrides binding fields on a variant, but identity (such as stationId) from the delta is silently dropped: variant identity always
+     * inherits from the canonical, and per-affiliate identity is expressed via the standalone classification path. We assert only the binding-override behavior
+     * here; the per-affiliate identity path (the abc-kabc divergent-identity case) is exercised by the standalone-classification tests in the migration suite.
      */
     const canonical = { name: "ABC", url: "https://abc.com/watch-live" } as ResolvedChannel;
     const predefined = { canonicalKey: "abc", channelSelector: "ABC", url: "https://www.hulu.com/live" } as VariantChannel;

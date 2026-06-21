@@ -2,8 +2,9 @@
  *
  * login.test.ts: Unit tests for the login mode state machine in login.ts. The module owns six exports plus a setter (setBrowserAccessors) that injects the
  * browser-side dependencies. Login mode is module-level singleton state, so each test resets the slot via clearLoginState() and re-installs fresh accessors before
- * running. The CDP-backed unminimizeWindow call inside startLoginMode receives a stub Page whose isClosed() reports true, which short-circuits cdp.ts's first guard
- * before any CDP traffic - so no real browser or session is involved.
+ * running. The CDP-backed unminimizeWindow call inside startLoginMode receives a stub Page whose isClosed() returns false, so cdp.ts's early-out guard does not fire;
+ * instead the stub omits createCDPSession entirely, so withCDPSession throws when it tries to open a session, catches the error, and returns undefined. That error is
+ * swallowed inside withCDPSession and never reaches startLoginMode, so the happy path still succeeds with no real browser, target, or CDP session involved.
  */
 import type { Browser, Page } from "puppeteer-core";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";

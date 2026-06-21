@@ -27,7 +27,7 @@ import path from "node:path";
  *
  * Each hook is invoked exactly when the framework calls the corresponding StorageBackend method. The default implementation of every other operation continues
  * to flow through the underlying Map<string, string> store, so override-and-default operations interleave naturally - a writeFile override can record the call
- * AND let the default behavior store the bytes by manually invoking the backend's own writeFile (or by using the exported pure helpers).
+ * AND let the default behavior store the bytes by mutating the exposed files map directly.
  */
 export type MemoryStorageBackendOverrides = Partial<StorageBackend>;
 
@@ -243,8 +243,9 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
     }
   };
 
-  // Compose: every operation is the override if supplied, otherwise the default. This mirrors the StorageBackend surface exactly - any future addition to the
-  // interface flags a typecheck error here, forcing both the default and the optional override to be considered.
+  // Compose: every operation is the override if supplied, otherwise the default. The StorageBackend-typed `defaults` object above is what enforces drift - any
+  // future addition to the interface flags a typecheck error at that declaration (it would be missing the new method), forcing the new operation to be considered
+  // here as well.
   return {
 
     access: overrides.access ?? defaults.access,

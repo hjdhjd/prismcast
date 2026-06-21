@@ -3,8 +3,8 @@
  * errors.ts: Error formatting and handling utilities for PrismCast.
  */
 
-/* These utilities provide consistent error handling and formatting throughout the application. The formatError function extracts meaningful messages from various
- * error types, while isSessionClosedError helps identify unrecoverable browser state errors that should abort retry loops.
+/* These helpers group the error-handling primitives shared across the application: one normalizes arbitrary errors into log-ready text, the other classifies
+ * unrecoverable browser-state errors so retry loops can abort early.
  */
 
 /**

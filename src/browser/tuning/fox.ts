@@ -22,7 +22,7 @@ interface FoxChannelInfo {
 // the discovery endpoint populates this cache. Cleared on browser disconnect via clearFoxCache().
 let cachedDiscoveredChannels: Nullable<DiscoveredChannel[]> = null;
 
-// Single source of truth for Fox's category-selector membership. Read by foxProvider.categorySelectors so the resolution layer in selectChannel() knows which
+// Single source of truth for Fox's category-selector membership. Read by foxProvider.categoryResolution.selectors so the resolution layer in selectChannel() knows which
 // selectors to route through resolveFoxCategorySelector, and read by verifyFoxManifest so it applies wildcard semantics on the same set. Adding a new Fox category
 // selector means appending one entry here - the provider declaration and the verifier pick it up automatically.
 const FOX_CATEGORY_SELECTORS: readonly string[] = ["FOXD2C"];
@@ -78,8 +78,9 @@ function extractCallSignFromManifestUrl(url: string): Nullable<string> {
 }
 
 /**
- * Failsafe verifier called by streaming/hls.ts after the master manifest URL has been captured for a Fox tune. Confirms the URL belongs to the channel the user
- * asked for. The selector is compared lowercase against the call sign extracted from the URL path - both cable channels (FBN, FNC, FS1, etc.) and local affiliate
+ * Failsafe verifier called by streaming/setup.ts (setupStream's tune-verification step) after the master manifest URL has been captured for a Fox tune. Confirms
+ * the URL belongs to the channel the user asked for. The selector is compared lowercase against the call sign extracted from the URL path - both cable channels
+ * (FBN, FNC, FS1, etc.) and local affiliate
  * call signs (WFLD, WPWRDT, etc.) follow the same lowercase convention in Fox's CDN paths. Returns null on match. Returns null when the URL shape is unrecognized
  * (fail-open: better to accept a stream we cannot inspect than to reject a working one when Fox restructures their CDN). Returns a failure reason when the URL
  * decodes cleanly to a different call sign - that is the unmistakable signature of a click that did not switch the player, and we want the stream to fail loudly
@@ -149,13 +150,13 @@ function verifyFoxManifest(url: string, channelSelector: string): Nullable<strin
  * because the in-line walk preserves it and the post-walk alphabetical sort is stable for name ties (every FOXD2C entry has name="FOXD2C"). The first entry is
  * the primary Fox-owned Fox affiliate in nearly all markets. Users who want the secondary station can manually edit the per-channel override after the system
  * persists the resolved selector - the override is the same delta a user-set selector produces.
- * @param selector - The category selector value being resolved (one of the entries in foxProvider.categorySelectors).
+ * @param selector - The category selector value being resolved (one of the entries in foxProvider.categoryResolution.selectors).
  * @param page - The active Fox.com page. Used to run discovery in-line when the cache is empty.
  * @returns The resolution containing the user's call sign, or null when resolution cannot be performed.
  */
 async function resolveFoxCategorySelector(selector: string, page: Page): Promise<CategoryResolution> {
 
-  // Defensive: only resolve selectors this provider actually declares as categories. selectChannel only invokes the resolver for selectors in categorySelectors,
+  // Defensive: only resolve selectors this provider actually declares as categories. selectChannel only invokes the resolver for categoryResolution.selectors,
   // so reaching this branch indicates a bug - either selectChannel routed wrong, or a caller bypassed selectChannel and invoked the resolver directly with the
   // wrong value. We throw rather than returning a CategoryResolutionFailure because the resolver's `reason` field is contracted as user-facing prose for
   // operational failures; an internal contract violation is a developer-audience event and belongs in the exception channel where it propagates to the existing

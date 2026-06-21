@@ -11,10 +11,10 @@ import url from "node:url";
  * service definition, allowing the application to adapt its restart behavior based on whether it's managed by a service manager or running standalone.
  */
 
-// Type representing supported platforms.
+// The union is intentionally three-valued. getPlatform() maps process.platform "darwin" and "win32" explicitly, and collapses everything else (Linux, the BSDs,
+// and any other Unix) into "linux", so there is no separate BSD or "other" branch to represent here.
 export type Platform = "darwin" | "linux" | "windows";
 
-// Type representing supported service managers.
 export type ServiceManager = "launchd" | "systemd" | "windows-scheduler";
 
 // Environment variable name used to detect container mode.

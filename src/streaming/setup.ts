@@ -518,6 +518,11 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       mimeType: captureMimeType,
       video: true,
       videoBitsPerSecond: CONFIG.streaming.videoBitsPerSecond,
+
+      // Constrain capture frame rate to a 30-60 fps band: 60 is the live-TV ceiling, and a 30 floor keeps motion smooth even when the user configures a lower rate.
+      // The ceiling is fixed at 60 while the floor follows the user's configured rate (clamped into the band), so the encoder favours the requested rate but never
+      // drops below 30. The readiness probe (attemptCaptureProbe) instead pins both bounds to a flat 30 because its getStream() fails or succeeds at the tabCapture
+      // API level before encoding matters, so a representative-but-minimal constraint set suffices there.
       videoConstraints: {
 
         mandatory: {
@@ -1183,8 +1188,8 @@ async function attemptCaptureProbe(browser: Browser, timeout: number): Promise<N
 
   try {
 
-    // Use the same capture MIME type and viewport constraints as the runtime. The stale state error occurs at the tabCapture API level before encoding matters,
-    // but matching the runtime configuration ensures the probe exercises the exact same getStream() parameters.
+    // Use the same capture MIME type and viewport (height/width) as the runtime. The stale state error occurs at the tabCapture API level before encoding matters,
+    // so matching those runtime constraints ensures the probe exercises a representative getStream() call.
     const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
     const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
 

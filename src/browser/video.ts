@@ -583,6 +583,8 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
  * or playback issues.
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile with video selection preferences.
+ * @param signal - Optional abort signal; when aborted the wait is abandoned without emitting the timeout warning, so the caller can supersede it after accepting an
+ * embedded-player consent gate that triggers a reload.
  */
 export async function waitForVideoReady(context: Frame | Page, profile: ResolvedSiteProfile, signal?: AbortSignal): Promise<void> {
 
@@ -949,8 +951,10 @@ async function isNativeFullscreenActive(context: Frame | Page): Promise<boolean>
  * dispatches real pointer events that Chrome recognizes as user gestures. The click may toggle play/pause on some players - the health monitor handles
  * re-starting playback if needed.
  *
- * Note: page.mouse.click() uses page-level coordinates, while getBoundingClientRect() in an iframe returns iframe-relative coordinates. This function works
- * correctly because all profiles with useRequestFullscreen are non-iframe (needsIframeHandling is false).
+ * Note: page.mouse.click() uses page-level coordinates, while getBoundingClientRect() inside an iframe returns iframe-relative coordinates. The iframe-embedded
+ * fullscreenApi profiles (the embeddedPlayer family) set both useRequestFullscreen and needsIframeHandling, so for those tunes the computed point can be offset
+ * from the real video position. That is tolerated here: the click exists only to register a trusted user gesture for transient activation, which any in-page
+ * click satisfies - it does not need to land precisely on the video - and a missed activation is recovered by the health monitor.
  * @param page - The Puppeteer page object.
  * @param context - The frame or page containing the video element.
  * @param selectorType - The video selector type for finding the element.
@@ -1480,6 +1484,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
   // accept embedded-player consent gates, and dismiss the profile's per-site modal. The poll never blocks the wait. If it accepts an embed gate, the in-flight wait
   // is abandoned and the page is reloaded once so the now-permitted player iframe is created and the video resolves on the second pass. If the wait fails with a
   // consent prompt still blocking the page, an actionable detect-and-guide error replaces the cryptic selector timeout.
+
   // Signals an embed-gate acceptance, so the video wait below can be raced against it. The gate resolves to "gate"; the video wait resolves to "video".
   const embedGate = Promise.withResolvers<"gate">();
 

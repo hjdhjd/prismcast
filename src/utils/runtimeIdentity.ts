@@ -11,11 +11,11 @@
  *
  * State machine.
  *   - free                  : No file on disk. claim writes a fresh record.
- *   - held-live             : File exists, boot session matches, PID is alive, and the live process's start time is consistent with the record (it is genuinely
- *                             the same process). claim refuses and returns the holder's record.
+ *   - held-live             : File exists, boot session matches, the PID is alive, and the process-identity probe does not positively identify the live process
+ *                             as a non-PrismCast program (it is genuinely the same process). claim refuses and returns the holder's record.
  *   - stale-different-boot  : File exists but boot session differs. The writing process cannot still exist; safe to overwrite.
  *   - stale-dead-pid        : File exists, boot session matches, but the PID is no longer alive OR the PID has been recycled to an unrelated process within the
- *                             same boot (its start time post-dates the record). Both are "the writer is gone"; safe to overwrite.
+ *                             same boot (the process-identity probe finds a non-PrismCast command line at that PID). Both are "the writer is gone"; safe to overwrite.
  *   - stale-malformed       : File exists but cannot be parsed (unrecognized format, partial write, corruption). Safe to overwrite.
  *
  * Same-boot PID reuse. The bootId check alone catches the cross-reboot case (a reboot mints a new boot session, so a recycled PID classifies as
@@ -237,6 +237,8 @@ export function parseRecord(raw: string): Nullable<IdentityRecord> {
 
   const lines = raw.split("\n");
 
+  // String.prototype.split always returns at least one element, so this guard can never actually fire - it is belt-and-suspenders defense that documents the
+  // empty-payload intent and keeps the array-access below structurally safe even if the split contract were ever to change.
   if(lines.length === 0) {
 
     return null;

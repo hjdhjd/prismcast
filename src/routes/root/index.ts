@@ -16,7 +16,7 @@ import { sendSuccess } from "../config/http/envelope.ts";
 /* The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface with six sections:
  *
  * 1. Overview - Introduction to PrismCast and Quick Start instructions
- * 2. Channels - The full M3U playlist with copy functionality
+ * 2. Channels - Channel management (enable/disable, edit, service selection) plus a Custom Profiles subtab
  * 3. Logs - Real-time log viewer for troubleshooting
  * 4. Configuration - Channel management and settings (with subtabs)
  * 5. API Reference - Documentation for all HTTP endpoints

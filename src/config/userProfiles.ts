@@ -21,8 +21,8 @@ import { getProfilesFilePath } from "./paths.ts";
  * User profiles cannot extend other user profiles - only builtin profiles. This prevents cascading breakage when a referenced user profile is deleted.
  */
 
-// Legacy profile flag names that have been renamed. Keys are the old names, values are the current names. Used by initializeUserProfiles() and service pack import to
-// silently normalize persisted and imported profiles at the boundary where external data enters the system.
+// Legacy profile flag names that have been renamed. Keys are the old names, values are the current names. Used by the profiles schema migration (profilesMigrations
+// v2) and service pack import to silently normalize persisted and imported profiles at the boundary where external data enters the system.
 const LEGACY_PROFILE_FLAGS: Record<string, string> = { noVideo: "staticCapture" };
 
 // Valid SiteProfile behavior flag names that users can set. Metadata fields (category, description, extends, summary) are handled separately.
@@ -514,7 +514,8 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
 }
 
 /**
- * Validates a domain mapping. Checks hostname format, profile references, service/serviceTag strings, loginUrl format, and maxContinuousPlayback type and range.
+ * Validates a domain mapping. Checks hostname format, builtin-domain collisions, dismissSelector, profile references, service/serviceTag strings, loginUrl format,
+ * and maxContinuousPlayback and videoTimeout type and range.
  * @param domain - The domain hostname.
  * @param config - The domain configuration.
  * @param availableProfiles - Set of available profile names (builtin + user, including profiles in the same import batch).

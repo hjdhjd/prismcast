@@ -383,9 +383,9 @@ describe("manifestFailureThreshold", () => {
 
   test("audio and video poll paths share identical thresholds (finding [8] parity)", () => {
 
-    // The core property of finding [8]: there is one threshold decision, so the audio poll and the video poll escalate identically for the same failure class. We
-    // assert the helper is a pure function of the status alone - the same status yields the same threshold regardless of which path calls it. Before the fix the
-    // audio path used a flat base threshold for both 5xx and network errors; now both paths route through this single helper.
+    // The core property: there is one threshold decision, so the audio poll and the video poll escalate identically for the same failure class. We assert the helper
+    // is a pure function of the status alone - the same status yields the same threshold regardless of which path calls it. Both paths route through this single
+    // helper, so neither can drift to a flat base threshold for 5xx and network errors.
     const networkThreshold = manifestFailureThreshold();
     const serverThreshold = manifestFailureThreshold(503);
     const clientThreshold = manifestFailureThreshold(403);
@@ -422,7 +422,7 @@ describe("resolveSegmentIv", () => {
 
   test("rejects a malformed explicit IV rather than substituting the sequence IV (finding [21])", () => {
 
-    // The core property of finding [21]: a present-but-malformed explicit IV must never silently fall back to the sequence-derived IV, because that decrypts the
+    // The core property: a present-but-malformed explicit IV must never silently fall back to the sequence-derived IV, because that decrypts the
     // segment with the wrong IV and serves garbage video. The resolver returns the "reject" sentinel so the caller drops the segment. We exercise both malformed
     // shapes parseExplicitIv recognizes - wrong length with and without the 0x prefix.
     for(const malformed of [ "0xdeadbeef", "deadbeef", "0x", "0x000102030405060708090a0b0c0d0e0f00" ]) {
@@ -450,7 +450,7 @@ describe("pruneKeyCache", () => {
 
   test("evicts entries whose URL is not in the active set and reports the count", () => {
 
-    // The bounding invariant of finding [18]: keys whose URL left the active video+audio working set are released. We seed three keys, mark one active, and assert
+    // The bounding invariant: keys whose URL left the active video+audio working set are released. We seed three keys, mark one active, and assert
     // the other two are evicted while the active one survives.
     const keysByUrl = new Map<string, Buffer>([
       [ "https://cdn.test/key-old-1.bin", Buffer.alloc(16, 1) ],
@@ -496,7 +496,7 @@ describe("pruneKeyCache", () => {
 
   test("stays bounded across repeated rotations (finding [18])", () => {
 
-    // The failure mode finding [18] addresses: one dead entry per token rotation accumulating unbounded. We simulate ten rotations, each introducing a fresh key URL
+    // The failure mode this guards against: one dead entry per token rotation accumulating unbounded. We simulate ten rotations, each introducing a fresh key URL
     // and pruning against the new active set. After every rotation the cache holds exactly the live key, never growing with the rotation count.
     const keysByUrl = new Map<string, Buffer>();
 

@@ -91,8 +91,8 @@ interface CdpEvent {
  */
 function makeWsUrl(req: Request, suffix: string): string {
 
-  // Express exposes the Host header at req.headers.host. We fall back to the configured server.host:port only if the request omits it, which should not happen
-  // for HTTP/1.1 clients but is defensive.
+  // Express exposes the Host header at req.headers.host. We fall back to the request hostname plus the accepting socket's local port only if the Host header
+  // is absent, which should not happen for HTTP/1.1 clients but is defensive.
   const host = req.headers.host ?? (req.hostname + ":" + String(req.socket.localPort ?? ""));
 
   // The proxy speaks ws (not wss) because PrismCast's HTTP listener is plain HTTP. If a reverse proxy fronts PrismCast with TLS, the operator is responsible for
@@ -910,6 +910,7 @@ export function setupCdpEndpoint(app: Express): void {
         "Protocol-Version": version.protocolVersion,
         "User-Agent": version.userAgent,
         "V8-Version": version.jsVersion,
+        // Browser.getVersion exposes no WebKit version, so we substitute the product string to keep this response byte-compatible with Chrome's /json/version shape.
         "WebKit-Version": version.product,
         "prismcastVersion": getPackageVersion(),
         "webSocketDebuggerUrl": makeWsUrl(req, "browser/prismcast")

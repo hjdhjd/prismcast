@@ -231,7 +231,8 @@ describe("deriveIvFromSequence", () => {
 
   test("places the sequence number in big-endian byte order in the last 4 bytes", () => {
 
-    // Boundary: 0x01020304 must land as 01 02 03 04 in bytes 12-15. This is the HLS spec: the sequence number is the least-significant 32 bits of a 128-bit IV.
+    // Boundary: 0x01020304 must land as 01 02 03 04 in bytes 12-15. Per the HLS spec the sequence number occupies the least-significant bytes of the 128-bit IV;
+    // the derivation writes it as a 64-bit big-endian value across the low 8 bytes, so a value that fits in 32 bits (like this one) lands in bytes 12-15.
     const iv = deriveIvFromSequence(0x01020304);
 
     // Bytes 0-11 remain zero.

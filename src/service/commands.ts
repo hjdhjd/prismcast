@@ -300,8 +300,9 @@ export async function handleUninstall(ctx: ServiceContext = createDefaultService
  */
 async function restartService(ctx: ServiceContext, generator: ServiceGenerator, action: string): Promise<number> {
 
-  // Compare the paths in the existing service file against the current runtime paths to determine whether regeneration is needed. All supported platforms (launchd
-  // plist, systemd unit, Windows PowerShell launcher) store paths in their service files, so getServicePaths() only returns null for corrupt or unparseable files.
+  // Compare the paths in the existing service file against the current runtime paths to determine whether regeneration is needed. The caller has already confirmed
+  // the service is installed and all supported platforms (launchd plist, systemd unit, Windows PowerShell launcher) store paths in their service files, so in this
+  // gated context getServicePaths() returns null only for a corrupt or unparseable service file.
   const existingPaths = ctx.getServicePaths();
   const currentNodePath = ctx.getNodePath();
   const currentEntryPoint = ctx.getEntryPoint();

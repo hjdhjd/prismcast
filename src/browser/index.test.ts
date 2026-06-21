@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.test.ts: Unit tests for the testable, non-Chrome-driving pieces of browser/index.ts. The module is dominated by Chrome lifecycle code (launchBrowser,
+ * index.test.ts: Unit tests for the testable, non-Chrome-driving pieces of browser/index.ts. The module is dominated by Chrome lifecycle code (launchReadyBrowser,
  * detectDisplayDimensions, cleanupStalePages, executeBrowserRestart, prepareExtension), which all require Puppeteer integration and are deferred to e2e.
  *
  * The unit tests here cover the synchronous accessor surface that does not touch Chrome:
@@ -166,7 +166,7 @@ describe("getChromeVersion", () => {
 
   test("returns null when no browser has been launched in this process", () => {
 
-    // The cached version is set inside launchBrowser() after a successful launch and cleared on disconnect. With no browser launched, it stays null.
+    // The cached version is set inside launchReadyBrowser() after a successful launch and cleared on disconnect. With no browser launched, it stays null.
     assert.equal(getChromeVersion(), null, "no launched browser -> null version");
   });
 });
@@ -184,7 +184,7 @@ describe("isBrowserConnected", () => {
 
   test("returns false when no browser has been launched", () => {
 
-    // The check is `!!currentBrowser && currentBrowser.connected` - both clauses fail when currentBrowser is null.
+    // The check reads supervisor.current() and returns `!!browser && browser.connected` - both clauses fail when no browser is published.
     assert.equal(isBrowserConnected(), false, "no launched browser -> not connected");
   });
 });
@@ -472,7 +472,7 @@ describe("ensureDataDirectory legacy-artifact purge", () => {
 
 /* Deferred to e2e (require Puppeteer/Chrome integration):
  *
- * - getCurrentBrowser, launchBrowser, launchWithCustomArgs, detectDisplayDimensions (every step here drives Puppeteer or executes JS in a real browser context).
+ * - getCurrentBrowser, launchReadyBrowser, launchWithCustomArgs, detectDisplayDimensions (every step here drives Puppeteer or executes JS in a real browser context).
  *
  * - closeBrowser (sends SIGTERM/SIGKILL to a real Chrome ChildProcess and waits for the exit event).
  *

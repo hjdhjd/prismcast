@@ -113,7 +113,7 @@ export function setupHealthEndpoint(app: Express): void {
       health.message = "Approaching stream capacity limit.";
     }
 
-    // Return HTTP 503 when unhealthy to allow load balancers and monitoring systems to detect problems via status code.
+    // Map the health status onto the HTTP status code so monitors react to the code alone, treating only the unhealthy state as a service failure.
     const httpStatus = status === "unhealthy" ? 503 : 200;
 
     res.status(httpStatus).json(health);

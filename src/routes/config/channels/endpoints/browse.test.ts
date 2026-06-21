@@ -121,8 +121,8 @@ describe("POST /config/channels/modify", () => {
 
   test("returns 'No changes made.' when given an entry that produces no effect (add with no name/url)", async () => {
 
-    // The handler accumulates per-entry errors but does not surface them as a 400 - the response is success with 'No changes made.' since no add/switch/remove
-    // counted. The errors are recorded internally and currently not rendered in the envelope. We lock the documented success-path response shape here.
+    // Per-entry validation failures are intentionally non-fatal: a bulk browse batch applies its valid entries and silently drops the invalid ones, so an entry
+    // with no add/switch/remove effect leaves nothing counted and the envelope deliberately reports only the success counts with 'No changes made.' here.
     const { json, req, res } = makeReqRes({ body: { channels: [{ action: "add" }] } });
 
     await modify(req, res, () => undefined);
@@ -161,7 +161,7 @@ describe("POST /config/channels/modify", () => {
 
   test("rejects a switch entry that is missing canonicalKey but still returns 200 with no changes", async () => {
 
-    // Per-entry errors are accumulated but the envelope returns 200 success with the no-changes message when nothing succeeded.
+    // Per-entry validation failures are intentionally non-fatal, so when nothing succeeds the envelope deliberately returns 200 with the no-changes message.
     const channels = [{ action: "switch", channelSelector: "ABC", name: "ABC", serviceSlug: "hulu" }];
     const { json, req, res } = makeReqRes({ body: { channels } });
 

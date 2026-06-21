@@ -55,7 +55,7 @@ function makePageStub(router: (arg: unknown) => unknown): { page: Page; stub: Pa
   return { page, stub };
 }
 
-// True when the argument is the embed-gate probe payload (locateEmbedGate passes { accept, gate }).
+// True when the argument is the embed-gate probe payload (locateEmbedGate passes { accept, exclude, gate }).
 function isGateProbe(arg: unknown): boolean {
 
   return (typeof arg === "object") && (arg !== null) && ("gate" in arg);

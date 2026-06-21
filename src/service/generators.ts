@@ -624,7 +624,7 @@ const WINDOWS_START_SCRIPT = [
   "Start-ScheduledTask -TaskName $TaskName | Out-Null"
 ].join("\n");
 
-/* Stops the task. Disables it first to prevent the RestartOnFailure policy from re-launching the process after we stop it. Start-ScheduledTask in WINDOWS_START_SCRIPT
+/* Stops the task. Disables it first to prevent the RestartOnFailure policy from re-launching the process after we stop it. Enable-ScheduledTask in WINDOWS_START_SCRIPT
  * re-enables the task. Takes the task name as its sole parameter.
  */
 const WINDOWS_STOP_SCRIPT = [

@@ -4,8 +4,8 @@
  * (src/config/health.test.ts) exercises the in-memory mark/get/snapshot API with mock.timers; what it cannot test is anything that crosses the file-store
  * boundary: the parser, the TTL prune at load, the debounced flush write, the beforeWrite emission shape, and the load-time count-summary log.
  *
- * Each finding from the audit's S4-I26 through S4-M4 set has a focused test below. The file-store framework's behavior (atomic writes, backup rotation, etc.)
- * is owned by persistence.test.ts; we exercise only what's specific to health.ts on top of that framework.
+ * Each file-store-boundary behavior of health.ts that the unit suite cannot reach has a focused test below. The file-store framework's behavior (atomic writes,
+ * backup rotation, etc.) is owned by persistence.test.ts; we exercise only what's specific to health.ts on top of that framework.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { createIntegrationContext, pathInDataDir, waitForHealthFlush } from "../../helpers/integration.helpers.ts";
@@ -25,6 +25,7 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
      */
     await using ctx = await createIntegrationContext();
 
+    // We void the binding to satisfy the no-unused-variable lint rule: ctx is still live through its `await using` disposal hook and the helper calls below.
     void ctx;
 
     const now = Date.now();
@@ -44,7 +45,7 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
 
   test("non-numeric schemaVersion falls back to 1 (parser sanitization)", async () => {
 
-    /* The parser at health.ts:129-160 guards every framework field defensively. A non-numeric schemaVersion (string, null, missing) must produce a v1 read
+    /* The parse function in healthStore guards every framework field defensively. A non-numeric schemaVersion (string, null, missing) must produce a v1 read
      * without throwing. The framework's migration runner then upgrades to current; for health (no migrations declared) it simply stamps the latest version on
      * the next write.
      */
@@ -64,8 +65,8 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
 
   test("non-array migrationsApplied is silently coerced to empty (parser sanitization)", async () => {
 
-    /* The parser only reads migrationsApplied via Array.isArray. A non-array (string, object, number) is treated as absent. We assert the load completes and
-     * the file is parseable; the empty result is implied by the lack of a thrown error and a clean state.
+    /* The parser only reads migrationsApplied via Array.isArray. A non-array (string, object, number) is treated as absent. We assert only that the load completes
+     * without throwing; the empty-result coercion itself is not read back here, so it is verified indirectly rather than asserted on the parsed shape.
      */
     await using ctx = await createIntegrationContext();
 
@@ -83,8 +84,8 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
 
   test("non-string entries inside migrationsApplied are filtered out (parser sanitization)", async () => {
 
-    /* The parser walks migrationsApplied with a typeof === "string" filter. Mixed-type entries must be dropped silently. We exercise by seeding a mixed array
-     * and confirming the load completes.
+    /* The parser walks migrationsApplied with a typeof === "string" filter that is contracted to drop mixed-type entries silently. We exercise by seeding a mixed
+     * array and asserting only that the load completes without throwing; the filtered shape is not read back, so it is verified indirectly rather than asserted.
      */
     await using ctx = await createIntegrationContext();
 
@@ -103,7 +104,7 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
   test("fractional schemaVersion is floored (Math.floor branch)", async () => {
 
     /* Hand-edited file might carry a fractional schemaVersion. The parser's Math.floor gate prevents downstream code from seeing a non-integer version. We
-     * assert the load completes and the next mutation persists the floored value.
+     * assert only that the load completes without throwing.
      */
     await using ctx = await createIntegrationContext();
 
@@ -120,8 +121,8 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
 
   test("missing channels/domains keys produce empty maps (parser ?? defaults)", async () => {
 
-    /* The parser uses `parsed.channels ?? {}` and `parsed.domains ?? {}` so older files that predate either field can still be read. After load, the
-     * snapshot must contain the seeded marker only - any spurious entries from a leaky parse would surface here.
+    /* The parser uses `parsed.channels ?? {}` and `parsed.domains ?? {}` so older files that predate either field can still be read. We seed a file with
+     * neither channels nor domains and confirm those defaults yield object-typed maps (not undefined) after load.
      */
     await using ctx = await createIntegrationContext();
 
@@ -130,8 +131,8 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
 
     await loadHealthState();
 
-    /* The snapshot reflects the loaded state. With a file that has neither channels nor domains, the snapshot should be empty - except for any leftover state
-     * from prior tests in the same process. We pin the structure (objects, not undefined) rather than emptiness.
+    /* The snapshot reflects the loaded state. We pin the structure (the maps are objects, not undefined) rather than emptiness, because the point under test is
+     * that the parser's `?? {}` defaults always supply object-typed maps for a file that carries neither field.
      */
     const snapshot = getHealthSnapshot();
 
@@ -172,7 +173,7 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
 
   test("emits the count-summary log line when at least one channel or domain is loaded", async () => {
 
-    /* The conditional log at health.ts:200 fires when channelCount > 0 OR domainCount > 0. A clean file with one fresh entry triggers the branch. We capture
+    /* The count-summary LOG.info in loadHealthState fires when channelCount > 0 OR domainCount > 0. A clean file with one fresh entry triggers the branch. We capture
      * LOG.info to assert the line fires with the documented format.
      */
     const infoSpy = mock.method(LOG, "info", () => undefined);
@@ -247,7 +248,7 @@ describe("flushHealthState - debounced write contract", () => {
 
   test("beforeWrite emits the migrationsApplied array only when it has at least one entry", async () => {
 
-    /* The beforeWrite hook at health.ts:114-124 conditionally includes migrationsApplied in the output: omitted when empty, included when non-empty. The
+    /* The beforeWrite hook in healthStore conditionally includes migrationsApplied in the output: omitted when empty, included when non-empty. The
      * empty branch is exercised every time the runtime flushes (since runtime starts each store with empty migrationsApplied), so we focus on confirming the
      * "omitted" shape on disk after a clean write.
      */
@@ -269,7 +270,7 @@ describe("flushHealthState - debounced write contract", () => {
     /* The debounced flush would lose a pending write if the process exited inside the FLUSH_DELAY window. flushHealthStateNow - called from graceful shutdown -
      * cancels the pending debounce timer and performs the write awaitably, so the on-disk file reflects the mark the instant the call resolves. The distinguishing
      * assertion from the debounce test above is the deliberate ABSENCE of waitForHealthFlush(): if flushHealthStateNow did not write immediately, the read below
-     * would observe a file missing the just-marked channel (the [24] regression this pins).
+     * would observe a file missing the just-marked channel (this pins the lost-pending-write-on-shutdown regression).
      */
     await using ctx = await createIntegrationContext();
 
@@ -313,8 +314,8 @@ describe("loadHealthState - recoveredFromBackup banner", () => {
 
     void ctx;
 
-    /* Use writePersistedJson to seed a valid main and then create a valid .bak by issuing a real mark + flush; that produces both files via the framework's
-     * pre-write rotation. Then corrupt main and re-load.
+    /* Seed a valid main by issuing a real mark + flush (markChannelSuccess + waitForHealthFlush). A second mark + flush then rotates that valid main into .bak
+     * via the framework's pre-write rotation. Finally corrupt main and re-load so the framework recovers from .bak.
      */
     markChannelSuccess("recovery-banner-channel", "recovery.test");
     await waitForHealthFlush();

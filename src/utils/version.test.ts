@@ -2,7 +2,7 @@
  *
  * version.test.ts: Unit tests for the version helpers in version.ts. The pure functions (normalizeVersion, isVersionLessThan) get full boundary coverage; the
  * networked functions (fetchLatestVersion, getChangelogItems, checkForUpdates) are exercised by stubbing globalThis.fetch via mock.method so no real HTTP calls
- * fire. getPackageVersion reads the project package.json from disk; we lock its return shape (a non-empty version string).
+ * fire. getPackageVersion returns the version from the JSON import resolved at module load; we lock its return shape (a non-empty version string).
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { checkForUpdates, fetchLatestVersion, getChangelogItems, getPackageVersion, getVersionInfo, isVersionLessThan, normalizeVersion, startUpdateChecking,
@@ -91,7 +91,7 @@ describe("getPackageVersion", () => {
 
   test("returns a non-empty version string", () => {
 
-    // The function reads ../../package.json relative to the file. In dev mode the path resolution succeeds; if it fails, the function returns "0.0.0" as a fallback.
+    // The version is read from the JSON import resolved at module load, so this is a constant-time field read; we only assert the return is a non-empty string.
     const result = getPackageVersion();
 
     assert.equal(typeof result, "string");
@@ -100,7 +100,7 @@ describe("getPackageVersion", () => {
 
   test("returns either a semver-like string or the documented fallback", () => {
 
-    // Boundary: either a real version (digits.dots) or the literal "0.0.0" fallback.
+    // Boundary: the value is a semver-like string from package.json (digits.dots).
     const result = getPackageVersion();
 
     assert.match(result, /^\d+(\.\d+)*$|^0\.0\.0$/);
@@ -365,7 +365,7 @@ describe("checkForUpdates", () => {
 
     const callsAfterFirst = fetchCalls;
 
-    // Second call without force, immediately after - the debounce guard at line 162 should fire.
+    // Second call without force, immediately after - the !force && within-debounce-window guard in checkForUpdates should short-circuit before any fetch.
     await checkForUpdates("1.0.0", false);
 
     assert.equal(fetchCalls, callsAfterFirst, "second call without force was debounced (no additional fetch)");

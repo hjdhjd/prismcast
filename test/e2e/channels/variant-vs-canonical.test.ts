@@ -97,10 +97,10 @@ describe("variant resolution invariants", () => {
 
 describe("default canonical resolution for multi-service predefined channels", () => {
 
-  /* The canonical resolution rule documented at src/channels/index.ts lines 23-33: if "site" exists in services, the canonical always gets the site URL;
-   * otherwise, the alphabetically-first service key (computed via Object.keys().sort(), not source-order) becomes canonical. This is the rule that 7f82b03
-   * regressed - "Fox defaulting to Cox instead of fox.com" - and re-pinning it as an integration-level invariant means a future flattener change that breaks
-   * the rule fails this suite immediately rather than waiting for a user-visible report.
+  /* The canonical resolution rule documented in the "Canonical resolution rules" comment in src/channels/index.ts: if "site" exists in services, the canonical
+   * always gets the site URL; otherwise, the alphabetically-first service key (computed via Object.keys().sort(), not source-order) becomes canonical.
+   * Re-pinning this as an integration-level invariant means a future flattener change that breaks the rule fails this suite immediately rather than surfacing
+   * as a user-visible misrouted canonical URL.
    *
    * Tests work against the public PREDEFINED_CHANNELS surface (the resolved output of flattenChannelDefinitions) - the flattener itself is not exported, but its
    * effective output is what every consumer sees. The chosen channels exercise: (a) site-presence wins; (b) alphabetical-first wins among many services with
@@ -223,8 +223,9 @@ describe("setServiceSelection: persistence and delete branch", () => {
 
   test("post-write cache hydration: getServiceSelections reflects the persisted state immediately after the mutate", async () => {
 
-    /* The audit's specific concern about S3-I1 / S3-I2 - that the post-write cache hydration is not asserted anywhere. Pin it: after setServiceSelection
-     * resolves, the in-memory getServiceSelections() returns the just-written state, demonstrating the cache was hydrated as part of the mutate.
+    /* setServiceSelection routes through mutateChannels, which re-hydrates the serviceSelections cache from the same normalized data it just wrote. This pins
+     * that after setServiceSelection resolves, the in-memory getServiceSelections() returns the just-written state, demonstrating the cache was hydrated as
+     * part of the mutate.
      */
     await using ctx = await createIntegrationContext();
 
@@ -241,8 +242,8 @@ describe("mutateServiceSelections: bulk variant", () => {
 
   test("applies multiple selection changes in a single atomic write", async () => {
 
-    /* The bulk variant (services.ts:946-955) is documented to coalesce N changes into one write. We exercise it with two distinct canonical channels and
-     * verify both selections land on disk.
+    /* The bulk variant (mutateServiceSelections in services.ts) is documented to coalesce N changes into one write. We exercise it with two distinct canonical
+     * channels and verify both selections land on disk.
      */
     await using ctx = await createIntegrationContext();
 
@@ -367,8 +368,8 @@ describe("clearChannelOverrides: dual-delete with canonical-precedence return", 
 
 describe("mutateEnabledServices: post-write cache hydration", () => {
 
-  /* The audit's S3-I1 concern: lines 303-304 (cache hydration after the file write) are not asserted anywhere. We pin it via service-filter HTTP route plus
-   * a subsequent in-memory check.
+  /* After mutateEnabledServices writes config.json, the in-memory enabledServices cache (services.ts lines 303-304) is hydrated from the just-persisted value.
+   * This suite pins that hydration via the service-filter HTTP route plus a subsequent in-memory getEnabledServices() read.
    */
 
   test("after mutateEnabledServices via the service-filter route, getEnabledServices reflects the new value", async () => {

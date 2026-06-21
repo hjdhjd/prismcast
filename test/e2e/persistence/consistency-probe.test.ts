@@ -6,7 +6,7 @@
  *
  * The warn-only paths cannot be observed via on-disk side effects (there is no auto-fix to land), so the suite must capture LOG output. We mock-module the
  * utils barrel with a proxy LOG that forwards to a per-test capturer, then dynamically import the modules under test so their static LOG bindings resolve
- * to the mock. The pattern follows persistence.integrity.test.ts and the precedents in src/routes/health.test.ts and test/e2e/streaming/pretune.test.ts.
+ * to the mock. The pattern follows src/config/persistence.integrity.test.ts and the precedents in src/routes/health.test.ts and test/e2e/streaming/pretune.test.ts.
  */
 import type * as ConsistencyProbeModule from "../../../src/config/consistencyProbe.ts";
 import type * as IntegrationHelpers from "../../helpers/integration.helpers.ts";
@@ -207,18 +207,18 @@ describe("consistency probe - auto-fix exception swallow", () => {
 
   test("a failing auto-fix logs a warning and does not propagate as an unhandled rejection", async () => {
 
-    /* The probe's auto-fix loop wraps each invocation in a try/catch that logs a warn and continues. This is the safety net that prevents one broken auto-fix
-     * from crashing the startup probe. We force a real auto-fix to fail by:
+    /* The probe runs every eligible auto-fix in parallel via Promise.allSettled, then inspects each settlement and logs a warn for any rejected result. This is
+     * the safety net that prevents one broken auto-fix from crashing the startup probe. We force a real auto-fix to fail by:
      *
      *   1. Setting up the unknown-service-tag scenario so checkServiceTagFilter surfaces an issue with an auto-fix that calls mutateEnabledServices (which
      *      goes through mutateConfig, which goes through the file store).
      *   2. Corrupting config.json AND config.json.bak between initializePersistence and the probe call so the file store's read fails parse on both files;
      *      the framework throws FileStoreParseError from within the auto-fix's mutate path.
-     *   3. Asserting the probe still resolves cleanly (no unhandled rejection), the catch path's "Consistency probe auto-fix failed" warn line landed, and
-     *      the probe identified the failing category.
+     *   3. Asserting the probe still resolves cleanly (no unhandled rejection), the rejected-settlement branch's "Consistency probe auto-fix failed" warn line
+     *      landed, and the probe identified the failing category.
      *
-     * If the catch were missing, the unhandled rejection would surface the FileStoreParseError as a process-level rejection (Node's --test runner would treat
-     * it as a test failure or even abort the run). The catch keeps the rest of startup safe.
+     * If the rejection were not inspected and logged, the FileStoreParseError would surface as a process-level unhandled rejection (Node's --test runner would
+     * treat it as a test failure or even abort the run). Inspecting each settlement keeps the rest of startup safe.
      */
     const { logger, lines } = capturingLog();
 
@@ -239,7 +239,7 @@ describe("consistency probe - auto-fix exception swallow", () => {
 
     // Now corrupt config.json and config.json.bak so that the autoFix's mutateConfig call hits the corruption guard. mutateConfig calls the file store's
     // mutate -> read; read attempts the corrupt main, fails parse, attempts .bak, fails parse on .bak too, and surfaces parseError. mutate then throws
-    // FileStoreParseError, which propagates back into the autoFix call - which the probe's try/catch catches and logs.
+    // FileStoreParseError, which rejects the autoFix call - the rejection surfaces as a rejected settlement that the probe inspects and logs.
     await writeFile(pathInDataDir(ctx, "config.json"), "{ this is not valid json", "utf-8");
     await writeFile(pathInDataDir(ctx, "config.json.bak"), "{ neither is this", "utf-8");
 

@@ -66,8 +66,8 @@ describe("pickIdentity", () => {
 
   test("skips fields that are undefined on the source (does not write them as undefined)", () => {
 
-    /* The for-loop continues on undefined values, so the result has no key for an absent identity field. Verify with `in` rather than equality - hasOwnProperty
-     * is the precise contract.
+    /* The for-loop continues on undefined values, so the result has no key for an absent identity field. We verify presence with the `in` operator, which is
+     * sufficient here because the result is a plain object literal with no inherited enumerable identity keys, so `in` and an own-property check coincide.
      */
     const channel = { name: "ABC", url: "https://example.com" } as ResolvedChannel;
     const identity = pickIdentity(channel);
@@ -115,8 +115,8 @@ describe("applyChannelDelta", () => {
 
   test("uses an empty stored entry when undefined is passed (no-prior-overrides case)", () => {
 
-    /* The "no entry exists yet" branch: callers like the bulk-tag handler pass undefined when the channel has no prior user override. The function returns just
-     * the delta verbatim.
+    /* The "no entry exists yet" branch: callers like the auto-number and hdhr-bulk handlers pass undefined when the channel has no prior stored override (e.g.,
+     * a channelNumber or hdhrEnabled delta on a channel that has never been customized). The function returns just the delta verbatim.
      */
     const result = applyChannelDelta(undefined, { tags: ["Sports"] });
 

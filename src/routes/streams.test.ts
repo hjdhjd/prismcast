@@ -281,8 +281,8 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
 
   test("emits the initial 'snapshot' frame at install time before subscribing to live events", () => {
 
-    // Pins streams.ts:114 - the route writes the snapshot frame BEFORE the subscribeToStatus call, so connecting clients always have current state on first
-    // read. We assert the first two writes match the snapshot shape: "event: snapshot\n" then "data: {...}\n\n".
+    // Pins streams.ts - the route writes the snapshot frame via sse.sendEvent("snapshot", ...) BEFORE the subscribeToStatus call, so connecting clients always
+    // have current state on first read. We assert the first two writes match the snapshot shape: "event: snapshot\n" then "data: {...}\n\n".
     const route = findStreamsStatusHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();
 
@@ -301,9 +301,9 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
 
   test("req.on('close') handler unsubscribes from the status emitter - post-close emits do not reach the wire", () => {
 
-    // Pins streams.ts:119-123 - the close handler must run unsubscribe(). After invoking the close handler synthetically, an emitted status event must NOT
-    // trigger a res.write. This is the observable invariant: a regression that dropped unsubscribe() would leak the listener and continue forwarding to a
-    // disconnected response.
+    // Pins streams.ts - the req.on("close") teardown handler must run unsubscribe(). After invoking the close handler synthetically, an emitted status event
+    // must NOT trigger a res.write. This is the observable invariant: a regression that dropped unsubscribe() would leak the listener and continue forwarding to
+    // a disconnected response.
     const route = findStreamsStatusHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();
 
@@ -327,7 +327,7 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
 
   test("req.on('close') handler clears the heartbeat - subsequent ticks do not produce writes", () => {
 
-    // Pins streams.ts:119-123 - the close handler must run sse.close(), which clears the heartbeat interval. We use mock.timers to drive the interval
+    // Pins streams.ts - the req.on("close") teardown handler must run sse.close(), which clears the heartbeat interval. We use mock.timers to drive the interval
     // deterministically: confirm one tick fires before close, then call the close handler and confirm subsequent ticks produce no writes.
     mock.timers.enable({ apis: ["setInterval"] });
 

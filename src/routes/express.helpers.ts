@@ -169,15 +169,15 @@ export interface MakeReqResResult {
 
 /**
  * Builds a synthetic Express req/res pair for direct-handler tests. The req carries body/params/query/headers/ip/protocol/get/socket wired from the input; the
- * res exposes mock.fn-based json/status/send/setHeader spies. status() returns the same res so res.status(400).json({...}) chains correctly. The req's get(name)
- * lookup is case-insensitive (matching Express semantics for header retrieval).
+ * res exposes mock.fn-based spies for the Response surface enumerated in MakeReqResResult. status() returns the same res so res.status(400).json({...}) chains
+ * correctly. The req's get(name) lookup is case-insensitive (matching Express semantics for header retrieval).
  *
  * This is the single source of truth for "fake an Express req/res in a unit test." Tests that only need the request part (e.g., tests of route-detection logic
  * that read req.protocol or req.headers) destructure { req }; tests that need handler-response inspection destructure { req, res, json, status, send,
  * setHeader }.
  *
  * @param input - Optional fields to override the defaults.
- * @returns The req/res pair plus the four mock.fn spies for response assertions.
+ * @returns The req/res pair plus the full mock.fn spy set and triggerReqEvent for response assertions; see MakeReqResResult for the complete list.
  */
 export function makeReqRes(input: MakeReqResInput = {}): MakeReqResResult {
 

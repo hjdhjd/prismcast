@@ -43,8 +43,8 @@ describe("formatTimestamp", () => {
 
   test("renders midnight (00:00:00) as 12 AM, not 00 AM", () => {
 
-    // Boundary: 12-hour formatting collapses 0 to 12. The implementation uses `hours = hours % 12 || 12` which depends on || coercing 0 to 12. We build the date
-    // with local-hour-zero constructor args so the test is timezone-independent.
+    // Boundary: 12-hour formatting collapses 0 to 12. The implementation takes hours modulo 12 and then relies on the falsy-zero default to coerce 0 to 12. We
+    // build the date with local-hour-zero constructor args so the test is timezone-independent.
     const midnight = new Date(2026, 2, 15, 0, 0, 0, 0);
 
     mock.timers.setTime(midnight.getTime());

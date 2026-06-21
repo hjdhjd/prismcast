@@ -132,9 +132,10 @@ export interface HandlerContext {
 }
 
 /**
- * Builds an empty client state. The IIFE calls this at startup; tests call it for fixtures. Defaults to "no streams, no system data, watchdog timestamps zeroed,
- * rAF gates open." lastStatusEventTime is zeroed here; the IIFE reseeds it to Date.now() right before opening the EventSource so the staleness watchdog has a
- * meaningful baseline. Tests that exercise the watchdog seed it explicitly.
+ * Builds an empty client state. This is the test-fixture seed; the production IIFE in status.ts does NOT call it - it constructs the initial state as an inline
+ * object literal whose shape must be kept in sync with this function by hand (the two are parallel definitions, not a shared call). Defaults to "no streams, no
+ * system data, watchdog timestamps zeroed, rAF gates open." lastStatusEventTime is zeroed here; the IIFE sets it to Date.now() directly in its own literal right
+ * before opening the EventSource so the staleness watchdog has a meaningful baseline. Tests that exercise the watchdog seed it explicitly.
  */
 export function createInitialState(): ClientState {
 
@@ -286,7 +287,7 @@ function formatTime(isoString: string): string {
   return timeStr;
 }
 
-// Format a timestamp as "N {unit}s ago" relative to now. Used by the channel/domain health icons in the Channels tab to show how recent the last result was.
+// Format a timestamp as "N {unit}s ago" relative to now.
 function formatTimeAgo(ts: number): string {
 
   const seconds = Math.floor((Date.now() - ts) / 1000);
@@ -316,7 +317,8 @@ function formatTimeAgo(ts: number): string {
 }
 
 // Extract a concise display domain from a URL (last two hostname parts). Mirrors the server-side extractDomain() in utils/format.ts so the popover label and the
-// table fallback agree on what "the domain" means.
+// table fallback agree on what "the domain" means. Uses the static URL.parse, which returns null on a malformed URL rather than throwing... this is the deliberate
+// browser-side counterpart to the new URL() + try/catch shape used server-side, and it requires the target browser runtime to support URL.parse.
 function getDomain(url: string): string {
 
   const parsed = URL.parse(url);
@@ -332,8 +334,8 @@ function getDomain(url: string): string {
 }
 
 // Resolve the recovery-level label for a stream in the recovering state. Kept as a dedicated helper because the mapping is level-based, not string-based, so it
-// cannot fold into the same lookup map as the top-level health labels. Escalation level semantics defined in monitor.ts: L1=play/unmute, L2=seek, L3=source
-// reload, L4=page navigation.
+// cannot fold into the same lookup map as the top-level health labels. Escalation level semantics defined in monitor.ts: L1=play/unmute, L2=source reload,
+// L3=page navigation (escalationLevel maxes at 3); the case 4+ arm below is defensive padding beyond that max.
 function getRecoveringLabel(level: number): string {
 
   switch(level) {
@@ -463,7 +465,7 @@ function renderDetailCodec(s: StreamSummary): string {
   return "<strong>Codec:</strong> " + codecLabel + " (" + modeLabel + ")" + qualitySuffix;
 }
 
-// Detail panel "Started:" line with optional "(N HLS, M MPEG-TS)" client suffix when clients > 0.
+// Detail panel "Started:" line with an optional " &middot; N HLS, M MPEG-TS" client suffix (middot separator, comma-joined list, no parentheses) when clients > 0.
 function renderDetailStarted(s: StreamSummary): string {
 
   const clientSuffix = s.clientCount > 0 ? " &middot; " + formatClients(s) : "";

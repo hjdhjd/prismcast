@@ -55,7 +55,8 @@ export function setupChannelsEndpoint(app: Express): void {
 
     for(const entry of listing) {
 
-      // Build the response entry with required fields. Canonical channels always have name; fallback to key is defensive.
+      // Build the response entry with required fields. The name is optional on a resolved channel - catalog canonicals set it eagerly, but a user-resolved entry
+      // may genuinely lack one (a ChannelDelta can clear it), so the fallback to key is a real, type-required branch rather than purely defensive.
       const channelEntry: ChannelEntry = {
 
         enabled: entry.enabled,

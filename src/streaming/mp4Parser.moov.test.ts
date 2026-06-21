@@ -79,7 +79,7 @@ function makeHdlr(handlerType: string): Buffer {
 }
 
 /* makeMdia / makeTrak assemble container boxes from their declared children. Both follow the standard parent-header + concat-children layout used by
- * iterateChildBoxes - same shape as makeMoof/makeTraf above.
+ * iterateChildBoxes.
  */
 function makeMdia(...children: Buffer[]): Buffer {
 
@@ -141,7 +141,7 @@ describe("parseMoovTrackInfo", () => {
   test("extracts track_ID and timescale from version-1 (64-bit) tkhd and mdhd boxes", () => {
 
     /* Version-1 boxes shift the track_ID and timescale fields past the 64-bit creation/modification timestamps - track_ID at byte 28 in tkhd v1, timescale at
-     * byte 28 in mdhd v1. Subsumes the original minor finding S5-M5 (mdhd v1 timescale branch). A regression that hard-codes the v0 offset for v1 boxes would
+     * byte 28 in mdhd v1. A regression that hard-codes the v0 offset for v1 boxes would
      * produce zero or junk values here.
      */
     const trak = makeTrak(
@@ -197,6 +197,3 @@ describe("parseMoovTrackInfo", () => {
     assert.equal(result.size, 0, "timescale 0 rejected");
   });
 });
-
-/* The MP4BoxCallback type is exercised by the createMP4BoxParser tests above; we lock the type's shape here as a structural sanity check.
- */

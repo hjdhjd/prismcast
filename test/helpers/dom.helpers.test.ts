@@ -78,7 +78,7 @@ describe("createDomTestContext - HTML loading and script extraction", () => {
 
   test("extracts inline <script> bodies in document order with sequential indices", async () => {
 
-    /* The landing page emits five inline scripts (tab, shared utilities, channels subtab, config subtab, status). The harness must surface them in document
+    /* The landing page emits five inline scripts (shared utilities, tab, channels subtab, config subtab, status). The harness must surface them in document
      * order so a test that wants "the script before the channels subtab" can use index arithmetic. We only assert structural properties that are stable across
      * re-orderings: indices are 0..N-1 and contiguous, content is a string, length matches scripts array length.
      */
@@ -138,8 +138,8 @@ describe("createDomTestContext - script execution", () => {
   test("runScripts returns the indices of executed scripts so tests can assert the exact set", async () => {
 
     /* When tests need to confirm that NOTHING beyond the intended script ran (defense against a future change accidentally widening the predicate), the indices
-     * are the audit trail. The shared-utilities script's index lies somewhere in the middle of the page's scripts; we confirm the returned index matches the
-     * scripts array entry that contains the marker.
+     * are the audit trail. We do not hardcode the shared-utilities script's position; instead the test discovers its index dynamically via findIndex and
+     * confirms the returned index list matches that single scripts array entry containing the marker.
      */
     await using ctx = await createDomTestContext();
 
@@ -215,13 +215,9 @@ describe("createDomTestContext - integration with production state", () => {
 
   test("a custom user channel mutated before context creation appears in the rendered page", async () => {
 
-    /* The mutator must run BEFORE createDomTestContext fetches the page HTML, otherwise the page is rendered against the prior in-memory state. Test layout
-     * mirrors the rendering-tier suite: open the integration context, mutate, then fetch via the harness.
-     *
-     * NOTE: createDomTestContext also calls initializePersistence implicitly. To seed state ahead of the fetch, we open a wrapping context manually, mutate
-     * within it, and then create the dom context (which sees the same temp dir because initializeDataDir is module-level - the next call sees the data dir
-     * we provisioned). A future API refinement could expose a "configure before page fetch" hook, but the current shape supports the use case via
-     * pre-seeding.
+    /* createDomTestContext fetches the page once at construction and holds it as ctx.html, so that snapshot predates any mutation we apply afterward. To observe
+     * a post-construction change we open the context, call mutateChannels to write the new user channel into the temp-dir stores, then re-fetch the page through
+     * the bootApp listener. The fresh response renders against the now-current in-memory state and includes the channel; ctx.html does not.
      */
     await using ctx = await createDomTestContext();
 

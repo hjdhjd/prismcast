@@ -22,7 +22,9 @@ import { parseTokenExpiry } from "./tokenExpiry.ts";
  * 2. If no manifest was intercepted: return null (fall back to capture)
  * 3. Probe the manifest for encryption type
  * 4. If DRM: log the reason, return null
- * 5. If clear or AES-128: create and return the native proxy
+ * 5. If the client is an MPEG-TS consumer and the stream has a separate audio rendition: return null (incompatible PAT/PMT, fall back to capture)
+ * 6. If AES-128: pre-fetch the decryption key, returning null if it is inaccessible
+ * 7. If clear or AES-128 (with key in hand): create and return the native proxy
  *
  * Token refresh: When the intercepted URL contains expiration tokens, we schedule a SINGLE timer aimed at the next expiry boundary - the earlier of the master URL's
  * and the polled variant URL's expirations, minus a comfortable margin. The refresh first attempts a direct Node.js fetch of the master manifest URL (no browser

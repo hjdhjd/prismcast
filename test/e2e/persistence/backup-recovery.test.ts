@@ -10,7 +10,7 @@
  * during shutdown. Each leaves the main file in a corrupt state that the .bak can rescue. The test deliberately corrupts files inside ctx.dataDir so the
  * corruption falls out of scope at disposal - the production data directory is never touched.
  *
- * recoveredFromBackup propagation: the framework's FileStore.read() exposes recoveredFromBackup on FileStoreReadResult (persistence.ts:108) and the per-store
+ * recoveredFromBackup propagation: the framework's FileStore.read() exposes recoveredFromBackup on the FileStoreReadResult interface and the per-store
  * wrapper read functions (readConfig, readChannels, readProfiles) project it onto their respective UserConfigLoadResult / UserChannelsLoadResult /
  * UserProfilesLoadResult return shapes. Read-path tests (Tests 2 and 3 below) pin the flag directly. Tests 1 and 4 trigger recovery through mutateConfig /
  * mutateChannels - the mutate API does not return a read result, so the flag is not observable from those callers. Their assertions cover separate invariants
@@ -37,7 +37,8 @@ describe("file-store backup recovery from a corrupt main file", () => {
     /* The canonical recovery scenario. Steps:
      *   1. Establish two distinct config states via mutateConfig - the second write copies the first to .bak. After this, main carries the v2 host and .bak
      *      carries the v1 host.
-     *   2. Snapshot the .bak file's bytes so we can assert (in Test 3 below) that recovery did NOT overwrite .bak with the corrupt main.
+     *   2. Snapshot the .bak file's bytes for the pre-corruption sanity check below (Step 1's v1 snapshot lives in .bak). The independent .bak-preservation
+     *      invariant - that recovery never overwrites .bak with the corrupt main - is pinned by Test 3 using its own separately-captured snapshot, not this one.
      *   3. Overwrite main with garbage that does not parse as JSON.
      *   4. Trigger a read by calling mutateConfig with a no-op. This invokes the framework's read(), which fails to parse main, falls through to .bak, parses
      *      it, atomically restores main from .bak, and returns the parsed v1 data. The mutate then proceeds normally - no FileStoreParseError thrown.
@@ -81,10 +82,9 @@ describe("file-store backup recovery from a corrupt main file", () => {
 
     /* Step 5b: drive the recovered data through the production boot sequence and assert the runtime CONFIG reflects the .bak value. initializeConfiguration()
      * calls readConfig() and feeds the result into mergeConfiguration(); the HYDRATED_FIELDS registry pulls channelsDvr.host through to runtime CONFIG so the
-     * recovered host is reachable via the same accessor production code uses. Before the registry landed (Finding #6, resolved 2026-05-04), this assertion
-     * would have failed because the inline-block merge path skipped channelsDvr.host - the field was preserved on disk but invisible to runtime CONFIG between
-     * boot and the first DVR discovery cycle. The runtime-CONFIG assertion is the structural pin for the gap that finding closed: a regression that broke the
-     * registry-driven hydration would surface here as a mismatch between disk and runtime view, not a silent drop.
+     * recovered host is reachable via the same accessor production code uses. The runtime-CONFIG assertion is the structural pin on registry-driven hydration:
+     * a regression that broke it - so that the inline-block merge path skipped channelsDvr.host and left the field preserved on disk but invisible to runtime
+     * CONFIG - would surface here as a mismatch between the disk and runtime views, not a silent drop.
      */
     await initializeConfiguration();
 
@@ -96,8 +96,8 @@ describe("file-store backup recovery from a corrupt main file", () => {
 
     /* The framework's "loud, recoverable, never silent" contract on the worst case: when even .bak is unparseable, the read does not throw - it returns the
      * default value with parseError=true so the caller can banner the failure to operators. Compare with mutate(), which DOES throw FileStoreParseError in the
-     * same scenario (the corruption guard at persistence.ts:608) - the asymmetry is by design: reads are diagnostic, writes are refused to prevent saving over
-     * the only-good copy with new data.
+     * same scenario (doMutate's corruption guard throws FileStoreParseError when result.parseError is set) - the asymmetry is by design: reads are diagnostic,
+     * writes are refused to prevent saving over the only-good copy with new data.
      *
      * We seed config first so both files exist on disk. Then corrupt both and call readConfig (the read path) and assert parseError=true with defaults flowing
      * through. A regression that caused an unhandled exception here would propagate up as an uncaught error during boot - a much worse failure mode than the
@@ -125,14 +125,14 @@ describe("file-store backup recovery from a corrupt main file", () => {
 
   test("recovery preserves .bak as the snapshot - the rotation does NOT overwrite .bak with the just-corrupted main during the recovery path itself", async () => {
 
-    /* The structural invariant that makes recovery safe to call repeatedly: the recovery code path (tryRecoverFromBackup at persistence.ts:347) reads .bak,
+    /* The structural invariant that makes recovery safe to call repeatedly: the recovery code path (tryRecoverFromBackup) reads .bak,
      * restores main from .bak via atomic temp+rename, and never touches .bak. This means a corrupt main can be recovered any number of times against the same
      * .bak - the .bak is the snapshot, never replaced by a worse version.
      *
-     * Note: the FOLLOWING write (the mutate that triggered the recovery) does eventually copy main to .bak as the normal pre-write rotation - but main is by
-     * then the recovered content, so the rotation is a no-op at the byte level (.bak gets overwritten with content byte-equal to what it already held). To
-     * isolate the recovery-path-only invariant from the post-recovery mutate's effect, we use readConfig (which does NOT mutate) instead of mutateConfig - the
-     * read-only path exercises tryRecoverFromBackup without the subsequent backup rotation.
+     * Note: when read() recovers the in-memory state from .bak, doMutate skips the .bak rotation entirely - the copy of main to .bak is guarded by
+     * `if(!result.recoveredFromBackup)`, so a mutate that triggered recovery leaves .bak untouched (no rotation occurs at all, not a rotation that re-writes
+     * identical bytes). To isolate the recovery-path-only invariant from any later mutate, we use readConfig (which restores main from .bak via the recovery
+     * path but performs no main->.bak rotation) instead of mutateConfig - the read-only path exercises tryRecoverFromBackup, which writes only to main.
      */
     await using ctx = await createIntegrationContext();
 
@@ -229,9 +229,10 @@ describe("file-store backup recovery from a corrupt main file", () => {
     assert.equal((recoveredEntry as Record<string, unknown>)["name"], "Iso v1",
       "the recovered channel must show the v1 name (.bak content), confirming recovery used .bak rather than falling through to defaults");
 
-    // The channels .bak survived the recovery path itself (same invariant as Test 3, scoped to the recovery boundary). The subsequent no-op mutate may have
-    // rotated .bak - but only with content byte-equal to what it already held (since main was just restored from .bak), so the bytes are stable.
+    // The channels .bak survived the recovery path itself (same invariant as Test 3, scoped to the recovery boundary). The no-op mutate that triggered recovery
+    // does NOT rotate .bak: doMutate guards the main->.bak copy with `if(!result.recoveredFromBackup)`, and read() recovered here, so the rotation is skipped
+    // entirely. .bak is left untouched because no rotation runs - not because a rotation re-wrote identical bytes.
     assert.equal(await readFile(pathInDataDir(ctx, "channels.json.bak"), "utf-8"), channelsBakBefore,
-      "channels.json.bak must remain byte-identical - the recovery path does not touch .bak, and the no-op mutate's rotation writes back the same bytes");
+      "channels.json.bak must remain byte-identical - the recovery path does not touch .bak, and the recovering mutate skips the rotation entirely");
   });
 });

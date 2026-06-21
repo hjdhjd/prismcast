@@ -149,7 +149,8 @@ export function validateChannel(channelName: string): ValidateChannelResult {
     LOG.warn("Service '%s' not found for channel '%s'. Using default service.", resolvedKey, channelName);
   }
 
-  // Runtime check needed even though TypeScript thinks channel is always defined (Record indexing quirk).
+  // effectiveChannel may be undefined: getResolvedChannel can return undefined and the getAllChannels() fallback is also possibly-undefined under
+  // noUncheckedIndexedAccess, so we guard before use.
 
   if(!effectiveChannel) {
 
@@ -1431,6 +1432,9 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
 
       const effectiveCodec = getEffectiveCaptureCodec();
       const captureHwAccel = isCaptureHardwareAccelerated();
+
+      // Prefix the codec label with U+26A1, the high-voltage / lightning-bolt glyph, as a visual marker in the "Streaming..." log line that capture is
+      // hardware-accelerated. The glyph is written as an escape so the source stays ASCII; it renders as the lightning bolt in the log output.
       const ffmpegCodec = captureHwAccel ? ("\u26A1 " + effectiveCodec.toUpperCase()) : effectiveCodec.toUpperCase();
       const captureMode = (streamingMode === "native") ? ("native HLS" + nativeQuality) :
         (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg [" + ffmpegCodec + "]" : "Native fMP4");

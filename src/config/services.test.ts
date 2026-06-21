@@ -70,7 +70,7 @@ describe("isServiceTagEnabled", () => {
 
     originalEnabled = [];
 
-    // The setter copies; capture before mutation so afterEach can restore.
+    // Reset the enabled-services filter to empty before each case; afterEach restores the same empty baseline.
     setEnabledServices(originalEnabled);
   });
 

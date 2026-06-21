@@ -38,7 +38,7 @@ describe("HLS playlist served from registry-backed state", () => {
 
     /* The baseline wire contract: when the registry holds a playlist string built from N entries, the route serves that string verbatim with the headers
      * Channels DVR expects. We seed mediaSequence at a non-trivial value (100) so a regression that hard-codes zero or off-by-one would surface. The
-     * targetDuration of 6 is the ceiling of the longest entry duration (4.0); the builder rounds up per RFC 8216. We assert on body content, status, and
+     * targetDuration of 4 is the maximum of the supplied floor (4) and the longest entry duration (4.0), rounded up per RFC 8216. We assert on body content, status, and
      * Content-Type because all three are part of the contract clients depend on.
      */
     await using ctx = await createIntegrationContext();
@@ -179,7 +179,7 @@ describe("HLS playlist served from registry-backed state", () => {
      *
      * The flow mirrors production: the resume map is populated via saveResumeState/loadResumeState (the persistence path that runs at process startup), and
      * the entry's hls.resumeSegmentIndex is read from the public getResumeSegmentIndex() accessor - the exact same call registerPendingStream() makes
-     * internally. We then build a playlist with MEDIA-SEQUENCE seeded at that resume index (matching what fmp4Segmenter does in production at line 584
+     * internally. We then build a playlist with MEDIA-SEQUENCE seeded at that resume index (matching what fmp4Segmenter does in production where it sets
      * "mediaSequence: startIndex") and assert the body emitted on the wire reflects it.
      */
     await using ctx = await createIntegrationContext();

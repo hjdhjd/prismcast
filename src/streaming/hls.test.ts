@@ -91,7 +91,7 @@ describe("validateChannel", () => {
 
   test("warns and falls back to the canonical channel when a service selection points at a missing variant", () => {
 
-    /* The variant-fallthrough warning at hls.ts:146. When serviceSelections maps a canonical to a variant key that no longer resolves to a real channel
+    /* The missing-variant fallback warning in validateChannel. When serviceSelections maps a canonical to a variant key that no longer resolves to a real channel
      * (e.g., the variant was removed after the selection was saved), validateChannel logs a LOG.warn and falls back to getAllChannels()[channelName] -
      * effectively serving the canonical's URL instead of failing the request. The test seeds a synthetic missing variant via setServiceSelections, captures
      * LOG.warn via mock.method, and asserts both the fallback channel surface AND the warning. Without the warning assertion, a refactor that quietly dropped

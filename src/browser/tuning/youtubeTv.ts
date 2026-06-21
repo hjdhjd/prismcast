@@ -55,9 +55,9 @@ const CHANNEL_ALTERNATES: Record<string, string[]> = {
  *    "abc 7") while excluding unrelated channels that share the prefix (e.g., "nbc sports").
  * 3. Parenthetical suffix: cache key starts with the name followed by " (". Catches timezone/region variants like "magnolia network (pacific)".
  *
- * When a non-exact match succeeds, the result is also cached under the primary channelSelector key for O(1) lookup on subsequent calls. This function doubles as
- * the resolveDirectUrl hook - after the first tune populates the cache via channel discovery, every subsequent YTTV tune resolves here without loading the guide
- * page.
+ * When a non-exact match succeeds, the result is also cached under the primary channelSelector key for O(1) lookup on subsequent calls. This function backs the
+ * resolveDirectUrl hook via the async resolveYttvDirectUrl wrapper - after the first tune populates the cache via channel discovery, every subsequent YTTV tune
+ * resolves here without loading the guide page.
  * @param channelName - The channelSelector value (e.g., "CNN", "NBC", "CW").
  * @returns The full watch URL or null if no match is found.
  */
@@ -65,10 +65,8 @@ function findWatchUrl(channelName: string): Nullable<string> {
 
   const lower = channelName.toLowerCase();
 
-  // Build the candidate list: primary name first, then any known alternates for markets where the affiliate uses a different name. The eslint disable is needed
-  // because TypeScript's Record indexing doesn't capture that the key may not exist at runtime.
+  // Build the candidate list: primary name first, then any known alternates for markets where the affiliate uses a different name.
   const alternates = CHANNEL_ALTERNATES[lower];
-
 
   const namesToTry = alternates ? [ lower, ...alternates.map((a) => a.toLowerCase()) ] : [lower];
 
@@ -89,7 +87,8 @@ function findWatchUrl(channelName: string): Nullable<string> {
     }
 
     // Tier 2: Prefix+digit match for local affiliates. Iterate all cache entries to find one whose key starts with "{name} " followed by a digit, matching the
-    // "{Network} {Number}" pattern (e.g., "nbc 5", "abc 7") while excluding unrelated channels that share the prefix (e.g., "nbc sports").
+    // "{Network} {Number}" pattern (e.g., "nbc 5", "abc 7") while excluding unrelated channels that share the prefix (e.g., "nbc sports"). The 48 and 57 bounds
+    // are the ASCII code points for '0' and '9', so the charCodeAt comparison tests that the character after the space is a digit.
     for(const [ key, entry ] of yttvChannelCache) {
 
       if(key.startsWith(name + " ") && (key.length > name.length + 1) && (key.charCodeAt(name.length + 1) >= 48) && (key.charCodeAt(name.length + 1) <= 57)) {

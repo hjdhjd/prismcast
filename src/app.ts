@@ -116,7 +116,7 @@ function setupGracefulShutdown(): void {
     setGracefulShutdown(true);
 
     // Tear down the background services. HDHR is torn down first and awaited so its HTTP and UDP sockets fully release before the rest of shutdown proceeds. The
-    // long-lived pollers are disposed wholesale via the DisposableStack they registered on at startup. The browser-launch-scoped precache cycle is cancelled
+    // long-lived pollers are disposed wholesale via the AsyncDisposableStack they registered on at startup. The browser-launch-scoped precache cycle is cancelled
     // separately - its graceful-shutdown guard has already neutralized it via setGracefulShutdown above, and this clears the pending timer.
     await stopHdhrServer();
     await backgroundServices?.disposeAsync();

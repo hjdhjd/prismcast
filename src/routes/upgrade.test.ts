@@ -131,7 +131,8 @@ describe("setupUpgradeEndpoint - GET /upgrade/info", () => {
     const res = await fetch(urlFor("/upgrade/info"));
     const body = await res.json() as UpgradeInfoResponse;
 
-    // normalizeVersion strips a leading 'v' or 'V'. The version comes from package.json so we only verify it doesn't start with 'v' and is non-empty.
+    // normalizeVersion strips only a leading lowercase 'v' (the regex is /^v/, case-sensitive). The version comes from package.json so we only verify it
+    // doesn't start with 'v' and is non-empty.
     assert.ok(body.currentVersion.length > 0);
     assert.doesNotMatch(body.currentVersion, /^[vV]/);
   });
@@ -191,7 +192,7 @@ describe("setupUpgradeEndpoint - GET /upgrade/info", () => {
 
   test("method is one of the documented installation methods", async () => {
 
-    // The detection module enumerates docker, homebrew, npm-global, npm-local, source, and unknown. Locking the constraint catches a regression that emitted a
+    // The detection module enumerates docker, homebrew, npm-global, npm-local, and unknown. Locking the constraint catches a regression that emitted a
     // bogus method label.
     const res = await fetch(urlFor("/upgrade/info"));
     const body = await res.json() as UpgradeInfoResponse;

@@ -406,7 +406,7 @@ describe("channels.ts: window.saveProfile", () => {
   test("attaches channelSelection only when strategy is not 'none'", async () => {
 
     /* The 'none' strategy means inherit-from-base; the body must omit channelSelection so the server doesn't store an empty selector block. Loading a profile
-     * with no channelSelection block via editUserProfile sets state.strategy to 'none' (the editStrat fallback), which is the path we want to pin.
+     * with no channelSelection block via editUserProfile sets state.strategy to 'none' (the `editCs.strategy || 'none'` default), which is the path we want to pin.
      */
     await using ctx = await setupChannelsRuntime();
 

@@ -246,7 +246,7 @@ describe("getClientSummary", () => {
 
   test("sorts the per-type breakdown alphabetically by type ('hls' before 'mpegts')", () => {
 
-    // The sort uses localeCompare which is case-insensitive in en-US, but with two lowercase strings 'hls' and 'mpegts' the order is straightforwardly alphabetic.
+    // The sort uses localeCompare; with two lowercase strings 'hls' and 'mpegts' the order is straightforwardly alphabetic.
     // Locks the consistent ordering that UI rendering depends on.
     registerClient(streamId, "10.0.0.1", "mpegts");
     registerClient(streamId, "10.0.0.2", "hls");

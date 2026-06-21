@@ -9,8 +9,8 @@
  *   - dangling-domain-profile: a user domain mapping references a profile that does not exist. NO auto-fix.
  *
  * The auto-fix path is the most observable from a black-box test because it produces persistent on-disk state changes; we exercise it for the unknown-service-
- * tag case below. The other two checks are surfaced via log warnings only - covered by the unit-tier test in consistencyProbe.test.ts which can capture logs
- * directly. The integration tier verifies the auto-fix actually persists across the full real-stores stack.
+ * tag case below. The other two checks are surfaced via log warnings only - covered by the warn-capturing integration suite in consistency-probe.test.ts, which
+ * seeds the dangling references and captures LOG output directly. This file verifies the auto-fix actually persists across the full real-stores stack.
  */
 import { createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -59,8 +59,8 @@ describe("consistency probe - unknown-service-tag auto-fix", () => {
 
   test("is idempotent - a second run with no dirty state is a no-op", async () => {
 
-    /* After the first auto-fix lands, a re-run of the probe should find no issues and produce no further state change. We exercise this by running the probe
-     * once on a known-clean state and asserting the on-disk file is unchanged across the call.
+    /* Running the probe against a known-clean (already-consistent) state must be a no-op. With only the recognized "hulu" tag enabled there is nothing to fix,
+     * so the probe should find no issues and leave config.json byte-for-byte unchanged across the single call.
      */
     await using ctx = await createIntegrationContext();
 

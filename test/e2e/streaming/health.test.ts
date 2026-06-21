@@ -23,6 +23,7 @@ describe("channel health state", () => {
      */
     await using ctx = await createIntegrationContext();
 
+    // The void marks ctx as intentionally held only for its await-using disposal protocol so the no-unused-binding lint does not fire on the disposable.
     void ctx;
     await initializePersistence(ctx);
 

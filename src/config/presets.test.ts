@@ -64,7 +64,7 @@ describe("getPresetViewport", () => {
 
   test("falls back to the 720p default viewport when the configured preset is unknown", () => {
 
-    // Boundary: a typo'd preset id returns undefined from the lookup. The function falls back to the documented default { 1280x720 }.
+    // Boundary: a typo'd preset id returns undefined from the lookup. The function falls back to the documented default { height: 720, width: 1280 }.
     assert.deepEqual(getPresetViewport(makeConfig("not-a-real-preset")), { height: 720, width: 1280 });
   });
 });

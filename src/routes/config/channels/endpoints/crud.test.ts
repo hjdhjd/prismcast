@@ -209,8 +209,8 @@ describe("handlePredefinedEdit (PUT /config/channels/:key)", () => {
     assert.equal(abcEntry["url"], undefined, "URL must not be stored as it matches the canonical default");
   });
 
-  /* The two variant-routing tests below are the keystones of this file. They lock the WHAT the audit entry tracked: when a variant is active and a user submits
-   * mixed identity+binding edits, identity values land on the canonical entry and binding values land on the variant entry. A regression that misroutes either
+  /* The two variant-routing tests below are the keystones of this file. They lock the keystone invariant: when a variant is active and a user submits mixed
+   * identity+binding edits, identity values land on the canonical entry and binding values land on the variant entry. A regression that misroutes either
    * direction would silently lose customization or apply the wrong value at resolution time.
    */
 
@@ -351,7 +351,7 @@ describe("handlePredefinedEdit (PUT /config/channels/:key)", () => {
     /* User opens the Edit form for ABC (no service selection set). Form pre-populates with the canonical (site URL = abc.com/watch-live). User adds a
      * stationId AND changes the URL to hulu.com/live (intending "default ABC to Hulu"). Expected: stationId lands on the canonical entry, URL is recognized as
      * matching the abc-hulu sibling and is NOT stored on the canonical (binding matches predefined exactly so no variant override is created either),
-     * serviceSelections.abc = "abc-hulu". This is the production-data shape that motivated the entire refactor.
+     * serviceSelections.abc = "abc-hulu".
      */
     const formBody = makeFormBody({ name: "ABC", stationId: "20456", tags: "Local", url: "https://www.hulu.com/live" });
     const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });

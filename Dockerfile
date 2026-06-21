@@ -130,11 +130,13 @@ ENV DISABLE_DRI3=false
 #   docker run -v prismcast-data:/root/.prismcast ...
 # Custom directories are supported via PRISMCAST_DATA_DIR, PRISMCAST_CHROME_DATA_DIR, and PRISMCAST_LOG_FILE environment variables.
 
-# Expose all ports the container listens on.
+# Expose the TCP ports the container serves.
 # 5589 - PrismCast web UI and streaming.
 # 5900 - VNC server for direct VNC client access.
 # 6080 - noVNC web interface for browser-based Chrome access.
 # 5004 - HDHomeRun emulation.
+# HDHomeRun LAN discovery additionally binds UDP 65001. It is intentionally not EXPOSEd because the broadcast-based discovery does not traverse Docker's bridge
+# NAT... clients that rely on auto-discovery (Plex, Channels DVR) need host networking for that path to work.
 EXPOSE 5589 5900 6080 5004
 
 # Health check verifies that the PrismCast web server is responding.

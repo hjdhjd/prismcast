@@ -118,8 +118,7 @@ describe("POST /config/channels/import-m3u", () => {
 
     const persisted = await readPersistedJson(ctx, "channels.json") as Record<string, unknown>;
 
-    /* The M3U importer derives a key from the channel name. We accept any key that resolves to an entry whose name matches our import. The filter is split
-     * for readability: object-and-non-null narrow first, then name comparison, parenthesized as the @hjdhjd/paren-comparisons-in-logical rule expects.
+    /* The M3U importer derives a key from the channel name. We accept any key that resolves to an entry whose name matches our import.
      */
     const importedKeys = Object.keys(persisted).filter((k) => {
 

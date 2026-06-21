@@ -1,15 +1,15 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * userchannels-public-api.test.ts: Integration-tier coverage for the smaller public exports of userChannels.ts that are reachable only after the persistence
- * subsystem is initialized. Each describe block targets one finding from the audit's S3 list:
+ * subsystem is initialized. Each describe block pins one such export:
  *
- *   - getStoredUserChannels (S3-I16): defensive copy contract.
- *   - isChannelAvailable (S3-I18): in-merged-map predicate.
- *   - getPredefinedScopeCounts (S3-I25): all/east/pacific counts under a service filter.
- *   - mutateChannelDisplayPrefs (S3-I22): partial-update + post-write CONFIG sync.
- *   - markSetupCompleted (S3-I22): one-shot transition.
- *   - mutateDisabledPredefined empty-keys early return (S3-I21): no write occurs when the input array is empty.
- *   - transformChannelTags (S3-C6): no-op skip via isDeepStrictEqual on sorted tags + null-empty-tags branch.
+ *   - getStoredUserChannels: defensive copy contract.
+ *   - isChannelAvailable: in-merged-map predicate.
+ *   - getPredefinedScopeCounts: all/east/pacific counts under a service filter.
+ *   - mutateChannelDisplayPrefs: partial-update + post-write CONFIG sync.
+ *   - markSetupCompleted: one-shot transition.
+ *   - mutateDisabledPredefined empty-keys early return: no write occurs when the input array is empty.
+ *   - transformChannelTags: no-op skip via isDeepStrictEqual on sorted tags + null-empty-tags branch.
  */
 import { createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -252,7 +252,7 @@ describe("transformChannelTags", () => {
 
   test("no-op skip via isDeepStrictEqual: when transform produces an unchanged sorted tag set, no write occurs for that channel", async () => {
 
-    /* The recently-changed isDeepStrictEqual call on the sorted tags arrays must skip channels whose effective tag set is unchanged after the transform. We
+    /* The isDeepStrictEqual call on the sorted tags arrays must skip channels whose effective tag set is unchanged after the transform. We
      * exercise via an identity transform: the result should report no affected keys for predefined channels (their tags don't change).
      */
     await using ctx = await createIntegrationContext();
@@ -261,7 +261,8 @@ describe("transformChannelTags", () => {
 
     const result = await transformChannelTags(
       (entry) => entry.key === "abc",
-      (tags) => tags // identity transform: returns the same tags
+      // The identity transform returns the same tags, so the sorted-equality check skips every selected channel.
+      (tags) => tags
     );
 
     assert.deepEqual(result.affectedKeys, [], "identity transform produces no changes; affectedKeys is empty");
@@ -305,7 +306,8 @@ describe("transformChannelTags", () => {
 
     const result = await transformChannelTags(
       (entry) => (entry.key === "abc") || (entry.key === "nbc"),
-      (tags) => [ ...tags, "Custom" ] // add a Custom tag to each
+      // The transform appends a Custom tag to every selected entry.
+      (tags) => [ ...tags, "Custom" ]
     );
 
     assert.deepEqual(result.affectedKeys.toSorted(), [ "abc", "nbc" ]);

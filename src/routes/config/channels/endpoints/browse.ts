@@ -100,6 +100,9 @@ export function registerBrowseRoutes(app: Express): void {
 
     const affectedKeys = new Set<string>();
     const keysToDisable = new Set<string>();
+    // Per-entry validation failures are collected here so an invalid entry skips itself without aborting the batch, but they are intentionally not surfaced in
+    // the response. The envelope reports only what succeeded (the added/switched/removed counts) and falls back to "No changes made." when nothing applied,
+    // matching the no-change behavior of the sibling endpoints.
     const errors: string[] = [];
     let added = 0;
     let removed = 0;

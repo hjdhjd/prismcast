@@ -262,10 +262,11 @@ export interface SelectChannelOptions {
  *
  * The function handles, in order:
  * - No-op short-circuit for single-channel sites (strategy "none" or no channelSelector).
- * - Category resolution: when the active provider declares categorySelectors and the profile's selector matches, resolveCategorySelector() is invoked to convert
- *   the category to a concrete per-user identifier. The resolved value replaces profile.channelSelector for the rest of the call and is persisted via the
- *   options.persistResolution callback if supplied. Resolution failures fall through with the original category selector - the strategy attempts a best-effort
- *   match and the verifier fails open.
+ * - Category resolution: when the active provider declares a categoryResolution config whose selectors include the profile's selector, categoryResolution.resolve()
+ *   is invoked to convert the category to a concrete per-user identifier. The resolved value replaces profile.channelSelector for the rest of the call and is
+ *   persisted via the options.persistResolution callback if supplied. On a resolution failure, strict providers (categories.requireResolution) abort the tune with
+ *   the resolver-authored reason; permissive providers fall through with the original category selector and the strategy attempts a best-effort match while the
+ *   verifier fails open.
  * - Pre-selection scroll phase to force lazy-loaded content into the DOM (when scrollToBottom or scrollSelector+scrollTarget is set).
  * - Polling for channel element readiness before strategy dispatch (when profile.channelSelection.matchSelector is set).
  * - Strategy dispatch based on profile.channelSelection.strategy.

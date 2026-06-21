@@ -2,7 +2,8 @@
  *
  * components.wizard.test.ts: Unit tests for the wizard modal generator in components.ts. The wizard modal is the most structurally complex component the
  * module exports - it builds an overlay, header, optional step indicator, content area, optional error display, and footer buttons across left/right slots.
- * The button-ownership rule (role-tagged buttons attach handlers via JS, custom buttons emit inline onclick) is the most subtle invariant locked here. The
+ * The button-ownership rule (role-tagged buttons Back/Next/Close attach handlers via the wizard controller, custom buttons Save/Apply/Finish declare a
+ * data-click-action dispatched by the project-wide action dispatcher, and no button carries an inline onclick) is the most subtle invariant locked here. The
  * other components (alerts, buttons, badges, inputs, selects, etc.) are tested in components.test.ts; we split this file out to keep both under the LOC cap.
  */
 import { describe, test } from "node:test";
@@ -17,7 +18,8 @@ describe("generateWizardModal", () => {
 
     assert.match(html, /<div id="mywiz" class="wizard-modal" style="display: none;">/);
     assert.match(html, /<h3>My Wizard<\/h3>/);
-    // The X close button. Attributes are alphabetized by serializeAttrs (aria-label, class, type) and carry no inline onclick.
+    // The X close button. Attributes are emitted in the order they appear in the alphabetically-authored object literal (serializeAttrs preserves insertion
+    // order), so the sequence is aria-label, class, type, and the button carries no inline onclick.
     assert.match(html, /<button aria-label="Close" class="wizard-close" type="button">/);
   });
 
@@ -115,7 +117,8 @@ describe("generateWizardModal", () => {
 
   test("hides buttons whose visible flag is false", () => {
 
-    // Attribute order is alphabetical via serializeAttrs, so style is not guaranteed to be the last attribute. Match the style attribute as a standalone token.
+    // The attrs literal in generateWizardButton is authored alphabetically and serializeAttrs preserves insertion order, so style is not guaranteed to be the
+    // last attribute. Match the style attribute as a standalone token.
     const html = generateWizardModal({
 
       buttons: [{ label: "Hidden", position: "right", visible: false }],

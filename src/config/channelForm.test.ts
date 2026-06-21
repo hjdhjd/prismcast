@@ -101,9 +101,8 @@ describe("channelMatches", () => {
 
   test("tags of equal length but different content do not match (post-isDeepStrictEqual semantics)", () => {
 
-    /* The recently-changed isDeepStrictEqual switch on the tags equality check produces order-independent comparison via sortTags; pinning the equal-length
-     * but distinct-content case prevents a regression where the deep-equal call accidentally compares unsorted arrays (which would produce false negatives
-     * for reordered tags) or compares sorted-by-different-keys arrays (false positives for reordered-but-different-content tags).
+    /* Tag equality is order-independent (via sortTags) but content-sensitive: equal-length arrays whose contents differ must not match. This case pins the
+     * boundary that the length check alone cannot cover, where the arrays are the same size but hold different tag values.
      */
     const channel = makeChannel({ name: "ABC", tags: [ "Local", "News" ], url: "https://abc.com" });
     const form = makeForm({ name: "ABC", url: "https://abc.com" });

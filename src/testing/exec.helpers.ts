@@ -45,7 +45,7 @@ export function bufferOrStringToString(value: Buffer | string | undefined): stri
  * test fixture authored - string (real default) or Buffer (encoding: "buffer" config). Diagnostic-enrichment helpers downstream unpack both branches.
  * @param message - The Error's message.
  * @param stderr - The child's stderr output. String or Buffer; both shapes are valid execFile failure shapes.
- * @param stdout - The child's stdout output.
+ * @param stdout - The child's stdout output. String or Buffer; both shapes are valid execFile failure shapes.
  * @returns The Error with .stderr and .stdout populated.
  */
 export function makeExecFileError(message: string, stderr: Buffer | string, stdout: Buffer | string): Error {

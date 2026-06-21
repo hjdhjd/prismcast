@@ -71,7 +71,7 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 
   /* When flushLogBuffer fails (e.g., directory removed mid-flight), writeLogEntry sets isDisabled=true and disabledAt=Date.now(). Subsequent writes are silently
    * dropped during the retry window (ERROR_RETRY_DELAY_MS = 60s). Once Date.now() advances past the threshold, the next writeLogEntry call re-enables logging
-   * (line 153: isDisabled = false). We exercise the re-enable branch by stubbing Date.now to advance past the threshold deterministically without waiting 60s.
+   * (it clears isDisabled). We exercise the re-enable branch by stubbing Date.now to advance past the threshold deterministically without waiting 60s.
    */
 
   afterEach(() => {
@@ -115,7 +115,7 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 
         mock.method(Date, "now", () => baseNow);
 
-        // The next writeLogEntry should observe (Date.now() - disabledAt) >= ERROR_RETRY_DELAY_MS, set isDisabled = false (line 153), and append the entry to
+        // The next writeLogEntry should observe (Date.now() - disabledAt) >= ERROR_RETRY_DELAY_MS, clear the isDisabled flag, and append the entry to
         // the buffer instead of silently dropping it.
         writeLogEntry("info", "Post-retry entry.", null);
         await flushLogBuffer();

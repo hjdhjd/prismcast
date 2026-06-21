@@ -77,8 +77,9 @@ describe("createLaunchdGenerator (via getServiceGenerator on darwin)", () => {
     });
     const generator = getServiceGenerator(io);
 
-    /* The current implementation calls runAndSurfaceStderr in the retry path, which expects a real Error with stderr (Buffer) on the cause. Our fake throws a
-     * plain Error so the second load also throws; we expect this to propagate.
+    /* The retry path wraps the second load in runAndSurfaceStderr, which reads .stderr off the thrown Error itself (falling back to error.message when absent) and
+     * attaches the original Error as the rethrown error's .cause. The retried load rejects because the fake is keyed shouldThrow, so runAndSurfaceStderr surfaces it
+     * as "launchctl load failed: <message>", which the assertion below matches.
      */
     await assert.rejects(() => generator?.install(definitionFixture()) ?? Promise.resolve(), /launchctl load failed/);
 

@@ -79,8 +79,10 @@ describe("recovery state machine - per-stream isolation across concurrent stream
     assert.equal(streamA.sourceReloadAttempts, 1, "stream A's L2 attempt counter incremented");
     assert.equal(streamA.pageNavigationAttempts, 1, "stream A's L3 attempt counter incremented");
 
-    // Stream B has not been touched - every per-method counter remains zero. We check every counter that streamA moved AND every counter that exists, so a
-    // bug that leaks via any single field surfaces with a precise assertion message.
+    // Stream B has not been touched - every field that recordRecoveryAttempt mutates remains at its initial value. We assert the four attempt counters plus the
+    // two current-recovery markers (currentRecoveryMethod, currentRecoveryStartTime) - the full set of fields that an attempt write touches - so a bug that
+    // leaks via any of them surfaces with a precise assertion message. The success counters and totalRecoveryTimeMs are not exercised by attempts, so they are
+    // not asserted here.
     assert.equal(streamB.playUnmuteAttempts, 0, "stream B's L1 counter must remain 0 - stream A's escalation must not leak into stream B");
     assert.equal(streamB.sourceReloadAttempts, 0, "stream B's L2 counter must remain 0");
     assert.equal(streamB.pageNavigationAttempts, 0, "stream B's L3 counter must remain 0");

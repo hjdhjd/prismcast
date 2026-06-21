@@ -113,10 +113,11 @@ export function generateSharedUtilitiesScript(): string {
 
     "  window.showToast = showToast;",
 
-    /* Single source of truth for extracting a user-facing error message from a server error response. The envelope emits two shapes: { error: string } for
-     * top-level failures (validation, not-found, conflict, server error) and { errors: Record<field, message> } for form submissions that surface multiple
-     * field errors at once. Callers pass a fallback string for the rare case where neither field is present. Every client that handles a !success response
-     * flows through this helper so error-reading logic lives in one place instead of drifting per call site.
+    /* Single source of truth for extracting a user-facing error message from a server error response. The envelope emits two shapes: a top-level message,
+     * carried as either { error: string } or { message: string } for failures (validation, not-found, conflict, server error), and { errors: Record<field,
+     * message> } for form submissions that surface multiple field errors at once. The helper reads errors first, then error, then message, so it consults
+     * all three fields. Callers pass a fallback string for the rare case where none of them is present. Every client that handles a !success response flows
+     * through this helper so error-reading logic lives in one place instead of drifting per call site.
      */
     "  window.extractErrorMessage = (response, fallback) => {",
     "    if(response && response.errors) {",

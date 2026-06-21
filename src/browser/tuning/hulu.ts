@@ -628,7 +628,7 @@ async function clickOnNowCellAndPlay(page: Page, clickTarget: string, playSelect
   const MAX_CLICK_ATTEMPTS = 3;
 
   // Shorter timeout for the play button on non-final attempts. When a click registers, the play button appears in under 10ms - this timeout only determines how
-  // quickly we detect a missed click and retry. Keeping it low saves ~2s per failed attempt compared to the previous 3000ms value.
+  // quickly we detect a missed click and retry. Keeping it low lets a failed attempt fall through to the next one promptly rather than stalling on a dead wait.
   const RETRY_PLAY_TIMEOUT = 1000;
 
   // Delay between click retries. Gives React additional time to finish hydrating event handlers.
@@ -779,6 +779,9 @@ async function tryFastPathTune(page: Page, entry: Nullable<HuluChannelEntry>, ch
 
       const injected = await page.evaluate((u: string, e: string): boolean => {
 
+        // The __prismcast* bridge functions are installed on window by the evaluateOnNewDocument fetch interceptor earlier in this module. The double cast reads
+        // them off window without committing to a global declaration, and the typeof === "function" guard below tolerates their absence when the interceptor was
+        // not installed (for example on a profile that does not use fetch interception). The same rationale applies to the two sibling reads in this module.
         const resolver = (window as unknown as Record<string, unknown>)["__prismcastResolveDirectTune"];
 
         if(typeof resolver === "function") {
@@ -1567,8 +1570,8 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
       // Promise that resolves when both UUID and EAB are available for the playlist swap. On warm cache, resolves immediately (both injected at install time).
       // On cold cache, resolves when the in-page listing and details API response parsers have captured both values. The playlist handler awaits this Promise
-      // to hold the request until the target channel's data is ready. We use Promise.withResolvers() (Chrome 119+) for the deferred case so the resolver-extraction
-      // pattern matches inPageTimeout below rather than the older "new Promise(executor) + outer-scope variable" pattern.
+      // to hold the request until the target channel's data is ready. We use Promise.withResolvers() (Chrome 119+) for the deferred case so the resolver can be
+      // invoked later by the in-page API parsers as they capture UUID and EAB, matching the resolver-extraction pattern of inPageTimeout below.
       let directTuneResolve: Nullable<() => void> = null;
       let directTunePromise: Promise<void>;
 
@@ -1615,8 +1618,9 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
 
       // Injection endpoint for the guide grid strategy's fast-path tune. After binary search identifies the target channel and the unified cache provides the
       // UUID and EAB, the strategy calls this function via page.evaluate to feed both values into the interceptor. The held playlist request then resumes with the
-      // swapped channel_id and content_eab_id. Returns true if the injection was accepted (directTunePromise not yet resolved), false if the Promise already
-      // resolved (self-resolution from API data, 8s timeout, or a previous injection).
+      // swapped channel_id and content_eab_id. Returns true if the injection was accepted (the deferred resolver is still present), false once that resolver has
+      // been consumed - by self-resolution from API data or a prior injection (both via tryResolveDirectTune) or by __prismcastReleasePlaylist. The 8s playlist
+      // hold timeout wins the Promise.race below without clearing the resolver, so it does not by itself flip this to false.
       (window as unknown as Record<string, unknown>)["__prismcastResolveDirectTune"] = (u: string, e: string): boolean => {
 
         if(!directTuneResolve) {
@@ -2063,10 +2067,10 @@ function invalidateHuluDirectUrl(channelSelector: string): void {
 
 /**
  * Discovers all channels from Hulu Live TV by clicking the Channels tab to trigger full API expansion and performing a complete linear scan through the
- * virtualized guide grid. The route has already navigated to the Hulu live page. Detects local affiliates using the same CALL_SIGN_PATTERN and position-based
+ * virtualized guide grid. This function navigates to the Hulu live page itself. Detects local affiliates using the same CALL_SIGN_PATTERN and position-based
  * inference logic as the tuning strategy. Affiliates get the network name as their selector; non-affiliates get their display name. Enriches unified cache
  * entries with affiliate metadata for subsequent getCachedChannels derivation.
- * @param page - The Puppeteer page object, already on the Hulu live page (navigated by the route handler).
+ * @param page - The Puppeteer page object; this function navigates it to the Hulu live page.
  * @returns Array of discovered channels with affiliate detection and selector mapping.
  */
 async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
@@ -2268,8 +2272,10 @@ export const huluProvider: ProviderModule = {
   handlesOwnNavigation: true,
   label: "Hulu",
 
-  // Profile for Hulu Live TV which presents a guide grid of live channels. The channel list is revealed by clicking a tab (listSelector), then the desired channel
-  // is found by matching img.alt text. Uses the fullscreen API (inherited from fullscreenApi) plus a dedicated fullscreen button selector for the player's native
+  // Profile for Hulu Live TV which presents a guide grid of live channels. The channel list is revealed by clicking the #CHANNELS tab (listSelector), then the
+  // target channel is located by matching its normalized name against the data-testid="live-guide-channel-kyber-{name}" attribute on the virtualized guide rows
+  // (binary search to scroll the target into the render window, with position-based affiliate inference). Uses the fullscreen API (inherited from fullscreenApi)
+  // plus a dedicated fullscreen button selector for the player's native
   // maximize control. Requires selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses waitForNetworkIdle because
   // Hulu's SPA has heavy async initialization that often prevents the load event from firing within the retryOperation timeout; the graceful networkidle2 fallback
   // in navigateToPage() allows execution to continue to channel selection even when background requests are still pending.

@@ -84,7 +84,8 @@ export interface StatusSnapshot {
 }
 
 /**
- * Event types emitted by the status emitter.
+ * The full set of SSE wire event types. This is broader than the events this emitter dispatches... "snapshot" originates from the route layer (routes/streams.ts)
+ * rather than from the in-process status emitter, so it appears in the union but is absent from StatusEmitterEventMap.
  */
 export type StatusEventType = "channelUpdate" | "snapshot" | "streamAdded" | "streamHealthChanged" | "streamRemoved" | "systemStatusChanged";
 
@@ -220,8 +221,9 @@ export function emitStreamHealthChanged(status: StreamStatus): void {
  */
 export function emitSystemStatusChanged(status: SystemStatus): void {
 
-  // Only emit if something meaningful changed. The optional chain on the second condition is defensive - TypeScript narrows cachedSystemStatus as non-null after
-  // the first comparison, but at runtime the first condition can be truthy with cachedSystemStatus === null (undefined !== true).
+  // Only emit if something meaningful changed. The optional chain on the second condition is load-bearing: cachedSystemStatus can be null here (the first emit
+  // before any cache is set), and a !== comparison does not narrow the optional-chained base to non-null. ESLint flags the second ?. as unnecessary, so the disable
+  // below preserves the null-safe access against that false positive.
   if((cachedSystemStatus?.browser.connected !== status.browser.connected) ||
      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
      (cachedSystemStatus?.streams.active !== status.streams.active)) {

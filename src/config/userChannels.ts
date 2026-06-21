@@ -1622,7 +1622,7 @@ const VARIANT_OVERLAY_ALLOWED_FIELDS = new Set<string>(CHANNEL_BINDING_KEYS);
 
 // The runtime delta surface: every field that may legitimately appear in a stored ChannelDelta override. Derived from the partition arrays in types/channels.ts
 // so adding or removing a delta-eligible field in one place propagates everywhere. Typed as Set<string> for ergonomics at .has() call sites that take string-keyed
-// values from Object.entries iteration; the contents are statically-known CustomizableField values via the spread above.
+// values from Object.entries iteration; the contents are statically-known CustomizableField values via the spread below.
 const DELTA_ALLOWED_FIELDS = new Set<string>([ ...DELTA_ELIGIBLE_IDENTITY_KEYS, ...DELTA_ELIGIBLE_BINDING_KEYS ]);
 
 /**

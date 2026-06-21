@@ -1,8 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * morganStream.test.ts: Unit tests for the Morgan logging stream adapter in morganStream.ts. The adapter routes Morgan output to console.log when console mode
- * is enabled, otherwise to writeLogEntry on the file logger. We exercise both branches by toggling setConsoleLogging and stubbing console.log; the file-logger
- * branch is no-op in test (writeLogEntry early-returns when uninitialized) but we verify it does not throw.
+ * is enabled, otherwise to writeLogEntry on the file logger. We exercise both branches by toggling setConsoleLogging and stubbing console.log. For the file-logger
+ * branch we initialize the file logger against a temporary directory, drive the morgan stream through writeLogEntry, flush, and assert the payload round-trips to
+ * disk; we also cover the uninitialized no-op boundary case (an empty payload must not throw).
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import assert from "node:assert/strict";

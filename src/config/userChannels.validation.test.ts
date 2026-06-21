@@ -183,8 +183,9 @@ describe("validateChannelProfile", () => {
  * getChannelListing() for number duplicates). Bringing up the full state in a unit test would require initializing CONFIG, the persistence framework, and the
  * service-group machinery - the existing pattern in this directory keeps unit tests on pure helpers via __internalForTests and routes integration coverage
  * through the HTTP-endpoint tests where that bring-up has already happened. The pure branches of those validators (empty/format/length checks) are tested
- * here against representative inputs by calling them with isNew=false (which short-circuits the duplicate check) and excludeKey="" (which still iterates the
- * listing, so we test only the format-rejection paths). This is a deliberate split: the cheap pure paths are unit-tested for fast localized failure messages;
+ * here against representative inputs. For validateChannelKey we pass isNew=false, which structurally skips the duplicate check. For validateChannelNumber we pass
+ * excludeKey="any-key"; the listing is still iterated, but the tested format-rejection inputs return before that loop, so only the format-rejection paths are
+ * exercised. This is a deliberate split: the cheap pure paths are unit-tested for fast localized failure messages;
  * the duplicate paths are integration-tested via crud.test.ts where the full system is already wired up.
  */
 
@@ -243,7 +244,7 @@ describe("validateChannelKey - pure branches (isNew=false short-circuits the dup
     assert.equal(validateChannelKey("abc hulu", false), "Channel key must contain only lowercase letters, numbers, and hyphens.");
   });
 
-  test("rejects a leading hyphen (still invalid by regex even though /^[a-z0-9-]+$/ accepts it)", () => {
+  test("accepts a leading hyphen (the regex /^[a-z0-9-]+$/ permits it; pinned to catch a future tightening)", () => {
 
     // The regex allows leading hyphens by construction; this test pins the current behavior so a future tightening of the regex (e.g., to require a leading
     // alphanumeric) is detected immediately rather than silently breaking imports.
@@ -308,8 +309,9 @@ describe("validateChannelNumber - pure branches (excludeKey-irrelevant when valu
 
   test("accepts the lower bound (1)", () => {
 
-    // Boundary: 1 is the smallest valid channel number. The duplicate loop runs after this passes; with no module init, the listing is empty and no duplicate
-    // hit fires. We assert undefined here because the format check passed AND the (empty) duplicate iteration found nothing.
+    // Boundary: 1 is the smallest valid channel number. The duplicate loop runs after the format check passes and iterates the full predefined catalog from
+    // getChannelListing(), which is enumerated regardless of module init. No predefined channel carries a channelNumber, so nothing collides with 1. We assert
+    // undefined here because the format check passed AND the duplicate iteration found no entry with channelNumber 1.
     assert.equal(validateChannelNumber("1", "any-key"), undefined);
   });
 
@@ -324,7 +326,7 @@ describe("validateChannelNumber - pure branches (excludeKey-irrelevant when valu
     assert.equal(validateChannelNumber("007", "any-key"), undefined);
   });
 
-  test("rejects floating-point notation that does not parse cleanly to an integer in range", () => {
+  test("accepts floating-point notation because parseInt truncates the fractional part (1.5 parses to 1, in range)", () => {
 
     // parseInt("1.5", 10) returns 1, which is in range. Document the current behavior: the validator only inspects the integer part. A future tightening to
     // reject decimals should update this test rather than silently break imports.
@@ -554,8 +556,11 @@ describe("validateImportedChannels", () => {
      */
     const result = validateImportedChannels({
 
-      "first": { url: "https://a.example.com" }, // missing name
-      "second": { name: "Second", url: "ftp://b.example.com" } // bad protocol
+      // The first entry omits the required name field.
+      "first": { url: "https://a.example.com" },
+
+      // The second entry uses a disallowed protocol.
+      "second": { name: "Second", url: "ftp://b.example.com" }
     }, validProfiles);
 
     assert.equal(result.valid, false);

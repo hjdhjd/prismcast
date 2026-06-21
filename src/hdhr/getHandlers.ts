@@ -73,7 +73,7 @@ const TUNER_KEY_PATTERN = /^\/tuner(\d+)\/(.+)$/;
 /**
  * Resolves a Get key to a reply value or an error. Single entry point the transport layer calls per request. Unknown keys produce an error result matching the
  * "ERROR: unknown getset variable" prose real HDHR firmware uses.
- * @param name - The dot-separated Get key from the request.
+ * @param name - The slash-delimited Get key from the request.
  * @param ctx - The resolution context (tuner state + runtime version).
  * @returns The resolved value or an error.
  */

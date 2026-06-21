@@ -5,8 +5,7 @@
  * module exports only two symbols: releaseInstanceSlot and startServer. startServer cannot be invoked safely from a unit test (it spawns Chrome, binds the
  * port, registers signal handlers, and calls process.exit on failure), so it is deferred to e2e coverage. releaseInstanceSlot is exercised here against the
  * critical-correctness path: a process that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file
- * record and refuses to remove a file whose PID does not match this process), which replaces the legacy in-memory ownsServerPid flag with a self-evident
- * invariant that survives across module loads.
+ * record and refuses to remove a file whose PID does not match this process), a self-evident invariant that survives across module loads.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "./testing.helpers.ts";

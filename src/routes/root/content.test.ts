@@ -163,7 +163,7 @@ describe("generateApiReferenceContent", () => {
 
   test("returns HTML with all eight API category groups", () => {
 
-    // The API index has eight named groups: Streaming, Playlist, Channels, Services, Profiles, Authentication, Management, Settings, Diagnostics. We verify
+    // The API index has nine named groups: Streaming, Playlist, Channels, Services, Profiles, Authentication, Management, Settings, Diagnostics. We verify
     // each section heading anchor is present so all categories surface for users.
     const html = generateApiReferenceContent();
     const anchors = [ "api-streaming", "api-playlist", "api-channels", "api-services", "api-profiles", "api-auth", "api-management", "api-settings",

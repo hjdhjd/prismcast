@@ -2,8 +2,8 @@
  *
  * playlist-generation.test.ts: HTTP-level integration coverage for the M3U playlist endpoint. The unit tier (routes/playlist.test.ts) covers the playlist
  * generators and validation paths against a synthetic server with default predefined channels. This suite tests the live interaction with mutated channel
- * state - user-set channelNumber surfacing in the playlist, disabledPredefined excluding channels, tag filter end-to-end - confirming the runtime composition
- * behaves as documented.
+ * state - a user-set channelNumber surfacing in the playlist, the request-derived host prefixing the stream URLs, and the canonical M3U structure (paired
+ * EXTINF and URL lines) - confirming the runtime composition behaves as documented.
  *
  * Why integration coverage adds value: the playlist endpoint reads CONFIG.channels.disabledPredefined, the tag registry, the resolved channel map, and applies
  * filter/sort transformations. A regression where any of those layers stops being read correctly would still pass the unit tier but produce a wrong playlist
@@ -18,7 +18,7 @@ describe("GET /playlist - integration with mutated state", () => {
 
   test("a user-set channelNumber on a canonical surfaces in the M3U playlist", async () => {
 
-    /* The user sets channelNumber=7 on abc; the playlist's EXTINF line for abc must carry tvg-chno="7" (or equivalent). The wire format is M3U; we assert
+    /* The user sets channelNumber=7 on abc; the playlist's EXTINF line for abc must carry channel-number="7". The wire format is M3U; we assert
      * via substring that the number appears in the playlist body.
      */
     await using ctx = await createIntegrationContext();

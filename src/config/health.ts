@@ -19,7 +19,8 @@ import { getHealthFilePath } from "./paths.ts";
  *    actually start?
  *
  * State is persisted to health.json in the data directory with a 2-second debounce to avoid excessive writes during rapid tune attempts. Entries older than 7 days
- * are pruned at load time to prevent unbounded growth.
+ * are filtered out at load time, and the live maps are kept bounded for the life of the process by pruning expired entries at the write chokepoint (writeHealthState)
+ * and on snapshot (getHealthSnapshot); the read paths additionally drop the single stale key they touch.
  */
 
 // Types.
@@ -187,8 +188,7 @@ const healthStore = createFileStore<HealthState>({
 });
 
 /**
- * Loads the health state from health.json into memory. Entries older than HEALTH_TTL are pruned during loading. Called once at startup from app.ts. Captures
- * a versioned snapshot of the file before reading so a release-introduced regression has a guaranteed restore point.
+ * Loads the health state from health.json into memory. Entries older than HEALTH_TTL are pruned during loading. Called once at startup from app.ts.
  */
 export async function loadHealthState(): Promise<void> {
 

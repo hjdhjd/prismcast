@@ -112,7 +112,7 @@ function enumerateLinux(): ProcessInfo[] {
 }
 
 /**
- * Enumerates processes on macOS via `ps -axww -o pid=,command=`. The -ax flags select every process on the system; -ww disables column truncation so long
+ * Enumerates processes on macOS via `ps -axww -o pid=,ppid=,command=`. The -ax flags select every process on the system; -ww disables column truncation so long
  * command lines (Chrome's are frequently very long) survive intact; the trailing `=` on each -o spec suppresses the column headers.
  * @returns The current process table.
  */

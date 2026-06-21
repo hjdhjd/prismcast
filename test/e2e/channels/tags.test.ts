@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * tags.test.ts: HTTP-level integration coverage for the tag vocabulary endpoints. Tags drive playlist filtering and channel-table grouping; the vocabulary
- * lives in tagRegistry inside channels.json. The 1.9.0 fix preserved tag casing - lowercase user input ("news") and capitalized form ("News") are the same
- * tag at the identity level but the displayed casing is what the user typed first. This suite exercises the full CRUD: create, list, delete (with cascade),
- * rename (cascading across channels).
+ * lives in tagRegistry inside channels.json. Tag identity is case-insensitive ("news" and "News" are the same tag) while the displayed casing is whatever the
+ * user typed first; that casing-identity invariant lives in the handler and is not exercised here. This suite exercises the full CRUD: create, list, delete (with
+ * cascade), rename (cascading across channels).
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -188,11 +188,12 @@ describe("POST /config/tags/rename - cascade across vocabulary and channel bindi
 
   /* The rename cascade invariant: when a tag is renamed in the vocabulary, every channel that referenced the old name must be updated to the new name in lockstep,
    * AND every other tag on those channels must survive untouched. The cascade implementation is shared with DELETE - both call transformChannelTags - so the
-   * shape of the cascade contract here mirrors Suite 20 exactly. The conflict path (renaming to an existing name) is the additional pin specific to rename:
+   * shape of the cascade contract here mirrors the "DELETE /config/tags/:tag - cascade across vocabulary and channel bindings" describe block below exactly. The
+   * conflict path (renaming to an existing name) is the additional pin specific to rename:
    * a 409 must short-circuit before either the registry write or the cascade, so vocabulary and channels stay byte-identical when the rename is rejected.
    *
    * The validation-failure path also short-circuits before the registry write, so a malformed newTag (empty, too long, invalid character) leaves the world
-   * unchanged just like the conflict path. This mirrors DELETE's 404 short-circuit pinned in the prior describe block.
+   * unchanged just like the conflict path. This mirrors DELETE's 404 short-circuit pinned in the DELETE-cascade describe block below (the unknown-tag DELETE test).
    */
 
   test("POST rename on a referenced user tag updates vocabulary AND every channel binding", async () => {
@@ -250,8 +251,8 @@ describe("POST /config/tags/rename - cascade across vocabulary and channel bindi
   test("POST rename to an existing tag name rejects with 409 and leaves vocabulary + channels byte-identical", async () => {
 
     /* Two user tags, A and B, both attached to a channel. Attempt to rename A -> B; the vocabulary already contains B, so the handler must reject with 409 before
-     * touching the registry or the cascade. We snapshot per-key bytes pre-rename and assert byte-equality post-rename to prove the short-circuit. The 409
-     * envelope is checked for completeness but the real invariant is the unchanged on-disk state.
+     * touching the registry or the cascade. We snapshot per-key bytes pre-rename and assert byte-equality post-rename to prove the short-circuit. We assert only
+     * the 409 status, not the envelope body; the real invariant being pinned is the unchanged on-disk state.
      */
     await using ctx = await createIntegrationContext();
 
@@ -261,9 +262,10 @@ describe("POST /config/tags/rename - cascade across vocabulary and channel bindi
 
     for(const tag of [ "alpha-tag", "beta-tag" ]) {
 
-      // Two sequential POST creations - the tag-create handler reads getTagRegistry() (a shared reference) and pushes; concurrent handlers can race on that read,
-      // so we serialize at the test level. eslint-disable-next-line no-await-in-loop -- handler-state race forces sequential creates here.
-      // eslint-disable-next-line no-await-in-loop -- see comment above.
+      // Two sequential POST creations. The tag-create handler reads a defensive copy of the registry via getTagRegistry(), pushes the new tag to that copy, and
+      // writes the whole copy back via setTagRegistry(); two concurrent creates both start from the same persisted snapshot, so the second write clobbers the
+      // first and one append is lost. We serialize at the test level to avoid that lost-append race.
+      // eslint-disable-next-line no-await-in-loop -- read-modify-write race on the registry forces sequential creates here.
       await fetch(urlFor("/config/tags"), {
 
         body: JSON.stringify({ tag }),
@@ -299,7 +301,8 @@ describe("POST /config/tags/rename - cascade across vocabulary and channel bindi
   test("POST rename on an unreferenced tag updates vocabulary; channel state byte-identical", async () => {
 
     /* A user tag with no channel bindings. Seed unrelated channels, rename the unreferenced tag, snapshot. The transformChannelTags filter (only entries that
-     * match) yields zero affected keys, so no channel write happens and per-entry channel bytes hold. The registry, of course, must reflect the rename.
+     * match) yields zero affected keys, so no channel entry changes and each seed channel's serialized bytes are byte-identical before and after. The registry,
+     * of course, must reflect the rename.
      */
     await using ctx = await createIntegrationContext();
 
@@ -452,7 +455,8 @@ describe("DELETE /config/tags/:tag - cascade across vocabulary and channel bindi
   test("DELETE on a tag that no channel carries leaves channel state byte-identical", async () => {
 
     /* Create a user tag with no channel bindings, seed channels carrying a different tag, snapshot, DELETE the unreferenced tag, snapshot again. The
-     * transformChannelTags filter (only entries that match) should yield zero affected keys, so no channel write happens and the per-entry bytes hold.
+     * transformChannelTags filter (only entries that match) should yield zero affected keys, so no channel entry changes and each seed channel's serialized bytes
+     * are byte-identical before and after.
      */
     await using ctx = await createIntegrationContext();
 

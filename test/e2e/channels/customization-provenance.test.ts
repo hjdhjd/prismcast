@@ -22,6 +22,8 @@ describe("getChannelCustomizations - provenance reporting", () => {
      */
     await using ctx = await createIntegrationContext();
 
+    // The context is consumed entirely through await using's Symbol.asyncDispose at scope exit, so the binding must survive to end-of-scope. The void discards
+    // the otherwise-unused local to satisfy the no-unused-vars lint without defeating that disposal. The same idiom recurs throughout this suite.
     void ctx;
     await initializePersistence(ctx);
 

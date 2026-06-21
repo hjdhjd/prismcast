@@ -27,7 +27,7 @@ let armReadConfigFailure = false;
 const readConfigFailureMessage = "synthetic readConfig failure for atomicity test";
 
 // When set, readConfig returns this synthetic load result instead of reading disk. Tests use it to drive reloadConfiguration's merge + validation path against
-// a controlled on-disk shape (an invalid or coercion-needing config) without touching the real config file. Reset in afterEach by the validation suite.
+// a controlled on-disk shape (an invalid or coercion-needing config) without touching the real config file. Reset in each test's finally block by the validation suite.
 let readConfigOverride: UserConfigModule.UserConfigLoadResult | null = null;
 
 // Captures each mutateConfig mutation as a probe object so the persistCoercedConfig write-back can be asserted without touching the real config file. The mock

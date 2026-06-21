@@ -14,7 +14,7 @@ import type { GpuCapabilities } from "../browser/display.ts";
 import assert from "node:assert/strict";
 
 /* makeGpuCapabilities builds a GpuCapabilities literal with sensible defaults (no hardware encoding, software renderer). Tests override only the fields they
- * care about - a hardware-HEVC test passes { hevcHardwareEncoding: true } and the rest stay false. The factory matches the test conventions §2 pattern.
+ * care about - a hardware-HEVC test passes { hevcHardwareEncoding: true } and the rest stay false.
  */
 function makeGpuCapabilities(overrides: Partial<GpuCapabilities> = {}): GpuCapabilities {
 

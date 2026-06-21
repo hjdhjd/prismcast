@@ -121,7 +121,7 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
 
   test("renders the action buttons (Apply, Select All, Deselect All)", async () => {
 
-    // Attribute order is alphabetical via serializeAttrs, so we slice the button tag by label and check the data-debug-action attribute independently rather
+    // serializeAttrs emits attributes in insertion order, so we slice the button tag by label and check the data-debug-action attribute independently rather
     // than asserting a positional layout (which would couple the test to insertion order).
     const res = await fetch(urlFor("/debug"));
     const body = await res.text();

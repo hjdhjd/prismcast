@@ -15,14 +15,15 @@ describe("buildServiceFilterWarning", () => {
 
   beforeEach(() => {
 
-    // Capture the prior filter state and clear it. setEnabledServices defensively copies, so it's safe to pass a fresh array.
+    // Reset the filter to empty for a clean baseline. These tests set their own filter per case and never depend on inheriting outer state, so the baseline is
+    // unconditionally the empty "show everything" filter. setEnabledServices defensively copies, so it's safe to pass this fresh array.
     originalEnabled = [];
     setEnabledServices(originalEnabled);
   });
 
   afterEach(() => {
 
-    // Restore the captured filter so other test files in the same run aren't perturbed by mutations here.
+    // Reset the filter back to empty so other test files in the same run aren't perturbed by the per-case filters set here.
     setEnabledServices(originalEnabled);
   });
 

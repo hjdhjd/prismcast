@@ -137,9 +137,9 @@ export function normalize(channels: StoredChannelMap): StoredChannelMap {
  */
 export function getCanonical(key: string): CanonicalChannel {
 
-  // PREDEFINED_CHANNELS is typed as a Record-of-Channel; under noUncheckedIndexedAccess this would yield Channel | undefined, but the catalog's literal type
-  // narrows the lookup further. We still want a runtime guard for misuse (the catalog content evolves and a key may disappear), so the read goes through an
-  // explicit Record cast that strips the literal narrowing.
+  // PREDEFINED_CHANNELS has a precise literal object type, so a direct index access does not surface a clean optional. We cast through an explicit
+  // Record<string, VariantChannel | CanonicalChannel | undefined> so the lookup yields a possibly-undefined union and the truthiness guard below reads cleanly;
+  // the runtime guard still matters because the catalog content evolves and a key may disappear.
   const channel = (PREDEFINED_CHANNELS as Record<string, VariantChannel | CanonicalChannel | undefined>)[key];
 
   if(!channel) {

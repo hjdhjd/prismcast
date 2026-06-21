@@ -5,7 +5,7 @@
  * spec-compatible output for Plex to register PrismCast as a tuner; the bug class this suite catches is "field rename or shape change that silently breaks
  * Plex discovery without breaking unit tests."
  *
- * The HDHR endpoints register on a separate Express instance in production (run on a dedicated port to avoid colliding with mainstream HTTP traffic). We mount
+ * The HDHR endpoints register on a separate Express instance in production (run on a dedicated port to avoid colliding with the main server's HTTP traffic). We mount
  * the same setupHdhrEndpoints function on a dedicated test instance here so the route handlers run with the same wiring they have in production.
  */
 import type { AddressInfo, Server } from "node:net";
@@ -62,8 +62,8 @@ describe("HDHR emulation endpoints", () => {
 
     const body = await response.json() as Record<string, unknown>;
 
-    /* Required fields per the HDHomeRun spec - omission of any of these breaks Plex discovery. We assert each field is present and roughly typed (string for
-     * identifiers, number for counts, URL for endpoints).
+    /* Required fields per the HDHomeRun spec - omission of any of these breaks Plex discovery. The loop below asserts presence for every field; type is
+     * spot-checked separately for TunerCount (a number) and LineupURL (matched against the lineup endpoint).
      */
     for(const field of [ "FriendlyName", "ModelNumber", "FirmwareName", "FirmwareVersion", "DeviceID", "DeviceAuth", "BaseURL", "LineupURL" ] as const) {
 

@@ -31,6 +31,8 @@ export function createDefaultDetectionContext(): DetectionContext {
 
       try {
 
+        // We cap each detection probe at five seconds so that a hung command (for example, a stalled "npm prefix -g") cannot stall install-method detection. A
+        // probe that exceeds the ceiling throws, which we treat the same as any other failure by returning null below.
         return execSync(cmd, { encoding: "utf-8", timeout: 5000 }).trim();
       } catch {
 

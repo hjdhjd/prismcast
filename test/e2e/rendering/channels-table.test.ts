@@ -155,7 +155,7 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
 
     const { editRow } = generateChannelRowHtml("abc", getProfiles());
 
-    // Tags hidden input carries data-default="" because the predefined default is ["Local"], joined by ", " becomes "Local". Verify the comma-join contract.
+    // Tags hidden input carries data-default="Local" because the predefined default ["Local"] is joined by ", ". Verify the comma-join contract.
     assert.match(editRow, /name="tags"[^>]*data-default="Local"/,
       "tags field carries data-default with the predefined tags joined by comma-space");
 
@@ -164,7 +164,8 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
     assert.match(editRow, /id="edit-abc-hdhrEnabled"[^>]*data-default="true"/,
       "hdhrEnabled checkbox carries data-default=\"true\" (string, matching the resetValueFor stringification)");
 
-    // channelNumber field: predefined has no channelNumber, so the data-default is the empty string (computeResetValue maps undefined/null to "").
+    // channelNumber field: predefined has no channelNumber, so the data-default is the empty string (resetValueFor maps the undefined predefined value to ""
+    // - see table.ts).
     assert.match(editRow, /name="channelNumber"[^>]*data-default=""/,
       "channelNumber field carries data-default=\"\" when the predefined had no value");
 
@@ -180,7 +181,7 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
   test("does NOT emit data-default attributes on a non-customized predefined channel (predefined-only path skips defaults)", async () => {
 
     // Negative test: when the channel has no override (predefined-only), generateChannelRowHtml passes defaults: undefined to generateAdvancedFields, and the
-    // helpers skip the data-default attribute entirely (line 123 in table.ts: `(options.defaultValue !== undefined) ? ... : ""`).
+    // helpers skip the data-default attribute entirely (the defaultAttr ternary in generateTextField: `(options.defaultValue !== undefined) ? ... : ""`).
     await using ctx = await createIntegrationContext();
 
     void ctx;
@@ -197,15 +198,15 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
 
   test("HTML-escapes the data-default value to defend against quote injection from logoUrl", async () => {
 
-    // Boundary: a customized logoUrl with embedded quotes or HTML-special characters would, if not escaped, break out of the data-default attribute. The
-    // escapeHtml call at line 123 is the defense; we exercise it by setting a logoUrl that contains an embedded '&' character which must surface as &amp;.
+    // Boundary: a customized logoUrl with embedded quotes or HTML-special characters would, if not escaped, break out of the value attribute on the input. The
+    // escapeHtml(value) call at table.ts:131 is the defense; we exercise it by setting a logoUrl that contains an embedded '&' character which must surface as
+    // &amp; in the rendered value attribute (the assertion below matches value="...&amp;...").
     await using ctx = await createIntegrationContext();
 
     void ctx;
     await initializePersistence(ctx);
 
-    // Set a customization first so the data-default attribute is emitted. The predefined logoUrl is undefined, so resetValueFor returns ""; we inspect the
-    // modified field's data-default carrying the empty default and the value attribute carrying the customized URL with its escaped & marker.
+    // Set a customization so the field renders with the operator's value. We inspect the value attribute carrying the customized URL with its escaped & marker.
     await mutateChannels((data) => {
 
       data.channels["abc"] = { logoUrl: "https://example.test/logo.png?id=1&type=logo" };

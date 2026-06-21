@@ -159,7 +159,7 @@ export interface FileStoreReadResult<T> {
 }
 
 /**
- * Options for creating a file store instance. The first three fields (defaultValue, label, parse, path) are the minimum surface required for any store. The
+ * Options for creating a file store instance. The four required fields (defaultValue, label, parse, path) are the minimum surface required for any store. The
  * remaining fields opt in to schema versioning, migrations, and integrity validation - any store can adopt them as its data shape grows.
  * @template T - The in-memory data type that callers mutate.
  */

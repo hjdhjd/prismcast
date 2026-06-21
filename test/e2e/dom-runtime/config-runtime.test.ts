@@ -14,7 +14,8 @@
  *
  * The harness loads the full landing page through the production bootApp listener, then selectively executes shared.ts (because config.ts depends on its
  * window.* utilities like channelTable, showToast, dropdowns, createSubtabSwitcher, copyToClipboard, persistDisplayPrefs), the channelSelectorsByDomain data
- * script (so updateSelectorSuggestions has the in-page provider lookup tables it expects), and config.ts itself. status.ts is NOT executed because happy-dom
+ * script (so updateSelectorSuggestions resolves real provider entries instead of degrading to its no-suggestions fallback; the lookup is typeof-guarded, so this
+ * block aids fidelity rather than averting a throw), and config.ts itself. status.ts is NOT executed because happy-dom
  * does not implement EventSource; channels.ts is also skipped to keep the namespace under test focused on config.ts. The IIFE-init code in config.ts references
  * `streamData` as a free identifier (status.ts puts it into script-realm scope in production); we seed window.streamData = {} BEFORE running scripts so the
  * lookup resolves cleanly via the global object instead of throwing on the first updateRestartDialogStatus or startUpgrade access.
@@ -36,8 +37,9 @@ import { createDomTestContext } from "../../helpers/dom.helpers.ts";
 
 /**
  * Shared bootstrap for the suite. Boots a DOM context, seeds streamData (config.ts references it as a free identifier expecting status.ts's script-realm
- * binding), runs shared.ts (config.ts depends on its window.* utilities), the channelSelectorsByDomain data script (so updateSelectorSuggestions has its lookup
- * tables), and config.ts. Tests differ only in what they seed and assert post-init.
+ * binding), runs shared.ts (config.ts depends on its window.* utilities), the channelSelectorsByDomain data script (so updateSelectorSuggestions resolves real
+ * provider entries instead of degrading to its no-suggestions fallback; the lookup is typeof-guarded, so this block aids fidelity rather than averting a throw),
+ * and config.ts. Tests differ only in what they seed and assert post-init.
  */
 async function setupConfigRuntime(options?: DomTestContextOptions): Promise<DisposableDomTestContext> {
 
@@ -50,8 +52,9 @@ async function setupConfigRuntime(options?: DomTestContextOptions): Promise<Disp
 
   /* Three scripts are loaded together:
    *   1. shared.ts (marker: "window.channelTable = {") - the namespace and utilities config.ts depends on (channelTable, showToast, dropdowns, etc.).
-   *   2. The provider data block (marker: "var channelSelectorsByDomain") - planted by generateChannelSelectorScript so updateSelectorSuggestions can resolve
-   *      service slugs from URL hostnames without a network round-trip.
+   *   2. The provider data block (marker: "var channelSelectorsByDomain") - planted by generateChannelSelectorScript so updateSelectorSuggestions resolves real
+   *      provider entries instead of degrading to its no-suggestions fallback. The lookup is typeof-guarded, so the script does not throw without it - unlike the
+   *      unguarded streamData seed, this block is loaded for behavioral fidelity rather than to avert an exception.
    *   3. config.ts (marker: "window.submitSettingsForm") - the script under test.
    *
    * The runScripts harness executes selected scripts in their source order regardless of predicate iteration, so shared.ts → provider-data → config.ts is the
@@ -1457,8 +1460,9 @@ describe("config.ts: window.toggleServiceTag and removeServiceChip", () => {
 
   test("toggleServiceTag POSTs /config/service-filter with the channel-table's currently-enabled tags", async () => {
 
-    /* toggleServiceTag reads channelTable.getEnabledFilterTags() (a fresh DOM read of every checked .tag-filter-checkbox) and POSTs the array. We seed two
-     * checkboxes with one checked, fire the handler, and assert the body matches.
+    /* toggleServiceTag reads channelTable.getEnabledFilterTags() and POSTs the array. getEnabledFilterTags scopes to .provider-dropdown-menu, reads each enabled
+     * (non-disabled) checkbox by its data-tag attribute, and collapses to [] when every checkbox is checked. We seed two checkboxes with one checked, fire the
+     * handler, and assert the body matches.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -1711,8 +1715,8 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
 
     /* The contract: while restart is pending and streams reach 0, updateRestartDialogStatus calls triggerRestart (which POSTs /config/restart-now). We open the
      * dialog via deferred submit (with one stream so the dialog stays open), zero out window.streamData, then call updateRestartDialogStatus and confirm the
-     * POST fires. waitForServerRestart's polling interval may produce additional /health calls; we assert the first call is the restart POST rather than the
-     * full call list.
+     * POST fires. waitForServerRestart's polling interval may produce additional /health calls; we locate the restart POST among the calls rather than asserting
+     * its position.
      */
     await using ctx = await setupConfigRuntime();
 

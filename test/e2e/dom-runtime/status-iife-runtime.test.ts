@@ -71,9 +71,9 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.toggleStreamPopover invokes the underlying handler without infinite recursion", async () => {
 
-    /* The regression this pins: prior to the fix at status.ts:86, the IIFE bound window.toggleStreamPopover = () => toggleStreamPopover(ctx). Because function
-     * declarations at script-tag top level create properties on the global object, the assignment overwrote the global binding for toggleStreamPopover; the
-     * arrow's bare-identifier lookup then resolved back to the arrow itself, blowing the stack with RangeError on the first invocation. The fix captures the
+    /* The regression this pins: before the trampoline-capture fix in the status.ts IIFE, the IIFE bound window.toggleStreamPopover = () => toggleStreamPopover(ctx).
+     * Because function declarations at script-tag top level create properties on the global object, the assignment overwrote the global binding for toggleStreamPopover;
+     * the arrow's bare-identifier lookup then resolved back to the arrow itself, blowing the stack with RangeError on the first invocation. The fix captures the
      * original function reference in an IIFE-local const before reassigning the global. This test calls window.toggleStreamPopover and asserts that no
      * RangeError (or any other error) propagates - if the trampoline ever recurses on itself again, the assertion catches it before release.
      */
@@ -115,9 +115,9 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
      * "trampoline silently no-ops in a way that swallows the bug". This test pins the positive case: when called with a populated DOM, copyOverviewPlaylistUrl
      * must actually invoke the externals.copyToClipboard surface the IIFE captured at init time.
      *
-     * We replace window.copyToClipboard with a recording spy AFTER shared.ts ran (which installed the real implementation) but the spy assignment happens
-     * after the IIFE already captured the reference - so we need a slightly different approach: replace it BEFORE the status IIFE runs. We do that inline below
-     * instead of through the shared setup helper because this is the only test that needs the spy.
+     * We install a recording spy on window.copyToClipboard between the shared-utilities script and the status script. The IIFE captures the bare identifier
+     * copyToClipboard at construction time, so the spy must be planted after shared.ts installs the real implementation but before the status IIFE runs. We do
+     * that inline below instead of through the shared setup helper because this is the only test that needs the spy.
      */
     await using ctx = await createDomTestContext();
 

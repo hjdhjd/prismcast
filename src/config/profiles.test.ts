@@ -187,7 +187,7 @@ describe("getProfileForChannel", () => {
 
   test("explicit-profile fallback flips profileName when channel needs no selector and the concise domain has a different profile", () => {
 
-    /* Positive case for the channel-selection fallback at profiles.ts:190-199. The audit's recommended fixture (watch.sling.com, slingLive) doesn't apply at
+    /* Positive case for the channel-selection fallback at profiles.ts:190-199. The obvious fixture (watch.sling.com, slingLive) doesn't apply at
      * unit-test scope because slingLive is a provider profile registered only when browser/channelSelection.ts loads. We use an in-process equivalent: the
      * channel asks for apiMultiVideo (a builtin general profile with strategy="tileClick") but provides no channelSelector and a URL whose concise domain
      * (cnbc.com) maps to fullscreenApi - a profile that does not require channel selection. The fallback fires and the profileName flips from apiMultiVideo

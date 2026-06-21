@@ -66,7 +66,7 @@ function printUpgradeUsage(ctx: UpgradeContext): void {
   ctx.stdout("  -h, --help          Show this help message");
 }
 
-// Shared between --check mode and the pre-upgrade display so both surfaces print identical version/install-method/upgrade-command rows.
+// Shared between --check mode and the non-upgradeable summary so both surfaces print identical version/install-method/upgrade-command rows.
 function printUpgradeInfo(ctx: UpgradeContext, info: InstallInfo, currentVersion: string, latestVersion: Nullable<string>): void {
 
   ctx.stdout("PrismCast Upgrade Check");

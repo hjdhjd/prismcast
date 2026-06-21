@@ -218,7 +218,7 @@ describe("getServiceGenerator", () => {
     setPlatform(ORIGINAL_PLATFORM);
   });
 
-  // [process.platform value, expected platform field, expected serviceManager field]
+  // Each case: processValue is the raw process.platform string we stub in; platform and manager are the expected ServiceGenerator fields the dispatch should return.
   const platformCases: { manager: "launchd" | "systemd" | "windows-scheduler"; platform: "darwin" | "linux" | "windows"; processValue: string }[] = [
 
     { manager: "launchd", platform: "darwin", processValue: "darwin" },

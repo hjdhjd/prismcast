@@ -271,8 +271,8 @@ export function getEnabledServices(): string[] {
 }
 
 /**
- * Hydrates the in-memory enabled-services cache from a serialized list. Called by initializeUserChannels at startup with the validated tags list and by the
- * consistency probe's auto-fix after stripping unknown tags. Never called by route code directly - mutations go through mutateEnabledServices, which is the
+ * Hydrates the in-memory enabled-services cache from a serialized list. Called by initializeUserChannels at startup with the validated tags list. Never called
+ * by route code directly - mutations go through mutateEnabledServices, which is the
  * single async path that updates both the cache and the persisted file in one atomic operation.
  * @param tags - The service tags to load into the cache. Empty array means "no filter" (all services shown).
  */

@@ -50,10 +50,10 @@ describe("empty-state rendering across tabs", () => {
 
   test("custom profiles panel renders the documented empty-state message when no user profiles exist", async () => {
 
-    /* The Custom Profiles panel (services.ts:48) carries an explicit empty-state branch: when getUserProfiles() returns no entries, it emits an empty-state div
-     * with a "No custom services installed" title and instructional text. The export button is conditionally omitted when there are no profiles to export.
-     * This test pins both the empty-state messaging AND the conditional export-button absence - a regression that left the export button visible in the empty
-     * state would mislead users into clicking a button that would download an empty file.
+    /* The Custom Profiles panel (generateCustomProfilesPanel in services.ts) carries an explicit empty-state branch: when getUserProfiles() returns no entries, it emits
+     * an empty-state div with a "No custom services installed" title and instructional text. The export button is conditionally omitted when there are no profiles
+     * to export. This test pins both the empty-state messaging AND the conditional export-button absence - a regression that left the export button visible in the
+     * empty state would mislead users into clicking a button that would download an empty file.
      */
     await using ctx = await createIntegrationContext();
 
@@ -98,9 +98,10 @@ describe("empty-state rendering across tabs", () => {
 
   test("GET /streams with no active streams returns the documented empty envelope", async () => {
 
-    /* The streams endpoint at routes/streams.ts:26 unconditionally emits { count, limit, streams }. With no active streams, count is 0 and streams is []. limit
-     * reflects CONFIG.streaming.maxConcurrentStreams. The shape is the same regardless of stream count - there is no separate empty-state envelope - so the
-     * test pins that uniformity: an empty streams array does NOT trigger a different envelope shape (a "no streams" message, an absent streams field, etc.).
+    /* The streams endpoint (the GET /streams handler in setupStreamsEndpoint, routes/streams.ts) unconditionally emits { count, limit, streams }. With no active
+     * streams, count is 0 and streams is []. limit reflects CONFIG.streaming.maxConcurrentStreams. The shape is the same regardless of stream count - there is no
+     * separate empty-state envelope - so the test pins that uniformity: an empty streams array does NOT trigger a different envelope shape (a "no streams" message,
+     * an absent streams field, etc.).
      */
     await using ctx = await createIntegrationContext();
 
@@ -143,7 +144,7 @@ describe("empty-state rendering across tabs", () => {
 
   test("service filter excluding every non-direct channel: panel renders without crashing", async () => {
 
-    /* The empty-effective-listing case. enabledServices=["nonexistent-tag"] structurally means: every variant whose service tag is not "direct" is filtered
+    /* The empty-effective-listing case. enabledServices=["nonexistent-service-tag"] structurally means: every variant whose service tag is not "direct" is filtered
      * out. Channels with a `direct` tag (those whose canonical URL is the network site, e.g., abc with abc.com) survive because isServiceTagEnabled returns
      * true for "direct" unconditionally; channels without a `direct` tag (e.g., abcnews) are not visible.
      *

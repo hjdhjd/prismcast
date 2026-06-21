@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * escaping.test.ts: Integration coverage for the cross-cutting escaping invariants that bind every server-rendered surface (HTML rows, tag manager, M3U
- * playlist) to safe handling of user-supplied strings. The escapeHtml helper at src/utils/html.ts maps {<, >, &, ", '} to HTML entities; the table renderer
+ * playlist) to safe handling of user-supplied strings. The escapeHtml helper at src/utils/markup.ts maps {<, >, &, ", '} to HTML entities; the table renderer
  * uses it on every user-content position; the M3U generator at src/routes/playlist.ts uses escapeM3uAttribute (src/utils/m3u.ts) to backslash-escape the
  * structural characters of an M3U quoted-string (`"` and `\`) and to collapse forbidden line breaks into a single space. Each test below pins the contract
  * that surface is supposed to honor, and the tests use one fixture string with every dangerous character so a regression in any single replacement path
@@ -65,7 +65,7 @@ describe("HTML escaping invariants - table renderer", () => {
 
   test("a channel URL with quote and ampersand characters renders with the URL safely escaped in the edit row value attribute", async () => {
 
-    /* The edit row contains the channel URL inside an <input value="..."> attribute (table.ts:1167 -> generateTextField -> table.ts:130). A URL like
+    /* The edit row contains the channel URL inside an <input value="..."> attribute (table.ts:1176 -> generateTextField -> table.ts:131). A URL like
      * "https://example.test/path?a=1&b=2&c=\"3\"" carries both the ampersand (URL parameter separator) and the quote (a pathological but legal URL component
      * via percent-encoding upstream of us). The renderer must escape both so the attribute value is well-formed HTML. A regression here breaks the edit form's
      * field value (the input would render with an empty or truncated value) and is the kind of bug that only surfaces when a user happens to use unusual URLs.
@@ -96,7 +96,7 @@ describe("HTML escaping invariants - table renderer", () => {
   test("a tag name with HTML special characters renders with every dangerous char escaped in the tag manager body", async () => {
 
     /* The tag manager body in generateTagManagerBody emits each tag's name in multiple positions per entry: once in the wrapper's data-tag="...", once in the
-     * rename anchor's data-tag-name="...", once in the delete button's data-tag-name="...", and once as the visible label inside <span>. All positions go
+     * rename span's data-tag-name="...", once in the delete button's data-tag-name="...", and once as the visible label inside <span>. All positions go
      * through escapeHtml. A user who creates a tag with embedded special characters (the pattern attribute on the input does limit this, but the renderer must
      * still be safe against bypassed validation - persisted state can outlive any client-side check) needs every position to be safe.
      *
@@ -123,7 +123,7 @@ describe("HTML escaping invariants - table renderer", () => {
     assert.match(body, /class="tag-badge tag-editable"[^>]*>news &lt;important&gt; &amp; &quot;hot&quot;</,
       "the visible badge label must contain entity-encoded special characters");
 
-    // Negative: the literal unescaped tag must not appear anywhere - that would mean at least one of the three positions skipped escaping.
+    // Negative: the literal unescaped tag must not appear anywhere - that would mean at least one of the four positions skipped escaping.
     assert.equal(body.includes(dangerousTag), false, "the raw unescaped tag string must not appear anywhere in the tag manager body");
   });
 });
@@ -226,8 +226,8 @@ describe("Round-trip safety - export and re-import preserve dangerous characters
     assert.equal(importResponse.status, 200, "import must succeed; body: " + (await importResponse.clone().text()).slice(0, 200));
 
     // Read the persisted channels.json and verify the channel's name field is byte-identical to the original DANGEROUS_NAME at the field level. We use
-    // readPersistedJson plus narrowing because the on-disk shape (per Gotcha #1) flattens entries to top-level keys - the seeded channel appears at
-    // parsed["roundtrip-channel"], not parsed.channels["roundtrip-channel"].
+    // readPersistedJson plus narrowing because the on-disk channels.json flattens channel entries to top-level keys alongside schemaVersion - the seeded
+    // channel appears at parsed["roundtrip-channel"], not parsed.channels["roundtrip-channel"].
     const persisted = await readPersistedJson(ctx, "channels.json");
 
     assert.equal(typeof persisted, "object", "channels.json must parse to an object");

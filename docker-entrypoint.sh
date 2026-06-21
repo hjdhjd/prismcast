@@ -19,8 +19,8 @@ mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 export XDG_RUNTIME_DIR
 
-# Auto-select the Intel VA-API driver when a DRI render node is present and LIBVA_DRIVER_NAME hasn't been set explicitly.
-# iHD is the driver for Intel Gen 9+ (Skylake and newer). Override with LIBVA_DRIVER_NAME=i965 for older hardware.
+# Fallback Intel VA-API driver selection. The image already pins LIBVA_DRIVER_NAME=iHD via the Dockerfile ENV, so this block only takes effect if that ENV is
+# dropped or the runtime unsets LIBVA_DRIVER_NAME. iHD is the driver for Intel Gen 9+ (Skylake and newer); override with LIBVA_DRIVER_NAME=i965 for older hardware.
 if [ -z "$LIBVA_DRIVER_NAME" ] && [ -e /dev/dri/renderD128 ]; then
   export LIBVA_DRIVER_NAME=iHD
 fi
@@ -66,6 +66,8 @@ rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM}
 # hardware-accelerated rendering. Without this, Chrome sees software GL only and
 # disables VAAPI. DISABLE_DRI3 must be exactly "false" (string) for DRI3 to stay active.
 VFBCOMMAND=""
+# Skip auto-selection on NVIDIA hosts: the LinuxServer -vfbdevice path targets Intel/AMD DRM render nodes, and binding it to an NVIDIA render node is unsupported,
+# so we leave it off here (DRINODE below can still force it explicitly when an operator knows their setup needs it).
 if [ -e /dev/dri/renderD128 ] && ! which nvidia-smi > /dev/null 2>&1; then
   VFBCOMMAND="-vfbdevice /dev/dri/renderD128"
 fi

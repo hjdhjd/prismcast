@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * auth.test.ts: Unit tests for the channel-login routes in auth.ts. setupAuthEndpoint registers POST /auth/login, POST /auth/done, and GET /auth/status. The
- * login flow requires a real Chrome browser to actually authenticate; without one, startLoginMode() rejects with "Browser is not connected." We cover the
+ * login flow requires a real Chrome browser to actually authenticate; without one, startLoginMode() returns success=false with "Browser is not connected." We cover the
  * paths that can be exercised honestly in a unit test: the request validation (missing channel/url), the unknown-channel 404, the login-when-disconnected 409,
  * the noop endLoginMode (idempotent against an inactive state), and the always-on getLoginStatus.
  */

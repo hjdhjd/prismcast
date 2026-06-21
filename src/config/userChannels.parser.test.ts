@@ -70,8 +70,10 @@ describe("parseChannelsFile", () => {
 
   test("accepts the legacy 'providerSelections' key as a synonym for serviceSelections", () => {
 
-    /* The v2 -> v3 migration was supposed to rewrite this key on next persist. The parser tolerates the legacy form so reads work even before the migration
-     * runs. Both keys could appear in the same file - the legacy one wins last because of object-iteration order... actually let me re-check.
+    /* The v2 -> v3 migration rewrites this key under the current name on next persist. The parser tolerates the legacy form so reads work even before the
+     * migration runs. Both "serviceSelections" and "providerSelections" funnel into the same accumulator, so if both keys ever appeared in one file their
+     * sub-entries would merge and a shared sub-key would take the value from whichever top-level key is iterated later (file order), not from legacy-vs-current
+     * status. This test exercises only the legacy-alone case below.
      */
     const result = parseChannelsFile(JSON.stringify({ providerSelections: { abc: "abc-hulu" } }));
 

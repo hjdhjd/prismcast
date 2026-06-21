@@ -68,8 +68,9 @@ describe("startPretunePolling / stopPretunePolling", () => {
 
   test("stopPretunePolling clears pending timers even when called immediately after start", () => {
 
-    // The implementation iterates activeTimers and safetyTimers Maps and clearTimeout's each entry. With no DVR host configured, the polling function returns
-    // early before scheduling any timers, so this test mostly exercises the no-timer cleanup path. Locks that the empty-Map iteration is harmless.
+    // The implementation iterates the activeTimers Map directly and clearTimeout's each entry, then clears the safety timers via clearAllPretuneSafetyTimers() (the
+    // pretuneTimers.ts registry that owns and iterates the safetyTimers Map). With no DVR host configured, the polling function returns early before scheduling any
+    // timers, so this test mostly exercises the no-timer cleanup path. Locks that the empty-Map iteration is harmless.
     startPretunePolling();
     stopPretunePolling();
 

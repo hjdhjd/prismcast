@@ -66,7 +66,7 @@ const newDocumentScriptIdsByPage = new WeakMap<Page, Map<string, string>>();
  * fetch interceptor, whose UUID/EAB tokens drift from a cold first tune to a warm recovery re-tune: installOncePerPage would freeze the first (cold) arguments and
  * starve the recovery tune, while re-installing without removal would stack duplicate scripts. This helper keeps exactly one live script carrying current arguments,
  * fixing both. installOncePerPage remains the right tool for installs that are genuinely idempotent - a request listener that reads live state, or a script whose
- * arguments never change (e.g. DirecTV's constant target name). `install` must perform the page.evaluateOnNewDocument call and return its result so the script
+ * arguments never change. `install` must perform the page.evaluateOnNewDocument call and return its result so the script
  * identifier can be tracked for the next removal.
  * @param page - The Puppeteer page the script targets. Used as the WeakMap key so the per-page record is released when the page is closed.
  * @param key - A stable identifier for this interceptor (e.g., "fetch-interceptor"). Distinct keys are tracked independently.
@@ -103,16 +103,16 @@ export async function installOrReplaceOnNewDocument(page: Page, key: string, ins
 }
 
 /**
- * Scrolls a target element into view and clicks it using coordinate-based mouse click. The 200ms settle delay after scrolling allows lazy-loaded content and
- * animations to complete before the click is dispatched. Coordinate-based clicking generates the full pointer event chain (pointerdown -> mousedown -> pointerup ->
- * mouseup -> click), which is more reliable for React/SPA-based sites than synthetic DOM click events.
+ * Clicks pre-computed viewport coordinates using a coordinate-based mouse click, after a 200ms settle delay that lets lazy-loaded content and animations settle
+ * before the click is dispatched. The caller is responsible for scrolling the target into view and computing its coordinates. Coordinate-based clicking generates
+ * the full pointer event chain (pointerdown -> mousedown -> pointerup -> mouseup -> click), which is more reliable for React/SPA sites than synthetic DOM clicks.
  * @param page - The Puppeteer page object.
  * @param target - The x/y coordinates to click.
- * @returns True if the click was executed.
+ * @returns Always true; the click is dispatched unconditionally and no failure is detectable from page.mouse.click.
  */
 export async function scrollAndClick(page: Page, target: ClickTarget): Promise<boolean> {
 
-  // Brief delay after scrolling for any animations or lazy-loaded content to settle.
+  // Brief settle delay so any animations or lazy-loaded content from the caller's prior scroll settle before the click is dispatched.
   await delay(200);
 
   // Click the target coordinates to switch to the channel.

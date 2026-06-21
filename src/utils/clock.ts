@@ -24,8 +24,8 @@ import { delay, raceWithTimeout } from "./delay.ts";
 export interface Clock {
 
   // Returns the current high-resolution timestamp in milliseconds. Wraps performance.now() in production; fakes return a deterministic value (often 0, or a
-  // controlled sequence). Provided in the interface for forward use - retry.ts does not consume it today, but timing.ts and any future deadline-tracking caller
-  // would.
+  // controlled sequence). Consumed today by timing.ts's startTimer, which reads now() at creation and on each elapsed-time call; retry.ts consumes only sleep()
+  // and raceWithTimeout().
   readonly now: () => number;
 
   // Races a promise against a timeout. Identical contract to raceWithTimeout in delay.ts: resolves with the promise's value on success, throws timeoutError (or

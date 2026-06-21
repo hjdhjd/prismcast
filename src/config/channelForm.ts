@@ -18,11 +18,12 @@ import { getChannelEffectiveTags, getEffectiveHdhrEnabled, sortTags } from "./us
 import { isDeepStrictEqual } from "node:util";
 
 /**
- * Case-insensitive order-independent comparison of two tag arrays. Delegates ordering to sortTags so the case-insensitive locale-aware sort policy lives in
- * exactly one place - this function is about equality, not ordering, and stays out of the "how do we sort tags" decision.
+ * Order-independent equality of two tag arrays. Ordering is delegated to sortTags (case-insensitive locale-aware sort) so that policy lives in exactly one place;
+ * the resulting arrays are then compared for exact, case-sensitive content equality. Only the ordering step is case-insensitive... value equality is case-sensitive,
+ * so ["abc"] and ["ABC"] are not equal here. This function is about equality, not ordering, and stays out of the "how do we sort tags" decision.
  * @param a - The first tag array.
  * @param b - The second tag array.
- * @returns True when the arrays contain the same tags under case-insensitive ordering.
+ * @returns True when the arrays contain the same tags, compared order-independently with case-sensitive value equality.
  */
 function tagsEqual(a: readonly string[], b: readonly string[]): boolean {
 

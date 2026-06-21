@@ -13,7 +13,7 @@
  * Each issue is logged loudly and, when an auto-fix is provided, applied immediately. Auto-fixes that need to mutate persistent state go through the same
  * mutate* functions as user code so the integrity validators and snapshot machinery cover them too.
  *
- * Adding a new check is a single function returning ConsistencyIssue[]; collectConsistencyIssues fans out to every check in parallel.
+ * Adding a new check is a single function returning ConsistencyIssue[]; collectConsistencyIssues calls each check in turn and aggregates their results into one array.
  */
 import { LOG, formatError } from "../utils/index.ts";
 import { getAllServiceTags, mutateEnabledServices } from "./services.ts";

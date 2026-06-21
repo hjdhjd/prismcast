@@ -5,8 +5,9 @@
  * key's on-disk entry byte-identical pre/post. The invariant catches a class of bug invisible to the existing crud/bulk suites - serializer drift that silently
  * re-keys entries, re-orders tag arrays, or rewrites whitespace - because those suites only assert the targeted side of the change.
  *
- * Comparison strategy: parse channels.json, project each channel entry through stringifySorted (the same serializer the production file store uses via
- * persistence.ts:627), and compare per-entry strings. This produces the strongest possible byte-identity assertion against parsed output without coupling to
+ * Comparison strategy: parse channels.json, project each channel entry through stringifySorted (the same serializer prepareChannelsForWrite hands to the
+ * file-store framework's beforeWrite path before it writes to disk), and compare per-entry strings. This produces the strongest possible byte-identity
+ * assertion against parsed output without coupling to
  * full-file bytes - which always change because the targeted entry changes - and survives whitespace/key-order regressions a deepEqual on parsed objects would
  * miss. The on-disk channels.json shape is flat per the prepareChannelsForWrite contract (channel entries top-level alongside schemaVersion / migrationsApplied
  * / serviceSelections / tagRegistry), so the projection iterates only the keys we explicitly named at seed time rather than every top-level key.
@@ -166,7 +167,7 @@ describe("channels.json non-targeted byte-preservation", () => {
 
   test("bulk tag assign leaves channels that already carry the tag byte-identical", async () => {
 
-    /* transformChannelTags' no-op short-circuit (line 1990 in userChannels.ts) skips channels whose tags are unchanged after the transform. Bulk-add of a tag
+    /* transformChannelTags' no-op short-circuit in userChannels.ts skips channels whose tags are unchanged after the transform. Bulk-add of a tag
      * already present must therefore not rewrite those entries on disk. We seed two channels with the predefined "News" tag and one without, run bulk-add
      * News, and assert: the two existing-News entries are byte-identical, the third is touched.
      */

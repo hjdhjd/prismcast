@@ -3,14 +3,15 @@
  * migrations.test.ts: Integration coverage for the channel-store schema migration runner against real on-disk fixtures. Unit tests in persistence.test.ts
  * exercise the migration FRAMEWORK (run-in-order, gap detection, forward-compat, idempotence) against synthetic stores; this suite exercises the actual
  * production migrations declared in userChannels.ts against canonical historical fixtures, catching regressions where a future migration breaks an older
- * shape's upgrade path. The three production migrations are:
+ * shape's upgrade path. The two production migrations are:
  *
  *   - schema v1 -> v2: stamp canonicalKey on hyphenated user channel entries whose identity matches a predefined canonical.
  *   - schema v2 -> v3: rename foxcom service references to foxone (and the special case fox-site -> fox-foxone).
  *
- * Each test seeds a fresh data directory with a v1 channels.json (no schemaVersion field, treated as version 1 by the framework), then triggers the migration
- * runner via initializeUserChannels (which calls ensureMigrated as part of its load sequence). After the runner finishes, the on-disk file is re-read to
- * verify the upgrade landed durably (not just in memory).
+ * Each test seeds a fresh data directory with a v1 channels.json (no schemaVersion field, treated as version 1 by the framework), then drives the migration
+ * runner through the initializePersistence helper. That helper calls ensureAllMigrated() first, which runs each store's ensureMigrated() and persists the
+ * upgrade to disk; only afterward does it call the load functions (initializeUserChannels) to hydrate module state from the already-migrated, already-persisted
+ * content. After ensureAllMigrated has run, the on-disk file is re-read to verify the upgrade landed durably (not just in memory).
  */
 import { createIntegrationContext, initializePersistence, readPersistedJson, writePersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -21,8 +22,8 @@ describe("persistence migrations", () => {
   test("v1 channels file with no schemaVersion field migrates to v3 and records the audit trail", async () => {
 
     /* Seed: a v1-shape channels.json (no schemaVersion key). The framework's parser treats absent schemaVersion as 1, so the runner must apply v2 and v3
-     * sequentially. After initializeUserChannels triggers ensureMigrated, the on-disk file should carry schemaVersion: 3 and a migrationsApplied audit list
-     * with both descriptions in order.
+     * sequentially. After ensureAllMigrated runs (driven by initializePersistence), the on-disk file should carry schemaVersion: 3 and a migrationsApplied
+     * audit list with both descriptions in order.
      */
     await using ctx = await createIntegrationContext();
 
@@ -140,7 +141,7 @@ describe("persistence migrations", () => {
 
 describe("persistence migrations - chain ordering and idempotency across stores", () => {
 
-  /* Phase 2.5 Suite 36 extends migrations.test.ts to pin the runner's behavior across two regimes that the per-step tests above did not directly exercise:
+  /* This suite pins the runner's behavior across two regimes that the per-step tests above did not directly exercise:
    *
    *   1. Chain coverage: a v1-fixture boot must apply v2 AND v3 in chronological order, with each step's transformation visible in the final on-disk state. The
    *      per-step tests in the prior describe block cover individual steps; these tests exercise both ends of the chain together. We exercise the chain on both
@@ -157,9 +158,8 @@ describe("persistence migrations - chain ordering and idempotency across stores"
    * equality so the chain-ordering invariant is structural.
    */
 
-  // Production-canonical migration descriptions. Sourced from configMigrations / channelsMigrations in src/config/userConfig.ts and src/config/userChannels.ts.
-  // Keeping these as test-side constants is deliberate: a rename in production must surface here as a failing test before the chain-ordering invariant is silently
-  // weakened. The four-line literal block IS the SSOT in test space.
+  // Production-canonical migration descriptions. Sourced from configMigrations / channelsMigrations in src/config/userConfig.ts and src/config/userChannels.ts. See
+  // the block comment above for why these live as test-side constants.
   const CONFIG_V2_DESCRIPTION = "Rename legacy provider-themed channel field names and foxcom service tag to foxone";
   const CONFIG_V3_DESCRIPTION = "Move dvrHost into channelsDvr.host (split legacy host:port format)";
   const CHANNELS_V2_DESCRIPTION = "Stamp canonicalKey on legacy user channel variant entries";

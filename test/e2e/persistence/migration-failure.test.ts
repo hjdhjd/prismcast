@@ -1,19 +1,19 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * migration-failure.test.ts: Pins the file-store framework's contract under migration failure - what happens when a declarative schema migration's `apply`
- * callback throws. The verification report flagged the rollback path as not visible from the framework excerpt; this suite investigates and pins the actual
- * behavior so a future migration that crashes (logic bug, type error, programmer mistake on a fresh schema bump) cannot silently corrupt user data.
+ * callback throws. The framework runs migrations in memory before any disk write, so a throwing migration cannot corrupt the on-disk file; this suite pins
+ * that behavior so a future migration that crashes (logic bug, type error, programmer mistake on a fresh schema bump) cannot silently corrupt user data.
  *
- * INVESTIGATION (per the roadmap's "investigate the cleanup contract before pinning" rule). Read of src/config/persistence.ts:271-315 (runMigrations) plus
- * read paths at :401-474 (read) and :712-721 (mutate enqueue):
+ * INVESTIGATION. Read of src/config/persistence.ts (runMigrations, read, doMutate, mutate, ensureMigrated). We cite these by function name rather than line
+ * number so the trail does not rot as the source file shifts:
  *
- *   - runMigrations is called by read() at line 465. The migration's `apply` callback runs in memory mutating the parsed data in place, then setSchemaVersion
+ *   - runMigrations is called by read(). The migration's `apply` callback runs in memory mutating the parsed data in place, then setSchemaVersion
  *     is stamped, then recordMigration is appended, then applied.push happens, then currentVersion advances. If apply() throws, control jumps out of
  *     runMigrations entirely - none of the post-apply steps (version stamp, record append) executes. The exception propagates out of read().
  *   - read() does not catch the throw (it only catches parse errors, not migration errors). So the throw propagates to whichever caller invoked read.
- *   - mutate's doMutate at :598-706 calls read() at :604. If read() throws, doMutate never reaches the write step. The file is therefore byte-identical to
+ *   - mutate's doMutate calls read() before any write. If read() throws, doMutate never reaches the write step. The file is therefore byte-identical to
  *     its pre-mutate state. The mutate's caller sees the thrown exception.
- *   - ensureMigrated at :727-742 calls read() at :730 (a peek). Same story: read throws, ensureMigrated propagates the exception, the file is untouched.
+ *   - ensureMigrated calls read() (a peek). Same story: read throws, ensureMigrated propagates the exception, the file is untouched.
  *
  * Conclusion: the framework's behavior on migration throw is correct by construction. The migration runs in memory before any disk write; a throw inside the
  * runner means the disk write never happens; the file's schemaVersion and migrationsApplied therefore cannot advance, and the data on disk is the pre-attempt
@@ -21,7 +21,7 @@
  * is what makes failure transparent. This suite pins that contract end-to-end so a future regression that, say, moved the version stamp ahead of the apply
  * call, or that swallowed the throw and persisted partial state, fails loud.
  *
- * Approach choice. The roadmap suggests `mock.module` per Suite 12's precedent. mock.module is the right tool for mocking exported FUNCTIONS that production
+ * Approach choice. mock.module is the right tool for mocking exported FUNCTIONS that production
  * statically imports - it intercepts at the module-binding boundary. The framework's migration contract is exercised by INSTANTIATING a fresh FileStore via
  * createFileStore with a custom migration map; that surface IS the production API for declaring a store, and the test using it exercises the same code path
  * production stores (config, channels, profiles) traverse on every boot. A mock.module call to swap a real production migration would test "would the

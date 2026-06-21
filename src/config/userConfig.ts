@@ -1707,8 +1707,7 @@ const isNonEmptyArray: PreservePredicate = (value: unknown): boolean => Array.is
 // logging.debugFilter, channelsDvr.host).
 const isNonEmptyString: PreservePredicate = (value: unknown): boolean => (typeof value === "string") && (value.length > 0);
 
-// Predicate: any number. Used for schemaVersion - the framework-managed integer that any non-undefined value must round-trip through filterDefaults.
-// Predicate: any number including NaN. Number.isFinite() would tighten the contract if NaN must be rejected.
+// Predicate: any number, including NaN. Used for schemaVersion - the framework-managed integer that any non-undefined value must round-trip through filterDefaults.
 const isNumber: PreservePredicate = (value: unknown): boolean => typeof value === "number";
 
 // Predicate: a string that differs from the default by simple equality. Used for channelSortField / channelSortDirection - both have meaningful default

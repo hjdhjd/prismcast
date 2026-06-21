@@ -4,13 +4,14 @@
  * exist beyond the mergeConfiguration pipeline (covered at unit tier in userConfig.merge.test.ts) and beyond the recoveredFromBackup banner (exercised
  * implicitly by backup-recovery.test.ts):
  *
- *   1. Persisted debug filter restoration. When config.json carries a logging.debugFilter and no environment- or CLI-driven debug filter is active, the
- *      function applies the persisted pattern and canonicalizes the in-memory copy to the parser's normalized form.
+ *   1. Persisted debug filter restoration. When config.json carries a logging.debugFilter and no environment- or CLI-driven debug filter is active,
+ *      normalizeConfig() rewrites the in-memory copy to its canonical form via canonicalizeDebugPattern() and commitDebugFilter() applies that pattern to the
+ *      live runtime filter via initDebugFilter().
  *   2. Quality preset validation gate. An unknown qualityPreset (typo in config.json or a preset removed in a release upgrade) is reset to DEFAULTS with an
  *      operator-visible warning rather than allowed through to the validation layer where it would only surface as a viewport mismatch.
  *
- * Each branch is isolated to its own describe block. CONFIG state is restored at the end of every test via a final initializeConfiguration() call against
- * an empty data dir so subsequent suites running in the same process see DEFAULTS-equivalent runtime CONFIG.
+ * Each branch is isolated to its own describe block. Each test runs against its own integration context (an isolated data dir disposed via "await using"),
+ * and the debugFilter suite's afterEach restores the PRISMCAST_DEBUG env var and clears the runtime filter so env/CLI debug state does not leak between tests.
  */
 import { CONFIG, initializeConfiguration } from "../../../src/config/index.ts";
 import { DEFAULTS, readConfig } from "../../../src/config/userConfig.ts";
@@ -22,8 +23,10 @@ import assert from "node:assert/strict";
 
 describe("initializeConfiguration: persisted debugFilter branch", () => {
 
-  /* The branch fires when isAnyDebugEnabled() is false (no PRISMCAST_DEBUG env var, no --debug CLI flag) AND CONFIG.logging.debugFilter has length > 0 after
-   * the merge. We seed config.json with a debugFilter, ensure the env-side debug state is clear, and assert the resulting runtime state.
+  /* The branch fires when no env/CLI debug source owns the filter (envOrCliDebugOverride is false, i.e. no PRISMCAST_DEBUG env var and no --debug CLI flag) AND
+   * the canonical persisted CONFIG.logging.debugFilter differs from the currently-active runtime pattern (getCurrentPattern()). That difference also covers the
+   * empty-clears-an-active-filter case, not merely a non-empty pattern. We seed config.json with a debugFilter, ensure the env-side debug state is clear, and
+   * assert the resulting runtime state.
    */
   const ORIGINAL_ENV = process.env["PRISMCAST_DEBUG"];
 
@@ -48,11 +51,14 @@ describe("initializeConfiguration: persisted debugFilter branch", () => {
 
   test("applies the persisted logging.debugFilter pattern and canonicalizes the in-memory copy", async () => {
 
-    /* The persisted form may carry user-formatted whitespace (e.g., "tuning:hulu, recovery"); the framework canonicalizes that via initDebugFilter and the
-     * function syncs CONFIG.logging.debugFilter back to getCurrentPattern() so equality checks elsewhere see the parser's exact output.
+    /* The persisted form may carry user-formatted whitespace (e.g., "tuning:hulu, recovery"); normalizeConfig() rewrites CONFIG.logging.debugFilter via
+     * canonicalizeDebugPattern() to its canonical form (the same form getCurrentPattern would yield) so equality checks elsewhere see the parser's exact output,
+     * while commitDebugFilter() applies that pattern to the live runtime filter via initDebugFilter() as a separate side effect.
      */
     await using ctx = await createIntegrationContext();
 
+    // The await-using binding owns the data dir for the test's lifetime; "void ctx;" marks it as intentionally held so the disposable is not flagged as unused
+    // before the writePersistedJson call below consumes it.
     void ctx;
     await writePersistedJson(ctx, "config.json", { logging: { debugFilter: "tuning:hulu, recovery" } });
 
@@ -65,9 +71,10 @@ describe("initializeConfiguration: persisted debugFilter branch", () => {
 
   test("does NOT re-apply the persisted filter when isAnyDebugEnabled is already true", async () => {
 
-    /* Pre-condition: an env- or CLI-driven debug pattern fired before initializeConfiguration ran. The function's isAnyDebugEnabled() guard then skips the
-     * persisted-pattern apply branch. We simulate by pre-initializing the filter ourselves; the persisted value still flows through mergeConfiguration into
-     * CONFIG, but the function does not call initDebugFilter again. The behavioral contract is that the previously-active pattern remains untouched.
+    /* Pre-condition: any debug pattern is already active at init time. initializeConfiguration captures that into the envOrCliDebugOverride snapshot (from
+     * isAnyDebugEnabled() before the persisted filter applies), and commitDebugFilter() then gates on that snapshot to skip the persisted-pattern apply branch.
+     * We simulate by pre-initializing the filter ourselves; the persisted value still flows through mergeConfiguration into CONFIG, but the function does not call
+     * initDebugFilter again. The behavioral contract is that the previously-active pattern remains untouched.
      */
     await using ctx = await createIntegrationContext();
 
@@ -91,8 +98,9 @@ describe("readConfig adapter shape", () => {
    *   - "migrationResult" (which the framework returns alongside data) is intentionally dropped from the wrapper's return shape so callers can't accidentally
    *     act on framework metadata that's already been applied to the data.
    *
-   * The drop-migrationResult contract is the part not exercised elsewhere - the surrounding fields are pinned by backup-recovery.test.ts. We seed a config
-   * with a v2-shaped legacy field, run readConfig, and assert the returned keyset matches the documented shape with no migrationResult leakage.
+   * The drop-migrationResult contract is the part not exercised elsewhere - the surrounding fields are pinned by backup-recovery.test.ts. We seed a plain
+   * current-shape config (a single server.port override), run readConfig, and assert the returned keyset matches the documented shape with no migrationResult
+   * leakage. The contract is independent of whether a migration actually ran, so no legacy field is needed to exercise it.
    */
   test("returns the documented keyset and drops migrationResult that the framework projects internally", async () => {
 

@@ -89,7 +89,7 @@ describe("CONFIG_METADATA", () => {
 
   test("every metadata path corresponds to a defined value in DEFAULTS", () => {
 
-    // The merge logic depends on getNestedValue(DEFAULTS, path) returning a defined value for every path. A typo here would silently break per-setting defaults.
+    // filterDefaults() depends on getNestedValue(DEFAULTS, path) resolving for every CONFIG_METADATA path. A typo here would silently break default-stripping on save.
     for(const settings of Object.values(CONFIG_METADATA)) {
 
       for(const setting of settings) {
@@ -131,7 +131,7 @@ describe("getNestedValue", () => {
 
   test("returns undefined for an empty path", () => {
 
-    // Boundary: split("") returns [""], so the function looks for the empty-string key. Most objects don't have one, so undefined is the typical result.
+    // Boundary: "".split(".") returns [""], so the function looks for the empty-string key. Most objects don't have one, so undefined is the typical result.
     assert.equal(getNestedValue({}, ""), undefined);
   });
 });

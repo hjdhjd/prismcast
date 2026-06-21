@@ -370,7 +370,7 @@ describe("inferMediaCodec (async orchestrator)", () => {
 
   test("caps the read at 32 KB when the CDN ignores Range and streams the full segment (HTTP 200)", async () => {
 
-    /* Finding [19]: when a CDN ignores the Range header it responds 200 OK and streams the entire segment, which can be several megabytes. The orchestrator must
+    /* When a CDN ignores the Range header it responds 200 OK and streams the entire segment, which can be several megabytes. The orchestrator must
      * read only the documented 32 KB prefix regardless, draining just enough of the body to parse the PAT/PMT and then cancelling the rest. We prove the cap holds
      * by serving a ReadableStream whose first chunk carries the valid TS fixture and whose tail is a multi-megabyte flood emitted in small chunks. The stream counts
      * how many bytes the consumer pulled and whether it was cancelled. A consumer that buffered the whole body (the old arrayBuffer() path) would pull every byte;

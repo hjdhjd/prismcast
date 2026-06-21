@@ -53,7 +53,7 @@ function sendDiscoveryError(res: Response, label: string, error: unknown): void 
   const message = (error instanceof Error) ? error.message : String(error);
 
   // Channel discovery failures are warnings rather than errors because they typically reflect provider DOM drift, network blips, or transient site outages
-  // (recoverable by retry) rather than server-side faults. The envelope helper normalizes the response shape; the LOG.warn level is preserved deliberately.
+  // (recoverable by retry) rather than server-side faults. The envelope helper normalizes the response shape.
   LOG.warn("Channel discovery failed for %s: %s.", label, message);
   sendError(res, 500, { error: "Channel discovery failed: " + message + "." });
 }

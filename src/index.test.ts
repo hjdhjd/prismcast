@@ -87,7 +87,7 @@ describe("ParsedArgs", () => {
  * - The unhandledRejection / uncaughtException handlers: registered at module load via process.on. Mutating process state from a unit test would leak across
  *   the rest of the test run, and the test runner has its own unhandled-rejection guard that would compete. Deferred to e2e.
  *
- * - The 'exit' handler that calls flushLogBufferSync / clearServerPid / killStaleChrome: registered only on the default branch (server startup), which we
+ * - The 'exit' handler that calls flushLogBufferSync / releaseInstanceSlot / killStaleChrome: registered only on the default branch (server startup), which we
  *   cannot reach without importing index.ts and triggering startServer. Deferred to e2e.
  *
  * - The dispatch to handleServiceCommand / handleUpgradeCommand / printEnvironmentVariables / startServer: top-level await-less promise chains that branch on

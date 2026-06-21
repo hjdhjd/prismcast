@@ -18,7 +18,8 @@ import { evaluateWithAbort } from "../../utils/index.ts";
  * 3. Walk up the DOM to find a container wide enough to hold both the channel element and guide entries
  * 4. Search for clickable elements (links, buttons, cards) to the right of the channel element on the same row
  * 5. Fall back to divs with cursor:pointer if no semantic clickables found
- * 6. Click the found element to switch to the channel
+ * 6. As an ultimate fallback, when no container yields a semantic or cursor:pointer target, blind-click a fixed offset to the right of the channel element
+ * 7. Click the found element to switch to the channel
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile with a non-null channelSelector.
  * @returns Result object with success status and optional failure reason.
@@ -38,7 +39,8 @@ async function thumbnailRowStrategyFn(page: Page, profile: ChannelSelectionProfi
       const htmlEl = el as HTMLElement;
       const elRect = htmlEl.getBoundingClientRect();
 
-      // Verify the element has dimensions (is actually rendered and visible).
+      // Verify the element has layout dimensions (is laid out rather than collapsed). Non-zero dimensions confirm layout but not full visibility, since
+      // visibility:hidden, opacity:0, or an overlaying element still report non-zero size; this is a reasonable laid-out heuristic for the row.
       if((elRect.width > 0) && (elRect.height > 0)) {
 
         // Found the channel element. Now walk up the DOM tree to find a container that holds both the element and the guide entries for this row.
@@ -94,6 +96,9 @@ async function thumbnailRowStrategyFn(page: Page, profile: ChannelSelectionProfi
               const style = window.getComputedStyle(div);
 
               const isRightOfElement = divRect.x > (elRect.x + elRect.width - 10);
+
+              // The 20px floor filters out tiny decorative or spacer divs that carry cursor:pointer but are not real click targets. This is stricter than the
+              // semantic-clickable path above, which trusts the element's role and only requires non-zero dimensions.
               const hasDimensions = (divRect.width > 20) && (divRect.height > 20);
               const isClickable = style.cursor === "pointer";
               const isSameRow = Math.abs(divCenterY - elCenterY) < elRect.height;
@@ -118,6 +123,8 @@ async function thumbnailRowStrategyFn(page: Page, profile: ChannelSelectionProfi
 
         const newElRect = htmlEl.getBoundingClientRect();
 
+        // The 50px offset lands just past the channel element's right edge, inside the first guide entry for typical row layouts, without overshooting far
+        // enough to risk landing in a second column or the row gutter.
         return { x: newElRect.x + newElRect.width + 50, y: newElRect.y + (newElRect.height / 2) };
       }
     }

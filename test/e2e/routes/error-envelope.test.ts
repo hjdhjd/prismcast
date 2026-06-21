@@ -6,8 +6,8 @@
  * envelope helpers carries `{ success: true, ... }`. The client-side toast and error-handling logic depends on this shape - any endpoint that ships a
  * non-conforming envelope silently breaks the UI.
  *
- * Why this suite exists: Phase 1 covers behavior per-endpoint, but no test pinned the cross-endpoint envelope-shape invariant. A new endpoint that forgets to
- * call sendValidationError / sendErrorResponse / sendFormErrors and instead writes a raw `res.status(400).json({ error: "..." })` would slip past every Phase 1
+ * Why this suite exists: per-endpoint suites cover behavior, but none pins the cross-endpoint envelope-shape invariant. A new endpoint that forgets to
+ * call sendValidationError / sendErrorResponse / sendFormErrors and instead writes a raw `res.status(400).json({ error: "..." })` would slip past every per-endpoint
  * suite - the per-endpoint test would still pass because the endpoint's behavior is correct, but the envelope shape would be off and the client wouldn't know.
  *
  * Sweep scope:
@@ -18,20 +18,22 @@
  *   ENDPOINT_SPECS or the EXCLUDED_ENDPOINTS list. A new endpoint added to production without a corresponding spec entry fails this check loud, before any
  *   sweep assertion runs - the SSOT for "what endpoints exist" is the runtime route stack, not the test fixture.
  *
- *   The sweep originally covered only /config/* (Suite 29 first land). It was extended to the full mutating-endpoint surface after the same envelope drift
- *   was found in src/routes/upgrade.ts, src/routes/streams.ts, and src/routes/services.ts. It was extended again (this session) to also cover GET endpoints
- *   with validation envelopes (playlist.ts query-parameter rejections, config/profiles/export missing-key rejection, services/:slug/channels unknown-service
- *   rejection) after the polymorphic-input refactor of sendValidationError / sendErrorResponse made the rich-payload form (`{ error, validTags, ... }`,
- *   `{ error, entries, mode, ... }`) part of the canonical contract. The unification means one drift check, one sweep, covering every endpoint that uses
- *   the envelope helpers regardless of HTTP method - validation envelopes on GET are no longer second-class.
+ *   The sweep covers every endpoint that uses the envelope helpers, regardless of HTTP method: mutating endpoints (POST / PUT / PATCH / DELETE) across the full
+ *   app, plus GET endpoints with validation envelopes (playlist.ts query-parameter rejections, config/profiles/export missing-key rejection, services/:slug/channels
+ *   unknown-service rejection). The rich-payload form of sendValidationError / sendErrorResponse (`{ error, validTags, ... }`, `{ error, validFields, ... }`,
+ *   `{ error, validDirections, ... }` - the diagnostic-context shapes the GET-validation endpoints emit) is part of the canonical contract, so one drift check and
+ *   one sweep cover every envelope-helper endpoint regardless of method... validation envelopes on GET are not second-class. The sweep pins the envelope marker
+ *   (success: false) and the simple-vs-form variant (error vs errors), not the diagnostic extension fields themselves.
  *
- * Why drift-check via stack-walk and not via a production-side endpoint registry: per the Phase 2 roadmap's pause-and-surface for Suite 29, the three options
- * were (A) export an endpoint registry from production, (B) walk Express's app.router.stack, (C) hardcode + drift-check the test list. The session adopted
- * Option C with the drift-check implemented via stack-walk - hardcoded test list as the SSOT for "which endpoints we exercise," runtime stack-walk as the
- * SSOT for "what endpoints exist now." If they ever disagree, the drift assertion fails and the maintainer adds the missing entry. Stack-walk uses the same
- * `app.router.stack` shape Express's own internals depend on, and the unit suites at src/routes/config/services.test.ts and similar already use it - it is
- * not coupled to undocumented internals beyond what the existing test infrastructure already relies on. Option A is the eventual right answer (a production
- * registry would be referenced from both the route setup and this test) but extracting it is a production refactor outside this session's scope; the test
+ * Why drift-check via stack-walk and not via a production-side endpoint registry: three options were considered - (A) export an endpoint registry from production,
+ * (B) walk Express's app.router.stack, (C) hardcode + drift-check the test list. Option C is used, with the drift-check implemented via stack-walk - hardcoded
+ * test list as the SSOT for "which endpoints we exercise," runtime stack-walk as the SSOT for "what endpoints exist now." If they ever disagree, the drift
+ * assertion fails and the maintainer adds the missing entry. Stack-walk reads the same
+ * `app.router.stack` shape Express's own internals depend on. Express 5 exposes `app.router` as a public accessor (it was the `app._router` private field in
+ * older Express), and the shape is stable, so the coupling is justified on its own terms. This suite is the sole stack-walk consumer in the codebase: the unit
+ * suites at src/routes/config/services.test.ts and similar introspect route registrations through the makeExpressStub recorder, a different surface, not through
+ * the real router stack. Option A is the eventual right answer (a production
+ * registry would be referenced from both the route setup and this test), but extracting it is a production refactor; the test
  * runs without it and remains correct.
  *
  * What this suite does NOT pin: GET endpoints with no validation rejection path (read-only data responses, streaming endpoints, server-rendered HTML pages,
@@ -89,7 +91,8 @@ const ENDPOINT_SPECS: readonly EndpointSpec[] = [
   { body: {}, expectedField: "error", expectedStatus: 400, method: "POST", registeredPath: "/config/channels/:key/revert",
     requestPath: "/config/channels/test-key/revert" },
 
-  /* Channel bulk - bulk.ts. start=0 is a valid "clear mode" sentinel (bulk.ts:29), so we use sortField="invalid" to trip the VALID_SORT_FIELDS check at line 40. */
+  /* Channel bulk - bulk.ts. start=0 is a valid "clear mode" sentinel (bulk.ts:29), so we use sortField="invalid-sort-field" to trip the VALID_SORT_FIELDS check at
+   * line 40. */
   { body: { sortField: "invalid-sort-field", start: 1 }, expectedField: "error", expectedStatus: 400, method: "POST",
     registeredPath: "/config/channels/auto-number", requestPath: "/config/channels/auto-number" },
   { body: {}, expectedField: "error", expectedStatus: 400, method: "POST", registeredPath: "/config/channels/bulk-tags", requestPath: "/config/channels/bulk-tags" },
@@ -159,16 +162,17 @@ const ENDPOINT_SPECS: readonly EndpointSpec[] = [
   { body: {}, expectedField: "error", expectedStatus: 400, method: "DELETE", registeredPath: "/streams/:id", requestPath: "/streams/not-a-number" },
   { body: {}, expectedField: "error", expectedStatus: 404, method: "DELETE", registeredPath: "/streams/:id", requestPath: "/streams/999999" },
 
-  /* GET-side validation envelopes - read endpoints whose query-parameter validation paths use the envelope helpers. These were originally classified as
-   * out-of-scope ("GET-only, out of mutating sweep") in the Suite 29 first land. The polymorphic-input refactor of sendValidationError makes the rich-payload
-   * form (`{ error, validTags?, validFields?, validDirections? }`, etc.) part of the canonical envelope contract, so GET-side rejection paths now participate
+  /* GET-side validation envelopes - read endpoints whose query-parameter validation paths use the envelope helpers. The rich-payload form of sendValidationError
+   * (`{ error, validTags?, validFields?, validDirections? }`, etc.) is part of the canonical envelope contract, so GET-side rejection paths participate
    * in the drift sweep on equal footing with mutating endpoints.
    */
 
-  /* Playlist - playlist.ts. Four paths from the same registered route, each tripping a different validation rejection: an unknown service tag (line 271, hits
-   * parseServiceFilter), an unknown user tag (line 286, hits parseTagFilter), an invalid sort field (line 297, hits VALID_SORT_FIELDS), an invalid sort
-   * direction (line 305, hits VALID_SORT_DIRECTIONS). Each carries a different extension field on the rich-payload envelope - a regression that dropped any of
-   * them is caught by the matching assertion below.
+  /* Playlist - playlist.ts. Four paths from the same registered route, each tripping a different validation rejection: an unknown service tag (hits
+   * parseServiceFilter), an unknown user tag (hits parseTagFilter), an invalid sort field (hits VALID_SORT_FIELDS), an invalid sort
+   * direction (hits VALID_SORT_DIRECTIONS). Each carries a different diagnostic extension field on the rich-payload envelope (validTags, validFields,
+   * validDirections), but the sweep does not pin those fields - the matching assertion below verifies only the envelope marker (success: false) and the
+   * simple-vs-form variant (an `error` string with `errors` absent). What these four entries pin is that every one of the four rejection paths still ships a
+   * conforming top-level error envelope.
    */
   { expectedField: "error", expectedStatus: 400, method: "GET", registeredPath: "/playlist", requestPath: "/playlist?service=nonexistent-service-tag-foo" },
   { expectedField: "error", expectedStatus: 400, method: "GET", registeredPath: "/playlist", requestPath: "/playlist?tag=nonexistent-user-tag-foo" },
@@ -181,7 +185,7 @@ const ENDPOINT_SPECS: readonly EndpointSpec[] = [
    */
   { expectedField: "error", expectedStatus: 400, method: "GET", registeredPath: "/config/profiles/export", requestPath: "/config/profiles/export" },
 
-  /* Services - services.ts. Unknown service slug trips sendNotFoundError (Finding #10's resolution). Deterministic in the harness because no provider exists
+  /* Services - services.ts. Unknown service slug trips sendNotFoundError. Deterministic in the harness because no provider exists
    * at the synthetic slug.
    */
   { expectedField: "error", expectedStatus: 404, method: "GET", registeredPath: "/services/:slug/channels",
@@ -281,8 +285,9 @@ const EXCLUDED_ENDPOINTS: readonly ExclusionSpec[] = [
 
 /**
  * Walks the booted app's router stack and returns every route registered under setupRoutes(). The shape `app.router.stack[i].route.methods` is the standard
- * Express surface used by every router-introspection consumer in this codebase (see services.test.ts, settings.test.ts, etc.); `app.router` (alias of
- * `app._router` in older Express) is the canonical accessor.
+ * Express surface; `app.router` is the public accessor in Express 5 (it was the `app._router` private field in older Express). This suite is the only
+ * stack-walk consumer in the codebase - the unit suites (services.test.ts, settings.test.ts) introspect route registrations through the makeExpressStub
+ * recorder, a different mechanism, not through the real router stack.
  *
  * No path-prefix filter and no method filter: the sweep covers the entire endpoint surface (GET + mutating) so envelope-shape drift in any future top-level
  * route file (alongside auth.ts, streams.ts, upgrade.ts, etc.) is caught the same way as drift inside /config/*. GET endpoints with validation envelopes
@@ -329,7 +334,7 @@ describe("HTTP error envelope - drift check across every registered endpoint", (
      * without a matching test entry fails this assertion loud, before any sweep test runs - the maintainer must decide explicitly whether to add it to
      * ENDPOINT_SPECS (sweep its envelope) or to EXCLUDED_ENDPOINTS (with a reason). Either choice is fine; the drift check catches accidental omissions.
      *
-     * The Suite 17 SEED_VALUES pattern applied here: both sides of the comparison (test fixture + production registry) are sources of truth; they must agree.
+     * Both sides of the comparison (test fixture + production registry) are sources of truth; they must agree.
      */
     await using ctx = await createIntegrationContext();
 

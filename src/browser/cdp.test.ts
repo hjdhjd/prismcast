@@ -300,18 +300,20 @@ describe("resizeAndMinimizeWindow", () => {
 
   test("falls back to page.evaluate when the chrome cache is empty (early-init path)", async () => {
 
-    /* The chrome cache is normally primed during display detection, but resizeAndMinimizeWindow can be called BEFORE detection completes (e.g., during the
-     * first stream startup before the browser settles into a known state). When getBrowserChrome() returns null, the production code calls page.evaluate to
-     * measure window.outerHeight - innerHeight live. We exercise this branch by clearing the cache to (0,0) - which the helper treats as null per its own
-     * isPrimed semantics - and providing a Page stub whose evaluate returns a synthetic UiSize. The resize must use the evaluated dimensions for the target.
+    /* This test pins the primed-cache short-circuit. The chrome cache is normally primed during display detection, but resizeAndMinimizeWindow can be called
+     * BEFORE detection completes (e.g., during the first stream startup before the browser settles into a known state). When getBrowserChrome() returns null,
+     * the production code calls page.evaluate to measure window.outerHeight - innerHeight live; when it returns a value the evaluate fallback must not run.
+     * getBrowserChrome() is a plain object-or-null cache - there is no isPrimed concept and a (0,0) value is a truthy object, not null. beforeEach primes the
+     * cache to (0, 70), so here we provide a Page stub whose evaluate would record a call, then assert that evaluate is NOT invoked. (A separate test for the
+     * genuine empty-cache fallback would require a cache-reset seam exported from display.ts, which does not exist today.)
      */
     const cdpStub = makeCdpStub();
 
-    // Simulate an unset cache. The display module's setBrowserChrome with both args zero leaves the cached value as a (0,0) UiSize, which the helper still
-    // returns. To exercise the fallback path we need getBrowserChrome to return null - in production this happens before any setBrowserChrome call. The cache
-    // module is a singleton per process so we can't reset it cleanly here without exporting a private clear; instead we drive the SAME branch by reading the
-    // current cache value (the "primed cached chrome" branch) and asserting the synthetic Page's evaluate is NOT called when the cache is primed. This pins
-    // the dispatch contract.
+    // To exercise the genuine fallback path we would need getBrowserChrome to return null, which in production only happens before any setBrowserChrome call.
+    // getBrowserChrome is a plain object-or-null cache, so a value set by setBrowserChrome (even (0, 70)) is a truthy object and never reported as null. The
+    // display cache is a singleton per process and exposes no clear, so we can't reset it to null cleanly here; instead we drive the primed-cache branch (cache
+    // primed to (0, 70) by beforeEach) and assert the synthetic Page's evaluate is NOT called. This pins the dispatch contract: a primed cache must
+    // short-circuit the page.evaluate measurement.
     let evaluateCallCount = 0;
 
     const page = {

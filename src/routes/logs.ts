@@ -71,6 +71,8 @@ function parseLogLine(line: string): Nullable<LogEntry> {
     return null;
   }
 
+  // LOG_LINE_PATTERN always yields exactly three capture groups in this positional order, so the cast onto a fixed tuple is sound: group 1 (timestamp) and
+  // group 3 (message) always participate, while group 2 (the level) is the only optional one and is therefore typed as string | undefined.
   const [ , timestamp, levelStr, message ] = match as unknown as [string, string, string | undefined, string];
 
   let level: "debug" | "error" | "info" | "warn" = "info";

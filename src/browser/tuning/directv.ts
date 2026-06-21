@@ -9,7 +9,8 @@ import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
 
 // Unified channel cache entry combining discovery metadata and tuning identifiers. Populated from the Redux store's channel lineup emitted via the
-// [DIRECTV-CHANNELS] console signal during page load. The channelId and resourceId are the stable tuning artifacts used by the playConsumable action.
+// [DIRECTV-CHANNELS] console signal during page load. resourceId is the stable tuning artifact dispatched to the playConsumable action (as both programChannelId
+// and consumableResourceId); channelId is retained for cache identity and as a presence gate during lineup parsing.
 interface DirectvChannelEntry {
 
   callSign: string;
@@ -490,8 +491,8 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
       }
 
       // Phase 3b: Extract the channel lineup from the Redux store state. The store is found early (~400ms after page load) but the SPA fetches channel data
-      // asynchronously. We poll getState() each interval until the lineup appears. The validated path is state.channels.channelArrays (a 151-element array).
-      // Fallback paths cover plausible restructurings in future app versions.
+      // asynchronously. We poll getState() each interval until the lineup appears. The validated path is state.channels.channelArrays (a ~152-element array,
+      // though the exact count is market/DMA-dependent). Fallback paths cover plausible restructurings in future app versions.
       const state = cachedStore.getState();
       let channels: { callSign?: string; ccid?: string; channelName?: string; resourceId?: string }[] = [];
 
@@ -709,6 +710,10 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
       // Redux action creator - do not wrap the call in store.dispatch().
       try {
 
+        // The payload mirrors the live-linear consumable shape DirecTV's player expects for the "on now" program of a linear channel. These are reverse-engineered
+        // values for an undocumented API: consumableType "LINEAR", the "OnNow" badge, the isPlayable constraint, makeFullscreen, and restart are the validated
+        // fields a successful live tune requires. duration is a nominal one-hour placeholder (3600 seconds) for the open-ended live tile, not a real program
+        // length - the player treats LINEAR content as continuous and does not honor this value.
         playConsumableFn({
 
           consumable: {

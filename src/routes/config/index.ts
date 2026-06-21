@@ -166,7 +166,7 @@ export function describeConfigurationOutcome(result: ApplyConfigurationResult): 
 }
 
 /**
- * Groups profiles by their declared category for UI display. Each profile declares its own category (api, keyboard, multiChannel, special) and this helper
+ * Groups profiles by their declared category for UI display. Each profile declares its own category (api, custom, keyboard, multiChannel, special) and this helper
  * simply filters by that field. The display order (api, keyboard, special, multiChannel) is determined by the caller.
  * @param profiles - List of available profiles with category, descriptions, and summaries.
  * @returns Object with profiles grouped by category.

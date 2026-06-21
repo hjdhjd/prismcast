@@ -118,8 +118,8 @@ async function discoverGuideChannels(page: Page): Promise<RawSpectrumChannel[]> 
         continue;
       }
 
-      // Deduplicate by tmsid - first occurrence wins (lowest channel number). This eliminates legacy mirror ranges (1000+/1200+) that share the same tmsid
-      // with primary entries but have no program listing data.
+      // Deduplicate by tmsid - first occurrence in DOM order wins. The guide renders rows in ascending channel-number order, so this keeps the primary
+      // (lowest-numbered) entry and eliminates legacy mirror ranges (1000+/1200+) that share the same tmsid with primary entries but have no program listing data.
       if(seenTmsids.has(tmsid)) {
 
         continue;
@@ -291,8 +291,9 @@ function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
  * 3. Display name iteration: iterate all cache entries, check if discovered.name (lowercased) equals input. Catches long display names like "Discovery Channel"
  *    when only the callsign-derived key was cached.
  *
- * When a non-exact match succeeds, the result is cached under the input key for O(1) lookup on subsequent calls. This function doubles as the resolveDirectUrl
- * hook - after the first tune populates the cache via channel discovery, every subsequent Spectrum tune resolves here without loading the guide page.
+ * When a non-exact match succeeds, the result is cached under the input key for O(1) lookup on subsequent calls. This function is the cache-lookup core behind
+ * the resolveDirectUrl hook (resolveSpectrumDirectUrl) - after the first tune populates the cache, every subsequent Spectrum tune resolves through here without
+ * loading the guide page.
  * @param channelName - The channelSelector value (e.g., "ESPN", "NBC", "Discovery Channel").
  * @returns The matching cache entry or null if no match is found.
  */

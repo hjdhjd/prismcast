@@ -178,8 +178,7 @@ describe("POST /config/channels/import", () => {
   test("succeeds for a valid import payload (single user channel)", async () => {
 
     // Round-trip through the handler. The mutateChannels callback receives the full ChannelsFileData and reassigns data.channels rather than mutating top-level
-    // keys; this test was previously skipped while a parameter-naming bug at the handler corrupted the file-store data root, and now exercises the corrected
-    // path end-to-end.
+    // keys; this exercises the import path end-to-end against the real persistence layer.
     const payload = { mychannel: { name: "My Channel", url: "https://example.com/live.m3u8" } };
     const { json, req, res } = makeReqRes({ body: payload });
 

@@ -1,12 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * precaching.test.ts: Unit tests for the precaching coordinator's no-op gates in precaching.ts. The module exports a single function, startPrecaching, which
- * inspects two pieces of state before scheduling the precache cycle:
+ * precaching.test.ts: Unit tests for the precaching coordinator's no-op gates in precaching.ts. The module exports startPrecaching (the gated scheduler tested
+ * here) and stopPrecaching (the shutdown-time canceller). startPrecaching inspects two pieces of state before scheduling the precache cycle:
  *
  *   1. CONFIG.channels.precacheServices: when empty, the function returns immediately with no side effects (no timer scheduled, no log lines, no internal flag
  *      mutated).
  *
- *   2. The module-level precacheInProgress flag: when true, the function defers. The flag is set when the cycle starts and cleared in a finally block.
+ *   2. The module-level precacheInProgress flag: when true, the function defers. The flag is set when startPrecaching schedules the cycle (before the timer fires) and
+ *      cleared in runPrecacheCycle's finally block.
  *
  * The actual precache cycle (runPrecacheCycle) drives Puppeteer via getCurrentBrowser, browser.newPage, page.goto, and provider.discoverChannels - that path is
  * deferred to e2e. The unit tests here lock the gate-behavior contract so that future refactors of the gates do not silently regress.
@@ -55,8 +56,8 @@ describe("startPrecaching", () => {
 
   test("returns silently when precacheServices contains only entries (the no-services-configured case is a no-op even after mutation)", () => {
 
-    // Boundary: the guard explicitly checks length === 0. This test confirms that the early-exit is contingent on that exact condition by setting the array back
-    // to empty after a non-empty start - the function should still be safely callable.
+    // Boundary: the guard explicitly checks length === 0. This test confirms that with an empty array the early-exit short-circuits and the function remains safely
+    // callable without scheduling any work.
     CONFIG.channels.precacheServices = [];
 
     assert.doesNotThrow(() => {
@@ -88,8 +89,8 @@ describe("startPrecaching", () => {
 
     startPrecaching();
 
-    // Ticking less than the precache delay confirms the timer is in flight without firing it. If startPrecaching had short-circuited, this would still pass; the
-    // distinguishing assertion is that runAll fires SOMETHING (the timer body), which we test in a sibling case below.
+    // Ticking less than the precache delay confirms the timer is in flight without firing it. This test only proves a timer was queued, not that its body runs;
+    // actually firing the cycle would drive Puppeteer, so that path is deferred to e2e.
     mock.timers.tick(0);
   });
 });

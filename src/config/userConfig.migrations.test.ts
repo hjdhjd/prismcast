@@ -9,15 +9,16 @@
  *   IPv6 ([::1]:8089) survives. Invalid trailing portion (non-numeric, out-of-range port) falls back to host-only handling rather than fabricating a port.
  *
  * Other migration framework behavior (audit-trail recording, schema-version stamping, version sequencing) is owned by the persistence framework and tested
- * in src/config/persistence.test.ts; this file is exclusively about the per-version transformation correctness.
+ * in src/config/persistence.migrations.test.ts; this file is exclusively about the per-version transformation correctness.
  */
 import { applyChannelsProviderRenameMigration, applyDvrHostNamespaceMigration } from "./userConfig.ts";
 import { describe, test } from "node:test";
 import type { UserConfig } from "./userConfig.ts";
 import assert from "node:assert/strict";
 
-// makePreV3 builds the on-disk shape a v2 config carries: the legacy top-level dvrHost field plus whatever channelsDvr state already exists. The literal cast
-// reflects that dvrHost is no longer declared on the current UserConfig type; on disk it predates the v3 namespace move.
+// makePreV3 builds the on-disk shape a v2 config carries: the legacy top-level dvrHost field plus whatever channelsDvr state already exists. The return-type
+// widening to UserConfig accommodates dvrHost, which is no longer declared on the current type; on disk it predates the v3 namespace move. Excess-property
+// checks do not fire here because overrides is a non-fresh variable at the return site, so the structural assignment is tolerated.
 function makePreV3(overrides: { dvrHost?: string; channelsDvr?: { host?: string; port?: number } } = {}): UserConfig {
 
   return overrides;

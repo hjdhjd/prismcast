@@ -239,7 +239,8 @@ describe("intersectBindingDeltas", () => {
   test("excludes identity fields entirely - result is restricted to CHANNEL_BINDING_KEYS", () => {
 
     // Both primary and criterion include identity fields (stationId, name). The result keeps only binding fields, even when both sides declare the same
-    // identity field. This locks the binding-only filter that prevents identity from leaking into the variant-delta heal path.
+    // identity field. This locks the binding-only filter that prevents identity from leaking into the variant-relative delta computed by the URL-inferred
+    // branch of the per-field write router (handlePredefinedEdit in crud.ts), matching the function's own docstring and the producer-side call site.
     const primary: ChannelDelta = { channelSelector: "ABC", name: "ignored", stationId: "ignored", url: "https://www.hulu.com/live" };
     const criterion: ChannelDelta = { channelSelector: "x", name: "x", stationId: "x", url: "x" };
     const result = intersectBindingDeltas(primary, criterion);

@@ -7,8 +7,8 @@
  * public reader getChannelLogo with predefined channels whose stationId is known to be present in the catalog, write through setChannelLogo / setChannelLogos,
  * and assert via the public reader. clearChannelLogos is verified by reading after clear.
  *
- * The Pacific east-counterpart resolution branch in getChannelStationId (line 2142 in userChannels.ts) is the load-bearing logic - a regression there silently
- * misroutes logos for every Pacific channel. Pinning it here keeps the case-of-record visible.
+ * The Pacific east-counterpart resolution in getChannelStationId (the getEastCanonicalKey(channelKey) ?? channelKey line in userChannels.ts) is the load-bearing
+ * logic - a regression there silently misroutes logos for every Pacific channel. Pinning it here keeps the case-of-record visible.
  */
 import { afterEach, describe, test } from "node:test";
 import { clearChannelLogos, getChannelLogo, getChannelStationId, setChannelLogo, setChannelLogos } from "./userChannels.ts";

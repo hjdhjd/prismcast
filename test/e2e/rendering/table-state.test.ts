@@ -23,8 +23,8 @@ import assert from "node:assert/strict";
 import { firstOf } from "../../../src/testing.helpers.ts";
 import { getProfiles } from "../../../src/config/profiles.ts";
 
-// PREDEFINED_KEY is documented as a real predefined channel - the existing channels-table integration suite uses it, and table.test.ts at the unit tier uses
-// it. It is the canonical test channel for any predefined-state assertion in this codebase.
+// PREDEFINED_KEY is a multi-service predefined channel with variants, which makes it suitable for predefined-state assertions: it exists in the catalog by
+// default, carries a service tag, and supports user overrides.
 const PREDEFINED_KEY = "abc";
 
 describe("buildChannelTablePatch - composition against real channel state", () => {
@@ -44,6 +44,8 @@ describe("buildChannelTablePatch - composition against real channel state", () =
      */
     await using ctx = await createIntegrationContext();
 
+    // We hold ctx only so the await-using disposal runs at scope exit; the void satisfies the unused-binding lint without detaching that disposal. This idiom
+    // recurs at the head of every test in this file.
     void ctx;
     await initializePersistence(ctx);
 
@@ -114,7 +116,8 @@ describe("buildChannelTablePatch - composition against real channel state", () =
     assert.equal(afterRow.action, "update", "the row stays in the patch as an update (not removed) because the channel is hidden, not deleted");
     assert.match(afterRow.displayRow ?? "", /\bclass="[^"]*\bchannel-disabled\b/, "disabled predefined rows MUST carry the channel-disabled class");
 
-    // Cleanup so the suite-level afterEach does not see a non-empty disabled list.
+    // Re-enable the predefined channel before exiting. The disabledPredefined list is process-wide in-memory state, and the suite-level afterEach intentionally
+    // resets only the service filter, not this list, so leaving the channel disabled would leak into later tests.
     await enablePredefinedChannels([PREDEFINED_KEY]);
   });
 

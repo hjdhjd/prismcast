@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * monitor.test.ts: Unit-test surface for the playback health monitor. monitor.ts exposes one public function - monitorPlaybackHealth - which spawns a 1Hz
- * setInterval, calls page.evaluate() against a real Puppeteer Page on every tick to read the HTML video element's state, classifies playback issues via the
+ * monitor.test.ts: Unit-test surface for the playback health monitor. monitor.ts exposes one public function - monitorPlaybackHealth - which spawns a setInterval
+ * on the configurable monitor interval (CONFIG.playback.monitorInterval, 2 seconds by default), calls page.evaluate() against a real Puppeteer Page on every tick
+ * to read the HTML video element's state, classifies playback issues via the
  * recovery primitives, and orchestrates recovery actions (play/unmute, source reload, page navigation, tab replacement). Honest test coverage for this
  * orchestration requires (1) a real Chrome browser to host the video element, (2) at least one segmenter and FFmpeg subprocess to detect the tiny-segment
  * threshold, and (3) timer control across AsyncLocalStorage boundaries that node:test's mock.timers does not adequately support. The pure helpers it relies on -

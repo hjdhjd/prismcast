@@ -8,7 +8,7 @@ import { emitLogEntry, subscribeToLogs } from "./logEmitter.ts";
 import type { LogEntry } from "./logEmitter.ts";
 import assert from "node:assert/strict";
 
-// makeEntry builds a LogEntry literal with sensible defaults; the four test files in this batch each construct LogEntry-shaped objects, so a small inline factory
+// makeEntry builds a LogEntry literal with sensible defaults; the multiple cases below each construct a LogEntry, so a small inline factory
 // keeps the call sites compact without needing a separate helpers file.
 function makeEntry(overrides: Partial<LogEntry> = {}): LogEntry {
 

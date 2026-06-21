@@ -1131,8 +1131,8 @@ function handleBrowserDisconnect(): void {
 }
 
 /**
- * Invalidates a specific browser that is still connected but can no longer capture - a mid-life capture death that no "disconnected" event would surface. It is the
- * §3.5 single recovery action generalized to the alive-but-incapable case: relinquish readiness and terminate the browser's streams (exactly as a disconnect does),
+ * Invalidates a specific browser that is still connected but can no longer capture - a mid-life capture death that no "disconnected" event would surface. This is the
+ * single recovery action generalized to the alive-but-incapable case: relinquish readiness and terminate the browser's streams (exactly as a disconnect does),
  * then additionally close the still-running Chrome so a leaked process is not left behind. The lifecycle is already absent after relinquish, so the next request
  * relaunches a fresh, gate-verified browser through the supervisor. Exported for the streaming layer's passive mid-life detector to call once its probe confirms the
  * browser cannot capture. noteReadinessLost stays internal: callers signal intent through this function, never the supervisor directly.
@@ -1380,7 +1380,7 @@ export async function minimizeBrowserWindow(): Promise<void> {
 }
 
 /**
- * Gets all open browser pages (tabs). This is used by the health check endpoint to report page count and by stale page cleanup to find orphaned pages.
+ * Gets all open browser pages (tabs). This is used by the health check endpoint to report page count.
  * @returns Array of pages, or empty array if the browser is not connected.
  */
 export async function getBrowserPages(): Promise<Page[]> {

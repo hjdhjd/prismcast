@@ -268,7 +268,7 @@ async function discoverHboChannels(page: Page): Promise<DiscoveredChannel[]> {
     return buildHboDiscoveredChannels();
   }
 
-  // Read the channel rail directly. The coordinator has already landed the page on /channels.
+  // Read the channel rail directly. The discovery route handler has already landed the page on /channels.
   const railResult = await readHboChannelRail(page);
 
   if(!railResult.railFound || (railResult.channels.length === 0)) {
@@ -302,9 +302,9 @@ export const hboProvider: ProviderModule = {
   guideUrl: HBO_CHANNELS_URL,
   label: "HBO Max",
 
-  // Profile for HBO Max live channels (play.hbomax.com/channels). The /channels hub contains an "Everything You Love From HBO" rail showing all 5 live linear
-  // channels (HBO, HBO Hits, HBO Drama, HBO Comedy, HBO Movies) as tiles. The hboGrid strategy reads the rail for the watch URL matching the channelSelector name
-  // and navigates to it. Extends fullscreenApi for requestFullscreen() behavior inherited by the watch page.
+  // Profile for HBO Max live channels (play.hbomax.com/channels). The /channels hub contains an "Everything You Love From HBO" rail showing the current live linear
+  // channels (e.g., HBO, HBO Hits) as tiles. The hboGrid strategy reads the rail for the watch URL matching the channelSelector name and navigates to it. Extends
+  // fullscreenApi for requestFullscreen() behavior inherited by the watch page.
   profile: {
 
     category: "multiChannel",

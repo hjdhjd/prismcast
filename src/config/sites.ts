@@ -335,8 +335,9 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
 };
 
 /**
- * Resolves a URL to its DOMAIN_CONFIG entry by trying the full hostname first for subdomain-specific overrides, then falling back to the concise domain (last two
- * hostname parts). This allows entries like "tv.youtube.com" to override the base "youtube.com" entry when the URL matches the more-specific subdomain.
+ * Resolves a URL to its domain configuration entry by precedence: user full hostname, then builtin full hostname (for subdomain-specific overrides), then user
+ * concise domain, then builtin concise domain (last two hostname parts). User mappings override builtins, and full-hostname entries like "tv.youtube.com" override
+ * the base "youtube.com" entry.
  * @param url - The URL to resolve a domain configuration for.
  * @returns The matching DomainConfig entry, or undefined if no match is found.
  */

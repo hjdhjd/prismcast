@@ -134,7 +134,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
     assert.equal(getStream(entry.id), undefined, "the registry entry must be gone after termination");
     assert.equal(getChannelStreamId("abc"), undefined, "the channel-to-stream index must not point at the terminated entry");
 
-    // terminationInitiated cleanup: the flag is added at the start of termination and removed at the end (lifecycle.ts:246). A regression that left the flag
+    // terminationInitiated cleanup: the flag is added at the start of termination and removed at the end via terminationInitiated.delete. A regression that left the flag
     // set would mean a future stream that recycled the id would be falsely treated as already-terminated and silently skipped.
     assert.equal(isTerminationInitiated(entry.id), false, "the terminationInitiated flag must be cleared after termination completes");
   });
@@ -142,8 +142,8 @@ describe("terminateStream during active recovery - cleanup contract", () => {
   test("terminateStream is idempotent across recovery cycles: a second call during a notional next-recovery is a no-op", async () => {
 
     /* The "twice in quick succession" scenario. terminateStream's first action is to add the id to terminationInitiated; if the id is already there, it
-     * early-returns without doing anything else (lifecycle.ts:125-129). The second call must NOT dispose the monitor again, NOT throw, and NOT corrupt the
-     * registry. This is the production safety net for cases where multiple sources fire termination concurrently (client disconnect race, monitor circuit
+     * early-returns without doing anything else via the terminationInitiated.has guard. The second call must NOT dispose the monitor again, NOT throw, and NOT
+     * corrupt the registry. This is the production safety net for cases where multiple sources fire termination concurrently (client disconnect race, monitor circuit
      * breaker trip, graceful shutdown sweep). Without it, a double-cleanup would attempt to drain already-released resources.
      *
      * Why this matters specifically for recovery: the recovery loop and the client-tracking idle-timeout are independent producers of termination intent. A

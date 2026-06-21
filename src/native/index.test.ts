@@ -1,10 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.test.ts: Unit tests for the native streaming coordinator in index.ts. The two exports are attemptNativeStreaming (the orchestrator that awaits manifest
- * interception, probes for DRM, and constructs the native proxy) and refreshNativeManifest (the token-refresh path that re-probes the master URL or reloads the
- * page). The page-reload branch of refreshNativeManifest is heavily entangled with real Chrome via Puppeteer (page.goto, installManifestInterceptor's CDP listener
- * wiring) and is deferred to e2e coverage; the unit tests here focus on the orchestration branches that can be exercised with synthetic CDP sessions, mocked
- * globalThis.fetch responses, and a minimal page stub.
+ * index.test.ts: Unit tests for attemptNativeStreaming, the native streaming coordinator's orchestrator in index.ts. attemptNativeStreaming awaits manifest
+ * interception, probes for DRM, and constructs the native proxy. The single describe block in this file covers that orchestrator's branches. The other export,
+ * refreshNativeManifest (the token-refresh path that re-probes the master URL or reloads the page), has its own coverage in index.refresh.test.ts. The
+ * orchestration branches exercised here are driven by a directly-injected interceptionPromise (resolving to null vs a valid manifest, or rejecting), mocked
+ * globalThis.fetch responses for the master/variant/key URLs, and a minimal page stub.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
@@ -22,8 +22,9 @@ import { clearProbeCache } from "./probe.ts";
  * 1. puppeteer-stream's PuppeteerStream module starts a WebSocketServer at import time. index.ts pulls in browser/manifestInterceptor.ts which in turn pulls in
  *    browser/index.ts and triggers that server creation, which keeps the event loop alive after every test resolves.
  *
- * 2. attemptNativeStreaming creates a 5-second setTimeout for the interception-await timeout via Promise.race, and that timer is not cleared when the race resolves
- *    via the other branch. With ~10 happy-path tests, each leaving a Timeout behind, the file appears to hang for 5 seconds before the loop drains.
+ * 2. attemptNativeStreaming's interception-await timeout no longer leaks: cancellableTimeout owns the underlying setTimeout, and the orchestrator clears it in
+ *    finally via timeout.cancel() when interceptionPromise wins the race. The residual handle leakage drained here is the per-stream token-refresh timer scheduled
+ *    by scheduleTokenRefresh (cancelled only on proxy.stop()) plus the puppeteer-stream WebSocketServer from point 1.
  *
  * Strategy: monkey-patch globalThis.setTimeout to call unref() on every Timeout it produces inside this test file. Production code in attemptNativeStreaming has
  * no contract that timers stay reffed; the unref makes the timer non-blocking for event-loop draining without changing its callback firing time. Combined with
@@ -385,8 +386,8 @@ describe("attemptNativeStreaming", () => {
   test("returns null when interception stalls past INTERCEPTION_AWAIT_TIMEOUT (cancellableTimeout fires)", async () => {
 
     /* The orchestrator's race between interceptionPromise and cancellableTimeout(INTERCEPTION_AWAIT_TIMEOUT). The "interception resolves first" branch is
-     * exercised by every other test in this suite (each one passes a Promise.resolve(...) interception). The "timeout fires first" branch is the user's
-     * recently-modified path: it switched from delay() to cancellableTimeout() and added a try/finally to clear the underlying setTimeout so it does not
+     * exercised by every other test in this suite (each one passes a Promise.resolve(...) interception). The "timeout fires first" branch races
+     * cancellableTimeout against the interception promise, coerces a false race result to null, and cancels the underlying timer in finally so it does not
      * hold an event loop reference. Without this test, a regression in the race coercion (e.g., dropping the `(result === false) ? null : result` step) or
      * the finally-cancel cleanup would not surface here.
      *
@@ -454,8 +455,8 @@ describe("attemptNativeStreaming", () => {
 
     assert.ok(result, "exp-token URL still produces a result");
 
-    // proxy.stop() cancels the token refresh timer; if it had not been scheduled correctly, stop() would not crash but the timer would leak. The lifecycle.ts
-    // pattern (cleanupTimer.unref) backstops handle leakage at the file level if anything escapes.
+    // proxy.stop() cancels the token refresh timer; if it had not been scheduled correctly, stop() would not crash but the timer would leak. The
+    // lifecycle.test.ts pattern (the setTimeout unref wrapper plus closePuppeteerStreamWssOnIdle) backstops handle leakage at the file level if anything escapes.
     assert.doesNotThrow(() => {
 
       result.proxy.stop();

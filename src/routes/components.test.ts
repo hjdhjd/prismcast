@@ -129,7 +129,7 @@ describe("generateButton", () => {
   test("adds the disabled attribute when disabled=true", () => {
 
     // The attribute is emitted in HTML5 boolean form (bare attribute name) via serializeAttrs. We match it as a standalone token rather than at end-of-tag,
-    // since the renderer emits attributes in alphabetical order and disabled may not be the final one.
+    // since the attrs literal is authored alphabetically and serializeAttrs preserves that insertion order, so disabled may not be the final one.
     const html = generateButton("Save", { disabled: true, variant: "primary" });
 
     assert.match(html, / disabled[ >]/);

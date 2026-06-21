@@ -96,9 +96,10 @@ describe("POST /config/profiles - create and update", () => {
   test("a POST update to one profile leaves all other profile entries byte-identical on disk", async () => {
 
     /* The cross-profile isolation invariant. The wizard's edit flow loads one profile, lets the user mutate it, and POSTs the result. The route handler
-     * cleans up stale domain mappings for the targeted profile (services.ts:478-485) and merges the new profile entry into the existing profiles map
-     * (services.ts:475 - `mergedProfiles = { ...existingProfiles, [key]: profile }`). A regression that wholesale-replaced profile state - that re-emitted
-     * the profiles map without copying every untouched entry - is precisely the 4afa8a0 class for the profiles surface.
+     * cleans up stale domain mappings for the targeted profile and merges the new profile entry into the existing profiles map. Both happen in-place inside the
+     * mutateProfiles callback: the stale-mapping loop deletes domains whose `profile` field matches the key, then the per-key write `data.profiles[key] = profile`
+     * adds or replaces just that one entry without disturbing any other. A regression that wholesale-replaced profile state - that re-emitted the profiles map
+     * without copying every untouched entry - is precisely the 4afa8a0 class for the profiles surface.
      *
      * We seed three profiles (a, b, c), capture the full profiles.json bytes, POST an edit to profile-b, and assert that profile-a's and profile-c's per-key
      * JSON projections (via stringifySorted-equivalent JSON.stringify with sorted keys) are byte-identical pre/post. We compare per-entry rather than full-file
@@ -155,7 +156,7 @@ describe("DELETE /config/profiles/:key - cascade", () => {
 
   test("DELETE removes every domain mapping that referenced the deleted profile while leaving unrelated mappings untouched", async () => {
 
-    /* The cascade contract. deleteUserProfile (userProfiles.ts:320) removes the profile entry and walks the domains map removing every entry whose `profile`
+    /* The cascade contract. deleteUserProfile in config/userProfiles.ts removes the profile entry and walks the domains map removing every entry whose `profile`
      * field references the deleted key. A regression that skipped the cascade would orphan domain entries pointing at a non-existent profile - those
      * entries would surface in the wizard's domain list with a broken reference and silently fail to resolve at request time.
      *
@@ -212,11 +213,11 @@ describe("POST /config/profiles - validation rejection", () => {
   test("a POST with an invalid profile body returns a 400 envelope and writes nothing to disk", async () => {
 
     /* Validation rejections must be transactional in the disk sense: a 400 response must mean profiles.json is byte-identical pre/post. The route handler at
-     * services.ts:441 calls validateProfile and short-circuits with status 400 when errors come back. A regression that bypassed the early return (or
+     * routes/config/services.ts calls validateProfile and short-circuits with status 400 when errors come back. A regression that bypassed the early return (or
      * partial-saved before validating) would corrupt state on every malformed POST.
      *
-     * Validation trip: extends="" - userProfiles.ts:455 rejects "extends is required". The same code path also rejects unknown extends targets, non-generic
-     * strategies, and unrecognized flags; the assertion below documents the envelope shape, not the specific error string.
+     * Validation trip: extends="" - validateProfile in config/userProfiles.ts rejects "extends is required". The same code path also rejects unknown extends
+     * targets, non-generic strategies, and unrecognized flags; the assertion below documents the envelope shape, not the specific error string.
      */
     await using ctx = await createIntegrationContext();
 

@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userChannels.migration.test.ts: Tests for collectLegacyVariantStamps (the tightened Migration 1 classifier) and end-to-end regression scenarios tying directly
- * to user-reported bugs.
+ * userChannels.migration.test.ts: Tests for collectLegacyVariantStamps (the tightened classifier behind the schemaVersion 2 migration, channelsMigrations[2]) and
+ * end-to-end regression scenarios tying directly to user-reported bugs.
  *
  * The migration classifier is the defensive line that prevents the old stamp-and-strip data loss. Tests here lock in the contract: stamp shape-compatible legacy
  * variants (safe to normalize as variants), leave user standalones alone (would lose per-variant identity if misclassified). Regression tests verify the fix for
@@ -40,8 +40,8 @@ describe("collectLegacyVariantStamps", () => {
   test("refuses to stamp a user standalone whose identity differs from the canonical (the abc-kabc case)", () => {
 
     // jsfullam's local affiliates: key like abc-kabc with custom stationId/channelNumber. The prefix matches a predefined canonical (abc), but the stored identity
-    // differs from the canonical's identity, so Migration 1 must treat this as a user standalone and leave it alone. Stamping would trigger the delta normalizer
-    // to strip the custom identity - the exact failure mode that caused the original data loss.
+    // differs from the canonical's identity, so the schemaVersion 2 migration must treat this as a user standalone and leave it alone. Stamping would trigger the
+    // delta normalizer to strip the custom identity - the exact failure mode that caused the original data loss.
     const channels: StoredChannelMap = {
 
       "abc-kabc": {
@@ -139,8 +139,8 @@ describe("regression: hyphenated user standalone survives the migration", () => 
 
   test("abc-kabc with divergent identity stays a standalone and resolves as-is", () => {
 
-    // Full flow: user has stored a standalone entry whose key happens to collide with the variant-shaped pattern. Migration 1 must not stamp canonicalKey.
-    // Subsequent normalization must treat the entry as a standalone (null-strip only, no base-matching). Resolution should carry identity verbatim.
+    // Full flow: user has stored a standalone entry whose key happens to collide with the variant-shaped pattern. The schemaVersion 2 migration must not stamp
+    // canonicalKey. Subsequent normalization must treat the entry as a standalone (null-strip only, no base-matching). Resolution should carry identity verbatim.
     const storedInput: StoredChannelMap = {
 
       "abc-kabc": {
@@ -232,7 +232,7 @@ describe("collectLegacyVariantStamps: post-isDeepStrictEqual array semantics", (
       "abc-hulu": {
 
         channelSelector: "ABC",
-        // abc canonical's tags are ["Local"]. We provide them via a single-element duplicate to assert the sort path is exercised.
+        // abc canonical's tags are ["Local"]. We supply the same single-element tags here to assert that tags equal to the canonical's are shape-compatible and stamp.
         tags: ["Local"],
         url: "https://www.hulu.com/live"
       }

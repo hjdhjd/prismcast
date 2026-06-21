@@ -1,9 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.test.ts: Unit tests for the configuration endpoint coordinator. The module exports two pieces of real logic - categorizeProfiles (a pure
- * grouping helper) and scheduleServerRestart (which branches on PRISMCAST_SERVICE and the active stream count and may schedule a delayed exit). The
- * remaining exports are barrel re-exports verified only as identity-typed function references. setupConfigEndpoint and the actual route handlers
- * require a live Express app; we flag those as integration-level rather than exercise them here.
+ * index.test.ts: Unit tests for the configuration endpoint coordinator. The module exports three pieces of real logic - categorizeProfiles (a pure
+ * grouping helper), scheduleServerRestart (which branches on PRISMCAST_SERVICE and the active stream count and may schedule a delayed exit), and
+ * describeConfigurationOutcome (which branches on applied/deferred/rejected counts and restart precedence to build the user-facing message).
+ * setupConfigEndpoint is exercised at the synchronous wiring level against an Express stub that records route registrations. The remaining exports are
+ * barrel re-exports verified only as identity-typed function references. The actual route handlers require a live Express app; we flag their per-handler
+ * behavior as integration-level rather than exercise it here.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { categorizeProfiles, describeConfigurationOutcome, scheduleServerRestart, setupConfigEndpoint } from "./index.ts";

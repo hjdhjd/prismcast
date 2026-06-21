@@ -14,10 +14,9 @@
  *
  * Architectural findings surfaced during construction (recorded alongside the integration-tests roadmap):
  *
- *   1. CHANNELS_DVR_PORT is hard-coded to 8089 in src/streaming/showInfo.ts. Channels DVR's port is user-configurable per their docs, so the hardcoding is a
- *      latent production constraint independently worth surfacing. Suite 12 routes around it by mocking fetchFromDvr at the module boundary - the HTTP layer
- *      is not the architectural unit under test, so binding a stub to port 8089 would conflate two different concerns. The hardcoding is recorded as a
- *      production-improvement candidate, not as part of this scope.
+ *   1. The Channels DVR port is user-configurable via CONFIG.channelsDvr.port - src/streaming/showInfo.ts builds the DVR URL from that value, so there is no
+ *      hard-coded port. Suite 12 routes around the HTTP layer entirely by mocking fetchFromDvr at the module boundary, because the HTTP layer is not the
+ *      architectural unit under test - binding a stub to a fixed port would conflate two different concerns.
  *
  *   2. mock.module is the canonical interception seam for module-level dependencies in this repo. node:test's --experimental-test-module-mocks is enabled
  *      via the integration test runner; the dynamic-import-after-mock pattern below is the precedent for future suites that need this kind of seam.
@@ -450,7 +449,7 @@ describe("pretune scheduling state machine", () => {
 
   test("scheduled job for a disabledPredefined channel does NOT trigger pretune", async () => {
 
-    /* Suite 38 test 3: a predefined channel on the user's disabledPredefined list. validateChannel checks isPredefinedChannelDisabled FIRST (hls.ts:85), short-
+    /* Suite 38 test 3: a predefined channel on the user's disabledPredefined list. validateChannel checks isPredefinedChannelDisabled first, short-
      * circuits with 404 "Channel is disabled," and pretuneChannel returns before initializeStream. The negative invariant: a user explicitly hiding a channel
      * from the playlist also suppresses pretune for that channel - the two paths share the same on-off semantics.
      */

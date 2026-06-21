@@ -80,9 +80,8 @@ describe("FileStore.snapshot - pruning under retention", () => {
 
   test("a directory with snapshots at or below SNAPSHOT_RETENTION is left untouched", async () => {
 
-    /* The retention constant is 5. After creating five labeled snapshots, the next snapshot creation triggers a prune that finds six entries - the oldest gets
-     * removed. Below the threshold, prune is a no-op short-circuit. We verify by creating exactly five snapshots and confirming all five survive after each
-     * subsequent mutation (which triggers the prune as a hygiene step).
+    /* The retention constant is 5. At or below that threshold, the prune step is a no-op short-circuit and removes nothing. We verify by creating exactly five
+     * labeled snapshots and confirming all five survive, since each snapshot()'s prune step finds <= 5 entries and returns early.
      */
     await withTempDir(async (dir) => {
 
@@ -108,10 +107,10 @@ describe("FileStore.snapshot - pruning under retention", () => {
     });
   });
 
-  test("creating a seventh snapshot prunes the two oldest by mtime, leaving the five most recent", async () => {
+  test("creating an eighth snapshot over seven seeded ones prunes the three oldest by mtime, leaving the five most recent", async () => {
 
     /* Drives the retention algorithm end-to-end. We seed seven snapshot files into the snapshots dir manually with known, increasing mtimes (via writeFile in
-     * order), then call snapshot() with a fresh label - the framework's create flow runs the prune step on success and removes the two oldest. We use the
+     * order), then call snapshot() with a fresh label - the framework's create flow runs the prune step on success and removes the three oldest. We use the
      * memory backend so we can control mtimes deterministically: the backend stamps mtimes via a monotonic counter, so writeFile order maps directly to mtime
      * order without depending on the wall clock or filesystem mtime resolution.
      */

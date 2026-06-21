@@ -1,8 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * commands.context.ts: The default adapter that produces a ServiceContext from real runtime I/O. The handlers in commands.ts are pure orchestrators over a
- * ServiceContext; this file is the only place in the service-commands module that calls execFile, fetches HTTP, reads the filesystem, or queries process.platform.
- * Tests bypass this file entirely by constructing ServiceContext literals inline.
+ * ServiceContext; this file is the composition seam that wires those handlers to live runtime I/O - it performs the HTTP probe of the running server directly and
+ * delegates the platform-specific generator factory and the path and platform queries to their respective helpers. Tests bypass this file entirely by constructing
+ * ServiceContext literals inline.
  */
 import { DEFAULTS, readConfig } from "../config/userConfig.ts";
 import type { ServiceContext, StreamsResponse } from "./commands.ts";

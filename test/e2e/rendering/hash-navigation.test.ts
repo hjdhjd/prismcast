@@ -3,8 +3,9 @@
  * hash-navigation.test.ts: Integration coverage for the server side of the URL-hash navigation contract. Phase 2.5 Suite 33 was investigation-first - the
  * roadmap framed the question as "what does the server actually do with hash state?" and asked the test author to pin whichever the actual behavior is.
  *
- * Investigation finding (Suite 33): the server's role in tab/hash activation is structurally NIL. The landing page handler at src/routes/root/index.ts:148
- * builds the tab bar with overview always marked active (generateTabButton's third arg) and emits every tab panel and subtab in source-fixed default-active
+ * Investigation finding (Suite 33): the server's role in tab/hash activation is structurally NIL. The landing page handler at src/routes/root/index.ts:144
+ * builds the tab bar with overview always marked active (the generateTabButton("overview", ..., true) call at src/routes/root/index.ts:159) and emits every tab
+ * panel and subtab in source-fixed default-active
  * state. No req.query consultation, no hash hint via header, no server-side variation by URL. Tab and subtab activation is wholly client-side - generateTabScript
  * (in routes/ui.ts) and createSubtabSwitcher (in routes/root/scripts/shared.ts) read window.location.hash on the client and toggle classes accordingly.
  *
@@ -146,7 +147,8 @@ describe("GET / - server-side hash/tab navigation contract", () => {
      * invariant assuming at least one item) would render the entire landing page as a 500. This test runs the empty-state landing-page render and asserts that
      * (a) it returns 200, (b) every tab's panel <div> is present, (c) every tab's panel contains some HTML body content (not an empty <div>).
      *
-     * Suite 39 covers per-tab structural correctness in detail; Suite 33's job here is the basic survival check: empty seed must not crash any tab generator.
+     * Suite 39 (empty-states.test.ts) covers empty-state rendering of the Channels, Profiles, Tags, and Streams surfaces; Suite 33's job here is the basic
+     * survival check: empty seed must not crash any tab generator.
      */
     await using ctx = await createIntegrationContext();
 

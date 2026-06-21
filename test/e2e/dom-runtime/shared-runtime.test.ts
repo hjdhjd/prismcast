@@ -15,7 +15,7 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin invariants, not historical incidents. "applyPatch handles every patch field" is the contract; "the d2ee7be channel-number bug doesn't recur" is a
+ *   - Pin invariants, not historical incidents. "applyPatch handles every patch field" is the contract; "the channel-number rendering bug doesn't recur" is a
  *     symptom to derive coverage from but not the test name.
  *   - Use evaluate(...) for one-shot expressions and DOM seeding; for complex setup, set ctx.document.body.innerHTML or insertAdjacentHTML in a single block.
  *   - For fetch-shape verification (persistDisplayPrefs, etc.), override window.fetch with a spy before triggering the operation. Asserting on persisted state
@@ -574,8 +574,9 @@ describe("shared.ts: channelDisplayHtml and serviceIconHtml", () => {
 
   test("channelDisplayHtml mode='logo' returns an <img> with onerror and a hidden text fallback span", async () => {
 
-    /* Logo mode (default): the image is the primary element with the text span hidden via inline style. onerror references imgFallback so a broken image
-     * URL falls back through the data-fallbacks chain.
+    /* Logo mode (default): the image is the primary element with the text span hidden via inline style:display:none. The img carries onerror="imgFallback(this)",
+     * and since channelDisplayHtml emits no data-fallbacks attribute, a broken logo URL exhausts the (empty) fallback chain immediately and reveals the hidden
+     * text span. The data-fallbacks chain itself is a property of serviceIconHtml (exercised at lines 602-613), not channelDisplayHtml.
      */
     await using ctx = await setupSharedRuntime();
 
@@ -780,7 +781,7 @@ describe("shared.ts: createWizardController", () => {
 
   test("next blocks advancement when onValidate returns a non-empty error string", async () => {
 
-    /* Validation gate: a returning a truthy string from onValidate should keep currentStep where it was and surface the error via setError. We attempt to
+    /* Validation gate: returning a truthy string from onValidate should keep currentStep where it was and surface the error via setError. We attempt to
      * advance, confirm step stays at 1, and confirm the error display shows the validation message.
      */
     await using ctx = await setupSharedRuntime();
@@ -871,9 +872,12 @@ describe("shared.ts: createWizardController", () => {
     );
 
     ctx.evaluate("window.harnessCtrl.open();");
-    ctx.evaluate("window.harnessCtrl.next();"); // 1 -> 2
+    // Advance from step 1 to step 2.
+    ctx.evaluate("window.harnessCtrl.next();");
     await ctx.flushAsync();
-    ctx.evaluate("window.harnessCtrl.next();"); // 2 -> 3
+
+    // Advance from step 2 to step 3.
+    ctx.evaluate("window.harnessCtrl.next();");
     await ctx.flushAsync();
 
     // Try jumping forward beyond highestStep (3): should be a no-op.
@@ -895,9 +899,9 @@ describe("shared.ts: window.channelTable namespace", () => {
      * mismatch the new display row. The production page renders BOTH rows server-side for every predefined channel (edit-row-abc is hidden by inline
      * style:display:none until the user clicks the inline edit button); we lean on that and verify both vanish after a single removeRow call.
      *
-     * Diagnostic note: an earlier version of this test inserted a synthetic edit-row-abc at body level. The server already renders one, so the synthetic
-     * created a duplicate-id condition; subsequently calling .remove() on the result of getElementById('edit-row-abc') hung happy-dom (likely a parser-state
-     * issue around duplicate ids). Trusting the server's rendered edit row is correct anyway - this is what production code operates against.
+     * We rely on the single server-rendered edit-row-abc rather than seeding a synthetic one: seeding a second element with the same id creates a duplicate-id
+     * condition, and calling .remove() on the result of getElementById('edit-row-abc') then hangs happy-dom (likely a parser-state issue around duplicate ids).
+     * Trusting the server's rendered edit row is correct anyway - this is what production code operates against.
      */
     await using ctx = await setupSharedRuntime();
 
@@ -1212,9 +1216,9 @@ describe("shared.ts: window.channelTable namespace", () => {
       "'<tr id=\"display-row-ccc\"><td></td><td data-sort-value=\"ccc\">C</td></tr>';"
     );
 
-    // Force the column index cache to rebuild against this table's header. The cache is populated from the existing thead which still corresponds to the
-    // server-rendered channel table; "name" is one of those columns. We confirm the cache is consistent with our new tbody by checking insertion lands
-    // between the two existing rows.
+    // insertRow's first _getSortValue call lazily builds the column-index cache from the still-server-rendered thead, mapping each field name to its column
+    // position (key=0, name=1, provider=2, ...). The cache is never invalidated, but our replacement tbody preserves the same column layout, so the "name"
+    // field still resolves to index 1; our fixture cells sit at index 1 to match, which lands the inserted row between the two existing rows.
     ctx.evaluate(
       "window.channelTable.insertRow({ displayRow: '<tr id=\"display-row-bbb\"><td></td><td data-sort-value=\"bbb\">B</td></tr>', editRow: '' }, 'bbb');"
     );

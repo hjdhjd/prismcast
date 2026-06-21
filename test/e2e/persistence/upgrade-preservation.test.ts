@@ -10,8 +10,10 @@
  *   - 1c549e8 (v1.9.1): user-set channel numbers and station IDs on local-affiliate variants were lost across upgrades. Cause: an upgrade migration normalized
  *     variant entries against the predefined base too aggressively, treating user-authored identity fields on variants as redundant overrides.
  *
- * Each test below seeds a state that exercises one preservation invariant, drives the production save path that historically broke it, and asserts the
- * non-form / user-customized state survives. The suite is a regression net: a future refactor that reintroduces either failure mode fails here loudly.
+ * The two describe blocks below verify these invariants from different angles. The 4afa8a0 block seeds non-form config state, drives the production
+ * config save path that historically broke it, and asserts the non-form state survives the merge. The 1c549e8 block verifies cross-store isolation: it
+ * seeds a user customization in the channels store, drives a config-store save, and asserts the channels file is byte-for-byte unchanged - a config save
+ * must never reach into and mutate the channels store. The suite is a regression net: a future refactor that reintroduces either failure mode fails here loudly.
  */
 import { createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";

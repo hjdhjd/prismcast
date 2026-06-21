@@ -106,7 +106,8 @@ describe("HLS resume state round-trip", () => {
 
   test("an empty save list produces a file that loads without error and has no resume entries", async () => {
 
-    /* Boundary: shutdown with no active streams produces an empty save. The next load should not throw and should have no entries to retrieve.
+    /* Boundary: shutdown with no active streams writes no resume file at all. saveResumeState returns early when there is nothing to merge (merged.size === 0),
+     * so no file is produced. The next load then takes the missing-file path, which must not throw and must yield no entries to retrieve.
      */
     await using ctx = await createIntegrationContext();
 
