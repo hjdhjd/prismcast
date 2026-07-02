@@ -55,40 +55,42 @@
   },
   "main": "./dist/index.js",
   "scripts": {
-    "build": "shx rm -rf dist && tsc -p tsconfig.build.json",
-    "clean": "shx rm -rf dist",
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{force:true,recursive:true})\"",
     "dev": "scripts/dev-prismcast.sh",
-    "lint": "ESLINT_MAX_WARNINGS=${ESLINT_MAX_WARNINGS:--1} eslint src test eslint.config.mjs",
-    "prepublishOnly": "npm run lint && npm run build",
+    "lint": "eslint --max-warnings=${ESLINT_MAX_WARNINGS:-\"-1\"} eslint.config.mjs src test",
+    "postpublish": "npm run clean",
+    "prebuild": "npm run clean",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run build",
     "start": "node dist/index.js",
-    "test": "node --strip-types --test --test-force-exit --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-exclude=\"src/**/*.test.ts\" --test-coverage-exclude=\"src/**/*.helpers.ts\" --experimental-test-module-mocks --test-timeout=15000 \"src/**/*.test.ts\"",
+    "test": "node --strip-types --test --test-force-exit --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-exclude=\"src/**/*.test.ts\" --test-coverage-exclude=\"src/**/*.helpers.ts\" --test-coverage-lines=68 --test-coverage-branches=84 --test-coverage-functions=75 --experimental-test-module-mocks --test-timeout=15000 \"src/**/*.test.ts\"",
     "test:all": "npm run test && npm run test:integration",
     "test:integration": "node --strip-types --test --test-force-exit --experimental-test-module-mocks --test-timeout=120000 \"test/**/*.test.ts\"",
     "test:watch": "node --strip-types --test --experimental-test-module-mocks --watch \"src/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
     "watch": "npm run build && nodemon"
   },
   "dependencies": {
     "compression": "^1.8.1",
     "express": "5.2.1",
     "ffmpeg-for-homebridge": "2.2.2",
-    "morgan": "1.10.1",
+    "morgan": "1.11.0",
     "puppeteer-core": "24.43.1",
     "puppeteer-stream": "3.0.22",
-    "ws": "^8.20.1"
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "5.10.0",
     "@types/compression": "^1.8.1",
     "@types/express": "5.0.6",
     "@types/morgan": "1.9.10",
-    "@types/node": "25.8.0",
+    "@types/node": "26.1.0",
     "@types/ws": "^8.18.1",
     "eslint": "9.39.2",
-    "happy-dom": "^20.9.0",
+    "happy-dom": "^20.10.6",
     "homebridge-plugin-utils": "1.35.0",
     "nodemon": "3.1.14",
-    "shx": "0.4.0",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.59.3"
+    "typescript-eslint": "8.62.1"
   }
 }

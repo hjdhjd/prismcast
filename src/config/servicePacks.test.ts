@@ -342,7 +342,7 @@ describe("countNewKeys (net-new import accounting)", () => {
     // is not net-new.
     const existing: Record<string, unknown> = {};
 
-    existing.constructor = "already-here";
+    Reflect.set(existing, "constructor", "already-here");
 
     assert.equal(countNewKeys({ constructor: 1 }, existing), 0);
   });

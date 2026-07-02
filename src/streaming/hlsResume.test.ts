@@ -560,5 +560,12 @@ describe("saveResumeState", () => {
  */
 function assertEqual<T>(actual: T, expected: T, message?: string): void {
 
+  if(message === undefined) {
+
+    assert.equal(actual, expected);
+
+    return;
+  }
+
   assert.equal(actual, expected, message);
 }
