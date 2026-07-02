@@ -317,9 +317,9 @@ export function formatRecoveryMetricsSummary(metrics: RecoveryMetrics): string {
 
 /**
  * State for failure accrual within a sliding time window. This is the single failure-counting primitive in PrismCast: the per-stream circuit breaker below and the
- * browser supervisor (browser/index.ts) both judge "have there been too many failures recently?" through it, differing only in the policy bounds they pass and what
- * they do when the window trips. The state is a plain record the caller owns and persists across calls; the bounds are supplied per call so one primitive serves
- * consumers with different tolerances without hard-coding any single config value.
+ * browser relaunch governor (browser/launchGovernor.ts) both judge "have there been too many failures recently?" through it, differing only in the policy bounds they
+ * pass and what they do when the window trips. The state is a plain record the caller owns and persists across calls; the bounds are supplied per call so one primitive
+ * serves consumers with different tolerances without hard-coding any single config value.
  */
 export interface FailureWindowState {
 

@@ -204,7 +204,7 @@ export function release(filePath: string, ctx: RuntimeIdentityContext = createDe
 }
 
 /**
- * Unconditionally removes the identity file at the given path. Intended for recovery flows (e.g., a `prismcast cleanup` command) where a user has explicitly
+ * Unconditionally removes the identity file at the given path. Intended for an explicit user-invoked reset or recovery flow where the caller has deliberately
  * asked to clear stale state without the safety check that release() provides. Prefer release() for normal lifecycle cleanup.
  * @param filePath - The absolute path to the identity file.
  */

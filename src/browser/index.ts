@@ -34,21 +34,20 @@ const { promises: fsPromises } = fs;
  * the application lifecycle:
  *
  * - supervisor: The browser capture-readiness supervisor. It is the single source of truth for the shared Chrome instance and its lifecycle (absent / launching /
- *   ready / degraded / trialing), so all streaming sessions use one Chrome process via supervisor.acquire(). It subsumes what used to be three scattered fields
- *   (the browser reference, its launch timestamp, and the launch mutex) into one discriminated-union state, and routes every relaunch through one loop-safe governor.
+ *   ready / degraded / trialing), so all streaming sessions use one Chrome process via supervisor.acquire(). It holds one discriminated-union lifecycle state that
+ *   captures the browser reference, its launch timestamp, and whether a launch is in flight, and routes every relaunch through one loop-safe governor.
  *
- * - currentChromeVersion: The one piece of per-browser metadata the adapter still holds directly, captured when the browser becomes ready and surfaced by the
+ * - currentChromeVersion: The one piece of per-browser metadata the adapter holds directly, captured when the browser becomes ready and surfaced by the
  *   health endpoint.
  *
- * - dataDir: The filesystem location for persistent data (Chrome profile, extension files). Resolved via config/paths.ts, which is created on startup if it doesn't
- *   exist.
- *
- * Stream tracking and ID generation live in streaming/registry.ts for unified stream management across all output types (HLS, MPEG-TS, etc.).
+ * Stream tracking and ID generation live in streaming/registry.ts for unified stream management across all output types (HLS, MPEG-TS, etc.). Filesystem path
+ * resolution for persistent data (the Chrome profile and the streaming extension files) is centralized in config/paths.ts, whose getters create the data directory on
+ * startup if it does not exist; it is resolved on demand rather than held as module state here.
  */
 
 // The Chrome version string (e.g., "Chrome/144.0.7559.110") captured when the browser becomes capture-ready in launchReadyBrowser. Cleared when the browser
-// disconnects or is closed. This is the one piece of per-browser metadata the adapter still holds directly; the browser instance, its launch timestamp, and the
-// launch mutex now live inside the supervisor's lifecycle state, which is the single source of truth for "what is the browser doing, and is it usable?".
+// disconnects or is closed. This is the one piece of per-browser metadata the adapter holds directly; the browser instance, its launch timestamp, and the
+// launch mutex live inside the supervisor's lifecycle state, which is the single source of truth for "what is the browser doing, and is it usable?".
 let currentChromeVersion: Nullable<string> = null;
 
 /* The browser relaunch governor's escalating cooldown ladder: 5 minutes, then 15, then 60. This is the escalation SHAPE - a design constant - rather than an
@@ -75,8 +74,8 @@ function buildRelaunchPolicy(): LaunchGovernorPolicy {
   };
 }
 
-/* The one browser capture-readiness supervisor for the process lifetime. It owns the lifecycle state (absent/launching/ready/degraded/trialing) that subsumes the
- * former currentBrowser + browserLaunchPromise + browserLaunchTime trio, and routes every relaunch through one loop-safe governor. The adapter injects the impure
+/* The one browser capture-readiness supervisor for the process lifetime. It owns the lifecycle state (absent/launching/ready/degraded/trialing) that unifies the
+ * browser reference, launch promise, and launch timestamp, and routes every relaunch through one loop-safe governor. The adapter injects the impure
  * ports: launchReadyBrowser (spawn Chrome and run the readiness gate), closeBrowserInstance (teardown), realClock.now (time), buildRelaunchPolicy (live config
  * bounds), and onSupervisorStateChange (the loud degraded alarm and the recovery notice). All browser access flows through it: getCurrentBrowser is acquire(); the
  * non-launching reads derive from current() and currentLaunchTime(). The injected ports are hoisted function declarations, so referencing them here is safe even
@@ -118,7 +117,7 @@ function onSupervisorStateChange(next: BrowserLifecycle, previous: BrowserLifecy
 }
 
 /* The capture-readiness probe is the capability tier of the launch gate: a real getStream against a throwaway page on the instance being launched - the authoritative
- * "can this browser actually capture?" predicate that the original outage proved must run at every (re)launch, not only boot. It lives in streaming/setup.ts (which
+ * "can this browser actually capture?" predicate that must run at every (re)launch, not only boot. It lives in streaming/setup.ts (which
  * owns getStream and the unrecoverable stale-mutex process.exit precedent) and is injected here via setCaptureProbe, because setup.ts already depends on this module:
  * injecting the function rather than importing it keeps the dependency one-directional and breaks the cycle, mirroring the browserAccessors seam between login.ts and
  * index.ts. The probe must also take the local instance as a parameter rather than re-entering getCurrentBrowser, since launchReadyBrowser IS the in-flight launch -
@@ -142,8 +141,6 @@ export function setCaptureProbe(probe: CaptureProbe): void {
 
   captureProbe = probe;
 }
-
-// The data directory stores Chrome's profile data and the streaming extension files. Path resolution is centralized in config/paths.ts.
 
 // The stale page cleanup interval handle, stored so we can clear it during graceful shutdown. The interval periodically checks for browser pages that are not
 // associated with active streams and closes them to prevent resource exhaustion.
@@ -1177,8 +1174,8 @@ export async function getCurrentBrowser(): Promise<Browser> {
  * The supervisor's `launch` port: spawns Chrome, runs the readiness gate, performs post-launch initialization (display detection, version/UA capture, precaching),
  * and resolves ONLY with a capture-ready browser. It builds into a local instance and publishes nothing - the supervisor owns publication and transitions to
  * "ready" only after this resolves. A launch that fails the gate tears down its own Chrome here and throws, so a broken instance is never handed up; the supervisor
- * counts the failure and decides whether to relaunch immediately or cool down. This is the fix for the original outage, where a failed extension load was logged as
- * a warning and the broken browser served anyway.
+ * counts the failure and decides whether to relaunch immediately or cool down. The gate throws rather than logging a failed extension load as a warning and serving
+ * the broken browser anyway, so only a verified-capturing instance is ever published.
  * @returns The capture-ready browser instance.
  * @throws If the launch or the readiness gate fails.
  */
@@ -1213,7 +1210,7 @@ async function launchReadyBrowser(): Promise<Browser> {
     LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
 
     // Readiness gate, capability tier (the authoritative arbiter). Run the injected capture probe - a real getStream against a throwaway page on THIS instance - so
-    // "ready" means "really captured," not merely "the extension handshake responded." This is the predicate the original outage proved must run at every (re)launch:
+    // "ready" means "really captured," not merely "the extension handshake responded." This predicate must run at every (re)launch:
     // it exercises the exact getStream path that hangs when the extension is unregistered. A probe failure throws, so the supervisor counts the launch failure and the
     // browser is never published; the unrecoverable stale-mutex case exits the process from inside the probe, since a Chrome restart cannot fix a leaked module mutex.
     //
@@ -1804,7 +1801,7 @@ async function executeBrowserRestart(): Promise<void> {
 
     // Retire the current instance from the lifecycle, tear it down, then acquire a fresh one through the supervisor. We do NOT touch the graceful-shutdown flag (the
     // server is not shutting down): closeBrowserInstance removes the disconnect listener, which is what makes this intentional teardown quiet. acquire() publishes
-    // "ready" only after the readiness gate passes, so the completion log below is finally truthful - unlike the prior liveness-only "ready" claim the outage exposed.
+    // "ready" only after the readiness gate passes, so the completion log below is truthful: it verifies capture capability before claiming readiness, not mere liveness.
     supervisor.noteReadinessLost();
 
     await closeBrowserInstance(browser);

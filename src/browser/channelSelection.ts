@@ -237,7 +237,7 @@ export function getCachedProviderChannels(): { entries: { label: string; station
 export { logAvailableChannels, normalizeChannelName, resolveMatchSelector, scrollAndClick } from "./tuning/shared.ts";
 
 /**
- * Options that callers may supply to selectChannel(). All fields are optional; omitting them preserves the historical no-op call signature.
+ * Options that callers may supply to selectChannel(). All fields are optional; selectChannel() may be called with no options.
  */
 export interface SelectChannelOptions {
 

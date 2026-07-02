@@ -96,6 +96,10 @@ export function createUdpSurface(): UdpSurface {
 
     const bindAddress = options?.bindAddress ?? "0.0.0.0";
     const port = options?.port ?? HDHR_DISCOVERY_PORT;
+
+    // We keep reuseAddr false deliberately: a competing binder on the discovery port must surface as EADDRINUSE so the bind-failure handler below can treat it as
+    // graceful "discovery unavailable" fallback rather than silently double-binding. Flipping this to true (or dropping it as redundant) would defeat that
+    // collision detection.
     const candidate = createSocket({ reuseAddr: false, type: "udp4" });
 
     candidate.on("message", (msg, rinfo) => {

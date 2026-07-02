@@ -78,8 +78,9 @@ describe("memoizeAsync", () => {
 
   test("caches a probe value of undefined (does not conflate 'not yet resolved' with 'resolved to undefined')", async () => {
 
-    /* Without the explicit resolved boolean, the closure would have to use `cached !== undefined` as the cache-hit check, which would re-probe whenever the
-     * resolved value is undefined. The boolean flag eliminates that conflation. This test pins the contract.
+    /* Without the "resolved" kind tag, the closure would have to use `state.value !== undefined` as the cache-hit check, which would re-probe whenever the
+     * resolved value is undefined. The discriminated union's kind tag distinguishes "resolved to undefined" from "not yet resolved", eliminating that
+     * conflation. This test pins the contract.
      */
     let calls = 0;
     const memoized = memoizeAsync(async () => {

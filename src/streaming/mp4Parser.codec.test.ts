@@ -291,8 +291,8 @@ describe("parseMoovCodecConfig", () => {
 
   test("decodes full range of profile/level/compatibility values from avcC", () => {
 
-    // Pin the byte-position contract: profile is byte[9], compatibility is byte[10], level is byte[11] of the avcC box (relative to its 8-byte header). Use
-    // distinct values for each so a swap would be detected.
+    // Pin the byte-position contract: profile is byte[9], compatibility is byte[10], level is byte[11] of the avcC box, measured from the box start, whose first 8 bytes
+    // are the box header. Use distinct values for each so a swap would be detected.
     const avcC = makeAvcC(0xAA, 0xBB, 0xCC);
     const stsd = makeStsd(makeAvc1(avcC));
     const moov = makeMoovWithStsd(stsd);

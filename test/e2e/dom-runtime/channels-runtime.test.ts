@@ -1090,8 +1090,9 @@ describe("channels.ts: window.startTagRename", () => {
     installFetchSpy(ctx);
     ctx.evaluate("window.startTagRename(document.getElementById('trn-pill2'), 'old')");
 
-    /* Construct a synthetic KeyboardEvent. happy-dom's KeyboardEvent constructor accepts the standard init dict; the inline onkeydown handler reads e.key, so
-     * the event's key property must be 'Escape'.
+    /* We construct and dispatch a synthetic keydown to mirror how a real Escape press would arrive. This dispatch is a no-op against the handler under test:
+     * production assigns inp.onkeydown, and happy-dom does not invoke a .onkeydown property handler from dispatchEvent (it only fires addEventListener-registered
+     * listeners). The direct inp2.onkeydown({ key: 'Escape', ... }) invocation below is the actual trigger, as the following comment explains.
      */
     ctx.evaluate(
       "const inp = document.querySelector('#trn-host2 input.tag-rename-input');" +

@@ -7,9 +7,9 @@ import type { CDPSession, Page } from "puppeteer-core";
 import { EventEmitter } from "node:events";
 
 /* Why this module exists. The puppeteer surface our observers depend on - CDPSession.send/detach/on/off/emit/removeAllListeners/connection() and the
- * Connection.session(sessionId) lookup - is the same regardless of which observer is being tested. Before this module, every test file that exercised the
- * observer stack declared its own FakeCdpSession + FakeConnection + makeFakePage trio with near-identical bodies, inviting drift each time puppeteer's
- * surface changed. Centralizing the stubs here is the single source of truth: a future puppeteer-rename or addition is one edit, not N.
+ * Connection.session(sessionId) lookup - is the same regardless of which observer is being tested, so the FakeCdpSession + FakeConnection + makeFakeCdpPage
+ * trio lives here as the single source of truth rather than as a near-identical fixture in every observer test file, where such copies drift each time
+ * puppeteer's surface changes. Centralizing the stubs means a puppeteer-rename or addition is one edit, not N.
  *
  * What's stubbed.
  *
@@ -23,7 +23,7 @@ import { EventEmitter } from "node:events";
  *     constructor flag - the minimum surface our observers touch on a Page.
  *
  * The classes carry the full feature set (listener-op spying, null-connection support, all three emit helpers); consumers that don't need a given field simply
- * never read it. This keeps the stub as one shape, avoiding the "two near-identical fixtures" pattern that drove the extraction.
+ * never read it. This keeps the stub as one shape, avoiding a second near-identical fixture that would drift from it.
  */
 
 /**

@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * pretune.test.ts: Unit tests for the predictive channel pretune subsystem. pretune.ts polls the Channels DVR /api/v1/jobs endpoint, schedules setTimeout
+ * pretune.test.ts: Unit tests for the predictive channel pretune subsystem. pretune.ts polls the Channels DVR /api/v1/jobs endpoint, schedules a setTimeout that
  * fires PRETUNE_LEAD_MS (30s) before each upcoming recording, and tears down unclaimed pretuned streams after a safety timeout. The public surface is the
  * startPretunePolling()/stopPretunePolling() lifecycle pair plus clearPretuneSafetyTimer(), which terminateStream() calls to drop a pretuned stream's safety timer
  * when the stream is claimed and torn down normally. The polling functions depend on side effects (intervals, async DVR fetches, stream initialization) that
@@ -87,8 +87,8 @@ describe("clearPretuneSafetyTimer", () => {
   test("is a no-op for a stream ID that was never pretuned (the dominant claim+terminate path)", () => {
 
     // terminateStream() calls clearPretuneSafetyTimer() for every stream it tears down, but the overwhelming majority of streams were never pretuned and so have no
-    // safetyTimers entry. The function must take the no-op branch (safetyTimers.get(streamId) is undefined) without throwing. This pins the contract that the new
-    // call added to terminateStream cannot fail for an ordinary, non-pretuned stream.
+    // safetyTimers entry. The function must take the no-op branch (safetyTimers.get(streamId) is undefined) without throwing. This pins the contract that the
+    // clearPretuneSafetyTimer call in terminateStream cannot fail for an ordinary, non-pretuned stream.
     assert.doesNotThrow(() => {
 
       clearPretuneSafetyTimer(999999);

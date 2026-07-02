@@ -99,8 +99,10 @@ describe("FileStore.read - migrations", () => {
      * exceeds) currentSchemaVersion. The while-loop's condition (currentVersion < options.currentSchemaVersion) immediately fails, no migrations apply, and
      * the result reports applied=[] with fromVersion === toVersion === the current schema version.
      *
-     * Without this test, a regression that off-by-one'd the loop guard (e.g., changed `<` to `<=` and re-applied the latest migration on every read) would
-     * pass the forward-compatible test (file at v99, current at v1, no migrations declared at v100+) and the upgrade test (v1 → v2) but fail this one.
+     * The upgrade test keeps the file below currentSchemaVersion and the forward-compatible test declares no migrations at all, so neither exercises the exact
+     * boundary where the file's version equals currentSchemaVersion with a migration declared at that version. This test is the one that directly pins the no-op:
+     * a migration keyed at the current version is not re-executed once the file already sits there, and the result reports a clean pass-through (applied empty,
+     * fromVersion === toVersion).
      */
     await withTempDir(async (dir) => {
 

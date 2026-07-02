@@ -973,8 +973,8 @@ export function generateChannelsSubtabScript(): string {
     "    if(selectAll) selectAll.checked = (visibleCount > 0) && allChecked;",
     "  }",
 
-    // Submit channel changes via the modify endpoint. Collects action types: add (new channels checked), enable (disabled channels checked), switch
-    // remove (current channels unchecked). Each entry includes an action field so the server can handle them appropriately.
+    // Submit channel changes via the modify endpoint. Collects four action types: add (new channels checked), enable (disabled channels checked),
+    // switch (switched-to channels checked), and remove (current channels unchecked). Each entry includes an action field so the server can handle them appropriately.
     "  window.submitBrowseChannels = () => {",
     "    const cbs = document.querySelectorAll('.browse-channel-cb');",
     "    const guideUrl = browseGuideUrls[browseWizard.state.slug] || '';",

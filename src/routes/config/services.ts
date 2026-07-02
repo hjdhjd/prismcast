@@ -220,7 +220,7 @@ export function generateCustomProfilesPanel(): string {
  */
 export function generateProfileWizardModal(): string {
 
-  // Build the profile data for Step 1 radio buttons. Include all profiles (builtin and user-defined).
+  // Build the profile data for Step 1 radio buttons. getProfiles() returns both builtin and user-defined profiles; we narrow the set to builtin only below.
   const profiles = getProfiles();
   const groups = categorizeProfiles(profiles);
 

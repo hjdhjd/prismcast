@@ -170,7 +170,7 @@ describe("M3U escaping invariants - playlist endpoint", () => {
 
     assert.ok(extinfLine.includes(expectedAttribute), "tvg-name attribute must contain the helper-escaped form: " + expectedAttribute);
 
-    // Negative: the malformed back-to-back-quote sequence that the unescaped concatenation used to produce must not appear anywhere on the line. This catches a
+    // Negative: the malformed back-to-back-quote sequence that an unescaped concatenation would produce must not appear anywhere on the line. This catches a
     // regression that re-introduces raw quoting even if the helper output happens to coincide with another substring.
     assert.doesNotMatch(extinfLine, /tvg-name="ESPN "The Ocho""/, "tvg-name attribute must not contain the raw unescaped name");
 

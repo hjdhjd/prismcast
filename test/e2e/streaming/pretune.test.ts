@@ -24,9 +24,9 @@
  *   3. getDeviceMappings caches by host with a 5-minute TTL. We sidestep host-keyed pollution by mocking getDeviceMappings entirely - the cache itself is
  *      bypassed, so test isolation is structural rather than depending on TTL math or unique-host-per-test conventions.
  *
- * Note on bootStubServer: an earlier roadmap framing positioned a generic stub-server helper as shared infrastructure between Suite 12 and Suite 13. That
- * framing did not survive contact with production: Suite 12's data layer is correctly mocked at the module boundary (HTTP is incidental), so bootStubServer
- * is now exclusively Suite 13's helper - to be built when Suite 13 lands.
+ * Note on bootStubServer: this suite mocks the DVR data layer at the module boundary rather than standing up a stub HTTP server. The HTTP layer is incidental
+ * to pretune's decision logic, so binding a stub server would conflate data acquisition with the decision path under test. The bootStubServer helper serves
+ * suites whose relationship with their upstream IS the unit under test - the native HLS proxy suite - and is intentionally not used here.
  */
 import type * as PretuneModule from "../../../src/streaming/pretune.ts";
 import { afterEach, before, describe, mock, test } from "node:test";
@@ -109,8 +109,8 @@ describe("pretune scheduling state machine", () => {
 
     mock.module(hlsUrl, {
 
-      // The Node 22 type definitions surface the option as namedExports; the runtime renamed it to exports in a later minor and emits a deprecation warning.
-      // We keep namedExports until @types/node catches up - the runtime path is unaffected and the type definition is authoritative for the build.
+      // mock.module accepts namedExports to declare the mocked module's export set. @types/node marks namedExports as deprecated in favor of the newer
+      // exports field, but the runtime still honors namedExports, so it continues to work for the passthrough-plus-override pattern used here.
       namedExports: { ...realHls, initializeStream: initializeStreamSpy }
     });
 

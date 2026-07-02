@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * serviceWarning.test.ts: Unit tests for buildServiceFilterWarning. The helper is the SSOT for the "service not in active filter" warning that the browse and
- * CRUD endpoints surface as a toast with a one-click enable action. Tests pin the three skip paths (no filter, "direct" tag, already-enabled tag) and the
- * positive case where a non-direct tag is missing from the active filter.
+ * CRUD endpoints surface as a toast with a one-click enable action. Tests pin the four skip paths (no active filter, no known service tag, the "direct" tag,
+ * and an already-enabled tag) and the positive case where a non-direct tag is missing from the active filter.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";

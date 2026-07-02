@@ -13,8 +13,9 @@ import { sendErrorResponse } from "./config/http/envelope.ts";
 
 const { promises: fsPromises } = fs;
 
-/* Log entries are parsed from the log file format: [YYYY/MM/DD HH:MM:ss.l] [LEVEL] message
- * The level prefix is present for debug, warn, and error entries; info entries have no prefix.
+/* Log entries are parsed from the log file format: [YYYY/MM/DD HH:MM:SS.mmm [AM|PM]] [LEVEL] message. The timestamp carries a three-digit millisecond field and an
+ * optional AM/PM suffix, matching the precise pattern defined at LOG_LINE_PATTERN below. The level prefix is present for debug, warn, and error entries; info entries
+ * have no prefix.
  */
 
 interface LogEntry {

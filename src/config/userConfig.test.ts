@@ -41,7 +41,8 @@ describe("DEFAULTS", () => {
   test("declares the load-bearing recovery and HLS defaults that downstream invariants depend on", () => {
 
     /* Pinning these explicitly catches a regression where a release upgrade silently changes a numeric tuning constant. The ones called out here are the
-     * defaults consumed by recovery/monitor.ts and streaming/hls.ts; their behavior depends on the specific values rather than just "any positive number".
+     * defaults consumed by streaming/recovery.ts, streaming/monitor.ts, and streaming/hls.ts; their behavior depends on the specific values rather than just "any
+     * positive number".
      */
     assert.equal(DEFAULTS.recovery.maxBackoffDelay, 3000, "recovery backoff cap aligns with the documented 3-second ceiling");
     assert.equal(DEFAULTS.recovery.backoffJitter, 1000, "backoff jitter range is ±1 second");

@@ -71,11 +71,11 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.toggleStreamPopover invokes the underlying handler without infinite recursion", async () => {
 
-    /* The regression this pins: before the trampoline-capture fix in the status.ts IIFE, the IIFE bound window.toggleStreamPopover = () => toggleStreamPopover(ctx).
-     * Because function declarations at script-tag top level create properties on the global object, the assignment overwrote the global binding for toggleStreamPopover;
-     * the arrow's bare-identifier lookup then resolved back to the arrow itself, blowing the stack with RangeError on the first invocation. The fix captures the
-     * original function reference in an IIFE-local const before reassigning the global. This test calls window.toggleStreamPopover and asserts that no
-     * RangeError (or any other error) propagates - if the trampoline ever recurses on itself again, the assertion catches it before release.
+    /* This test pins the trampoline-wiring invariant for window.toggleStreamPopover. Because classic-script top-level function declarations create properties on the
+     * global object, a naive window.toggleStreamPopover = () => toggleStreamPopover(ctx) would shadow the global binding for toggleStreamPopover; the arrow's
+     * bare-identifier lookup would then resolve back to the arrow itself, blowing the stack with RangeError on the first invocation. The IIFE avoids this by capturing
+     * the original function reference in an IIFE-local const before reassigning the global. This test calls window.toggleStreamPopover and asserts that no
+     * RangeError (or any other error) propagates - if the trampoline ever recurses on itself, the assertion catches it before release.
      */
     await using ctx = await setupStatusIifeRuntime();
 

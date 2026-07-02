@@ -497,10 +497,11 @@ export const yttvProvider: ProviderModule = {
   label: "YouTube TV",
 
   // Profile for YouTube TV (tv.youtube.com/live). The guide grid renders all ~256 channel rows in the DOM simultaneously (no virtualization), each containing a
-  // direct watch URL. The youtubeGrid strategy performs a single querySelector to find the target channel's watch link via aria-label, extracts the URL, and
-  // navigates directly - no scrolling, clicking, or timing workarounds needed. Uses selectReadyVideo because the watch page has ~36 video elements (live preview
-  // thumbnails from the guide) but only one active stream with readyState >= 3 and videoWidth > 0. Extends fullscreenApi because requestFullscreen() works
-  // directly on the active video element without gesture requirements.
+  // direct watch URL. The youtubeGrid strategy enumerates every channel in a single evaluate round-trip - one querySelectorAll reads all channel names and watch
+  // URLs into the unified cache - then resolves the target channel's watch URL from that cache and navigates directly, with no scrolling, clicking, or timing
+  // workarounds needed. Uses selectReadyVideo because the watch page has ~36 video elements (live preview thumbnails from the guide) but only one active stream
+  // with readyState >= 3 and videoWidth > 0. Extends fullscreenApi because requestFullscreen() works directly on the active video element without gesture
+  // requirements.
   profile: {
 
     category: "multiChannel",

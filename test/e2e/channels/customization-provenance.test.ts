@@ -101,7 +101,8 @@ describe("getChannelCustomizations - provenance reporting", () => {
   test("Pass 2 (variant-stored): a binding override on the active variant reports as variant-stored with activeVariantKey set", async () => {
 
     /* When a non-canonical service is active and the user has stored a binding override on the variant entry, getChannelCustomizations reports the override
-     * with storedIn="variant" and exposes activeVariantKey. This is the Pass 2 path that the audit calls out as untested.
+     * with storedIn="variant" and exposes activeVariantKey. This exercises the variant walk (Pass 2), which surfaces overrides stored on the active variant
+     * entry rather than the canonical.
      */
     await using ctx = await createIntegrationContext();
 
@@ -167,7 +168,7 @@ describe("getChannelCustomizations - provenance reporting", () => {
 
     await mutateChannels((data) => {
 
-      // Pass 1: a canonical-stored binding override (channelSelector). normally this would route to a variant via the form router, but a stored entry can carry
+      // Pass 1: a canonical-stored binding override (channelSelector). Normally this would route to a variant via the form router, but a stored entry can carry
       // it directly via direct mutation. The point is to seed both layers with the same field name to force the precedence test.
       data.channels["abc"] = { channelSelector: "FROM-CANONICAL" };
       data.channels["abc-hulu"] = { canonicalKey: "abc", channelSelector: "FROM-VARIANT" };

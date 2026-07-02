@@ -34,7 +34,9 @@ const VALID_PROFILE_FLAGS = new Set([
 // Generic strategies available for user profiles. Service-specific strategies are builtin implementations and cannot be used by user profiles.
 const GENERIC_STRATEGIES = new Set([ "none", "thumbnailRow", "tileClick" ]);
 
-// All recognized strategy names (generic + service-specific). Used for validation error messages.
+// Curated subset of channel selection strategy names, used only to shape validation error messages: it holds the three generic strategies plus several service
+// strategies, but is not exhaustive. The ChannelSelectionStrategy union in types/profiles.ts is the canonical list; strategies absent here (coxDirect, directvGrid,
+// spectrumGrid, xfinityDirect) fall through to the "unrecognized" message rather than the more specific "builtin service strategy" guidance.
 const ALL_STRATEGIES = new Set([ "foxGrid", "guideGrid", "hboGrid", "none", "slingGrid", "thumbnailRow", "tileClick", "youtubeGrid" ]);
 
 // Strategies that require a matchSelector to identify channel elements.
@@ -432,7 +434,7 @@ export function validateProfileKey(key: string, isNew: boolean): string | undefi
     return "Profile key must be 50 characters or less.";
   }
 
-  // Built-in profile keys are reserved.
+  // Builtin profile keys are reserved.
   if(key in SITE_PROFILES) {
 
     return "Profile key '" + key + "' conflicts with a builtin profile. Choose a different name.";

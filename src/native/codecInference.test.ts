@@ -232,7 +232,7 @@ describe("inferCodecFromTsBuffer", () => {
 
   test("returns the codec from the first recognized video stream when audio precedes video in the PMT", () => {
 
-    // Boundary: PMTs commonly list audio first (mp4a stream_type 0x0F) and video second. The parser must skip past the audio record (which is not in the
+    // Boundary: PMTs commonly list audio first (ADTS AAC audio, stream_type 0x0F) and video second. The parser must skip past the audio record (which is not in the
     // codec map) and find the video record. We use stream_type 0x0F (audio) followed by 0x1B (H264).
     const buffer = buildTsFixture([
       { pid: 0x100, streamType: 0x0F },

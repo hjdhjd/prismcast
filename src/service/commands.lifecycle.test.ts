@@ -262,7 +262,7 @@ describe("handleServiceCommand (literal context)", () => {
 
   test("threads the same context through every subcommand", async () => {
 
-    // We exercise every dispatch case once and verify the context's stdout buffer captures output from each. This ensures the dispatcher passes ctx through
+    // We route one subcommand through the shared context and confirm its output lands in ctx.stdout. This proves the dispatcher threads the supplied ctx through
     // rather than constructing a fresh default context per invocation.
     const generator = makeFakeGenerator({ installed: true, running: true });
     const { context, stdout } = makeContextHarness({ generator });

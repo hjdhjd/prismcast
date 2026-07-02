@@ -60,6 +60,8 @@ export function setupHealthEndpoint(app: Express): void {
       }
     }
 
+    // Stream utilization is the fraction of the configured concurrency limit currently in use. Once it reaches 80% we report "degraded" and surface a capacity
+    // warning below, giving monitoring and alerting systems headroom to react while streams can still be served rather than only flagging trouble at full saturation.
     const streamUtilization = getStreamCount() / CONFIG.streaming.maxConcurrentStreams;
 
     let status: "degraded" | "healthy" | "unhealthy" = "healthy";

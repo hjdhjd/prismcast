@@ -84,8 +84,9 @@ function resolveServiceTag(channel: Channel): string {
 
 /**
  * Gets the service tag for a channel key. For channels in a service group, reads the pre-computed tag from the group variant entry (computed at group-building
- * time by buildServiceGroups). For standalone channels not in any group, derives the tag from the channel's URL domain. This function should not be called with
- * :predefined synthetic keys - those only exist inside service groups and their tags are available via the group's variant entries.
+ * time by buildServiceGroups). For standalone channels not in any group, derives the tag from the channel's URL domain. Callers normally pass canonical or plain
+ * variant keys, but :predefined synthetic keys are also resolved: the suffix is stripped to locate the group and the matching variant is found by either the
+ * original :predefined key or the stripped key.
  * @param key - The channel key.
  * @returns The service tag string.
  */

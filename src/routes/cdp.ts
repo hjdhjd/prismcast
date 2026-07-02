@@ -38,8 +38,8 @@ import { getBrowserInstance } from "../browser/index.ts";
  * /cdp/devtools/* upgrades into the WSS and leave any other upgrade requests untouched so future features can claim them.
  *
  * Lifecycle ownership lives one layer down: each CdpProxySession subscribes to its own browser's `disconnected` event in start() and unsubscribes in cleanup().
- * That replaces the older module-level "track the current browser, broadcast over a Set of active sessions" pattern - which encoded a per-instance concern
- * (this WS attached to that browser) as shared state and had a latent race when listener registration outran rotation. Discovery endpoints likewise hold no
+ * That keeps ownership per-session rather than as a module-level "track the current browser, broadcast over a Set of active sessions" scheme, which would encode
+ * a per-instance concern (this WS attached to that browser) as shared state and race when listener registration outran rotation. Discovery endpoints likewise hold no
  * disconnect subscription: the discoverySessions WeakMap is keyed by Browser identity, so rotation invalidates structurally and the old entry GCs with its
  * browser.
  */
@@ -489,7 +489,7 @@ export class CdpProxySession {
 
   /**
    * Handles Target.setDiscoverTargets. When enabled, emits Target.targetCreated for every existing target so the client's view of the world matches Chrome's;
-   * targetcreated / targetdestroyed events thereafter flow via the Browser event subscriptions.
+   * Target.targetCreated / Target.targetDestroyed events thereafter flow via the browser session's CDP Target.* event subscriptions.
    * @param msg - The parsed CDP request.
    */
   private async handleSetDiscoverTargets(msg: CdpRequest): Promise<void> {

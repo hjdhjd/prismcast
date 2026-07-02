@@ -136,7 +136,7 @@ export function generateThemeStyles(): string {
     "  --table-row-even: #fafafa;",
     "  --table-row-hover: #f5f5f5;",
 
-    // Dark surface colors (used for logs, streams table in light mode too).
+    // Dark surface, text, and scrollbar colors that back the log viewer in both light and dark themes.
     "  --dark-surface-bg: #1e1e1e;",
     "  --dark-surface-elevated: #2d2d2d;",
     "  --dark-surface-header: #3d3d3d;",
@@ -220,7 +220,8 @@ export function generateThemeStyles(): string {
     "    --status-info-border: #2a4a5a;",
     "    --status-info-text: #7dc4f5;",
 
-    // Stream health indicator colors - same in dark mode for consistency.
+    // Stream health indicator colors. Recovering, stalled, and error match their light-mode values, while healthy and buffering are brightened to track the
+    // interactive palette for better dark-mode contrast.
     "    --stream-healthy: #2ecc71;",
     "    --stream-buffering: #f1c40f;",
     "    --stream-recovering: #e67e22;",

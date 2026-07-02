@@ -14,8 +14,8 @@ export const PREDEFINED_TAGS: readonly string[] =
 const SITE_KEY = "site";
 
 /* Nested channel definitions. Each entry maps a channel key to a ChannelDefinition with identity fields (name, stationId) and a services map keyed by service
- * slug. The "site" key represents the channel's own streaming website. All other keys are multi-service platform slugs (cox, directv, hulu, sling, spectrum,
- * xfinity, yttv, foxone, paramountplus).
+ * slug. The "site" key represents the channel's own streaming website. All other keys are multi-service platform slugs, such as cox, directv, disneyplus,
+ * foxone, hulu, paramountplus, sling, spectrum, usa, xfinity, and yttv.
  *
  * At module load, the flattener compiles these nested definitions into the flat ChannelMap consumed by the rest of the codebase. Each variant entry gets
  * canonicalKey set to its parent definition's key, which buildServiceGroups in services.ts uses to assemble service groups.
@@ -24,7 +24,7 @@ const SITE_KEY = "site";
  * 1. If "site" exists in services, the canonical always gets the site URL.
  * 2. Otherwise, the service whose key sorts first alphabetically (computed, not source-order) becomes canonical.
  *
- * Adding a new service never changes canonicals unless a "site" entry is introduced.
+ * Adding a service whose slug sorts after the current canonical never changes it; introducing a "site" entry or an alphabetically-earlier slug does.
  *
  * Pacific timezone support:
  * - pacificStationId on an East ChannelDefinition triggers auto-generation of a Pacific sibling.
@@ -2431,8 +2431,8 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
  * 2. Otherwise, services are sorted alphabetically by key. The first service populates the canonical entry. No variant key is emitted for it.
  * 3. All remaining services produce variant entries keyed as "{key}-{slug}".
  *
- * Canonical entries carry the full identity (name, stationId, channelNumber, tags, tvgShift) from the ChannelDefinition plus the canonical service's URL and
- * service-specific binding fields. Variant entries carry only service-specific binding fields (url, channelSelector, profile, etc.) plus canonicalKey pointing
+ * Canonical entries carry the full identity (name, stationId, pacificStationId, channelNumber, tags, tvgShift) from the ChannelDefinition plus the canonical service's
+ * URL and service-specific binding fields. Variant entries carry only service-specific binding fields (url, channelSelector, profile, etc.) plus canonicalKey pointing
  * at the canonical - identity inherits at resolution time from the (possibly user-overridden) canonical.
  *
  * Variants are pure tuning data: how to reach the channel via this service. Identity (channelNumber, hdhrEnabled, tags, etc.) is a user preference for the

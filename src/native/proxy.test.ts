@@ -19,7 +19,7 @@ import { deriveIvFromSequence } from "./decrypt.ts";
 closePuppeteerStreamWssOnIdle();
 
 /* makeProxyOptions builds a NativeProxyOptions literal with sensible defaults. Tests override the encryption mode, audio variant URL, and prerollSegmentCount as
- * needed. The onError callback defaults to a no-op; tests that need to observe error escalation override it. The proxy no longer holds a CDP session reference -
+ * needed. The onError callback defaults to a no-op; tests that need to observe error escalation override it. The proxy does not hold a CDP session reference;
  * session ownership lives entirely inside the manifest interceptor's tab network observer and is disposed deterministically when interception ends.
  */
 function makeProxyOptions(overrides: Partial<NativeProxyOptions> = {}): NativeProxyOptions {
@@ -232,7 +232,7 @@ describe("NativeProxy.updateVariantUrl", () => {
   test("multiple updates accumulate without resetting the counter", () => {
 
     // Boundary: the counter is monotonic across the proxy's lifetime. Stop does not reset; restart is not supported. The counter survives all internal state
-    // changes (filterFetchedSequences, etc.) and only ever increments.
+    // changes (the fetchedSequences reset on updateVariantUrl, etc.) and only ever increments.
     const proxy = createNativeProxy(makeProxyOptions());
 
     for(let i = 0; i < 5; i++) {

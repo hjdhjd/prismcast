@@ -8,9 +8,9 @@ import * as barrel from "./testing.helpers.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-/* The complete list of runtime symbols the barrel is documented to re-export. Type-only re-exports (CapturedLogLine, TestLogger, FakeExecFile, FakeExecFileResult)
- * are erased at runtime and therefore not part of this surface. Update this list when the barrel grows or shrinks; a mismatch with the actual exports fails the
- * drift-check test below.
+/* The complete list of runtime symbols the barrel is documented to re-export. Type-only re-exports (CapturedCdpCommand, CdpSessionListenerOp, CapturedLogLine,
+ * TestLogger, FakeExecFile, FakeExecFileResult) are erased at runtime and therefore not part of this surface. Update this list when the barrel grows or shrinks;
+ * a mismatch with the actual exports fails the drift-check test below.
  */
 const EXPECTED_RUNTIME_EXPORTS = [
 

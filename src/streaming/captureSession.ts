@@ -19,11 +19,10 @@
  *
  *   1. Kill FFmpeg FIRST. kill() sets FFmpeg's internal shuttingDown flag unconditionally, so its exit handler treats whatever follows as an expected exit and
  *      never misfires the onError callback. This must precede step 2 because destroying the capture stream carries an EOF down the pipeline to FFmpeg's stdin, and
- *      an FFmpeg flush that exits non-zero would otherwise look like a spurious error. The pre-composite teardown sites use the inverted destroy-then-kill order;
- *      that order is currently safe only because each site runs destroy and kill in the same synchronous frame, ahead of FFmpeg's inherently asynchronous exit
- *      event - so shuttingDown is always set before the exit handler can run, whatever the exit code. Pinning kill-first here is a hardening: it removes that
- *      fragile dependence on call-site synchrony (a future await between the steps would reintroduce the misfire) and makes the order self-evidently correct for
- *      the owners that will adopt this composite. It is correctness-by-construction, not a fix for an active misfire.
+ *      an FFmpeg flush that exits non-zero would otherwise look like a spurious error. Pinning kill-first here is correctness-by-construction, not a fix for an
+ *      active misfire: kill() always runs ahead of the capture stream's destroy, so shuttingDown is set before FFmpeg's inherently asynchronous exit event can run
+ *      its handler, whatever the exit code. Because that guarantee comes from the fixed step order rather than from destroy and kill happening in the same
+ *      synchronous frame, an await inserted between the steps would remain safe - the flush-triggered non-zero exit can never look like a spurious error.
  *   2. Destroy the raw capture stream. destroy() schedules the stream's close emission; puppeteer-stream's close handler then calls STOP_RECORDING in the capture
  *      extension on a later tick, provided the browser is still connected. That "still connected" guarantee is owned by the CALLER (which must not tear the browser
  *      down before disposing), not by disposal ordering. Without STOP_RECORDING, Chrome's tabCapture state lingers and subsequent getStream() calls hang with

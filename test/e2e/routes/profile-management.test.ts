@@ -21,8 +21,8 @@
  * call, and those layers ARE under test. Calling the mutator directly would exercise the persistence layer but skip the HTTP-side logic that the UI depends
  * on. Cross-profile isolation, validation rejection, and the delete cascade are all behaviors that live in the route handler, not the persistence layer.
  *
- * Why we use a non-built-in domain ("myservice.example.test"): src/config/userProfiles.ts validateDomain rejects domains that collide with the built-in
- * DOMAIN_CONFIG map. Picking a fictitious .example.test hostname keeps the test self-contained and avoids coupling test fidelity to the built-in catalog.
+ * Why we use a non-builtin domain ("myservice.example.test"): src/config/userProfiles.ts validateDomain rejects domains that collide with the builtin
+ * DOMAIN_CONFIG map. Picking a fictitious .example.test hostname keeps the test self-contained and avoids coupling test fidelity to the builtin catalog.
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -32,7 +32,7 @@ import { readFile } from "node:fs/promises";
 
 /**
  * Builds the JSON body for a POST /config/profiles request. The route handler expects `{ key, profile, domains? }`; this helper centralizes the shape so each
- * test focuses on the values being exercised rather than re-asserting the request shape on every call. fullscreenApi is the canonical built-in base profile
+ * test focuses on the values being exercised rather than re-asserting the request shape on every call. fullscreenApi is the canonical builtin base profile
  * for "extends" since it's the simplest user-extensible base in src/config/sites.ts.
  * @param key - User profile key.
  * @param description - Profile description.

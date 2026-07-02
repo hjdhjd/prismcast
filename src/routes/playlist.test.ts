@@ -133,8 +133,8 @@ describe("resolveBaseUrl", () => {
 
   test("falls back to the configured host when X-Forwarded-Host is present but whitespace-only (no empty-host URL)", () => {
 
-    // Regression: a present-but-empty X-Forwarded-Host trims its first entry to "", which is non-nullish and slipped past ?? in the old code, yielding a hostless
-    // "http:///hls/..." URL. The truthiness guard must collapse the empty case onto the configured server settings, so the origin is never empty.
+    // Regression: a present-but-empty X-Forwarded-Host trims its first entry to "", which is non-nullish and would slip past ??, yielding a hostless
+    // "http:///hls/..." URL. The truthiness guard collapses the empty case onto the configured server settings, so the origin is never empty.
     const { req } = makeReqRes({ headers: { host: "internal:5000", "x-forwarded-host": "   " }, protocol: "http" });
     const url = resolveBaseUrl(req);
 

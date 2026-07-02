@@ -493,8 +493,8 @@ function extractFirstSampleFlags(data: Buffer, offset: number, size: number, def
 
 /**
  * Detects whether a moof box starts with a keyframe (sync sample) by examining the sample flags of the first sample in each trun box. The detection inspects all traf
- * boxes within the moof to handle multi-track containers (e.g., separate audio and video tracks). A non-keyframe signal from any traf (sample_depends_on === 2) takes
- * precedence because audio tracks are always independently decodable - the only source of sample_depends_on === 2 is a non-keyframe video track. This avoids needing
+ * boxes within the moof to handle multi-track containers (e.g., separate audio and video tracks). A non-keyframe signal from any traf (sample_depends_on === 1) takes
+ * precedence because audio tracks are always independently decodable - the only source of sample_depends_on === 1 is a non-keyframe video track. This avoids needing
  * to map track IDs back to the moov box's codec metadata.
  *
  * The function checks three flag sources in priority order per the ISO 14496-12 spec: trun first_sample_flags (0x004), trun per-sample flags (0x400), and tfhd
@@ -548,9 +548,9 @@ export function detectMoofKeyframe(moofData: Buffer): Nullable<boolean> {
     });
   });
 
-  // A non-keyframe traf (video track with sample_depends_on === 2) overrides keyframe trafs. Audio tracks are always sync (sample_depends_on 0 or 1), so the presence
-  // of any non-keyframe signal is the definitive indicator that this fragment does not start with a video keyframe. TypeScript's control flow analysis cannot track
-  // mutations made inside the iterateChildBoxes callback, so these variables appear "always falsy" to the linter despite being set to true at runtime.
+  // A non-keyframe traf (video track with sample_depends_on === 1) overrides keyframe trafs. Audio tracks are always sync (sample_depends_on === 2, or 0 for unknown),
+  // so the presence of any non-keyframe signal is the definitive indicator that this fragment does not start with a video keyframe. TypeScript's control flow analysis
+  // cannot track mutations made inside the iterateChildBoxes callback, so these variables appear "always falsy" to the linter despite being set to true at runtime.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if(hasExplicitNonKeyframe) {
 
@@ -938,7 +938,7 @@ export interface VideoCodecConfig {
  */
 export interface AudioCodecConfig {
 
-  // AAC object type (1 = AAC-LC, 2 = HE-AAC, etc.).
+  // AAC object type / AudioObjectType (2 = AAC-LC, 5 = HE-AAC (SBR), 1 = AAC Main, etc.).
   objectType: number;
 
   // Sample rate index from the AudioSpecificConfig frequency table (e.g., 3 = 48000 Hz, 4 = 44100 Hz).
@@ -1188,8 +1188,8 @@ export function parseMoovCodecConfig(moovData: Buffer): MoovCodecConfig {
                 });
               } else if(entryType === "mp4a") {
 
-                // mp4a is a sample entry: 8 header + 6 reserved + 2 data_ref_index + 8 reserved + 2 channelcount + 2 samplesize + 4 reserved + 2 samplerate +
-                // 2 reserved = 36 bytes before child boxes.
+                // mp4a is a sample entry: 8 header + 6 reserved + 2 data_ref_index + 8 reserved + 2 channelcount + 2 samplesize + 2 pre_defined + 2 reserved +
+                // 4 samplerate = 36 bytes before child boxes.
                 if(entrySize < 36) {
 
                   return;

@@ -339,8 +339,9 @@ describe("startLoginMode", () => {
 
     pageStub.onCloseHandlers[0]?.();
 
-    // Drain the microtask queue so the void endLoginMode() promise can settle. We yield twice because endLoginMode's await chain has two stages (page close +
-    // minimize). expectAt-style polling would be heavier than necessary here since the test runs in-process with no real timers.
+    // Drain the microtask queue so the void endLoginMode() promise can settle. We yield three times: endLoginMode's await chain has two stages (page close +
+    // minimize), and a third yield gives margin so the trailing continuation lands before we assert. expectAt-style polling would be heavier than necessary here
+    // since the test runs in-process with no real timers.
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();

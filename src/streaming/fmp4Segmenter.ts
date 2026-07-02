@@ -650,7 +650,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
   }
 
   /**
-   * Resets per-segment tracking state. Called after outputting a segment. Extracted to avoid duplication of the same five assignments.
+   * Resets the per-segment tracking state once a segment has been emitted, grouping the reset in one place so outputSegment reads cleanly and the next segment
+   * starts from a known baseline.
    */
   function resetSegmentTracking(): void {
 

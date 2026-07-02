@@ -50,7 +50,8 @@ export function getPlatform(): Platform {
 
 /**
  * Returns the appropriate service manager for the current platform.
- * @returns The service manager type, or null if the platform is not supported for service installation.
+ * @returns The service manager for the current platform. Every platform in the three-valued union maps to a concrete manager, so the trailing null is an unreachable
+ * defensive default retained to satisfy the Nullable return type.
  */
 export function getServiceManager(): Nullable<ServiceManager> {
 

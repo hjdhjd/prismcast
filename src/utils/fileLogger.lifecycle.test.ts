@@ -69,7 +69,7 @@ describe("flushLogBuffer - error-path retry-disable", () => {
 
 describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 
-  /* When flushLogBuffer fails (e.g., directory removed mid-flight), writeLogEntry sets isDisabled=true and disabledAt=Date.now(). Subsequent writes are silently
+  /* When flushLogBuffer fails (e.g., directory removed mid-flight), its catch sets isDisabled=true and disabledAt=Date.now(). Subsequent writes are silently
    * dropped during the retry window (ERROR_RETRY_DELAY_MS = 60s). Once Date.now() advances past the threshold, the next writeLogEntry call re-enables logging
    * (it clears isDisabled). We exercise the re-enable branch by stubbing Date.now to advance past the threshold deterministically without waiting 60s.
    */
@@ -109,8 +109,8 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
         await mkdir(dir, { recursive: true });
         await writeFile(logPath, "", "utf-8");
 
-        // Advance Date.now() past the 60-second retry window. We override Date.now via mock.method (Node 22 does not yet support Date in mock.timers, so
-        // method-level stubbing is the cross-version idiom).
+        // Advance Date.now() past the 60-second retry window. We stub only Date.now via mock.method rather than enabling mock.timers with the Date API, because
+        // mock.timers would also take over setInterval and freeze the logger's live flush-timer interval running throughout this test.
         const baseNow = Date.now() + 70_000;
 
         mock.method(Date, "now", () => baseNow);

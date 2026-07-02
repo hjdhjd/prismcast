@@ -1,9 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * index.test.ts: Unit tests for the predefined channel catalog in src/channels/index.ts. The module's surface is two exports - PREDEFINED_TAGS (a vocabulary
- * constant) and CHANNELS / PREDEFINED_CHANNELS (the flat ChannelMap produced by Pacific auto-generation + flattening at module load). Tests are split into three
- * groups: the tag vocabulary, the catalog-wide structural invariants (every entry well-formed, canonical/variant key shapes, identity vs binding partition), and
- * the Pacific generation rules (auto-generation step 1, service merging step 2, manual-override precedence, East/West skip).
+ * constant) and CHANNELS / PREDEFINED_CHANNELS (the flat ChannelMap produced by Pacific auto-generation + flattening at module load). Tests are grouped by
+ * concern: the tag vocabulary, the two exports sharing one map, the catalog-wide structural invariants (every entry well-formed, canonical/variant key shapes,
+ * identity vs binding partition), the canonical resolution rules (site-wins, alphabetically-first, single-service, identity inheritance, tags copy,
+ * pacificStationId presence, variant binding-only), the Pacific generation rules (auto-generation step 1, service merging step 2, manual-override precedence,
+ * East/West skip), and a sampling of known catalog entries.
  */
 import { CHANNELS, PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "./index.ts";
 import type { CanonicalChannel, Channel, VariantChannel } from "../types/index.ts";
@@ -248,8 +250,8 @@ describe("canonical resolution rules", () => {
 
   test("canonical tags array is a copy, not a shared reference with the source ChannelDefinition", () => {
 
-    // buildCanonicalEntry uses def.tags.slice(). Two canonicals built from the same source array would share the reference if .slice() were dropped. We mutate
-    // the canonical's tags array and confirm a sibling canonical's tags are unaffected as a regression guard against shared-reference bugs.
+    // buildCanonicalEntry uses def.tags.slice(), so the canonical's tags array is a fresh copy of the source definition's rather than an alias. We exercise
+    // ae.tags directly by pushing a test marker and popping it back off.
     const ae = CHANNELS["ae"] as CanonicalChannel | undefined;
 
     assert.ok(ae, "ae canonical must exist");
@@ -257,9 +259,8 @@ describe("canonical resolution rules", () => {
 
     const originalLength = ae.tags.length;
 
-    // Mutating the test fixture is fine because the assertion below is only that the catalog re-read returns the same array we already hold (identity), not
-    // that other channels were touched. The point is that ae.tags is its own array, not aliased to BASE_CHANNEL_DEFINITIONS.ae.tags. We restore the array to
-    // avoid affecting other tests.
+    // Mutating the fixture is fine because the assertions below only observe ae.tags' own length: the push grows it by one and the pop restores the original
+    // length. The round-trip leaves ae.tags exactly as we found it, so later tests are unaffected.
     ae.tags.push("__test-marker");
     assert.equal(ae.tags.length, originalLength + 1);
     ae.tags.pop();
@@ -393,8 +394,9 @@ describe("Pacific auto-generation: Step 2 (merge East services into Pacific)", (
 
   test("Step 2 skips services with East/West-specific channelSelectors", () => {
 
-    // cartoon's hulu service has channelSelector "Cartoon Network (East)". The merger must skip this service when filling cartoonp because the West selector is
-    // service-specific. cartoonp manually declares hulu with selector "Cartoon Network (West)" - that manual entry must remain, untouched.
+    // cartoonp manually declares hulu with selector "Cartoon Network (West)"; East cartoon's hulu carries the timezone-specific selector "Cartoon Network (East)".
+    // The already-declared rule skips hulu first because cartoonp already declares it, so the East selector is never copied - and the East/West skip would filter
+    // that timezone-specific selector as a backstop even without the manual entry. The manual West entry remains untouched.
     const cartoonpHulu = CHANNELS["cartoonp-hulu"] as VariantChannel | undefined;
 
     assert.ok(cartoonpHulu, "cartoonp-hulu manual variant must exist");

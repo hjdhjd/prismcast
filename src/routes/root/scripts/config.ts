@@ -6,6 +6,11 @@ import { ACTIONS } from "../../clientActions.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../../config/presets.ts";
 import { isRunningAsService } from "../../../utils/index.ts";
 
+/**
+ * Generates the configuration subtab script block containing the form handling, preset auto-fill, and import/export client-side logic. Functions are exposed on
+ * window so inline event handlers and other tab scripts can invoke them.
+ * @returns HTML script block with configuration subtab functions.
+ */
 export function generateConfigSubtabScript(): string {
 
   // Build preset data for auto-filling bitrate and frame rate when preset changes. Viewport is derived server-side and not included here.

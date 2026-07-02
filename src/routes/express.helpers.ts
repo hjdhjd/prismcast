@@ -191,9 +191,9 @@ export function makeReqRes(input: MakeReqResInput = {}): MakeReqResResult {
   const setHeader = mock.fn((): unknown => undefined);
   const write = mock.fn((): boolean => true);
 
-  // status() and sendStatus() return res so handlers can chain res.status(N).json({...}) and res.sendStatus(N). The mock.fn body returns the synthesized res
-  // once it is initialized below; we declare the spy fns before res so the closures can reference res by name, and the cast through unknown is safe because the
-  // call shapes match Response's status() / sendStatus() signatures.
+  // status() returns res so handlers can chain res.status(N).json({...}); the remaining spies return undefined, including sendStatus, which callers invoke as a
+  // terminal res.sendStatus(N) that needs no return value. We declare status after res so its body can close over res by name, and the direct "as Response" cast on
+  // res is safe because the spy call shapes match Response's method signatures.
   const res = { headersSent: false } as Response;
   const status = mock.fn((): Response => res);
 

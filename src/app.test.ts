@@ -81,7 +81,8 @@ describe("releaseInstanceSlot", () => {
       const otherPid = process.pid === 99999 ? 99998 : 99999;
 
       // The bootId here does not matter for the test - whether the state classifies as held-live, stale-different-boot, or stale-dead-pid, the structural
-      // ownership check (pid match) is the gate that protects the file. Using process.pid + 1 ensures we are definitely not the holder.
+      // ownership check (pid match) is the gate that protects the file. Using a fixed sentinel PID (99999, or 99998 when this process happens to be 99999)
+      // guarantees a PID that is not this process, so we are definitely not the holder.
       writeFileSync(pidPath, serializeRecord({ bootId: "any-boot", pid: otherPid, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }), "utf-8");
 
       assert.equal(existsSync(pidPath), true, "sentinel record exists before the call");

@@ -67,8 +67,8 @@ describe("FileStore.mutate - validator severity routing", () => {
 
   test("warning-severity issues are emitted at warn level (not error)", async () => {
 
-    /* The validator's contract: returned issues are routed by severity. A warning emits at LOG.warn; an error emits at LOG.error. The previous validator test
-     * confirmed the validator IS called and receives prev/next, but used a [] return - neither severity branch fired. We pin the warning route here.
+    /* The validator's contract: returned issues are routed by severity. A warning emits at LOG.warn; an error emits at LOG.error. This test pins the warning route -
+     * a warning-severity issue must surface through LOG.warn and never through LOG.error.
      */
     const { logger, lines } = capturingLog();
 

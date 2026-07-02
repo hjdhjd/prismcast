@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * identity-binding-routing.test.ts: Integration coverage for the channel-edit per-field routing introduced in dd227dd. Identity fields (name, channelNumber,
+ * identity-binding-routing.test.ts: Integration coverage for the channel-edit per-field routing. Identity fields (name, channelNumber,
  * stationId, logoUrl, tvgShift, guideTitle, tags, hdhrEnabled) live on the canonical stored entry; binding fields (url, channelSelector, channelSelection)
  * live on the variant entry when a non-canonical service is resolved. The CRUD endpoint splits a submitted form delta into identity and binding halves and
  * writes each half to the correct entry in a single atomic mutateChannels.

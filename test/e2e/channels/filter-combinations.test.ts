@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * filter-combinations.test.ts: Integration coverage for the channel-table panel under combinations of service filter, sort, and column-visibility settings.
- * Each individual mechanism is unit-tested or pinned by a Phase 1/2 suite, but their COMBINATION is not - and combinations are where regressions hide. A
+ * Each individual mechanism is covered on its own, but their COMBINATION is not - and combinations are where regressions hide. A
  * mutation that "preserved sort" while quietly resetting visibleColumns, or "applied service filter" while crashing on an empty visibleColumns array, would
  * not surface in any single-dimension test.
  *
@@ -13,9 +13,9 @@
  * Each test seeds a non-default value on each axis it cares about (via mutateEnabledServices / mutateChannelDisplayPrefs), renders the panel, and asserts
  * structural reflection of the dimension. The "preservation" tests mutate one axis after another and assert the previously-set axis is unchanged at render time.
  *
- * Channels DVR fixture: abcnews has variants {cox, directv, hulu, sling, xfinity, yttv} and no `site`/`direct` tag, so the service filter is load-bearing for it
- * (Suite 26's canonical fixture). amcthrillers has only {sling, yttv} so it falls out of getVisibleChannels under enabledServices=["hulu"]. abc has a `direct`
- * tag (always enabled) so it survives any narrow service filter. The fixture is a real predefined channel set; no user channels are seeded.
+ * Channels DVR fixture: abcnews has variants {cox, directv, hulu, sling, xfinity, yttv} and no `site`/`direct` tag, so the service filter is load-bearing for it -
+ * the canonical fixture for these filter-scoping tests. amcthrillers has only {sling, yttv} so it falls out of getVisibleChannels under enabledServices=["hulu"].
+ * abc has a `direct` tag (always enabled) so it survives any narrow service filter. The fixture is a real predefined channel set; no user channels are seeded.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -153,7 +153,7 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
 
   test("hiding all optional columns does not crash the renderer; the table renders with every hide-col-* class", async () => {
 
-    /* Edge case from the roadmap: visibleColumns = empty array means EVERY optional column is hidden. The renderer must produce a structurally valid table -
+    /* Edge case: visibleColumns = empty array means EVERY optional column is hidden. The renderer must produce a structurally valid table -
      * the hide classes are applied uniformly, the table element is still emitted, and the panel render returns successfully. A regression that assumed
      * visibleColumns had at least one entry (NPE on a forEach over a derived collection, or an invariant about column counts) would surface here.
      *

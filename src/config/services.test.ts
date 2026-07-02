@@ -52,7 +52,8 @@ describe("getCanonicalKey", () => {
 
   test("strips :predefined suffix to return the base key", () => {
 
-    // The function checks the registry first; for an unknown :predefined key it falls back to slicing the suffix.
+    // The function strips the :predefined suffix first, then looks the base key up in the service-group registry, returning the group's canonical key, or the
+    // base key itself when no group is found.
     assert.equal(getCanonicalKey("nbc:predefined"), "nbc");
   });
 
@@ -233,14 +234,15 @@ describe("resolvePredefinedVariant", () => {
 
 describe("findPredefinedByDomain", () => {
 
-  /* The reverse index is built by buildServiceGroups; route-handler tests transitively populate it via initializePersistence. We test the throw-and-fallback
-   * branch (URL parse failure -> empty array) directly since that path doesn't depend on index content.
+  /* The reverse index is built by buildServiceGroups; route-handler tests transitively populate it via initializePersistence. We test the map-miss fallback
+   * (an unparseable or unknown domain yielding an empty array) directly since that path doesn't depend on index content.
    */
 
   test("returns an empty array when the URL cannot be parsed (extractDomain throws)", () => {
 
-    /* extractDomain calls new URL(); a structurally-broken URL throws and the catch falls through to []. The fallback prevents the inline-hint feature from
-     * crashing the form on malformed input.
+    /* extractDomain returns the unparseable string unchanged when new URL() fails, so the reverse-index lookup misses and the ?? [] fallback yields the empty
+     * array. The outer try/catch here is defensive and unreachable given extractDomain's own internal catch. This keeps the inline-hint feature from crashing
+     * the form on malformed input.
      */
     const result = findPredefinedByDomain("\x00\x01\x02 not a url");
 
@@ -249,8 +251,8 @@ describe("findPredefinedByDomain", () => {
 
   test("returns an empty array for a domain not present in the index", () => {
 
-    /* Even with a parseable URL, an unknown domain yields []. This is the not-found branch (different from the parse-failure branch above) - both produce
-     * empty arrays but via different code paths.
+    /* Even with a parseable URL, an unknown domain yields []. Both this case and the unparseable-input case above reach the empty array through the same
+     * map-miss path: the reverse-index lookup misses and the ?? [] fallback returns the empty array.
      */
     const result = findPredefinedByDomain("https://definitely-not-a-real-tv-domain-x9z2.example/");
 

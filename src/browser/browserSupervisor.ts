@@ -175,7 +175,7 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
         await ports.close(browser);
       } catch {
 
-        // Best effort: a failed orphan close is the adapter's close to log; the supervisor still reports supersession.
+        // Best effort: a failed orphan close is the adapter's concern to log; the supervisor still reports supersession.
       }
 
       throw new BrowserSupersededError();

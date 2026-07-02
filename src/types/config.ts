@@ -5,13 +5,14 @@
 import type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";
 
 /* These interfaces define the structure of the application configuration. The Config interface is the root configuration object, with nested interfaces for each
- * functional area. All configuration values are loaded from environment variables with sensible defaults. The configuration is validated at startup to catch
- * misconfigurations before the server begins accepting connections.
+ * functional area. Most values can be supplied through a layered priority (CLI flags override environment variables, which override the config file, which overrides
+ * builtin defaults), while a few are managed internally - the Channels DVR host is auto-discovered, the HDHomeRun device ID is auto-generated, and the debug filter
+ * is owned by the /debug UI. The configuration is validated at startup to catch misconfigurations before the server begins accepting connections.
  */
 
 /**
- * Browser-related configuration controlling Chrome launch behavior. Viewport dimensions are derived from the quality preset via getViewport() and are not stored in
- * this configuration object.
+ * Browser-related configuration controlling Chrome launch behavior. Viewport dimensions are derived from the quality preset via getPresetViewport() and are not
+ * stored in this configuration object.
  */
 export interface BrowserConfig {
 
@@ -19,9 +20,10 @@ export interface BrowserConfig {
   // useful in containerized environments or when multiple browser versions are installed. Environment variable: CHROME_BIN.
   executablePath: Nullable<string>;
 
-  // Time in milliseconds to wait after browser launch for the puppeteer-stream extension to initialize. The extension injects recording APIs into the browser
-  // context, and attempting to capture streams before initialization completes causes silent failures. Increase this value if streams start with blank frames.
-  // Environment variable: BROWSER_INIT_TIMEOUT. Default: 1000ms.
+  // Maximum time in milliseconds to wait after browser launch for the puppeteer-stream extension to initialize. The extension injects recording APIs into the
+  // browser context, and attempting to capture streams before initialization completes causes silent failures. The system polls for readiness and proceeds early
+  // once the extension is ready, so this is a ceiling rather than a fixed delay. Increase this value if streams start with blank frames. Environment variable:
+  // BROWSER_INIT_TIMEOUT. Default: 3000ms.
   initTimeout: number;
 }
 
@@ -55,11 +57,11 @@ export interface PlaybackConfig {
 
   // Time in milliseconds to allow buffering before declaring a stall. Live streams occasionally buffer due to network conditions, and triggering recovery too
   // quickly causes unnecessary disruption. This grace period prevents false positives while still catching genuine stalls. Environment variable:
-  // BUFFERING_GRACE_PERIOD. Default: 5000ms (5 seconds).
+  // BUFFERING_GRACE_PERIOD. Default: 10000ms (10 seconds).
   bufferingGracePeriod: number;
 
   // Time in milliseconds to wait after clicking a channel selector before checking for video. Some multi-channel players have animated transitions or need time to
-  // load the new channel's stream. Environment variable: CHANNEL_SELECTOR_DELAY. Default: 3000ms.
+  // load the new channel's stream. Environment variable: CHANNEL_SELECTOR_DELAY. Default: 5000ms.
   channelSelectorDelay: number;
 
   // Time in milliseconds to wait after a channel switch completes for the stream to stabilize. This delay allows the player to finish any post-switch
@@ -124,7 +126,7 @@ export interface RecoveryConfig {
   circuitBreakerWindow: number;
 
   // Maximum delay in milliseconds between retry attempts. Exponential backoff doubles the delay after each failure, but this cap prevents excessively long waits.
-  // The actual delay is: min(1000 * 2^attempt, maxBackoffDelay) + random(0, backoffJitter). Environment variable: MAX_BACKOFF_DELAY. Default: 3000ms.
+  // The actual delay is: min(1000 * 2^(attempt-1), maxBackoffDelay) + random(0, backoffJitter). Environment variable: MAX_BACKOFF_DELAY. Default: 3000ms.
   maxBackoffDelay: number;
 
   // Number of failed browser relaunches within relaunchFailureWindow that trips the browser relaunch governor into a cooldown. Below this, the first relaunch
@@ -273,7 +275,7 @@ export interface LoggingConfig {
   httpLogLevel: "all" | "errors" | "filtered" | "none";
 
   // Maximum size of the log file in bytes. When the file exceeds this size, it is trimmed to half the size keeping only complete lines. The most recent logs are
-  // preserved. Environment variable: LOG_MAX_SIZE. Default: 1048576 (1MB). Valid range: 10240-104857600.
+  // preserved. Environment variable: LOG_MAX_SIZE. Default: 1048576 (1MB). Valid range: 524288-104857600.
   maxSize: number;
 }
 
@@ -337,16 +339,16 @@ export interface StreamingConfig {
   navigationTimeout: number;
 
   // Video quality preset that determines capture resolution. The preset controls the browser viewport dimensions used for video capture. Valid values: "480p",
-  // "720p", "1080p", "1080p-high", "4k". Bitrate and frame rate can be customized independently. Environment variable: QUALITY_PRESET. Default: "720p".
+  // "720p", "720p-high", "1080p", "1080p-high", "4k". Bitrate and frame rate can be customized independently. Environment variable: QUALITY_PRESET. Default: "720p-high".
   qualityPreset: string;
 
   // Video bitrate in bits per second for browser capture. This controls the quality of the stream captured by puppeteer-stream. For HLS output, FFmpeg copies
   // the video stream directly without re-encoding, preserving this quality. 8Mbps is suitable for 720p content; 15-20Mbps is recommended for 1080p. The actual
-  // bitrate may vary based on content complexity. Environment variable: VIDEO_BITRATE. Default: 8000000. Valid range: 100000-50000000.
+  // bitrate may vary based on content complexity. Environment variable: VIDEO_BITRATE. Default: 12000000. Valid range: 100000-50000000.
   videoBitsPerSecond: number;
 
   // Timeout in milliseconds for waiting for a video element to become ready. After navigating to a page, we wait for a video element with sufficient readyState.
-  // Increase for sites with slow-loading video players or heavy preroll content. Environment variable: VIDEO_TIMEOUT. Default: 10000ms. Valid range:
+  // Increase for sites with slow-loading video players or heavy preroll content. Environment variable: VIDEO_TIMEOUT. Default: 11000ms. Valid range:
   // 1000-600000.
   videoTimeout: number;
 }

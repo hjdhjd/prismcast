@@ -180,7 +180,8 @@ describe("generateConfigSubtabScript", () => {
 
   test("calls initSubtab at the bottom of the IIFE for subtab persistence", () => {
 
-    // The IIFE ends with initSubtab to wire the hash > localStorage > default subtab logic. The presence of this call indicates the lifecycle is set up.
+    // initSubtab is called near the end of the setup phase, immediately before the action-registration block, to wire the hash > localStorage > default subtab logic.
+    // The presence of this call indicates the lifecycle is set up.
     const script = generateConfigSubtabScript();
 
     assert.match(script, /initSubtab\(\{/);

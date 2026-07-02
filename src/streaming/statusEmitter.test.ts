@@ -419,9 +419,9 @@ describe("getStatusSnapshot", () => {
 
   test("does not include health state in its snapshot - that responsibility moved to the route layer", () => {
 
-    // statusEmitter owns the stream + system snapshot only. The channel table catch-up patch (the former `health` field) is composed in routes/streams.ts by
-    // spreading getStatusSnapshot() together with buildSnapshotChannelPatch(), so the streaming layer no longer needs to know about health, channels, or
-    // rendering. Asserting the field is absent here documents the layering boundary.
+    // statusEmitter owns only the stream + system snapshot. The channel-table catch-up patch is composed in routes/streams.ts by spreading getStatusSnapshot()
+    // together with buildSnapshotChannelPatch(), so the streaming layer stays free of health, channel, and rendering concerns. Asserting that health and
+    // channelPatch are absent here documents the layering boundary.
     const snapshot = getStatusSnapshot();
 
     assert.ok(!("health" in snapshot), "statusEmitter snapshot must not carry a health field");

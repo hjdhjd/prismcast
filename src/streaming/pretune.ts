@@ -15,8 +15,8 @@ import { getStream } from "./registry.ts";
  * stream, it's already live with buffered segments - achieving near-instant tuning instead of 3-7 second cold starts.
  *
  * The polling loop runs every 60 seconds, checking for jobs starting within a 5-minute scheduling horizon. For each eligible job (PrismCast channel as the DVR's
- * preferred source), a precise setTimeout is scheduled for 30 seconds before the recording start time. When the timer fires, the module validates the channel,
- * checks for conflicts, and calls initializeStream() with the preTuned flag. A safety timeout tears down unclaimed streams 90 seconds after the scheduled start.
+ * preferred source), a precise setTimeout is scheduled for 30 seconds before the recording start time. When the timer fires, the module checks for conflicts,
+ * validates the channel, and calls initializeStream() with the preTuned flag. A safety timeout tears down unclaimed streams 90 seconds after the scheduled start.
  *
  * Key design decisions:
  * - Only pretune when a PrismCast guide number is the FIRST entry in the job's channels array (DVR's preferred source).

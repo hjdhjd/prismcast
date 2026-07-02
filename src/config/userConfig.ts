@@ -1678,8 +1678,8 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
  * The registry pairs each preserved path with a predicate that decides whether the value at that path is meaningful enough to survive. The predicates are
  * named for their intent (isNonEmptyArray, differsFromSortedArrayDefault, ...) so the registry reads as a declarative table; filterDefaults() consumes it via
  * a single uniform loop. Adding a new preserved field is one line in PRESERVED_FIELDS, not a new inline block in the function body - and Suite 17 in
- * test/e2e/routes/settings-preservation.test.ts iterates the registry directly so a new entry is automatically covered by the parameterized preservation
- * sweep without a sibling test edit.
+ * test/e2e/routes/settings-preservation.test.ts iterates the registry directly so a new entry is covered by the parameterized preservation sweep once its
+ * seed value is added to the SEED_VALUES table; the only test edit needed is that seed, never a new test case.
  *
  * Read-side counterpart: HYDRATED_FIELDS (further below) is the symmetric registry consumed by mergeConfiguration() to bring persisted values back into
  * runtime CONFIG on boot. The two sets together with PERSISTENCE_ONLY_FIELDS partition every preserved path into "hydrates to runtime" or "persistence-only
@@ -1695,8 +1695,8 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
  */
 type PreservePredicate = (value: unknown, defaultValue: unknown) => boolean;
 
-// Predicate: any array, including empty. Used by HYDRATED_FIELDS to mirror the historical mergeConfiguration() inline-block behavior of unconditionally
-// hydrating any array-typed value present on disk; downstream validateConfiguration() normalizes empty-array edge cases (e.g., captureCodecs forces h264).
+// Predicate: any array, including empty. Used by HYDRATED_FIELDS to unconditionally hydrate any array-typed value present on disk; downstream
+// validateConfiguration() normalizes empty-array edge cases (e.g., captureCodecs forces h264).
 const isArrayValue: PreservePredicate = (value: unknown): boolean => Array.isArray(value);
 
 // Predicate: any non-empty array. Used for fields where the user's empty-array state coincides with the default-empty-array state (disabledPredefined,

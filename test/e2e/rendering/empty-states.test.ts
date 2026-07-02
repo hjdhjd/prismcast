@@ -9,11 +9,11 @@
  * sequence. A renderer that crashes only when data flows through the full initialization pipeline (e.g., when getProfiles() returns the bare default profile
  * rather than a populated array) shows up here, not in unit tests of the renderer itself.
  *
- * Investigation finding (Suite 39): no production gap surfaced during this suite's construction. Each surface either renders an explicit empty-state message
- * (Custom Profiles panel: "No custom services installed"), uses an always-non-empty source (the tag vocabulary always carries the predefined tags), or returns
- * an envelope that explicitly accommodates zero items (GET /streams: { count: 0, limit, streams: [] }). Test 5 (all columns hidden) and test 6 (every channel
- * filtered out) are intentionally redundant with adjacent suites' coverage to provide an empty-state-specific assertion locus - if a future regression made
- * those scenarios crash, the failure surfaces here even if the adjacent suite's assertion happens to still pass.
+ * No renderer assumes at least one row: each surface either renders an explicit empty-state message (Custom Profiles panel: "No custom services installed"),
+ * draws from an always-non-empty source (the tag vocabulary always carries the predefined tags), or returns an envelope that explicitly accommodates zero items
+ * (GET /streams: { count: 0, limit, streams: [] }). Test 5 (all columns hidden) and test 6 (every channel filtered out) are intentionally redundant with adjacent
+ * suites' coverage to provide an empty-state-specific assertion locus - if a future regression made those scenarios crash, the failure surfaces here even if the
+ * adjacent suite's assertion happens to still pass.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";

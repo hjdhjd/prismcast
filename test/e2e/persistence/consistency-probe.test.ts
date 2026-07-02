@@ -176,7 +176,8 @@ describe("consistency probe - dangling-domain-profile detection", () => {
 
     // Regression guard for the dual-table lookup: checkDomainProfiles resolves each domain's profile against builtin profiles AND the user-defined profile store
     // (getUserProfiles), so mapping a domain onto a profile the user created is a valid configuration the save-path validator accepts and the probe must not warn
-    // about. Before the fix, the probe consulted only builtins and raised a false "dangling-domain-profile" for this exact case.
+    // about. Consulting only the builtin table would surface this valid custom configuration as a false "dangling-domain-profile", which is exactly the outcome this
+    // guard asserts against.
     const { logger, lines } = capturingLog();
 
     activeLogger = logger;

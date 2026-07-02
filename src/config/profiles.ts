@@ -43,7 +43,8 @@ export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, 
  * 3. Merge the current profile's properties, overriding any inherited values
  * 4. Return the fully-resolved profile with all flags set
  *
- * Metadata properties (description, extends) are stripped during resolution - they exist only for documentation and inheritance specification.
+ * Metadata properties (category, description, extends, summary) are stripped during resolution - they exist only for UI categorization, documentation, inheritance
+ * specification, and UI display.
  *
  * @param profileName - The name of the profile to resolve.
  * @returns The merged site profile containing all behavior flags.
@@ -251,8 +252,9 @@ export function getProfileForChannel(channel: {
  */
 
 /**
- * Validates all profile configurations including inheritance chains, domain mappings, and channel references. Throws an error if any validation fails. This
- * function runs at startup before the server begins accepting connections.
+ * Validates all profile configurations including inheritance chains, domain mappings, and channel references. Builtin configuration errors throw and abort startup;
+ * user-defined profile and domain validation errors are surfaced as warnings so the server can still start and the user can fix them via the web UI. This function
+ * runs at startup before the server begins accepting connections.
  *
  * Validation checks:
  *
@@ -261,7 +263,8 @@ export function getProfileForChannel(channel: {
  * 3. Domain mapping validation - ensures all domain profile references exist
  * 4. Channel profile validation - ensures all channel profile references exist
  *
- * @throws If any profile configuration is invalid.
+ * @throws If any builtin profile, domain-mapping, or channel-reference configuration is invalid. User-defined profile and domain errors are logged as warnings
+ * rather than thrown.
  */
 export function validateProfiles(): void {
 

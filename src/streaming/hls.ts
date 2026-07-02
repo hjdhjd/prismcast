@@ -197,9 +197,9 @@ export function sendValidationError(validation: { body: Record<string, string> |
 
 /**
  * Pure predicate for the concurrent-stream capacity decision. Returns true when a new stream may be admitted given the current active count and the configured
- * limit. Extracted as a standalone function so the boundary arithmetic - the off-by-one that previously double-counted a stream against its own slot - is pinned
- * by a unit test without driving a browser. The count passed in must be the count BEFORE the new stream's pending entry is registered, so the new stream is
- * naturally excluded from its own capacity check; admitting the final slot (active === maxConcurrent - 1) returns true.
+ * limit. Extracted as a standalone function so the boundary arithmetic is pinned by a unit test without driving a browser. The count passed in must be the count
+ * BEFORE the new stream's pending entry is registered, so the new stream is naturally excluded from its own capacity check; admitting the final slot
+ * (active === maxConcurrent - 1) returns true.
  * @param activeCount - Number of streams currently registered, excluding the stream being admitted.
  * @param maxConcurrent - The configured concurrent-stream limit.
  * @returns True if a slot is available for the new stream.
@@ -744,9 +744,9 @@ function createTabReplacementHandler(
     const currentSessionStats = oldSegmenter?.getSessionStats();
     const currentTrackTimestamps = oldSegmenter?.getTrackTimestamps();
 
-    // Dispose the OLD capture pipeline. The CaptureSession destroys the capture stream first (which MUST happen before the old page is closed below, so
-    // chrome.tabCapture releases the capture and the new getStream() does not hang with "Cannot capture a tab with an active stream"), then kills the FFmpeg child
-    // and stops the segmenter. The new pipeline is constructed fresh further down.
+    // Dispose the OLD capture pipeline. The CaptureSession kills the FFmpeg child first (setting its shuttingDown flag before the capture stream's EOF can reach
+    // FFmpeg's stdin), then destroys the capture stream (which MUST happen before the old page is closed below, so chrome.tabCapture releases the capture and the
+    // new getStream() does not hang with "Cannot capture a tab with an active stream"), then stops the segmenter. The new pipeline is constructed fresh further down.
     if(stream.captureSession) {
 
       LOG.debug("recovery:tab", "Disposing old capture pipeline for tab replacement.");

@@ -89,7 +89,7 @@ export interface TabNetworkObserver extends Disposable {
   readonly [Symbol.dispose]: () => void;
 }
 
-// CDP Target events we listen to. Declared as discriminated unions of the structural payloads CDP delivers so the handlers can be typed without leaning on
+// CDP Target events we listen to. Declared as standalone interfaces modeling the structural payloads CDP delivers so the handlers can be typed without leaning on
 // puppeteer's internal Protocol types.
 interface TargetAttachedParams {
 

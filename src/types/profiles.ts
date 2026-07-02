@@ -16,8 +16,8 @@ import type { Nullable } from "./shared.ts";
  * - "directvGrid": Tune via webpack injection - captures __webpack_require__, extracts the Redux store from the React fiber tree, matches by channel name, and
  *   dispatches playConsumable. Falls back to logo aria-label click when the interceptor fails. Used by DirecTV Stream.
  * - "foxGrid": Find channel by station code in a non-virtualized guide grid, click the channel logo button via DOM .click(). Used by Fox.com.
- * - "guideGrid": Find channel by exact-matching image alt text, click nearest clickable ancestor. Optionally clicks a tab to reveal the list first. Used by Hulu
- *   Live TV.
+ * - "guideGrid": Find channel by data-testid in a virtualized guide grid via binary search, click the on-now program cell, then click the play button tile.
+ *   Optionally clicks a tab to reveal the list first. Used by Hulu Live TV.
  * - "hboGrid": Discover the HBO tab page URL from the homepage menu bar, read the live channel tile rail for a matching channel name, and navigate to the watch
  *   URL. Caches the tab URL across tunes with stale-cache fallback. Used by HBO Max.
  * - "none": No channel selection needed (single-channel sites). This is the default.

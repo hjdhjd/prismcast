@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * delay.test.ts: Unit tests for the timer primitives in delay.ts (cancellableTimeout, raceWithTimeout, delay). All three exports use real setTimeout. The tests
- * use small real-time delays (1-30ms) to stay well under the per-test budget while exercising the timer cleanup paths - mock.timers in Node 25 lacks the async
- * tick variant needed to drain Promise.race over setTimeout reliably.
+ * use small real-time delays (1-30ms) to stay well under the per-test budget while exercising the timer cleanup paths - node:test mock.timers exposes only
+ * synchronous ticks, which cannot drain Promise.race over setTimeout reliably.
  */
 import { cancellableTimeout, delay, raceWithTimeout } from "./delay.ts";
 import { describe, test } from "node:test";

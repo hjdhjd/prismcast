@@ -575,8 +575,8 @@ export function registerCrudRoutes(app: Express): void {
     });
   }));
 
-  // PATCH /config/channels/:key - Partial update from inline cell edits. Accepts any subset of { channelNumber, hdhrEnabled, stationId, tags }. Each field is typed:
-  // a typed value to set, null to clear.
+  // PATCH /config/channels/:key - Partial update from inline cell edits. Accepts exactly one of { channelNumber, hdhrEnabled, stationId, tags }, since the inline
+  // editors update one cell at a time. Each field is typed: a typed value to set, null to clear.
   app.patch("/config/channels/:key", route("save channel", async (req: Request, res: Response) => {
 
     const key = (req.params as { key?: string }).key?.trim();

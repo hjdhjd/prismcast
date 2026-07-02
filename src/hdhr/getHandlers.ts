@@ -101,8 +101,8 @@ export function resolveGet(name: string, ctx: GetContext): GetResult {
 }
 
 /**
- * Resolves a per-tuner Get key for a specific slot. Sub-keys fall into two families: static state (filter, lockkey, channelmap) returning constants, and
- * dynamic state (channel, status, target, streaminfo) reading from the addressed TunerState. Unknown sub-keys produce an error matching real HDHR behavior.
+ * Resolves a per-tuner Get key for a specific slot. Sub-keys fall into two families: static state (filter, lockkey, channelmap, target) returning constants, and
+ * dynamic state (channel, status, streaminfo) reading from the addressed TunerState. Unknown sub-keys produce an error matching real HDHR behavior.
  * @param slot - Zero-based tuner slot index.
  * @param subKey - The sub-key portion after the slot prefix.
  * @param ctx - The resolution context.

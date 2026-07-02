@@ -49,7 +49,7 @@ describe("waitForPlaylist", () => {
 
   test("returns false when the timeout fires before any playlist arrives", async () => {
 
-    // The fake clock's raceWithTimeout throws synchronously to simulate the timer winning. waitForReady's .catch maps the throw to false. Locks the contract
+    // The fake clock's raceWithTimeout rejects immediately to simulate the timer winning. waitForReady's .catch maps the rejection to false. Locks the contract
     // without depending on real-time delay budgets.
     const { clock } = makeFakeClock({
 

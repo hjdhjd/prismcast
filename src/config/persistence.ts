@@ -207,8 +207,9 @@ export interface FileStoreOptions<T> {
   // upgrading.
   setSchemaVersion?: (data: T, version: number) => void;
 
-  // Pre-write integrity validator. Receives the parsed pre-mutation state (deep-cloned snapshot) and the post-mutation, post-beforeWrite state. Returns issues
-  // for the framework to surface. Per-store contracts: each store knows its own identity fields, foreign-key-style references, and consistency rules.
+  // Pre-write integrity validator. Receives the parsed pre-mutation state (deep-cloned snapshot) and the post-mutation, pre-beforeWrite state (the raw mutated
+  // data before the beforeWrite serialization transform). Returns issues for the framework to surface. Per-store contracts: each store knows its own identity
+  // fields, foreign-key-style references, and consistency rules.
   validate?: (prev: T, next: T) => ValidationIssue[];
 }
 

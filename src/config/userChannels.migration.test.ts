@@ -4,8 +4,8 @@
  * end-to-end regression scenarios tying directly to user-reported bugs.
  *
  * The migration classifier is the defensive line that prevents the old stamp-and-strip data loss. Tests here lock in the contract: stamp shape-compatible legacy
- * variants (safe to normalize as variants), leave user standalones alone (would lose per-variant identity if misclassified). Regression tests verify the fix for
- * jsfullam's case and the canonical-override propagation surfaced during refactor review.
+ * variants (safe to normalize as variants), leave user standalones alone (would lose per-variant identity if misclassified). Regression tests lock in the
+ * end-to-end invariants: a hyphenated user standalone survives the migration untouched, and a canonical identity edit propagates to every resolved variant.
  */
 import type { CanonicalChannel, StoredChannelMap } from "../types/index.ts";
 import { describe, test } from "node:test";
@@ -224,8 +224,9 @@ describe("collectLegacyVariantStamps: post-isDeepStrictEqual array semantics", (
 
   test("stamps when stored tags differ only in authoring order from the canonical's tags", () => {
 
-    /* If the canonical declares tags=["A", "B"] and the legacy variant stored tags=["B", "A"], the sortTags wrapper canonicalizes both to ["A", "B"] before the
-     * deep-equal check. The classifier should treat this as shape-compatible and stamp.
+    /* The stored variant supplies tags equal to the canonical's (abc's ["Local"]). sortTags wraps both sides in case-insensitive canonical order before the
+     * deep-equal check, so tags matching the canonical are shape-compatible and the classifier stamps. Order-independence across a reordered multi-element
+     * array is exercised separately in userChannels.normalization.test.ts.
      */
     const channels: StoredChannelMap = {
 

@@ -63,9 +63,9 @@ describe("createMorganStream", () => {
 
   test("routes to the file logger with the trimmed payload when console logging is disabled", async () => {
 
-    // The file-logging branch must reach writeLogEntry, which appends to the active log file. The previous test only verified the negative ("did not call
-    // console.log"), which passes even if the writeLogEntry call is silently dropped because the file logger is uninitialized. Here we initialize the file
-    // logger against a temp dir, drive the morgan stream, flush, and inspect the on-disk content - that asserts the round-trip from morgan stream to file.
+    // The file-logging branch must reach writeLogEntry, which appends to the active log file. A negative-only assertion ("did not call console.log") would
+    // pass even if the writeLogEntry call were silently dropped because the file logger is uninitialized. Here we initialize the file logger against a temp
+    // dir, drive the morgan stream, flush, and inspect the on-disk content - that asserts the round-trip from morgan stream to file.
     const { flushLogBuffer, initializeFileLogger, shutdownFileLogger } = await import("./fileLogger.ts");
     const { mkdtemp, readFile, rm } = await import("node:fs/promises");
     const { join } = await import("node:path");

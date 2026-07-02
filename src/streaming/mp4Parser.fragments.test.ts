@@ -167,8 +167,8 @@ describe("detectMoofKeyframe", () => {
 
   test("a non-keyframe traf overrides a keyframe traf (multi-track precedence)", () => {
 
-    // Audio tracks are always sync (sample_depends_on 0/1), so the only source of sample_depends_on === 2 is video. If any traf reports non-keyframe explicitly,
-    // we treat the moof as non-keyframe regardless of other trafs being marked sync. Locks the multi-track precedence rule.
+    // Audio tracks are always sync (sample_depends_on === 2, or 0 for unknown), so the only source of sample_depends_on === 1 is video. If any traf reports
+    // non-keyframe explicitly, we treat the moof as non-keyframe regardless of other trafs being marked sync. Locks the multi-track precedence rule.
     const audioTraf = makeTraf(makeTfhd({ trackId: 1 }), makeTrun({ firstSampleFlags: 2 << 24, sampleCount: 1 }));
     const videoTraf = makeTraf(makeTfhd({ trackId: 2 }), makeTrun({ firstSampleFlags: 1 << 24, sampleCount: 1 }));
     const moof = makeMoof(audioTraf, videoTraf);
@@ -258,8 +258,3 @@ describe("offsetMoofTimestamps", () => {
     assert.equal(result.get(2)?.duration, 600n, "video: 3 samples * 200 = 600");
   });
 });
-
-/* makeTkhd constructs a minimal track header box with track_ID at the version-correct offset. The parser needs the payload large enough that childSize >= 24
- * for v0 / >= 32 for v1; we allocate exactly that minimum so the test fixture pins the offset arithmetic the parser relies on. v0 layout (post-header):
- * version+flags(4) creation_time(4) modification_time(4) track_ID(4); v1 layout: version+flags(4) creation_time(8) modification_time(8) track_ID(4).
- */

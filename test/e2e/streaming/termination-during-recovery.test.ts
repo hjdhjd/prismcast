@@ -17,7 +17,7 @@
  *      snapshots the summary stats while live (segmenter via the capture session, nativeProxy.getStats(), monitor.getMetrics()) -> disposeStreamResources(entry)
  *      [abort + unregister AbortController -> monitor.dispose() -> clearTimeout(prerollTimer) -> nativeProxy.stop() | captureSession.dispose() -> close page (if not
  *      graceful shutdown)] -> index cleanup [remove channel mapping -> emit terminated + remove emitter listeners -> unregisterStream -> clearClients ->
- *      clearShowName -> emitStreamRemoved -> delete terminationInitiated] -> log. Every step is synchronous from the caller's perspective.
+ *      clearPretuneSafetyTimer -> clearShowName -> emitStreamRemoved -> delete terminationInitiated] -> log. Every step is synchronous from the caller's perspective.
  *
  *   3. Cleanup gap analysis. Reviewed each branch above for "what survives if termination interrupts an in-flight recovery":
  *        - prerollTimer: cleared via clearTimeout (no orphan timer).

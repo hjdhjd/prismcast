@@ -18,7 +18,7 @@ import { sendSuccess } from "../config/http/envelope.ts";
  * 1. Overview - Introduction to PrismCast and Quick Start instructions
  * 2. Channels - Channel management (enable/disable, edit, service selection) plus a Custom Profiles subtab
  * 3. Logs - Real-time log viewer for troubleshooting
- * 4. Configuration - Channel management and settings (with subtabs)
+ * 4. Configuration - Server settings and advanced tuning options, with a Backup subtab (subtabs)
  * 5. API Reference - Documentation for all HTTP endpoints
  * 6. Help - Updating, platform notes, troubleshooting, and known limitations
  */
@@ -97,7 +97,7 @@ function generateChangelogModal(): string {
 }
 
 /**
- * Configures the root endpoint that serves as a landing page with a tabbed interface containing usage documentation, API reference, playlist, and log viewer.
+ * Configures the root endpoint that serves as a landing page with a tabbed interface containing usage documentation, channel management, API reference, and a log viewer.
  * @param app - The Express application.
  */
 export function setupRootEndpoint(app: Express): void {
@@ -212,12 +212,12 @@ export function setupRootEndpoint(app: Express): void {
 
     // Build the body content. The shared utilities script is emitted first so the action dispatcher (and other window.* primitives like showToast,
     // extractErrorMessage, dropdowns, safe storage, etc.) is installed before any inline script in the body content parses - this is what lets the
-    // log-viewer's inline registerAction calls in content.ts work correctly. All other tab-specific scripts go in the trailing scripts block as before.
+    // log-viewer's inline registerAction calls in content.ts work correctly. All other tab-specific scripts are emitted in the trailing scripts block.
     const changelogModal = generateChangelogModal();
     const bodyContent = [ generateSharedUtilitiesScript(), header, tabBar, tabPanels, restartModal, changelogModal,
       "<div id=\"toast-container\" class=\"toast-container\"></div>" ].join("\n");
 
-    // Generate scripts: tab switching, config subtab handling, then status SSE for header updates.
+    // Generate scripts: tab switching, channels and config subtab handling, then status SSE for header updates.
     const scripts = [
       generateTabScript({ localStorageKey: "prismcast-home-tab" }),
       generateChannelsSubtabScript(),

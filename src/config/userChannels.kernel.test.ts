@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userChannels.kernel.test.ts: Direct unit tests for the recently-extracted overlay kernel and the field-shape gates that feed it.
+ * userChannels.kernel.test.ts: Direct unit tests for the overlay kernel and the field-shape gates that feed it.
  *
  * Coverage scope:
  *
@@ -16,7 +16,7 @@
  *   - filterToDeltaSurface: the storage-write-time shape enforcer. Called from normalizeChannelDeltas on every save, so the strip-vs-keep decision is the gate
  *     that prevents legacy orphan fields (non-delta-eligible identity, identity-on-variants, DOM hooks) from persisting forward.
  *
- * The recently-extracted applyOverlayKernel consolidated overlayDelta and overlayVariantBinding. The public callers' tests confirm consumer-level invariants;
+ * applyOverlayKernel is the kernel shared by overlayDelta and overlayVariantBinding. The public callers' tests confirm consumer-level invariants;
  * these tests pin the kernel's contract directly so a future refactor that breaks the abstraction (e.g., reintroduces a divergent branch in one of the wrappers)
  * fails locally rather than only via downstream callers.
  */
@@ -151,7 +151,7 @@ describe("getAllowedFieldsForShape", () => {
 
   /* The classifier-driven branches:
    *
-   *   classification.kind === "variant"            -> CHANNEL_BINDING_KEYS (delta-eligible) + canonicalKey discriminator
+   *   classification.kind === "variant"            -> DELTA_ELIGIBLE_BINDING_KEYS + canonicalKey discriminator
    *   classification.kind === "canonical"          -> full delta surface (identity ∪ binding, both delta-eligible)
    *   classification.kind === "standalone"         -> full delta surface (treated as canonical-shaped, since standalones carry identity + binding)
    */

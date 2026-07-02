@@ -261,7 +261,7 @@ async function buildApp(): Promise<Express> {
 
         skip: (req, res): boolean => {
 
-          // Log all non-error responses.
+          // Skip all non-error responses. In errors-only mode we log only 4xx and 5xx statuses, so any successful response is skipped here.
           if(res.statusCode < 400) {
 
             return true;
@@ -624,9 +624,9 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   killStaleChrome();
 
-  // Warm up the browser. getCurrentBrowser() launches Chrome through the capture-readiness supervisor, whose launch gate now runs the real capture probe (the
-  // capability tier) at every launch - including this one. So a successful warm-up means capture has already been verified; there is no separate verification step.
-  // A stale-capture mutex exits the process from inside the probe, and any other gate failure rejects here and aborts startup, just as the old explicit probe did.
+  // Warm up the browser. getCurrentBrowser() launches Chrome through the capture-readiness supervisor, whose launch gate runs the real capture probe (the
+  // capability tier) at every launch - including this one. So a successful warm-up already means capture is verified. A stale-capture mutex exits the process from
+  // inside the probe, and any other gate failure rejects here and aborts startup.
   try {
 
     await getCurrentBrowser();

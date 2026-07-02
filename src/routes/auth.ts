@@ -12,12 +12,12 @@ import { getDomainConfig } from "../config/sites.ts";
  * satellite, or streaming service) before content can be accessed.
  *
  * The login flow works as follows:
- * 1. User clicks "Login" on a channel in the web UI
- * 2. POST /auth/login opens a browser tab with the channel's URL
- * 3. The browser window is un-minimized so the user can interact with it
- * 4. User completes TV provider authentication
- * 5. User clicks "Done" in the web UI (POST /auth/done) or closes the browser tab
- * 6. The browser tab is closed and the window is re-minimized
+ * 1. User clicks "Login" on a channel in the web UI.
+ * 2. POST /auth/login opens a browser tab with the channel's URL.
+ * 3. The browser window is un-minimized so the user can interact with it.
+ * 4. User completes TV provider authentication.
+ * 5. User clicks "Done" in the web UI (POST /auth/done) or closes the browser tab.
+ * 6. The browser tab is closed and the window is re-minimized.
  *
  * During login mode, new stream requests are blocked to prevent interference.
  */
@@ -90,7 +90,6 @@ export function setupAuthEndpoint(app: Express): void {
       url = domainConfig.loginUrl;
     }
 
-    // Start login mode.
     const result = await startLoginMode(url);
 
     if(result.success) {

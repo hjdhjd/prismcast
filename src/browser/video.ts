@@ -1572,7 +1572,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
  * @param page - The Puppeteer page object.
  * @param url - The URL to navigate to.
  * @param profile - The site profile containing all behavior flags.
- * @returns The video context (frame or page) for subsequent monitoring.
+ * @returns The video context (frame or page) for subsequent monitoring, and a directTune flag when the channel was tuned via API interception.
  */
 export async function tuneToChannel(page: Page, url: string, profile: ResolvedSiteProfile): Promise<TuneResult> {
 

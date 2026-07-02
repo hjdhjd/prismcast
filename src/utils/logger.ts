@@ -173,7 +173,7 @@ function emitFormatted(level: LogEntry["level"], color: LogColor, formatted: str
     logMessage = formatted;
   }
 
-  // Emit to SSE subscribers for real-time streaming.
+  // SSE emission.
   emitToSubscribers(level, logMessage, categoryTag);
 
   if(useConsoleLogging) {

@@ -281,9 +281,8 @@ describe("evaluateWithAbort with stream context", () => {
 
       const page = makeFakePage(() => "ok");
 
-      // The pre-fix implementation added an abort listener that was removed only when the abort fired, so each normal completion leaked one listener on the long-
-      // lived per-stream signal. The finally-scoped disposal must remove it on every completion; ten concurrent runs add ten listeners at peak, all of which must
-      // be gone once they settle.
+      // evaluateWithAbort must remove its abort listener on every completion path, not only when the abort fires; otherwise each normal completion would leak one
+      // listener on the long-lived per-stream signal. Ten concurrent runs add ten listeners at peak, all of which must be gone once they settle.
       await Promise.all(Array.from({ length: 10 }, () => evaluateWithAbort(page, () => "ok")));
 
       assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listeners linger after normal completions");

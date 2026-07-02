@@ -48,7 +48,7 @@ import type { Express } from "express";
 import assert from "node:assert/strict";
 
 /**
- * One mutating endpoint specification. The body is what triggers a 4xx response from the handler; expectedStatus and expectedField document the response shape
+ * One registered endpoint specification. The body is what triggers a 4xx response from the handler; expectedStatus and expectedField document the response shape
  * the test asserts. registeredPath uses the literal path string Express records (e.g., "/config/channels/:key" for parameterized routes); requestPath is the
  * concrete URL the test actually hits, with placeholder values substituted (test-key for :key, nonexistent-tag for :tag, etc.).
  */
@@ -73,9 +73,9 @@ interface EndpointSpec {
   registeredPath: string;
 }
 
-/* The single source of truth for "which endpoints this suite exercises." Drift-check at the bottom of the file validates that every mutating route registered
- * at runtime appears here or in EXCLUDED_ENDPOINTS - so a new endpoint cannot be added without a maintainer's deliberate decision about whether to sweep its
- * envelope or document its exclusion.
+/* The single source of truth for "which endpoints this suite exercises." Drift-check at the bottom of the file validates that every registered route (GET / POST /
+ * PUT / PATCH / DELETE) captured at runtime appears here or in EXCLUDED_ENDPOINTS - so a new endpoint cannot be added without a maintainer's deliberate decision
+ * about whether to sweep its envelope or document its exclusion.
  *
  * Per-entry rationale: each body is the simplest input that triggers a 4xx response from the handler. Most are empty `{}` (the handler validates required
  * fields first); a few use `null` or specific shapes to trip type-check guards in the validator. The expectedField/expectedStatus values are what the production
@@ -192,8 +192,8 @@ const ENDPOINT_SPECS: readonly EndpointSpec[] = [
     requestPath: "/services/nonexistent-provider-slug/channels" }
 ];
 
-/* Mutating endpoints whose envelope shape is excluded from the sweep, with reasoning. The drift-check expects every registered mutating endpoint to be in
- * either ENDPOINT_SPECS or this list, so excluding an endpoint here is a deliberate maintenance decision documented inline.
+/* Registered endpoints whose envelope shape is excluded from the sweep, with reasoning. The drift-check expects every registered endpoint (GET / POST / PUT /
+ * PATCH / DELETE) to be in either ENDPOINT_SPECS or this list, so excluding an endpoint here is a deliberate maintenance decision documented inline.
  */
 interface ExclusionSpec {
 

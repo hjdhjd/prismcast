@@ -117,7 +117,8 @@ describe("UdpSurface - round-trip", () => {
     return promise;
   }
 
-  // Wildcard Discover request used by every Discover-side test. Centralizing the wildcards as a single fixture keeps each test focused on the assertion.
+  // Wildcard Discover request for the Discover round-trip test. The wildcard device type and device ID match any responder, keeping the test focused on the
+  // reply assertion.
   function wildcardDiscover(): Buffer {
 
     return makeDiscoverRequest(0xFFFFFFFF, 0xFFFFFFFF);

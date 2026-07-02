@@ -5,7 +5,6 @@
  * The probe runs once at startup after every initialize* function has loaded its store. It validates "foreign-key-style" invariants that span multiple stores
  * - things the per-store schema migrations cannot enforce because they only see one file at a time:
  *
- *   - Service selections (in channels.json) reference variants that exist in the rebuilt service group taxonomy.
  *   - Variant entries with a canonicalKey (in channels.json) reference a canonical that exists in PREDEFINED_CHANNELS or the user's stored channels.
  *   - User domain mappings (in profiles.json) reference profiles that exist as builtin or user-defined.
  *   - The service tag filter (in config.json's channels.enabledServices) contains only recognized service tags.
@@ -43,8 +42,9 @@ interface ConsistencyIssue {
 }
 
 /**
- * Validates that every service tag in CONFIG.channels.enabledServices is recognized. Strips and persists unknown tags. Mirrors the runtime cleanup that
- * already happens in initializeUserChannels, but persists the cleanup so the on-disk file no longer carries stale tags between boots.
+ * Validates that every service tag in CONFIG.channels.enabledServices is recognized, and when unknown tags remain its auto-fix persists the cleaned list through
+ * mutateEnabledServices. In practice initializeUserChannels already strips unrecognized tags from the in-memory CONFIG.channels.enabledServices before the probe
+ * runs - a memory-only cleanup that does not rewrite config.json - so the probe usually sees a clean list and the persisting auto-fix does not fire.
  */
 function checkServiceTagFilter(): ConsistencyIssue[] {
 

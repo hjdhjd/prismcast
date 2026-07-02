@@ -593,10 +593,10 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 }
 
 /**
- * Generates JavaScript variables for channel selector datalist population. Produces three variables: `channelSelectorsByDomain` maps URL hostnames to known
+ * Generates JavaScript variables for channel selector datalist population. Produces four variables: `channelSelectorsByDomain` maps URL hostnames to known
  * channel selector values (from predefined channels and cached service discovery), `serviceByDomain` maps service guide URL hostnames to service slugs for
- * client-side async discovery, and `serviceGuideUrl` maps service slugs to their guide URLs for URL correction hints. Embedded as a `<script>` block in the
- * channels panel.
+ * client-side async discovery, `serviceGuideUrl` maps service slugs to their guide URLs for URL correction hints, and `predefinedByDomain` maps domains to
+ * predefined channel summaries so the manual add form can show inline hints without a server round-trip. Embedded as a `<script>` block in the channels panel.
  *
  * @returns JavaScript variable declarations ready to embed in a `<script>` tag.
  */
@@ -965,7 +965,8 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
   displayLines.push("</td>");
 
-  // Optional columns: Number, HDHR, Station ID, Profile, Selector. All five are always rendered; visibility is controlled by CSS classes on the table element.
+  // Optional columns: Number, HDHR, Station ID, Profile, Selector - the first five of the six optional columns (Tags is rendered separately below). All five
+  // are always rendered here; visibility is controlled by CSS classes on the table element.
   const cellKey = escapeHtml(key);
 
   displayLines.push("<td class=\"col-chnum editable-cell\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelNumber")) +
@@ -1243,7 +1244,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
  */
 export interface ChannelTableCounts {
 
-  // Number of predefined channels that are disabled or unavailable by service filter.
+  // Number of channels that are disabled or unavailable by the service filter (predefined or user).
   disabled: number;
 
   // Number of channels that are enabled and available by service filter.
@@ -1630,7 +1631,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Compute initial toggle counts for predefined channel scopes. The server is the single source of truth - the client renders what we return here.
   const scopeCounts = getPredefinedScopeCounts();
 
-  // Three toggle rows: checkbox + label + count. Clicking toggles the group via bulkTogglePredefined(). The onclick uses event.preventDefault() to stop the
+  // Three toggle rows: checkbox + label + count. Clicking toggles the group via bulkTogglePredefined(). The data-click-prevent-default attribute stops the
   // native checkbox toggle - the server response drives the update.
   const scopes: { count: number; label: string; scope: string; total: number }[] = [
     { count: scopeCounts.all.enabled, label: "All Predefined", scope: "all", total: scopeCounts.all.total },

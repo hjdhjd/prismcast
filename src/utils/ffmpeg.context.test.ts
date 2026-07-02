@@ -4,8 +4,8 @@
  * literal from real runtime I/O - existsSync, homedir, process.platform, the spawn-based probe, and the bundled FFmpeg path from ffmpeg-for-homebridge. The
  * algorithmic content lives in ffmpeg.ts (probeFFmpegPath) and is exercised against synthetic contexts in ffmpeg.test.ts; this file pins the contract that the
  * default adapter exposes the documented five-field shape and that the private probe helper returns true for a known-good binary and false for a known-missing
- * one. The probe is invoked transitively against process.execPath (the running Node binary - guaranteed to exist and exit 0 on -version) and a definitely-not-here
- * path; we cannot import the private helper, so we exercise it through the context's `probe` field.
+ * one. The probe is invoked transitively against /bin/bash (a host binary that exits 0 in response to -version) and a definitely-missing path; we cannot import
+ * the private helper, so we exercise it through the context's `probe` field.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";

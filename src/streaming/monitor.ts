@@ -493,6 +493,9 @@ export function monitorPlaybackHealth(
     const channelKey = entry.info.storeKey;
     const clientSummary = getClientSummary(streamInfo.numericStreamId);
 
+    // Native streams have no recovery ladder, so we reuse escalationLevel purely as a UI severity encoding rather than as a recovery-level index: healthy maps to 0,
+    // stalled to 1, and recovering to 2. The intended ordering is stalled < recovering because an actively-recovering stream warrants a stronger visual signal than one
+    // that has merely stalled.
     const escalation = (health === "stalled") ? 1 : ((health === "recovering") ? 2 : 0);
 
     const status: StreamStatus = {

@@ -196,7 +196,7 @@ describe("setServiceSelection: persistence and delete branch", () => {
 
   test("setting selection to the canonical key DELETES the entry from serviceSelections (no redundant mapping)", async () => {
 
-    /* The canonical-equals-service-key delete branch (services.ts line 923). When the user selects the canonical service explicitly, the function removes the
+    /* setServiceSelection's canonical-equals-key delete branch. When the user selects the canonical service explicitly, the function removes the
      * selection rather than storing a redundant key->key entry. Confirm the on-disk entry disappears.
      */
     await using ctx = await createIntegrationContext();
@@ -368,13 +368,13 @@ describe("clearChannelOverrides: dual-delete with canonical-precedence return", 
 
 describe("mutateEnabledServices: post-write cache hydration", () => {
 
-  /* After mutateEnabledServices writes config.json, the in-memory enabledServices cache (services.ts lines 303-304) is hydrated from the just-persisted value.
+  /* After mutateEnabledServices writes config.json, the in-memory enabledServices cache is hydrated from the just-persisted value.
    * This suite pins that hydration via the service-filter HTTP route plus a subsequent in-memory getEnabledServices() read.
    */
 
   test("after mutateEnabledServices via the service-filter route, getEnabledServices reflects the new value", async () => {
 
-    /* Mutate via the public route, then assert the in-memory cache reads back the new state. If the post-write hydration on lines 303-304 regressed, the cache
+    /* Mutate via the public route, then assert the in-memory cache reads back the new state. If mutateEnabledServices' post-write cache hydration regressed, the cache
      * would lag behind disk and this assertion would fail.
      */
     await using ctx = await createIntegrationContext();

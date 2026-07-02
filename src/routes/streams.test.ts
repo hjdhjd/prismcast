@@ -3,7 +3,8 @@
  * streams.test.ts: Unit tests for the stream management routes in streams.ts. setupStreamsEndpoint registers GET /streams (lists active streams), DELETE
  * /streams/:id (terminates a single stream), and GET /streams/status (Server-Sent Events). Without a real Chrome browser or capture pipeline running, the
  * registry is empty for the duration of the suite, so the tests focus on the empty-list response shape, the parameter-validation paths in DELETE, and the
- * SSE handshake (initial snapshot + heartbeat header set). Streams cannot be created in a unit test - that path is covered by e2e tests.
+ * SSE handshake (initial snapshot + SSE response headers). A separate direct-handler suite drives the captured handler against synthetic req/res pairs to pin
+ * named-event forwarding, the close-time unsubscribe, and heartbeat teardown. Streams cannot be created in a unit test - that path is covered by e2e tests.
  */
 import type { AddressInfo, Server } from "node:net";
 import type { Express, Request, Response } from "express";

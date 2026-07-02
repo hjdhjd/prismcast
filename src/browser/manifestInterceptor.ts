@@ -32,8 +32,9 @@ import { observeHlsPlaylists } from "./hlsPlaylistObserver.ts";
 // Default timeout for the long-lived interception used by native HLS.
 const INTERCEPTION_TIMEOUT = 15000;
 
-// Brief delay after finalize() is called to allow any in-flight manifest response to arrive. Applied only for guide-based tunes (directTune=false) where the
-// channel switch may trigger a manifest fetch that arrives milliseconds after the click handler returns. Direct tunes skip this delay and resolve immediately.
+// Brief delay after finalize() is called to allow any in-flight manifest response to arrive. Applied for guide-based tunes (directTune=false), where the channel
+// switch may trigger a manifest fetch that arrives milliseconds after the click handler returns, and for direct tunes that have not yet captured a master
+// manifest. A direct tune skips this delay and resolves immediately only once a master manifest has already arrived.
 const FINALIZE_SETTLE_DELAY = 1500;
 
 // Default timeout for awaitMatchingManifest. Tune verification is a short-lived check after a click, so the budget is tighter than the native interception path.
@@ -105,9 +106,10 @@ export interface ManifestInterceptorHandle extends Disposable {
   // handle can be used with "using" syntax for scope-bound cleanup, including on thrown errors.
   readonly dispose: () => void;
 
-  // Signals that channel selection is complete. When directTune is true (single-channel site navigated by URL), resolves immediately with the first captured
-  // manifest - the one loaded for the navigated URL. When false (guide-based multi-channel site), applies a brief settle delay and resolves with the latest
-  // manifest - the one from the channel switch click.
+  // Signals that channel selection is complete. When directTune is true (single-channel site navigated by URL) and a master manifest has already arrived,
+  // resolves immediately with the first captured manifest - the one loaded for the navigated URL. When directTune is true but only a media-only manifest, or
+  // nothing, has arrived so far, it waits the settle delay so master priority still has a chance to take effect. When false (guide-based multi-channel site),
+  // applies a brief settle delay and resolves with the latest manifest - the one from the channel switch click.
   readonly finalize: (directTune: boolean) => void;
 
   // Promise that resolves with the interception result after finalize() is called (or after the timeout expires, whichever comes first). Resolves with null
@@ -125,8 +127,9 @@ export interface ManifestInterceptorHandle extends Disposable {
  * renditions) that improves the resulting MediaFeed. The returned handle provides a finalize(directTune) callback - when called, the observer resolves with
  * whichever URL is appropriate for the tune type:
  *
- * - directTune=true: resolves immediately (or after the settle delay if no manifest has arrived yet) with the first manifest captured. Used by sites where the
- *   navigated URL itself selects the channel and the player loads its manifest before the click handler returns. Master-first URL preferred over media-first.
+ * - directTune=true: resolves immediately if a master manifest has already arrived (or after the settle delay when only a media-only manifest, or nothing, has
+ *   arrived so far) with the first manifest captured. Used by sites where the navigated URL itself selects the channel and the player loads its manifest before
+ *   the click handler returns. Master-first URL preferred over media-first.
  * - directTune=false: resolves after the settle delay with the latest manifest captured. Used by guide-based sites where the channel-switch click triggers a
  *   new manifest fetch that may arrive milliseconds after the click handler returns. Master-latest URL preferred over media-latest.
  *
@@ -225,7 +228,7 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
   // Finalize function exposed on the returned handle. Called by the stream setup code after channel selection is complete. The resolution strategy depends on
   // two factors: whether a qualifying manifest has already been captured, and whether the tune is direct or guide-based.
   //
-  // - Manifest captured + direct tune: settle immediately (A&E, most TVE sites - manifest arrived during page load).
+  // - Master manifest captured + direct tune: settle immediately (A&E, most TVE sites - manifest arrived during page load).
   // - Manifest captured + guide tune: wait FINALIZE_SETTLE_DELAY (Fox guide, Hulu - a newer manifest from the channel switch may still arrive).
   // - No manifest captured + either: wait FINALIZE_SETTLE_DELAY (Fox Sports - manifest fetch starts after video element appears, hasn't arrived yet).
   const finalize = (directTune: boolean): void => {

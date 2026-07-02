@@ -22,7 +22,7 @@ import { clearProbeCache } from "./probe.ts";
  * 1. puppeteer-stream's PuppeteerStream module starts a WebSocketServer at import time. index.ts pulls in browser/manifestInterceptor.ts which in turn pulls in
  *    browser/index.ts and triggers that server creation, which keeps the event loop alive after every test resolves.
  *
- * 2. attemptNativeStreaming's interception-await timeout no longer leaks: cancellableTimeout owns the underlying setTimeout, and the orchestrator clears it in
+ * 2. attemptNativeStreaming's interception-await timeout does not leak: cancellableTimeout owns the underlying setTimeout, and the orchestrator clears it in
  *    finally via timeout.cancel() when interceptionPromise wins the race. The residual handle leakage drained here is the per-stream token-refresh timer scheduled
  *    by scheduleTokenRefresh (cancelled only on proxy.stop()) plus the puppeteer-stream WebSocketServer from point 1.
  *
@@ -134,8 +134,8 @@ describe("attemptNativeStreaming", () => {
   test("returns null when the probe classifies the manifest as DRM", async () => {
 
     // The probe runs on the intercepted master URL and detects SAMPLE-AES (Widevine). The orchestrator must return null so the caller falls back to capture mode.
-    // The underlying CDP session ownership is now internal to the interceptor and disposed automatically when its observer finalizes; the orchestrator no longer
-    // performs explicit session cleanup, so this test asserts only the return-value contract.
+    // CDP session ownership is internal to the interceptor and disposed automatically when its observer finalizes, so this test asserts only the return-value
+    // contract.
     const masterUrl = "https://cdn.test/drm-master.m3u8";
     const variantUrl = "https://cdn.test/drm-variant.m3u8";
 

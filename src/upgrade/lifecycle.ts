@@ -15,7 +15,7 @@
  *   - performUpgrade (this file) - the dispatcher; picks a strategy by platform and runs it
  *   - createDefaultLifecycleContext (lifecycle.context) - the adapter; the only place that calls spawn, execSync, getDataDir, or process.pid
  *
- * Why a strategy port at all? The v1.10.2 bug report exposed three Windows-specific facts that POSIX strategies never confront: (1) Windows file locks prevent
+ * Why a strategy port at all? Windows introduces three facts that POSIX strategies never confront: (1) Windows file locks prevent
  * `npm install -g` from renaming the prismcast directory while any node.exe holds it open, so the upgrade cannot run in-process; (2) Windows Task Scheduler does
  * not re-spawn a task because its process exited, so `ctx.exit(0)` does not restart the service the way launchd's KeepAlive or systemd's Restart=always do; and
  * (3) the upgrade tool cannot wait for the helper to finish because it would never finish (the helper is waiting for us to exit). The right architectural shape
@@ -50,9 +50,9 @@ export type UpgradeStep = {
 };
 
 /**
- * Result of running an upgrade subprocess. Mirrors the same-named type in commands.ts...the in-process strategy passes this through verbatim, so callers of
- * either layer see the same shape. The success flag distinguishes ran-without-error from threw-or-exited-non-zero; the runner does not surface the actual
- * error because the user sees subprocess stderr directly on the terminal.
+ * Result of running an upgrade subprocess. The in-process strategy passes this through verbatim into the UpgradeStep "ran" variant, so its success flag is what
+ * commands.ts narrows on and the outcome shape stays consistent across the two layers. The success flag distinguishes ran-without-error from
+ * threw-or-exited-non-zero; the runner does not surface the actual error because the user sees subprocess stderr directly on the terminal.
  */
 export interface UpgradeRunResult {
 
@@ -121,7 +121,7 @@ export interface UpgradeLifecycleStrategy {
  *
  *   1. Wait for the parent process to exit. Wait-Process with -ErrorAction SilentlyContinue tolerates the (theoretical) case where the parent has already exited
  *      between us being spawned and this line running.
- *   2. If a service task is registered AND running, disable it (so RestartOnFailure does not interfere) and stop it. Stop-ScheduledTask is non-blocking, so we
+ *   2. If a service task is registered, disable it (so RestartOnFailure does not interfere) and stop it. Stop-ScheduledTask is non-blocking, so we
  *      poll for the task to transition out of Running with a 30-second ceiling - the same poll pattern as service/generators.ts's WINDOWS_REGISTER_SCRIPT.
  *   3. Run the upgrade command via cmd.exe /c so npm/brew shell-style command lines parse correctly. Output is captured for the log; the exit code is captured
  *      so we can re-raise it as our own exit code at the very end.
@@ -129,7 +129,7 @@ export interface UpgradeLifecycleStrategy {
  *      this step, the next reboot would silently leave the service disabled.
  *   5. Exit with the upgrade's exit code so the helper's own exit reflects the upgrade outcome (visible in the log via $LASTEXITCODE).
  *
- * Logging is best-effort: a failed Out-File call (e.g., the directory does not exist) is swallowed by SilentlyContinue so the helper still completes its
+ * Logging is best-effort: a failed Add-Content call (e.g., the directory does not exist) is swallowed by SilentlyContinue so the helper still completes its
  * primary job. The log itself is the only user-facing artifact of the helper, and we surface its path back to commands.ts as part of the UpgradeStep.
  */
 const WINDOWS_HANDOFF_SCRIPT = [

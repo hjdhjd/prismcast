@@ -40,7 +40,8 @@ import { isGracefulShutdown } from "../browser/index.ts";
 const channelToStreamId = new Map<string, number>();
 
 /**
- * Set of stream IDs for which termination has been initiated. Used to suppress warnings from segmenter callbacks during cleanup.
+ * Set of stream IDs whose termination is in flight. Serves as the idempotency guard that makes redundant terminateStream() calls a no-op (callers may issue them
+ * freely), and lets in-flight segmenter and monitor callbacks suppress spurious warnings during cleanup.
  */
 const terminationInitiated = new Set<number>();
 

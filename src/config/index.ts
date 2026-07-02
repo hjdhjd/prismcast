@@ -27,8 +27,13 @@ import path from "node:path";
  * - server: Network binding for the HTTP server (port, host)
  * - browser: Chrome launch settings (executable path, init timeout)
  * - streaming: Media capture quality (preset, bitrates, frame rate) and timeout limits
+ * - hls: HLS output tuning (segment duration, buffer depth, idle timeout)
  * - playback: Health monitoring intervals and recovery timing thresholds
  * - recovery: Retry backoff parameters and circuit breaker configuration
+ * - channels: Predefined channel enable/disable state, table sort, and service filter
+ * - channelsDvr: Connection settings for the user's external Channels DVR server
+ * - hdhr: HDHomeRun emulation settings (port, device ID, LAN discovery)
+ * - logging: File-based logging behavior (debug filter, HTTP request log level)
  * - paths: Filesystem locations for Chrome profile and extension data
  *
  * Configuration is initialized at startup via initializeConfiguration(), which loads the user config file, merges with defaults, applies environment overrides and
@@ -188,7 +193,7 @@ function normalizeConfig(config: Config): void {
     config.logging.debugFilter = canonicalizeDebugPattern(config.logging.debugFilter);
   }
 
-  // Validate quality preset. Viewport is derived on-demand via getViewport() rather than stored in CONFIG.
+  // Validate quality preset. Viewport is derived on-demand via getPresetViewport() rather than stored in CONFIG.
   const validPresets = getValidPresetIds();
 
   if(!validPresets.includes(config.streaming.qualityPreset)) {
@@ -487,7 +492,7 @@ function collectHardErrors(config: Config): string[] {
 
     check(validatePositiveInt("HDHR_PORT", config.hdhr.port, 1, 65535));
 
-    // Warn if HDHR port conflicts with the main server port (same host).
+    // Reject if the HDHR port conflicts with the main server port (same host).
     if((config.hdhr.port === config.server.port) && ((config.server.host === "0.0.0.0") || (config.server.host === "::"))) {
 
       errors.push("HDHR_PORT (" + String(config.hdhr.port) + ") conflicts with the main server port.");

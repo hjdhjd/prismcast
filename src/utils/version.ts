@@ -119,6 +119,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number, failureLogTempla
  */
 export async function fetchLatestVersion(): Promise<Nullable<string>> {
 
+  // Cap the npm registry lookup at a five-second (5000 ms) hard timeout so a slow or unreachable registry cannot stall the update-check path.
   const response = await fetchWithTimeout("https://registry.npmjs.org/" + NPM_PACKAGE_NAME, 5000, "Failed to fetch latest version from npm: %s.");
 
   if(!response) {
@@ -146,6 +147,7 @@ export async function fetchLatestVersion(): Promise<Nullable<string>> {
  */
 async function fetchChangelogContent(): Promise<Nullable<string>> {
 
+  // Cap the changelog fetch at a five-second (5000 ms) hard timeout so a slow or unreachable GitHub host cannot stall the update-check path.
   const response = await fetchWithTimeout(CHANGELOG_URL, 5000, "Failed to fetch changelog from GitHub: %s.");
 
   if(!response) {

@@ -12,8 +12,8 @@ import type { Nullable } from "../types/index.ts";
  * 2. Browser chrome dimensions: The height and width of browser UI elements (title bar, toolbar, borders). Used when resizing the browser window to calculate the
  *    total window size needed for a given viewport size.
  *
- * 3. GPU capabilities: Whether Chrome has hardware GPU acceleration (vs software rendering) and HEVC encoding support. Used for diagnostic logging at startup and
- *    to gate HEVC capture mode when hardware encoding is available.
+ * 3. GPU capabilities: The hardware-encoding availability for AV1, H.264, and HEVC, plus the WebGL renderer string identifying the GPU. Used for diagnostic logging at
+ *    startup and consumed by codec selection to gate each hardware capture mode when the corresponding hardware encoder is available.
  *
  * This module is intentionally minimal with no imports from other project modules to avoid circular dependencies. The browser module detects dimensions and calls
  * the setters. Other modules call the getters to access cached values.

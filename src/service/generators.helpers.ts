@@ -3,7 +3,7 @@
  * generators.helpers.ts: Shared test helpers for the service-generators suite. Hosts the FakeIO* shapes (a GeneratorIO double that captures every IO call into
  * arrays so tests can assert on the exact subprocess invocations and file-write content each generator emits) and the definitionFixture factory (a
  * ServiceDefinition with sensible defaults). Platform-specific tests (generators.launchAgent.test.ts, generators.systemd.test.ts, generators.windowsTask.test.ts)
- * and the kept generators.test.ts (getServiceGenerator dispatch) all consume these. The path-resolution stubs (withParserStubs, FAKE_PLIST, FAKE_UNIT, FAKE_LAUNCHER)
+ * and generators.test.ts (getServiceGenerator dispatch) all consume these. The path-resolution stubs (withParserStubs, FAKE_PLIST, FAKE_UNIT, FAKE_LAUNCHER)
  * are scoped to generators.paths.test.ts and live there directly.
  */
 /* eslint-disable @typescript-eslint/require-await -- Methods on the fake IO fulfill the async GeneratorIO interface; their bodies are deliberately synchronous

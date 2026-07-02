@@ -91,7 +91,7 @@ describe("initDebugFilter", () => {
 
   test("a pattern with only whitespace and commas leaves the filter disabled", () => {
 
-    // Boundary: parts is empty after the trim/filter, so init returns without setting anyEnabled.
+    // Boundary: the split/trim/filter yields zero tokens, so wildcard is false and both sets are empty - initDebugFilter sets anyEnabled to false.
     initDebugFilter("  ,  ,  ");
 
     assert.equal(isAnyDebugEnabled(), false);

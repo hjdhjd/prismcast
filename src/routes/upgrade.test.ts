@@ -205,7 +205,7 @@ describe("setupUpgradeEndpoint - POST /upgrade", () => {
 
   test("returns 400 with the canonical envelope when the installation method is not upgradeable", async () => {
 
-    // The unknown/source branches return upgradeable=false; the handler short-circuits via sendValidationError to the documented envelope shape
+    // The docker/unknown branches return upgradeable=false; the handler short-circuits via sendValidationError to the documented envelope shape
     // ({ error: string, success: false }) at HTTP 400, without attempting any exec. We don't pin the method (depends on the test environment) but we lock
     // the contract: when upgradeable=false, the response is the documented validation-error envelope.
     const infoRes = await fetch(urlFor("/upgrade/info"));

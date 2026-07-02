@@ -6,8 +6,8 @@
  * dropped without canonical fallback, or a wholesale-clear of a top-level metadata collection) surfaces as a warning. Coverage at this level is critical because
  * a regression in the validator silently corrupts the operator's user-feedback signal - false positives spam the log, false negatives let real data loss ship.
  *
- * The detectIdentityFieldLoss function recently switched from JSON.stringify to isDeepStrictEqual for array-valued fields. The audit specifically calls out the
- * post-swap branch matrix as one of the most likely places for a subtle regression, so the array-equality cases are exercised here directly.
+ * The detectIdentityFieldLoss function compares array-valued identity fields structurally via isDeepStrictEqual. The array-equality branch matrix is an easy place
+ * for a subtle regression, so the equal-array and unequal-array cases are exercised here directly.
  */
 import type { CanonicalChannel, StoredChannelMap } from "../types/index.ts";
 import { describe, test } from "node:test";
@@ -107,8 +107,8 @@ describe("detectIdentityFieldLoss", () => {
 
   test("array-valued identity (tags) post-isDeepStrictEqual swap: equal arrays are recognized as canonical-equivalent (delta minimization)", () => {
 
-    /* The recent isDeepStrictEqual swap changed the equality check for array-valued canonical fallback. This test pins the post-swap behavior: when the user's
-     * stored tags array exactly matches the canonical's tags array, dropping the stored field is delta minimization and must NOT flag.
+    /* When the user's stored tags array exactly matches the canonical's tags array, dropping the stored field is delta minimization and must NOT flag. This test
+     * pins that structural equality via isDeepStrictEqual recognizes matched array-valued fields as canonical-equivalent.
      *
      * abc is known to have a tags array in PREDEFINED_CHANNELS; we assert dropping a tags field that matches the canonical's tags is recognized as no-loss.
      */
@@ -133,7 +133,7 @@ describe("detectIdentityFieldLoss", () => {
 
   test("array-valued identity (tags) post-isDeepStrictEqual swap: different arrays are flagged as loss", () => {
 
-    /* The contrapositive: when the user's stored tags do NOT match the canonical's tags exactly, dropping them IS data loss. This test pins that the post-swap
+    /* The contrapositive: when the user's stored tags do NOT match the canonical's tags exactly, dropping them IS data loss. This test pins that the
      * isDeepStrictEqual call correctly distinguishes equal arrays from non-equal arrays.
      */
     const before: StoredChannelMap = { abc: { tags: [ "Custom", "Sports" ] } };
@@ -147,7 +147,7 @@ describe("detectIdentityFieldLoss", () => {
   test("array equality comparison handles different-length arrays without throwing", () => {
 
     /* Boundary case: a stored tags array shorter or longer than the canonical's. The isDeepStrictEqual call must return false and the validator must flag the
-     * loss. This test pins that the array-equality path handles length mismatches correctly post-swap.
+     * loss. This test pins that the array-equality path handles length mismatches correctly.
      */
     const before: StoredChannelMap = { mychannel: { name: "My Channel", tags: [ "A", "B", "C" ], url: "https://example.com" } };
     const after: StoredChannelMap = { mychannel: { name: "My Channel", url: "https://example.com" } };

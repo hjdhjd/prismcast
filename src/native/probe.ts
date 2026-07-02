@@ -77,9 +77,9 @@ export function classifyHlsPlaylist(body: string): HlsPlaylistKind {
 }
 
 /**
- * Fully described HLS media feed ready for consumption by the native proxy. Every code path that produces this type (master-playlist resolution today; media-only
- * passthrough in a follow-on change) emerges with the same shape, so downstream code (proxy creation, token refresh, status display) does not branch on which
- * playlist kind originally arrived.
+ * Fully described HLS media feed ready for consumption by the native proxy. Every code path that produces this type (master-playlist resolution and media-only
+ * passthrough) emerges with the same shape, so downstream code (proxy creation, token refresh, status display) does not branch on which playlist kind originally
+ * arrived.
  */
 export interface MediaFeed {
 

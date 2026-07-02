@@ -9,11 +9,6 @@ import type { Clock } from "./clock.ts";
 import { LOG } from "./logger.ts";
 import { realClock } from "./clock.ts";
 
-/* The retry system provides resilient operation execution with exponential backoff and jitter. When operations fail due to transient issues like network hiccups or
- * slow page loads, the system automatically retries with increasing delays. The exponential backoff prevents overwhelming struggling services, while jitter prevents
- * multiple clients from synchronizing their retry attempts.
- */
-
 /**
  * Options for retryOperation. Groups all parameters into a single object to avoid positional parameter sprawl and make the function extensible.
  */

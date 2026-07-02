@@ -6,8 +6,9 @@
  * createWindowsSchedulerGenerator lives in generators.windowsTask.test.ts. The path-resolution helpers (getServicePaths, detectStalePaths) and their injected-IO
  * variants live in generators.paths.test.ts.
  *
- * The install/start/stop/uninstall paths on each generator spawn external subprocesses (launchctl, systemctl, powershell.exe); those branches are intentionally
- * NOT tested in this tier - they require real OS state and belong in e2e coverage.
+ * The install/start/stop/uninstall paths on each generator spawn external subprocesses (launchctl, systemctl, powershell.exe), and those branches are exercised
+ * against GeneratorIO fakes in the per-platform sibling files rather than here; only genuine cross-process behavior against the real launchctl/systemctl/powershell.exe
+ * binaries is left to e2e coverage.
  */
 import { afterEach, before, beforeEach, describe, test } from "node:test";
 import { buildServiceDefinition, collectServiceEnvironment, getServiceGenerator } from "./generators.ts";
@@ -70,8 +71,7 @@ function setPlatform(value: string): void {
 
 before(() => {
 
-  // Initialize the data directory so getDataDir() does not throw. The Windows getServiceFilePath() reads from this; tests that need a writable location route
-  // the file path into a per-test temp dir below.
+  // Initialize the data directory so buildServiceDefinition()'s path helpers (getDataDir and friends) do not throw when they resolve the data directory.
   initializeDataDir(path.join(os.tmpdir(), "prismcast-generators-test"));
 });
 

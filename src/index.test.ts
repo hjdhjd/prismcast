@@ -73,7 +73,7 @@ describe("ParsedArgs", () => {
 /* The remaining surface area of index.ts is deferred. We document the deferrals here so a future maintainer can confirm the test conventions are being
  * followed and not just silently skipped:
  *
- * - parseArgs(): not exported, parses process.argv directly and on -h / -v / --list-env it calls process.exit. Cannot be tested in isolation without exporting
+ * - parseArgs(): not exported, parses process.argv directly and on -h / -v it calls process.exit. Cannot be tested in isolation without exporting
  *   it; importing the module to reach it would also run the surrounding entry-point code (initializeDataDir, branch on subcommand, startServer). Deferred to
  *   e2e where the CLI is invoked as a subprocess.
  *

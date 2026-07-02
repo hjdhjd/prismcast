@@ -44,8 +44,7 @@ describe("generateCustomProfilesPanel", () => {
   test("does NOT render the Export button when no user profiles exist (gated branch)", () => {
 
     // Boundary: the Export button is conditionally rendered only when Object.keys(userProfiles).length > 0. With no user profiles, Export must be
-    // absent. The Import button is still present, so we disambiguate on the Export button's data-click-action marker (the "start-service-export"
-    // action wired through the client action registry), which the renderer omits in the empty case while the Import button's marker stays.
+    // absent. We assert that the rendered HTML carries no inline onclick="startServiceExport()" handler, confirming the Export button was omitted.
     const html = generateCustomProfilesPanel();
 
     assert.doesNotMatch(html, /onclick="startServiceExport\(\)"/, "Export button is omitted when no user profiles exist");

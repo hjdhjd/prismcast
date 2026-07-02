@@ -11,9 +11,9 @@
  *
  * Architectural note: this suite is structurally different from the three sibling DOM-runtime suites (shared/channels/config). Those scripts have their handler
  * logic tangled with their IIFE init code, so the only way to exercise their behavior is to execute the emitted script string in a synthetic DOM via runScripts.
- * status.handlers.ts is the result of a ports-and-adapters refactor that extracted every handler, formatter, renderer, and DOM mutator into free-standing TypeScript
- * functions over a HandlerContext literal. That makes them directly importable as TS - this suite calls them with synthetic context literals instead of running
- * the emitted script. The trade-off is masterclass-worthy: the cleaner production architecture earns simpler tests.
+ * status.handlers.ts exposes every handler, formatter, renderer, and DOM mutator as free-standing TypeScript functions over a HandlerContext literal. That makes
+ * them directly importable as TS - this suite calls them with synthetic context literals instead of running the emitted script. The trade-off is masterclass-worthy:
+ * the cleaner production architecture earns simpler tests.
  *
  * Harness usage: createDomTestContext is reused for the synthetic Document. The bootApp listener is incidental (we don't fetch from these handlers), but the page
  * HTML provides realistic structural fixtures (#streams-tbody, #system-health, #stream-count, #stream-popover-menu, #toast-container) that the DOM mutators rely
@@ -371,8 +371,8 @@ describe("status.handlers: formatTime (pure)", () => {
 
   test("midnight (hour=0) renders as 12 AM and noon (hour=12) renders as 12 PM", () => {
 
-    /* The hours = hours % 12 ? hours : 12 line is the corner that tripped the original IIFE's logic. We pin both boundaries so a regression that drops the
-     * fallback (e.g., hours = hours % 12) would render midnight as 0:00 AM.
+    /* The 12-hour wrap - hours = hours % 12, then fall back to 12 when the result is zero - is a bug-prone corner. We pin both midnight and noon so a regression
+     * that drops the fallback (e.g., leaving only hours = hours % 12) would render midnight as 0:00 AM instead of 12:00 AM.
      */
     const now = new Date();
     const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).toISOString();
@@ -456,8 +456,9 @@ describe("status.handlers: getRecoveringLabel (pure)", () => {
 
   test("dispatches level 1-3 to the named labels and level 4+ to 'Reloading page'", () => {
 
-    /* Levels 1-4 are the escalation ladder. Level 1: play/unmute -> 'Resuming playback'. Level 2: seek -> 'Syncing to live'. Level 3: source reload -> 'Reloading
-     * player'. Level 4 (and any higher): page navigation -> 'Reloading page'. Pinning the full ladder catches a regression in any single branch.
+    /* The escalation ladder defined in monitor.ts: level 1 (play/unmute) -> 'Resuming playback', level 2 (source reload) -> 'Syncing to live', level 3 (page
+     * navigation) -> 'Reloading player'. Level 4+ -> 'Reloading page' is defensive padding since escalationLevel maxes at 3 in production. Pinning the full ladder
+     * catches a regression in any single branch.
      */
     assert.equal(handlers.getRecoveringLabel(1), "Resuming playback");
     assert.equal(handlers.getRecoveringLabel(2), "Syncing to live");

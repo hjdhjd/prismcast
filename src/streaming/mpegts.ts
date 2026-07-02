@@ -220,8 +220,8 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
 
   const streamLog = LOG.withStreamId(stream.streamIdStr);
 
-  // Resolved FFmpeg binary path. Falls back to "ffmpeg" so spawn() defers to PATH lookup if the resolver couldn't find one (matching previous behavior; the
-  // spawn will then fail with ENOENT if PATH is also empty).
+  // Resolved FFmpeg binary path. Falls back to "ffmpeg" so spawn() defers to a PATH lookup if the resolver couldn't find one; the spawn then fails with ENOENT if
+  // PATH is also empty.
   const ffmpegBin = (await resolveFFmpegPath()) ?? "ffmpeg";
   const remuxer = spawnMpegTsRemuxer(ffmpegBin, (error) => {
 
@@ -397,6 +397,8 @@ function connectMpegTsClient({ beforeCatchup, extraCleanup, logLabel, onStreamTe
   // during this iteration.
   for(const [ filename, data ] of stream.hls.segments) {
 
+    // The linter sees cleanedUp as always false in this synchronous scope, but cleanup() can flip it true from the client-disconnect, stream-termination, or
+    // output-error path, so the guard stops the catch-up loop the moment the connection is torn down mid-iteration.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if(cleanedUp) {
 

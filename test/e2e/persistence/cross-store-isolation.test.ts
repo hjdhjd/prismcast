@@ -5,9 +5,9 @@
  * path - a stale path resolver, a misrouted .bak, a write that targets the wrong file - would silently corrupt unrelated state.
  *
  * Why integration coverage adds value here: persistence.test.ts (unit tier) verifies the file-store framework primitives in isolation against synthetic stores.
- * It does not verify that the real production stores - each with their own beforeWrite/validate/migrations - coexist correctly. A historical settings-save bug
- * reached into channels-adjacent state - the disabled-channel list, the service filter, and the HDHomeRun device ID - and lost it. That was structurally a
- * cross-store concern: a config save reached into channels-adjacent state and lost it. Tests at this tier guard against that class of regression.
+ * It does not verify that the real production stores - each with their own beforeWrite/validate/migrations - coexist correctly. The invariant this tier guards is
+ * that a config save must never reach into channels-adjacent state - the disabled-channel list, the service filter, or the HDHomeRun device ID - and lose it,
+ * because that is structurally a cross-store concern that unit coverage of a single store cannot catch.
  *
  * The mutations below use the public mutator surface of each module (mutateChannels, mutateConfig, mutateProfiles) rather than reaching into the private file
  * stores - this exercises every layer above the framework (validators, beforeWrite transforms, post-write cache hydration, side effects) exactly as production

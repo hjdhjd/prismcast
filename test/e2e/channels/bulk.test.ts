@@ -179,7 +179,7 @@ describe("bulk operations × service filter scoping", () => {
    * The canonical fixture for this suite: enabledServices = ["hulu"]. abcnews has variants { cox, directv, hulu, sling, xfinity, yttv } and no site, so its
    * service tag set excludes "direct" - the filter is load-bearing for it. amcthrillers has only { sling, yttv } and no site, so it has no overlap with the
    * filter and falls out of getVisibleChannels. Channels with a "site" entry (e.g., abc) are excluded from this fixture because their "direct" service tag is
-   * structurally always enabled (per the by-design behavior pinned in Suite 11.2), which would mask the filter-scoping rule under test.
+   * structurally always enabled by design, which would mask the filter-scoping rule under test.
    */
 
   test("bulk auto-number under an active service filter assigns numbers only to visible channels", async () => {

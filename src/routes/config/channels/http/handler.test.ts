@@ -1,8 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * handler.test.ts: Unit tests for the route() wrapper. The wrapper is the SSOT for try/catch in channel-config endpoints - every handler delegates exception
- * routing to it. Tests pin the four invariants: synchronous handlers run and complete, asynchronous handlers are awaited, thrown errors flow to the envelope's
- * 500/parse-error path, and successful handlers do not invoke the error envelope.
+ * routing to it. Tests pin the core invariants: synchronous handlers run and complete, asynchronous handlers are awaited, thrown errors flow to the envelope's
+ * 500/parse-error path, successful handlers do not invoke the error envelope, each wrapped handler carries its own action label, next() is never invoked, and the
+ * request and response objects forward through unchanged.
  */
 import { describe, mock, test } from "node:test";
 import assert from "node:assert/strict";

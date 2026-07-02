@@ -81,8 +81,8 @@ function generateBackupPanel(): string {
 }
 
 /**
- * Generates the Overview tab content with a comprehensive user guide covering what PrismCast is, video quality expectations, quick start instructions, tuning speed,
- * channel authentication, working with channels, and system requirements.
+ * Generates the Overview tab content with a comprehensive user guide covering what PrismCast is, video quality expectations, quick start instructions,
+ * Plex integration, tuning speed, channel authentication, working with channels, and system requirements.
  * @param baseUrl - The base URL for the server.
  * @returns HTML content for the Overview tab.
  */
@@ -1032,7 +1032,7 @@ export function generateLogsContent(): string {
 }
 
 /**
- * Generates the Configuration tab content with subtabs for channels, settings, advanced, and backup.
+ * Generates the Configuration tab content with subtabs for settings, advanced, and backup.
  * @returns HTML content for the Configuration tab.
  */
 export function generateConfigContent(): string {
@@ -1068,7 +1068,7 @@ export function generateConfigContent(): string {
   lines.push("<button type=\"button\" class=\"subtab-btn\" data-subtab=\"backup\" role=\"tab\" aria-selected=\"false\">Backup</button>");
   lines.push("</div>");
 
-  // Start the settings form (wraps settings and advanced subtabs, not channels or backup).
+  // Start the settings form (wraps the settings and advanced subtabs, not backup).
   lines.push("<form id=\"settings-form\" data-submit-action=\"" + ACTIONS.submitSettingsForm + "\" data-submit-prevent-default>");
 
   // Settings subtab panel with non-collapsible section headers (default active subtab).

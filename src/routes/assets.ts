@@ -8,8 +8,8 @@ import type { Nullable } from "../types/index.ts";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 
-/* This module serves static assets like the logo and favicon. The assets are read from the project root directory at startup and cached in memory for efficient
- * serving.
+/* This module serves static assets like the logo and favicon. Each asset is read from the project root directory on first request and cached in memory for efficient
+ * serving of subsequent requests.
  */
 
 // Cached asset data keyed by filename. Populated on first request and reused for subsequent requests.
@@ -47,6 +47,8 @@ function registerAssetRoute(app: Express, routePath: string, filename: string, c
 
     if(!assetCache.has(filename)) {
 
+      // We cache the result of the very first load, including a null from a read failure. A failed load is therefore not retried and serves 404 until the process
+      // restarts. This is acceptable because the served assets are committed to the repository and expected to always be present on disk.
       assetCache.set(filename, await loadAsset(filename));
     }
 

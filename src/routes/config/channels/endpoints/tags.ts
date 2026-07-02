@@ -3,7 +3,8 @@
  * tags.ts: Tag vocabulary management endpoints.
  *
  * The tag vocabulary is the merge of predefined tags (minus user-deleted) plus user-created tags. Mutations cascade through transformChannelTags to keep channel
- * assignments consistent with the vocabulary. All responses include the full tag UI bundle so the filter dropdown and tag manager modal stay in sync.
+ * assignments consistent with the vocabulary. Every successful mutation response includes the full tag UI bundle so the filter dropdown and tag manager modal stay
+ * in sync.
  */
 import type { Express, Request, Response } from "express";
 import { getActiveTagVocabulary, getPredefinedChannel, getTagRegistry, isInVocabulary, setTagRegistry, tagsMatch,
@@ -219,7 +220,8 @@ export function registerTagRoutes(app: Express): void {
     sendSuccess(res, { affectedKeys, tags: true });
   }));
 
-  // POST /config/tags/rename - Rename a tag atomically across the vocabulary and all channel assignments. Case-only renames are allowed (the identity is shared).
+  // POST /config/tags/rename - Rename a tag across the vocabulary and all channel assignments via two ordered writes: the registry first, then a single batched
+  // channel update through transformChannelTags. Case-only renames are allowed (the identity is shared).
   app.post("/config/tags/rename", route("rename tag", async (req: Request, res: Response) => {
 
     const body = req.body as { newTag?: string; oldTag?: string };

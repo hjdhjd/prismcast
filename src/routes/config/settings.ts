@@ -64,6 +64,7 @@ const LIST_ITEM_PROVIDERS: Record<string, () => ListItem[]> = {
 /**
  * Formats a value for display, converting numbers to human-readable strings where appropriate.
  * @param value - The value to format.
+ * @param settingType - Gates thousands-separator grouping; a value of "port" suppresses comma grouping so port numbers render without separators.
  * @returns Formatted string for display.
  */
 function formatValueForDisplay(value: unknown, settingType?: string): string {
@@ -567,7 +568,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
       inputAttrs.push("max=\"" + String(displayMax) + "\"");
     }
 
-    // Disable if overridden by env var.
+    // Disable when the value is overridden by an environment variable or locked out by a disabledReason.
     if(isDisabled) {
 
       inputAttrs.push("disabled");

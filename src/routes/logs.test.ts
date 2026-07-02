@@ -224,8 +224,8 @@ describe("setupLogsEndpoint - GET /logs/stream (SSE handshake)", () => {
 
   test("forwards live log entries as SSE data events (subscribeToLogs wiring)", async () => {
 
-    // We open the stream, then synthesize a log entry by calling subscribeToLogs directly is the wrong approach (it observes - it doesn't emit). The route
-    // subscribes via subscribeToLogs which the production logger fires when logging happens. We use a tighter contract test: confirm subscribeToLogs returns
+    // We open the stream, then want to synthesize a log entry. Calling subscribeToLogs directly is the wrong approach here - it observes, it does not emit. The
+    // route subscribes via subscribeToLogs which the production logger fires when logging happens. We use a tighter contract test: confirm subscribeToLogs returns
     // an unsubscribe function (the route relies on it for cleanup on client disconnect). This locks the integration shape without requiring us to drive a real
     // log emission from a co-located fixture. The wire-byte forwarding contract (and null-eventType prefix-skip behavior) is pinned by the direct-handler suite
     // below, which can drive emitLogEntry deterministically and read res.write spy calls back.
@@ -298,9 +298,9 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
 
   test("forwards a log entry through sse.sendEvent(null, entry) - data line only, no 'event:' prefix", () => {
 
-    // Pins logs.ts:227 - subscribeToLogs forwards entries via sse.sendEvent(null, entry). The null-eventType branch in installSseStream skips the event line and
-    // writes only `data: <json>\n\n`. Without this assertion, a regression that switched to a named eventType (or wrapped the entry in an envelope) would not be
-    // caught at any tier.
+    // Pins the /logs/stream forwarding path: subscribeToLogs forwards entries via sse.sendEvent(null, entry). The null-eventType branch in installSseStream skips
+    // the event line and writes only `data: <json>\n\n`. Without this assertion, a regression that switched to a named eventType (or wrapped the entry in an
+    // envelope) would not be caught at any tier.
     const route = findLogsStreamHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();
 
@@ -325,9 +325,9 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
 
   test("level filter short-circuits non-matching entries - only matching entries reach res.write", () => {
 
-    // Pins logs.ts:222 - filterLevel skips entries whose level does not match. The existing fetch-based test only checked that ?level=error did not produce an
-    // error response; it never confirmed that a non-error entry is actually filtered out. This test drives the level=error filter, emits one info entry
-    // (must be skipped) and one error entry (must reach the wire), and asserts the filter shape directly.
+    // Pins the level-filter short-circuit inside the subscribeToLogs callback: entries whose level does not match filterLevel are skipped. The existing
+    // fetch-based test only checked that ?level=error did not produce an error response; it never confirmed that a non-error entry is actually filtered out. This
+    // test drives the level=error filter, emits one info entry (must be skipped) and one error entry (must reach the wire), and asserts the filter shape directly.
     const route = findLogsStreamHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes({ query: { level: "error" } });
 
@@ -374,9 +374,9 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
 
   test("req.on('close') handler unsubscribes from the log emitter - post-close emits do not reach the wire", () => {
 
-    // Pins logs.ts:230-234 - the close handler must run unsubscribe(). After invoking the close handler synthetically, an emitted log entry must NOT trigger a
-    // res.write. This is the observable invariant: a regression that dropped the unsubscribe() call would leak the listener and continue forwarding to a
-    // disconnected response, eventually causing memory growth and write errors.
+    // Pins the req.on("close") cleanup path: the close handler must run unsubscribe(). After invoking the close handler synthetically, an emitted log entry must
+    // NOT trigger a res.write. This is the observable invariant: a regression that dropped the unsubscribe() call would leak the listener and continue forwarding
+    // to a disconnected response, eventually causing memory growth and write errors.
     const route = findLogsStreamHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();
 
@@ -400,9 +400,9 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
 
   test("req.on('close') handler clears the heartbeat - subsequent ticks do not produce writes", () => {
 
-    // Pins logs.ts:230-234 - the close handler must run sse.close(), which clears the heartbeat interval. Without this, a regression that dropped sse.close()
-    // would leak the heartbeat past disconnect. We use mock.timers to drive the interval deterministically: confirm one tick fires before close, then call the
-    // close handler and confirm subsequent ticks produce no writes.
+    // Pins the req.on("close") cleanup path: the close handler must run sse.close(), which clears the heartbeat interval. Without this, a regression that dropped
+    // sse.close() would leak the heartbeat past disconnect. We use mock.timers to drive the interval deterministically: confirm one tick fires before close, then
+    // call the close handler and confirm subsequent ticks produce no writes.
     mock.timers.enable({ apis: ["setInterval"] });
 
     try {

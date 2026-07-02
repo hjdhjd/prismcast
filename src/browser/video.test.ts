@@ -1,9 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * video.test.ts: Unit tests for the testable helpers in video.ts. The module's broader API drives Puppeteer pages through page.click, page.waitForSelector,
- * page.goto, and the fullscreen sequence - those paths are deferred to e2e. The unit tests here cover buildVideoSelectorType (a pure profile->string mapper) and
- * the evaluate-backed helpers that route through evaluateWithAbort with no other browser interaction (getVideoState, enforceVideoVolume, validateVideoElement,
- * checkVideoPresence, reloadVideoSource, startVideoPlayback, applyVideoStyles, lockVolumeProperties, verifyFullscreen, injectVideoSelector, suppressPageAudio).
+ * page.goto, and the fullscreen sequence - those paths are deferred to e2e. The unit tests here cover buildVideoSelectorType (a pure profile->string mapper), the
+ * evaluate-backed helpers that route through evaluateWithAbort with no other browser interaction (getVideoState, enforceVideoVolume, validateVideoElement,
+ * checkVideoPresence, reloadVideoSource, startVideoPlayback, applyVideoStyles, lockVolumeProperties, verifyFullscreen), and the injection helpers that register their
+ * in-page scripts via page.evaluateOnNewDocument (injectVideoSelector, and suppressPageAudio, which also runs an immediate page.evaluate to mute existing videos).
  * Each helper is exercised against a stub context whose evaluate() returns a configurable value or throws, so the helper's argument-passing and result-handling
  * contracts are locked without spinning up Chrome.
  */
@@ -51,7 +52,7 @@ function makeContextStub(impl: (fn: unknown, ...args: unknown[]) => unknown): { 
   return { context: stub as unknown as Frame | Page, stub };
 }
 
-/* makePageWithEvaluateOnNewDocument returns a Page-shaped stub whose evaluateOnNewDocument records its callback. Tests assert on the call count to lock the
+/* makePageStub returns a Page-shaped stub whose evaluateOnNewDocument records its callback. Tests assert on the call count to lock the
  * injection contract without trying to execute the in-page function (which references browser-only globals).
  */
 interface PageStub {
@@ -372,8 +373,8 @@ describe("injectVideoSelector", () => {
 
   test("a second call results in a second registration (idempotency is not enforced at this layer)", async () => {
 
-    // Boundary: the helper does not gate on a registered flag - duplicate calls register duplicate handlers. The Puppeteer extension queue dedupes by content,
-    // so this is a no-op at the browser level; we lock the surface contract here.
+    // Boundary: the helper does not gate on a registered flag - duplicate calls register duplicate handlers, so the injected script runs twice on each new document.
+    // Each run merely reassigns the same idempotent window.__prismcastSelectVideo global, so the net effect is a no-op; we lock the surface contract here.
     const { page, stub } = makePageStub();
 
     await injectVideoSelector(page);

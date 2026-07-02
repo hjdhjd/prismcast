@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * icons.ts: Shared SVG icon constants for the PrismCast web UI. All icons are 14x14 with stroke-based rendering using currentColor so they adapt to their
- * container's text color. Icons are organized alphabetically by name.
+ * container's text color. Icons are organized into labeled sections (Action, Status) with entries listed alphabetically by name within each section.
  */
 
 // Action Icons.

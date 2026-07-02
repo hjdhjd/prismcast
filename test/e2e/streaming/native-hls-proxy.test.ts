@@ -37,8 +37,8 @@ import { makeFakeClock } from "../../../src/utils/clock.helpers.ts";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
 
 /* aes128Encrypt produces an encrypted segment matching the proxy's decryption contract: AES-128-CBC with PKCS7 padding (Node's default), key as a 16-byte
- * Buffer, IV derived from the media sequence number when no explicit IV is in the manifest. Returning the ciphertext bytes plus the plaintext lets tests
- * verify byte-equality against what the proxy will produce after decryption.
+ * Buffer, IV derived from the media sequence number when no explicit IV is in the manifest. Returning the ciphertext bytes lets tests compare byte-for-byte
+ * against what the proxy stores after decrypting, since the caller retains the plaintext it passed in.
  */
 function aes128Encrypt(plaintext: Buffer, key: Buffer, iv: Buffer): Buffer {
 
@@ -352,8 +352,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
      * a controllable promise. The first poll fires immediately on start(); the awaiter created by schedulePoll then awaits clock.sleep(MANIFEST_BACKOFF_BASE)
      * - in this test, that promise stays pending until the test releases it. The test calls stop(), then releases the held sleep, then drains microtasks. The
      * awaiter wakes, sees lifecycle.stopped === true, and exits without issuing a second fetch. The invariant pinned: zero upstream requests after stop()
-     * regardless of whether the in-flight sleep ever resolves. The 4-second wall-clock wait that previously protected this assertion is gone; the test now
-     * proves the negative deterministically via the injection seam.
+     * regardless of whether the in-flight sleep ever resolves. The fake-clock injection seam proves this negative deterministically, without any wall-clock wait.
      */
     await using ctx = await createIntegrationContext();
 

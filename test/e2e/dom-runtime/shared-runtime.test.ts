@@ -1265,9 +1265,9 @@ describe("shared.ts: action dispatcher modifier scoping", () => {
 
   test("data-submit-prevent-default on a form prevents the submit default but NOT keydown defaults on input fields inside the form", async () => {
 
-    /* This is the regression test for the typing-blocked-in-edit-form bug. Before the event-type-scoped rename, data-prevent-default on a form fired on every
-     * event bubbling through, including keydown on inputs inside it, which prevented the typed character from inserting. The fix: scope the modifier to the
-     * submit event via the attribute name. We assert both halves directly: submit gets defaultPrevented; keydown does not.
+    /* This test pins the invariant that an event modifier is scoped to its own event type via the data-<event>-* attribute: a submit-scoped preventDefault on a
+     * form must not suppress keydown on input fields inside that form, so typed characters still insert. We assert both halves directly: submit gets
+     * defaultPrevented; keydown does not.
      */
     await using ctx = await setupSharedRuntime();
 

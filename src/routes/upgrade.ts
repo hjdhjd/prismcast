@@ -62,7 +62,8 @@ export function setupUpgradeEndpoint(app: Express): void {
         return;
       }
 
-      // Execute the upgrade command asynchronously to avoid blocking the event loop.
+      // We build the exec options for the upgrade command with a two-minute timeout, which bounds a slow package install so a stuck download is killed and surfaced as a
+      // failed upgrade rather than hanging the request indefinitely. For a local npm install we also point the working directory at the package directory below.
       const options: { cwd?: string; timeout: number } = { timeout: 120000 };
 
       if((info.method === "npm-local") && info.packageDir) {

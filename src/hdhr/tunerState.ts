@@ -7,7 +7,7 @@
  * indexed view of current state:
  *
  *   1. The HTTP /status.json endpoint serves it to monitoring dashboards (Home Assistant, Homepage) as a JSON array of HDHR-shaped tuner entries.
- *   2. The UDP control plane on port 65001 serves it to clients that issue Get requests for /tuner&lt;N&gt;/channel, /tuner&lt;N&gt;/status, /tuner&lt;N&gt;/target, etc.
+ *   2. The UDP control plane on port 65001 serves it to clients that issue Get requests for /tuner<N>/channel, /tuner<N>/status, /tuner<N>/target, etc.
  *
  * This module is the single source of truth for the slot-indexed projection. It returns format-neutral TunerState records; each consumer formats them into the
  * wire shape its protocol expects (JSON keys for HTTP, slash-delimited values for UDP). Keeping the projection here means the channel-map merge logic, the

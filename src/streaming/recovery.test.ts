@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * recovery.test.ts: Unit tests for the issue-classification primitives in recovery.ts - RECOVERY_METHODS sentinel, getIssueDescription, getRecoveryMethod,
- * formatIssueType, and getIssueCategory. Metrics tracking lives in recovery.metrics.test.ts; circuit-breaker primitives live in recovery.circuitBreaker.test.ts.
+ * formatIssueType, getIssueCategory, and isCaptureInfrastructureError. Metrics tracking lives in recovery.metrics.test.ts; circuit-breaker primitives live in
+ * recovery.circuitBreaker.test.ts.
  */
 import { RECOVERY_METHODS, formatIssueType, getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError } from "./recovery.ts";
 import { describe, test } from "node:test";

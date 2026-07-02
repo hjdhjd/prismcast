@@ -242,8 +242,8 @@ describe("handleUpgradeCommand - docker (non-upgradeable)", () => {
   test("--check on docker prints the summary, the in-place advisory, and the recreate instructions", async () => {
 
     // Locks the unified manual-message behavior between --check and the main upgrade flow. Both paths print every line of the strategy's manualUpgradeMessage,
-    // so the --check output now includes the "Docker containers cannot be upgraded in-place." advisory in addition to the recreate instruction. The unification
-    // came from removing the docker-specific switch in commands.ts; the strategy is now the single source of truth for its own messaging.
+    // so the --check output includes the "Docker containers cannot be upgraded in-place." advisory in addition to the recreate instruction. The strategy is the
+    // single source of truth for its own messaging.
     const cap = makeUpgradeContext({ detect: () => dockerInfo, fetchLatestVersion: async () => "1.99.0" });
 
     await handleUpgradeCommand(["--check"], cap.context);

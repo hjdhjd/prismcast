@@ -152,7 +152,7 @@ export interface ProviderModule {
   // slug-based lookups and service filter comparisons use the same identifier space.
   slug: string;
 
-  // The existing tuning strategy contract, unchanged from the flat registry pattern.
+  // The channel-selection strategy contract this provider implements; generic (non-provider) strategies register the same ChannelStrategyEntry shape directly.
   strategy: ChannelStrategyEntry;
 
   // Number of consecutive tiny segments (below the size threshold) required before triggering tab replacement recovery. Defaults to 10 (~20 seconds at 2-second

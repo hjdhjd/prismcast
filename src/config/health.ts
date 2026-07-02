@@ -73,9 +73,11 @@ export interface HealthSnapshot {
   domains: Record<string, number>;
 }
 
-// Health event emitter. Fires on every markChannelSuccess / markChannelFailure call so SSE clients receive real-time indicator updates.
+// Health event emitter. Fires on every markChannelSuccess, markChannelFailure, and markDomainAuth call so SSE clients receive real-time indicator updates.
 const healthEmitter = new EventEmitter();
 
+// Every /streams/status SSE subscriber registers a listener on this emitter, so we lift the cap from Node's default of 10 to 100 to accommodate many concurrent
+// subscribers without triggering a spurious MaxListenersExceededWarning.
 healthEmitter.setMaxListeners(100);
 
 // Constants.
@@ -100,9 +102,9 @@ const domainAuth = new Map<string, number>();
 let flushTimer: Nullable<ReturnType<typeof setTimeout>> = null;
 
 /* Drops every expired entry from the in-memory maps so the maps stay bounded for the life of the process. Without this the maps would only ever grow - read paths
- * filter expired entries out of their results but never delete them, so a channel tuned once and never revisited would linger forever. We run this at the single write
- * chokepoint (writeHealthState) so the on-disk record never carries stale entries, and again from getHealthSnapshot so a long-lived process that stops mutating still
- * sheds its expired state.
+ * only delete the single stale key they touch, never the untouched remainder, so a channel tuned once and never revisited would linger forever. We run this at the
+ * single write chokepoint (writeHealthState) so the on-disk record never carries stale entries, and again from getHealthSnapshot so a long-lived process that stops
+ * mutating still sheds its expired state.
  */
 const pruneExpiredEntries = (): void => {
 
@@ -125,8 +127,8 @@ const pruneExpiredEntries = (): void => {
 
 // Persistence.
 
-/* Current schema version for health.json. No migrations are required today (the v1.5.0 absent-field guards moved into the parser already cover legacy reads),
- * but the framework metadata is still maintained so future migrations can be added trivially.
+/* Current schema version for health.json. No migrations are required today because the parser tolerates absent top-level fields, so legacy files load cleanly, but the
+ * framework metadata is still maintained so future migrations can be added trivially.
  */
 const CURRENT_HEALTH_SCHEMA_VERSION = 1;
 

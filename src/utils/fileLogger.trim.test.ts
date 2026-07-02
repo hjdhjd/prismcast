@@ -53,7 +53,7 @@ describe("computeTrimmedLogContent", () => {
     const newEntry = "[2026/01/02] NEW entry that should be preserved.";
     const content = oldEntry + "\n" + newEntry + "\n";
 
-    // content.length = 47 + 1 + 49 + 1 = 98. maxSize=120 -> targetSize=60 -> cutPosition=38 (inside old entry). Next \n at offset 47, lineStart = 48, result is
+    // content.length = 46 + 1 + 48 + 1 = 96. maxSize=120 -> targetSize=60 -> cutPosition=36 (inside old entry). Next \n at offset 46, lineStart = 47, result is
     // the new entry plus its trailing newline.
     const result = computeTrimmedLogContent(content, 120);
 
@@ -76,8 +76,8 @@ describe("computeTrimmedLogContent", () => {
 
   test("uses Math.floor for targetSize (odd maxSize rounds down)", () => {
 
-    // maxSize=1001 -> targetSize=500. content.length=600 -> cutPosition=100. With newlines at 100, 200, ..., the first newline at-or-past 100 is exactly 100.
-    // Result keeps everything from offset 101 onward.
+    // maxSize=1001 -> targetSize=500. content.length=600 -> cutPosition=100. With newlines at 99, 199, 299, 399, 499, the first newline at-or-past 100 is 199.
+    // Result keeps everything from offset 200 onward.
     const lines = Array.from({ length: 6 }, () => "X".repeat(99));
     const content = lines.join("\n");
 

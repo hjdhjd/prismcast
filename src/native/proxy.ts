@@ -1309,7 +1309,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       return;
     }
 
-    // Schedule the next poll at roughly half the target segment duration for timely detection of new segments.
+    // Schedule the next poll at MANIFEST_BACKOFF_BASE (3000ms, ~half a typical 6s segment) for timely detection of new segments.
     lifecycle.manifestBackoffMs = MANIFEST_BACKOFF_BASE;
 
     schedulePoll(MANIFEST_BACKOFF_BASE);

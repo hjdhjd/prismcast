@@ -311,7 +311,8 @@ function encodeStringTlv(tag: number, value: string): Buffer {
 }
 
 /**
- * Decoded TLV records produced by the parser. Tag is the numeric tag byte; value is the raw value bytes (UTF-8 NUL stripped if it was a string TLV).
+ * Decoded TLV records produced by the parser. Tag is the numeric tag byte; value is the raw value bytes exactly as they appear on the wire, including any
+ * trailing NUL carried by string TLVs. Stripping that NUL is the responsibility of readStringTlv at decode time, not of the parser.
  */
 interface DecodedTlv {
 

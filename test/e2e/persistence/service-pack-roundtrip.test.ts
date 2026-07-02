@@ -42,7 +42,7 @@ import { readFile } from "node:fs/promises";
 
 /**
  * Seeds a one-profile / one-domain / one-channel fixture and returns the seeded keys for cross-reference. fullscreenApi is the canonical user-extensible base
- * profile; myservice.example.test does not collide with any built-in domain in src/config/sites.ts so validateDomain accepts it.
+ * profile; myservice.example.test does not collide with any builtin domain in src/config/sites.ts so validateDomain accepts it.
  * @returns The seeded fixture's keys.
  */
 async function seedFixture(): Promise<{ channelKey: string; domainKey: string; profileKey: string }> {

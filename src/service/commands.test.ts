@@ -6,7 +6,7 @@
  * paths) are split by grouping: install/uninstall in commands.install.test.ts, runtime lifecycle (start/stop/restart) plus dispatch helpers in
  * commands.lifecycle.test.ts, and handleStatus literal in commands.status.test.ts.
  *
- * Branches that genuinely need a real launchd/systemd/sc.exe round trip are still e2e territory and are not exercised here.
+ * Branches that genuinely need a real launchd/systemd/Windows Task Scheduler round trip are still e2e territory and are not exercised here.
  */
 import { afterEach, before, beforeEach, describe, mock, test } from "node:test";
 import { handleServiceCommand, handleStart, handleStatus, handleStop, handleUninstall, printServiceUsage } from "./commands.ts";
@@ -79,8 +79,8 @@ describe("printServiceUsage", () => {
 
     printServiceUsage();
 
-    // The usage block is at least a dozen lines (header, commands list, options, configuration note). We don't lock the exact line count, but we verify the
-    // shape: the first line is the canonical "Usage:" header, and several known command names appear somewhere in the output.
+    // The usage block spans at least a dozen lines (header, commands list, options, configuration note). This test locks only the multi-line shape - that the output
+    // spans several lines. The sibling tests below verify the canonical "Usage:" header on the first line and the presence of every documented subcommand name.
     assert.ok(logCalls.length > 5, "usage output should span multiple lines");
   });
 
@@ -248,7 +248,7 @@ describe("handlers report 'not installed' on a clean system", () => {
     restoreHome();
   });
 
-  // [handler name, handler fn, platform value] - we walk the cross product so every handler is exercised on at least two platforms.
+  // Each case is { fn, name, platform } - we walk the cross product so every handler is exercised on at least two platforms.
   const handlerCases: { fn: () => Promise<number>; name: string; platform: string }[] = [
 
     { fn: handleStart, name: "handleStart", platform: "darwin" },
@@ -468,13 +468,14 @@ describe("handleServiceCommand routes to each handler (smoke tests)", () => {
     assert.match(stdoutText, /PrismCast Service Status/);
   });
 
-  /* The 'install' command path is exercised in the literal-context tests below, which inject a fake generator instead of spawning launchctl/systemctl/sc.exe.
-   * The dispatcher's force-flag parsing (args.includes("--force") || args.includes("-f")) is exercised indirectly via the unknown-command negative test - if
-   * --force or -f were not recognized as flags following an "install" verb, the dispatcher would still route to handleInstall(false) rather than misclassify
-   * them as unknown commands, so the routing contract is preserved.
+  /* The 'install' command path is exercised in the literal-context tests in commands.install.test.ts, which inject a fake generator instead of spawning
+   * launchctl/systemctl/powershell.exe. The dispatcher's force-flag parsing (args.includes("--force") || args.includes("-f")) is exercised indirectly via the
+   * unknown-command negative test - if --force or -f were not recognized as flags following an "install" verb, the dispatcher would still route to
+   * handleInstall(false) rather than misclassify them as unknown commands, so the routing contract is preserved.
    */
 });
 
-/* Literal-context fixture types and factories live in commands.helpers.ts. Tests in this file consume makeFakeGenerator and makeContextHarness from there.
+/* Literal-context fixture types and factories live in commands.helpers.ts. The tests that consume makeFakeGenerator and makeContextHarness are the sibling files
+ * listed in this file's header - commands.install.test.ts, commands.lifecycle.test.ts, and commands.status.test.ts - not this file.
  */
 

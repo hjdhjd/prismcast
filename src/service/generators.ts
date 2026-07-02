@@ -132,7 +132,7 @@ export interface ServiceGenerator {
  * Runs an asynchronous child_process call and, on failure, re-throws an Error whose message includes the trimmed stderr text captured from the failed child and
  * whose cause chain points back at the original Error. Without the stderr enrichment, execFile/exec failures surface to users as a generic "Command failed: ..."
  * line while the actual diagnostic - written by the child to stderr - is left on the Error's unread stderr Buffer. Attaching the original via Error.cause
- * preserves the original stack and structured properties (status, signal, stdout, stderr) for any programmatic consumer.
+ * preserves the original stack and structured properties (code, signal, stdout, stderr) for any programmatic consumer.
  * @param description - A short human-readable label describing what was attempted; prepended to the error message.
  * @param run - The child_process thunk to execute.
  */

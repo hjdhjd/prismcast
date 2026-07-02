@@ -130,8 +130,8 @@ describe("parsePid1StartTicks", () => {
 
   test("extracts field 22 from a representative /proc/1/stat payload", () => {
 
-    // Constructed from a real Linux /proc/1/stat shape with all 52 numeric fields after the comm. The comm contains an embedded paren ("(bash") to exercise the
-    // last-paren anchor. Field 22 (starttime, in clock ticks since boot) is 5678; everything else is filler that the parser must skip.
+    // Constructed to mirror a real Linux /proc/1/stat shape, where the comm is followed by the state character and then the numeric fields. The comm contains an embedded
+    // paren ("(bash") to exercise the last-paren anchor. Field 22 (starttime, in clock ticks since boot) is 5678; everything else is filler that the parser must skip.
     const raw = "1 ((bash) S 0 1 1 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 5678 0 0 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n";
 
     assert.equal(parsePid1StartTicks(raw), "5678");

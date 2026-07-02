@@ -39,7 +39,7 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
  * 1. createPageWithCapture(): Creates a browser page, starts media capture, navigates to the URL, and sets up video playback. This is the reusable core that both
  *    initial stream setup and tab replacement recovery use.
  *
- * 2. setupStream(): Orchestrates stream creation by calling createPageWithCapture(), then registering the stream and starting the health monitor. This is the
+ * 2. setupStream(): Orchestrates stream creation by calling createPageWithCapture(), then starting the health monitor. This is the
  *    entry point for new stream requests.
  *
  * The separation allows tab replacement recovery (in monitor.ts) to reuse the capture setup logic without duplicating code. When a browser tab becomes unresponsive,
@@ -52,8 +52,7 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
  * - Video element detection and playback setup
  *
  * setupStream() additionally handles:
- * - Request validation (URL format, concurrent stream limit)
- * - Stream registration
+ * - Request validation (URL format only)
  * - Health monitor startup
  * - Cleanup function creation
  */
@@ -463,8 +462,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   // Acquire every resource on a DisposableStack so that any throw - in capture initialization, navigation, or playback setup - disposes them structurally as the
   // function unwinds, in last-acquired-first order (capture session before page, so the capture stream is destroyed and STOP_RECORDING fires while the browser is
-  // still connected, before the page closes). On success we move() the stack to disarm it and transfer ownership to the caller. This replaces the hand-written
-  // teardown each failure path used to repeat, and closes the navigation-path leak of the manifest interceptor.
+  // still connected, before the page closes). On success we move() the stack to disarm it and transfer ownership to the caller. This centralizes teardown that
+  // would otherwise be repeated in each failure path, and closes the navigation-path leak of the manifest interceptor.
   using resources = new DisposableStack();
 
   // Create browser page.
@@ -647,6 +646,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
       slot.release();
 
+      // Defer the exit briefly so the error log above has time to flush to disk before the process dies; an immediate process.exit() can truncate the buffered
+      // file write and lose the diagnostic that explains why the service restarted.
       setTimeout(() => process.exit(1), 100);
 
       throw error;

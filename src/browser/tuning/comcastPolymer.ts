@@ -24,8 +24,8 @@ import { logAutoDismiss } from "../consent.ts";
  * with separate channel caches and channelmap response caches, parameterized by guide URL, branding, and strategy name.
  *
  * Tuning flow:
- * 1. resolveDirectUrl: sets up channelmap API interception and returns null. On warm tunes, also enables CDP request interception to serve the cached channelmap
- *    response instantly, eliminating the 3-5s network round-trip.
+ * 1. resolveDirectUrl: sets up channelmap API response interception and installs the request-interception listener (once per page), returning null. On warm tunes the
+ *    listener serves the cached channelmap response instantly, eliminating the 3-5s network round-trip.
  * 2. The caller (tuneToChannel in video.ts) navigates to the guide URL, loading the Polymer SPA.
  * 3. directStrategy: waits for `TV-APP.channelMap.channels` to populate, finds the target channel by callSign, and calls `_watchChannelEventHandler`.
  * 4. A fire-and-forget poll watches for a visible "Watch Now" modal button and clicks it if it appears.
@@ -613,9 +613,9 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
   }
 
   /**
-   * Sets up channelmap API interception for the upcoming page navigation and, on warm tunes, enables CDP request interception to serve the cached channelmap
-   * response instantly. Like DirecTV's resolveDirectUrl, this always returns null - all tuning happens in the strategy's execute function via
-   * `_watchChannelEventHandler`.
+   * Sets up channelmap API response interception for the upcoming page navigation and installs the request-interception listener (once per page). On warm tunes the
+   * listener serves the cached channelmap response instantly. Like DirecTV's resolveDirectUrl, this always returns null - all tuning happens in the strategy's execute
+   * function via `_watchChannelEventHandler`.
    * @param _channelSelector - The channel selector string (unused - channel lookup happens in the strategy).
    * @param page - The Puppeteer page for response interception setup.
    * @returns Always null - no direct URL navigation.

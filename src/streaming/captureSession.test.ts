@@ -239,8 +239,8 @@ describe("createCaptureSession - segmenter wiring", () => {
 
   test("stops the orphan and does not wire it when attaching to an already-disposed session", () => {
 
-    // Folds the former orphaned-segmenter cleanup into the session contract: a stream terminated mid-setup disposes the session before the segmenter is created, so
-    // the later attach must stop the orphan rather than pipe it into a torn-down pipeline.
+    // The session contract owns orphaned-segmenter cleanup: a stream terminated mid-setup disposes the session before the segmenter is created, so the later attach
+    // must stop the orphan rather than pipe it into a torn-down pipeline.
     const rig = createRig();
     const session = createCaptureSession({ ffmpegProcess: rig.ffmpegProcess, rawCaptureStream: rig.rawCaptureStream });
 

@@ -3,7 +3,7 @@
  * testing.helpers.ts: Barrel re-export for the cross-cutting testing helper modules under src/testing/. Test files import from this single entry to keep
  * import paths stable as the implementation modules evolve. The thematic submodules under src/testing/ each own one concern:
  *
- *   - cdp.helpers.ts          FakeCdpSession, FakeConnection, makeFakeCdpPage, CapturedCdpCommand (puppeteer CDP stubs)
+ *   - cdp.helpers.ts          FakeCdpSession, FakeConnection, makeFakeCdpPage, CapturedCdpCommand, CdpSessionListenerOp (puppeteer CDP stubs)
  *   - cleanup.helpers.ts      closePuppeteerStreamWss, closePuppeteerStreamWssOnIdle
  *   - exec.helpers.ts         FakeExecFileResult, FakeExecFile, bufferOrStringToString, makeExecFileError, execFileFromMap, execFileAlwaysSucceeds
  *   - fn.helpers.ts           noop

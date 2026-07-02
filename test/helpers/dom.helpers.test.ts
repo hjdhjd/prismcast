@@ -78,9 +78,9 @@ describe("createDomTestContext - HTML loading and script extraction", () => {
 
   test("extracts inline <script> bodies in document order with sequential indices", async () => {
 
-    /* The landing page emits five inline scripts (shared utilities, tab, channels subtab, config subtab, status). The harness must surface them in document
-     * order so a test that wants "the script before the channels subtab" can use index arithmetic. We only assert structural properties that are stable across
-     * re-orderings: indices are 0..N-1 and contiguous, content is a string, length matches scripts array length.
+    /* The landing page emits several inline scripts (shared utilities, tab, channels subtab, config subtab, status, and the logs-tab log-viewer block). The
+     * harness must surface them in document order so a test that wants "the script before the channels subtab" can use index arithmetic. We assert only structural
+     * properties that are stable across re-orderings and additions: indices are 0..N-1 and contiguous, content is a string, length matches scripts array length.
      */
     await using ctx = await createDomTestContext();
 

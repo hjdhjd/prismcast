@@ -34,8 +34,8 @@ export function assertNoUnhandledRejections(emitter: EventEmitter = process): ()
 
     if(captured.length > 0) {
 
-      // Surface every captured rejection via AggregateError.errors so every stack is inspectable, not just the first. The summary message keeps the [N total]
-      // form so the top-level failure line stays scannable for operators; per-rejection reasons live on errors[] in capture order.
+      // Surface every captured rejection via AggregateError.errors so every stack is inspectable, not just the first. The summary message keeps the "(N total)"
+      // count so the top-level failure line stays scannable for operators; per-rejection reasons live on errors[] in capture order.
       const reasons = captured.map((c) => c.reason);
       const summary = "Unhandled rejection during test (" + String(captured.length) + " total): " + String(reasons[0]);
 

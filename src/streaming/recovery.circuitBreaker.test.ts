@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * recovery.circuitBreaker.test.ts: Unit tests for the circuit-breaker primitives in recovery.ts - checkCircuitBreaker and resetCircuitBreaker. Issue
- * classification helpers live in recovery.test.ts; metrics tracking lives in recovery.metrics.test.ts.
+ * recovery.circuitBreaker.test.ts: Unit tests for the circuit-breaker and failure-window primitives in recovery.ts - checkCircuitBreaker, resetCircuitBreaker,
+ * recordFailure, and resetFailureWindow. Issue classification helpers live in recovery.test.ts; metrics tracking lives in recovery.metrics.test.ts.
  */
 import type { CircuitBreakerState, FailureWindowState } from "./recovery.ts";
 import { checkCircuitBreaker, recordFailure, resetCircuitBreaker, resetFailureWindow } from "./recovery.ts";

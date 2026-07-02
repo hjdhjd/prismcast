@@ -3,8 +3,8 @@
  * userChannels.accessors.test.ts: Direct unit tests for the read-accessor cluster - small predicates and pure value lookups whose contracts are stable enough to
  * be locked in at the unit level. The accessors split into two coverage tiers:
  *
- *   1. Pure-relative-to-compile-time-data: tagsMatch, getEffectiveHdhrEnabled, isPredefinedChannel, getEastCanonicalKey. These read only static module imports
- *      (PREDEFINED_CHANNELS) or their argument, so they are safe to unit-test directly without any module initialization.
+ *   1. Pure-relative-to-compile-time-data: tagsMatch, getEffectiveHdhrEnabled, isPredefinedChannel, getEastCanonicalKey, isVisibleChannel. These read only static
+ *      module imports (PREDEFINED_CHANNELS) or their argument, so they are safe to unit-test directly without any module initialization.
  *
  *   2. Runtime-state-dependent: isUserChannel (loadedUserChannels), isPredefinedChannelDisabled (CONFIG.channels.disabledPredefined), isInVocabulary and
  *      getChannelEffectiveTags (loadedTagRegistry via getActiveTagVocabulary), isChannelAvailable (getAllChannels merge result). These depend on state populated
@@ -12,7 +12,10 @@
  *      in this directory keeps unit tests on pure helpers and routes integration coverage through HTTP-endpoint tests where the full system is already wired
  *      up. The tier-2 accessors are exercised there transitively.
  *
- * The tests below cover tier 1 exhaustively. tier 2 is documented at each function's describe block as a deliberate transitive-coverage decision.
+ * The tests below cover tier 1 exhaustively. A third group - the thin state and delegation wrappers hasChannelsParseError, getChannelsParseErrorMessage, and
+ * getUserChannelsFilePath - is contract-tested directly here: their shape (boolean, string-or-undefined, and throw-or-resolve) holds regardless of bring-up state,
+ * so we pin the contract without standing up the bootstrap. The remaining tier-2 accessors are documented at each function's describe block as a deliberate
+ * transitive-coverage decision.
  */
 import type { ChannelListingEntry, ResolvedChannel } from "../types/index.ts";
 import { describe, test } from "node:test";

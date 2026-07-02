@@ -5,7 +5,7 @@
  * Each handler is a pure orchestrator over a ServiceContext. The context bundles the platform-specific generator factory, runtime path and platform queries, the
  * server-port and active-streams probes, the stale-path detector, the service-definition builder, and stdout/stderr writers; production wires all of them through
  * createDefaultServiceContext (in commands.context.ts), tests pass a context literal. The decision logic - install gating, restart vs. start, status display,
- * dispatcher routing - is fully testable without touching real launchctl/systemctl/sc.exe state, real config files, or real HTTP.
+ * dispatcher routing - is fully testable without touching real launchctl/systemctl/powershell.exe state, real config files, or real HTTP.
  */
 import type { ServiceDefinition, ServiceGenerator, ServicePaths, StalePathResult } from "./generators.ts";
 import type { Nullable } from "../types/index.ts";
@@ -330,6 +330,8 @@ async function restartService(ctx: ServiceContext, generator: ServiceGenerator, 
 
     try {
 
+      // install() re-registers and starts the service on every platform (launchd load -w, systemctl enable+start, Windows Register+Start-ScheduledTask), so the
+      // regeneration path needs no separate start() call; the success message below reflects a service that install() has already brought up.
       await generator.install(ctx.buildServiceDefinition());
     } catch(error) {
 

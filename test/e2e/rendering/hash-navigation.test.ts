@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * hash-navigation.test.ts: Integration coverage for the server side of the URL-hash navigation contract. Phase 2.5 Suite 33 was investigation-first - the
- * roadmap framed the question as "what does the server actually do with hash state?" and asked the test author to pin whichever the actual behavior is.
+ * hash-navigation.test.ts: Integration coverage for the server side of the URL-hash navigation contract. The server produces stable, URL-independent HTML with
+ * source-fixed default-active markers; all hash and tab activation is client-side.
  *
- * Investigation finding (Suite 33): the server's role in tab/hash activation is structurally NIL. The landing page handler at src/routes/root/index.ts:144
+ * The server's role in tab/hash activation is structurally NIL. The landing page handler at src/routes/root/index.ts:144
  * builds the tab bar with overview always marked active (the generateTabButton("overview", ..., true) call at src/routes/root/index.ts:159) and emits every tab
  * panel and subtab in source-fixed default-active
  * state. No req.query consultation, no hash hint via header, no server-side variation by URL. Tab and subtab activation is wholly client-side - generateTabScript

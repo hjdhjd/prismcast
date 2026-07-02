@@ -17,8 +17,8 @@
 /**
  * Escapes the five HTML special characters - & < > " ' - to their HTML5 entities, including the numeric apostrophe reference &#39;. This is the client mirror of
  * markup.escapeHtml. The five-character coverage is load-bearing: client renderers concatenate escaped values into innerHTML in both text-node and attribute
- * positions, and the double quote is the attribute-breakout vector, so a text-node-only escaper (the textContent round-trip pattern the retired copies used,
- * which leaves " and ' raw) would be unsafe for the title/alt/value/data-* attribute sites that consume this. The body is deliberately self-contained - a literal
+ * positions, and the double quote is the attribute-breakout vector, so a text-node-only escaper (a textContent round-trip pattern that leaves " and ' raw) would
+ * be unsafe for the title/alt/value/data-* attribute sites that consume this. The body is deliberately self-contained - a literal
  * regex and an inline entity table, no module-scope helpers and no imports - because it is emitted to the browser via Function.prototype.toString() and may
  * therefore reference only its parameters and browser globals.
  * @param value - The text to escape.

@@ -308,6 +308,8 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "mylifetime.com": { profile: "fullscreenApi", service: "Lifetime" },
   "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", service: "Nat Geo" },
   "nba.com": { profile: "fullscreenApi", service: "NBA.com" },
+  // NBC.com enforces a session limit that cuts the stream after roughly four continuous hours of playback, so maxContinuousPlayback (measured in hours) drives a
+  // proactive page reload just before that cap is reached. No other configured domain imposes a continuous-playback limit, which is why the field appears here alone.
   "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", service: "NBC.com" },
   "paramountplus.com": { dismissSelector: ".ppp-watch", iconUrl: "https://www.paramountplus.com/assets/images/pplus_App_Icon-Blue-144x144.png",
     profile: "fullscreenApi", service: "Paramount+", serviceTag: "paramountplus" },

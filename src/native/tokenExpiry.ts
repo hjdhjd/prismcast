@@ -29,7 +29,7 @@ export interface TokenExpiryStrategy {
 }
 
 /* Numeric expiry timestamps embedded in CDN tokens are commonly 10-digit seconds since the epoch, but some emit 13-digit milliseconds directly. We treat any
- * value below 1e12 (approximately year 33658 in milliseconds, but only year 2001 in seconds) as seconds and multiply; values at or above 1e12 are taken as
+ * value below 1e12 (approximately year 2001 in milliseconds, but only year 33658 in seconds) as seconds and multiply; values at or above 1e12 are taken as
  * milliseconds verbatim. The cutoff is well past any plausible seconds-since-epoch value an HLS CDN would emit during this code's lifetime.
  */
 const SECONDS_TO_MS_THRESHOLD = 1e12;

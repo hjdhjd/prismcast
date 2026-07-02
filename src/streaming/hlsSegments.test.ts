@@ -273,7 +273,8 @@ describe("updateAudioPlaylist / getAudioPlaylist", () => {
 
   test("returns undefined when the audio playlist is empty (empty-string-to-undefined coercion)", () => {
 
-    // The implementation explicitly maps "" -> undefined so callers can distinguish "no audio variant" from "audio variant with empty content."
+    // The implementation coerces empty string to undefined so an empty audio playlist is treated as "no audio variant." That collapses empty content and absence into one
+    // value, letting callers rely on a simple presence check instead of distinguishing "" from undefined.
     assert.equal(getAudioPlaylist(streamId), undefined, "fresh stream has no audio playlist");
   });
 

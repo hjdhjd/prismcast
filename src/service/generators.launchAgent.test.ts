@@ -62,7 +62,8 @@ describe("createLaunchdGenerator (via getServiceGenerator on darwin)", () => {
 
   test("install: falls back to unload+load on initial load failure (reinstall scenario)", async () => {
 
-    // The first load throws (already loaded). The generator unloads and retries, which succeeds.
+    // The first load throws (already loaded), so the generator unloads and retries. Here the retry is configured to fail as well, exercising the
+    // runAndSurfaceStderr error path so the install rejects with "launchctl load failed".
     const installPath = "/Users/test/Library/LaunchAgents/com.prismcast.plist";
     const { calls, io } = makeFakeIO({
 

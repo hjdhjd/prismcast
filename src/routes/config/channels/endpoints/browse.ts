@@ -108,8 +108,9 @@ export function registerBrowseRoutes(app: Express): void {
     let removed = 0;
     let switched = 0;
 
-    // Process all entries inside a single transactional mutation. Both channel changes and service-selection changes go through data.* directly so the entire
-    // batch lands as one atomic write - the framework persists exactly what the fn produced.
+    // Process all entries inside a single transactional mutation. Channel changes and service-selection changes go through data.* directly, so that portion of the
+    // batch lands as one atomic write - the framework persists exactly what the fn produced. Atomicity covers only the channel and service-selection writes made
+    // here; the predefined enable/disable side effects run as separate follow-up writes after this mutation, so the batch as a whole is not crash-consistent.
     await mutateChannels((data) => {
 
       const allKeys = new Set(Object.keys(PREDEFINED_CHANNELS)).union(new Set(Object.keys(data.channels)));

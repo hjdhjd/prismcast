@@ -11,7 +11,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 
 // Tests stub process.platform via this helper rather than direct assignment, because Node exposes process.platform as an accessor on some builds. The helper
-// captures the original value and lets the test stash a getter that returns whatever the test wants.
+// installs a configurable data property that overrides process.platform with the requested value; the original is captured once at module scope as
+// ORIGINAL_PLATFORM and restored in each stubbing describe's afterEach.
 function setPlatform(value: string): void {
 
   Object.defineProperty(process, "platform", {
@@ -155,7 +156,7 @@ describe("isRunningInContainer", () => {
 
     // The fallback branch calls fs.existsSync("/.dockerenv"). We can't (and shouldn't) create that file on the host - it's a Docker convention - but the
     // platform module captures fs via `import fs from "node:fs"`, so mock.method on the fs default-export's existsSync property substitutes the probe at
-    // runtime. The mock is reverted in afterEach via mock.reset.
+    // runtime. The mock is reverted in this test's own finally block via mock.reset().
     delete process.env["PRISMCAST_CONTAINER"];
 
     const fs = await import("node:fs");
@@ -265,7 +266,7 @@ describe("getPrismCastWorkingDirectory", () => {
   });
 });
 
-// Restore platform on suite teardown - belt-and-braces in case any individual test leaves a stub in place.
+// A final belt-and-braces restore, run as a beforeEach ahead of the sanity-check assertion, in case any earlier test left a platform stub in place.
 describe("platform restoration sanity check", () => {
 
   beforeEach(() => {

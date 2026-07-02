@@ -195,8 +195,8 @@ before(async () => {
 
   setupHealthEndpoint = healthModule.setupHealthEndpoint;
 
-  // The shared listener closes over a getter for setupHealthEndpoint by installing it once now; since setupHealthEndpoint is a synchronous registration of a
-  // single GET /health route, one server can serve every test and rely on mockState mutations to drive scenarios.
+  // The install callback closes over the module-scope setupHealthEndpoint binding; because it registers a single synchronous GET /health route, one server can
+  // serve every test and rely on mockState mutations to drive scenarios.
   const created = await makeServer((app) => {
 
     setupHealthEndpoint(app);

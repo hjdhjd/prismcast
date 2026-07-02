@@ -452,7 +452,7 @@ describe("saveResumeState", () => {
   test("does not throw when the resume file path is unwritable (fs.writeFileSync fails)", () => {
 
     /* The save path wraps fs.writeFileSync in try/catch and emits a warning rather than throwing - shutdown must remain robust to a momentarily unwritable
-     * data directory (read-only filesystem, permission flip, parent removed by an external process). The catch block was previously untested. We trigger the
+     * data directory (read-only filesystem, permission flip, parent removed by an external process). This test exercises that catch block. We trigger the
      * branch by pointing initializeDataDir at a path that contains a non-directory component as its parent, so writeFileSync raises ENOTDIR / ENOENT depending
      * on the platform. The function must swallow the error and return cleanly.
      */
@@ -489,7 +489,7 @@ describe("saveResumeState", () => {
 
   test("round-trips a non-null initSegment Buffer through save -> load -> peek with bytewise equality", () => {
 
-    /* The base64 encode/decode path was previously exercised only with initSegment: null. A regression in the encode side, the decode side, or the Map-key
+    /* This test pins the base64 encode/decode path with a non-null initSegment. A regression in the encode side, the decode side, or the Map-key
      * stringification could silently corrupt the segment without affecting any other test. We seed a 256-byte Buffer with distinguishable content (sequential
      * byte values mod 256) so any byte slip surfaces as a mismatch.
      */

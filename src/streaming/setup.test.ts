@@ -132,7 +132,7 @@ describe("validateStreamUrl", () => {
 
     assert.equal(result.valid, false);
 
-    // The discriminant is now narrowed to false at the type level - dereferencing result.reason is type-safe without a guard.
+    // UrlValidationResult carries reason as an optional string field, so it is directly readable on the failure result; there is no discriminated-union narrowing here.
     const reason = (result as { reason?: string }).reason;
 
     assert.equal(reason, "URL is required.");
@@ -145,7 +145,7 @@ describe("validateStreamUrl", () => {
 
     assert.equal(result.valid, false);
 
-    // The discriminant is now narrowed to false at the type level - dereferencing result.reason is type-safe without a guard.
+    // UrlValidationResult carries reason as an optional string field, so it is directly readable on the failure result; there is no discriminated-union narrowing here.
     const reason = (result as { reason?: string }).reason;
 
     assert.equal(reason, "URL is required.");

@@ -169,10 +169,9 @@ describe("mergeConfiguration", () => {
 
   test("env var that parses as zero is honored (no truthiness gate on parsed values)", () => {
 
-    /* Boundary: the merge writes through any defined parsed value (the guard is `parsedValue !== undefined`, NOT a truthy check). This pins that a single
-     * non-empty checkboxList override survives the merge with no truthiness filter applied to the array contents, so a parsed value that is defined-but-falsy
-     * for a permissive field is not silently dropped. The checkboxList type carries no positivity gate at the merge layer, which makes it the clean vehicle for
-     * exercising the defined-value path here.
+    /* Boundary: the merge writes through any defined parsed value because the guard is `parsedValue !== undefined`, NOT a truthy check. This pins that a single
+     * non-empty checkboxList override reaches CONFIG unchanged, with no per-element truthiness filter applied to the array contents. The checkboxList type carries
+     * no positivity gate at the merge layer, which makes it the clean vehicle for exercising the defined-value pass-through here.
      */
     process.env["CAPTURE_CODECS"] = "h264";
 

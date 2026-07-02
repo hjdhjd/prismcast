@@ -4,7 +4,8 @@
  * counterpart - they form a pair, co-located so any test that consumes a Clock has the factory ready without inventing its own. By default the fake clock's
  * sleep() resolves immediately and records the requested duration into a shared array (so tests can assert on the schedule); raceWithTimeout() forwards the
  * inner promise unchanged (so the operation's own resolve/throw drives the outcome); now() returns 0. Tests that need different behavior pass overrides for
- * the specific method they want to control - e.g., a raceWithTimeout that throws synchronously to simulate the timer winning the race.
+ * the specific method they want to control - e.g., a raceWithTimeout that throws inside an async override, surfacing as a rejection, to simulate the timer winning the
+ * race.
  *
  * Excluded from the build emit by the *.helpers.ts pattern in tsconfig.build.json.
  */

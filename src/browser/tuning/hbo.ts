@@ -12,9 +12,8 @@ import { logAvailableChannels } from "./shared.ts";
 // rail. Kept as a separate constant from HBO_CHANNELS_URL so the two roles (path-concatenation base vs. landing-URL constant) stay distinct.
 const HBO_MAX_BASE_URL = "https://play.hbomax.com";
 
-// The /channels hub URL where HBO Max surfaces all live linear channels. PrismCast lands here directly via provider.guideUrl rather than chasing brand-page links
-// out of the homepage menu - HBO's site restructure (late 2025/early 2026) consolidated brand tabs into the /channels hub, deprecating the previous menu-bar
-// driven navigation entirely. This is now the single landing URL for both tuning and discovery.
+// The /channels hub URL where HBO Max surfaces all live linear channels. PrismCast lands here directly via provider.guideUrl; this is the single landing URL for
+// both tuning and discovery.
 const HBO_CHANNELS_URL = "https://play.hbomax.com/channels";
 
 // Internal cache entry combining discovery metadata and tuning data. The discovered field provides the API-facing DiscoveredChannel (name, channelSelector), and

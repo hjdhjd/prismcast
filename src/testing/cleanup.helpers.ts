@@ -9,13 +9,12 @@
  * after binding (see the source at https://github.com/SamuelScheit/puppeteer-stream/blob/main/src/PuppeteerStream.ts). A search of the upstream issue tracker
  * for "WebSocketServer", "unref", and "exit hang" returned no relevant matches; the related issue #131 ("Shutdown is taking more than 5 seconds") is about a
  * separate setTimeout in the stream-stop path. The pristine fix would be a one-line .unref() upstream; we work around the limitation here so PrismCast tests
- * exit cleanly without depending on an upstream change. If we ever decide to open an issue or PR there, the title would be "WebSocketServer should be unref'd
- * so Node test runners exit cleanly" with a one-line patch on the wss-binding IIFE.
+ * exit cleanly without depending on an upstream change.
  *
- * The previous implementation scanned process._getActiveHandles() (an undocumented Node internal) and duck-typed by constructor.name === "Server", which was
- * fragile (any unrelated Server handle would be force-closed) and dependent on internal API surface. Now we close the specific known handle: puppeteer-stream
- * exports its WebSocketServer as the awaitable `wss` symbol from the package entry. We import it dynamically inside the helper so this module itself doesn't
- * force every consuming test file to load puppeteer-stream - tests that do not transitively need it never trigger the load.
+ * We close the specific exported handle rather than scanning process._getActiveHandles() (an undocumented Node internal) and duck-typing by
+ * constructor.name === "Server", which would force-close any unrelated Server handle and depend on internal API surface. puppeteer-stream exports its
+ * WebSocketServer as the awaitable `wss` symbol from the package entry. We import it dynamically inside the helper so this module itself doesn't force every
+ * consuming test file to load puppeteer-stream - tests that do not transitively need it never trigger the load.
  *
  * Two call patterns are supported because they serve genuinely different test styles:
  *

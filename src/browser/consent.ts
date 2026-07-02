@@ -30,7 +30,7 @@ import type { ResolvedSiteProfile } from "../types/index.ts";
  * to detect-and-guide: it surfaces an actionable message telling the viewer to dismiss the prompt once in setup/login mode, instead of a cryptic selector timeout.
  */
 
-// Interval in milliseconds between overlay-handling poll checks. Matches the cadence of the legacy dismiss-modal poll this mechanism replaces.
+// Interval in milliseconds between overlay-handling poll checks. This cadence is responsive enough to catch a late-rendering overlay while keeping each tick cheap.
 const OVERLAY_POLL_INTERVAL = 500;
 
 // Settle delay in milliseconds after scrolling an element into view, before dispatching a coordinate click. Mirrors the shared scrollAndClick helper's settle so
@@ -91,7 +91,7 @@ type AutoDismissKind = "cookie-consent" | "embed-gate" | "modal";
  */
 interface AutoDismissDetail {
 
-  // Short snippet of the accepted control's label, for embed-gate acceptances.
+  // Short snippet of the acted-on control's label, carried by embed-gate acceptances and text-matched modal dismissals (such as the Comcast "Watch Now" modal).
   readonly label?: string;
 
   // The CSS selector that matched, for CMP rejects and per-site modal dismissals.
@@ -219,9 +219,8 @@ async function clickSelectorByCoordinate(page: Page, selector: string): Promise<
 }
 
 /**
- * Clicks an element identified by a CSS selector using a synthetic in-page click. This preserves the exact behavior of the legacy dismiss-modal poll for per-site
- * dismissSelector modals (Paramount+ "Watch Live", c-span, cbs), which were validated against synthetic clicks; coordinate clicking is reserved for the consent
- * paths that require it. Returns false when the element is absent.
+ * Clicks an element identified by a CSS selector using a synthetic in-page click. The per-site dismissSelector modals (Paramount+ "Watch Live", c-span, cbs) are
+ * reliably dismissed by synthetic clicks, so coordinate clicking is reserved for the consent paths that require it. Returns false when the element is absent.
  * @param page - The Puppeteer page.
  * @param selector - The CSS selector for the modal element to dismiss.
  * @returns True if the element was found and clicked.
@@ -244,9 +243,9 @@ async function clickSelectorSynthetic(page: Page, selector: string): Promise<boo
 }
 
 /**
- * Locates an embedded-player consent gate and returns the coordinates of its accept control, or null when none is present. A gate is recognized by shape: a button
- * (or button-role element) whose label matches the accept affordance AND whose ancestor container carries the 2-click-embed phrasing. The scan early-outs when a
- * video is already playable, so it never fires on a tune that is succeeding without an overlay. The matched control is scrolled into view and its viewport-center
+ * Locates an embedded-player consent gate and returns the coordinates of its accept control, or null when none is present. A gate is recognized by shape: a button,
+ * a button-role element, or an anchor whose label matches the accept affordance AND whose ancestor container carries the 2-click-embed phrasing. The scan early-outs
+ * when a video is already playable, so it never fires on a tune that is succeeding without an overlay. The matched control is scrolled into view and its viewport-center
  * coordinates returned for a real coordinate click.
  * @param page - The Puppeteer page.
  * @returns The accept control's center coordinates and a short label, or null when no gate is detected.
@@ -396,7 +395,7 @@ async function runOverlayTick(page: Page, profile: ResolvedSiteProfile, state: O
       return "gate";
     }
 
-    // Dismiss the profile's per-site intermittent modal, if configured, using a synthetic click to preserve the legacy behavior.
+    // Dismiss the profile's per-site intermittent modal, if configured, using a synthetic click, which reliably dismisses these per-site modals.
     if(profile.dismissSelector && !state.dismissSelectorHandled) {
 
       const dismissed = await clickSelectorSynthetic(page, profile.dismissSelector);
@@ -418,8 +417,8 @@ async function runOverlayTick(page: Page, profile: ResolvedSiteProfile, state: O
 }
 
 /**
- * Launches the fire-and-forget overlay-handling poll for a tune. Runs concurrently with the video wait, never blocks it, and never throws - it is the unified
- * replacement for the legacy dismiss-modal poll, additionally rejecting known cookie banners and accepting embedded-player consent gates. The poll window matches
+ * Launches the fire-and-forget overlay-handling poll for a tune. Runs concurrently with the video wait, never blocks it, and never throws - it is the single
+ * mechanism that rejects known cookie banners, accepts embedded-player consent gates, and dismisses per-site modals during a tune. The poll window matches
  * the video-wait window so a late-rendering gate is still caught; the caller's abort signal stops it as soon as the wait settles.
  *
  * When an embedded-player consent gate is accepted, onEmbedGateAccepted() is invoked and the poll stops, because the gate's acceptance only takes effect on a fresh

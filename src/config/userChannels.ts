@@ -140,7 +140,7 @@ export function getChannelsParseErrorMessage(): string | undefined {
  *       stamping canonicalKey on entries whose identity fields match the canonical (shape-compatible with a legitimate variant) and skipping entries whose
  *       fields differ (user standalones that happened to share a hyphenated key with a predefined canonical).
  *   3 - Foxone-era service naming. The v2 -> v3 migration renames "foxcom" -> "foxone" in service selections and channel keys, and the special-case
- *       "fox-site" -> "fox-foxone" rename for the FoxOne variant briefly mis-keyed in v1.8.0. Bumping this version also flushes parser-side legacy field
+ *       "fox-site" -> "fox-foxone" rename for the FoxOne variant stored under the "fox-site" key. Bumping this version also flushes parser-side legacy field
  *       cleanups (provider -> service field, providerSelections -> serviceSelections key) to disk on the same write that lands the foxone rename.
  */
 const CURRENT_CHANNELS_SCHEMA_VERSION = 3;
@@ -980,9 +980,10 @@ function normalizeChannelDeltas(data: ChannelsFileData): void {
 }
 
 /**
- * Prepares channels data for writing to disk. Injects metadata from module state (serviceSelections, tagRegistry) into the serializable output. The metadata
- * is always pulled from module state rather than from the file data, because route handlers may have modified metadata in memory since the last file read.
- * Delta normalization is handled by mutateChannels() before the data reaches this hook.
+ * Prepares channels data for writing to disk. This is a pure function of the passed envelope: channels, schemaVersion, migrationsApplied, serviceSelections,
+ * and tagRegistry are all sourced from `data`, never from module-state caches. The framework guarantees `data` is the source of truth at write time, so reading
+ * module state here would be a side channel that breaks correctness when the boot persist runs before module state is populated. Delta normalization is handled
+ * by mutateChannels() before the data reaches this hook.
  * @param data - The compound channels data with already-normalized channels.
  * @returns The serializable output with channels and current metadata.
  */
@@ -1684,7 +1685,7 @@ function overlayDelta(base: ResolvedChannel, stored: StoredChannel): ResolvedCha
  * Shared overlay kernel used by overlayDelta and overlayVariantBinding. Walks the stored entry's fields and applies them to a clone of base under three rules:
  * fields in allowedFields apply with delta semantics (null clears, undefined skips, value overrides); non-allowed fields either pass through (delta) or are
  * silently dropped (variant overlay) per passThroughOthers; canonicalKey is always allowed regardless of the gate so resolved variants retain their relationship
- * metadata. The kernel exists to keep the two overlays from drifting - identical control flow lived in both call sites before this consolidation.
+ * metadata. The kernel exists to keep the two overlays from drifting - both share one control-flow path rather than duplicating it in each call site.
  * @param base - The base channel to clone and overlay onto.
  * @param stored - The stored entry whose fields override the base.
  * @param options - allowedFields selects which fields apply with delta semantics; passThroughOthers controls whether non-allowed fields flow through or are
@@ -2607,7 +2608,7 @@ export async function enablePredefinedChannels(keys: readonly string[]): Promise
 /**
  * Persists a partial update of channel-table display preferences (sort field, sort direction, visible columns) to config.json. Only fields present in `prefs`
  * are written; absent fields are left untouched. The mutate fn copies the new values into data and the runtime CONFIG cache is updated post-write to match.
- * Single-call replacement for the prior set-then-save pattern, consistent with mutateServiceSelections, mutateEnabledServices, and setTagRegistry.
+ * Persists and hydrates the runtime cache in a single call, consistent with mutateServiceSelections, mutateEnabledServices, and setTagRegistry.
  * @param prefs - Subset of display preferences to update.
  * @throws FileStoreParseError if config.json contains invalid JSON and the .bak rotation is also unparseable.
  */

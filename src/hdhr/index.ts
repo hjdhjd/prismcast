@@ -5,8 +5,9 @@
  * When HDHomeRun emulation is enabled, PrismCast runs two complementary surfaces. The HTTP server (this module + discover.ts) responds to /device.xml,
  * /discover.json, /lineup.json, /lineup_status.json, and /status.json - the surface clients consume once they have located PrismCast by IP and port. The UDP
  * responder (udp.ts) answers SiliconDust LAN-discovery broadcasts on port 65001 so Plex finds PrismCast automatically without a manual address paste. The two
- * surfaces are independent: an operator can disable LAN discovery while keeping HTTP HDHR running (multi-tenant boxes, environments with a real HDHomeRun
- * already on the network), or vice versa. Channels DVR also auto-discovers via the UDP responder but its discovery assumes port 80 for the HTTP control
+ * surfaces are not symmetric: UDP discovery is gated on the HTTP surface being bound, so the only independent choice is to disable LAN discovery while keeping HTTP
+ * HDHR running (multi-tenant boxes, environments with a real HDHomeRun already on the network); discovery never runs without HTTP. Channels DVR also auto-discovers
+ * via the UDP responder but its discovery assumes port 80 for the HTTP control
  * plane, so the lineup fetch fails unless hdhr.port is set to 80; Channels DVR users typically add PrismCast manually as a Custom Channels source.
  *
  * The lifecycle is modeled as a reconciler owning self-disposing resource nodes. An HdhrController owns one HttpSurface and one UdpSurface; each surface fully
@@ -105,7 +106,7 @@ function createHttpSurface(): HttpSurface {
    *
    * Detects bind success or failure through the explicit "listening" and "error" events rather than express's listen callback. The listen callback fires even
    * when the bind fails (verified empirically: it resolves on EADDRINUSE and EADDRNOTAVAIL with a non-listening server), so it cannot be trusted to signal
-   * success - relying on it is exactly why a port conflict used to be reported as a successful start. Exactly one of "listening" or "error" fires for a given
+   * success - relying on it would report a port conflict as a successful start. Exactly one of "listening" or "error" fires for a given
    * bind attempt, so the promise always settles. This mirrors the bind-vs-runtime error-handler split the UDP surface uses in udp.ts.
    * @param port - The TCP port to bind.
    * @param host - The host address to bind.
@@ -115,6 +116,9 @@ function createHttpSurface(): HttpSurface {
 
     const app = express();
 
+    // The HDHomeRun HTTP surface can sit behind a reverse proxy, so we trust the X-Forwarded-* chain. With trust proxy enabled, Express derives the client IP,
+    // protocol, and hostname from the forwarded headers rather than the immediate proxy hop, so any consumer reading those request properties sees the originating
+    // client. This complements resolveHostname in discover.ts, which prefers X-Forwarded-Host when composing the advertised BaseURL.
     app.set("trust proxy", true);
 
     setupHdhrEndpoints(app);
@@ -390,6 +394,5 @@ export async function applyHdhrConfigChanges(changes: readonly ConfigChange[]): 
 // Module-load side effect: register the live-apply handler exactly once per process. ESM modules load at most once per process so this runs deterministically
 // at boot - before app.ts's startHdhrServer call, before any settings save can fire, and before any test interaction. Tests that explicitly reset the registry
 // via resetConfigChangeHandlers() can re-register by calling registerConfigChangeHandler("hdhr.", applyHdhrConfigChanges) themselves; both symbols are
-// exported. Co-locating the registration here (rather than at startHdhrServer call time) keeps registry state and registration state from diverging - the
-// previous flag-guarded version could lie about being registered after a reset.
+// exported. Co-locating the registration here (rather than at startHdhrServer call time) keeps registry state and registration state from diverging.
 registerConfigChangeHandler("hdhr.", applyHdhrConfigChanges);

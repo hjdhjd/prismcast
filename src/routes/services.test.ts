@@ -77,7 +77,7 @@ describe("setupServicesEndpoint - GET /services/:slug/channels (unknown slug)", 
 
   test("response body for unknown slug includes the slug name in the error message", async () => {
 
-    // The error message is "Unknown service: <slug>." - we lock the format so a regression that loses the specific slug surface as a real diff.
+    // The error message is "Unknown service: <slug>." - we lock the format so a regression that loses the specific slug surfaces as a real diff.
     const res = await fetch(urlFor("/services/madeUpSlug/channels"));
     const body = await res.json() as { error: string };
 

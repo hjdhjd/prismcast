@@ -57,7 +57,7 @@ describe("buildServiceGroups", () => {
 
 describe("buildServiceGroups: user-override scenarios A and B", () => {
 
-  /* The function's branch matrix for user overrides of canonicals (lines 418-451 in services.ts):
+  /* The branch matrix that buildServiceGroups applies when isUserOverride is true for a canonical key (the Scenario A / Scenario B split in services.ts):
    *
    *   Scenario A: predefined exists AND user override is on the same domain as predefined or a known variant -> single canonical entry, label = service name.
    *   Scenario B: predefined exists AND user override is on a DIFFERENT domain -> 2-entry group ["Custom (domain)", original-service-name].

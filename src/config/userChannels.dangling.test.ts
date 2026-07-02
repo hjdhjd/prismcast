@@ -1,22 +1,15 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userChannels.dangling.test.ts: Direct unit tests for the dangling-canonical preserve-and-warn path in getMergedChannelMap and the warning dedup helper
- * warnDanglingCanonical.
+ * userChannels.dangling.test.ts: Direct unit tests for warnDanglingCanonical, the warn-once helper that getMergedChannelMap calls whenever a user variant
+ * references a canonical channel that is not present in the resolved map.
  *
  * Coverage scope:
- *
- *   - getMergedChannelMap with a user variant whose canonicalKey points at a missing canonical: the variant must be preserved (resolveStoredChannel path) so
- *     the user does not silently lose data; the warning must fire so the operator sees the inconsistency.
  *
  *   - warnDanglingCanonical: emits the warn-once dedup. The first call for a given (variant, canonical) pair logs; subsequent calls for the same pair are
  *     silently suppressed. We verify via a captured logger.
  *
- * State note: getMergedChannelMap reads loadedUserChannels (module state populated by initializeUserChannels). Without a full bring-up we exercise it via the
- * mutateChannels integration path - tests writing a dangling variant via mutateChannels surface the read-back behavior. Pure-state alternative would be a test
- * seam; we use the existing integration entrypoint instead per the production-refactor-for-testability rule.
- *
- * For warnDanglingCanonical: this helper is internally stateful (warnedDanglingVariants Set). Tests use unique (variant, canonical) pairs so cross-test bleed
- * is impossible without clearing the set.
+ * State note: warnDanglingCanonical is internally stateful (warnedDanglingVariants Set). Tests use unique (variant, canonical) pairs so cross-test bleed is
+ * impossible without clearing the set.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { LOG } from "../utils/index.ts";
