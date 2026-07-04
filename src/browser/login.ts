@@ -67,6 +67,21 @@ export function setBrowserAccessors(accessors: BrowserAccessors): void {
   browserAccessors = accessors;
 }
 
+// Login-end observer injected by the composition root (app.ts) via setLoginModeEndObserver(). Follows the same injected-accessor pattern as setBrowserAccessors
+// above so this module stays free of discovery knowledge. Null until wired.
+let loginModeEndObserver: Nullable<(url: string) => void> = null;
+
+/**
+ * Registers the observer invoked when login mode ends. The observer fires at most once per login session - from endLoginMode's single-effect teardown, carrying the
+ * session's login URL - and never from clearLoginState (a browser crash leaves nothing to observe against). The contract is fire-and-forget: the observer owns its
+ * own async failures, and a synchronous throw is contained here so it cannot break login teardown.
+ * @param observer - Function to call with the session's login URL when login mode ends.
+ */
+export function setLoginModeEndObserver(observer: (url: string) => void): void {
+
+  loginModeEndObserver = observer;
+}
+
 /**
  * Login status information returned by getLoginStatus().
  */
@@ -195,6 +210,10 @@ export async function startLoginMode(url: string): Promise<{ error?: string; suc
  */
 export async function endLoginMode(): Promise<void> {
 
+  // Capture the session's login URL before the page close below. Closing the login page re-enters this function through the page close handler, and whichever
+  // invocation wins the wasActive latch must still see the URL that resetLoginState() nulls out.
+  const observedUrl = loginUrl;
+
   // Clear the timeout if it hasn't fired yet.
   if(loginTimeoutHandle) {
 
@@ -228,6 +247,19 @@ export async function endLoginMode(): Promise<void> {
     }
 
     LOG.info("Login mode ended.");
+
+    // Notify the login-end observer. The wasActive latch above is what guarantees at most one invocation per login session - the re-entrant page-close path reads
+    // the flag as already cleared. Fire-and-forget: a throwing observer is contained so it cannot break login teardown.
+    if(observedUrl && loginModeEndObserver) {
+
+      try {
+
+        loginModeEndObserver(observedUrl);
+      } catch(error) {
+
+        LOG.warn("The login-end observer failed: %s.", formatError(error));
+      }
+    }
   }
 }
 

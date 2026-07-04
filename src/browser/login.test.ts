@@ -1,14 +1,16 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * login.test.ts: Unit tests for the login mode state machine in login.ts. The module owns six exports plus a setter (setBrowserAccessors) that injects the
- * browser-side dependencies. Login mode is module-level singleton state, so each test resets the slot via clearLoginState() and re-installs fresh accessors before
- * running. The CDP-backed unminimizeWindow call inside startLoginMode receives a stub Page whose isClosed() returns false, so cdp.ts's early-out guard does not fire;
- * instead the stub omits createCDPSession entirely, so withCDPSession throws when it tries to open a session, catches the error, and returns undefined. That error is
- * swallowed inside withCDPSession and never reaches startLoginMode, so the happy path still succeeds with no real browser, target, or CDP session involved.
+ * login.test.ts: Unit tests for the login mode state machine in login.ts. The module owns its lifecycle exports plus two injection setters (setBrowserAccessors for
+ * the browser-side dependencies, setLoginModeEndObserver for the composition root's login-end observer). Login mode is module-level singleton state, so each test
+ * resets the slot via clearLoginState() and re-installs fresh accessors before running. The CDP-backed unminimizeWindow call inside startLoginMode receives a stub
+ * Page whose isClosed() returns false, so cdp.ts's early-out guard does not fire; instead the stub omits createCDPSession entirely, so withCDPSession throws when it
+ * tries to open a session, catches the error, and returns undefined. That error is swallowed inside withCDPSession and never reaches startLoginMode, so the happy
+ * path still succeeds with no real browser, target, or CDP session involved.
  */
 import type { Browser, Page } from "puppeteer-core";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { clearLoginState, endLoginMode, getLoginPage, getLoginStatus, isLoginModeActive, setBrowserAccessors, startLoginMode } from "./login.ts";
+import { clearLoginState, endLoginMode, getLoginPage, getLoginStatus, isLoginModeActive, setBrowserAccessors, setLoginModeEndObserver,
+  startLoginMode } from "./login.ts";
 import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 
@@ -432,6 +434,150 @@ describe("endLoginMode", () => {
 
     assert.equal(counters.minimizeCalls, 0, "no minimize attempt against a disconnected browser");
     assert.equal(isLoginModeActive(), false, "state still cleared");
+  });
+});
+
+describe("setLoginModeEndObserver / login-end notification", () => {
+
+  let observed: string[];
+
+  beforeEach(() => {
+
+    clearLoginState();
+
+    observed = [];
+    setLoginModeEndObserver((url) => {
+
+      observed.push(url);
+    });
+  });
+
+  afterEach(() => {
+
+    clearLoginState();
+
+    // Leave a no-op observer installed so this suite's counting closure cannot receive notifications from other describes' endLoginMode calls.
+    setLoginModeEndObserver(() => { /* No-op between suites. */ });
+  });
+
+  test("fires exactly once with the session URL when endLoginMode tears down an active session", async () => {
+
+    /* Traced path: endLoginMode captures loginUrl before the page close, wins the wasActive latch, and invokes the observer inside the latch. Dropping the
+     * pre-close capture would deliver null (no invocation); dropping the latch placement would double-fire on the re-entrant path pinned below.
+     */
+    const pageStub = makePageStub();
+
+    installAccessors(makeBrowserStub({ pageStub }));
+
+    await startLoginMode("https://example.test/observer");
+    await endLoginMode();
+
+    assert.deepEqual(observed, ["https://example.test/observer"], "one notification carrying the session URL");
+  });
+
+  test("fires at most once when the page close re-enters endLoginMode through the close handler", async () => {
+
+    /* Criterion pin: puppeteer emits the page "close" event while endLoginMode's own loginPage.close() is in flight, and that handler calls endLoginMode again
+     * (fire-and-forget). The stub reproduces the re-entrancy by dispatching the registered close handlers synchronously from close(). Whichever invocation wins
+     * the wasActive latch fires the observer; the other reads the flag as cleared. Two notifications here means the latch no longer guards the observer.
+     */
+    const pageStub = makePageStub();
+
+    pageStub.close = async function(this: PageStub): Promise<void> {
+
+      this.closeCalls++;
+      this.isClosedReturn = true;
+
+      for(const handler of this.onCloseHandlers) {
+
+        handler();
+      }
+    };
+
+    installAccessors(makeBrowserStub({ pageStub }));
+
+    await startLoginMode("https://example.test/reentrant");
+    await endLoginMode();
+
+    // Drain the microtask queue so the re-entrant void endLoginMode() promise settles before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.deepEqual(observed, ["https://example.test/reentrant"], "exactly one notification despite the re-entrant close path");
+  });
+
+  test("fires once when the user closes the tab (the close-handler path)", async () => {
+
+    const pageStub = makePageStub();
+
+    installAccessors(makeBrowserStub({ pageStub }));
+
+    await startLoginMode("https://example.test/tab-close");
+
+    // Simulate the user closing the tab: puppeteer fires the close handler, which runs void endLoginMode().
+    pageStub.isClosedReturn = true;
+    pageStub.onCloseHandlers[0]?.();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.deepEqual(observed, ["https://example.test/tab-close"], "the tab-close path notifies once");
+  });
+
+  test("does not fire when endLoginMode runs with no active session (idempotent teardown)", async () => {
+
+    installAccessors(makeBrowserStub({ pageStub: makePageStub() }));
+
+    await endLoginMode();
+
+    assert.deepEqual(observed, [], "no session, no notification");
+  });
+
+  test("does not fire a second time when endLoginMode is called again after the session ended", async () => {
+
+    const pageStub = makePageStub();
+
+    installAccessors(makeBrowserStub({ pageStub }));
+
+    await startLoginMode("https://example.test/twice");
+    await endLoginMode();
+    await endLoginMode();
+
+    assert.equal(observed.length, 1, "the second teardown finds wasActive false and stays silent");
+  });
+
+  test("does not fire from clearLoginState (browser crash cleanup leaves nothing to observe against)", async () => {
+
+    const pageStub = makePageStub();
+
+    installAccessors(makeBrowserStub({ pageStub }));
+
+    await startLoginMode("https://example.test/crash");
+    clearLoginState();
+
+    assert.deepEqual(observed, [], "crash cleanup never notifies");
+  });
+
+  test("contains a throwing observer so endLoginMode still resolves and resets state", async () => {
+
+    /* The fire-and-forget contract: a synchronous throw inside the observer is caught and logged, never propagated into login teardown. State must still be fully
+     * reset afterward.
+     */
+    setLoginModeEndObserver(() => {
+
+      throw new Error("synthetic observer failure");
+    });
+
+    const pageStub = makePageStub();
+
+    installAccessors(makeBrowserStub({ pageStub }));
+
+    await startLoginMode("https://example.test/throws");
+
+    await assert.doesNotReject(() => endLoginMode(), "a throwing observer must not break teardown");
+    assert.equal(isLoginModeActive(), false, "state still reset");
   });
 });
 

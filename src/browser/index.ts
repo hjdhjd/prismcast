@@ -212,7 +212,7 @@ const potentiallyStalePages = new Map<string, number>();
 // Login mode management. State and functions live in login.ts; re-exported here so existing consumers don't need import path changes. clearLoginState,
 // isLoginModeActive, and setBrowserAccessors are imported above; the first two for internal use, setBrowserAccessors for one-time initialization below.
 export { clearLoginState, isLoginModeActive };
-export { type LoginStatus, endLoginMode, getLoginPage, getLoginStatus, startLoginMode } from "./login.ts";
+export { type LoginStatus, endLoginMode, getLoginPage, getLoginStatus, setLoginModeEndObserver, startLoginMode } from "./login.ts";
 
 // Re-export the supervisor's acquire() rejection classes through the browser surface so the stream-setup layer can map them to a 503 back-off without reaching into
 // the supervisor module directly. Both signal a transient "retry me" condition: BrowserUnavailableError while the relaunch governor is cooling, BrowserSupersededError

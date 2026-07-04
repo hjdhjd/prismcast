@@ -4,12 +4,12 @@
  */
 import type { DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
 import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
-import { clearDomainAuthRequirement, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
+import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { getCurrentBrowser, isGracefulShutdown, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.ts";
+import { getProviderBySlug, getProviderGuideUrls } from "./channelSelection.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
 import { classifyBlockedPage } from "./blockedPage.ts";
-import { getProviderBySlug } from "./channelSelection.ts";
 import { isLoginModeActive } from "./login.ts";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
@@ -222,6 +222,105 @@ export async function precacheService(provider: ProviderModule): Promise<Discove
 
       await minimizeBrowserWindow();
     }
+  }
+}
+
+/**
+ * Revalidates a domain's authentication after login mode ends: when the domain is currently marked needs-sign-in, re-runs channel discovery for every provider
+ * whose guide lives on that domain so fresh success evidence can clear the flag through the discovery-outcome policy. Wired to the login-end observer by app.ts.
+ *
+ * Never rejects - the observer wiring voids the returned promise, so every failure is logged and absorbed here. Revalidation deliberately ignores both the
+ * precacheServices and enabledServices filters: this is clearing-evidence collection for a domain the user just signed in to, not precaching, and the cycle's
+ * filter skip is unchanged. While it runs it holds the same single-flight guard the precache cycle holds, so a cycle scheduled mid-revalidation (a browser crash
+ * relaunch) defers instead of overlapping.
+ * @param url - The login session's URL; its extracted domain selects the providers to revalidate.
+ * @returns A promise that resolves when revalidation completes or is skipped. It never rejects.
+ */
+export async function revalidateDomainAuth(url: string): Promise<void> {
+
+  try {
+
+    const domain = extractDomain(url);
+
+    // Only a standing needs-sign-in entry warrants an automatic discovery - a verified or unknown domain has nothing to clear.
+    if(getDomainAuthState(domain)?.status !== "needsLogin") {
+
+      return;
+    }
+
+    // The profile-test wizard and sequential multi-provider sign-in flows re-enter login mode immediately after ending it; the final Done fires this observer
+    // again with login mode inactive, so deferring here loses nothing.
+    if(isLoginModeActive()) {
+
+      LOG.debug("precache", "Skipping post-login revalidation for %s: login mode is active again.", domain);
+
+      return;
+    }
+
+    if(isGracefulShutdown()) {
+
+      return;
+    }
+
+    // Defer to an in-flight precache cycle rather than overlapping it. Honest limitation: if the flagged provider is not in that cycle's configured service set,
+    // the flag persists until the next successful discovery or tune for the domain - an in-flight cycle cannot be retargeted.
+    if(precacheInProgress) {
+
+      LOG.info("Deferring the post-login revalidation for %s to the precache cycle already in progress.", domain);
+
+      return;
+    }
+
+    // Match every provider whose guide lives on the domain the user just signed in to. The observer's URL may be a DOMAIN_CONFIG loginUrl override rather than a
+    // channel URL, but both extract to the same registrable domain the guide URLs use.
+    const providers: ProviderModule[] = [];
+
+    for(const [ slug, guideUrl ] of Object.entries(getProviderGuideUrls())) {
+
+      if(extractDomain(guideUrl) === domain) {
+
+        const provider = getProviderBySlug(slug);
+
+        if(provider) {
+
+          providers.push(provider);
+        }
+      }
+    }
+
+    if(providers.length === 0) {
+
+      LOG.debug("precache", "No provider guide matches %s; skipping post-login revalidation.", domain);
+
+      return;
+    }
+
+    // Acquire the single-flight guard for the duration of the revalidation, exactly as the cycle does.
+    precacheInProgress = true;
+
+    try {
+
+      LOG.info("Re-running channel discovery for %s to verify authentication after sign-in.", domain);
+
+      for(const provider of providers) {
+
+        try {
+
+          // eslint-disable-next-line no-await-in-loop
+          await precacheService(provider);
+        } catch(error) {
+
+          // A provider still behind its wall commonly times out the guide navigation. Contain the failure per provider and keep going - the flag simply stays set.
+          LOG.warn("Post-login revalidation failed for %s: %s.", provider.label, formatError(error));
+        }
+      }
+    } finally {
+
+      precacheInProgress = false;
+    }
+  } catch(error) {
+
+    LOG.warn("Post-login revalidation for %s failed: %s.", url, formatError(error));
   }
 }
 

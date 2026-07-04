@@ -7,12 +7,13 @@ import type { Express, NextFunction, Request, Response } from "express";
 import { LOG, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release, resolveFFmpegPath,
   setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
-  startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.ts";
+  setLoginModeEndObserver, startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
 import { flushHealthStateNow, loadHealthState } from "./config/health.ts";
 import { getDebugEnv, getLogFilePath, getServerPidFilePath } from "./config/paths.ts";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.ts";
 import { loadResumeState, saveResumeState } from "./streaming/hlsResume.ts";
+import { revalidateDomainAuth, stopPrecaching } from "./browser/precaching.ts";
 import { startHdhrServer, stopHdhrServer } from "./hdhr/index.ts";
 import { startPretunePolling, stopPretunePolling } from "./streaming/pretune.ts";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.ts";
@@ -33,7 +34,6 @@ import { installHealthBridge } from "./routes/config/channels/healthBridge.ts";
 import morgan from "morgan";
 import { runConsistencyProbeAtStartup } from "./config/consistencyProbe.ts";
 import { setupRoutes } from "./routes/index.ts";
-import { stopPrecaching } from "./browser/precaching.ts";
 import { terminateStream } from "./streaming/lifecycle.ts";
 import { validateProfiles } from "./config/profiles.ts";
 
@@ -614,6 +614,11 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // Install the reactive bridge that translates health/auth state changes into channel table patches over SSE. Channel row HTML has a single source of truth -
   // generateChannelRowHtml on the server - and every reactive update flows through this bridge so the client never composes channel row state imperatively.
   installHealthBridge();
+
+  // Wire the login-end observer: when login mode ends, a domain currently marked needs-sign-in gets an automatic revalidation discovery so fresh success evidence
+  // can clear the flag without waiting for the next precache cycle. Composition-root wiring - login.ts stays free of discovery knowledge, and revalidateDomainAuth
+  // never rejects, so voiding the promise is safe.
+  setLoginModeEndObserver((url) => void revalidateDomainAuth(url));
 
   // Run the cross-store consistency probe now that every store is loaded. Validates foreign-key-style invariants spanning multiple stores (service selections,
   // variant canonicalKey targets, domain profile mappings, service tag filter) and auto-fixes warnings where safe. Errors do not block startup.
