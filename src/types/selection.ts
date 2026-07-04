@@ -108,11 +108,29 @@ export interface DiscoveredChannel {
 }
 
 /**
+ * Provider-declared identifiers for the provider's authentication wall, consumed by the blocked-page classifier when a discovery walk returns zero channels.
+ * Host patterns match the landed URL's hostname (exact, or any subdomain of the pattern); selectors match against the page DOM. Either match classifies the page
+ * as an auth wall ahead of the generic sign-in shape probe. Declared per provider only when the generic probe cannot recognize that provider's wall.
+ */
+export interface AuthWallIndicators {
+
+  // Hostname patterns that identify the provider's authentication wall (e.g., "auth.example.com", or "example.com" to match any of its subdomains).
+  hosts?: string[];
+
+  // CSS selectors that identify the provider's authentication wall DOM.
+  selectors?: string[];
+}
+
+/**
  * Unified provider contract that bundles identity metadata, tuning strategy, and channel discovery into a single registry entry. Each provider tuning file
  * exports one ProviderModule. The coordinator builds its strategy dispatch lookup from provider modules at evaluation time. Generic strategies (thumbnailRow,
  * tileClick) remain bare ChannelStrategyEntry objects - they are not providers.
  */
 export interface ProviderModule {
+
+  // Identifiers for this provider's authentication wall, checked by the blocked-page classifier ahead of its generic sign-in shape probe. Omitted when the
+  // generic probe recognizes the provider's wall on its own - declare indicators only when it cannot.
+  authWallIndicators?: AuthWallIndicators;
 
   /**
    * Discovers all available channels from the provider's guide. The route handler navigates to guideUrl before calling this function unless handlesOwnNavigation

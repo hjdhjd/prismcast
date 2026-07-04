@@ -13,6 +13,7 @@ import { sendError, sendNotFoundError } from "./config/http/envelope.ts";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { Page } from "puppeteer-core";
+import { recordDiscoveryOutcome } from "../browser/precaching.ts";
 
 /* The services endpoint exposes channel discovery for each registered service. A GET request to /services/:slug/channels creates a temporary browser page,
  * navigates to the service's guide, runs the service's discoverChannels implementation, and returns a sorted JSON array of discovered channels. The temporary
@@ -109,6 +110,15 @@ async function runDiscovery(provider: ProviderModule, signal: AbortSignal): Prom
     }
 
     const channels = await provider.discoverChannels(page);
+
+    // Record the domain auth consequences of this discovery while the page is still open - an empty result classifies the page it walked, and a non-empty result
+    // supplies the success evidence that verifies the domain or clears a standing needs-sign-in flag. Skipped when the walk was aborted by a refresh=true request,
+    // since an aborted walk says nothing about the provider.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- The early abort guard narrows aborted to false, but the awaits since can flip it.
+    if(!signal.aborted) {
+
+      await recordDiscoveryOutcome(provider, channels, page);
+    }
 
     // Sort by name for consistent output. Discovery functions sort at cache time, but fresh (uncached) results from the first call may not be sorted yet.
     channels.sort((a, b) => a.name.localeCompare(b.name));

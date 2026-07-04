@@ -2,12 +2,15 @@
  *
  * precaching.ts: Service channel lineup precaching for PrismCast.
  */
+import type { DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
 import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
+import { clearDomainAuthRequirement, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { getCurrentBrowser, isGracefulShutdown, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.ts";
 import { CONFIG } from "../config/index.ts";
-import type { Nullable } from "../types/index.ts";
+import type { Page } from "puppeteer-core";
+import { classifyBlockedPage } from "./blockedPage.ts";
 import { getProviderBySlug } from "./channelSelection.ts";
-import { markDomainAuth } from "../config/health.ts";
+import { isLoginModeActive } from "./login.ts";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
  * sequentially - discovery opens a browser page and navigates to a heavy SPA, so running all services concurrently would stress CPU and GPU on resource-constrained
@@ -16,6 +19,10 @@ import { markDomainAuth } from "../config/health.ts";
  * Precaching is triggered from launchBrowser() in browser/index.ts. This covers both initial server startup and browser crash recovery (where all caches are cleared).
  * Each service has its own try/catch - one failure does not stop the rest. The browser reference is obtained per-service via getCurrentBrowser() so that a browser
  * crash between services is handled transparently (the next service gets the relaunched browser).
+ *
+ * This module also owns the discovery-outcome policy (recordDiscoveryOutcome): the single source of truth for how a completed discovery walk translates into domain
+ * auth state, shared by the precache cycle here and the /services/:slug/channels endpoint. The routes layer never calls a health mutator directly - it calls the
+ * recorder, which does.
  */
 
 // Delay in milliseconds before precaching begins after browser launch. This gives the browser time to settle after initialization.
@@ -80,6 +87,145 @@ export function stopPrecaching(): void {
 }
 
 /**
+ * Records the domain auth consequences of a completed channel discovery. This is the single source of truth for discovery-outcome policy, consumed by both the
+ * precache cycle (via precacheService) and the /services/:slug/channels endpoint - the routes layer never calls a health mutator directly.
+ *
+ * An empty result classifies the still-open page: a confirmed authentication wall marks the provider's domain needs-sign-in; a consent overlay and the unknown
+ * classification change no state (an unexplained empty walk is not evidence of anything). A non-empty result that the provider's validatePrecache accepts (or that
+ * needs no validation) marks the domain verified; a non-empty result the validator rejects proves the wall is gone but not that paid access exists, so it clears a
+ * standing needs-sign-in entry back to unknown and otherwise changes nothing.
+ * @param provider - The provider whose discovery completed.
+ * @param channels - The discovered channels (possibly empty).
+ * @param page - The still-open discovery page, inspected only when the result is empty.
+ * @returns A promise that resolves once any classification and state recording completes.
+ */
+export async function recordDiscoveryOutcome(provider: ProviderModule, channels: DiscoveredChannel[], page: Page): Promise<void> {
+
+  const domain = extractDomain(provider.guideUrl);
+
+  if(channels.length === 0) {
+
+    const classification = await classifyBlockedPage(page, { indicators: provider.authWallIndicators, requestedUrl: provider.guideUrl });
+
+    switch(classification.kind) {
+
+      case "authWall": {
+
+        markDomainAuthRequired(domain);
+        LOG.warn("%s returned no channels because the provider is presenting an authentication wall (%s). Sign in from the channel table's login icon.",
+          provider.label, classification.evidence);
+
+        break;
+      }
+
+      case "consentOverlay": {
+
+        LOG.warn("%s returned no channels while a consent overlay was present on the page. Open the channel in PrismCast's Chrome from the channel table's " +
+          "login icon to dismiss it.", provider.label);
+
+        break;
+      }
+
+      case "unknown": {
+
+        LOG.debug("precache", "%s returned no channels and the page did not classify as an auth wall or consent overlay; leaving domain auth unchanged.",
+          provider.label);
+
+        break;
+      }
+    }
+
+    return;
+  }
+
+  // A successful discovery with results proves the service is accessible and authenticated. Mark it so the UI shows the green indicator immediately rather than
+  // waiting for the first manual tune. When a provider module defines validatePrecache, defer to it - some services (e.g., Sling) return guide data even without
+  // authentication, so a non-empty result alone does not prove paid access.
+  if(!provider.validatePrecache || provider.validatePrecache(channels)) {
+
+    markDomainAuth(domain);
+
+    return;
+  }
+
+  // The validator rejected: the wall is gone (channels came back) but paid access is unproven. Clear a standing needs-sign-in entry back to unknown so the red
+  // state never outlives the wall it reported - clearDomainAuthRequirement is a no-op unless the domain is currently flagged, so verified state is never touched.
+  clearDomainAuthRequirement(domain);
+}
+
+/**
+ * Precaches a single service: opens a browser page, navigates to the provider's guide, runs discovery, records the discovery outcome, and cleans the page up. The
+ * per-service primitive behind the precache cycle. Errors propagate to the caller, and no service filtering happens here - the cycle loop owns both the filter skip
+ * and the per-service error containment.
+ * @param provider - The provider to precache.
+ * @returns The discovered channels (possibly empty).
+ */
+export async function precacheService(provider: ProviderModule): Promise<DiscoveredChannel[]> {
+
+  const serviceElapsed = startTimer();
+
+  // Clear the service's cache before discovery to ensure a complete walk, even if a tune partially warmed the cache during the startup delay.
+  provider.strategy.clearCache?.();
+
+  const browser = await getCurrentBrowser();
+  const page = await browser.newPage();
+
+  // Suppress audio on precache pages. Services like Hulu auto-play a default livestream when their guide loads. Since Chrome's --mute-audio is deliberately
+  // disabled (puppeteer-stream needs audio capture for active streams), we intercept play() at the prototype level to mute before any media element can produce
+  // audio. evaluateOnNewDocument runs before site JavaScript, so nothing slips through.
+  await page.evaluateOnNewDocument((): void => {
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const originalPlay = HTMLMediaElement.prototype.play;
+
+    HTMLMediaElement.prototype.play = async function(this: HTMLMediaElement): Promise<void> {
+
+      this.muted = true;
+
+      return originalPlay.call(this);
+    };
+  });
+
+  registerManagedPage(page);
+
+  try {
+
+    // Navigate to the service's guide URL unless the provider module handles its own navigation (e.g., sets up response interception before navigating).
+    if(!provider.handlesOwnNavigation) {
+
+      await page.goto(provider.guideUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
+    }
+
+    const channels = await provider.discoverChannels(page);
+
+    LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (serviceElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
+
+    // Record the domain auth consequences while the page is still open - an empty result classifies the page it walked.
+    await recordDiscoveryOutcome(provider, channels, page);
+
+    return channels;
+  } finally {
+
+    unregisterManagedPage(page);
+
+    try {
+
+      await page.close();
+    } catch {
+
+      // Page may already be closed if the browser disconnected during discovery.
+    }
+
+    // Re-minimize the browser window. Opening the temporary discovery page may have restored the window on macOS. Skipped while login mode is active so a
+    // discovery finishing mid-login never minimizes the window under the user.
+    if(!isLoginModeActive()) {
+
+      await minimizeBrowserWindow();
+    }
+  }
+}
+
+/**
  * Executes the sequential precaching cycle. Discovers channel lineups for each configured service, clearing the service's cache first to ensure a complete walk.
  * Services not in the active service filter are silently skipped when the filter is non-empty.
  */
@@ -100,6 +246,7 @@ async function runPrecacheCycle(): Promise<void> {
   const hasFilter = enabledFilter.length > 0;
   const cycleElapsed = startTimer();
 
+  let empty = 0;
   let skipped = 0;
   let succeeded = 0;
 
@@ -134,77 +281,18 @@ async function runPrecacheCycle(): Promise<void> {
         continue;
       }
 
-      const serviceElapsed = startTimer();
-
       try {
 
-        // Clear the service's cache before discovery to ensure a complete walk, even if a tune partially warmed the cache during the startup delay.
-        provider.strategy.clearCache?.();
-
         // eslint-disable-next-line no-await-in-loop
-        const browser = await getCurrentBrowser();
+        const channels = await precacheService(provider);
 
-        // eslint-disable-next-line no-await-in-loop
-        const page = await browser.newPage();
-
-        // Suppress audio on precache pages. Services like Hulu auto-play a default livestream when their guide loads. Since Chrome's --mute-audio is deliberately
-        // disabled (puppeteer-stream needs audio capture for active streams), we intercept play() at the prototype level to mute before any media element can produce
-        // audio. evaluateOnNewDocument runs before site JavaScript, so nothing slips through.
-        // eslint-disable-next-line no-await-in-loop
-        await page.evaluateOnNewDocument((): void => {
-
-          // eslint-disable-next-line @typescript-eslint/unbound-method
-          const originalPlay = HTMLMediaElement.prototype.play;
-
-          HTMLMediaElement.prototype.play = async function(this: HTMLMediaElement): Promise<void> {
-
-            this.muted = true;
-
-            return originalPlay.call(this);
-          };
-        });
-
-        registerManagedPage(page);
-
-        try {
-
-          // Navigate to the service's guide URL unless the provider module handles its own navigation (e.g., sets up response interception before navigating).
-          if(!provider.handlesOwnNavigation) {
-
-            // eslint-disable-next-line no-await-in-loop
-            await page.goto(provider.guideUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
-          }
-
-          // eslint-disable-next-line no-await-in-loop
-          const channels = await provider.discoverChannels(page);
-
-          LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (serviceElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
-
-          // A successful discovery with results proves the service is accessible and authenticated. Mark it so the UI shows the green indicator immediately
-          // rather than waiting for the first manual tune. When a provider module defines validatePrecache, defer to it - some services (e.g., Sling) return guide data
-          // even without authentication, so a non-empty result alone does not prove paid access.
-          if((channels.length > 0) && (!provider.validatePrecache || provider.validatePrecache(channels))) {
-
-            markDomainAuth(extractDomain(provider.guideUrl));
-          }
+        // An empty walk cached nothing, so it is counted honestly as empty rather than folded into the success count.
+        if(channels.length > 0) {
 
           succeeded++;
-        } finally {
+        } else {
 
-          unregisterManagedPage(page);
-
-          try {
-
-            // eslint-disable-next-line no-await-in-loop
-            await page.close();
-          } catch {
-
-            // Page may already be closed if the browser disconnected during discovery.
-          }
-
-          // Re-minimize the browser window. Opening the temporary discovery page may have restored the window on macOS.
-          // eslint-disable-next-line no-await-in-loop
-          await minimizeBrowserWindow();
+          empty++;
         }
       } catch(error) {
 
@@ -213,9 +301,10 @@ async function runPrecacheCycle(): Promise<void> {
     }
 
     const elapsed = (cycleElapsed() / 1000).toFixed(1).replace(/\.0$/, "");
-    const skippedSuffix = skipped > 0 ? ", " + String(skipped) + " skipped (filtered)" : "";
+    const emptySuffix = (empty > 0) ? ", " + String(empty) + " returned no channels" : "";
+    const skippedSuffix = (skipped > 0) ? ", " + String(skipped) + " skipped (filtered)" : "";
 
-    LOG.info("Channel lineup precaching complete: %d service%s cached%s in %ss.", succeeded, (succeeded === 1) ? "" : "s", skippedSuffix, elapsed);
+    LOG.info("Channel lineup precaching complete: %d service%s cached%s%s in %ss.", succeeded, (succeeded === 1) ? "" : "s", emptySuffix, skippedSuffix, elapsed);
   } finally {
 
     precacheInProgress = false;

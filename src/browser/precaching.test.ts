@@ -1,7 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * precaching.test.ts: Unit tests for the precaching coordinator's no-op gates in precaching.ts. The module exports startPrecaching (the gated scheduler tested
- * here) and stopPrecaching (the shutdown-time canceller). startPrecaching inspects two pieces of state before scheduling the precache cycle:
+ * precaching.test.ts: Unit tests for the precaching coordinator's no-op gates and the discovery-outcome recorder in precaching.ts. The module exports
+ * startPrecaching (the gated scheduler tested here), stopPrecaching (the shutdown-time canceller), precacheService (the per-service primitive), and
+ * recordDiscoveryOutcome (the discovery-outcome policy, covered by the matrix below). startPrecaching inspects two pieces of state before scheduling the precache
+ * cycle:
  *
  *   1. CONFIG.channels.precacheServices: when empty, the function returns immediately with no side effects (no timer scheduled, no log lines, no internal flag
  *      mutated).
@@ -12,10 +14,14 @@
  * The actual precache cycle (runPrecacheCycle) drives Puppeteer via getCurrentBrowser, browser.newPage, page.goto, and provider.discoverChannels - that path is
  * deferred to e2e. The unit tests here lock the gate-behavior contract so that future refactors of the gates do not silently regress.
  */
+import type { AuthWallIndicators, DiscoveredChannel, ProviderModule } from "../types/index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
+import { recordDiscoveryOutcome, startPrecaching } from "./precaching.ts";
 import { CONFIG } from "../config/index.ts";
+import { LOG } from "../utils/index.ts";
+import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
-import { startPrecaching } from "./precaching.ts";
 
 describe("startPrecaching", () => {
 
@@ -95,17 +101,177 @@ describe("startPrecaching", () => {
   });
 });
 
+describe("recordDiscoveryOutcome", () => {
+
+  beforeEach(() => {
+
+    // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced health flush timer the mark calls below schedule. Each test uses
+    // unique synthetic domains so state from one scenario cannot color another.
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+  });
+
+  afterEach(() => {
+
+    mock.timers.reset();
+  });
+
+  /* Builds a minimal ProviderModule carrying only the fields recordDiscoveryOutcome reads (authWallIndicators, guideUrl, label, validatePrecache). The double-cast
+   * documents that the recorder's contract touches this subset, not the full provider surface.
+   */
+  function makeProvider(overrides: { authWallIndicators?: AuthWallIndicators; guideUrl: string;
+    validatePrecache?: (channels: DiscoveredChannel[]) => boolean; }): ProviderModule {
+
+    return { label: "Stub Service", ...overrides } as unknown as ProviderModule;
+  }
+
+  /* Builds a Page stub whose evaluate routes on the argument shape, mirroring the consent.test.ts stub convention: a string array is the CMP-detect probe, an
+   * object with a `gate` key is the embed-gate probe, and an object with a `maxDepth` key is the sign-in container collector. The classifier reaches these probes
+   * only when no provider indicator already decided.
+   */
+  function makePage(url: string, router: (arg: unknown) => unknown = (): unknown => false): Page {
+
+    return {
+
+      $: async (): Promise<unknown> => null,
+      evaluate: async (_fn: unknown, arg?: unknown): Promise<unknown> => router(arg),
+      url: (): string => url
+    } as unknown as Page;
+  }
+
+  // A single discovered channel for the non-empty scenarios; the recorder only reads channels.length and hands the array to validatePrecache.
+  const ONE_CHANNEL = [{ channelSelector: "Stub", name: "Stub" }] as unknown as DiscoveredChannel[];
+
+  test("an empty result classified as an auth wall marks the domain needs-sign-in and warns with the remedy", async (t) => {
+
+    /* Traced path: channels.length === 0 -> classifyBlockedPage returns authWall via the provider host indicator -> the recorder's authWall case calls
+     * markDomainAuthRequired(extractDomain(guideUrl)) and emits the WARN. Dropping the mark would leave the state read null; dropping the WARN drops the operator
+     * signal this arc exists to create.
+     */
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const provider = makeProvider({ authWallIndicators: { hosts: ["auth.case-wall.test"] }, guideUrl: "https://www.case-wall.test/guide" });
+
+    await recordDiscoveryOutcome(provider, [], makePage("https://auth.case-wall.test/login"));
+
+    assert.deepEqual(getDomainAuthState("case-wall.test"), { status: "needsLogin", timestamp: 1_700_000_000_000 }, "domain marked needs-sign-in");
+    assert.equal(warn.mock.calls.length, 1, "exactly one WARN");
+
+    const message = String(warn.mock.calls[0]?.arguments[0]);
+
+    assert.match(message, /authentication wall/, "names the wall");
+    assert.match(message, /Sign in from the channel table's login icon\./, "names the remedy");
+  });
+
+  test("an empty result classified as a consent overlay warns but never marks auth state", async (t) => {
+
+    /* Traced path: channels.length === 0 -> no indicators -> consentOverlayPresent's CMP probe (the string-array evaluate) returns true -> consentOverlay case.
+     * The scenario pins that the case logs WARN and reaches no health mutator - a mutation that marked needs-sign-in here would trip the null read.
+     */
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const provider = makeProvider({ guideUrl: "https://www.case-consent.test/guide" });
+    const page = makePage("https://www.case-consent.test/guide", (arg) => Array.isArray(arg));
+
+    await recordDiscoveryOutcome(provider, [], page);
+
+    assert.equal(getDomainAuthState("case-consent.test"), null, "no auth state change on a consent overlay");
+    assert.equal(warn.mock.calls.length, 1, "the overlay is reported at WARN");
+  });
+
+  test("an empty result classified unknown changes no state and does not warn", async (t) => {
+
+    /* Traced path: channels.length === 0 -> no indicators, no consent, no sign-in containers (the collector probe returns []) -> unknown case: debug-only, no
+     * mutation. An unexplained empty walk is not evidence of anything.
+     */
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const provider = makeProvider({ guideUrl: "https://www.case-unknown.test/guide" });
+    const page = makePage("https://www.case-unknown.test/guide", (arg) => {
+
+      // The CMP probe (string array) reports no banner; the embed-gate probe reports no gate; the collector reports no containers.
+      if(Array.isArray(arg)) {
+
+        return false;
+      }
+
+      return ((typeof arg === "object") && (arg !== null) && ("maxDepth" in arg)) ? [] : null;
+    });
+
+    await recordDiscoveryOutcome(provider, [], page);
+
+    assert.equal(getDomainAuthState("case-unknown.test"), null, "no auth state change on unknown");
+    assert.equal(warn.mock.calls.length, 0, "no WARN on unknown");
+  });
+
+  test("a non-empty result with no validatePrecache marks the domain verified (today's semantics)", async () => {
+
+    // Traced path: channels.length > 0 -> the !provider.validatePrecache disjunct -> markDomainAuth. This is the pre-existing verified mark, unchanged.
+    const provider = makeProvider({ guideUrl: "https://www.case-plain.test/guide" });
+
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-plain.test/guide"));
+
+    assert.deepEqual(getDomainAuthState("case-plain.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified without a validator");
+  });
+
+  test("a non-empty result passing validatePrecache marks the domain verified", async () => {
+
+    // Traced path: channels.length > 0 -> validatePrecache returns true -> markDomainAuth.
+    const provider = makeProvider({ guideUrl: "https://www.case-validated.test/guide", validatePrecache: (): boolean => true });
+
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-validated.test/guide"));
+
+    assert.deepEqual(getDomainAuthState("case-validated.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified through the validator");
+  });
+
+  test("a non-empty result failing validatePrecache clears a standing needs-sign-in flag back to unknown", async () => {
+
+    /* Traced path: channels.length > 0 -> validatePrecache returns false -> clearDomainAuthRequirement, whose needsLogin guard passes because the domain is
+     * flagged - the wall is gone (channels came back) but paid access is unproven, so the red state must not persist. Dropping the clear would leave the flag
+     * standing forever for a free-tier user.
+     */
+    const provider = makeProvider({ guideUrl: "https://www.case-unproven.test/guide", validatePrecache: (): boolean => false });
+
+    markDomainAuthRequired("case-unproven.test");
+
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-unproven.test/guide"));
+
+    assert.equal(getDomainAuthState("case-unproven.test"), null, "the needs-sign-in entry is cleared to unknown");
+  });
+
+  test("a non-empty result failing validatePrecache never deletes a verified entry", async () => {
+
+    /* Traced path: channels.length > 0 -> validatePrecache returns false -> clearDomainAuthRequirement, whose needsLogin guard REJECTS a verified entry. A Sling
+     * free-tier walk after a legitimate verified tune must leave the green state alone.
+     */
+    const provider = makeProvider({ guideUrl: "https://www.case-keeps-verified.test/guide", validatePrecache: (): boolean => false });
+
+    markDomainAuth("case-keeps-verified.test");
+
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-keeps-verified.test/guide"));
+
+    assert.deepEqual(getDomainAuthState("case-keeps-verified.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified state untouched");
+  });
+
+  test("a non-empty result failing validatePrecache on an unknown domain changes nothing", async () => {
+
+    // Traced path: the validator-rejected arm with no standing entry - clearDomainAuthRequirement's guard finds nothing to clear.
+    const provider = makeProvider({ guideUrl: "https://www.case-still-unknown.test/guide", validatePrecache: (): boolean => false });
+
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-still-unknown.test/guide"));
+
+    assert.equal(getDomainAuthState("case-still-unknown.test"), null, "unknown stays unknown");
+  });
+});
+
 /* Deferred to e2e (require Puppeteer/Chrome integration):
  *
  * - runPrecacheCycle (the cycle body itself - drives getCurrentBrowser, browser.newPage, page.evaluateOnNewDocument, page.goto, provider.discoverChannels,
- *   markDomainAuth, page.close, minimizeBrowserWindow).
+ *   recordDiscoveryOutcome, page.close, minimizeBrowserWindow) - including the succeeded/empty/skipped counters and the completion sentence they compose.
+ *
+ * - precacheService (the extracted per-service primitive) - it opens a real page via getCurrentBrowser, so its navigation, mute injection, cleanup ordering, and
+ *   the login-mode minimize guard are exercised with the cycle at that tier. Its discovery-outcome policy is covered here through recordDiscoveryOutcome directly.
  *
  * - The precacheInProgress guard's positive case (the cycle must be in flight to observe the flag set; verifying that requires running the cycle which requires a
  *   real browser).
  *
  * - The service-filter skip path (skipping services not in CONFIG.channels.enabledServices) - exercised inside runPrecacheCycle.
- *
- * - The validatePrecache path - per-provider auth confirmation runs after a real discovery completes.
  *
  * - Per-provider error isolation (one provider failing while others succeed) - requires a real browser to populate the discovery flow.
  */
