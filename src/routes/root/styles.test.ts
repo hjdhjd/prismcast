@@ -96,6 +96,17 @@ describe("generateLandingPageStyles", () => {
     assert.match(css, /@keyframes\s+toastOut/);
   });
 
+  test("preserves the login icon's needs-sign-in red on hover", () => {
+
+    /* The generic .btn-icon-login:hover rule recolors the icon with the interactive-primary color. The needs-sign-in state must survive hover (matching the
+     * .btn-icon-health precedent), so a more specific compound rule pins the delete/red variable. Without this rule, hovering a flagged channel's login icon
+     * would flash it back to the neutral interactive color and hide the state the icon exists to surface.
+     */
+    const css = generateLandingPageStyles();
+
+    assert.match(css, /\.btn-icon-login\.health-failed:hover\s*\{\s*color:\s*var\(--interactive-delete\);\s*\}/, "hover-preservation rule present");
+  });
+
   test("includes login modal and restart modal styling", () => {
 
     const css = generateLandingPageStyles();

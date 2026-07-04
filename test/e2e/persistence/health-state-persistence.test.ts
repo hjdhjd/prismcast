@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { createIntegrationContext, pathInDataDir, waitForHealthFlush } from "../../helpers/integration.helpers.ts";
-import { flushHealthStateNow, getChannelHealth, getDomainAuth, getHealthSnapshot, loadHealthState, markChannelSuccess,
+import { flushHealthStateNow, getChannelHealth, getDomainAuthState, getHealthSnapshot, loadHealthState, markChannelSuccess,
   markDomainAuth } from "../../../src/config/health.ts";
 import { LOG } from "../../../src/utils/index.ts";
 import assert from "node:assert/strict";
@@ -40,7 +40,9 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
     await loadHealthState();
 
     assert.equal(getChannelHealth("test-load-channel", "load.test")?.status, "success", "channel state loaded from disk");
-    assert.equal(getDomainAuth("load.test"), now, "domain auth state loaded from disk");
+
+    // The v1 bare-number domain value is migrated to the entry shape at read time, preserving the original timestamp as a verified entry.
+    assert.deepEqual(getDomainAuthState("load.test"), { status: "verified", timestamp: now }, "domain auth state loaded from disk in the migrated entry shape");
   });
 
   test("non-numeric schemaVersion falls back to 1 (parser sanitization)", async () => {
@@ -167,8 +169,8 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
 
     assert.equal(getChannelHealth("stale-ttl-channel", "stale.test"), null, "stale channel pruned at load");
     assert.equal(getChannelHealth("fresh-ttl-channel", "fresh.test")?.status, "success", "fresh channel survives load");
-    assert.equal(getDomainAuth("stale.test"), null, "stale domain auth pruned at load");
-    assert.equal(getDomainAuth("fresh.test"), now, "fresh domain auth survives load");
+    assert.equal(getDomainAuthState("stale.test"), null, "stale domain auth pruned at load");
+    assert.deepEqual(getDomainAuthState("fresh.test"), { status: "verified", timestamp: now }, "fresh domain auth survives load");
   });
 
   test("emits the count-summary log line when at least one channel or domain is loaded", async () => {
@@ -288,6 +290,126 @@ describe("flushHealthState - debounced write contract", () => {
 
     assert.ok(persisted.channels?.["shutdown-flush-channel"], "the pending channel mark was flushed to disk immediately by flushHealthStateNow");
     assert.ok(persisted.domains?.["shutdown.test"], "the pending domain auth was flushed to disk immediately by flushHealthStateNow");
+  });
+});
+
+describe("health schema v1 to v2 migration matrix", () => {
+
+  /* The v2 schema converts bare-number domain auth values (v1: presence of a timestamp means verified) into status-bearing entries. The framework runs the
+   * migration after parse, so parse must hand legacy numbers through unmodified - these tests exercise the whole pipeline through loadHealthState and the
+   * on-disk readback after a flush.
+   */
+  test("a v1 file's bare-number domains all survive as verified entries with their original timestamps", async () => {
+
+    /* Pre-mortem pin: the migration must not corrupt or drop any v1 domain. We seed several v1 domains with distinct timestamps and assert each one reads back
+     * verified with its exact original timestamp. The mutation under test is the migration's adoptDomainAuthValue call - dropping it would leave bare numbers in
+     * the runtime map and the entry-shaped deepEqual reads below would fail.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+
+    const now = Date.now();
+    const seeded: Record<string, number> = { "one.test": now - 1000, "three.test": now - 3000, "two.test": now - 2000 };
+
+    await writePersistedJson(ctx, "health.json", { channels: {}, domains: seeded, schemaVersion: 1 });
+
+    await loadHealthState();
+
+    for(const [ domain, timestamp ] of Object.entries(seeded)) {
+
+      assert.deepEqual(getDomainAuthState(domain), { status: "verified", timestamp }, domain + " survives migration verified with its original timestamp");
+    }
+  });
+
+  test("the first flush after a v1 read persists the v2 shape: entry-valued domains, schemaVersion 2, and the migration audit trail", async () => {
+
+    /* The migration runs in memory at read time; persistence happens on the next write. We load a v1 file, flush, and read the raw file back: domains must be
+     * entry-shaped, schemaVersion must be stamped 2, and migrationsApplied must carry the migration description (the beforeWrite hook emits it once non-empty).
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+
+    const now = Date.now();
+
+    await writePersistedJson(ctx, "health.json", { channels: {}, domains: { "readback.test": now }, schemaVersion: 1 });
+
+    await loadHealthState();
+    await flushHealthStateNow();
+
+    const persisted = JSON.parse(await readFile(pathInDataDir(ctx, "health.json"), "utf8")) as {
+      domains: Record<string, { status: string; timestamp: number }>;
+      migrationsApplied?: string[];
+      schemaVersion: number;
+    };
+
+    assert.deepEqual(persisted.domains["readback.test"], { status: "verified", timestamp: now }, "on-disk domain value is entry-shaped after the migration flush");
+    assert.equal(persisted.schemaVersion, 2, "schemaVersion stamped to 2");
+    assert.ok(persisted.migrationsApplied?.some((entry) => entry.includes("domain auth")), "migration audit trail recorded");
+  });
+
+  test("an already-v2 file loads without transformation, preserving both statuses and the needsLogin TTL exemption at load", async () => {
+
+    /* Load-site TTL-exemption pin: loadHealthState's domain filter runs isDomainAuthExpired per entry. We seed a v2 file whose needsLogin and verified entries are
+     * both aged past the TTL - the aged verified entry must be pruned at load while the identically-aged needsLogin entry survives. A fresh verified entry pins
+     * the untransformed happy path. The status conjunct in isDomainAuthExpired is the mutation under test: an age-only predicate would drop the aged needsLogin
+     * entry too.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+
+    const now = Date.now();
+    const thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000);
+
+    await writePersistedJson(ctx, "health.json", {
+
+      channels: {},
+      domains: {
+
+        "aged-flag.test": { status: "needsLogin", timestamp: thirtyDaysAgo },
+        "aged-verified.test": { status: "verified", timestamp: thirtyDaysAgo },
+        "fresh-verified.test": { status: "verified", timestamp: now }
+      },
+      migrationsApplied: ["Convert bare-number domain auth timestamps to status-bearing entries"],
+      schemaVersion: 2
+    });
+
+    await loadHealthState();
+
+    assert.deepEqual(getDomainAuthState("aged-flag.test"), { status: "needsLogin", timestamp: thirtyDaysAgo }, "aged needsLogin entry survives the load filter");
+    assert.equal(getDomainAuthState("aged-verified.test"), null, "identically-aged verified entry pruned at load");
+    assert.deepEqual(getDomainAuthState("fresh-verified.test"), { status: "verified", timestamp: now }, "fresh verified entry loads unchanged");
+  });
+
+  test("a v2-stamped file holding mixed bare-number and entry values loads both (tolerance for writes from an older binary)", async () => {
+
+    /* An older binary performing a forward-compatible read of a v2 file writes bare-number domain values back into it while keeping schemaVersion 2, so the
+     * migration runner never revisits the file. The load boundary's per-value adoption is the mutation under test: without it, the bare number would flow into
+     * the runtime map unconverted and the entry-shaped deepEqual below would fail.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+
+    const now = Date.now();
+
+    await writePersistedJson(ctx, "health.json", {
+
+      channels: {},
+      domains: {
+
+        "entry-shaped.test": { status: "needsLogin", timestamp: now },
+        "old-binary-wrote-this.test": now
+      },
+      schemaVersion: 2
+    });
+
+    await loadHealthState();
+
+    assert.deepEqual(getDomainAuthState("old-binary-wrote-this.test"), { status: "verified", timestamp: now }, "bare number adopted as verified at the load boundary");
+    assert.deepEqual(getDomainAuthState("entry-shaped.test"), { status: "needsLogin", timestamp: now }, "entry-shaped value loads untouched alongside it");
   });
 });
 

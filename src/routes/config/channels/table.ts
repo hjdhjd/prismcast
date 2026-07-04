@@ -13,7 +13,7 @@ import { getActiveTagVocabulary, getChannelCustomizations, getChannelEffectiveTa
   getEffectiveHdhrEnabled, getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel,
   isPredefinedChannelDisabled, isUserChannel, isVisibleChannel, tagsMatch } from "../../../config/userChannels.ts";
 import { getCachedProviderChannels, getProviderDomainMap, getProviderGuideUrls, getProviderModuleInfo } from "../../../browser/channelSelection.ts";
-import { getChannelHealth, getDomainAuth } from "../../../config/health.ts";
+import { getChannelHealth, getDomainAuthState } from "../../../config/health.ts";
 import { getProfileForChannel, getProfiles } from "../../../config/profiles.ts";
 import { ACTIONS } from "../../clientActions.ts";
 import { CONFIG } from "../../../config/index.ts";
@@ -1035,18 +1035,21 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-edit\" title=\"Edit\" aria-label=\"Edit\" " +
     "data-click-action=\"" + ACTIONS.showEditForm + "\" data-channel-key=\"" + escapedKey + "\">" + ICON_EDIT + "</button>");
 
-  // Position 2: Login for enabled channels (with domain auth color), placeholder for disabled predefined. Custom channels (user-defined, not predefined) skip
-  // login coloring because they have no service concept.
+  // Position 2: Login for enabled channels (with tri-state domain auth color: green verified, red needs-sign-in, neutral unknown), placeholder for disabled
+  // predefined. Custom channels (user-defined, not predefined) skip login coloring because they have no service concept.
   if(!isDisabled) {
 
-    const authTimestamp = (isPredefined || isOverride) ? getDomainAuth(authDomain) : null;
-    const loginColorClass = authTimestamp ? " health-success" : "";
+    const authState = (isPredefined || isOverride) ? getDomainAuthState(authDomain) : null;
+    const needsLogin = authState?.status === "needsLogin";
+    const loginColorClass = (authState?.status === "verified") ? " health-success" : needsLogin ? " health-failed" : "";
 
-    // Lead the title with the action so users discover that the icon is interactive...the trailing fact reports the service-scoped verified state, since the
-    // auth domain is shared across every channel of the same service.
+    // Lead the title with the action so users discover that the icon is interactive...the trailing fact reports the service-scoped auth state, since the
+    // auth domain is shared across every channel of the same service. The needs-sign-in title drops "or test" - signing in IS the remedy being asked for.
     const serviceLabel = getChannelServiceLabel(channel);
-    const loginTitle = "Click to open this channel in PrismCast's Chrome to sign in or test. " + serviceLabel +
-      (authTimestamp ? " verified " + formatTimeAgo(authTimestamp) : " not yet verified") + ".";
+    const loginTitle = needsLogin ?
+      "Click to open this channel in PrismCast's Chrome to sign in. " + serviceLabel + " needs sign-in (detected " + formatTimeAgo(authState.timestamp) + ")." :
+      "Click to open this channel in PrismCast's Chrome to sign in or test. " + serviceLabel +
+        (authState ? " verified " + formatTimeAgo(authState.timestamp) : " not yet verified") + ".";
 
     displayLines.push("<button type=\"button\" class=\"btn-icon btn-icon-login" + loginColorClass + "\" data-auth-domain=\"" +
       escapeHtml(authDomain) + "\" title=\"" + escapeHtml(loginTitle) + "\" aria-label=\"Login\" " +

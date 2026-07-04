@@ -416,7 +416,8 @@ export function generateLandingPageStyles(): string {
     ".btn-icon-copy:hover { color: var(--interactive-primary); }",
     ".btn-icon-placeholder { display: inline-block; width: 28px; height: 28px; }",
 
-    // Health indicator colors. The login icon only uses health-success (provider verified). The health icon uses both (channel last-tune result).
+    // Health indicator colors. The login icon uses both: health-success (provider verified) and health-failed (provider needs sign-in). The health icon uses both
+    // (channel last-tune result).
     ".health-success { color: var(--interactive-success); }",
     ".health-failed { color: var(--interactive-delete); }",
 
@@ -426,9 +427,11 @@ export function generateLandingPageStyles(): string {
     ".btn-icon-health:hover { background: transparent; color: var(--text-secondary); }",
     ".user-channel .btn-icon-health:hover { background: transparent; }",
 
-    // Override hover to preserve health color when set.
+    // Override hover to preserve health color when set. The login icon's needs-sign-in red gets the same treatment - without it, the generic
+    // .btn-icon-login:hover rule above would swap the red for the interactive-primary color on hover.
     ".btn-icon-health.health-success:hover { color: var(--interactive-success); }",
     ".btn-icon-health.health-failed:hover { color: var(--interactive-delete); }",
+    ".btn-icon-login.health-failed:hover { color: var(--interactive-delete); }",
     ".copy-dropdown .dropdown-item { font-size: 12px; }",
 
     // JS tooltip styling. The tooltip element is appended to <body> and positioned via getBoundingClientRect() so it's immune to overflow and stacking contexts.

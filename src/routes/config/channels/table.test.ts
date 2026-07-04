@@ -7,7 +7,8 @@
  */
 import { OPTIONAL_COLUMNS, VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState, generateServiceFilterToolbar, generateTagFilterContent,
   generateTagManagerBody } from "./table.ts";
-import { afterEach, beforeEach, describe, test } from "node:test";
+import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { loadHealthState, markDomainAuth, markDomainAuthRequired } from "../../../config/health.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { firstOf } from "../../../testing.helpers.ts";
@@ -176,6 +177,95 @@ describe("buildChannelTablePatch", () => {
     assert.equal(row.action, "update");
     assert.equal(row.key, "abc");
     assert.equal(typeof row.displayRow, "string", "displayRow HTML present");
+  });
+});
+
+describe("login icon tri-state rendering", () => {
+
+  /* The login icon on service-bound channel rows renders one of three domain auth states: verified (health-success, green), needs-sign-in (health-failed, red),
+   * or unknown (no color class). We render through buildChannelTablePatch - the same primitive the health bridge uses for reactive row patches - and assert on
+   * the login button's class and title. The predefined "abc" channel resolves to the abc.com auth domain, which is what the marks below key on.
+   */
+  let dir: string;
+
+  beforeEach(async () => {
+
+    dir = await mkdtemp(path.join(os.tmpdir(), "prismcast-loginicon-test-"));
+    initializeDataDir(dir);
+    await initializeUserChannels();
+
+    // Reload health state from the fresh (empty) data dir so domain auth residue from other test files cannot color the rows rendered here.
+    await loadHealthState();
+
+    // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flush timer the mark calls below schedule.
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+  });
+
+  afterEach(async () => {
+
+    mock.timers.reset();
+    await rm(dir, { force: true, recursive: true });
+  });
+
+  // Extracts the rendered display-row HTML for the predefined "abc" channel.
+  function renderAbcRow(): string {
+
+    const patch = buildChannelTablePatch(["abc"], []);
+    const row = firstOf(patch.rows, "patch row");
+
+    assert.equal(row.action, "update", "abc renders as an update row");
+    assert.equal(typeof row.displayRow, "string", "displayRow HTML present");
+
+    return row.displayRow ?? "";
+  }
+
+  test("renders the neutral state (no color class, 'not yet verified' title) when the domain is unknown", () => {
+
+    const html = renderAbcRow();
+
+    assert.match(html, /class="btn-icon btn-icon-login"/, "login button carries no color class");
+    assert.match(html, /not yet verified/, "title reports the unverified state");
+    assert.doesNotMatch(html, /btn-icon-login health-/, "no health color on the login button");
+  });
+
+  test("renders the verified state (health-success, 'verified' title) when the domain has success evidence", () => {
+
+    markDomainAuth("abc.com");
+
+    const html = renderAbcRow();
+
+    assert.match(html, /class="btn-icon btn-icon-login health-success"/, "login button carries the verified green class");
+    assert.match(html, / verified /, "title reports the verified state");
+  });
+
+  test("renders the needs-sign-in state (health-failed, actionable title) when the domain is flagged", () => {
+
+    /* Discrimination pin for the needsLogin branch in generateChannelRowHtml's login icon block: the scenario seeds a needsLogin entry for abc.com, so the
+     * rendering enters the needsLogin arm - the appended health-failed class and the sign-in title are the mutations under test. The title must lead with the
+     * click action (the icon IS the remedy) and carry the detection timestamp.
+     */
+    markDomainAuthRequired("abc.com");
+
+    const html = renderAbcRow();
+
+    assert.match(html, /class="btn-icon btn-icon-login health-failed"/, "login button carries the needs-sign-in red class");
+    assert.match(html, /Click to open this channel in PrismCast&#39;s Chrome to sign in\./, "title leads with the sign-in action");
+    assert.match(html, /needs sign-in \(detected /, "title reports the detection state and timestamp");
+  });
+
+  test("returns to the neutral state after the flag is cleared by a fresh health reload", async () => {
+
+    /* Round-trip sanity: the rendering derives entirely from current health state, so reloading from an empty data dir (clearing the in-memory flag) must return
+     * the row to neutral - there is no cached red state in the renderer.
+     */
+    markDomainAuthRequired("abc.com");
+    assert.match(renderAbcRow(), /btn-icon-login health-failed/, "precondition: flagged renders red");
+
+    mock.timers.reset();
+    await loadHealthState();
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+
+    assert.match(renderAbcRow(), /class="btn-icon btn-icon-login"/, "reloaded state renders neutral again");
   });
 });
 

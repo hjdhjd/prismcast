@@ -10,7 +10,7 @@
  */
 import { createIntegrationContext, initializePersistence, waitForHealthFlush } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
-import { getChannelHealth, getDomainAuth, getHealthSnapshot, loadHealthState, markChannelFailure, markChannelSuccess,
+import { getChannelHealth, getDomainAuthState, getHealthSnapshot, loadHealthState, markChannelFailure, markChannelSuccess,
   markDomainAuth } from "../../../src/config/health.ts";
 import assert from "node:assert/strict";
 
@@ -58,7 +58,7 @@ describe("channel health state", () => {
     assert.equal(health?.status, "failed", "later failure overrides prior success");
   });
 
-  test("markDomainAuth records a domain timestamp visible via getDomainAuth", async () => {
+  test("markDomainAuth records a verified entry visible via getDomainAuthState", async () => {
 
     await using ctx = await createIntegrationContext();
 
@@ -67,7 +67,7 @@ describe("channel health state", () => {
 
     markDomainAuth("hulu.com");
 
-    assert.ok(getDomainAuth("hulu.com"), "domain auth timestamp should be recorded");
+    assert.equal(getDomainAuthState("hulu.com")?.status, "verified", "domain auth entry should be recorded as verified");
   });
 
   test("getHealthSnapshot returns the full in-memory state shape", async () => {
@@ -117,6 +117,6 @@ describe("channel health state", () => {
     assert.ok(health, "channel health should hydrate from disk");
     assert.equal(health.status, "success", "status preserved across reload");
 
-    assert.ok(getDomainAuth("abc.com"), "domain auth should hydrate from disk");
+    assert.equal(getDomainAuthState("abc.com")?.status, "verified", "domain auth should hydrate from disk");
   });
 });

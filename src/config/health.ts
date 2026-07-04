@@ -4,6 +4,7 @@
  */
 import { EventEmitter } from "node:events";
 import { LOG } from "../utils/index.ts";
+import type { Migration } from "./persistence.ts";
 import type { Nullable } from "../types/index.ts";
 import { createFileStore } from "./persistence.ts";
 import { getHealthFilePath } from "./paths.ts";
@@ -13,19 +14,47 @@ import { getHealthFilePath } from "./paths.ts";
  * 1. Channel health - did the last tune attempt for a specific channel succeed or fail? Each channel's health is independent. Switching a channel's domain resets its
  *    health indicator because the stored domain no longer matches.
  *
- * 2. Domain authentication - has the user successfully tuned at least one channel on a given domain? Authentication is proven by success: one successful tune on any
- *    channel from a domain turns the entire domain green. There is no "red" state - domains are either verified (green) or unknown (no entry / TTL expired). This
- *    avoids brittle heuristics for detecting auth failures (domain redirects, login page detection, MVPD picker walls) in favor of a single reliable signal: did video
- *    actually start?
+ * 2. Domain authentication - a per-domain tri-state: verified (green), needs-sign-in (red), or unknown (no entry). Verified is proven by success: one successful tune
+ *    on any channel from a domain, or a validated channel discovery for the domain's service, turns the entire domain green. Needs-sign-in is proven by inspection: a
+ *    discovery that returns zero channels leaves its page open long enough to positively classify a provider authentication wall, and only a confirmed classification
+ *    sets the state - a page-shape reading of what is actually on screen, not the redirect-URL or login-page guessing that a heuristic-first design would need. Only
+ *    success evidence changes a needs-sign-in entry: fresh verification overwrites it to verified, and a non-empty discovery that cannot prove paid access removes it
+ *    back to unknown so the red state never outlives the wall it reported.
  *
- * State is persisted to health.json in the data directory with a 2-second debounce to avoid excessive writes during rapid tune attempts. Entries older than 7 days
- * are filtered out at load time, and the live maps are kept bounded for the life of the process by pruning expired entries at the write chokepoint (writeHealthState)
- * and on snapshot (getHealthSnapshot); the read paths additionally drop the single stale key they touch.
+ *    TTL semantics: verified entries expire after HEALTH_TTL because verification is aging evidence - a week-old success no longer proves the session is still valid.
+ *    Needs-sign-in entries are exempt from the TTL: the entry describes a standing account condition that only new evidence resolves, so letting it lapse silently
+ *    would just hide the problem it exists to surface. Boundedness survives the exemption because entries are keyed by the finite provider/domain set and every
+ *    needs-sign-in entry is removed on the verified overwrite or the unproven-access deletion.
+ *
+ *    Downgrade note: an older binary performing a forward-compatible read of a v2 health file treats every domain entry (including needs-sign-in) as a truthy verified
+ *    value and renders it green. The state is advisory and self-heals on the next mark or load, so this is accepted rather than defended against.
+ *
+ * State is persisted to health.json in the data directory with a 2-second debounce to avoid excessive writes during rapid tune attempts. Expired entries are filtered
+ * out at load time, and the live maps are kept bounded for the life of the process by pruning expired entries at the write chokepoint (writeHealthState) and on
+ * snapshot (getHealthSnapshot); the read paths additionally drop the single stale key they touch.
  */
 
 // Types.
 
 type HealthStatus = "failed" | "success";
+
+/**
+ * Authentication status for a domain. "verified" means success evidence exists within the TTL window; "needsLogin" means a confirmed provider auth wall was observed
+ * and the user must sign in. The unknown state is represented by the absence of an entry.
+ */
+export type DomainAuthStatus = "needsLogin" | "verified";
+
+/**
+ * A domain's authentication state entry.
+ */
+export interface DomainAuthEntry {
+
+  // The domain's authentication status.
+  status: DomainAuthStatus;
+
+  // Unix millisecond timestamp: when success evidence was recorded (verified) or when the auth wall was detected (needsLogin).
+  timestamp: number;
+}
 
 interface ChannelHealthEntry {
 
@@ -43,8 +72,8 @@ interface HealthState {
 
   channels: Record<string, ChannelHealthEntry>;
 
-  // Domain auth entries are just timestamps. The presence of a non-expired entry means "verified authenticated."
-  domains: Record<string, number>;
+  // Domain auth entries carry a status and a timestamp. The unknown state is the absence of an entry.
+  domains: Record<string, DomainAuthEntry>;
 
   // Audit trail of schema migrations applied to this file. Managed by the file store framework's migration runner.
   migrationsApplied: string[];
@@ -60,7 +89,7 @@ export interface HealthEvent {
 
   channelKey: string;
   domain: string;
-  status: HealthStatus;
+  status: HealthStatus | "needsLogin";
   timestamp: number;
 }
 
@@ -70,10 +99,10 @@ export interface HealthEvent {
 export interface HealthSnapshot {
 
   channels: Record<string, { domain: string; status: HealthStatus; timestamp: number }>;
-  domains: Record<string, number>;
+  domains: Record<string, DomainAuthEntry>;
 }
 
-// Health event emitter. Fires on every markChannelSuccess, markChannelFailure, and markDomainAuth call so SSE clients receive real-time indicator updates.
+// Health event emitter. Fires on every domain auth or channel health mutation so SSE clients receive real-time indicator updates.
 const healthEmitter = new EventEmitter();
 
 // Every /streams/status SSE subscriber registers a listener on this emitter, so we lift the cap from Node's default of 10 to 100 to accommodate many concurrent
@@ -91,12 +120,25 @@ const FLUSH_DELAY = 2000;
 // Returns true if the given timestamp is older than HEALTH_TTL.
 const isHealthExpired = (timestamp: number): boolean => (Date.now() - timestamp) >= HEALTH_TTL;
 
+/* Returns true when a domain auth entry has aged out. Only verified entries expire - verification is aging evidence with a shelf life. Needs-sign-in entries are
+ * exempt: they describe a standing account condition that only new evidence (a sign-in followed by success, or an unproven-access discovery) resolves. This predicate
+ * is the single expression of that status-aware TTL rule, shared by the load filter, the bulk prune, and the single-key read path.
+ */
+const isDomainAuthExpired = (entry: DomainAuthEntry): boolean => (entry.status === "verified") && isHealthExpired(entry.timestamp);
+
+/* Converts a persisted domain auth value to the entry shape. Bare numbers are the legacy timestamp form, whose presence meant verified. The v1 to v2 schema migration
+ * converts whole files through this function, and the load path applies it per-value as well: an older binary performing a forward-compatible read of a v2 file
+ * writes bare numbers back into it without downgrading the schema version, so the migration never re-runs for that file and tolerance has to live at the load
+ * boundary too. One converter, two call sites, one definition of the legacy form.
+ */
+const adoptDomainAuthValue = (value: number | DomainAuthEntry): DomainAuthEntry => (typeof value === "number") ? { status: "verified", timestamp: value } : value;
+
 // In-memory state.
 
 const channelHealth = new Map<string, ChannelHealthEntry>();
 
-// Domain auth is proven by success only. The presence of a non-expired timestamp means the user has successfully tuned at least one channel on the domain.
-const domainAuth = new Map<string, number>();
+// Domain authentication state. The unknown state is the absence of an entry; verified and needs-sign-in are entry-valued per DomainAuthEntry.
+const domainAuth = new Map<string, DomainAuthEntry>();
 
 // Debounce timer for flushHealthState().
 let flushTimer: Nullable<ReturnType<typeof setTimeout>> = null;
@@ -116,9 +158,9 @@ const pruneExpiredEntries = (): void => {
     }
   }
 
-  for(const [ key, timestamp ] of domainAuth) {
+  for(const [ key, entry ] of domainAuth) {
 
-    if(isHealthExpired(timestamp)) {
+    if(isDomainAuthExpired(entry)) {
 
       domainAuth.delete(key);
     }
@@ -127,14 +169,41 @@ const pruneExpiredEntries = (): void => {
 
 // Persistence.
 
-/* Current schema version for health.json. No migrations are required today because the parser tolerates absent top-level fields, so legacy files load cleanly, but the
- * framework metadata is still maintained so future migrations can be added trivially.
+/* Current schema version for health.json.
+ *
+ * Version history:
+ *   1 - Original. Domain auth entries are bare Unix millisecond timestamps; the presence of a non-expired value means verified.
+ *   2 - Status-bearing domain auth. Each domain value becomes { status, timestamp } so a domain can carry the needs-sign-in state alongside verified.
  */
-const CURRENT_HEALTH_SCHEMA_VERSION = 1;
+const CURRENT_HEALTH_SCHEMA_VERSION = 2;
+
+/* Declarative schema migrations. The file store framework runs these in order from the file's stored schemaVersion up to CURRENT_HEALTH_SCHEMA_VERSION, stamping the
+ * new version and recording the description in migrationsApplied after each application. Apply functions mutate the data in place.
+ */
+const healthMigrations: Record<number, Migration<HealthState>> = {
+
+  2: {
+
+    apply: (data: HealthState): void => {
+
+      /* Cast to the pre-migration shape: v1 files store bare-number timestamps that the parser passes through unmodified so this migration can transform them.
+       * Values already in the entry shape pass through the converter untouched, which makes the migration idempotent over partially-converted content.
+       */
+      const domains = data.domains as Record<string, number | DomainAuthEntry>;
+
+      for(const [ domain, value ] of Object.entries(domains)) {
+
+        domains[domain] = adoptDomainAuthValue(value);
+      }
+    },
+    description: "Convert bare-number domain auth timestamps to status-bearing entries"
+  }
+};
 
 /* Transactional store for health.json. The parser tolerates the absence of either top-level data field so older files (and partial writes from prior versions
- * predating both keys) load cleanly. The beforeWrite hook emits framework metadata alongside the data; data fields are emitted unconditionally since the
- * runtime always populates them on every flush.
+ * predating both keys) load cleanly. Legacy bare-number domain values pass through the parser unmodified - the framework runs migrations after parse, so the v1 to v2
+ * migration is what transforms them. The beforeWrite hook emits framework metadata alongside the data; data fields are emitted unconditionally since the runtime
+ * always populates them on every flush.
  */
 const healthStore = createFileStore<HealthState>({
 
@@ -153,9 +222,12 @@ const healthStore = createFileStore<HealthState>({
   defaultValue: (): HealthState => ({ channels: {}, domains: {}, migrationsApplied: [], schemaVersion: CURRENT_HEALTH_SCHEMA_VERSION }),
   getSchemaVersion: (data: HealthState): number => data.schemaVersion,
   label: "health state",
+  migrations: healthMigrations,
   parse: (raw: string): HealthState => {
 
-    const parsed = JSON.parse(raw) as Partial<HealthState>;
+    // The domains field is typed as a value union here rather than as the current entry shape: v1 files hold bare numbers, and the migration (which runs after
+    // parse) is what converts them. Parse must hand those values through unmodified or the migration would have nothing to transform.
+    const parsed = JSON.parse(raw) as Partial<Omit<HealthState, "domains">> & { domains?: Record<string, number | DomainAuthEntry> };
 
     let schemaVersion = 1;
 
@@ -180,17 +252,21 @@ const healthStore = createFileStore<HealthState>({
     return {
 
       channels: parsed.channels ?? {},
-      domains: parsed.domains ?? {},
+      domains: (parsed.domains ?? {}) as Record<string, DomainAuthEntry>,
       migrationsApplied,
       schemaVersion
     };
   },
   path: getHealthFilePath,
+  recordMigration: (data: HealthState, description: string): void => {
+
+    data.migrationsApplied.push(description);
+  },
   setSchemaVersion: (data: HealthState, version: number): void => { data.schemaVersion = version; }
 });
 
 /**
- * Loads the health state from health.json into memory. Entries older than HEALTH_TTL are pruned during loading. Called once at startup from app.ts.
+ * Loads the health state from health.json into memory. Expired entries are pruned during loading. Called once at startup from app.ts.
  */
 export async function loadHealthState(): Promise<void> {
 
@@ -207,11 +283,15 @@ export async function loadHealthState(): Promise<void> {
     }
   }
 
-  for(const [ key, timestamp ] of Object.entries(result.data.domains)) {
+  for(const [ key, value ] of Object.entries(result.data.domains)) {
 
-    if(!isHealthExpired(timestamp)) {
+    // Adopt each value at the load boundary. Post-migration data is already entry-shaped; the conversion covers bare numbers written by an older binary into a
+    // v2-stamped file, which the migration runner never revisits.
+    const entry = adoptDomainAuthValue(value);
 
-      domainAuth.set(key, timestamp);
+    if(!isDomainAuthExpired(entry)) {
+
+      domainAuth.set(key, entry);
     }
   }
 
@@ -295,6 +375,34 @@ export async function flushHealthStateNow(): Promise<void> {
   }
 }
 
+// Write chokepoints. Every domain auth transition flows through exactly one of the three private mutators below (verified, needs-sign-in, removal), so the entry
+// shape and the flush-plus-emit sequence are each written in one place.
+
+/* Sets a domain's auth entry to verified, schedules a flush, and emits the change event. The single write chokepoint for the verified transition - both
+ * markChannelSuccess's markAuth path (channel-scoped event) and markDomainAuth (domain-scoped event with an empty channelKey) flow through here, so each caller
+ * produces exactly one event and the entry it describes is constructed in exactly one place.
+ */
+function setDomainVerified(channelKey: string, domain: string, timestamp: number): void {
+
+  domainAuth.set(domain, { status: "verified", timestamp });
+
+  flushHealthState();
+  healthEmitter.emit("healthChanged", { channelKey, domain, status: "success", timestamp } satisfies HealthEvent);
+}
+
+/* Removes a domain's auth entry, returning the domain to the unknown state, then schedules a flush and emits the change event. The single deletion chokepoint. The
+ * emitted status is "failed": the event union has no member for unknown because no consumer discriminates on status (the health bridge re-renders affected rows from
+ * current truth), and "failed" is the one value that collides with neither the verified transition ("success") nor the needs-sign-in transition ("needsLogin"),
+ * keeping the three domain-scoped transitions distinguishable to subscribers.
+ */
+function removeDomainAuth(domain: string): void {
+
+  domainAuth.delete(domain);
+
+  flushHealthState();
+  healthEmitter.emit("healthChanged", { channelKey: "", domain, status: "failed", timestamp: Date.now() } satisfies HealthEvent);
+}
+
 // Public API.
 
 /**
@@ -311,9 +419,12 @@ export function markChannelSuccess(channelKey: string, domain: string, markAuth 
 
   channelHealth.set(channelKey, { domain, status: "success", timestamp: now });
 
+  // The verified write chokepoint emits the channel-scoped success event on our behalf, so both paths produce exactly one event per call with the same payload.
   if(markAuth) {
 
-    domainAuth.set(domain, now);
+    setDomainVerified(channelKey, domain, now);
+
+    return;
   }
 
   flushHealthState();
@@ -327,12 +438,38 @@ export function markChannelSuccess(channelKey: string, domain: string, markAuth 
  */
 export function markDomainAuth(domain: string): void {
 
+  setDomainVerified("", domain, Date.now());
+}
+
+/**
+ * Records that a domain needs sign-in. Used when a confirmed provider authentication wall is observed during channel discovery. Overwrites any existing entry for
+ * the domain, triggers a debounced flush, and emits a health event with an empty channelKey and the "needsLogin" status.
+ * @param domain - The domain that needs sign-in.
+ */
+export function markDomainAuthRequired(domain: string): void {
+
   const now = Date.now();
 
-  domainAuth.set(domain, now);
+  domainAuth.set(domain, { status: "needsLogin", timestamp: now });
 
   flushHealthState();
-  healthEmitter.emit("healthChanged", { channelKey: "", domain, status: "success", timestamp: now } satisfies HealthEvent);
+  healthEmitter.emit("healthChanged", { channelKey: "", domain, status: "needsLogin", timestamp: now } satisfies HealthEvent);
+}
+
+/**
+ * Clears a domain's needs-sign-in entry, returning the domain to the unknown state. Used when a non-empty discovery proves the auth wall is gone but the provider's
+ * validation cannot prove paid access (e.g., Sling's free-tier lineup appears without a subscription) - the red state must not outlive the wall it reported, but the
+ * domain has not earned verified either. A no-op unless the domain's current state is needs-sign-in: verified entries are never deleted by unproven-access evidence.
+ * @param domain - The domain whose needs-sign-in entry should be cleared.
+ */
+export function clearDomainAuthRequirement(domain: string): void {
+
+  if(domainAuth.get(domain)?.status !== "needsLogin") {
+
+    return;
+  }
+
+  removeDomainAuth(domain);
 }
 
 /**
@@ -386,30 +523,30 @@ export function getChannelHealth(channelKey: string, domain: string): Nullable<{
 }
 
 /**
- * Returns the timestamp when a domain was last verified as authenticated, or null if unknown. Verification is proven by at least one successful tune within the TTL
- * window. A non-null return means the domain is verified; the value is the Unix millisecond timestamp of the most recent successful tune.
+ * Returns a domain's authentication state entry, or null when the domain is unknown (no entry, or a verified entry older than the TTL). Needs-sign-in entries are
+ * exempt from the TTL per the module's status-aware expiry rule.
  * @param domain - The domain to check.
- * @returns Timestamp of last verification, or null if unknown (no entry or stale).
+ * @returns The domain's auth entry, or null if unknown.
  */
-export function getDomainAuth(domain: string): Nullable<number> {
+export function getDomainAuthState(domain: string): Nullable<DomainAuthEntry> {
 
-  const timestamp = domainAuth.get(domain);
+  const entry = domainAuth.get(domain);
 
-  if(timestamp === undefined) {
+  if(!entry) {
 
     return null;
   }
 
-  // Stale entry - older than TTL. We delete it here as well as returning null so that a domain that is read but never re-marked does not linger in memory; this read
-  // path touches exactly one key, so we prune just that key rather than paying for a full-map scan.
-  if(isHealthExpired(timestamp)) {
+  // Stale entry - only verified entries age out. We delete it here as well as returning null so that a domain that is read but never re-marked does not linger in
+  // memory; this read path touches exactly one key, so we prune just that key rather than paying for a full-map scan.
+  if(isDomainAuthExpired(entry)) {
 
     domainAuth.delete(domain);
 
     return null;
   }
 
-  return timestamp;
+  return { status: entry.status, timestamp: entry.timestamp };
 }
 
 /**
@@ -423,16 +560,16 @@ export function getHealthSnapshot(): HealthSnapshot {
   pruneExpiredEntries();
 
   const channels: Record<string, { domain: string; status: HealthStatus; timestamp: number }> = {};
-  const domains: Record<string, number> = {};
+  const domains: Record<string, DomainAuthEntry> = {};
 
   for(const [ key, entry ] of channelHealth) {
 
     channels[key] = { domain: entry.domain, status: entry.status, timestamp: entry.timestamp };
   }
 
-  for(const [ domainKey, timestamp ] of domainAuth) {
+  for(const [ domainKey, entry ] of domainAuth) {
 
-    domains[domainKey] = timestamp;
+    domains[domainKey] = { status: entry.status, timestamp: entry.timestamp };
   }
 
   return { channels, domains };
