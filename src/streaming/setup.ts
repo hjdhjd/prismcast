@@ -10,6 +10,7 @@ import { LOG, delay, extractDomain, formatError, raceWithTimeout, registerAbortC
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
 import { getAllStreams, getNextStreamId } from "./registry.ts";
+import { getAuthDomainForChannel, getServiceDisplayName, resolveServiceKey } from "../config/services.ts";
 import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.ts";
 import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
 import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
@@ -23,9 +24,9 @@ import { chromeFetch } from "../utils/index.ts";
 import { createCaptureSession } from "./captureSession.ts";
 import { getCachedEncryption } from "../native/probe.ts";
 import { getCaptureMimeType } from "./codec.ts";
+import { getDomainAuthState } from "../config/health.ts";
 import { getDomainConfig } from "../config/sites.ts";
 import { getEffectiveViewport } from "../config/presets.ts";
-import { getServiceDisplayName } from "../config/services.ts";
 import { installManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
@@ -267,6 +268,35 @@ export class StreamSetupError extends Error {
     this.statusCode = statusCode;
     this.userMessage = userMessage;
   }
+}
+
+/**
+ * Prepends sign-in guidance to a user-facing failure message when the failing channel's service domain is currently marked needs-sign-in. A confirmed
+ * authentication wall on the service is the most likely cause of a failed tune there, and the channel table's login icon is the remedy - the underlying error
+ * stays in the message so the original failure remains identifiable. Returns the message unchanged for ad-hoc URL streams without a channel identity, for
+ * channels whose domain cannot be resolved, and for domains not marked needs-sign-in.
+ *
+ * Exported for unit-test coverage of the guidance composition. Production callers reach this only through setupStream's failure paths, never directly.
+ * @param userMessage - The user-facing failure message being composed.
+ * @param channelKey - The failing channel's key, or null/undefined for ad-hoc URL streams.
+ * @param serviceName - The service's display name, used to name who needs the sign-in.
+ * @returns The user message, led by sign-in guidance when the channel's domain is marked needs-sign-in.
+ */
+export function withSignInGuidance(userMessage: string, channelKey: Nullable<string> | undefined, serviceName: string): string {
+
+  if(!channelKey) {
+
+    return userMessage;
+  }
+
+  const domain = getAuthDomainForChannel(resolveServiceKey(channelKey));
+
+  if(!domain || (getDomainAuthState(domain)?.status !== "needsLogin")) {
+
+    return userMessage;
+  }
+
+  return serviceName + " needs sign-in. Open PrismCast's channel table and click this channel's login icon to sign in. " + userMessage;
 }
 
 /**
@@ -1001,7 +1031,8 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         noteCaptureInfrastructureFailure(numericStreamId);
       }
 
-      throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, "Failed to start stream.", { cause: error });
+      // A failed tune on a service currently marked needs-sign-in most likely failed AT the auth wall, so the user-facing message leads with the remedy.
+      throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, withSignInGuidance("Failed to start stream.", channelName, serviceName), { cause: error });
     }
 
     const { captureSession, context, directTune, manifestInterception, page } = captureResult;
@@ -1050,7 +1081,8 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
             const failureLabel = channel?.name ?? channelName ?? url;
 
-            throw new StreamSetupError("Tune verification failed: " + verifyError, 502, "Tune verification failed for " + failureLabel + ". " + verifyError);
+            throw new StreamSetupError("Tune verification failed: " + verifyError, 502,
+              withSignInGuidance("Tune verification failed for " + failureLabel + ". " + verifyError, channelName, serviceName));
           }
         }
       }

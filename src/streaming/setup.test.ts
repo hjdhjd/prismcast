@@ -1,14 +1,20 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module. setup.ts has three synchronously testable pure exports -
- * StreamSetupError, generateStreamId, and validateStreamUrl - all of which earn full coverage here. The async exports (createPageWithCapture, setupStream,
- * verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are deferred to e2e.
- * We cover every throw reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
+ * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module. setup.ts has four synchronously testable exports -
+ * StreamSetupError, generateStreamId, validateStreamUrl, and withSignInGuidance - all of which earn full coverage here. The async exports (createPageWithCapture,
+ * setupStream, verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are
+ * deferred to e2e. We cover every throw reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
  */
-import { StreamSetupError, generateStreamId, validateStreamUrl } from "./setup.ts";
-import { describe, test } from "node:test";
+import { StreamSetupError, generateStreamId, validateStreamUrl, withSignInGuidance } from "./setup.ts";
+import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { loadHealthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
+import { mkdtemp, rm } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
+import { initializeDataDir } from "../config/paths.ts";
+import { initializeUserChannels } from "../config/userChannels.ts";
+import os from "node:os";
+import path from "node:path";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -191,5 +197,70 @@ describe("validateStreamUrl", () => {
 
     assert.equal(result.valid, false);
     assert.match((result as { reason?: string }).reason ?? "", /ftp:/, "rejected protocol surfaced in the reason");
+  });
+});
+
+describe("withSignInGuidance", () => {
+
+  let dir: string;
+
+  beforeEach(async () => {
+
+    dir = await mkdtemp(path.join(os.tmpdir(), "prismcast-guidance-test-"));
+    initializeDataDir(dir);
+    await initializeUserChannels();
+
+    // Reload health state from the fresh (empty) data dir so domain auth residue from other test files cannot leak into the guidance decision.
+    await loadHealthState();
+
+    // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced health flush timer the mark calls below schedule.
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+  });
+
+  afterEach(async () => {
+
+    mock.timers.reset();
+    await rm(dir, { force: true, recursive: true });
+  });
+
+  test("leads the message with sign-in guidance naming the service when the channel's domain is marked needs-sign-in", () => {
+
+    /* Traced path: the channel key resolves through resolveServiceKey to the predefined "abc" channel, whose URL extracts to the abc.com auth domain; the flagged
+     * entry satisfies the needsLogin status check, so the guidance sentence is prepended. Dropping the prepend (or the state read) would return the message
+     * unchanged and the leading-guidance assertion below would fail. The underlying error must remain identifiable at the end of the message.
+     */
+    markDomainAuthRequired("abc.com");
+
+    const message = withSignInGuidance("Failed to start stream.", "abc", "ABC");
+
+    assert.equal(message, "ABC needs sign-in. Open PrismCast's channel table and click this channel's login icon to sign in. Failed to start stream.");
+  });
+
+  test("returns the message unchanged when the domain is verified", () => {
+
+    // Traced path: the needsLogin status comparison - a verified entry must not trigger guidance.
+    markDomainAuth("abc.com");
+
+    assert.equal(withSignInGuidance("Failed to start stream.", "abc", "ABC"), "Failed to start stream.");
+  });
+
+  test("returns the message unchanged when the domain has no auth state", () => {
+
+    assert.equal(withSignInGuidance("Failed to start stream.", "abc", "ABC"), "Failed to start stream.");
+  });
+
+  test("returns the message unchanged for ad-hoc URL streams with no channel identity", () => {
+
+    // Traced path: the falsy channelKey early return - ad-hoc /play streams pass undefined and must never consult domain auth.
+    assert.equal(withSignInGuidance("Failed to start stream.", undefined, "Example"), "Failed to start stream.");
+    assert.equal(withSignInGuidance("Failed to start stream.", null, "Example"), "Failed to start stream.");
+  });
+
+  test("returns the message unchanged when the channel key cannot resolve to a domain (empty-domain guard)", () => {
+
+    /* Traced path: getAuthDomainForChannel returns an empty string for an unknown key, and the empty-domain guard must short-circuit before the state read - an
+     * unguarded lookup against "" could match a malformed entry and mislabel an unrelated failure.
+     */
+    assert.equal(withSignInGuidance("Failed to start stream.", "definitely-not-a-channel-key", "Example"), "Failed to start stream.");
   });
 });
