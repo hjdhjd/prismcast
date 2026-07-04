@@ -9,11 +9,11 @@
 import type * as PrecachingModule from "./precaching.ts";
 import type { Browser, Page } from "puppeteer-core";
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
+import { LOG, extractDomain } from "../utils/index.ts";
 import { afterEach, before, beforeEach, describe, mock, test } from "node:test";
 import { clearLoginState, setBrowserAccessors, startLoginMode } from "./login.ts";
 import { getDomainAuthState, markDomainAuthRequired } from "../config/health.ts";
 import { CONFIG } from "../config/index.ts";
-import { LOG } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 
@@ -107,7 +107,9 @@ before(async () => {
     namedExports: {
 
       getProviderBySlug: (slug: string): ProviderModule | undefined => mockProviders[slug],
-      getProviderGuideUrls: (): Record<string, string> => mockGuideUrls
+      getProviderGuideUrls: (): Record<string, string> => mockGuideUrls,
+      getProvidersForDomain: (domain: string): ProviderModule[] => Object.entries(mockGuideUrls)
+        .filter(([ , guideUrl ]) => extractDomain(guideUrl) === domain).flatMap(([slug]) => mockProviders[slug] ?? [])
     }
   });
 

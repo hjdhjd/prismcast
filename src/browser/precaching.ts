@@ -6,7 +6,7 @@ import type { DiscoveredChannel, Nullable, ProviderModule } from "../types/index
 import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
 import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { getCurrentBrowser, isGracefulShutdown, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.ts";
-import { getProviderBySlug, getProviderGuideUrls } from "./channelSelection.ts";
+import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
 import { classifyBlockedPage } from "./blockedPage.ts";
@@ -273,20 +273,7 @@ export async function revalidateDomainAuth(url: string): Promise<void> {
 
     // Match every provider whose guide lives on the domain the user just signed in to. The observer's URL may be a DOMAIN_CONFIG loginUrl override rather than a
     // channel URL, but both extract to the same registrable domain the guide URLs use.
-    const providers: ProviderModule[] = [];
-
-    for(const [ slug, guideUrl ] of Object.entries(getProviderGuideUrls())) {
-
-      if(extractDomain(guideUrl) === domain) {
-
-        const provider = getProviderBySlug(slug);
-
-        if(provider) {
-
-          providers.push(provider);
-        }
-      }
-    }
+    const providers = getProvidersForDomain(domain);
 
     if(providers.length === 0) {
 

@@ -3,7 +3,7 @@
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
-import { LOG, delay, evaluateWithAbort, formatError } from "../utils/index.ts";
+import { LOG, delay, evaluateWithAbort, extractDomain, formatError } from "../utils/index.ts";
 import { getDomainConfig, registerProviderModuleProfile } from "../config/sites.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
@@ -202,6 +202,18 @@ export function getProviderGuideUrls(): Record<string, string> {
   }
 
   return map;
+}
+
+/**
+ * Returns every registered provider module whose guide URL lives on the given registrable domain. This is the single source of truth for matching a domain-level
+ * observation (a sign-in wall sighting, a post-login revalidation) to the providers it applies to. Guide URLs and login URLs on the same service extract to the
+ * same registrable domain, so callers pass extractDomain() of whichever URL they hold.
+ * @param domain - The registrable domain to match (as produced by extractDomain(), e.g., "sling.com").
+ * @returns Array of matching provider modules, empty when no registered provider's guide lives on the domain.
+ */
+export function getProvidersForDomain(domain: string): ProviderModule[] {
+
+  return providerModules.filter((p) => extractDomain(p.guideUrl) === domain);
 }
 
 /**

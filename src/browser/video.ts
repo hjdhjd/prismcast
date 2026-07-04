@@ -2,12 +2,15 @@
  *
  * video.ts: Video context and playback handling for PrismCast.
  */
-import { EvaluateAbortError, LOG, delay, evaluateWithAbort, formatError, raceWithTimeout, startTimer } from "../utils/index.ts";
+import { EvaluateAbortError, LOG, delay, evaluateWithAbort, extractDomain, formatError, raceWithTimeout, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.ts";
-import { consentOverlayPresent, startOverlayHandling } from "./consent.ts";
-import { invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
+import { getProvidersForDomain, invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
+import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
+import { classifyBlockedPage } from "./blockedPage.ts";
+import { markDomainAuthRequired } from "../config/health.ts";
+import { startOverlayHandling } from "./consent.ts";
 
 /* These functions manage the video element lifecycle for streaming capture. The key challenges we solve:
  *
@@ -1381,6 +1384,69 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
   }
 }
 
+// Upper bound on the blocked-page classification during a failed tune. classifyBlockedPage() never throws but is not internally time-bounded (its DOM probes run
+// without a timeout wrapper), so a hung renderer could otherwise stall the failure path indefinitely. Four seconds accommodates the probes on a responsive page
+// while keeping the added window negligible inside the 45-second playback-initialization race in setup.ts.
+const BLOCKED_PAGE_CLASSIFY_TIMEOUT = 4000;
+
+/**
+ * Diagnoses a failed tune by classifying the still-open page, which holds the evidence of why the tune failed. A confirmed provider authentication wall marks the
+ * domain needs-sign-in and replaces the generic failure with an actionable error; a wall on a domain with no registered provider is reported without marking (there
+ * is no channel-table row to point at, and an unmarked ad-hoc entry would have no clearing path); a consent overlay surfaces the standing detect-and-guide text;
+ * anything unrecognized - including a classification that outruns its time budget - rethrows the original failure unchanged.
+ * @param page - The Puppeteer page object, still open at the point of failure.
+ * @param requestedUrl - The URL this tune navigated to; its registrable domain selects the provider and receives any needs-sign-in mark.
+ * @param originalError - The failure that triggered the diagnosis, rethrown as-is when the page classifies as unknown.
+ * @returns Never resolves - every classification outcome throws.
+ */
+async function diagnoseBlockedTune(page: Page, requestedUrl: string, originalError: unknown): Promise<never> {
+
+  const domain = extractDomain(requestedUrl);
+
+  // Resolve the provider whose guide lives on this domain, when one is registered. Its declared auth wall indicators (when defined) sharpen the classification,
+  // and a provider match is what authorizes the needs-sign-in mark below.
+  const provider = getProvidersForDomain(domain)[0];
+
+  // Time-bound the classification so the failure path stays bounded: on timeout the page is simply unknown and the original failure stands.
+  const classification = await raceWithTimeout(classifyBlockedPage(page, { indicators: provider?.authWallIndicators, requestedUrl }),
+    BLOCKED_PAGE_CLASSIFY_TIMEOUT).catch((): BlockedPageClassification => ({ kind: "unknown" }));
+
+  switch(classification.kind) {
+
+    case "authWall": {
+
+      // A wall on a registered provider's domain is marked before the throw, so the stream setup layer reads the needs-sign-in state while composing the
+      // client-visible message for this very failure.
+      if(provider) {
+
+        markDomainAuthRequired(domain);
+
+        LOG.warn("The tune failed because %s is presenting an authentication wall (%s). Sign in from the channel table's login icon.", provider.label,
+          classification.evidence);
+
+        throw new Error("Tune failed: " + provider.label + " is presenting an authentication wall (" + classification.evidence + "). Sign in from the channel " +
+          "table's login icon.");
+      }
+
+      throw new Error("Tune failed: " + domain + " is presenting an authentication wall (" + classification.evidence + ").");
+    }
+
+    case "consentOverlay": {
+
+      // A consent or cookie prompt is blocking the page. Surface actionable guidance in place of the cryptic underlying failure - the viewer dismisses it once in
+      // setup or login mode and the choice persists.
+      throw new Error("This site is displaying a consent or cookie prompt that is blocking playback. Open it once in setup or login mode and dismiss the prompt - " +
+        "your choice is remembered.");
+    }
+
+    default: {
+
+      // Nothing recognizable on the page - the original failure is the most truthful report we have.
+      throw originalError;
+    }
+  }
+}
+
 /**
  * Optional behaviors for initializePlayback(). All fields are optional; an empty options object preserves the default tune flow.
  */
@@ -1391,6 +1457,13 @@ export interface InitializePlaybackOptions {
    * store. The streaming setup layer constructs this closure with the channel key and service tag in scope.
    */
   persistResolution?: (resolvedSelector: string) => Promise<void>;
+
+  /**
+   * The URL this tune navigated to. When present, a failed tune diagnoses the still-open blocked page: a confirmed sign-in wall or consent overlay replaces the
+   * generic failure with an actionable error, and an unrecognized page rethrows the original failure unchanged. When absent, every failure propagates exactly as
+   * it occurred with no classifier pass.
+   */
+  requestedUrl?: string;
 
   /**
    * When true, skip the channel selection phase entirely. Used when navigating directly to a cached watch URL that already targets the correct channel - only
@@ -1416,7 +1489,7 @@ export interface InitializePlaybackOptions {
 export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, options: InitializePlaybackOptions = {}): Promise<TuneResult> {
 
   const elapsed = startTimer();
-  const { persistResolution, skipChannelSelection = false } = options;
+  const { persistResolution, requestedUrl, skipChannelSelection = false } = options;
 
   // Mute any existing video elements to suppress wrong-channel audio during tuning. On SPA-based providers (Hulu, Fox, USA Network, etc.), a default livestream
   // auto-plays when the page loads. Since the capture pipeline is already running, this audio bleeds into the stream until channel selection completes and
@@ -1446,7 +1519,16 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
       if(!channelResult.success) {
 
-        throw new Error("Channel selection failed: " + (channelResult.reason ?? "Unknown reason."));
+        const selectionError = new Error("Channel selection failed: " + (channelResult.reason ?? "Unknown reason."));
+
+        // With the requested URL in hand, diagnose the still-open page before failing - the selection may have failed because a sign-in wall or consent prompt is
+        // where the guide should be. An unknown classification rethrows this same error, so the undiagnosed outcome is identical to the plain throw below.
+        if(requestedUrl !== undefined) {
+
+          await diagnoseBlockedTune(page, requestedUrl, selectionError);
+        }
+
+        throw selectionError;
       }
     }
 
@@ -1456,8 +1538,23 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
   }
 
   // Find the video context, which may be an iframe for embedded players. Some streaming sites embed their video player in an iframe, requiring us to search
-  // through frames to find the one containing the video element.
-  let context = await findVideoContext(page, profile);
+  // through frames to find the one containing the video element. For iframe-handling profiles this can reject with a raw selector timeout when the player iframe
+  // never appears, so with the requested URL in hand the failure routes through the blocked-page diagnosis; an unknown classification rethrows the original
+  // rejection unchanged.
+  let context: Frame | Page;
+
+  try {
+
+    context = await findVideoContext(page, profile);
+  } catch(contextError) {
+
+    if(requestedUrl !== undefined) {
+
+      await diagnoseBlockedTune(page, requestedUrl, contextError);
+    }
+
+    throw contextError;
+  }
 
   LOG.debug("timing:tune", "Video context found. (+%sms)", elapsed());
 
@@ -1529,12 +1626,14 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
     }
   } catch(videoError) {
 
-    // Playback never became ready. If a consent or cookie prompt is still blocking the page, surface actionable guidance in place of the cryptic selector timeout -
-    // the viewer dismisses it once in setup or login mode and the choice persists. Otherwise propagate the original error unchanged.
-    if(await consentOverlayPresent(page)) {
+    // Playback never became ready. With the requested URL in hand, diagnose the still-open page - a sign-in wall or a still-blocking consent prompt found there
+    // replaces the cryptic selector timeout with an actionable error, and an unrecognized page rethrows this same rejection unchanged.
+    if(requestedUrl !== undefined) {
 
-      throw new Error("This site is displaying a consent or cookie prompt that is blocking playback. Open it once in setup or login mode and dismiss the prompt - " +
-        "your choice is remembered.");
+      // Stop the overlay poll before probing the page, so it cannot keep clicking mid-classification. The finally below remains the safety net for every exit.
+      overlayController.abort();
+
+      await diagnoseBlockedTune(page, requestedUrl, videoError);
     }
 
     throw videoError;
@@ -1610,8 +1709,10 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
 
   LOG.debug("timing:tune", "Navigation complete. (+%sms)", tuneElapsed());
 
-  // Perform all post-navigation initialization: channel selection, video context resolution, click to play, video readiness, and fullscreen.
-  const result = await initializePlayback(page, profile);
+  // Perform all post-navigation initialization: channel selection, video context resolution, click to play, video readiness, and fullscreen. The guide URL rides
+  // along so a failed tune can diagnose the blocked page; the cached-direct attempt above deliberately does not pass it, since its failure is swallowed and retried
+  // through this authoritative path.
+  const result = await initializePlayback(page, profile, { requestedUrl: url });
 
   LOG.debug("timing:tune", "Tune complete. Total: %sms.", tuneElapsed());
 

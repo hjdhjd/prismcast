@@ -731,7 +731,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       const PLAYBACK_INIT_TIMEOUT = 45000;
 
       const tuneResult = await raceWithTimeout(
-        initializePlayback(page, profile, { persistResolution: options.persistResolution, skipChannelSelection: usedDirectUrl }),
+        initializePlayback(page, profile, { persistResolution: options.persistResolution, requestedUrl: navigationUrl, skipChannelSelection: usedDirectUrl }),
         PLAYBACK_INIT_TIMEOUT,
         new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms.")
       );
