@@ -5,6 +5,7 @@
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, VideoState } from "../types/index.ts";
 import { CONFIG } from "../config/index.ts";
+import type { StreamHealthStatus } from "./statusEmitter.ts";
 
 /* Recovery metrics are tracked throughout each stream's lifetime. The playback health monitor accumulates these counters during recovery attempts, and the
  * termination handler includes them in the stream-end log for analytics and troubleshooting.
@@ -561,4 +562,173 @@ export function isCaptureInfrastructureError(error: unknown): boolean {
   const message = (error instanceof Error) ? error.message : String(error);
 
   return CAPTURE_INFRASTRUCTURE_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
+// Recovery Decisions.
+
+/**
+ * Derives the reported health status for a capture stream from its recovery and playback state. This is the single source of truth for the health precedence
+ * ladder the monitor emits over SSE: an error state - or a page-reload-level escalation (>= 3), which is equally severe - reports "error"; an active escalation
+ * (levels 1-2) reports "recovering"; buffering within the grace window reports "buffering"; consecutive stalls that have not yet crossed the recovery trigger
+ * report "stalled"; otherwise "healthy". Pure and total, so the precedence lives in exactly one place and is directly testable.
+ * @param inputs - The recovery escalation level, error flag, buffering flag, and consecutive stall count read from the monitor's state.
+ * @returns The stream health status to report.
+ */
+export function deriveStreamHealth(inputs: { escalationLevel: number; hasError: boolean; isBuffering: boolean; stallCount: number }): StreamHealthStatus {
+
+  // An error state and a page-reload-level escalation (>= 3) are equally severe - both report as an error.
+  if(inputs.hasError || (inputs.escalationLevel >= 3)) {
+
+    return "error";
+  }
+
+  // Escalation levels 1-2 mean recovery is actively in progress.
+  if(inputs.escalationLevel > 0) {
+
+    return "recovering";
+  }
+
+  // Buffering within the grace period.
+  if(inputs.isBuffering) {
+
+    return "buffering";
+  }
+
+  // Consecutive stalls that have not yet crossed the recovery trigger.
+  if(inputs.stallCount > 0) {
+
+    return "stalled";
+  }
+
+  return "healthy";
+}
+
+/**
+ * Decides whether the monitor should trigger a recovery action this tick. This is the single source of truth for the recovery-trigger condition: recovery never
+ * fires inside the post-recovery grace window; otherwise it fires on an error, an ended stream, a persistent pause (paused past the stall-count hysteresis while
+ * outside the buffering grace window), a persistent stall (not progressing past the same hysteresis while outside the buffering grace window), or a stalled
+ * capture pipeline. The buffering grace window filters transient rebuffer pauses so they do not escalate. Pure and total.
+ * @param inputs - The grace-window flags, playback state flags, pause/stall counts, the stall-count threshold, and the production-stalled flag from the monitor.
+ * @returns True when a recovery action is warranted.
+ */
+export function shouldTriggerRecovery(inputs: {
+  hasEnded: boolean;
+  hasError: boolean;
+  isPaused: boolean;
+  isProgressing: boolean;
+  pauseCount: number;
+  productionStalled: boolean;
+  stallCount: number;
+  stallCountThreshold: number;
+  withinBufferingGrace: boolean;
+  withinRecoveryGrace: boolean;
+}): boolean {
+
+  // Recovery never fires inside the post-recovery grace window - a freshly recovered stream is given time to stabilize before another attempt.
+  if(inputs.withinRecoveryGrace) {
+
+    return false;
+  }
+
+  // A persistent pause: paused past the stall-count hysteresis while outside the buffering grace window that filters transient rebuffer pauses.
+  const persistentPause = inputs.isPaused && !inputs.withinBufferingGrace && (inputs.pauseCount > inputs.stallCountThreshold);
+
+  // A persistent stall: not progressing past the same hysteresis while outside the buffering grace window.
+  const persistentStall = !inputs.isProgressing && !inputs.withinBufferingGrace && (inputs.stallCount > inputs.stallCountThreshold);
+
+  return inputs.hasError || inputs.hasEnded || persistentPause || persistentStall || inputs.productionStalled;
+}
+
+/**
+ * Computes the recovery escalation level to enter for a fresh recovery episode. This is the single source of truth for the issue-aware escalation ladder: a
+ * paused stream from a clean slate tries L1 (play/unmute) first, since it resolves paused playback roughly half the time; a first attempt for a buffering or
+ * other issue - or a pause that L1 did not fix - escalates to L2 (source reload); and once a source reload has already been attempted, it escalates to L3 (page
+ * navigation). The distinct L3-to-L2 fallback under a navigation rate limit is a separate concern owned by the recovery executor, not this ladder.
+ * @param inputs - The current escalation level, the classified issue category, and whether a source reload has already been attempted this episode.
+ * @returns The escalation level (1, 2, or 3) to enter.
+ */
+export function computeNextRecoveryLevel(inputs: {
+  currentEscalationLevel: number;
+  issueCategory: "buffering" | "other" | "paused";
+  sourceReloadAttempted: boolean;
+}): number {
+
+  // A paused stream from a clean slate tries L1 (play/unmute) first - it resolves paused playback roughly half the time.
+  if((inputs.issueCategory === "paused") && (inputs.currentEscalationLevel === 0)) {
+
+    return 1;
+  }
+
+  // First attempt for a buffering or other issue, or L1 did not fix the pause: escalate to L2 (source reload).
+  if(!inputs.sourceReloadAttempted) {
+
+    return 2;
+  }
+
+  // Source reload already attempted: escalate to L3 (page navigation).
+  return 3;
+}
+
+/**
+ * The health classification and recovery escalation warranted by a native stream's segment-delivery metrics.
+ */
+export interface NativeSegmentHealthDecision {
+
+  // The recovery escalation warranted this tick: none, an L2 page reload for fresh tokens, or an L3 capture fallback.
+  readonly action: "l2" | "l3" | "none";
+
+  // The health status to report for the native stream.
+  readonly health: StreamHealthStatus;
+
+  // The issue label to record when one is not already tracked, or null when the stream is healthy.
+  readonly issueType: Nullable<string>;
+}
+
+/**
+ * Classifies a native (proxied HLS) stream's health from its segment-delivery metrics and decides the recovery escalation, if any. This is the single source of
+ * truth for the native staleness ladder: active fetch errors report "recovering" without escalating from here (the proxy retries internally); otherwise, once at
+ * least one segment has been produced, staleness beyond 2x the target duration reports "stalled", with escalation to an L2 page reload at 4x on the first attempt
+ * and, once that reload has not resolved the stall, an L3 capture fallback. Below the staleness threshold the stream is healthy. Pure and total; the
+ * caller owns the segment-advance bookkeeping, issue-timestamp recording, logging, and firing of the returned action.
+ * @param inputs - Consecutive fetch errors, the last-segment timestamp, prior recovery attempts, staleness in milliseconds, and the target duration in milliseconds.
+ * @returns The health status, the warranted escalation action, and the issue label to record.
+ */
+export function classifyNativeSegmentHealth(inputs: {
+  consecutiveErrors: number;
+  lastSegmentTime: number;
+  recoveryAttempts: number;
+  stalenessMs: number;
+  targetDurationMs: number;
+}): NativeSegmentHealthDecision {
+
+  // Active fetch errors take precedence: the proxy is retrying internally, so report recovering without escalating from here.
+  if(inputs.consecutiveErrors > 0) {
+
+    return { action: "none", health: "recovering", issueType: "fetch errors" };
+  }
+
+  // Staleness is only meaningful once at least one segment has been produced.
+  const isStale = (inputs.stalenessMs > (inputs.targetDurationMs * 2)) && (inputs.lastSegmentTime > 0);
+
+  if(!isStale) {
+
+    return { action: "none", health: "healthy", issueType: null };
+  }
+
+  // Stalled past the escalation threshold (4x target duration). The first attempt is an L2 page reload for fresh tokens; once that reload has been attempted and the
+  // stall persists, the next stalled tick escalates to an L3 capture fallback. Escalation is driven by whether the reload resolved the stall (recoveryAttempts), not
+  // by a further staleness tier - a stream still stalled one tick after its reload is exactly the "the reload did not work" signal.
+  const pastEscalationThreshold = inputs.stalenessMs > (inputs.targetDurationMs * 4);
+
+  if(pastEscalationThreshold && (inputs.recoveryAttempts === 0)) {
+
+    return { action: "l2", health: "stalled", issueType: "segment stall" };
+  }
+
+  if(pastEscalationThreshold && (inputs.recoveryAttempts > 0)) {
+
+    return { action: "l3", health: "stalled", issueType: "segment stall" };
+  }
+
+  return { action: "none", health: "stalled", issueType: "segment stall" };
 }

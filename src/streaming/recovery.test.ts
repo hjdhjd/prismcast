@@ -4,7 +4,8 @@
  * formatIssueType, getIssueCategory, and isCaptureInfrastructureError. Metrics tracking lives in recovery.metrics.test.ts; circuit-breaker primitives live in
  * recovery.circuitBreaker.test.ts.
  */
-import { RECOVERY_METHODS, formatIssueType, getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError } from "./recovery.ts";
+import { RECOVERY_METHODS, classifyNativeSegmentHealth, computeNextRecoveryLevel, deriveStreamHealth, formatIssueType, getIssueCategory, getIssueDescription,
+  getRecoveryMethod, isCaptureInfrastructureError, shouldTriggerRecovery } from "./recovery.ts";
 import { describe, test } from "node:test";
 import type { VideoState } from "../types/index.ts";
 import assert from "node:assert/strict";
@@ -210,5 +211,186 @@ describe("isCaptureInfrastructureError", () => {
     // The narrower "Cannot capture a tab with an active stream" stale-mutex case triggers a process exit at its own call sites; it is still a
     // capture-infrastructure error here, so the two predicates are layered rather than mutually exclusive.
     assert.equal(isCaptureInfrastructureError(new Error("Cannot capture a tab with an active stream")), true);
+  });
+});
+
+describe("deriveStreamHealth", () => {
+
+  test("an error state reports 'error', outranking every lower signal", () => {
+
+    // hasError takes top precedence: even with a buffering signal and a stall count also present, the health is "error".
+    assert.equal(deriveStreamHealth({ escalationLevel: 0, hasError: true, isBuffering: true, stallCount: 5 }), "error");
+  });
+
+  test("a page-reload-level escalation (>= 3) reports 'error' even without an error flag", () => {
+
+    // Escalation level 3 is the page-reload tier - treated as equally severe as an error state.
+    assert.equal(deriveStreamHealth({ escalationLevel: 3, hasError: false, isBuffering: true, stallCount: 5 }), "error");
+  });
+
+  test("an active escalation of 1-2 reports 'recovering', outranking buffering and stalls", () => {
+
+    assert.equal(deriveStreamHealth({ escalationLevel: 1, hasError: false, isBuffering: true, stallCount: 5 }), "recovering");
+    assert.equal(deriveStreamHealth({ escalationLevel: 2, hasError: false, isBuffering: false, stallCount: 0 }), "recovering");
+  });
+
+  test("buffering reports 'buffering' once error and escalation are clear, outranking a stall count", () => {
+
+    assert.equal(deriveStreamHealth({ escalationLevel: 0, hasError: false, isBuffering: true, stallCount: 5 }), "buffering");
+  });
+
+  test("a positive stall count reports 'stalled' when nothing higher applies", () => {
+
+    assert.equal(deriveStreamHealth({ escalationLevel: 0, hasError: false, isBuffering: false, stallCount: 1 }), "stalled");
+  });
+
+  test("a clean slate reports 'healthy'", () => {
+
+    assert.equal(deriveStreamHealth({ escalationLevel: 0, hasError: false, isBuffering: false, stallCount: 0 }), "healthy");
+  });
+});
+
+describe("shouldTriggerRecovery", () => {
+
+  // A neutral baseline where no condition fires; each test flips only the fields its scenario needs.
+  const base = {
+
+    hasEnded: false,
+    hasError: false,
+    isPaused: false,
+    isProgressing: true,
+    pauseCount: 0,
+    productionStalled: false,
+    stallCount: 0,
+    stallCountThreshold: 3,
+    withinBufferingGrace: false,
+    withinRecoveryGrace: false
+  };
+
+  test("never triggers inside the post-recovery grace window, even when every other condition would fire", () => {
+
+    // The grace window short-circuits: a stream with an error, an ended flag, and a stalled pipeline still does not trigger while recovering.
+    assert.equal(shouldTriggerRecovery({ ...base, hasEnded: true, hasError: true, productionStalled: true, withinRecoveryGrace: true }), false);
+  });
+
+  test("triggers on an error state outside the grace window", () => {
+
+    assert.equal(shouldTriggerRecovery({ ...base, hasError: true }), true);
+  });
+
+  test("triggers on an ended stream (live streams should not end)", () => {
+
+    assert.equal(shouldTriggerRecovery({ ...base, hasEnded: true }), true);
+  });
+
+  test("triggers on a persistent pause strictly past the stall-count hysteresis, but not at or below it", () => {
+
+    assert.equal(shouldTriggerRecovery({ ...base, isPaused: true, pauseCount: 4 }), true);
+    assert.equal(shouldTriggerRecovery({ ...base, isPaused: true, pauseCount: 3 }), false, "exactly at the threshold does not trigger");
+  });
+
+  test("the buffering grace window suppresses a persistent pause", () => {
+
+    // Even past the pause hysteresis, being inside the buffering grace window filters the transient rebuffer pause.
+    assert.equal(shouldTriggerRecovery({ ...base, isPaused: true, pauseCount: 4, withinBufferingGrace: true }), false);
+  });
+
+  test("triggers on a persistent stall past the hysteresis, suppressed by the buffering grace and not fired at the threshold", () => {
+
+    assert.equal(shouldTriggerRecovery({ ...base, isProgressing: false, stallCount: 4 }), true);
+    assert.equal(shouldTriggerRecovery({ ...base, isProgressing: false, stallCount: 4, withinBufferingGrace: true }), false, "buffering grace suppresses the stall");
+    assert.equal(shouldTriggerRecovery({ ...base, isProgressing: false, stallCount: 3 }), false, "exactly at the threshold does not trigger");
+  });
+
+  test("triggers when the capture pipeline has stalled, regardless of the playback flags", () => {
+
+    assert.equal(shouldTriggerRecovery({ ...base, productionStalled: true }), true);
+  });
+
+  test("does not trigger on a healthy, progressing stream", () => {
+
+    assert.equal(shouldTriggerRecovery(base), false);
+  });
+});
+
+describe("computeNextRecoveryLevel", () => {
+
+  test("a paused stream from a clean slate (level 0) escalates to L1 (play/unmute)", () => {
+
+    assert.equal(computeNextRecoveryLevel({ currentEscalationLevel: 0, issueCategory: "paused", sourceReloadAttempted: false }), 1);
+  });
+
+  test("a paused stream already past level 0 skips L1 and escalates to L2 when no source reload has been attempted", () => {
+
+    // The L1 fast-path only applies from a clean slate; once escalated, a paused issue follows the same source-reload path as the others.
+    assert.equal(computeNextRecoveryLevel({ currentEscalationLevel: 1, issueCategory: "paused", sourceReloadAttempted: false }), 2);
+  });
+
+  test("a buffering or other issue escalates to L2 (source reload) on the first attempt", () => {
+
+    assert.equal(computeNextRecoveryLevel({ currentEscalationLevel: 0, issueCategory: "buffering", sourceReloadAttempted: false }), 2);
+    assert.equal(computeNextRecoveryLevel({ currentEscalationLevel: 0, issueCategory: "other", sourceReloadAttempted: false }), 2);
+  });
+
+  test("escalates to L3 (page navigation) once a source reload has already been attempted", () => {
+
+    assert.equal(computeNextRecoveryLevel({ currentEscalationLevel: 2, issueCategory: "buffering", sourceReloadAttempted: true }), 3);
+    assert.equal(computeNextRecoveryLevel({ currentEscalationLevel: 2, issueCategory: "paused", sourceReloadAttempted: true }), 3);
+  });
+});
+
+describe("classifyNativeSegmentHealth", () => {
+
+  // A target duration of 1000ms puts the staleness tiers at 2000ms (stalled), 4000ms (first escalation), and 6000ms.
+  const targetDurationMs = 1000;
+
+  test("active fetch errors report 'recovering' with no escalation, outranking any staleness", () => {
+
+    // consecutiveErrors takes precedence: even a 7x-stale stream reports recovering, not stalled, and does not escalate here (the proxy retries internally).
+    assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 2, lastSegmentTime: 1, recoveryAttempts: 0, stalenessMs: 7000, targetDurationMs }),
+      { action: "none", health: "recovering", issueType: "fetch errors" });
+  });
+
+  test("below the 2x staleness threshold the stream is healthy, and exactly 2x is not yet stale", () => {
+
+    assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 1, recoveryAttempts: 0, stalenessMs: 1999, targetDurationMs }),
+      { action: "none", health: "healthy", issueType: null });
+    // The comparison is strict: exactly 2000ms is not stale.
+    assert.equal(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 1, recoveryAttempts: 0, stalenessMs: 2000, targetDurationMs }).health, "healthy");
+  });
+
+  test("staleness is ignored until at least one segment has been produced (lastSegmentTime 0)", () => {
+
+    // A brand-new stream with no segment yet must not be flagged stalled even when the staleness clock has run well past the threshold.
+    assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 0, recoveryAttempts: 0, stalenessMs: 9000, targetDurationMs }),
+      { action: "none", health: "healthy", issueType: null });
+  });
+
+  test("between 2x and 4x staleness reports 'stalled' without escalating", () => {
+
+    assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 1, recoveryAttempts: 0, stalenessMs: 3000, targetDurationMs }),
+      { action: "none", health: "stalled", issueType: "segment stall" });
+  });
+
+  test("past 4x on the first attempt escalates to L2", () => {
+
+    assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 1, recoveryAttempts: 0, stalenessMs: 5000, targetDurationMs }),
+      { action: "l2", health: "stalled", issueType: "segment stall" });
+  });
+
+  test("the first attempt always escalates to L2 (reload first), however stale - it does not skip straight to L3", () => {
+
+    // The least-disruptive-first principle: on the first stalled tick the stream gets a page reload no matter how stale it is, rather than jumping to the
+    // heavier capture fallback. Even a 7x-stale stream with no prior attempt escalates to L2, not L3.
+    assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 1, recoveryAttempts: 0, stalenessMs: 7000, targetDurationMs }),
+      { action: "l2", health: "stalled", issueType: "segment stall" });
+  });
+
+  test("a still-stalled stream after a page reload has been attempted escalates to L3 (the reload did not resolve it)", () => {
+
+    // recoveryAttempts > 0 means a reload already fired; a stream still past the 4x threshold on the next tick is the "the reload did not work" signal, so it
+    // escalates to the L3 capture fallback.
+    assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 1, recoveryAttempts: 1, stalenessMs: 5000, targetDurationMs }),
+      { action: "l3", health: "stalled", issueType: "segment stall" });
   });
 });

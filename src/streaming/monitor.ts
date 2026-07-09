@@ -6,8 +6,9 @@ import type { CircuitBreakerState, MonitorHandle, RecoveryMetrics, TabReplacemen
 import { EvaluateTimeoutError, LOG, capitalize, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
-import { RECOVERY_METHODS, checkCircuitBreaker, createRecoveryMetrics, formatIssueType, formatRecoveryDuration, getIssueCategory, getIssueDescription,
-  getRecoveryMethod, recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker } from "./recovery.ts";
+import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics, deriveStreamHealth, formatIssueType,
+  formatRecoveryDuration, getIssueCategory, getIssueDescription, getRecoveryMethod, recordRecoveryAttempt, recordRecoverySuccess,
+  resetCircuitBreaker, shouldTriggerRecovery } from "./recovery.ts";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.ts";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
   validateVideoElement, verifyFullscreen } from "../browser/video.ts";
@@ -413,65 +414,62 @@ export function monitorPlaybackHealth(
 
     // Calculate staleness: time since the last new segment was produced.
     const stalenessMs = now - nativeHealthState.lastSegmentAdvanceTime;
-    const stalenessThreshold = targetDuration * 2 * 1000;
 
-    // Classify health based on segment delivery metrics.
-    let nativeHealth: StreamHealthStatus = "healthy";
+    // Classify health and the warranted escalation via the pure classifyNativeSegmentHealth core in recovery.ts. The shell below owns the side effects the core
+    // leaves out: issue-timestamp recording, diagnostic logging, and firing the returned recovery action.
+    const decision = classifyNativeSegmentHealth({
 
-    if(consecutiveErrors > 0) {
+      consecutiveErrors,
+      lastSegmentTime,
+      recoveryAttempts: nativeHealthState.recoveryAttempts,
+      stalenessMs,
+      targetDurationMs: targetDuration * 1000
+    });
 
-      nativeHealth = "recovering";
+    // Record the issue label the decision named when none is already tracked, so an earlier issue keeps its original timestamp across ticks.
+    if(decision.issueType && !nativeHealthState.issueType) {
 
-      if(!nativeHealthState.issueType) {
-
-        nativeHealthState.issueType = "fetch errors";
-        nativeHealthState.issueTime = now;
-      }
-
-      LOG.debug("native:monitor", "Native stream recovering for %s. Consecutive errors: %s.", storeKey, consecutiveErrors);
-    } else if((stalenessMs > stalenessThreshold) && (lastSegmentTime > 0)) {
-
-      // Only flag staleness after at least one segment has been produced (lastSegmentTime > 0) and the staleness exceeds the threshold.
-      nativeHealth = "stalled";
-
-      if(!nativeHealthState.issueType) {
-
-        nativeHealthState.issueType = "segment stall";
-        nativeHealthState.issueTime = now;
-      }
-
-      const staleSec = Math.round(stalenessMs / 1000);
-
-      LOG.debug("native:monitor", "Native stream stalled for %s. No new segments in %ss (threshold: %ss).", storeKey, staleSec,
-        Math.round(stalenessThreshold / 1000));
-
-      // L2: At 4x target duration, attempt a page reload for fresh tokens. This recovers from auth expiry where the manifest URL is still valid but segment URLs
-      // are rejected. The proxy continues serving cached segments during the reload.
-      if((stalenessMs > (targetDuration * 4 * 1000)) && (nativeHealthState.recoveryAttempts === 0)) {
-
-        LOG.warn("Native stream stalled for %s. No new segments in %ss. Attempting recovery.", storeKey, staleSec);
-
-        nativeHealthState.recoveryAttempts++;
-
-        // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
-        void executeNativeL2Recovery(entry);
-
-        return;
-      }
-
-      // L3: At 6x target duration (or if L2 was already attempted), fall back to capture mode via tab replacement.
-      if((stalenessMs > (targetDuration * 6 * 1000)) || ((stalenessMs > (targetDuration * 4 * 1000)) && (nativeHealthState.recoveryAttempts > 0))) {
-
-        LOG.warn("Falling back to capture mode for %s: native streaming stalled after recovery attempt.", storeKey);
-
-        // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
-        void executeNativeL3Fallback(entry);
-
-        return;
-      }
+      nativeHealthState.issueType = decision.issueType;
+      nativeHealthState.issueTime = now;
     }
 
-    emitNativeStatus(entry, nativeHealth);
+    const staleSec = Math.round(stalenessMs / 1000);
+
+    // Diagnostic logging mirrors the classification. The staleness threshold reported is 2x the target duration in seconds.
+    if(decision.health === "recovering") {
+
+      LOG.debug("native:monitor", "Native stream recovering for %s. Consecutive errors: %s.", storeKey, consecutiveErrors);
+    } else if(decision.health === "stalled") {
+
+      LOG.debug("native:monitor", "Native stream stalled for %s. No new segments in %ss (threshold: %ss).", storeKey, staleSec, Math.round(targetDuration * 2));
+    }
+
+    // L2: at 4x target duration on the first attempt, reload the page for fresh tokens - recovering from auth expiry where the manifest URL is still valid but
+    // segment URLs are rejected. The proxy continues serving cached segments during the reload.
+    if(decision.action === "l2") {
+
+      LOG.warn("Native stream stalled for %s. No new segments in %ss. Attempting recovery.", storeKey, staleSec);
+
+      nativeHealthState.recoveryAttempts++;
+
+      // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
+      void executeNativeL2Recovery(entry);
+
+      return;
+    }
+
+    // L3: at 6x target duration, or at 4x once an L2 attempt has already been made, fall back to capture mode via tab replacement.
+    if(decision.action === "l3") {
+
+      LOG.warn("Falling back to capture mode for %s: native streaming stalled after recovery attempt.", storeKey);
+
+      // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
+      void executeNativeL3Fallback(entry);
+
+      return;
+    }
+
+    emitNativeStatus(entry, decision.health);
   }
 
   /**
@@ -652,37 +650,14 @@ export function monitorPlaybackHealth(
    */
   function computeHealthStatus(): StreamHealthStatus {
 
-    // Error state takes precedence.
-    if(lastVideoState?.error) {
+    // The health precedence ladder is the pure deriveStreamHealth core in recovery.ts; the monitor only supplies its current recovery and playback state.
+    return deriveStreamHealth({
 
-      return "error";
-    }
-
-    // If we're at escalation level 3 (page reload), we're in serious trouble.
-    if(recoveryState.escalationLevel >= 3) {
-
-      return "error";
-    }
-
-    // If we're actively recovering (levels 1-2).
-    if(recoveryState.escalationLevel > 0) {
-
-      return "recovering";
-    }
-
-    // If we're buffering (within grace period).
-    if(bufferingStartTime !== null) {
-
-      return "buffering";
-    }
-
-    // If we have consecutive stalls but not yet triggering recovery.
-    if(recoveryState.stallCount > 0) {
-
-      return "stalled";
-    }
-
-    return "healthy";
+      escalationLevel: recoveryState.escalationLevel,
+      hasError: lastVideoState?.error ?? false,
+      isBuffering: bufferingStartTime !== null,
+      stallCount: recoveryState.stallCount
+    });
   }
 
   /**
@@ -1618,23 +1593,15 @@ export function monitorPlaybackHealth(
       return true;
     }
 
-    // Issue-aware escalation. Determine the appropriate level based on the type of issue and whether source reload has already been attempted.
+    // Issue-aware escalation. The escalation ladder is the pure computeNextRecoveryLevel core in recovery.ts; the later L3-to-L2 fallback under a navigation rate
+    // limit stays here in the executor because it is entangled with the async navigation attempt.
     const issueCategory = getIssueCategory(state, !isProgressing, isBuffering);
-    let nextLevel: number;
+    const nextLevel = computeNextRecoveryLevel({
 
-    if((issueCategory === "paused") && (recoveryState.escalationLevel === 0)) {
-
-      // Paused issues: try L1 first (play/unmute works ~50% for paused).
-      nextLevel = 1;
-    } else if(!recoveryState.sourceReloadAttempted) {
-
-      // First recovery attempt for buffering/other, or L1 didn't fix paused: try L2 (source reload).
-      nextLevel = 2;
-    } else {
-
-      // Source reload already attempted: go to L3 (page reload).
-      nextLevel = 3;
-    }
+      currentEscalationLevel: recoveryState.escalationLevel,
+      issueCategory,
+      sourceReloadAttempted: recoveryState.sourceReloadAttempted
+    });
 
     // Note: Keep state updates in sync with the video-not-found recovery path in handleVideoNotFound above.
     recoveryState.escalationLevel = nextLevel;
@@ -2039,10 +2006,19 @@ export function monitorPlaybackHealth(
          * - Video is stalled for too long (stallCount exceeds threshold and not in buffering grace)
          * - Segment production has stalled after recovery (capture pipeline dead)
          */
-        const needsRecovery = !withinRecoveryGrace && (state.error || state.ended ||
-                            (state.paused && !withinBufferingGrace && (recoveryState.pauseCount > CONFIG.playback.stallCountThreshold)) ||
-                            (!isProgressing && !withinBufferingGrace && (recoveryState.stallCount > CONFIG.playback.stallCountThreshold)) ||
-                            segmentState.productionStalled);
+        const needsRecovery = shouldTriggerRecovery({
+
+          hasEnded: state.ended,
+          hasError: state.error,
+          isPaused: state.paused,
+          isProgressing,
+          pauseCount: recoveryState.pauseCount,
+          productionStalled: segmentState.productionStalled,
+          stallCount: recoveryState.stallCount,
+          stallCountThreshold: CONFIG.playback.stallCountThreshold,
+          withinBufferingGrace: Boolean(withinBufferingGrace),
+          withinRecoveryGrace
+        });
 
         /* Escalation reset. After sustained healthy playback (SUSTAINED_PLAYBACK_REQUIRED, default 60 seconds), we reset the escalation level and circuit breaker.
          * This allows a stream that recovered to start fresh, rather than immediately escalating to aggressive recovery on the next issue.
