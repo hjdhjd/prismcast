@@ -2,14 +2,16 @@
  *
  * pretune.ts: Predictive channel pretuning from Channels DVR schedule.
  */
-import { LOG, delay, formatError } from "../utils/index.ts";
+import { LOG, formatError } from "../utils/index.ts";
 import { clearAllPretuneSafetyTimers, forgetPretuneSafetyTimer, setPretuneSafetyTimer } from "./pretuneTimers.ts";
 import { fetchFromDvr, getDeviceMappings, getDvrHost } from "./showInfo.ts";
 import { getChannelStreamId, terminateStream } from "./lifecycle.ts";
 import { initializeStream, validateChannel } from "./hls.ts";
+import type { Clock } from "../utils/clock.ts";
 import type { Nullable } from "../types/index.ts";
 import { emitCurrentSystemStatus } from "../browser/index.ts";
 import { getStream } from "./registry.ts";
+import { realClock } from "../utils/clock.ts";
 
 /* This module polls the Channels DVR schedule API to discover upcoming recordings and pretunes channels 30 seconds before they start. When the DVR requests the
  * stream, it's already live with buffered segments - achieving near-instant tuning instead of 3-7 second cold starts.
@@ -51,7 +53,7 @@ const RETRY_DELAY_MS = 5000;
 /**
  * Scheduled recording job from the Channels DVR /api/v1/jobs endpoint.
  */
-interface ScheduledJob {
+export interface ScheduledJob {
 
   // Guide numbers ordered by DVR preference. First entry is the preferred source.
   channels: string[];
@@ -79,6 +81,25 @@ interface ScheduledJob {
   start_time: number;
 }
 
+/* PretuneDeps is the external-I/O surface the pretune decision logic composes on: the DVR data-acquisition calls (getDvrHost, fetchFromDvr, getDeviceMappings) and
+ * the expensive go-action (initializeStream). It is injected as a default parameter threaded from startPretunePolling so a test can substitute in-memory stubs at
+ * the same seam - no loader mock - while production uses the real defaultPretuneDeps. validateChannel, the registry, lifecycle, and the safety-timer registry stay
+ * direct imports because they are not the substituted boundary. fetchFromDvr is narrowed to the ScheduledJob rows pretune actually reads. This mirrors the Clock
+ * port (utils/clock.ts): a typed interface plus a module-const default, consumed through a defaulted parameter.
+ */
+export interface PretuneDeps {
+
+  // The time source for the retry loop's inter-attempt sleeps. Injected as a Clock (rather than a direct delay() call) so tests can supply a fake whose sleep
+  // resolves instantly - the retry loop's await-delay chain is exactly the shape mock.timers cannot deterministically resolve, which the Clock port exists to solve.
+  readonly clock: Clock;
+  readonly fetchFromDvr: (host: string, path: string) => Promise<ScheduledJob[]>;
+  readonly getDeviceMappings: typeof getDeviceMappings;
+  readonly getDvrHost: typeof getDvrHost;
+  readonly initializeStream: typeof initializeStream;
+}
+
+const defaultPretuneDeps: PretuneDeps = { clock: realClock, fetchFromDvr, getDeviceMappings, getDvrHost, initializeStream };
+
 // State.
 
 // Interval handle for periodic job polling.
@@ -92,7 +113,7 @@ const activeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /**
  * Starts the pretune polling loop. Should be called on server startup after show info polling is initialized.
  */
-export function startPretunePolling(): void {
+export function startPretunePolling(deps: PretuneDeps = defaultPretuneDeps): void {
 
   if(pollInterval) {
 
@@ -102,12 +123,12 @@ export function startPretunePolling(): void {
   // Run the first poll after a short delay to allow the persisted DVR host to load.
   setTimeout(() => {
 
-    void pollForUpcomingJobs();
+    void pollForUpcomingJobs(deps);
   }, 5000);
 
   pollInterval = setInterval(() => {
 
-    void pollForUpcomingJobs();
+    void pollForUpcomingJobs(deps);
   }, POLL_INTERVAL_MS);
 }
 
@@ -139,16 +160,16 @@ export function stopPretunePolling(): void {
 /**
  * Polls the Channels DVR API for upcoming scheduled recordings and schedules pretune timers for eligible jobs.
  */
-async function pollForUpcomingJobs(): Promise<void> {
+async function pollForUpcomingJobs(deps: PretuneDeps): Promise<void> {
 
-  const host = getDvrHost();
+  const host = deps.getDvrHost();
 
   if(!host) {
 
     return;
   }
 
-  const jobs = await fetchFromDvr<ScheduledJob>(host, "/api/v1/jobs");
+  const jobs = await deps.fetchFromDvr(host, "/api/v1/jobs");
 
   if(jobs.length === 0) {
 
@@ -162,7 +183,7 @@ async function pollForUpcomingJobs(): Promise<void> {
   const seenJobIds = new Set<string>();
 
   // Get the device mappings once for resolving guide numbers. The cache ensures this is fast on repeated calls.
-  const mappings = await getDeviceMappings(host);
+  const mappings = await deps.getDeviceMappings(host);
 
   if(mappings.size === 0) {
 
@@ -218,7 +239,7 @@ async function pollForUpcomingJobs(): Promise<void> {
 
       activeTimers.delete(job.id);
 
-      void pretuneChannel(channelId, job.name, startMs);
+      void pretuneChannel(channelId, job.name, startMs, deps);
     }, effectiveDelay);
 
     activeTimers.set(job.id, timer);
@@ -265,7 +286,7 @@ function resolveGuideNumber(mappings: Map<string, Map<string, string>>, guideNum
  * @param jobName - The program title for logging (e.g., "Anderson Cooper 360").
  * @param startTimeMs - The recording start time in milliseconds.
  */
-async function pretuneChannel(channelId: string, jobName: string, startTimeMs: number): Promise<void> {
+async function pretuneChannel(channelId: string, jobName: string, startTimeMs: number, deps: PretuneDeps): Promise<void> {
 
   // Check if the channel is already streaming.
   const existingStreamId = getChannelStreamId(channelId);
@@ -297,7 +318,7 @@ async function pretuneChannel(channelId: string, jobName: string, startTimeMs: n
     try {
 
       // eslint-disable-next-line no-await-in-loop
-      const streamId = await initializeStream({
+      const streamId = await deps.initializeStream({
 
         channel: validation.channel,
         channelName: channelId,
@@ -350,7 +371,7 @@ async function pretuneChannel(channelId: string, jobName: string, startTimeMs: n
     if(attempts < MAX_RETRIES) {
 
       // eslint-disable-next-line no-await-in-loop
-      await delay(RETRY_DELAY_MS);
+      await deps.clock.sleep(RETRY_DELAY_MS);
     }
   }
 

@@ -2,68 +2,75 @@
  *
  * pretune.test.ts: Integration coverage for the pretune scheduling state machine in src/streaming/pretune.ts. The architectural unit under test is pretune's
  * decision logic - read the DVR job schedule, dedupe against active streams, schedule per-job timers within the horizon, cancel cleanly on stop. The HTTP
- * fetch layer to the DVR is not the boundary under test - it is data acquisition for the decision layer. We mock the data-acquisition seam (fetchFromDvr,
- * getDeviceMappings, getDvrHost) so the test feeds synthetic schedule data straight into the decision logic, and we mock initializeStream so the test can
- * observe pretune's go / no-go decisions without firing the real browser-launching capture path.
- *
- * Why mock.module + dynamic import. pretune.ts captures its imports at module load time; ESM bindings are read-only after the fact, so neither mock.method on
- * a namespace object nor monkey-patch-after-import would propagate into pretune's call sites. mock.module replaces the module's exports for all subsequent
- * imports, so dynamic-importing pretune.ts AFTER the mocks are registered is the canonical way to make the spies visible at the call site. Static-importing
- * pretune.ts in this file would resolve before mock.module runs and bind the real exports - defeating the seam. The trade-off is sequencing discipline: the
- * suite-level before() must complete its mocks-then-import dance before any test body runs.
+ * fetch layer to the DVR is not the boundary under test - it is data acquisition for the decision layer. pretune composes those calls behind its injectable
+ * PretuneDeps port (fetchFromDvr, getDeviceMappings, getDvrHost, initializeStream), so we pass a deps object that feeds synthetic schedule data straight into
+ * the decision logic and records go / no-go decisions through an initializeStream spy - no real HTTP round-trip, no real browser-launching capture path, and
+ * no loader mock.
  *
  * Architectural findings surfaced during construction (recorded alongside the integration-tests roadmap):
  *
  *   1. The Channels DVR port is user-configurable via CONFIG.channelsDvr.port - src/streaming/showInfo.ts builds the DVR URL from that value, so there is no
- *      hard-coded port. Suite 12 routes around the HTTP layer entirely by mocking fetchFromDvr at the module boundary, because the HTTP layer is not the
+ *      hard-coded port. This suite routes around the HTTP layer entirely by injecting fetchFromDvr at pretune's port, because the HTTP layer is not the
  *      architectural unit under test - binding a stub to a fixed port would conflate two different concerns.
  *
- *   2. mock.module is the canonical interception seam for module-level dependencies in this repo. node:test's --experimental-test-module-mocks is enabled
- *      via the integration test runner; the dynamic-import-after-mock pattern below is the precedent for future suites that need this kind of seam.
- *
- *   3. getDeviceMappings caches by host with a 5-minute TTL. We sidestep host-keyed pollution by mocking getDeviceMappings entirely - the cache itself is
+ *   2. getDeviceMappings caches by host with a 5-minute TTL. We sidestep host-keyed pollution by injecting getDeviceMappings entirely - the cache itself is
  *      bypassed, so test isolation is structural rather than depending on TTL math or unique-host-per-test conventions.
  *
- * Note on bootStubServer: this suite mocks the DVR data layer at the module boundary rather than standing up a stub HTTP server. The HTTP layer is incidental
- * to pretune's decision logic, so binding a stub server would conflate data acquisition with the decision path under test. The bootStubServer helper serves
- * suites whose relationship with their upstream IS the unit under test - the native HLS proxy suite - and is intentionally not used here.
+ * Note on bootStubServer: this suite injects the DVR data layer at pretune's port rather than standing up a stub HTTP server. The HTTP layer is incidental to
+ * pretune's decision logic, so binding a stub server would conflate data acquisition with the decision path under test. The bootStubServer helper serves suites
+ * whose relationship with their upstream IS the unit under test - the native HLS proxy suite - and is intentionally not used here.
  */
-import type * as PretuneModule from "../../../src/streaming/pretune.ts";
-import { afterEach, before, describe, mock, test } from "node:test";
+import * as pretune from "../../../src/streaming/pretune.ts";
+import { afterEach, describe, mock, test } from "node:test";
 import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { deleteChannelStreamId, setChannelStreamId } from "../../../src/streaming/lifecycle.ts";
 import { disablePredefinedChannels, enablePredefinedChannels, mutateChannels } from "../../../src/config/userChannels.ts";
-import { registerStream, unregisterStream } from "../../../src/streaming/registry.ts";
+import { getStream, registerStream, unregisterStream } from "../../../src/streaming/registry.ts";
+import type { Clock } from "../../../src/utils/clock.ts";
 import assert from "node:assert/strict";
+import { firstOf } from "../../../src/testing.helpers.ts";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
 import { mutateEnabledServices } from "../../../src/config/services.ts";
 
-// Module-scope handles populated in the suite-level before() block. Each is set exactly once so all tests share the same mocks; tests reset call history per
-// test rather than rebuild the mocks.
-let pretune: typeof PretuneModule;
-let initializeStreamSpy: ReturnType<typeof mock.fn<(options: unknown) => Promise<number | null>>>;
-let fetchFromDvrSpy: ReturnType<typeof mock.fn<(host: string, path: string) => Promise<unknown[]>>>;
-let getDvrHostStub: () => string | null;
+// Synthetic schedule data set per test. The injected fetchFromDvr returns these for the /api/v1/jobs path (and nothing for any other path - pretune reads no other
+// endpoint). Reassigned per test; the injected deps' closures read it at call time. The row type is the production ScheduledJob (the wire shape) directly, so the
+// fixture stays in lockstep with what pretune reads rather than duplicating the type.
+let scheduledJobs: pretune.ScheduledJob[] = [];
 
-// Synthetic schedule data set per test by reassigning fetchFromDvrSpy's behavior. The function's path argument routes between /api/v1/jobs (returns scheduled
-// jobs) and any other path (defaults to empty - we do not use other endpoints in pretune's path).
-let scheduledJobs: ScheduledJobFixture[] = [];
-
-// The DVR API uses snake_case in the wire protocol; the production ScheduledJob type mirrors that exactly. The fixture reproduces the protocol shape so its
-// shape stays in lockstep with what pretune.ts reads - we are matching an external contract, not authoring our own naming.
-interface ScheduledJobFixture {
-
-  channels: string[];
-  id: string;
-  item: { cancelled?: boolean; completed?: boolean };
-  name: string;
-  skipped?: boolean;
-  start_time: number;
-}
-
-// Synthetic device mappings - guide number to channel ID. pretune calls getDeviceMappings(host) to resolve job.channels[0] (a guide number) to a PrismCast
-// channel key. The mock returns one M3U device with whatever guide-to-channel entries the test sets.
+// Synthetic device mappings - guide number to channel key. pretune calls getDeviceMappings(host) to resolve job.channels[0] (a guide number) to a PrismCast channel
+// key. The injected getDeviceMappings returns one synthetic device whose guide map is this. Reassigned per test.
 let deviceGuideMap = new Map<string, string>();
+
+// The initializeStream spy stands in for the browser-launching capture path so tests observe pretune's go / no-go decisions by call count and arguments. Typed as
+// the production PretuneDeps field so the double cannot drift from initializeStream's real signature.
+const initializeStreamSpy = mock.fn<pretune.PretuneDeps["initializeStream"]>(async () => 999);
+
+// The fetchFromDvr spy returns the per-test scheduledJobs for the jobs endpoint and nothing for any other path.
+const fetchFromDvrSpy = mock.fn<pretune.PretuneDeps["fetchFromDvr"]>(async (_host, path) => ((path === "/api/v1/jobs") ? scheduledJobs : []));
+
+/* The retry loop's inter-attempt sleeps run through the injected Clock. This fake resolves each sleep instantly and advances the mocked Date by the requested
+ * duration - mock.timers.setTime moves only the clock the abandonment guard reads, without firing any scheduled timer. Non-retry tests never reach the sleep, so
+ * the advancement is inert for them; the two retry tests rely on it to walk the attempt schedule deterministically with no real-time wait.
+ */
+const fakeClock: Clock = {
+
+  now: (): number => Date.now(),
+  raceWithTimeout: <T>(promise: Promise<T>): Promise<T> => promise,
+  sleep: async (ms: number): Promise<void> => { mock.timers.setTime(Date.now() + ms); }
+};
+
+/* The injected pretune dependencies: the DVR data-acquisition trio and the initializeStream go-action, substituted at pretune's PretuneDeps seam so the decision
+ * logic runs against synthetic schedule data with no HTTP round-trip or real capture. getDeviceMappings returns one synthetic device whose guide map is the per-
+ * test deviceGuideMap; getDvrHost is a stable stub. Typed as PretuneDeps so the doubles cannot drift from the production port.
+ */
+const deps: pretune.PretuneDeps = {
+
+  clock: fakeClock,
+  fetchFromDvr: fetchFromDvrSpy,
+  getDeviceMappings: async (): Promise<Map<string, Map<string, string>>> => new Map([[ "test-device", deviceGuideMap ]]),
+  getDvrHost: (): string => "stub-dvr-host",
+  initializeStream: initializeStreamSpy
+};
 
 /* drainMicrotasks yields to the microtask queue several times so that async chains queued from a mock.timers.tick callback resolve completely before the
  * test asserts. pollForUpcomingJobs awaits twice (fetchFromDvr, then getDeviceMappings) before scheduling per-job timers, and pretuneChannel itself awaits
@@ -80,55 +87,6 @@ async function drainMicrotasks(): Promise<void> {
 }
 
 describe("pretune scheduling state machine", () => {
-
-  before(async () => {
-
-    // Capture the real exports of hls.ts and showInfo.ts so we can passthrough the names pretune does not call directly. Without this, mock.module would
-    // declare the mocked module's namedExports as the FULL set of exports for that module, and any incidental access to a non-listed name would resolve to
-    // undefined. The safe pattern: real exports + targeted overrides.
-    const realHls = await import("../../../src/streaming/hls.ts");
-    const realShowInfo = await import("../../../src/streaming/showInfo.ts");
-
-    initializeStreamSpy = mock.fn<(options: unknown) => Promise<number | null>>(async () => 999);
-    fetchFromDvrSpy = mock.fn<(host: string, path: string) => Promise<unknown[]>>(async (_host, path) => {
-
-      if(path === "/api/v1/jobs") {
-
-        return scheduledJobs;
-      }
-
-      return [];
-    });
-
-    // The DVR-host stub returns a stable synthetic value. The real persistence path is not exercised here - we drive pretune directly via getDvrHost rather
-    // than via a real setDvrHost+persistConfig round-trip.
-    getDvrHostStub = (): string | null => "stub-dvr-host";
-
-    const hlsUrl = new URL("../../../src/streaming/hls.ts", import.meta.url).href;
-    const showInfoUrl = new URL("../../../src/streaming/showInfo.ts", import.meta.url).href;
-
-    mock.module(hlsUrl, {
-
-      // mock.module accepts namedExports to declare the mocked module's export set. @types/node marks namedExports as deprecated in favor of the newer
-      // exports field, but the runtime still honors namedExports, so it continues to work for the passthrough-plus-override pattern used here.
-      namedExports: { ...realHls, initializeStream: initializeStreamSpy }
-    });
-
-    mock.module(showInfoUrl, {
-
-      namedExports: {
-
-        ...realShowInfo,
-        fetchFromDvr: fetchFromDvrSpy,
-        getDeviceMappings: async (): Promise<Map<string, Map<string, string>>> => new Map([[ "test-device", deviceGuideMap ]]),
-        getDvrHost: (): string | null => getDvrHostStub()
-      }
-    });
-
-    // Now that the mocks are in place, dynamic-import pretune.ts so its captured references resolve to the mocks rather than the real exports. This must
-    // happen here, not at the top of the file - a static import would resolve before the mocks are registered.
-    pretune = await import("../../../src/streaming/pretune.ts");
-  });
 
   afterEach(() => {
 
@@ -156,7 +114,7 @@ describe("pretune scheduling state machine", () => {
 
     scheduledJobs = [];
 
-    pretune.startPretunePolling();
+    pretune.startPretunePolling(deps);
 
     // Drive the initial 5-second startup poll, then a full 60-second polling interval. Both polls should hit the empty schedule and exit cleanly.
     mock.timers.tick(5_000);
@@ -214,7 +172,7 @@ describe("pretune scheduling state machine", () => {
       start_time: Math.floor((Date.now() + 90_000) / 1000)
     }];
 
-    pretune.startPretunePolling();
+    pretune.startPretunePolling(deps);
 
     // Tick past the 5s startup poll - pretune schedules a setTimeout for (90s - 30s) = 60s from now.
     mock.timers.tick(5_000);
@@ -259,7 +217,7 @@ describe("pretune scheduling state machine", () => {
       start_time: Math.floor((Date.now() + 240_000) / 1000)
     }];
 
-    pretune.startPretunePolling();
+    pretune.startPretunePolling(deps);
 
     // Initial 5s startup poll - schedules the per-job timer for (240s - 30s) = 210s from now.
     mock.timers.tick(5_000);
@@ -305,7 +263,7 @@ describe("pretune scheduling state machine", () => {
       start_time: Math.floor((Date.now() + 90_000) / 1000)
     }];
 
-    pretune.startPretunePolling();
+    pretune.startPretunePolling(deps);
 
     mock.timers.tick(5_000);
     await drainMicrotasks();
@@ -379,7 +337,7 @@ describe("pretune scheduling state machine", () => {
       start_time: Math.floor((Date.now() + 90_000) / 1000)
     }];
 
-    pretune.startPretunePolling();
+    pretune.startPretunePolling(deps);
 
     // 5s startup poll, then advance through the per-job timer's effective delay (90s - 30s = 60s).
     mock.timers.tick(5_000);
@@ -435,7 +393,7 @@ describe("pretune scheduling state machine", () => {
       start_time: Math.floor((Date.now() + 90_000) / 1000)
     }];
 
-    pretune.startPretunePolling();
+    pretune.startPretunePolling(deps);
 
     mock.timers.tick(5_000);
     await drainMicrotasks();
@@ -481,7 +439,7 @@ describe("pretune scheduling state machine", () => {
       start_time: Math.floor((Date.now() + 90_000) / 1000)
     }];
 
-    pretune.startPretunePolling();
+    pretune.startPretunePolling(deps);
 
     mock.timers.tick(5_000);
     await drainMicrotasks();
@@ -523,7 +481,7 @@ describe("pretune scheduling state machine", () => {
       start_time: Math.floor((Date.now() + 90_000) / 1000)
     }];
 
-    pretune.startPretunePolling();
+    pretune.startPretunePolling(deps);
 
     mock.timers.tick(5_000);
     await drainMicrotasks();
@@ -537,5 +495,749 @@ describe("pretune scheduling state machine", () => {
 
     assert.equal((options as { channelName: string }).channelName, "cnn", "options.channelName must be the predefined cnn key");
     assert.equal((options as { preTuned: boolean }).preTuned, true, "options.preTuned must be true so the stream is exempt from idle timeout until a client connects");
+  });
+
+  /* Scheduler-branch coverage. The tests below pin the still-uncovered internal branches of pretune's state machine that the go / no-go tests above do not
+   * exercise: the safety-timeout reaper (claimed vs unclaimed), the retry loop and its past-start abandonment guard, the pre-schedule skips (cancelled/skipped,
+   * outside horizon, already started, empty or unresolvable guide, empty device mappings), and the timer-map hygiene (dedup on re-poll, stale-timer cleanup on
+   * job disappearance). Each drives the scheduler with mock.timers and asserts the observable effect a regression would break - the initializeStream spy call
+   * count, the registry state after a timer fires, or the termination of a reaped stream.
+   */
+
+  test("an unclaimed pretuned stream is torn down by the safety timeout at start + 90s", async () => {
+
+    /* The reaper's positive case: a pretuned stream that no real client ever claims must be terminated when its safety timer fires (start_time + 90s), so a
+     * speculatively-tuned browser tab does not linger forever after the DVR declined to record. The safety callback reads getStream(streamId)?.preTuned; because
+     * the injected initializeStream shortcuts to returning a stream id rather than registering one, the test seeds a matching preTuned registry entry so the
+     * callback finds the live stream production would have registered.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["psafe"] = { name: "PSafe", url: "https://example.test/psafe" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    // Seed the registry entry the injected initializeStream will "return" so the safety timer's getStream(streamId) finds a live, preTuned stream to reap.
+    const entry = makeRegistryEntry({ channelName: "psafe", preTuned: true });
+
+    registerStream(entry);
+    ctx.registerCleanup(() => { unregisterStream(entry.id); });
+
+    // The next initializeStream call resolves to this seeded stream's id; subsequent calls (none expected here) fall back to the default stub.
+    initializeStreamSpy.mock.mockImplementationOnce(async () => entry.id);
+
+    deviceGuideMap = new Map([[ "300", "psafe" ]]);
+
+    scheduledJobs = [{
+
+      channels: ["300"],
+      id: "job-safety-unclaimed",
+      item: {},
+      name: "Late Night Unclaimed",
+      // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+      start_time: Math.floor((Date.now() + 50_000) / 1000)
+    }];
+
+    pretune.startPretunePolling(deps);
+
+    // Startup poll runs at +5s and schedules the per-job timer for +15s more (50s start - 30s lead - 5s elapsed). Firing it well before the 60s polling interval
+    // keeps the interval re-poll out of this scenario.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+
+    // Fire the per-job timer: pretuneChannel calls initializeStream and arms the safety timer 120s out (start + 90s from the current clock).
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "the per-job timer must fire pretune exactly once");
+    assert.ok(getStream(entry.id)?.preTuned, "the pretuned stream is registered and still unclaimed before the safety timeout");
+
+    // Advance to start + 90s. The safety timer fires, sees preTuned still true, and terminates the unclaimed stream.
+    mock.timers.tick(120_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(getStream(entry.id), undefined, "an unclaimed pretuned stream must be terminated by the safety timeout");
+  });
+
+  test("a claimed pretuned stream (preTuned cleared) is left running by the safety timeout", async () => {
+
+    /* The reaper's negative case: once a real client claims a pretuned stream, the normal lifecycle clears its preTuned flag. When the safety timer later fires
+     * it must observe preTuned false and leave the stream alone - reaping a stream a client is actively watching would drop live video. This is the guard inside
+     * the safety callback (stream?.preTuned) and is the counterpart to the unclaimed-teardown test above.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pclaim"] = { name: "PClaim", url: "https://example.test/pclaim" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    const entry = makeRegistryEntry({ channelName: "pclaim", preTuned: true });
+
+    registerStream(entry);
+    ctx.registerCleanup(() => { unregisterStream(entry.id); });
+
+    initializeStreamSpy.mock.mockImplementationOnce(async () => entry.id);
+
+    deviceGuideMap = new Map([[ "301", "pclaim" ]]);
+
+    scheduledJobs = [{
+
+      channels: ["301"],
+      id: "job-safety-claimed",
+      item: {},
+      name: "Late Night Claimed",
+      // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+      start_time: Math.floor((Date.now() + 50_000) / 1000)
+    }];
+
+    pretune.startPretunePolling(deps);
+
+    // Fire the per-job timer at +20s, before the 60s polling interval, so no interval re-poll enters this scenario.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "the per-job timer must fire pretune exactly once");
+
+    // Simulate a real client claiming the stream: the normal lifecycle clears preTuned when a client connects.
+    entry.preTuned = false;
+
+    // Advance to start + 90s. The safety timer fires but sees preTuned cleared, so it must NOT terminate the now-claimed stream.
+    mock.timers.tick(120_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.ok(getStream(entry.id), "a claimed stream (preTuned cleared) must be left running by the safety timeout");
+    assert.equal(getStream(entry.id)?.preTuned, false, "the claimed stream stays registered with preTuned cleared");
+  });
+
+  test("a throwing initializeStream is retried up to MAX_RETRIES attempts within the pretune window", async () => {
+
+    /* The retry loop: pretuneChannel retries a failing capture up to MAX_RETRIES (5) times, sleeping RETRY_DELAY_MS (5s) between attempts, because a transient
+     * launch failure inside the pretune window should still land the stream before the recording starts. The spy call count of exactly 5 is the observable a
+     * regression (retrying too few, too many, or forever) would break.
+     *
+     * Timing: the inter-attempt sleep runs through the injected Clock, whose fake resolves instantly and advances the mocked Date by RETRY_DELAY_MS each time
+     * (setTime, so no scheduling timer fires). The mocked Date starts at the per-job fire instant (start_time - 30s) and rises only 5s per sleep, so after four
+     * sleeps it is still below start_time and the past-start abandonment guard never trips - all five attempts run and the loop then caps. The whole budget settles
+     * within the microtask queue, so we drain until the fifth attempt registers instead of waiting real time.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pretry"] = { name: "PRetry", url: "https://example.test/pretry" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    // Make every capture attempt fail so pretuneChannel walks its full retry budget. Restore the default success stub at scope exit so no throwing implementation
+    // leaks into a later test.
+    initializeStreamSpy.mock.mockImplementation(async () => { throw new Error("pretune capture failed"); });
+    ctx.registerCleanup(() => { initializeStreamSpy.mock.mockImplementation(async () => 999); });
+
+    deviceGuideMap = new Map([[ "310", "pretry" ]]);
+
+    scheduledJobs = [{
+
+      channels: ["310"],
+      id: "job-retry",
+      item: {},
+      name: "Retry Show",
+      // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+      start_time: Math.floor((Date.now() + 50_000) / 1000)
+    }];
+
+    pretune.startPretunePolling(deps);
+
+    // Fire the per-job timer at +20s (before the 60s interval). Its callback enters the retry loop; attempt 1 throws and awaits the first real RETRY_DELAY_MS sleep.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    // Drain the microtask queue until all five attempts register. The fake-clock sleeps resolve instantly, so the retry budget runs entirely in microtasks; the
+    // bound stops a regression that never settles from hanging the suite rather than failing.
+    for(let i = 0; (i < 50) && (initializeStreamSpy.mock.callCount() < 5); i++) {
+
+      // eslint-disable-next-line no-await-in-loop -- the loop semantically IS the sequential drain until the retry loop settles.
+      await drainMicrotasks();
+    }
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 5, "a throwing initializeStream must be retried up to MAX_RETRIES (5) attempts");
+  });
+
+  test("pretune retries are abandoned as soon as Date.now() passes start_time", async () => {
+
+    /* The retry loop's abandonment guard: once the clock passes the scheduled start_time there is no point retrying - the recording has begun and a late pretune
+     * would only spin up a stream nobody is waiting on. pretuneChannel checks Date.now() >= startTimeMs after each attempt and returns early. The injected
+     * initializeStream advances the mocked clock past start_time on its first (and only) attempt, so the post-attempt guard trips and the loop returns without
+     * sleeping or retrying.
+     *
+     * Non-vacuous by construction: were the guard removed, the loop would fall through to the (now instant) fake-clock sleep and fire a second attempt. With the
+     * guard intact the count stays 1; draining the microtask queue gives any would-be second attempt the chance to register, so a broken guard surfaces as a count
+     * above 1.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pabandon"] = { name: "PAbandon", url: "https://example.test/pabandon" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    // The scheduled start in epoch milliseconds. The spy jumps the mocked clock just past it so the guard trips right after the first attempt.
+    const startMs = Math.floor((Date.now() + 50_000) / 1000) * 1000;
+
+    initializeStreamSpy.mock.mockImplementation(async () => {
+
+      // Advance the mocked clock past start_time so pretuneChannel's post-attempt guard abandons the loop.
+      mock.timers.setTime(startMs + 1_000);
+
+      throw new Error("pretune capture failed");
+    });
+    ctx.registerCleanup(() => { initializeStreamSpy.mock.mockImplementation(async () => 999); });
+
+    deviceGuideMap = new Map([[ "311", "pabandon" ]]);
+
+    scheduledJobs = [{
+
+      channels: ["311"],
+      id: "job-abandon",
+      item: {},
+      name: "Abandon Show",
+      // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+      start_time: startMs / 1000
+    }];
+
+    pretune.startPretunePolling(deps);
+
+    // Fire the per-job timer at +20s (before the 60s interval). Attempt 1 runs, jumps the clock past start_time, and throws; the guard must then abandon.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    // Drain the microtask queue so attempt 1 and the post-attempt guard settle, and any would-be second attempt (only possible if the guard were broken) has the
+    // chance to register.
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "retries must be abandoned once Date.now() passes start_time; no second attempt after the guard trips");
+  });
+
+  test("cancelled and skipped jobs are never scheduled while an eligible job still fires", async () => {
+
+    /* The pre-schedule skip for lifecycle flags: pollForUpcomingJobs drops any job with item.cancelled or a top-level skipped before it ever creates a timer, so
+     * a recording the user cancelled or skipped never triggers a speculative tune. The eligible control job proves the polling and scheduling machinery ran - a
+     * bare 0-count could otherwise pass for the wrong reason - and its single pretune call, identified by channel, confirms only the eligible job scheduled.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pcancel"] = { name: "PCancel", url: "https://example.test/pcancel" };
+      data.channels["pctrl"] = { name: "PCtrl", url: "https://example.test/pctrl" };
+      data.channels["pskip"] = { name: "PSkip", url: "https://example.test/pskip" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    deviceGuideMap = new Map([ [ "320", "pctrl" ], [ "321", "pcancel" ], [ "322", "pskip" ] ]);
+
+    const startTime = Math.floor((Date.now() + 50_000) / 1000);
+
+    scheduledJobs = [
+      {
+
+        channels: ["321"],
+        id: "job-cancelled",
+        item: { cancelled: true },
+        name: "Cancelled Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      },
+      {
+
+        channels: ["322"],
+        id: "job-skipped",
+        item: {},
+        name: "Skipped Show",
+        skipped: true,
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      },
+      {
+
+        channels: ["320"],
+        id: "job-control",
+        item: {},
+        name: "Control Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      }
+    ];
+
+    pretune.startPretunePolling(deps);
+
+    // Fire the control job's per-job timer at +20s, before the 60s interval, so only the startup poll's scheduling decisions are under test.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "only the eligible control job may schedule and fire; cancelled and skipped jobs are never scheduled");
+
+    const call = firstOf(initializeStreamSpy.mock.calls, "initializeStream call");
+    const [options] = call.arguments;
+
+    assert.equal((options as { channelName: string }).channelName, "pctrl", "the single pretune must be for the eligible control channel, not the skipped ones");
+  });
+
+  test("a job that already has an active timer is not rescheduled on a subsequent poll", async () => {
+
+    /* Timer-map dedup: when a poll re-observes a job it already scheduled, the activeTimers.has(job.id) guard skips it so a duplicate setTimeout is never armed.
+     * A regression would leave two timers for one job, both firing near the pretune time and calling initializeStream twice. With the start 4 minutes out, the
+     * per-job timer survives across two poll cycles; ticking to its firing point must yield exactly one pretune call.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pdedup"] = { name: "PDedup", url: "https://example.test/pdedup" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    deviceGuideMap = new Map([[ "330", "pdedup" ]]);
+
+    scheduledJobs = [{
+
+      channels: ["330"],
+      id: "job-dedup",
+      item: {},
+      name: "Dedup Show",
+      // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+      start_time: Math.floor((Date.now() + 240_000) / 1000)
+    }];
+
+    pretune.startPretunePolling(deps);
+
+    // Startup poll schedules the per-job timer (fires ~205s out). Then advance to the 60s interval poll, which re-observes the same job and must dedup it.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(55_000);
+    await drainMicrotasks();
+
+    // Fire the per-job timer (205s after the startup poll). A single armed timer means exactly one pretune call.
+    mock.timers.tick(150_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "a job with an active timer must not be rescheduled on a subsequent poll");
+  });
+
+  test("a job that disappears from the schedule has its pending timer cleared", async () => {
+
+    /* Stale-timer cleanup: when a previously-scheduled job vanishes from a later poll (cancelled, rescheduled, or moved outside the horizon) while other jobs
+     * remain, pollForUpcomingJobs clears its orphaned timer via the seenJobIds sweep so it cannot fire against a recording that is no longer planned. Two jobs
+     * are scheduled; the first is removed before the interval poll, and only the survivor may fire - proven by the single pretune call being for the survivor.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pstalea"] = { name: "PStaleA", url: "https://example.test/pstalea" };
+      data.channels["pstaleb"] = { name: "PStaleB", url: "https://example.test/pstaleb" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    deviceGuideMap = new Map([ [ "340", "pstalea" ], [ "341", "pstaleb" ] ]);
+
+    const startTime = Math.floor((Date.now() + 240_000) / 1000);
+
+    scheduledJobs = [
+      {
+
+        channels: ["340"],
+        id: "job-stale-a",
+        item: {},
+        name: "Stale A Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      },
+      {
+
+        channels: ["341"],
+        id: "job-stale-b",
+        item: {},
+        name: "Stale B Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      }
+    ];
+
+    pretune.startPretunePolling(deps);
+
+    // Startup poll schedules both per-job timers.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+
+    // Remove the first job from the schedule. The next poll must clear its now-orphaned timer while re-observing and keeping the survivor.
+    scheduledJobs = [firstOf(scheduledJobs.slice(1), "surviving job")];
+
+    // Advance to the 60s interval poll, which runs the stale-timer sweep.
+    mock.timers.tick(55_000);
+    await drainMicrotasks();
+
+    // Fire the remaining per-job timer. The cleared timer must not fire, so only the survivor pretunes.
+    mock.timers.tick(150_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "the disappeared job's timer must be cleared; only the surviving job may fire");
+
+    const call = firstOf(initializeStreamSpy.mock.calls, "initializeStream call");
+    const [options] = call.arguments;
+
+    assert.equal((options as { channelName: string }).channelName, "pstaleb", "the single pretune must be for the surviving job, not the disappeared one");
+  });
+
+  test("a job outside the scheduling horizon is skipped while a nearer job fires", async () => {
+
+    /* The horizon skip: pollForUpcomingJobs ignores jobs whose start is beyond SCHEDULING_HORIZON_MS (5 minutes) so it does not tune far too early. The far job
+     * starts well past the horizon and must never schedule within the ticked window; the nearer job proves the machinery ran, so the far job's silence is a real
+     * skip rather than an idle poll.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pfar"] = { name: "PFar", url: "https://example.test/pfar" };
+      data.channels["pnear"] = { name: "PNear", url: "https://example.test/pnear" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    deviceGuideMap = new Map([ [ "350", "pfar" ], [ "351", "pnear" ] ]);
+
+    scheduledJobs = [
+      {
+
+        channels: ["350"],
+        id: "job-far",
+        item: {},
+        name: "Far Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: Math.floor((Date.now() + 400_000) / 1000)
+      },
+      {
+
+        channels: ["351"],
+        id: "job-near",
+        item: {},
+        name: "Near Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: Math.floor((Date.now() + 50_000) / 1000)
+      }
+    ];
+
+    pretune.startPretunePolling(deps);
+
+    // Startup poll schedules only the near job (fires 15s later); the far job is beyond the horizon and is skipped. Stop before the 60s interval poll so the far
+    // job is never re-evaluated as time advances toward it.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "a job outside the scheduling horizon must be skipped while the nearer job fires");
+
+    const call = firstOf(initializeStreamSpy.mock.calls, "initializeStream call");
+    const [options] = call.arguments;
+
+    assert.equal((options as { channelName: string }).channelName, "pnear", "the single pretune must be for the in-horizon job, not the far one");
+  });
+
+  test("a job whose start has already passed is skipped while a future job fires", async () => {
+
+    /* The already-started skip: pollForUpcomingJobs ignores jobs whose start is at or before now, so a recording already in progress is never speculatively
+     * tuned. The past job's start is before the clock; the future job proves the poll ran and pins that only it schedules.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["ppast"] = { name: "PPast", url: "https://example.test/ppast" };
+      data.channels["pnear2"] = { name: "PNear2", url: "https://example.test/pnear2" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    deviceGuideMap = new Map([ [ "360", "ppast" ], [ "361", "pnear2" ] ]);
+
+    scheduledJobs = [
+      {
+
+        channels: ["360"],
+        id: "job-past",
+        item: {},
+        name: "Past Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: Math.floor((Date.now() - 10_000) / 1000)
+      },
+      {
+
+        channels: ["361"],
+        id: "job-future",
+        item: {},
+        name: "Future Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: Math.floor((Date.now() + 50_000) / 1000)
+      }
+    ];
+
+    pretune.startPretunePolling(deps);
+
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "a job whose start has already passed must be skipped while the future job fires");
+
+    const call = firstOf(initializeStreamSpy.mock.calls, "initializeStream call");
+    const [options] = call.arguments;
+
+    assert.equal((options as { channelName: string }).channelName, "pnear2", "the single pretune must be for the future job, not the already-started one");
+  });
+
+  test("a job whose channels[0] is empty is skipped while a resolvable job fires", async () => {
+
+    /* The empty-guide skip: a job whose preferred channel entry is empty yields no guide number to resolve, so pretune skips it before touching the device
+     * mappings. The control job with a resolvable guide proves the poll ran and pins that only it schedules.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pchanctrl"] = { name: "PChanCtrl", url: "https://example.test/pchanctrl" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    deviceGuideMap = new Map([[ "370", "pchanctrl" ]]);
+
+    const startTime = Math.floor((Date.now() + 50_000) / 1000);
+
+    scheduledJobs = [
+      {
+
+        channels: [""],
+        id: "job-empty-channel",
+        item: {},
+        name: "Empty Channel Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      },
+      {
+
+        channels: ["370"],
+        id: "job-channel-control",
+        item: {},
+        name: "Channel Control Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      }
+    ];
+
+    pretune.startPretunePolling(deps);
+
+    // Fire the resolvable control job's per-job timer at +20s, before the 60s interval.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "a job with an empty channels[0] must be skipped while the resolvable job fires");
+
+    const call = firstOf(initializeStreamSpy.mock.calls, "initializeStream call");
+    const [options] = call.arguments;
+
+    assert.equal((options as { channelName: string }).channelName, "pchanctrl", "the single pretune must be for the resolvable-guide job");
+  });
+
+  test("a job whose guide number resolves to no PrismCast channel is skipped while a mapped job fires", async () => {
+
+    /* The unresolved-guide skip: a guide number the device mappings do not know maps to no PrismCast channel, so resolveGuideNumber returns undefined and pretune
+     * skips the job. This guards against guide-mapping drift where the DVR references a channel PrismCast no longer serves. The mapped control job proves the poll
+     * ran and pins that only it schedules.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pguidectrl"] = { name: "PGuideCtrl", url: "https://example.test/pguidectrl" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    // Only the control guide is mapped; "99999" resolves to nothing.
+    deviceGuideMap = new Map([[ "380", "pguidectrl" ]]);
+
+    const startTime = Math.floor((Date.now() + 50_000) / 1000);
+
+    scheduledJobs = [
+      {
+
+        channels: ["99999"],
+        id: "job-unresolved-guide",
+        item: {},
+        name: "Unresolved Guide Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      },
+      {
+
+        channels: ["380"],
+        id: "job-guide-control",
+        item: {},
+        name: "Guide Control Show",
+        // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+        start_time: startTime
+      }
+    ];
+
+    pretune.startPretunePolling(deps);
+
+    // Fire the mapped control job's per-job timer at +20s, before the 60s interval.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.equal(initializeStreamSpy.mock.callCount(), 1, "a job whose guide resolves to no PrismCast channel must be skipped while the mapped job fires");
+
+    const call = firstOf(initializeStreamSpy.mock.calls, "initializeStream call");
+    const [options] = call.arguments;
+
+    assert.equal((options as { channelName: string }).channelName, "pguidectrl", "the single pretune must be for the mapped-guide job");
+  });
+
+  test("an empty device-mappings result short-circuits the whole poll", async () => {
+
+    /* The empty-mappings short-circuit: if getDeviceMappings returns nothing, pretune cannot resolve any guide number, so pollForUpcomingJobs returns before
+     * scheduling anything - even for an otherwise-eligible job. The fetchFromDvr spy still records the poll, proving the short-circuit happened after data
+     * acquisition (on empty mappings) rather than because the poll never ran.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateEnabledServices([]);
+    await mutateChannels((data) => {
+
+      data.channels["pmap"] = { name: "PMap", url: "https://example.test/pmap" };
+    });
+
+    mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: 1_700_000_000_000 });
+
+    // A deps variant whose device mappings are empty, so mappings.size === 0 short-circuits the poll. Everything else mirrors the shared deps.
+    const emptyMappingDeps: pretune.PretuneDeps = {
+
+      clock: fakeClock,
+      fetchFromDvr: fetchFromDvrSpy,
+      getDeviceMappings: async (): Promise<Map<string, Map<string, string>>> => new Map(),
+      getDvrHost: (): string => "stub-dvr-host",
+      initializeStream: initializeStreamSpy
+    };
+
+    deviceGuideMap = new Map([[ "390", "pmap" ]]);
+
+    scheduledJobs = [{
+
+      channels: ["390"],
+      id: "job-empty-mappings",
+      item: {},
+      name: "Empty Mappings Show",
+      // eslint-disable-next-line camelcase -- DVR wire protocol field name.
+      start_time: Math.floor((Date.now() + 50_000) / 1000)
+    }];
+
+    pretune.startPretunePolling(emptyMappingDeps);
+
+    // Run the startup poll (and a little beyond); the empty mappings must short-circuit it before any per-job timer is armed.
+    mock.timers.tick(5_000);
+    await drainMicrotasks();
+    mock.timers.tick(15_000);
+    await drainMicrotasks();
+    await drainMicrotasks();
+
+    assert.ok(fetchFromDvrSpy.mock.callCount() >= 1, "the DVR jobs endpoint must be polled, so the short-circuit is on empty mappings, not a skipped poll");
+    assert.equal(initializeStreamSpy.mock.callCount(), 0, "an empty device-mappings result must short-circuit the poll before any pretune is scheduled");
   });
 });
