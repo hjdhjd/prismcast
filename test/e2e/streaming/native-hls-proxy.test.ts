@@ -26,6 +26,7 @@
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { bootStubServer, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { createCipheriv, randomBytes } from "node:crypto";
+import { firstOf, nthOf } from "../../../src/testing.helpers.ts";
 import { getStream, registerStream, unregisterStream } from "../../../src/streaming/registry.ts";
 import type { Clock } from "../../../src/utils/clock.ts";
 import type { NativeProxy } from "../../../src/native/proxy.ts";
@@ -449,5 +450,314 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     assert.equal(manifestRequestCount, countAtStop, "no further manifest polls should hit the stub after stop() even when the in-flight sleep resolves");
     assert.equal(proxy.isStopped(), true, "the proxy reports itself as stopped");
     assert.equal(sleepDurations[0], 3_000, "the next-poll sleep used MANIFEST_BACKOFF_BASE on a successful first poll");
+  });
+
+  test("polls a separate-audio rendition and stores its audio segments as audioN.ts with a master + audio variant playlist", async () => {
+
+    /* The separate-audio contract mirrors the video fetch-and-store contract this suite already pins, but on the audio rendition. When the probe resolves a
+     * master with an EXT-X-MEDIA AUDIO group, it hands the proxy the two resolved media playlist URLs directly (variantUrl for video, audioVariantUrl for audio).
+     * The proxy runs pollAudioStream in parallel with the video poll, applies the same tail-fill window on the first poll, and stores each new audio segment under
+     * "audio0.ts", "audio1.ts", ... in the registry's SEPARATE hls.audioSegments map - never intermixed with the video hls.segments map. It then publishes a
+     * master playlist (referencing audio.m3u8 + video.m3u8) as the top-level hls.playlist, the video variant into hls.videoPlaylist, and the audio variant into
+     * hls.audioPlaylist. We assert the audioN.ts storage, the byte-for-byte fidelity, the rendition separation, and the propagated EXTINF metadata.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const vid0 = randomBytes(256);
+    const vid1 = randomBytes(256);
+    const aud0 = randomBytes(192);
+    const aud1 = randomBytes(192);
+
+    const stub = await bootStubServer(ctx, (app) => {
+
+      // The proxy consumes the resolved media playlist URLs, not the master. We still serve the master for fidelity to the real probe output - an EXT-X-MEDIA
+      // AUDIO group plus a video variant - even though it is inert from the proxy's perspective.
+      app.get("/master.m3u8", (_req, res) => {
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:4",
+          "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"English\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\"",
+          "#EXT-X-STREAM-INF:BANDWIDTH=3000000,AUDIO=\"aud\"",
+          "video.m3u8",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/video.m3u8", (_req, res) => {
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:500",
+          "#EXTINF:4.000,",
+          "vid0.ts",
+          "#EXTINF:4.000,",
+          "vid1.ts",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/audio.m3u8", (_req, res) => {
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:500",
+          "#EXTINF:4.000,",
+          "aud0.ts",
+          "#EXTINF:4.000,",
+          "aud1.ts",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/vid0.ts", (_req, res) => { res.type("video/mp2t").send(vid0); });
+      app.get("/vid1.ts", (_req, res) => { res.type("video/mp2t").send(vid1); });
+      app.get("/aud0.ts", (_req, res) => { res.type("audio/mp2t").send(aud0); });
+      app.get("/aud1.ts", (_req, res) => { res.type("audio/mp2t").send(aud1); });
+    });
+
+    const entry = makeRegistryEntry({ channelName: "stub-audio" });
+
+    registerStream(entry);
+    activeStreamId = entry.id;
+
+    const proxy = createNativeProxy({
+
+      audioVariantUrl: stub.urlFor("/audio.m3u8"),
+      channelName: "stub-audio",
+      encryption: "clear",
+      keyUrl: null,
+      onError: (): void => undefined,
+      prefetchedKey: null,
+      prerollSegmentCount: 0,
+      streamId: entry.id,
+      streamIdStr: entry.streamIdStr,
+      variantUrl: stub.urlFor("/video.m3u8")
+    });
+
+    activeProxy = proxy;
+    proxy.start();
+
+    await waitFor(() => ((getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 2) && (proxy.getSegmentIndex() >= 2), 5_000,
+      "first poll cycle stores both video and audio segments");
+
+    const stored = getStream(entry.id);
+
+    assert.ok(stored, "the registry entry survives the separate-audio poll cycle");
+
+    // The audio segments land in the dedicated hls.audioSegments map under the audioN.ts naming, byte-for-byte from the upstream rendition.
+    assert.equal(stored.hls.audioSegments.size, 2, "exactly two audio segments stored");
+    assert.deepEqual(stored.hls.audioSegments.get("audio0.ts"), aud0, "audio0.ts holds the first upstream audio segment byte-for-byte");
+    assert.deepEqual(stored.hls.audioSegments.get("audio1.ts"), aud1, "audio1.ts holds the second upstream audio segment byte-for-byte");
+
+    // Video segments land in the separate hls.segments map under segmentN.ts - the two renditions never cross-contaminate their storage maps.
+    assert.deepEqual(stored.hls.segments.get("segment0.ts"), vid0, "video0 is stored in the video segment map, not the audio map");
+    assert.equal(stored.hls.audioSegments.has("segment0.ts"), false, "video filenames never leak into the audio segment map");
+    assert.equal(stored.hls.segments.has("audio0.ts"), false, "audio filenames never leak into the video segment map");
+
+    // The audio variant playlist references the proxy-renumbered audioN.ts filenames and carries the upstream #EXTINF duration metadata.
+    assert.match(stored.hls.audioPlaylist, /^#EXTM3U$/m, "the audio variant playlist opens with EXTM3U");
+    assert.match(stored.hls.audioPlaylist, /^audio0\.ts$/m, "the audio variant playlist references audio0.ts (proxy-renumbered, not upstream aud0.ts)");
+    assert.match(stored.hls.audioPlaylist, /^audio1\.ts$/m, "the audio variant playlist references audio1.ts");
+    assert.match(stored.hls.audioPlaylist, /^#EXTINF:4\.000,$/m, "the audio variant playlist propagates the upstream 4s EXTINF duration metadata");
+    assert.doesNotMatch(stored.hls.audioPlaylist, /^aud0\.ts$/m, "the upstream audio filename must NOT leak into the served audio playlist");
+
+    // For separate audio the top-level hls.playlist is a MASTER referencing both renditions; the video variant lives in hls.videoPlaylist.
+    assert.match(stored.hls.playlist, /#EXT-X-STREAM-INF:.*AUDIO="audio"/, "the master playlist advertises the audio group");
+    assert.match(stored.hls.playlist, /URI="audio\.m3u8"/, "the master playlist references the audio media playlist");
+    assert.match(stored.hls.playlist, /^video\.m3u8$/m, "the master playlist references the video media playlist");
+    assert.match(stored.hls.videoPlaylist, /^segment0\.ts$/m, "the video variant playlist references segment0.ts");
+  });
+
+  test("re-polls the audio rendition on cadence and stores newly-published audio segments above the high-water mark", async () => {
+
+    /* The audio live-edge contract: the audio poll applies the same high-water-mark filtering as the video path. On the first poll (highWaterSequence === -1) it
+     * tail-fills the window; on subsequent polls it stores only audio segments whose sequence advances past the high-water mark, never re-fetching ones already
+     * stored. We seed the audio rendition with two segments at sequence S, wait for the first poll, then flip the audio media playlist to publish two more at
+     * S+2..S+3, and assert the proxy stores exactly the two new ones (audio2.ts, audio3.ts) while leaving the already-stored audio0/audio1 bytes untouched. The
+     * video rendition is static (two segments), so subsequent polls advance the registry only because the AUDIO path produced new segments.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const vids = [ randomBytes(128), randomBytes(128) ];
+    const auds = [ randomBytes(96), randomBytes(96), randomBytes(96), randomBytes(96) ];
+    let audioVersion = 0;
+
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.get("/video.m3u8", (_req, res) => {
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:600",
+          "#EXTINF:4.000,",
+          "vid0.ts",
+          "#EXTINF:4.000,",
+          "vid1.ts",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/audio.m3u8", (_req, res) => {
+
+        res.type("application/vnd.apple.mpegurl");
+
+        if(audioVersion === 0) {
+
+          res.send([
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            "#EXT-X-TARGETDURATION:4",
+            "#EXT-X-MEDIA-SEQUENCE:600",
+            "#EXTINF:4.000,",
+            "aud0.ts",
+            "#EXTINF:4.000,",
+            "aud1.ts",
+            ""
+          ].join("\n"));
+        } else {
+
+          res.send([
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            "#EXT-X-TARGETDURATION:4",
+            "#EXT-X-MEDIA-SEQUENCE:600",
+            "#EXTINF:4.000,",
+            "aud0.ts",
+            "#EXTINF:4.000,",
+            "aud1.ts",
+            "#EXTINF:4.000,",
+            "aud2.ts",
+            "#EXTINF:4.000,",
+            "aud3.ts",
+            ""
+          ].join("\n"));
+        }
+      });
+
+      app.get("/vid0.ts", (_req, res) => { res.type("video/mp2t").send(nthOf(vids, 0)); });
+      app.get("/vid1.ts", (_req, res) => { res.type("video/mp2t").send(nthOf(vids, 1)); });
+      app.get("/aud0.ts", (_req, res) => { res.type("audio/mp2t").send(nthOf(auds, 0)); });
+      app.get("/aud1.ts", (_req, res) => { res.type("audio/mp2t").send(nthOf(auds, 1)); });
+      app.get("/aud2.ts", (_req, res) => { res.type("audio/mp2t").send(nthOf(auds, 2)); });
+      app.get("/aud3.ts", (_req, res) => { res.type("audio/mp2t").send(nthOf(auds, 3)); });
+    });
+
+    const entry = makeRegistryEntry({ channelName: "stub-audio-refresh" });
+
+    registerStream(entry);
+    activeStreamId = entry.id;
+
+    const proxy = createNativeProxy({
+
+      audioVariantUrl: stub.urlFor("/audio.m3u8"),
+      channelName: "stub-audio-refresh",
+      encryption: "clear",
+      keyUrl: null,
+      onError: (): void => undefined,
+      prefetchedKey: null,
+      prerollSegmentCount: 0,
+      streamId: entry.id,
+      streamIdStr: entry.streamIdStr,
+      variantUrl: stub.urlFor("/video.m3u8")
+    });
+
+    activeProxy = proxy;
+    proxy.start();
+
+    await waitFor(() => (getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 2, 5_000, "first poll cycle stores the initial two audio segments");
+
+    // Flip the audio rendition to its four-segment version. The next poll must store only the two newly-published segments - aud0/aud1 at sequence 600/601 are
+    // already in the audio fetchedSequences set and below the high-water mark (601).
+    audioVersion = 1;
+
+    await waitFor(() => (getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 4, 6_000, "next poll cycle picks up the two newly-published audio segments");
+
+    const stored = getStream(entry.id);
+
+    assert.ok(stored, "the registry entry survives the audio refresh cycle");
+    assert.deepEqual(stored.hls.audioSegments.get("audio2.ts"), nthOf(auds, 2), "newly-published aud2 stored under audio2.ts byte-for-byte");
+    assert.deepEqual(stored.hls.audioSegments.get("audio3.ts"), nthOf(auds, 3), "newly-published aud3 stored under audio3.ts byte-for-byte");
+    assert.deepEqual(stored.hls.audioSegments.get("audio0.ts"), nthOf(auds, 0), "the already-stored audio0 bytes are untouched - not re-fetched on the refresh poll");
+    assert.match(stored.hls.audioPlaylist, /^audio3\.ts$/m, "the regenerated audio variant playlist includes the newly-published last audio segment");
+  });
+
+  test("escalates audio manifest failures through the shared manifestFailureThreshold and reports an error", async () => {
+
+    /* The escalation contract: pollAudioStream classifies a failed audio manifest poll via the SAME manifestFailureThreshold helper the video poll uses, so a 4xx
+     * (client error) is capped at MAX_MANIFEST_FAILURES = 3 consecutive attempts before it reports an error and stops the proxy. We keep the video rendition
+     * healthy so the poll loop keeps cycling at MANIFEST_BACKOFF_BASE, and return HTTP 404 for the audio manifest. After three consecutive audio failures the proxy
+     * invokes onError with the audio-specific message and flips itself to stopped. Pinning "3 times" in the message asserts the 4xx branch of the shared threshold
+     * (identical to the video path) rather than the doubled network/5xx branch.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const errors: string[] = [];
+
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.get("/video.m3u8", (_req, res) => {
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:700",
+          "#EXTINF:4.000,",
+          "vid0.ts",
+          ""
+        ].join("\n"));
+      });
+
+      // The audio manifest always returns a 404 client error, which manifestFailureThreshold caps at three consecutive attempts.
+      app.get("/audio.m3u8", (_req, res) => { res.sendStatus(404); });
+
+      app.get("/vid0.ts", (_req, res) => { res.type("video/mp2t").send(randomBytes(128)); });
+    });
+
+    const entry = makeRegistryEntry({ channelName: "stub-audio-fail" });
+
+    registerStream(entry);
+    activeStreamId = entry.id;
+
+    const proxy = createNativeProxy({
+
+      audioVariantUrl: stub.urlFor("/audio.m3u8"),
+      channelName: "stub-audio-fail",
+      encryption: "clear",
+      keyUrl: null,
+      onError: (message: string): void => { errors.push(message); },
+      prefetchedKey: null,
+      prerollSegmentCount: 0,
+      streamId: entry.id,
+      streamIdStr: entry.streamIdStr,
+      variantUrl: stub.urlFor("/video.m3u8")
+    });
+
+    activeProxy = proxy;
+    proxy.start();
+
+    // Three consecutive audio failures at MANIFEST_BACKOFF_BASE (3s) spacing land the onError within roughly six seconds; the generous deadline absorbs CI jitter.
+    await waitFor(() => errors.length > 0, 20_000, "three consecutive audio manifest failures escalate to onError");
+
+    assert.match(firstOf(errors), /audio manifest poll failed 3 times/, "the error reports the audio-specific message at exactly the shared 4xx threshold of 3");
+    assert.equal(proxy.isStopped(), true, "the proxy flips itself to stopped once the audio manifest failure threshold is reached");
   });
 });

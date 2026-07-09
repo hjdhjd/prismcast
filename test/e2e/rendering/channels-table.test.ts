@@ -9,12 +9,15 @@
  * unit-tier coverage is exercising the generator against the REAL resolved listing produced by getChannelListing() against a populated channel store -
  * regressions that only manifest when the listing pipeline disagrees with the renderer's expectations show up here.
  */
-import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
+import { createIntegrationContext, initializePersistence, pathInDataDir } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import { generateChannelRowHtml, generateChannelsPanel } from "../../../src/routes/config/channels/table.ts";
+import { getChannelsParseErrorMessage, getUserChannelsFilePath, mutateChannels } from "../../../src/config/userChannels.ts";
 import assert from "node:assert/strict";
-import { generateChannelRowHtml } from "../../../src/routes/config/channels/table.ts";
+import { escapeHtml } from "../../../src/utils/index.ts";
 import { getProfiles } from "../../../src/config/profiles.ts";
-import { mutateChannels } from "../../../src/config/userChannels.ts";
+import { mutateProfiles } from "../../../src/config/userProfiles.ts";
+import { writeFile } from "node:fs/promises";
 
 describe("generateChannelRowHtml - canonical / variant / override visual classes", () => {
 
@@ -217,5 +220,163 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
     // The current value (the customization) is in the value attribute, and a literal & must appear as &amp; in the rendered HTML.
     assert.match(editRow, /value="https:\/\/example\.test\/logo\.png\?id=1&amp;type=logo"/,
       "ampersand in customized logoUrl is HTML-escaped to &amp; in the value attribute");
+  });
+});
+
+describe("generateChannelRowHtml - Profile column explicit vs auto-resolved branch", () => {
+
+  test("an explicit channel.profile renders the Profile cell as the profile name verbatim, without the (auto) marker or muted styling", async () => {
+
+    /* The Profile column has two rendering branches (table.ts). When channel.profile is set, the explicit branch emits a bare <td> whose content is the profile
+     * name run through escapeHtml - no wrapping span, no "(auto)" suffix, no text-muted class. The auto-resolved branch (no explicit profile) instead wraps the
+     * derived service label in <span class="text-muted">Label (auto)</span>. This test pins the explicit branch so a regression that accidentally routed an
+     * explicit assignment through the muted/auto styling - visually implying "we guessed this" when the operator set it deliberately - is caught.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    // Seed a user channel that names a REAL builtin profile explicitly. "fullscreenApi" is an existing SITE_PROFILES entry, so this resolves to a real profile
+    // and exercises the explicit branch (channel.profile truthy) rather than the auto-resolved fallback.
+    await mutateChannels((data) => {
+
+      data.channels["explicit-profile-channel"] = { name: "Explicit", profile: "fullscreenApi", url: "https://example.test/explicit" };
+    });
+
+    const { displayRow } = generateChannelRowHtml("explicit-profile-channel", getProfiles());
+
+    // Isolate the Profile column cell (col-profile). The explicit branch emits a single-line <td> with the escaped profile name and no child <span>.
+    const profileCell = displayRow.split("\n").find((line) => line.includes("class=\"col-profile\""));
+
+    assert.ok(profileCell, "the Profile column cell must be present in the display row");
+
+    // The cell content is the profile name verbatim, closing directly with </td> - the explicit branch does not wrap it in a span.
+    assert.match(profileCell, />fullscreenApi<\/td>/, "the explicit profile name renders verbatim as the Profile cell content");
+
+    // Distinct from the auto-resolved branch: neither the "(auto)" suffix nor the muted styling appears on an explicit assignment.
+    assert.equal(profileCell.includes("(auto)"), false, "an explicit profile must not carry the (auto) marker the auto-resolved branch appends");
+    assert.equal(profileCell.includes("text-muted"), false, "an explicit profile must not carry the text-muted styling the auto-resolved branch applies");
+  });
+});
+
+describe("generateChannelsPanel - validation errors block", () => {
+
+  test("a non-empty formErrors map renders a Validation Errors block with one HTML-escaped <li> per field", async () => {
+
+    /* formErrors is the fifth positional parameter of generateChannelsPanel (channelMessage, channelError, editingChannelKey, showAddForm, formErrors,
+     * formValues). When it is non-empty the panel emits a "Validation Errors" block with a <ul> carrying one <li> per entry, each rendering the field name in a
+     * <strong> and the message after it - both through escapeHtml. This pins the count-per-field invariant and the escaping of BOTH positions, so a regression
+     * that dropped escaping on either the field name or the message (an XSS vector, since messages can echo user input) surfaces.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    // Put HTML markup in BOTH the field name and the message so a regression dropping escaping on either position is caught. A second plain entry pins the
+    // one-<li>-per-field count.
+    const formErrors = new Map<string, string>();
+
+    formErrors.set("na<me>&", "Value has <script> & \"quotes\"");
+    formErrors.set("url", "Must be a valid URL");
+
+    const panel = generateChannelsPanel(undefined, undefined, undefined, undefined, formErrors);
+
+    assert.match(panel, /<div class="error-title">Validation Errors<\/div>/, "the Validation Errors block header must be present");
+
+    // Isolate the <ul> list so the <li> count reflects only the validation errors and not any incidental list elsewhere in the panel.
+    const ulStart = panel.indexOf("Please correct the following errors:");
+    const ulEnd = panel.indexOf("</ul>", ulStart);
+
+    assert.ok((ulStart >= 0) && (ulEnd > ulStart), "the validation error list must be delimited by the intro text and its closing </ul>");
+
+    const listBlock = panel.slice(ulStart, ulEnd);
+    const itemCount = (listBlock.match(/<li>/g) ?? []).length;
+
+    assert.equal(itemCount, formErrors.size, "exactly one <li> is rendered per formErrors entry");
+
+    // Both the field name and the message render with entity-encoded special characters, and the raw markup must not appear anywhere in the list block.
+    assert.match(listBlock, /<strong>na&lt;me&gt;&amp;<\/strong>: Value has &lt;script&gt; &amp; &quot;quotes&quot;/,
+      "both the field name and the message render with entity-encoded special characters");
+    assert.equal(listBlock.includes("na<me>&"), false, "the raw unescaped field name must not appear in the list block");
+    assert.equal(listBlock.includes("<script>"), false, "the raw unescaped message markup must not appear in the list block");
+  });
+});
+
+describe("generateChannelsPanel - channels file parse error block", () => {
+
+  test("a malformed channels.json surfaces a Channels File Error block with the escaped path and escaped parse-error message", async () => {
+
+    /* When the channels loader records a parse error (hasChannelsParseError() true), generateChannelsPanel renders a "Channels File Error" block that reports
+     * the user-channels file path inside a <code> element and, when present, the JSON.parse error message inside a second <code> element - both through
+     * escapeHtml. We write malformed JSON to channels.json BEFORE initializePersistence so the loader records the error, and we embed <, >, and & in the content
+     * so the JSON.parse message (which quotes the offending input) genuinely carries markup the escape must neutralize.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+
+    // Write malformed content directly (bypassing the JSON-only writePersistedJson helper) so the loader hits a genuine parse failure. The embedded markup forces
+    // the parse-error message to contain <, >, and & - see the escaping assertions below.
+    await writeFile(pathInDataDir(ctx, "channels.json"), "{ \"channels\": <>& }", "utf8");
+
+    await initializePersistence(ctx);
+
+    const panel = generateChannelsPanel();
+
+    assert.match(panel, /<div class="error-title">Channels File Error<\/div>/, "the Channels File Error block header must be present");
+
+    // The user-channels file path renders inside a <code> element, HTML-escaped. escapeHtml is identity for a plain temp path, but comparing against it pins the
+    // escaping as the contract - a path containing markup would still be neutralized.
+    const expectedPath = "<code>" + escapeHtml(getUserChannelsFilePath()) + "</code>";
+
+    assert.ok(panel.includes(expectedPath), "the escaped channels file path must render inside a <code> element");
+
+    // The parse-error message renders inside a <code> element, HTML-escaped. Our crafted malformed input forces the JSON.parse message to contain <, >, and &,
+    // so the escape is genuinely exercised: the entity-encoded form appears and the raw (markup-bearing) message does not.
+    const parseMessage = getChannelsParseErrorMessage();
+
+    assert.ok(parseMessage, "the parse-error message must be recorded for a malformed channels file");
+    assert.ok((parseMessage.includes("<") || parseMessage.includes("&")),
+      "the crafted malformed input must yield a parse message containing markup so escaping is actually exercised");
+    assert.ok(panel.includes("<code>" + escapeHtml(parseMessage) + "</code>"), "the escaped parse-error message must render inside a <code> element");
+    assert.equal(panel.includes("<code>" + parseMessage + "</code>"), false, "the raw unescaped parse-error message must not render");
+  });
+});
+
+describe("generateChannelsPanel - custom (user-defined) profile groups", () => {
+
+  test("seeded custom profiles surface a Custom optgroup and a Custom Profiles reference category, with the no-description fallback", async () => {
+
+    /* generateProfileDropdown and generateProfileReference are internal to table.ts (not exported), so we exercise their custom-group behavior through the
+     * exported generateChannelsPanel, which composes both. getProfiles() tags a user profile that declares no category as "custom", and categorizeProfiles routes
+     * it into the custom group that the dropdown renders as an <optgroup label="Custom"> and the reference renders as a "Custom Profiles" category. One seeded
+     * profile carries a description; the other omits it so the "No description provided." fallback in the reference listing is exercised.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["myDescribedProfile"] = { description: "Handles a bespoke embedded player." };
+      data.profiles["myBareProfile"] = {};
+    });
+
+    const panel = generateChannelsPanel();
+
+    // The dropdown emits a Custom optgroup listing both user profiles as options.
+    assert.match(panel, /<optgroup label="Custom">/, "a Custom optgroup must appear in the profile dropdown when user profiles exist");
+    assert.match(panel, /<option value="myDescribedProfile"/, "the described custom profile must appear as a dropdown option");
+    assert.match(panel, /<option value="myBareProfile"/, "the bare custom profile must appear as a dropdown option");
+
+    // The profile reference emits a Custom Profiles category with a <dt>/<dd> per profile, on adjacent joined lines.
+    assert.match(panel, /<h4>Custom Profiles<\/h4>/, "a Custom Profiles category must appear in the profile reference");
+    assert.match(panel, /<dt>myDescribedProfile<\/dt>\n<dd>Handles a bespoke embedded player\.<\/dd>/,
+      "the described custom profile lists its description in the reference");
+    assert.match(panel, /<dt>myBareProfile<\/dt>\n<dd>No description provided\.<\/dd>/,
+      "the bare custom profile lists the No description provided. fallback in the reference");
   });
 });

@@ -520,3 +520,237 @@ describe("DELETE /config/tags/:tag - cascade across vocabulary and channel bindi
     assert.equal(stringifySorted(afterFile.tagRegistry ?? null), beforeRegistryBytes, "tag registry must be byte-identical when the delete is rejected");
   });
 });
+
+describe("POST /config/tags/restore - restore a deleted predefined tag", () => {
+
+  /* The restore invariant is the inverse of the predefined delete: removing a predefined tag tombstones it in deletedTags (dropping it from the active
+   * vocabulary) and cascades a tag-stripping override onto every predefined channel whose definition carries it; restoring the tag reverses both halves. It must
+   * (1) remove the tag from deletedTags so it re-enters the active vocabulary, and (2) cascade the canonical-cased tag back onto exactly those predefined channels
+   * whose DEFINITION includes it but whose current resolved tags dropped it. The normalizer then strips the now-redundant override, reverting each such channel to
+   * its predefined default. We use the real predefined channel "cooking" (Food Network's Cooking Channel), whose definition carries the single predefined tag
+   * "Lifestyle", as the cascade witness. The not-deleted-tag path 404s, mirroring the DELETE 404 short-circuit in the sibling delete-cascade block above.
+   */
+
+  test("restores a deleted predefined tag to the vocabulary and re-applies it to the channels that define it", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    // Delete the predefined Lifestyle tag first so it enters deletedTags and drops from the channels that define it. The "cooking" channel's stored delta becomes
+    // an explicit tag-stripping override ({ tags: null }) - a witness that the tag was actively removed rather than simply absent.
+    const deleteResponse = await fetch(urlFor("/config/tags/Lifestyle"), { method: "DELETE" });
+
+    assert.equal(deleteResponse.status, 200, "deleting the predefined tag should succeed");
+
+    const afterDelete = await readPersistedJson(ctx, "channels.json") as Record<string, unknown> & { tagRegistry?: { deletedTags: string[]; tags: string[] } };
+
+    assert.deepEqual(afterDelete["cooking"], { tags: null }, "delete must leave a tag-stripping override on the predefined channel that defined Lifestyle");
+    assert.ok((afterDelete.tagRegistry?.deletedTags ?? []).includes("Lifestyle"), "delete must record the canonical predefined tag in deletedTags");
+
+    // Restore it. deletedTags must drop Lifestyle so it re-enters the active vocabulary, and the cascade must re-add the canonical tag to cooking, which the
+    // normalizer then reverts to its predefined default - the override disappears from the persisted file entirely.
+    const restoreResponse = await fetch(urlFor("/config/tags/restore"), {
+
+      body: JSON.stringify({ tag: "Lifestyle" }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(restoreResponse.status, 200, "restore should succeed; body: " + (await restoreResponse.clone().text()).slice(0, 200));
+
+    const restoreBody = await restoreResponse.json() as { active: string[]; registry: { deletedTags: string[]; tags: string[] }; success: boolean };
+
+    assert.ok(restoreBody.active.includes("Lifestyle"), "the restored tag must re-enter the active vocabulary bundle");
+    assert.equal(restoreBody.registry.deletedTags.includes("Lifestyle"), false, "restore must remove the tag from the deletedTags registry");
+
+    const afterRestore = await readPersistedJson(ctx, "channels.json") as Record<string, unknown> & { tagRegistry?: { deletedTags: string[]; tags: string[] } };
+
+    assert.equal(afterRestore["cooking"], undefined, "restore must revert the predefined channel to its default so its Lifestyle definition tag applies again");
+    assert.equal((afterRestore.tagRegistry?.deletedTags ?? []).includes("Lifestyle"), false, "persisted deletedTags must no longer carry the restored tag");
+  });
+
+  test("returns 404 when restoring a tag that was never deleted", async () => {
+
+    /* The restore guard: a tag that is not in deletedTags cannot be restored. Lifestyle is a valid predefined tag but has not been deleted here, so restore must
+     * 404 rather than silently succeed. This mirrors the not-found short-circuit the delete and rename endpoints enforce.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config/tags/restore"), {
+
+      body: JSON.stringify({ tag: "Lifestyle" }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 404, "restoring a tag that was never deleted must reject with 404");
+  });
+});
+
+describe("POST /config/tags/rename - predefined versus user tag registry semantics", () => {
+
+  /* Rename resolves the old tag's provenance and takes one of two registry paths, both cascading identically across channel bindings. For a PREDEFINED old tag,
+   * the endpoint tombstones the canonical old name in deletedTags (exactly once) and pushes the new name as a user tag - it cannot mutate the immutable predefined
+   * list in place. For a USER old tag, the endpoint maps the name in place within the user tags array and never touches deletedTags. These two tests pin that
+   * distinction in the persisted registry while asserting the shared cascade onto channel bindings.
+   */
+
+  test("renaming a PREDEFINED tag tombstones the canonical old name and adds the new name as a user tag, cascading to bindings", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    // Rename the predefined Lifestyle tag. cooking (which defines Lifestyle) is the cascade witness: its stored delta must carry the new name.
+    const response = await fetch(urlFor("/config/tags/rename"), {
+
+      body: JSON.stringify({ newTag: "Wellness", oldTag: "Lifestyle" }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "renaming a predefined tag should succeed; body: " + (await response.clone().text()).slice(0, 200));
+
+    const persisted = await readPersistedJson(ctx, "channels.json") as Record<string, unknown> & { tagRegistry?: { deletedTags: string[]; tags: string[] } };
+    const deletedTags = persisted.tagRegistry?.deletedTags ?? [];
+    const tags = persisted.tagRegistry?.tags ?? [];
+
+    assert.equal(deletedTags.filter((t) => t === "Lifestyle").length, 1, "the canonical old predefined tag must be tombstoned in deletedTags exactly once");
+    assert.ok(tags.includes("Wellness"), "the new name must be added to the user tags");
+    assert.equal(tags.includes("Lifestyle"), false, "the old predefined name must not appear in the user tags");
+    assert.deepEqual(persisted["cooking"], { tags: ["Wellness"] }, "the rename must cascade onto the predefined channel that defined the old tag");
+  });
+
+  test("renaming a USER tag maps it in place and never tombstones anything in deletedTags", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    // Create a user tag, bind it to a channel alongside an unrelated predefined tag, then rename it.
+    const createResponse = await fetch(urlFor("/config/tags"), {
+
+      body: JSON.stringify({ tag: "custom-a" }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(createResponse.status, 200, "creating the user tag should succeed");
+
+    await mutateChannels((data) => {
+
+      data.channels["seed-a"] = { name: "Seed A", tags: [ "News", "custom-a" ], url: "https://example.test/a" };
+    });
+
+    const response = await fetch(urlFor("/config/tags/rename"), {
+
+      body: JSON.stringify({ newTag: "custom-b", oldTag: "custom-a" }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "renaming a user tag should succeed; body: " + (await response.clone().text()).slice(0, 200));
+
+    const persisted = await readPersistedJson(ctx, "channels.json") as Record<string, unknown> & { tagRegistry?: { deletedTags: string[]; tags: string[] } };
+    const deletedTags = persisted.tagRegistry?.deletedTags ?? [];
+    const tags = persisted.tagRegistry?.tags ?? [];
+
+    assert.ok(tags.includes("custom-b"), "the user tags must carry the new name after an in-place rename");
+    assert.equal(tags.includes("custom-a"), false, "the user tags must no longer carry the old name");
+    assert.deepEqual(deletedTags, [], "a user-tag rename must not tombstone anything in deletedTags");
+
+    const entry = persisted["seed-a"] as { tags?: string[] };
+
+    assert.ok(Array.isArray(entry.tags), "seed-a should still carry a tags array after the cascade rename");
+    assert.ok(entry.tags.includes("custom-b"), "seed-a must carry the renamed user tag");
+    assert.equal(entry.tags.includes("custom-a"), false, "seed-a must no longer carry the old user tag");
+    assert.ok(entry.tags.includes("News"), "seed-a must still carry the unrelated News tag");
+  });
+});
+
+describe("POST /config/tags - creating a deleted predefined tag conflicts", () => {
+
+  /* A deleted predefined tag is not gone - it is tombstoned in deletedTags and can be restored. Re-creating it as a fresh user tag would fork the identity and
+   * lose the restore path, so the create endpoint rejects that case with a 409 that directs the user to restore instead. We delete the predefined Lifestyle tag,
+   * then attempt to create it, and pin the 409 plus its restore guidance and the fact that the conflicting create leaves the user vocabulary untouched.
+   */
+
+  test("returns 409 directing the user to restore when creating a tag that matches a deleted predefined tag", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const deleteResponse = await fetch(urlFor("/config/tags/Lifestyle"), { method: "DELETE" });
+
+    assert.equal(deleteResponse.status, 200, "deleting the predefined tag should succeed");
+
+    const response = await fetch(urlFor("/config/tags"), {
+
+      body: JSON.stringify({ tag: "Lifestyle" }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 409, "creating a tag matching a deleted predefined tag must reject with 409");
+
+    const body = await response.json() as { error: string; success: boolean };
+
+    assert.match(body.error, /restore/i, "the 409 must direct the user to restore rather than re-create");
+
+    const persisted = await readPersistedJson(ctx, "channels.json") as Record<string, unknown> & { tagRegistry?: { deletedTags: string[]; tags: string[] } };
+    const tags = persisted.tagRegistry?.tags ?? [];
+
+    assert.equal(tags.some((t) => t.toLowerCase() === "lifestyle"), false, "the rejected create must not add the deleted predefined tag to the user vocabulary");
+  });
+});
+
+describe("DELETE /config/tags/:tag - predefined delete and already-deleted no-op", () => {
+
+  /* Deleting a predefined tag differs from deleting a user tag: the user tags array is immutable for predefined names, so the endpoint records the canonical form
+   * in deletedTags and cascades a tag-stripping override across bindings. Re-deleting an ALREADY-deleted predefined tag is a no-op: the handler short-circuits
+   * before setTagRegistry and the cascade, returning current state without a second write. We pin both halves - the first delete's registry + cascade effect, and
+   * the second delete's byte-identical persisted state proving no write occurred.
+   */
+
+  test("records the canonical predefined form and cascades on first delete; re-delete is a no-op that leaves persisted state byte-identical", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const first = await fetch(urlFor("/config/tags/Lifestyle"), { method: "DELETE" });
+
+    assert.equal(first.status, 200, "the first predefined delete should succeed");
+
+    const afterFirst = await readPersistedJson(ctx, "channels.json") as Record<string, unknown> & { tagRegistry?: { deletedTags: string[]; tags: string[] } };
+
+    assert.deepEqual(afterFirst["cooking"], { tags: null }, "the first delete must strip the tag from the predefined channel that defined it");
+    assert.ok((afterFirst.tagRegistry?.deletedTags ?? []).includes("Lifestyle"), "the first delete must record the canonical predefined tag in deletedTags");
+
+    const afterFirstBytes = stringifySorted(afterFirst);
+
+    const second = await fetch(urlFor("/config/tags/Lifestyle"), { method: "DELETE" });
+
+    assert.equal(second.status, 200, "re-deleting an already-deleted predefined tag returns current state");
+
+    const afterSecond = await readPersistedJson(ctx, "channels.json") as Record<string, unknown>;
+
+    assert.equal(stringifySorted(afterSecond), afterFirstBytes, "re-deleting an already-deleted predefined tag must not mutate persisted state");
+  });
+});

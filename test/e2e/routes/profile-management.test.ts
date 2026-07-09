@@ -26,7 +26,9 @@
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import { firstOf, nthOf } from "../../../src/testing.helpers.ts";
 import assert from "node:assert/strict";
+import { mutateChannels } from "../../../src/config/userChannels.ts";
 import { mutateProfiles } from "../../../src/config/userProfiles.ts";
 import { readFile } from "node:fs/promises";
 
@@ -297,5 +299,95 @@ describe("POST /config/profiles - per-store mutator queue under contention", () 
 
     assert.ok("concurrent-a" in profilesMap, "concurrent-a must be present on disk after the parallel POSTs settle");
     assert.ok("concurrent-b" in profilesMap, "concurrent-b must be present on disk after the parallel POSTs settle");
+  });
+});
+
+describe("GET /config/profiles - list projection", () => {
+
+  test("the list maps each profile to its channel count, reverse-looked-up domains, extends/strategy fallbacks, sorted by key", async () => {
+
+    /* The read-side projection contract. The GET handler at services.ts:321-358 is what the Custom Profiles subtab fetches to render (and re-render after a
+     * mutation). For every user profile it emits, in one entry: channelCount (scanned from the channel listing), the reverse-looked-up domain mappings that
+     * reference the profile, the extends base (falling back to "default" when the profile declares no base), and the channel-selection strategy (falling back to
+     * "inherited" when the profile declares no channelSelection block). The whole list is sorted by key via localeCompare. A regression in any one of those five
+     * projections - a channel-count that stops scanning the listing, a domain reverse-lookup that attributes a mapping to the wrong profile, a fallback that
+     * emits undefined instead of the "default"/"inherited" sentinel, or a list that loses its sort - would surface to the operator as a mis-rendered profile
+     * table even though the underlying stores are correct. sendSuccess flattens the payload's data to the envelope top level, so the wire body is
+     * { domains, profiles: [...], success: true } rather than a nested data object.
+     *
+     * We seed two profiles that exercise both sides of the fallbacks: "zebra" declares an explicit base ("fullscreenApi") and an explicit strategy ("tileClick"),
+     * while "alpha" declares neither, so it must project extends "default" and strategy "inherited". The keys are chosen so insertion order (alpha seeded after
+     * zebra below) is the reverse of sorted order, which makes the sort assertion load-bearing. Channels and domains are seeded to distinct profiles so the
+     * per-profile counts and reverse-lookups are unambiguous, plus a profile-less channel that must be counted against nobody.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    // Seed the two profiles. "zebra" is inserted first so that a handler which forgot to sort would emit zebra before alpha; the sort assertion below catches
+    // exactly that. "alpha" deliberately omits both extends and channelSelection so its projection must fall back to the "default"/"inherited" sentinels.
+    await mutateProfiles((data) => {
+
+      data.profiles["zebra"] = { channelSelection: { strategy: "tileClick" }, description: "Z", extends: "fullscreenApi", summary: "Z summary" };
+      data.profiles["alpha"] = { description: "A", summary: "A summary" };
+
+      // Reverse-lookup fixtures: one domain per profile. alpha's mapping carries service/serviceTag; zebra's omits them so the handler's `?? ""` fallback is
+      // exercised. A bystander domain references a non-existent profile and must appear in neither profile's domains array.
+      data.domains["a1.example.test"] = { profile: "alpha", service: "AlphaTV", serviceTag: "alpha" };
+      data.domains["z1.example.test"] = { profile: "zebra" };
+      data.domains["orphan.example.test"] = { profile: "does-not-exist" };
+    });
+
+    // Seed channels: two bound to alpha, one to zebra, one with no profile at all. countChannelsByProfile scans getChannelListing() and buckets on
+    // channel.profile, so these drive channelCount to 2 (alpha) and 1 (zebra); the profile-less channel must not be counted against anyone.
+    await mutateChannels((data) => {
+
+      data.channels["alpha-one"] = { name: "Alpha One", profile: "alpha", url: "https://a1.example.test/one" };
+      data.channels["alpha-two"] = { name: "Alpha Two", profile: "alpha", url: "https://a1.example.test/two" };
+      data.channels["zebra-one"] = { name: "Zebra One", profile: "zebra", url: "https://z1.example.test/one" };
+      data.channels["no-profile"] = { name: "No Profile", url: "https://n.example.test/x" };
+    });
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config/profiles"));
+
+    assert.equal(response.status, 200, "GET /config/profiles must succeed; body: " + (await response.clone().text()).slice(0, 200));
+
+    // The envelope: sendSuccess flattens data to the top level, so success/profiles/domains all sit at the root of the parsed body.
+    const body = await response.json() as {
+      profiles?: { channelCount?: number; domains?: { domain?: string; service?: string; serviceTag?: string }[]; extends?: string; key?: string;
+        strategy?: string; }[];
+      success?: boolean;
+    };
+
+    assert.equal(body.success, true, "the envelope must carry success: true");
+    assert.ok(Array.isArray(body.profiles), "the response must carry a profiles array");
+
+    const profiles = body.profiles ?? [];
+
+    // Sort: the two seeded keys must come back in localeCompare order (alpha before zebra) regardless of insertion order.
+    assert.deepEqual(profiles.map((p) => p.key), [ "alpha", "zebra" ], "the profile list must be sorted by key ascending");
+
+    const alpha = firstOf(profiles);
+    const zebra = nthOf(profiles, 1);
+
+    // Channel counts: alpha has two bound channels, zebra one; the profile-less channel is counted against neither.
+    assert.equal(alpha.channelCount, 2, "alpha's channelCount must reflect its two bound channels");
+    assert.equal(zebra.channelCount, 1, "zebra's channelCount must reflect its single bound channel");
+
+    // Fallbacks: alpha declared neither base nor strategy, so it must project the "default"/"inherited" sentinels; zebra declared both, so it must project them
+    // verbatim.
+    assert.equal(alpha.extends, "default", "a profile with no extends must project extends: 'default'");
+    assert.equal(alpha.strategy, "inherited", "a profile with no channelSelection must project strategy: 'inherited'");
+    assert.equal(zebra.extends, "fullscreenApi", "a profile with an explicit base must project that base verbatim");
+    assert.equal(zebra.strategy, "tileClick", "a profile with an explicit strategy must project that strategy verbatim");
+
+    // Reverse-looked-up domains: exactly the mapping that references each profile, with the service/serviceTag `?? ""` fallback applied. The bystander mapping
+    // for a non-existent profile must appear in neither array.
+    assert.deepEqual(alpha.domains, [{ domain: "a1.example.test", service: "AlphaTV", serviceTag: "alpha" }],
+      "alpha's domains must be exactly its one mapping with service/serviceTag preserved");
+    assert.deepEqual(zebra.domains, [{ domain: "z1.example.test", service: "", serviceTag: "" }],
+      "zebra's domains must carry the '' fallback for the absent service/serviceTag fields");
   });
 });
