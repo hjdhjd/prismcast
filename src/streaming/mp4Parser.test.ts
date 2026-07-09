@@ -11,6 +11,7 @@ import type { MP4Box, MP4BoxCallback } from "./mp4Parser.ts";
 import { createMP4BoxParser, iterateChildBoxes } from "./mp4Parser.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { firstOf } from "../testing.helpers.ts";
 
 /* makeBox builds a minimal MP4 box: 4-byte size + 4-byte type + payload. The size includes the 8-byte header.
  */
@@ -264,6 +265,50 @@ describe("createMP4BoxParser", () => {
     }
 
     assert.equal(seen.filter((type) => type === "moof").length, 3, "every valid box emitted despite repeated oversized-box framing");
+  });
+
+  test("emits an extended-size box (size field == 1), taking the box size from the low 32 bits of the 64-bit field", () => {
+
+    // The extended-size form signals a 64-bit size with a size field of 1, followed by an 8-byte size at bytes 8-15. For streaming media the high 32 bits are always
+    // zero, so the parser takes the low 32 bits as the box size. We build a 24-byte box (16-byte extended header + 8-byte payload) and verify it emits with the size
+    // read from the low word, not from the size-field-1 sentinel.
+    const seen: MP4Box[] = [];
+    const parser = createMP4BoxParser((box) => seen.push(box));
+    const box = Buffer.alloc(24);
+
+    box.writeUInt32BE(1, 0);
+    box.write("mdat", 4, 4, "ascii");
+    box.writeUInt32BE(0, 8);
+    box.writeUInt32BE(24, 12);
+
+    parser.push(box);
+
+    assert.equal(seen.length, 1, "the extended-size box emitted");
+
+    const emitted = firstOf(seen);
+
+    assert.equal(emitted.type, "mdat");
+    assert.equal(emitted.size, 24, "size taken from the low 32 bits of the extended-size field");
+    assert.equal(emitted.data.length, 24, "the emitted box carries its full 24 bytes");
+  });
+
+  test("rejects an extended-size box whose high 32 bits are non-zero (a > 4 GB claim) rather than emitting it", () => {
+
+    // A box declaring more than 4 GB via a non-zero high word is not legitimate streaming framing. Were the high word ignored, this otherwise well-formed 24-byte
+    // frame would emit as a 24-byte box; the guard must instead resync so nothing is emitted. The distinct low word (24) is what an unguarded parser would wrongly
+    // trust, so a zero emit count pins the high-word rejection.
+    const seen: MP4Box[] = [];
+    const parser = createMP4BoxParser((box) => seen.push(box));
+    const box = Buffer.alloc(24);
+
+    box.writeUInt32BE(1, 0);
+    box.write("mdat", 4, 4, "ascii");
+    box.writeUInt32BE(1, 8);
+    box.writeUInt32BE(24, 12);
+
+    parser.push(box);
+
+    assert.equal(seen.length, 0, "a box claiming > 4 GB via the high word is rejected, not emitted");
   });
 });
 

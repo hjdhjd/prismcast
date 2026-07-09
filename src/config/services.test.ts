@@ -7,8 +7,8 @@
  * persistent mutators (mutateEnabledServices, setServiceSelection) are exercised indirectly via the persistence test layer.
  */
 import { PREDEFINED_SUFFIX, buildServiceGroups, findPredefinedByDomain, getAllServiceTags, getAuthDomainForChannel, getCanonicalKey, getChannelServiceLabel,
-  getEnabledServices, getServiceDisplayName, getServiceSelections, hasMultipleServices, isChannelAvailableByService, isServiceTagEnabled, isServiceVariant,
-  resolvePredefinedVariant, setEnabledServices, setServiceSelections } from "./services.ts";
+  getEnabledServices, getServiceDisplayName, getServiceSelections, getServiceTagForChannel, hasMultipleServices, isChannelAvailableByService, isServiceTagEnabled,
+  isServiceVariant, resolvePredefinedVariant, setEnabledServices, setServiceSelections } from "./services.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import type { ResolvedChannelMap } from "../types/index.ts";
@@ -422,6 +422,38 @@ describe("getEnabledServices: defensive copy", () => {
     const snapshot2 = getEnabledServices();
 
     assert.deepEqual(snapshot2.toSorted(), [ "hulu", "yttv" ].toSorted(), "second read does not include the mutation");
+  });
+});
+
+describe("getServiceTagForChannel: missing-channel fallback", () => {
+
+  /* getServiceTagForChannel first consults the runtime serviceGroups map (returning a variant's pre-computed tag when the key is grouped), then falls back to a
+   * direct URL-domain derivation via channelsRef / PREDEFINED_CHANNELS. When the key resolves to no channel in either source, the function does NOT throw - it
+   * returns the "direct" sentinel. We pin that fallback here: rebuild the groups from an empty channel map so channelsRef is empty and no group matches, then
+   * assert an obviously-unknown key yields "direct".
+   */
+
+  let originalSelections: Record<string, string>;
+
+  beforeEach(() => {
+
+    originalSelections = getServiceSelections();
+  });
+
+  afterEach(() => {
+
+    setServiceSelections(originalSelections);
+  });
+
+  test("returns 'direct' (does not throw) for a key absent from both channelsRef and PREDEFINED_CHANNELS", () => {
+
+    // Reset selections and rebuild groups from an empty map so the unknown key cannot resolve via a group or via channelsRef.
+    setServiceSelections({});
+    buildServiceGroups({});
+
+    // The key is not in PREDEFINED_CHANNELS either, so both lookup sources miss and the fallback path (lines 113-116) returns the sentinel.
+    assert.equal(PREDEFINED_CHANNELS["definitely-not-a-real-channel-key-q7z"], undefined, "guard: the probe key is genuinely unknown");
+    assert.equal(getServiceTagForChannel("definitely-not-a-real-channel-key-q7z"), "direct");
   });
 });
 

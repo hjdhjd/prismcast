@@ -203,6 +203,38 @@ describe("parseTokenExpiry: JWT in query parameter (Angelcam-style)", () => {
   });
 });
 
+describe("parseTokenExpiry: JWT payload structural guards", () => {
+
+  test("returns null for a JWT whose payload decodes to valid JSON that is not an object (a bare number)", () => {
+
+    // Negative test on the object guard in parseJwtExpClaim. The payload segment base64url-decodes to the string "42", which JSON.parse accepts as the number 42.
+    // A scalar cannot carry an exp claim, so the "typeof claims !== object" branch must reject it and the strategy must report null rather than treating the bare
+    // number as an expiry. We synthesize the numeric payload directly (encodeJwtSegment only encodes objects) using the same base64url transform the parser decodes.
+    const numericPayload = Buffer.from("42", "utf8")
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=/g, "");
+    const header = encodeJwtSegment({ alg: "HS256", typ: "JWT" });
+    const jwt = header + "." + numericPayload + ".synthetic-signature";
+    const url = "https://cdn.test/master.m3u8?token=" + encodeURIComponent(jwt);
+
+    assert.equal(parseTokenExpiry(url), null);
+  });
+
+  test("returns null for a JWT with an empty payload segment", () => {
+
+    // Negative test on the empty-segment guard. A JWT with three segments but an empty middle one (header..signature) yields an empty payload string; the base64url
+    // decoder short-circuits an empty segment to null, so the JSON parse is never attempted and parseJwtExpClaim returns null. This protects against a decode of the
+    // empty string being misread as a valid (but exp-less) payload.
+    const header = encodeJwtSegment({ alg: "HS256", typ: "JWT" });
+    const jwt = header + "..synthetic-signature";
+    const url = "https://cdn.test/master.m3u8?token=" + encodeURIComponent(jwt);
+
+    assert.equal(parseTokenExpiry(url), null);
+  });
+});
+
 describe("parseTokenExpiry: strategy ordering", () => {
 
   test("plain ?exp= takes precedence over a JWT with a different exp value when both are present", () => {

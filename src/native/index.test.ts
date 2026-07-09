@@ -462,5 +462,48 @@ describe("attemptNativeStreaming", () => {
       result.proxy.stop();
     });
   });
+
+  test("returns a NativeStreamResult and enters native mode when the AES-128 key is accessible on both the probe and the prefetch", async () => {
+
+    // AES-128 success path: the variant declares METHOD=AES-128 and the key URL returns a stable 16-byte key on BOTH the probe's accessibility check and the
+    // coordinator's pre-fetch. Both key fetches must succeed for the orchestrator to commit to native mode. We count the key fetches to pin that the key URL was
+    // consulted exactly twice (probe accessibility check plus coordinator prefetch) before the proxy was constructed. A regression that skipped the prefetch, or
+    // failed to classify the stream as AES-128, would break this count or return null instead of a NativeStreamResult.
+    const masterUrl = "https://cdn.test/aes-ok-master.m3u8";
+    const variantUrl = "https://cdn.test/aes-ok-variant.m3u8";
+    const keyUrl = "https://cdn.test/aes-ok-key.bin";
+
+    let keyCallCount = 0;
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,CODECS=\"avc1.640028\"\naes-ok-variant.m3u8\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"\n#EXTINF:2,\nseg.ts\n", { status: 200 }),
+      [keyUrl]: () => {
+
+        keyCallCount++;
+
+        // Every key fetch returns a valid 16-byte key, so both the probe accessibility check and the coordinator prefetch succeed and native mode is entered.
+        return new Response(Buffer.alloc(16), { status: 200 });
+      }
+    });
+
+    const options = makeAttemptOptions({
+
+      channelName: "aes-ok-channel",
+      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
+    });
+
+    clearProbeCache("aes-ok-channel");
+
+    const result = await attemptNativeStreaming(options);
+
+    assert.ok(result, "accessible AES-128 key enters native mode");
+    assert.equal(result.bandwidth, 1500000, "bandwidth surfaces from the probe");
+    assert.equal(result.hasAudio, false, "no separate audio rendition on the AES-128 variant");
+    assert.equal(keyCallCount, 2, "key URL consulted twice: probe accessibility check plus coordinator prefetch");
+
+    result.proxy.stop();
+  });
 });
 

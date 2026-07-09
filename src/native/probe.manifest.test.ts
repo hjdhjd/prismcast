@@ -665,3 +665,138 @@ describe("probeManifest: media-only playlists", () => {
     assert.equal(getCachedEncryption("media-only-channel"), "clear", "clear classification cached for media-only path");
   });
 });
+
+describe("probeManifest: uncovered branches", () => {
+
+  // Mirrors PROBE_CACHE_TTL in probe.ts (24 hours). The constant is module-private, so the TTL test hardcodes the same 24h value and steps Date.now() past it.
+  const PROBE_CACHE_TTL = 24 * 60 * 60 * 1000;
+
+  beforeEach(() => {
+
+    clearProbeCache("probe-channel");
+  });
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("returns null when a master playlist has a #EXT-X-STREAM-INF but no following variant URL line", async () => {
+
+    // Boundary distinct from the "unknown" branch: this body DOES classify as "master" because #EXT-X-STREAM-INF is present, but the line after it is a comment
+    // (#EXT-X-ENDLIST) rather than a variant URL. selectBestVariant finds no bestUrl and returns null, so resolveMasterPlaylist returns null and the probe
+    // surfaces null. The existing "no variant streams" test hits the "unknown" classification branch instead, so this pins the master-with-no-bestUrl path.
+    const masterUrl = "https://cdn.test/dangling-stream-inf.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=1000000",
+        "#EXT-X-ENDLIST",
+        ""
+      ].join("\n"), { status: 200 })
+    });
+
+    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "master with no resolvable variant URL returns null");
+  });
+
+  test("ignores an #EXT-X-MEDIA rendition that is not TYPE=AUDIO even when it carries a URI", async () => {
+
+    // parseAudioRendition must only follow TYPE=AUDIO renditions. A TYPE=SUBTITLES rendition with a URI must never become audioVariantUrl - otherwise the proxy
+    // would poll a subtitle playlist as if it were an audio track. We assert audioVariantUrl stays null despite the URI on the subtitle rendition.
+    const masterUrl = "https://cdn.test/subs-master.m3u8";
+    const videoVariantUrl = "https://cdn.test/subs-video.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",URI=\"https://cdn.test/subs-track.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "subs-video.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [videoVariantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "probe resolved");
+    assert.equal(result.audioVariantUrl, null, "TYPE=SUBTITLES rendition with a URI is not treated as audio");
+  });
+
+  test("returns null when the master fetch itself throws (network error / abort)", async () => {
+
+    // fetchManifestText wraps chromeFetch in a try/catch so a thrown fetch (DNS failure, connection reset, AbortSignal.timeout firing) surfaces as null rather
+    // than propagating. probeManifest sees a null body and returns null so the caller falls back to capture instead of crashing.
+    const masterUrl = "https://cdn.test/throwing-master.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => {
+
+        throw new Error("simulated network failure");
+      }
+    });
+
+    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "thrown fetch surfaces as null");
+  });
+
+  test("downgrades AES-128 to 'drm' when the key fetch throws", async () => {
+
+    // testKeyAccessibility wraps the key fetch in a try/catch and returns false on any throw. A thrown key fetch (network error, abort) must downgrade the
+    // classification to drm - not aes128 - because Node cannot decrypt without a fetchable key. Master and variant fetches succeed so only the key path throws.
+    const masterUrl = "https://cdn.test/keythrow-master.m3u8";
+    const variantUrl = "https://cdn.test/keythrow-variant.m3u8";
+    const keyUrl = "https://cdn.test/keythrow-key.bin";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nkeythrow-variant.m3u8\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"\n", { status: 200 }),
+      [keyUrl]: () => {
+
+        throw new Error("key endpoint unreachable");
+      }
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "probe resolved");
+    assert.equal(result.encryption, "drm", "thrown key fetch downgrades AES-128 to drm");
+    assert.equal(result.keyUrl, null, "no key URL surfaces when the key fetch throws");
+  });
+
+  test("expires a cache entry older than PROBE_CACHE_TTL and treats it as a miss", async () => {
+
+    // getCachedEncryption reads Date.now() directly to compute entry age. We seed the cache with a real DRM probe (timestamp = real Date.now()), then mock
+    // Date.now() to a value more than 24h past the seed so the entry is stale. getCachedEncryption must delete the entry and return null. To prove the entry was
+    // deleted (not merely compared against the clock), we then rewind Date.now() back inside the TTL window and confirm the lookup still misses.
+    const masterUrl = "https://cdn.test/ttl-master.m3u8";
+    const variantUrl = "https://cdn.test/ttl-variant.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nttl-variant.m3u8\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n", { status: 200 })
+    });
+
+    const seededAt = Date.now();
+
+    await probeManifest(masterUrl, "probe-channel");
+    assert.equal(getCachedEncryption("probe-channel"), "drm", "seed probe cached drm before any clock manipulation");
+
+    // Advance the clock past the TTL. The seed timestamp is >= seededAt, so this difference is guaranteed to exceed PROBE_CACHE_TTL.
+    let nowValue = seededAt + PROBE_CACHE_TTL + 1000;
+
+    mock.method(Date, "now", () => nowValue);
+
+    assert.equal(getCachedEncryption("probe-channel"), null, "entry older than the TTL is treated as a miss");
+
+    // Rewind the clock inside the TTL window. A live entry would now read as fresh; a deleted one stays a miss. This distinguishes deletion from a pure age check.
+    nowValue = seededAt;
+
+    assert.equal(getCachedEncryption("probe-channel"), null, "the stale entry was deleted, not merely compared against the clock");
+  });
+});

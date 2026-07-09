@@ -8,9 +8,9 @@
  * across every test that exercises this observer or any module layered on top of it; the actual CDP wire is deferred to e2e coverage and this file isolates
  * the observer's behavior from Chrome.
  */
+import type { CDPSession, Page } from "puppeteer-core";
 import { FakeCdpSession, FakeConnection, closePuppeteerStreamWssOnIdle, makeFakeCdpPage, noop } from "../testing.helpers.ts";
 import { describe, test } from "node:test";
-import type { CDPSession } from "puppeteer-core";
 import type { ObservedResponse } from "./tabNetworkObserver.ts";
 import assert from "node:assert/strict";
 import { observeTabResponses } from "./tabNetworkObserver.ts";
@@ -410,5 +410,82 @@ describe("observeTabResponses", () => {
     rootSession.emitResponse("https://ghost.test/late.m3u8");
 
     assert.equal(observed.length, 0, "no callback delivery after dispose");
+  });
+
+  test("returns null when page.createCDPSession() rejects (session-creation failure branch)", async () => {
+
+    // Boundary: the third installation failure mode beyond the already-covered closed-page and no-connection branches. When createCDPSession() rejects (the target
+    // vanished mid-construction, a protocol error, a browser tear-down race), the observer must catch it, log at debug, and return null rather than letting the
+    // rejection escape to the caller. We build a page whose createCDPSession() rejects; if the observer failed to catch it, the await below would reject and the
+    // assertion would never run, failing the test.
+    const rejectingPage = {
+
+      createCDPSession: async (): Promise<CDPSession> => {
+
+        await Promise.resolve();
+
+        throw new Error("session creation refused");
+      },
+      isClosed: (): boolean => false
+    } as unknown as Page;
+
+    const observer = await observeTabResponses(rejectingPage, { onResponse: noop });
+
+    assert.equal(observer, null, "createCDPSession rejection short-circuits to null");
+  });
+
+  test("ignores an attachedToTarget whose sessionId cannot be resolved (child-detached-before-lookup race)", async () => {
+
+    // Race contract: Target.attachedToTarget can fire for a child that has already detached by the time the observer looks it up via connection.session(). That
+    // lookup returns null and the observer must treat the attach as a no-op - no commands issued, no throw, and the observer left fully healthy. We construct a
+    // child session but deliberately do NOT register it on the connection, so the sessionId is unresolvable, then assert the orphan received zero commands and a
+    // subsequent root response still flows through the callback.
+    const { connection, root: rootSession } = buildFixture();
+
+    const orphanSession = new FakeCdpSession(connection);
+
+    const observed: ObservedResponse[] = [];
+
+    const observer = await observeTabResponses(makeFakeCdpPage(rootSession), { onResponse: (r): void => { observed.push(r); } });
+
+    assert.ok(observer, "observer installed");
+
+    // Emit an attach for a sessionId the connection cannot resolve. onChildAttached() must bail at the null-session guard before touching any session.
+    rootSession.emitAttached("orphan-unresolvable", "iframe");
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(orphanSession.sent.length, 0, "no CDP commands issued for an unresolvable child session");
+
+    // The observer must remain healthy after ignoring the race - a subsequent root response still reaches the callback.
+    rootSession.emitResponse("https://root.test/after-orphan.m3u8");
+
+    assert.equal(observed.length, 1, "observer still forwards root responses after ignoring an unresolvable attach");
+
+    observer.dispose();
+  });
+
+  test("treats a detachedFromTarget for an untracked session as a clean no-op", async () => {
+
+    // Lifecycle boundary: a Target.detachedFromTarget can arrive for a sessionId the observer never tracked (e.g., a target filtered out at attach time, or a
+    // duplicate detach). connection.session() returns null and onChildDetached() must return early rather than calling removeAllListeners on a null session. The
+    // emit is synchronous, so assert.doesNotThrow directly pins the guard: were it removed, null.removeAllListeners would throw synchronously through the emit.
+    const { root: rootSession } = buildFixture();
+
+    const observed: ObservedResponse[] = [];
+
+    const observer = await observeTabResponses(makeFakeCdpPage(rootSession), { onResponse: (r): void => { observed.push(r); } });
+
+    assert.ok(observer, "observer installed");
+
+    assert.doesNotThrow((): void => { rootSession.emitDetached("never-attached"); }, "detach for an untracked session does not throw");
+
+    // The observer must remain healthy after the no-op detach - a subsequent root response still reaches the callback.
+    rootSession.emitResponse("https://root.test/after-untracked-detach.m3u8");
+
+    assert.equal(observed.length, 1, "observer still forwards root responses after an untracked-detach no-op");
+
+    observer.dispose();
   });
 });

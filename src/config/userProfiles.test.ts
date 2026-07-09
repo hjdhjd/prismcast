@@ -496,3 +496,71 @@ describe("validateImportedProfiles", () => {
     assert.ok(result.domains["custom-cross-ref.example"], "domain included in result");
   });
 });
+
+describe("validateImportedProfiles field-type guards", () => {
+
+  test("reports 'Invalid profiles field' when profiles is present but is an array", () => {
+
+    /* The profiles top-level key is guarded by a plain-object check ((typeof !== "object") || Array.isArray). An array passes the truthiness gate that enters the
+     * profiles branch but fails the plain-object shape check, so the batch is rejected with the field-shape error rather than being iterated as entries.
+     */
+    const result = validateImportedProfiles({ profiles: [] });
+
+    assert.equal(result.valid, false, "an array profiles field invalidates the batch");
+    assert.ok(result.errors.some((e) => e.includes("Invalid profiles field")), "expected the profiles field-shape error");
+    assert.deepEqual(result.profiles, {}, "no profiles are collected from a malformed profiles field");
+  });
+
+  test("reports 'Invalid profiles field' when profiles is present but is a string", () => {
+
+    // A string profiles field fails the typeof === "object" arm of the shape guard, producing the same field-shape error as the array case.
+    const result = validateImportedProfiles({ profiles: "not-an-object" });
+
+    assert.equal(result.valid, false, "a string profiles field invalidates the batch");
+    assert.ok(result.errors.some((e) => e.includes("Invalid profiles field")), "expected the profiles field-shape error");
+    assert.deepEqual(result.profiles, {}, "no profiles are collected from a malformed profiles field");
+  });
+
+  test("reports 'Invalid domains field' when domains is present but is an array", () => {
+
+    // The domains top-level key carries the same plain-object guard as profiles; an array enters the domains branch but fails the shape check and is rejected.
+    const result = validateImportedProfiles({ domains: [] });
+
+    assert.equal(result.valid, false, "an array domains field invalidates the batch");
+    assert.ok(result.errors.some((e) => e.includes("Invalid domains field")), "expected the domains field-shape error");
+    assert.deepEqual(result.domains, {}, "no domains are collected from a malformed domains field");
+  });
+
+  test("reports 'Invalid domains field' when domains is present but is a string", () => {
+
+    // A string domains field fails the typeof === "object" arm of the guard, producing the field-shape error rather than iterating characters as entries.
+    const result = validateImportedProfiles({ domains: "not-an-object" });
+
+    assert.equal(result.valid, false, "a string domains field invalidates the batch");
+    assert.ok(result.errors.some((e) => e.includes("Invalid domains field")), "expected the domains field-shape error");
+    assert.deepEqual(result.domains, {}, "no domains are collected from a malformed domains field");
+  });
+
+  test("skips a single profile that fails validateProfile while collecting every valid sibling", () => {
+
+    /* One profile failing validateProfile must not discard the whole import: the validator continues past the bad entry and still collects the valid siblings.
+     * The existing single-sibling test pins that one good entry survives one bad entry; this strengthens the invariant to two good siblings so a regression that
+     * kept only the first valid entry (or aborted the loop on the first error) surfaces here.
+     */
+    const result = validateImportedProfiles({
+
+      profiles: {
+
+        bad: { extends: "not-a-real-profile" },
+        goodOne: { extends: "fullscreenApi" },
+        goodTwo: { extends: "keyboardFullscreen" }
+      }
+    });
+
+    assert.equal(result.valid, false, "the bad profile makes the batch invalid");
+    assert.ok(result.profiles["goodOne"], "first valid sibling collected");
+    assert.ok(result.profiles["goodTwo"], "second valid sibling collected past the bad entry");
+    assert.equal(result.profiles["bad"], undefined, "the failing profile is skipped, not collected");
+    assert.match(result.errors.join(" "), /non-existent builtin profile/, "the skipped profile's validateProfile error is reported");
+  });
+});

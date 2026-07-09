@@ -11,19 +11,25 @@
  *
  *   3. Get and Set request paths are exercised similarly to confirm the transport composes the correct reply type for each parsed packet.
  *
+ *   4. Negative and failure paths: a valid Upgrade request (which parses as an unsupported type) is dropped without a reply - distinct from the malformed-packet
+ *      drop, which fails the parser's length/CRC check - and a bind collision on the responder port resolves ensureUp false at warn level rather than throwing, so
+ *      the HTTP HDHR surface survives a discovery-port conflict.
+ *
  * The integration tests run on 127.0.0.1 with an ephemeral port so they cannot collide with a real HDHomeRun device or another emulator on the developer's
  * host. `await using` disposal tears the responder down at the end of each test, so there is no afterEach to forget. Request packet builders (makeDiscoverRequest,
  * makeGetRequest) and the shared framing helper (sealPacket) come from protocol.helpers.ts so both test files speak the same wire format.
  */
 import { HDHR_DISCOVERY_PORT, createUdpSurface, selectLanAddress } from "./udp.ts";
-import { PACKET_DISCOVER_REPLY, PACKET_GET_REPLY, TLV_BASE_URL, TLV_DEVICE_ID, TLV_DEVICE_TYPE, TLV_ERROR, TLV_GETSET_NAME, TLV_GETSET_VALUE,
-  TLV_TUNER_COUNT } from "./protocol.ts";
+import { PACKET_DISCOVER_REPLY, PACKET_GET_REPLY, PACKET_UPGRADE_REQUEST, TLV_BASE_URL, TLV_DEVICE_ID, TLV_DEVICE_TYPE, TLV_ERROR, TLV_GETSET_NAME,
+  TLV_GETSET_VALUE, TLV_TUNER_COUNT } from "./protocol.ts";
 import { describe, test } from "node:test";
-import { makeDiscoverRequest, makeGetRequest } from "./protocol.helpers.ts";
+import { makeDiscoverRequest, makeGetRequest, sealPacket } from "./protocol.helpers.ts";
+import type { LogEntry } from "../utils/logEmitter.ts";
 import type { NetworkInterfaceInfo } from "node:os";
 import type { UdpSurface } from "./udp.ts";
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
+import { subscribeToLogs } from "../utils/logEmitter.ts";
 
 // makeIPv4 builds a synthetic NetworkInterfaceInfo entry shaped like what os.networkInterfaces() returns. Captures only the fields selectLanAddress reads;
 // other fields the runtime would populate are filled with placeholder values to satisfy the type.
@@ -267,6 +273,22 @@ describe("UdpSurface - round-trip", () => {
     await assert.rejects(() => sendAndReceive(port, garbage), /Timed out waiting/);
   });
 
+  test("a valid but unsupported packet type (Upgrade) is dropped without a reply", async () => {
+
+    await using surface = createUdpSurface();
+
+    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = requireBoundPort(surface);
+
+    // A well-formed, valid-CRC Upgrade request parses cleanly as { type: "unsupported" } and must be dropped WITHOUT a reply. This is a distinct branch from the
+    // malformed-drop above: that datagram fails parsePacket's length/CRC check and returns early, whereas this one parses successfully and reaches the
+    // case "unsupported" dispatch arm - so a regression that answered unsupported packets would deliver a reply here instead of timing out.
+    const upgrade = sealPacket(PACKET_UPGRADE_REQUEST, Buffer.alloc(0));
+
+    await assert.rejects(() => sendAndReceive(port, upgrade), /Timed out waiting/);
+  });
+
   test("idempotent ensureUp: calling it twice returns true without rebinding", async () => {
 
     await using surface = createUdpSurface();
@@ -300,6 +322,39 @@ describe("UdpSurface - round-trip", () => {
 
     assert.equal(rebound, true, "a stopped surface rebinds on the next ensureUp");
     assert.notEqual(surface.boundPort, null, "surface is bound again after the second ensureUp");
+  });
+
+  test("a bind collision on the responder port resolves ensureUp false at warn level without throwing", async () => {
+
+    await using first = createUdpSurface();
+    const firstOk = await first.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    assert.equal(firstOk, true, "the first surface binds the ephemeral port");
+
+    const port = requireBoundPort(first);
+
+    // Capture warn-level logs only across the colliding bind so the assertion is scoped to this event and cannot pick up unrelated lifecycle lines.
+    const warnings: string[] = [];
+    const unsubscribe = subscribeToLogs((entry: LogEntry) => {
+
+      if(entry.level === "warn") {
+
+        warnings.push(entry.message);
+      }
+    });
+
+    // A second surface binding the SAME address and port collides. reuseAddr is deliberately false, so the kernel returns EADDRINUSE, which the bind-failure
+    // handler treats as graceful "discovery unavailable": ensureUp resolves false, never throws or rejects, and the surface stays down so the HTTP HDHR surface
+    // keeps working. Binding the first surface's actual ephemeral port keeps the collision deterministic without hard-coding a port that another host process
+    // might already hold.
+    await using second = createUdpSurface();
+    const secondOk = await second.ensureUp({ bindAddress: "127.0.0.1", port });
+
+    unsubscribe();
+
+    assert.equal(secondOk, false, "the colliding bind resolves false rather than throwing");
+    assert.equal(second.boundPort, null, "the collided surface stays down");
+    assert.ok(warnings.some((message) => message.includes("already in use")), "the collision is surfaced at warn level");
   });
 
   test("HDHR_DISCOVERY_PORT constant matches the canonical SiliconDust value", () => {

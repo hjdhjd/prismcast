@@ -13,10 +13,11 @@
  * outside the unit-test scope and listed in the deferred-coverage block at the bottom of this file.
  */
 import { clearChannelSelectionCaches, getCachedProviderChannels, getProviderBySlug, getProviderByStrategy, getProviderDomainMap, getProviderGuideUrls,
-  getProviderModuleInfo, getProviderSlugs, invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
+  getProviderModuleInfo, getProviderSlugs, getProvidersForDomain, invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
 import { describe, test } from "node:test";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
+import { extractDomain } from "../utils/index.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 
@@ -192,6 +193,57 @@ describe("getProviderGuideUrls", () => {
   test("returns one entry per provider", () => {
 
     assert.equal(Object.keys(getProviderGuideUrls()).length, getProviderSlugs().length, "one URL per provider");
+  });
+});
+
+describe("getProvidersForDomain", () => {
+
+  test("returns exactly the single provider whose guide lives on the given domain", () => {
+
+    // sling.com is the registrable domain of the sling provider's guide URL (watch.sling.com/...). extractDomain collapses the "watch." subdomain, so the lookup
+    // must return precisely one provider and it must be sling.
+    const matches = getProvidersForDomain("sling.com");
+
+    assert.equal(matches.length, 1, "sling.com maps to exactly one provider");
+    assert.equal(matches[0]?.slug, "sling", "the single match is the sling provider");
+  });
+
+  test("returns an empty array when no registered provider's guide lives on the domain", () => {
+
+    // A domain no provider registers must yield an empty array, never undefined. This is the contract callers rely on to iterate the result unconditionally.
+    const matches = getProvidersForDomain("no-such-provider.example");
+
+    assert.ok(Array.isArray(matches), "result is an array");
+    assert.equal(matches.length, 0, "unregistered domain -> empty array");
+  });
+
+  test("every returned provider extracts to the requested domain, for each provider's own domain", () => {
+
+    // Property check across the whole registry: for each provider, look up by its own guide-URL domain. The result must include that provider, and every provider
+    // in the result must itself extract to the requested domain (never a stray registration on a different domain). This locks the "exactly the modules whose
+    // extractDomain(guideUrl) equals the argument" contract without hard-coding the provider list.
+    for(const slug of getProviderSlugs()) {
+
+      const provider = getProviderBySlug(slug);
+
+      assert.ok(provider, "provider lookup succeeded for " + slug);
+
+      const domain = extractDomain(provider.guideUrl);
+      const matches = getProvidersForDomain(domain);
+
+      assert.ok(matches.some((p) => p.slug === slug), "domain " + domain + " includes provider " + slug);
+
+      for(const match of matches) {
+
+        assert.equal(extractDomain(match.guideUrl), domain, "every match for " + domain + " extracts to that domain");
+      }
+    }
+  });
+
+  test("returns an empty array for the empty-string domain (no provider guide is domain-less)", () => {
+
+    // Boundary: the empty string is not the registrable domain of any provider guide URL, so the filter matches nothing.
+    assert.deepEqual(getProvidersForDomain(""), [], "empty domain -> empty array");
   });
 });
 

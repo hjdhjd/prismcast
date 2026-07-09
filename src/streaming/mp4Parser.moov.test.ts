@@ -196,4 +196,36 @@ describe("parseMoovTrackInfo", () => {
 
     assert.equal(result.size, 0, "timescale 0 rejected");
   });
+
+  test("skips a non-trak sibling box (mvhd) and still extracts the trak that follows it", () => {
+
+    // A real moov leads with an mvhd (movie header) before its trak boxes. The walker must ignore every box whose type is not trak; a regression that recursed into
+    // the mvhd would find no track (or misread its bytes), so a surfaced track proves the sibling was cleanly skipped.
+    const mvhd = makeBox("mvhd", Buffer.alloc(96));
+    const trak = makeTrak(
+      makeTkhd({ trackId: 3, version: 0 }),
+      makeMdia(makeMdhd({ timescale: 1_000, version: 0 }), makeHdlr("vide"))
+    );
+    const moov = makeBox("moov", Buffer.concat([ mvhd, trak ]));
+    const result = parseMoovTrackInfo(moov);
+
+    assert.equal(result.size, 1, "the trak after the mvhd sibling was parsed");
+    assert.equal(result.get(3)?.handlerType, "vide");
+  });
+
+  test("omits a track whose hdlr box is truncated below its 20-byte minimum rather than recording a garbage handler_type", () => {
+
+    // The hdlr handler_type sits at bytes 16-19, so a box shorter than 20 bytes cannot supply it. The guard must leave handlerType unset so the track is omitted;
+    // without it, an out-of-range read would yield an empty or partial string that still satisfies the non-null combine check and record a bogus track. The tkhd and
+    // mdhd are well-formed, so the omission is attributable solely to the truncated hdlr.
+    const truncatedHdlr = makeBox("hdlr", Buffer.alloc(8));
+    const trak = makeTrak(
+      makeTkhd({ trackId: 9, version: 0 }),
+      makeMdia(makeMdhd({ timescale: 1_000, version: 0 }), truncatedHdlr)
+    );
+    const moov = makeBox("moov", trak);
+    const result = parseMoovTrackInfo(moov);
+
+    assert.equal(result.size, 0, "a track with a truncated hdlr is omitted, not recorded with a garbage handler");
+  });
 });

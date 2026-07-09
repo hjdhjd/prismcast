@@ -7,13 +7,19 @@
  * strategies (comcastPolymer, hulu, directv). The bookkeeping is fully pure - it only uses the Puppeteer Page as a map key (and, for the replace helper, calls
  * page.removeScriptToEvaluateOnNewDocument) - so both are unit-testable with a plain object stub standing in for the Page reference.
  *
- * The other exports in shared.ts (scrollAndClick, locate/click helpers) drive Puppeteer through page.mouse and page.evaluate and are deferred to the e2e tier.
- * normalizeChannelName, resolveMatchSelector, and logAvailableChannels are exercised through their consuming providers and the channel-selection coordinator tests.
+ * normalizeChannelName, resolveMatchSelector, and logAvailableChannels are pure functions the tuning strategies and the channel-selection coordinator rely on for
+ * name matching, selector resolution, and the "channels you must configure manually" diagnostic; they are pinned directly below. The remaining exports
+ * (scrollAndClick and the locate/click helpers) drive Puppeteer through page.mouse and page.evaluate and are deferred to the e2e tier.
  */
 import type { NewDocumentScriptEvaluation, Page } from "puppeteer-core";
-import { describe, test } from "node:test";
-import { installOncePerPage, installOrReplaceOnNewDocument } from "./shared.ts";
+import { afterEach, beforeEach, describe, test } from "node:test";
+import { installOncePerPage, installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName, resolveMatchSelector } from "./shared.ts";
+import { CHANNELS } from "../../channels/index.ts";
+import type { ChannelSelectionProfile } from "../../types/index.ts";
+import type { LogEntry } from "../../utils/logEmitter.ts";
 import assert from "node:assert/strict";
+import { makeProfile } from "../../config/profiles.helpers.ts";
+import { subscribeToLogs } from "../../utils/logEmitter.ts";
 
 /* makePage returns a minimal object that stands in for a Puppeteer Page. installOncePerPage only uses the reference as a WeakMap key and never reads any property,
  * so an empty object cast through unknown is a faithful stub. Each call produces a distinct identity, which is exactly what the per-page isolation tests need.
@@ -218,5 +224,155 @@ describe("installOrReplaceOnNewDocument", () => {
     await assert.doesNotReject(installOrReplaceOnNewDocument(page, "k", install), "a removal failure does not abort the fresh install");
 
     assert.deepEqual(ids, [ "script-0", "script-1" ], "the fresh script installed despite the prior removal failing");
+  });
+});
+
+describe("normalizeChannelName", () => {
+
+  test("lowercases and trims surrounding whitespace", () => {
+
+    assert.equal(normalizeChannelName("  ESPN  "), "espn");
+  });
+
+  test("collapses internal whitespace runs - spaces, tabs, and non-breaking spaces - into a single space", () => {
+
+    // Guide data-testid values arrive with double spaces, tabs, or U+00A0 non-breaking spaces that would defeat an exact-string match. The normalizer folds every
+    // \s-matched run (which includes \t and U+00A0) to one ASCII space so a padded or non-breaking-spaced name matches its plain-spaced canonical form.
+    assert.equal(normalizeChannelName("Cartoon   Network"), "cartoon network");
+    assert.equal(normalizeChannelName("Cartoon\tNetwork"), "cartoon network");
+    assert.equal(normalizeChannelName("Cartoon\u00A0Network"), "cartoon network");
+  });
+
+  test("is idempotent - normalizing an already-normalized name returns it unchanged", () => {
+
+    // Callers on both sides of a match (the predefined channelSelector and the discovered name) normalize independently, so the function must be a fixed point:
+    // running it twice yields the same string it produced once, or matching would depend on how many times each side happened to be normalized.
+    const once = normalizeChannelName("  A&E  (East) ");
+
+    assert.equal(normalizeChannelName(once), once);
+  });
+
+  test("returns an empty string for whitespace-only input", () => {
+
+    assert.equal(normalizeChannelName("   \t   "), "");
+  });
+});
+
+describe("resolveMatchSelector", () => {
+
+  test("interpolates every {channel} placeholder in the matchSelector template with the channelSelector", () => {
+
+    // A template may reference {channel} more than once (e.g. a compound attribute selector matching both a data attribute and an alt text). replaceAll must
+    // substitute all occurrences, not just the first, or the second selector clause would search for the literal placeholder and never match.
+    const profile = makeProfile({ channelSelection: { matchSelector: "[data-ch=\"{channel}\"], img[alt*=\"{channel}\"]", strategy: "none" },
+      channelSelector: "ESPN" }) as ChannelSelectionProfile;
+
+    assert.equal(resolveMatchSelector(profile), "[data-ch=\"ESPN\"], img[alt*=\"ESPN\"]");
+  });
+
+  test("falls back to case-insensitive image-src slug matching when no matchSelector template is configured", () => {
+
+    // Profiles that predate matchSelector leave it unset; the resolver then defaults to the img[src*="<selector>" i] form so the thumbnailRow and tileClick
+    // strategies still locate the channel logo by URL slug. The trailing " i" flag keeps the match case-insensitive against mixed-case CDN paths.
+    const profile = makeProfile({ channelSelection: { strategy: "none" }, channelSelector: "espn" }) as ChannelSelectionProfile;
+
+    assert.equal(resolveMatchSelector(profile), "img[src*=\"espn\" i]");
+  });
+});
+
+describe("logAvailableChannels", () => {
+
+  // logAvailableChannels calls the module-singleton LOG, whose formatted output is broadcast to the SSE emitter that subscribeToLogs taps. Asserting on the
+  // formatted message pins the operator-visible invariant (which channels are reported, and the covered/uncovered count) rather than a pre-format implementation
+  // detail. The subscription is installed per test and reset so one test's output cannot leak into another's assertions.
+  let captured: LogEntry[];
+
+  let unsubscribe: () => void;
+
+  beforeEach(() => {
+
+    captured = [];
+    unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+  });
+
+  afterEach(() => {
+
+    unsubscribe();
+  });
+
+  test("logs every available channel unfiltered when no preset suffix is supplied", () => {
+
+    // Small channel sets (Fox, HBO) pass no presetSuffix, so the full discovered list is actionable and reported verbatim with a plain count.
+    logAvailableChannels({ availableChannels: [ "Alpha Channel", "Beta Channel" ], channelName: "Gamma", guideUrl: "https://guide.example",
+      providerName: "Test Provider" });
+
+    const warning = captured.find((line) => (line.level === "warn") && line.message.includes("Test Provider"));
+
+    assert.ok(warning, "a warning is emitted when channels are available");
+    assert.match(warning.message, /Alpha Channel/, "the unfiltered list includes the first channel");
+    assert.match(warning.message, /Beta Channel/, "the unfiltered list includes the second channel");
+    assert.match(warning.message, /\(2\)/, "the count label reports the total number of channels");
+    assert.match(warning.message, /https:\/\/guide\.example/, "the guide URL is included so users know what to set as the channel URL");
+  });
+
+  test("excludes channels already covered by a preset definition when a preset suffix is supplied", () => {
+
+    // The covered set is driven from the CHANNELS single source of truth: any discovered channel whose name matches a preset channelSelector for this suffix is
+    // "covered" and filtered out of the diagnostic, so users see only channels that genuinely need manual configuration. We pick a real preset selector as the
+    // covered case and pair it with a fabricated name no preset matches; a regression in the coverage filter changes the reported count.
+    const suffix = "-yttv";
+    const knownSelectors = Object.entries(CHANNELS).filter(([key]) => key.endsWith(suffix)).map(([ , channel ]) => channel.channelSelector)
+      .filter((selector): selector is string => (typeof selector === "string") && (selector.length > 0));
+
+    assert.ok(knownSelectors.length > 0, "the CHANNELS single source of truth still defines preset channels for the " + suffix + " suffix");
+
+    const covered = knownSelectors[0] ?? "";
+
+    logAvailableChannels({ availableChannels: [ covered, "Nonexistent Diagnostic Channel" ], channelName: "Whatever", guideUrl: "https://guide.example",
+      presetSuffix: suffix, providerName: "YouTube TV" });
+
+    const warning = captured.find((line) => (line.level === "warn") && line.message.includes("YouTube TV"));
+
+    assert.ok(warning, "a warning is emitted because at least one channel is uncovered");
+    assert.match(warning.message, /Nonexistent Diagnostic Channel/, "the uncovered fabricated channel is reported");
+    assert.match(warning.message, /uncovered \(1 of 2\)/, "the count label reports one uncovered channel of two available");
+  });
+
+  test("treats additionalKnownNames as covered so they are excluded from the diagnostic", () => {
+
+    // YouTube TV passes CHANNEL_ALTERNATES values via additionalKnownNames; a discovered channel whose name matches one of those must be filtered out even though
+    // it is not itself a preset channelSelector for the suffix.
+    const extra = "Some Alternate Name";
+
+    logAvailableChannels({ additionalKnownNames: [extra], availableChannels: [ extra, "Truly Unlisted Channel" ], channelName: "Whatever",
+      guideUrl: "https://guide.example", presetSuffix: "-yttv", providerName: "Alt Provider" });
+
+    const warning = captured.find((line) => (line.level === "warn") && line.message.includes("Alt Provider"));
+
+    assert.ok(warning, "a warning is emitted for the remaining uncovered channel");
+    assert.doesNotMatch(warning.message, /Some Alternate Name/, "the additionalKnownNames entry is excluded from the reported list");
+    assert.match(warning.message, /Truly Unlisted Channel/, "the genuinely-uncovered channel is still reported");
+  });
+
+  test("emits nothing when there are no available channels to report", () => {
+
+    logAvailableChannels({ availableChannels: [], channelName: "Whatever", guideUrl: "https://guide.example", providerName: "Silent Provider" });
+
+    assert.equal(captured.filter((line) => line.message.includes("Silent Provider")).length, 0, "no warning is emitted for an empty channel list");
+  });
+
+  test("emits nothing when every available channel is already covered by a preset", () => {
+
+    // When the coverage filter removes every channel, there is nothing actionable to tell the user, so the diagnostic stays silent rather than logging an empty list.
+    const suffix = "-yttv";
+    const knownSelectors = Object.entries(CHANNELS).filter(([key]) => key.endsWith(suffix)).map(([ , channel ]) => channel.channelSelector)
+      .filter((selector): selector is string => (typeof selector === "string") && (selector.length > 0));
+
+    assert.ok(knownSelectors.length > 0, "the CHANNELS single source of truth still defines preset channels for the " + suffix + " suffix");
+
+    logAvailableChannels({ availableChannels: [knownSelectors[0] ?? ""], channelName: "Whatever", guideUrl: "https://guide.example",
+      presetSuffix: suffix, providerName: "Covered Provider" });
+
+    assert.equal(captured.filter((line) => line.message.includes("Covered Provider")).length, 0, "a fully-covered channel list produces no diagnostic");
   });
 });

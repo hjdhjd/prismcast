@@ -8,8 +8,8 @@
  * helper, and the resulting packet is verified end-to-end through buildPacket + parsePacket round-trip. Where literal byte offsets matter (header field
  * positions, CRC placement), we assert them directly so a refactor that silently changes the wire format would fail loudly.
  */
-import { HDHR_WILDCARD, PACKET_DISCOVER_REPLY, PACKET_GET_REPLY, PACKET_UPGRADE_REQUEST, TLV_BASE_URL, TLV_DEVICE_ID, TLV_DEVICE_TYPE, TLV_ERROR,
-  TLV_GETSET_NAME, TLV_GETSET_VALUE, TLV_TUNER_COUNT, buildDiscoverReply, buildErrorReply, buildGetReply, parsePacket } from "./protocol.ts";
+import { HDHR_WILDCARD, PACKET_DISCOVER_REPLY, PACKET_DISCOVER_REQUEST, PACKET_GET_REPLY, PACKET_GET_REQUEST, PACKET_UPGRADE_REQUEST, TLV_BASE_URL, TLV_DEVICE_ID,
+  TLV_DEVICE_TYPE, TLV_ERROR, TLV_GETSET_NAME, TLV_GETSET_VALUE, TLV_TUNER_COUNT, buildDiscoverReply, buildErrorReply, buildGetReply, parsePacket } from "./protocol.ts";
 import { describe, test } from "node:test";
 import { makeDiscoverRequest, makeGetRequest, sealPacket } from "./protocol.helpers.ts";
 import assert from "node:assert/strict";
@@ -206,6 +206,85 @@ describe("Set and Upgrade requests are classified correctly so transport layer c
 
     assert.equal(parsed?.type, "unsupported");
     assert.deepEqual(parsed, { packetType: 0x00FF, type: "unsupported" });
+  });
+});
+
+describe("parsePacket TLV-level malformation and boundary handling", () => {
+
+  test("returns null when a TLV length field overruns the payload despite a valid frame and CRC", () => {
+
+    // A single TLV declares a 10-byte value but only two value bytes follow. sealPacket computes a correct outer frame length and a matching CRC, so the packet
+    // clears the header-size and CRC gates; only the TLV walk inside decodeTlvs detects the overrun, and it must reject the entire packet rather than parse it
+    // partially.
+    const payload = Buffer.from([ TLV_GETSET_NAME, 10, 0x41, 0x42 ]);
+    const packet = sealPacket(PACKET_GET_REQUEST, payload);
+
+    // Prove the outer frame and CRC are internally consistent so the null result is attributable solely to the TLV overrun, not to a frame-size or CRC mismatch.
+    assert.equal(packet.readUInt16BE(2), payload.length, "declared payload length matches the datagram size");
+    assert.equal(crc32(packet.subarray(0, packet.length - 4)), packet.readUInt32LE(packet.length - 4), "CRC is valid over header and payload");
+    assert.equal(parsePacket(packet), null);
+  });
+
+  test("returns null for a GETSET_REQ carrying a value TLV but no name TLV", () => {
+
+    // A value-only payload (tag 0x04) with no accompanying name TLV. Without a name there is nothing to dispatch, so the parser must reject rather than invent a
+    // nameless get keyed on the empty string.
+    const valueBytes = Buffer.from("auto:5\0", "utf8");
+    const valueTlv = Buffer.concat([ Buffer.from([ TLV_GETSET_VALUE, valueBytes.length ]), valueBytes ]);
+
+    assert.equal(parsePacket(sealPacket(PACKET_GET_REQUEST, valueTlv)), null);
+  });
+
+  test("returns null for a GETSET_REQ with an empty payload (no name TLV at all)", () => {
+
+    // An empty payload decodes to an empty TLV list, so no name TLV is present. The parser must reject the same way it rejects a value-only payload.
+    assert.equal(parsePacket(sealPacket(PACKET_GET_REQUEST, Buffer.alloc(0))), null);
+  });
+
+  test("a string TLV whose UTF-8+NUL length is >= 128 bytes round-trips through the two-byte extended length form", () => {
+
+    // A 200-character ASCII string plus its trailing NUL is 201 value bytes, which exceeds the 127-byte single-byte length ceiling and forces encodeStringTlv
+    // into the two-byte extended header. buildGetReply is the public entry that exercises encodeStringTlv; we then feed the emitted value TLV bytes back through
+    // parsePacket's decodeTlvs (by retagging the value TLV as a name TLV) to prove the extended header round-trips to the identical string.
+    const longString = "x".repeat(200);
+    const reply = buildGetReply("", longString);
+    const payloadLength = reply.readUInt16BE(2);
+    const payload = reply.subarray(4, 4 + payloadLength);
+
+    // The empty-name TLV occupies three bytes ([ tag, length=1, NUL ]); the long value TLV follows it. Copy the value TLV out so we can mutate its tag.
+    const valueTlv = Buffer.from(payload.subarray(3));
+
+    // encodeStringTlv must have emitted the extended header: the length byte carries the high bit and the 15-bit little-endian length reconstructs to 201.
+    assert.equal(valueTlv.readUInt8(0), TLV_GETSET_VALUE, "value TLV tag");
+    assert.notEqual(valueTlv.readUInt8(1) & 0x80, 0, "extended-length high bit is set on the first length byte");
+
+    const reconstructedLength = (valueTlv.readUInt8(1) & 0x7F) | (valueTlv.readUInt8(2) << 7);
+
+    assert.equal(reconstructedLength, longString.length + 1, "15-bit length equals the UTF-8 bytes plus the trailing NUL");
+
+    // Retag the extended-form value TLV as a name TLV and feed it through parsePacket so decodeTlvs reads the extended length and readStringTlv strips the NUL.
+    valueTlv.writeUInt8(TLV_GETSET_NAME, 0);
+
+    const parsed = parsePacket(sealPacket(PACKET_GET_REQUEST, valueTlv));
+
+    assert.deepEqual(parsed, { name: longString, type: "get" });
+  });
+
+  test("a Discover device-type TLV whose value is not exactly 4 bytes falls back to wildcard rather than reading a garbage integer", () => {
+
+    // The device-type TLV carries six value bytes instead of the required four. readU32Tlv must reject the wrong-width value and yield null, which parsePacket
+    // maps to the wildcard default. A regression that dropped the exact-length guard would read the first four bytes (0xDEADBEEF) as a bogus device-type filter.
+    // The device-id TLV is well-formed so the assertion proves only the malformed field falls back while the correct one still decodes.
+    const deviceTypeTlv = Buffer.from([ TLV_DEVICE_TYPE, 6, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00 ]);
+    const deviceIdTlv = Buffer.from([ TLV_DEVICE_ID, 4, 0x12, 0x34, 0x56, 0x78 ]);
+    const packet = sealPacket(PACKET_DISCOVER_REQUEST, Buffer.concat([ deviceTypeTlv, deviceIdTlv ]));
+
+    assert.deepEqual(parsePacket(packet), {
+
+      requestedDeviceId: 0x12345678,
+      requestedDeviceType: HDHR_WILDCARD,
+      type: "discover"
+    });
   });
 });
 

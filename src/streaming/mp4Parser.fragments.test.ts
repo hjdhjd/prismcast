@@ -258,3 +258,209 @@ describe("offsetMoofTimestamps", () => {
     assert.equal(result.get(2)?.duration, 600n, "video: 3 samples * 200 = 600");
   });
 });
+
+/* u32 returns a 4-byte big-endian buffer, the wire form of every fixed-width MP4 field the richer builders below emit. Keeping it a named helper makes the byte
+ * layout of each synthetic box explicit at the call site.
+ */
+function u32(value: number): Buffer {
+
+  const buf = Buffer.alloc(4);
+
+  buf.writeUInt32BE(value >>> 0);
+
+  return buf;
+}
+
+/* makeTfhdRaw builds a tfhd that can carry the optional fields preceding default_sample_flags - base_data_offset (0x1), sample_description_index (0x2), and
+ * default_sample_size (0x10) - which the minimal makeTfhd above cannot. The fields are emitted in ISO 14496-12 order so tests can verify parseTfhd advances its
+ * optional-field cursor correctly before reading default_sample_flags / default_sample_duration.
+ */
+function makeTfhdRaw(options: { baseDataOffset?: bigint; defaultSampleDuration?: number; defaultSampleFlags?: number; defaultSampleSize?: number;
+  sampleDescriptionIndex?: number; trackId: number; }): Buffer {
+
+  let flags = 0;
+  const fields: Buffer[] = [];
+
+  if(options.baseDataOffset !== undefined) {
+
+    flags |= 0x000001;
+
+    const wide = Buffer.alloc(8);
+
+    wide.writeBigUInt64BE(options.baseDataOffset);
+    fields.push(wide);
+  }
+
+  if(options.sampleDescriptionIndex !== undefined) {
+
+    flags |= 0x000002;
+    fields.push(u32(options.sampleDescriptionIndex));
+  }
+
+  if(options.defaultSampleDuration !== undefined) {
+
+    flags |= 0x000008;
+    fields.push(u32(options.defaultSampleDuration));
+  }
+
+  if(options.defaultSampleSize !== undefined) {
+
+    flags |= 0x000010;
+    fields.push(u32(options.defaultSampleSize));
+  }
+
+  if(options.defaultSampleFlags !== undefined) {
+
+    flags |= 0x000020;
+    fields.push(u32(options.defaultSampleFlags));
+  }
+
+  return makeBox("tfhd", Buffer.concat([ u32(flags), u32(options.trackId), ...fields ]));
+}
+
+/* makeTrunWithSamples builds a trun carrying per-sample entries, which the minimal makeTrun above cannot. flags is the trun flag word (e.g. 0x100 | 0x200 for
+ * per-sample duration and size); samples is one array of already-ordered field values per sample, matching the set flag bits. sample_count is samples.length.
+ */
+function makeTrunWithSamples(options: { flags: number; samples: number[][] }): Buffer {
+
+  const parts: Buffer[] = [ u32(options.flags), u32(options.samples.length) ];
+
+  for(const sample of options.samples) {
+
+    for(const field of sample) {
+
+      parts.push(u32(field));
+    }
+  }
+
+  return makeBox("trun", Buffer.concat(parts));
+}
+
+/* makeTfdtV1 builds a version-1 tfdt whose baseMediaDecodeTime is a 64-bit value, exercising the high/low 32-bit read-and-write-back path that the version-0
+ * makeTfdt above does not.
+ */
+function makeTfdtV1(baseMediaDecodeTime: bigint): Buffer {
+
+  const payload = Buffer.alloc(12);
+
+  // Version 1 in the high byte of the version+flags word; the 64-bit decode time follows.
+  payload.writeUInt32BE(0x01000000, 0);
+  payload.writeBigUInt64BE(baseMediaDecodeTime, 4);
+
+  return makeBox("tfdt", payload);
+}
+
+/* makeMfhd builds a minimal mfhd (movie fragment header) box. A real moof carries an mfhd sibling ahead of its traf boxes; tests use it to prove the moof walker
+ * skips non-traf siblings without perturbing the per-track result.
+ */
+function makeMfhd(): Buffer {
+
+  return makeBox("mfhd", Buffer.concat([ u32(0), u32(1) ]));
+}
+
+describe("detectMoofKeyframe - flag-source resolution and container robustness", () => {
+
+  test("reads the first sample's per-sample flags (0x400) after skipping the duration and size fields", () => {
+
+    // When a trun sets per-sample flags (0x400) but not first_sample_flags (0x004), the first sample's flags live in the first entry, after the per-sample duration
+    // (0x100) and size (0x200) fields. We seed the duration and size slots with a non-keyframe pattern (sample_depends_on == 1) and the real flags slot with a
+    // keyframe pattern (sample_depends_on == 2); only reading the correct cursor yields a keyframe verdict, so a cursor slip would flip the result to false.
+    const trun = makeTrunWithSamples({ flags: 0x100 | 0x200 | 0x400, samples: [[ 0x01000000, 0x01000000, 0x02000000 ]] });
+    const moof = makeMoof(makeTraf(makeTfhd({ trackId: 1 }), trun));
+
+    assert.equal(detectMoofKeyframe(moof), true, "per-sample flags of the first entry were read at the correct offset");
+  });
+
+  test("walks the tfhd optional-field cursor to read default_sample_flags past base_data_offset, sample_description_index, and default_sample_size", () => {
+
+    // tfhd optional fields appear in flag order: base_data_offset (0x1, 8 bytes), sample_description_index (0x2, 4 bytes), default_sample_size (0x10, 4 bytes),
+    // then default_sample_flags (0x20, 4 bytes). We poison every preceding field with a non-keyframe pattern (0x01000000) and set default_sample_flags to a
+    // keyframe pattern (0x02000000); the trun carries no flags, so the verdict comes solely from tfhd's default. A miscomputed cursor reads a poisoned field and
+    // returns false, so a true result pins the cursor math.
+    const tfhd = makeTfhdRaw({ baseDataOffset: 0x0100000001000000n, defaultSampleFlags: 0x02000000, defaultSampleSize: 0x01000000, sampleDescriptionIndex: 0x01000000,
+      trackId: 1 });
+    const moof = makeMoof(makeTraf(tfhd, makeTrun({ sampleCount: 1 })));
+
+    assert.equal(detectMoofKeyframe(moof), true, "default_sample_flags read at the correct optional-field offset");
+  });
+
+  test("returns null without throwing for a truncated trun smaller than its 16-byte minimum", () => {
+
+    // A trun box of only 12 bytes (header plus a version/flags word, no sample_count) is below the 16-byte floor. extractFirstSampleFlags must return null rather
+    // than read past the box, so detectMoofKeyframe reports indeterminate. The suite completing proves no out-of-bounds read or hang on truncated fragment input.
+    const truncatedTrun = makeBox("trun", u32(0));
+    const moof = makeMoof(makeTraf(makeTfhd({ trackId: 1 }), truncatedTrun));
+
+    assert.equal(detectMoofKeyframe(moof), null);
+  });
+
+  test("skips a non-traf sibling box (mfhd) in the moof without disturbing the traf verdict", () => {
+
+    // A real moof leads with an mfhd before its traf boxes. The walker must ignore any box whose type is not traf, so the keyframe verdict is determined solely by
+    // the traf. A regression that mis-handled siblings would either throw on the mfhd or read its bytes as a traf.
+    const moof = makeMoof(makeMfhd(), makeTraf(makeTfhd({ trackId: 1 }), makeTrun({ firstSampleFlags: 2 << 24, sampleCount: 1 })));
+
+    assert.equal(detectMoofKeyframe(moof), true, "the mfhd sibling was skipped and the traf drove the verdict");
+  });
+});
+
+describe("offsetMoofTimestamps - per-sample durations, 64-bit tfdt, and truncation", () => {
+
+  test("sums per-sample durations when the trun sets the sample-duration flag (0x100)", () => {
+
+    // With per-sample durations present (0x100) the total is the sum of each entry's duration field, not defaultSampleDuration * sampleCount. The entries also carry
+    // a size field (0x200), so entrySize is 8 and the duration is the first 4 bytes of each 8-byte entry. Durations 10 + 20 + 30 must total 60.
+    const tfhd = makeTfhd({ defaultSampleDuration: 999, trackId: 1 });
+    const trun = makeTrunWithSamples({ flags: 0x100 | 0x200, samples: [ [ 10, 0 ], [ 20, 0 ], [ 30, 0 ] ] });
+    const moof = makeMoof(makeTraf(tfhd, makeTfdt(0), trun));
+
+    const result = offsetMoofTimestamps(moof, new Map());
+
+    assert.equal(result.get(1)?.duration, 60n, "per-sample durations summed (10 + 20 + 30), ignoring the 999 default");
+  });
+
+  test("reads a version-1 (64-bit) tfdt across the 32-bit boundary and round-trips an applied offset", () => {
+
+    // A version-1 tfdt stores baseMediaDecodeTime as two 32-bit halves. We choose a value just past 2^32 (high = 1, low = 5) so a read that ignored the high word
+    // would report 5 instead of 4294967301. Applying a +100 offset must write both halves back so a re-read observes 4294967401 - proving the boundary-crossing
+    // read and write-back are correct.
+    const original = (1n << 32n) | 5n;
+    const tfhd = makeTfhd({ trackId: 7 });
+    const moof = makeMoof(makeTraf(tfhd, makeTfdtV1(original), makeTrun({ sampleCount: 0 })));
+
+    assert.equal(offsetMoofTimestamps(moof, new Map()).get(7)?.originalTfdt, original, "64-bit tfdt read across the 32-bit boundary");
+
+    const offsets = new Map<number, bigint>([[ 7, 100n ]]);
+
+    offsetMoofTimestamps(moof, offsets);
+
+    assert.equal(offsetMoofTimestamps(moof, new Map()).get(7)?.originalTfdt, original + 100n, "the offset was written back into both 32-bit halves");
+  });
+
+  test("leaves originalTfdt at zero without throwing when a version-1 tfdt is truncated below 20 bytes", () => {
+
+    // A version-1 tfdt needs 20 bytes (8 header + 4 version/flags + 8 decode time). A 16-byte version-1 tfdt is truncated; the reader must bail rather than read the
+    // missing low word, leaving originalTfdt at its 0n default. The track still reports because its tfhd parsed cleanly.
+    const truncatedV1Tfdt = makeBox("tfdt", Buffer.concat([ u32(0x01000000), u32(0) ]));
+    const moof = makeMoof(makeTraf(makeTfhd({ trackId: 1 }), truncatedV1Tfdt, makeTrun({ sampleCount: 0 })));
+
+    const result = offsetMoofTimestamps(moof, new Map());
+
+    assert.equal(result.get(1)?.originalTfdt, 0n, "truncated 64-bit tfdt yields the zero default, not a partial read");
+  });
+
+  test("drops a track whose tfhd claims default_sample_duration (0x8) but is truncated with no room for it", () => {
+
+    // parseTfhd returns null when a declared optional field overruns the box. A tfhd whose flags claim default_sample_duration (0x8) but whose box ends right after
+    // track_ID cannot supply the 4-byte field, so parseTfhd yields null and offsetMoofTimestamps omits the track entirely - a control track with a well-formed tfhd
+    // confirms the omission is caused by the overrun, not by the surrounding structure.
+    const truncatedTfhd = makeBox("tfhd", Buffer.concat([ u32(0x000008), u32(1) ]));
+    const brokenTraf = makeTraf(truncatedTfhd, makeTfdt(0), makeTrun({ sampleCount: 0 }));
+    const goodTraf = makeTraf(makeTfhd({ trackId: 2 }), makeTfdt(0), makeTrun({ sampleCount: 0 }));
+
+    const result = offsetMoofTimestamps(makeMoof(brokenTraf, goodTraf), new Map());
+
+    assert.equal(result.has(1), false, "the track with the overrunning tfhd is dropped");
+    assert.equal(result.has(2), true, "the well-formed track is still reported");
+  });
+});

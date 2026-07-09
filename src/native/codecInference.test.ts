@@ -509,3 +509,267 @@ describe("inferMediaCodec (async orchestrator)", () => {
     assert.equal(result.codec, "H264");
   });
 });
+
+/* Fills a 188-byte TS packet whose adaptation_field_control is 11 (adaptation field followed by payload) - the shape a live TS packet carrying a PCR uses. The
+ * adaptation field is left as 0xFF stuffing of the requested length; only its length byte is meaningful to the parser, which must skip past it to reach the payload.
+ */
+function buildTsPacketWithAdaptation(pid: number, sectionPayload: Buffer, adaptationLength: number): Buffer {
+
+  const packet = Buffer.alloc(188, 0xFF);
+
+  // Byte 0: sync_byte (0x47).
+  packet[0] = 0x47;
+
+  // Byte 1: payload_unit_start_indicator(1) plus the high 5 bits of the PID.
+  packet[1] = 0x40 | ((pid >> 8) & 0x1F);
+
+  // Byte 2: the low 8 bits of the PID.
+  packet[2] = pid & 0xFF;
+
+  // Byte 3: scrambling(00) | adaptation_field_control(11) | continuity_counter(0000). 0x30 selects "adaptation field followed by payload".
+  packet[3] = 0x30;
+
+  // Byte 4: adaptation_field_length, the count of adaptation bytes that follow. The stuffing itself stays 0xFF; the parser only consumes the length to skip past it.
+  packet[4] = adaptationLength;
+
+  // The payload begins after the 4-byte header, the length byte, and the adaptation field. Its first byte is the pointer_field (0 = the section starts immediately).
+  const payloadStart = 5 + adaptationLength;
+
+  packet[payloadStart] = 0x00;
+  sectionPayload.copy(packet, payloadStart + 1);
+
+  return packet;
+}
+
+/* Builds a PAT section that declares several program records in order. Unlike buildPatSection, this variant emits multiple 4-byte records so tests can exercise the
+ * walk that skips a program_number == 0 (network PID) record and continues to the next. The trailing CRC32 is omitted (zeroed) exactly as the single-program helper.
+ */
+function buildPatSectionMulti(programs: readonly { pid: number; programNumber: number }[]): Buffer {
+
+  // section_length covers everything after the section_length field: 5 fixed bytes (TS id + version + section_no + last_section_no) + 4 per program + 4-byte CRC.
+  const bodyLength = 5 + (programs.length * 4) + 4;
+  const totalSize = 3 + bodyLength;
+  const section = Buffer.alloc(totalSize, 0x00);
+
+  // Byte 0: table_id (0x00 = PAT).
+  section[0] = 0x00;
+
+  // Bytes 1-2: section_syntax_indicator(1) | reserved(011) | section_length(12).
+  section[1] = 0xB0 | ((bodyLength >> 8) & 0x0F);
+  section[2] = bodyLength & 0xFF;
+
+  // Bytes 3-4: transport_stream_id.
+  section[3] = 0x00;
+  section[4] = 0x01;
+
+  // Byte 5: reserved(11) | version_number(00000) | current_next_indicator(1).
+  section[5] = 0xC1;
+
+  // Byte 6: section_number.
+  section[6] = 0x00;
+
+  // Byte 7: last_section_number.
+  section[7] = 0x00;
+
+  // Program records start at byte 8. A program_number of 0 declares the network PID rather than a PMT PID; the parser must skip such records.
+  let cursor = 8;
+
+  for(const program of programs) {
+
+    section[cursor] = (program.programNumber >> 8) & 0xFF;
+    section[cursor + 1] = program.programNumber & 0xFF;
+    section[cursor + 2] = 0xE0 | ((program.pid >> 8) & 0x1F);
+    section[cursor + 3] = program.pid & 0xFF;
+    cursor += 4;
+  }
+
+  return section;
+}
+
+/* Composes a TS fixture whose PAT packet carries a 7-byte adaptation field (the length a PCR-only adaptation uses) ahead of its payload, then a normal PMT packet.
+ * Correct parsing must consume adaptation_field_length to land on the real PSI section.
+ */
+function buildTsFixtureAdaptationPat(streams: readonly { pid: number; streamType: number }[]): Buffer {
+
+  const programNumber = 1;
+  const pmtPid = 0x100;
+  const patPacket = buildTsPacketWithAdaptation(0, buildPatSection(programNumber, pmtPid), 7);
+  const pmtPacket = buildTsPacket(pmtPid, buildPmtSection(programNumber, streams));
+
+  return Buffer.concat([ patPacket, pmtPacket ]);
+}
+
+describe("inferCodecFromTsBuffer (adaptation_field_control handling)", () => {
+
+  test("returns null when the PAT packet declares adaptation_field_control=2 (adaptation only, no payload)", () => {
+
+    // Sanity: the unmutated fixture describes an H264 stream, so any difference below is caused solely by the adaptation_field_control mutation.
+    assert.equal(inferCodecFromTsBuffer(buildTsFixture([{ pid: 0x101, streamType: 0x1B }])), "H264");
+
+    const buffer = buildTsFixture([{ pid: 0x101, streamType: 0x1B }]);
+
+    // Byte 3 of the first packet is adaptation_field_control. 0x20 sets it to 10 (adaptation only), which carries no payload, so payloadOffsetForPacket returns null
+    // and the PAT is unreadable. A parser that treated adaptation-only as payload-bearing would still read the section and wrongly return H264.
+    buffer[3] = 0x20;
+
+    assert.equal(inferCodecFromTsBuffer(buffer), null);
+  });
+
+  test("skips the adaptation field using adaptation_field_length when adaptation_field_control=3", () => {
+
+    // The PAT packet carries a 7-byte adaptation field ahead of its payload (the live PCR shape). Correct parsing consumes adaptation_field_length to reach the PSI
+    // section; a parser that ignored the length would misread the section start and return null instead of H264.
+    const buffer = buildTsFixtureAdaptationPat([{ pid: 0x101, streamType: 0x1B }]);
+
+    assert.equal(inferCodecFromTsBuffer(buffer), "H264");
+  });
+});
+
+describe("inferCodecFromTsBuffer (PAT program walk)", () => {
+
+  test("skips a PAT record whose program_number is 0 (network PID) and continues to the next record", () => {
+
+    // The first program record declares the network PID (program_number 0); the second declares the real PMT PID. The walk must skip the first and resolve the
+    // second, where the H264 PMT lives. A parser that returned the first record would resolve the network PID, find no matching PMT packet, and return null.
+    const networkPid = 0x1F;
+    const pmtPid = 0x100;
+    const patSection = buildPatSectionMulti([
+      { pid: networkPid, programNumber: 0 },
+      { pid: pmtPid, programNumber: 1 }
+    ]);
+    const patPacket = buildTsPacket(0, patSection);
+    const pmtPacket = buildTsPacket(pmtPid, buildPmtSection(1, [{ pid: 0x101, streamType: 0x1B }]));
+    const buffer = Buffer.concat([ patPacket, pmtPacket ]);
+
+    assert.equal(inferCodecFromTsBuffer(buffer), "H264");
+  });
+});
+
+describe("inferCodecFromTsBuffer (malformed PSI handling)", () => {
+
+  test("returns null when the PAT packet has payload_unit_start_indicator unset", () => {
+
+    const buffer = buildTsFixture([{ pid: 0x101, streamType: 0x1B }]);
+
+    // Byte 1 bit 6 (0x40) is PUSI. For the PAT packet (PID 0) clearing PUSI leaves byte 1 at 0x00, marking the packet as carrying section continuation rather than a
+    // section start, so sectionOffsetForPacket cannot locate the PSI section and inference returns null.
+    buffer[1] = 0x00;
+
+    assert.equal(inferCodecFromTsBuffer(buffer), null);
+  });
+
+  test("returns null when the PAT section_length declares more bytes than the buffer holds", () => {
+
+    const patSection = buildPatSection(1, 0x100);
+
+    // Bytes 1-2 hold section_length. Widening it to 0xFFF pushes the section end far past the single-packet buffer; parsePatForPmtPid must reject the section via its
+    // sectionEnd > buffer.length guard rather than read out of bounds.
+    patSection[1] = 0xBF;
+    patSection[2] = 0xFF;
+
+    const buffer = buildTsPacket(0, patSection);
+
+    assert.equal(inferCodecFromTsBuffer(buffer), null);
+  });
+
+  test("returns null when the PAT section carries a table_id other than 0x00", () => {
+
+    const patSection = buildPatSection(1, 0x100);
+
+    // table_id 0x00 identifies a PAT. Any other value means this is not a PAT section, so parsePatForPmtPid must reject it and inference returns null.
+    patSection[0] = 0x42;
+
+    const buffer = buildTsPacket(0, patSection);
+
+    assert.equal(inferCodecFromTsBuffer(buffer), null);
+  });
+
+  test("returns null when the PMT section carries a table_id other than 0x02", () => {
+
+    // A valid PAT points at the PMT PID, but the PMT section's table_id is corrupted away from 0x02, so parsePmtForVideoStreamType must reject it and inference
+    // returns null even though a video stream_type is present in the record.
+    const programNumber = 1;
+    const pmtPid = 0x100;
+    const patPacket = buildTsPacket(0, buildPatSection(programNumber, pmtPid));
+    const pmtSection = buildPmtSection(programNumber, [{ pid: 0x101, streamType: 0x1B }]);
+
+    pmtSection[0] = 0x03;
+
+    const pmtPacket = buildTsPacket(pmtPid, pmtSection);
+    const buffer = Buffer.concat([ patPacket, pmtPacket ]);
+
+    assert.equal(inferCodecFromTsBuffer(buffer), null);
+  });
+});
+
+describe("inferMediaCodec (fallback and audio-only paths)", () => {
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("falls back to arrayBuffer() when the response exposes no readable body stream", async () => {
+
+    // Some runtimes and test doubles expose only arrayBuffer() with a null body. readStreamPrefix must fall back to buffering the whole body and truncating to the
+    // cap, so a codec is still inferred from the TS bytes. The 64 KB filler past the fixture makes the buffered body exceed the 32 KB cap, exercising the truncation
+    // slice; the truncation keeps the leading PAT/PMT so the H264 label still emerges.
+    const ts = buildTsFixture([{ pid: 0x101, streamType: 0x1B }]);
+    const full = Buffer.concat([ ts, Buffer.alloc(64 * 1024, 0xFF) ]);
+    const bodyBytes = new ArrayBuffer(full.length);
+
+    new Uint8Array(bodyBytes).set(full);
+
+    let arrayBufferCalls = 0;
+
+    mock.method(globalThis, "fetch", async (): Promise<Response> => {
+
+      const fake = {
+
+        arrayBuffer: async (): Promise<ArrayBuffer> => {
+
+          arrayBufferCalls++;
+
+          return bodyBytes;
+        },
+        body: null,
+        ok: true,
+        status: 206
+      };
+
+      return fake as unknown as Response;
+    });
+
+    const result = await inferMediaCodec({ baseUrl: "https://cdn.test/path/playlist.m3u8", playlistBody: "#EXTM3U\n#EXTINF:2,\nseg.ts\n" });
+
+    assert.equal(result.codec, "H264");
+    assert.equal(arrayBufferCalls, 1, "the null-body path must read via arrayBuffer()");
+  });
+
+  test("returns codec=null via the parser else-branch for a TS segment whose PMT lists only audio", async () => {
+
+    // Distinct from the no-segment and non-TS short-circuits: here the segment IS fetched and parsed, but its PMT declares only an audio stream_type (0x0F), so
+    // inferCodecFromTsBuffer returns null and the orchestrator reports codec=null through the else-branch. The fetch count proves the segment was actually retrieved.
+    const ts = buildTsFixture([{ pid: 0x100, streamType: 0x0F }]);
+    const segUrl = "https://cdn.test/path/seg.ts";
+
+    let fetchCalls = 0;
+
+    mock.method(globalThis, "fetch", async (url: string | URL): Promise<Response> => {
+
+      fetchCalls++;
+
+      if(url.toString() === segUrl) {
+
+        return new Response(new Uint8Array(ts), { status: 206 });
+      }
+
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await inferMediaCodec({ baseUrl: "https://cdn.test/path/playlist.m3u8", playlistBody: "#EXTM3U\n#EXTINF:2,\nseg.ts\n" });
+
+    assert.equal(result.codec, null);
+    assert.ok(fetchCalls > 0, "the segment must be fetched and parsed, unlike the short-circuit null paths");
+  });
+});

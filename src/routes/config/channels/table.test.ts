@@ -8,12 +8,13 @@
 import { OPTIONAL_COLUMNS, VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState, generateServiceFilterToolbar, generateTagFilterContent,
   generateTagManagerBody } from "./table.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, initializeUserChannels } from "../../../config/userChannels.ts";
 import { loadHealthState, markDomainAuth, markDomainAuthRequired } from "../../../config/health.ts";
 import { mkdtemp, rm } from "node:fs/promises";
+import { CONFIG } from "../../../config/index.ts";
 import assert from "node:assert/strict";
 import { firstOf } from "../../../testing.helpers.ts";
 import { initializeDataDir } from "../../../config/paths.ts";
-import { initializeUserChannels } from "../../../config/userChannels.ts";
 import os from "node:os";
 import path from "node:path";
 
@@ -345,5 +346,125 @@ describe("generateTagManagerBody", () => {
     assert.match(html, /tag-manager/, "contains the manager root class");
     assert.match(html, /tag-manager-input/, "contains the new-tag input id");
     assert.match(html, /data-click-action="create-tag"/, "contains the create-tag action reference");
+  });
+});
+
+describe("getTagCounts (via buildChannelTablePatch tagCounts)", () => {
+
+  /* getTagCounts is not exported, so we exercise it through its sole consumer - buildChannelTablePatch, which surfaces the result as patch.tagCounts. These
+   * counts drive the Quick Actions tag bulk-toggle tri-states, so the invariants under test are: the tags-column visibility gate, the per-tag enabled +
+   * service-available numerator, and the shared enabled + service-available denominator. The predefined channel definitions ship with tags, so the seeded
+   * vocabulary and listing produce non-trivial counts.
+   */
+  let dir: string;
+  let originalVisibleColumns: string[];
+
+  beforeEach(async () => {
+
+    dir = await mkdtemp(path.join(os.tmpdir(), "prismcast-tagcounts-test-"));
+    initializeDataDir(dir);
+    await initializeUserChannels();
+
+    // Snapshot the visible-column preference so per-test mutation of the tags-column gate cannot leak into other suites that share the CONFIG singleton.
+    originalVisibleColumns = CONFIG.channels.visibleColumns;
+  });
+
+  afterEach(async () => {
+
+    CONFIG.channels.visibleColumns = originalVisibleColumns;
+    await rm(dir, { force: true, recursive: true });
+  });
+
+  test("omits tagCounts when the tags column is not visible", () => {
+
+    // The tag bulk-toggle counts only exist when the tags column is shown. With the column hidden the builder must return undefined so the client skips the
+    // tag-toggle refresh entirely rather than rendering counts for controls that are not on the page.
+    CONFIG.channels.visibleColumns = [];
+
+    const patch = buildChannelTablePatch([], []);
+
+    assert.equal(patch.tagCounts, undefined);
+  });
+
+  test("reports every active vocabulary tag, each denominated by the enabled + service-available channel count", () => {
+
+    CONFIG.channels.visibleColumns = ["tags"];
+
+    const patch = buildChannelTablePatch([], []);
+    const tagCounts = patch.tagCounts;
+
+    assert.ok(tagCounts, "tagCounts must be present when the tags column is visible and the vocabulary is non-empty");
+
+    // The keys are exactly the active tag vocabulary - every tag the user can toggle, and no others.
+    const vocabulary = getActiveTagVocabulary();
+
+    assert.ok(vocabulary.length > 0, "precondition: predefined tags seed a non-empty vocabulary");
+    assert.deepEqual(Object.keys(tagCounts).toSorted(), [...vocabulary].toSorted());
+
+    // The per-tag denominator is the number of enabled, service-available channels. buildChannelTableState derives that same figure independently as
+    // counts.enabled, so a regression that changes the denominator (for example, dropping the availableByService filter) breaks this cross-check.
+    const enabledCount = buildChannelTableState().counts.enabled;
+
+    // Iterate the entries rather than index the record by tag: Object.entries yields the concrete value type, so each denominator/count check reads a defined
+    // entry without a per-access undefined narrow. The key-set equality asserted above guarantees these entries are exactly the active vocabulary.
+    for(const [ tag, entry ] of Object.entries(tagCounts)) {
+
+      assert.equal(entry.total, enabledCount, "denominator for " + tag + " equals the enabled channel count");
+      assert.ok(entry.count >= 0, "count for " + tag + " is non-negative");
+      assert.ok(entry.count <= entry.total, "count for " + tag + " does not exceed its denominator");
+    }
+
+    // The predefined channels ship with tags, so at least one tag must have a positive count - a guard against a vacuous all-zero result.
+    assert.ok(Object.values(tagCounts).some((entry) => entry.count > 0), "at least one predefined tag has a positive channel count");
+  });
+
+  test("counts only enabled, service-available channels carrying each tag in their effective tags", () => {
+
+    CONFIG.channels.visibleColumns = ["tags"];
+
+    const patch = buildChannelTablePatch([], []);
+    const tagCounts = patch.tagCounts;
+
+    assert.ok(tagCounts, "tagCounts must be present");
+
+    // Recompute the expected per-tag counts from the same inputs the production builder consumes: the current listing filtered to enabled + service-available
+    // entries, and each entry's vocabulary-filtered effective tags. This pins the exact counting contract the Quick Actions toggles rely on.
+    const vocabulary = getActiveTagVocabulary();
+    const listing = getChannelListing();
+    const expected: Record<string, { count: number; total: number }> = {};
+    const counts = new Map<string, number>();
+    let total = 0;
+
+    for(const tag of vocabulary) {
+
+      counts.set(tag, 0);
+    }
+
+    for(const entry of listing) {
+
+      if(!entry.enabled || !entry.availableByService) {
+
+        continue;
+      }
+
+      total++;
+
+      for(const tag of getChannelEffectiveTags(entry.channel)) {
+
+        const current = counts.get(tag);
+
+        if(current !== undefined) {
+
+          counts.set(tag, current + 1);
+        }
+      }
+    }
+
+    for(const tag of vocabulary) {
+
+      expected[tag] = { count: counts.get(tag) ?? 0, total };
+    }
+
+    assert.deepEqual(tagCounts, expected);
   });
 });

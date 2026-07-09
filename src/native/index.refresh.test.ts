@@ -464,4 +464,83 @@ describe("refreshNativeManifest", () => {
     // The 120s variant boundary is inside the margin, so no lead is applied and the reschedule fires at ~120s. A 2-second tolerance absorbs the wall-clock read.
     assert.ok(Math.abs((hooks.lastRefreshDelayMs!) - 120000) <= 2000, "reschedule is pinned to the earlier variant expiry, not the master expiry");
   });
+
+  test("discards a direct-fetched variant whose token expires within MIN_USABLE_TOKEN_LIFETIME and falls through to page reload", async () => {
+
+    /* The direct-fetch path parses the variant URL's token and rejects a variant that would expire almost immediately (within ~5s), since handing the proxy a
+     * variant that dies on the next poll is worse than a page reload that mints a genuinely fresh token. Here the master fetches fine but the variant carries an
+     * exp roughly 2 seconds out, inside the MIN_USABLE_TOKEN_LIFETIME floor. tryDirectManifestRefresh returns null, so the refresh falls through to the page-reload
+     * strategy; with the page closed that path returns false and the proxy variant URL is never updated.
+     */
+    const variantExpirySeconds = Math.floor(Date.now() / 1000) + 2;
+    const masterUrl = "https://cdn.test/near-expiry-master.m3u8";
+    const variantPath = "near-expiry-variant.m3u8?exp=" + String(variantExpirySeconds);
+
+    makeFetchRouter({
+
+      "https://cdn.test/near-expiry-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\n" + variantPath + "\n", { status: 200 }),
+      "https://cdn.test/near-expiry-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("near-expiry-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "near-expiry-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "near-expiry-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, false, "near-expired variant discarded, closed page yields false");
+    assert.equal(hooks.variantUrl, "", "proxy variant URL was NOT updated from the discarded direct fetch");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh scheduled on the discard-then-fail path");
+  });
+
+  test("does not update the proxy and returns false when the proxy is stopped during the direct-fetch probe", async () => {
+
+    /* Staleness guard: the direct-fetch probe is async, and the stream can be terminated while it runs. refreshNativeManifest re-checks proxy.isStopped() after the
+     * probe resolves and before touching the proxy. Here the proxy starts running so the initial guard passes, then flips to stopped mid-probe (inside the variant
+     * fetch). Because the post-probe isStopped check now observes true, the orchestrator must NOT call updateVariantUrl and must return false, leaving the proxy's
+     * variant URL untouched.
+     */
+    const masterUrl = "https://cdn.test/stop-midprobe-master.m3u8";
+    const variantUrl = "https://cdn.test/stop-midprobe-variant.m3u8";
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nstop-midprobe-variant.m3u8\n", { status: 200 }),
+      [variantUrl]: () => {
+
+        // The stream terminates while the direct-fetch probe is walking the variant playlist. Flipping the stub to stopped here means the post-probe isStopped
+        // re-check inside refreshNativeManifest observes a stopped proxy on its next read.
+        hooks.isStopped = true;
+
+        return new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 });
+      }
+    });
+
+    clearProbeCache("stop-midprobe-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "stop-midprobe-channel",
+      masterUrl,
+      page: makeFakePage(),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "stop-midprobe-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, false, "proxy stopped mid-probe yields false");
+    assert.equal(hooks.variantUrl, "", "updateVariantUrl was NOT called after the mid-probe stop");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh rescheduled after the mid-probe stop");
+  });
 });
