@@ -43,7 +43,7 @@
     "video-streaming"
   ],
   "engines": {
-    "node": ">=22.10"
+    "node": ">=22.20"
   },
   "repository": {
     "type": "git",
