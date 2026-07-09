@@ -1,20 +1,20 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * video.diagnosis.test.ts: Unit tests for the failed-tune blocked-page diagnosis in video.ts (diagnoseBlockedTune, reached through initializePlayback's failure
- * sites). video.test.ts statically value-imports video.ts, so mock.module cannot take effect there; this sibling file follows the precaching.revalidation.test.ts
- * precedent - register the module mocks first, then bind initializePlayback through a dynamic import so its captured imports resolve to the overrides. The
- * channelSelection, blockedPage, and consent modules are mocked at the module boundary; the health module is real, so marking assertions go through
- * getDomainAuthState, and each test uses its own domain to keep the shared in-memory auth state isolated.
+ * sites). initializePlayback accepts its tune collaborators (selectChannel and the overlay poll on the main path; the provider lookup and blocked-page classifier
+ * on the failure path) as an injected VideoTuneDeps parameter, so we pass a deps object of stubs at that seam and never drive a browser. The health module is real,
+ * so marking assertions go through getDomainAuthState, and each test uses its own domain to keep the shared in-memory auth state isolated.
  */
-import type * as VideoModule from "./video.ts";
 import type { BlockedPageClassification, ClassifyBlockedPageOptions } from "./blockedPage.ts";
 import type { ChannelSelectorResult, ProviderModule } from "../types/index.ts";
-import { afterEach, before, beforeEach, describe, mock, test } from "node:test";
+import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { LOG } from "../utils/index.ts";
 import type { Page } from "puppeteer-core";
+import type { VideoTuneDeps } from "./video.ts";
 import assert from "node:assert/strict";
 import { getDomainAuthState } from "../config/health.ts";
 import { setImmediate as immediate } from "node:timers/promises";
+import { initializePlayback } from "./video.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 
 // Mutable state the module mocks read, so each test can shape the provider match, the channel selection outcome, and the classification without re-registering
@@ -24,8 +24,23 @@ let classifyResult: () => Promise<BlockedPageClassification>;
 let mockDomainProviders: ProviderModule[] = [];
 let mockSelectResult: ChannelSelectorResult = { success: true };
 
-// The function under test, bound after mock.module registration via dynamic import.
-let initializePlayback: typeof VideoModule.initializePlayback;
+/* The injected tune collaborators: channel selection and the overlay poll on the main path, plus the provider lookup and blocked-page classifier on the failure
+ * path, substituted at video.ts's VideoTuneDeps seam so the diagnosis paths run without a real browser. Each field reads the mutable module state above at call
+ * time; classifyBlockedPage records every options object into classifyCalls so tests assert the call count and the forwarded indicators. Typed as the production
+ * port so the doubles cannot drift; invalidateDirectUrl/resolveDirectUrl stay real because initializePlayback's tested paths never call them.
+ */
+const deps: VideoTuneDeps = {
+
+  classifyBlockedPage: async (_page, options) => {
+
+    classifyCalls.push(options);
+
+    return classifyResult();
+  },
+  getProvidersForDomain: (): ProviderModule[] => mockDomainProviders,
+  selectChannel: async (): Promise<ChannelSelectorResult> => mockSelectResult,
+  startOverlayHandling: async (): Promise<void> => { /* The overlay poll is not under test. */ }
+};
 
 /* Builds a stub Page satisfying the surface the exercised initializePlayback paths touch: evaluate for the best-effort video mute, and waitForSelector for the
  * video-readiness wait (site B) and the iframe context resolution (site C). A test drives a failure site by passing a waitForSelector that rejects; the default
@@ -41,56 +56,6 @@ function makeStubPage(waitForSelector?: (selector: string, options?: unknown) =>
     waitForSelector: waitForSelector ?? (async (): Promise<unknown> => ({}))
   } as unknown as Page;
 }
-
-before(async () => {
-
-  /* Like the precaching.revalidation.test.ts precedent, the mocks enumerate their named exports explicitly: the enumerated names are exactly the surface video.ts
-   * consumes from each module. The utils and config modules stay real - LOG method mocks and getDomainAuthState assertions must observe the same instances
-   * video.ts uses.
-   */
-  const selectionUrl = new URL("./channelSelection.ts", import.meta.url).href;
-
-  mock.module(selectionUrl, {
-
-    namedExports: {
-
-      getProvidersForDomain: (): ProviderModule[] => mockDomainProviders,
-      invalidateDirectUrl: (): void => { /* The cached-URL layer is not under test. */ },
-      resolveDirectUrl: async (): Promise<null> => null,
-      selectChannel: async (): Promise<ChannelSelectorResult> => mockSelectResult
-    }
-  });
-
-  const blockedPageUrl = new URL("./blockedPage.ts", import.meta.url).href;
-
-  mock.module(blockedPageUrl, {
-
-    namedExports: {
-
-      classifyBlockedPage: async (page: Page, options: ClassifyBlockedPageOptions): Promise<BlockedPageClassification> => {
-
-        classifyCalls.push(options);
-
-        return classifyResult();
-      }
-    }
-  });
-
-  const consentUrl = new URL("./consent.ts", import.meta.url).href;
-
-  mock.module(consentUrl, {
-
-    namedExports: {
-
-      startOverlayHandling: async (): Promise<void> => { /* The overlay poll is not under test. */ }
-    }
-  });
-
-  // Dynamic-import video.ts now that the mocks are registered, so its captured imports resolve to the overrides above.
-  const videoModule = await import("./video.ts");
-
-  initializePlayback = videoModule.initializePlayback;
-});
 
 describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
 
@@ -124,7 +89,7 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
     mockSelectResult = { reason: "Station code FBN not found.", success: false };
     classifyResult = async (): Promise<BlockedPageClassification> => ({ evidence: "a sign-in form is present at stub-a.test/signin", kind: "authWall" });
 
-    await assert.rejects(initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-a.test/guide" }), (error: unknown) => {
+    await assert.rejects(initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-a.test/guide" }, deps), (error: unknown) => {
 
       assert.ok(error instanceof Error, "the enriched failure is an Error");
       assert.equal(error.message, "Tune failed: Stub Provider is presenting an authentication wall (a sign-in form is present at stub-a.test/signin). " +
@@ -153,7 +118,7 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
     mockSelectResult = { reason: "Station code FBN not found.", success: false };
     classifyResult = async (): Promise<BlockedPageClassification> => ({ evidence: "a sign-in form is present at stub-b.test/login", kind: "authWall" });
 
-    await assert.rejects(initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-b.test/play" }), (error: unknown) => {
+    await assert.rejects(initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-b.test/play" }, deps), (error: unknown) => {
 
       assert.ok(error instanceof Error, "the enriched failure is an Error");
       assert.equal(error.message, "Tune failed: stub-b.test is presenting an authentication wall (a sign-in form is present at stub-b.test/login).",
@@ -174,7 +139,7 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
     mockSelectResult = { reason: "Station code FBN not found.", success: false };
     classifyResult = async (): Promise<BlockedPageClassification> => ({ kind: "consentOverlay" });
 
-    await assert.rejects(initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-c.test/guide" }), (error: unknown) => {
+    await assert.rejects(initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-c.test/guide" }, deps), (error: unknown) => {
 
       assert.ok(error instanceof Error, "the guidance is an Error");
       assert.equal(error.message, "This site is displaying a consent or cookie prompt that is blocking playback. Open it once in setup or login mode and " +
@@ -200,7 +165,7 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
       throw sentinel;
     });
 
-    await assert.rejects(initializePlayback(page, makeProfile(), { requestedUrl: "https://www.stub-d.test/guide" }), (error: unknown) => {
+    await assert.rejects(initializePlayback(page, makeProfile(), { requestedUrl: "https://www.stub-d.test/guide" }, deps), (error: unknown) => {
 
       assert.equal(error, sentinel, "the raw rejection propagates by reference");
 
@@ -220,7 +185,7 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
     mockSelectResult = { reason: "Station code FBN not found.", success: false };
     classifyResult = (): Promise<BlockedPageClassification> => Promise.withResolvers<BlockedPageClassification>().promise;
 
-    const pending = initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-e.test/guide" });
+    const pending = initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-e.test/guide" }, deps);
 
     const rejection = assert.rejects(pending, (error: unknown) => {
 
@@ -247,7 +212,7 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
      */
     mockSelectResult = { reason: "Station code FBN not found.", success: false };
 
-    await assert.rejects(initializePlayback(makeStubPage(), makeProfile(), {}), (error: unknown) => {
+    await assert.rejects(initializePlayback(makeStubPage(), makeProfile(), {}, deps), (error: unknown) => {
 
       assert.ok(error instanceof Error, "the failure is an Error");
       assert.equal(error.message, "Channel selection failed: Station code FBN not found.", "the selection error is byte-identical to the plain throw");
@@ -273,7 +238,9 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
       throw sentinel;
     });
 
-    await assert.rejects(initializePlayback(page, makeProfile({ needsIframeHandling: true }), { requestedUrl: "https://www.stub-f.test/guide" }), (error: unknown) => {
+    const pending = initializePlayback(page, makeProfile({ needsIframeHandling: true }), { requestedUrl: "https://www.stub-f.test/guide" }, deps);
+
+    await assert.rejects(pending, (error: unknown) => {
 
       assert.equal(error, sentinel, "the raw context-resolution rejection propagates by reference");
 

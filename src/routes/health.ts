@@ -15,15 +15,67 @@ import { getClientSummary } from "../streaming/clients.ts";
  * for monitoring and alerting systems. Returns HTTP 503 when unhealthy to allow load balancers and monitoring systems to detect problems via status code.
  */
 
+/* HealthDeps is the state-reader boundary the /health handler folds into its payload: browser connection/pages/version, the stream registry counts and memory, and
+ * the per-stream client summary. It is injected as a default parameter so a test can substitute in-memory readers at the same seam - no loader mock - while
+ * production uses the real defaultHealthDeps. isFFmpegAvailable, CONFIG, and the process memory/version are read directly because they are not the substituted
+ * boundary. This mirrors the Clock port (utils/clock.ts): a typed interface plus a module-const default, consumed through a defaulted parameter.
+ */
+export interface HealthDeps {
+
+  readonly getAllStreams: typeof getAllStreams;
+  readonly getBrowserPages: typeof getBrowserPages;
+  readonly getChromeVersion: typeof getChromeVersion;
+  readonly getClientSummary: typeof getClientSummary;
+  readonly getStreamCount: typeof getStreamCount;
+  readonly getTotalSegmentMemory: typeof getTotalSegmentMemory;
+  readonly isBrowserConnected: typeof isBrowserConnected;
+}
+
+const defaultHealthDeps: HealthDeps = { getAllStreams, getBrowserPages, getChromeVersion, getClientSummary, getStreamCount, getTotalSegmentMemory, isBrowserConnected };
+
+/**
+ * The health decision: the tri-state status, its HTTP code, and the operator message. Deriving it in one place collapses what were three separate evaluations of
+ * the same two conditions (status, message, and HTTP code) into a single source of truth.
+ */
+interface HealthDecision {
+
+  readonly httpStatus: 200 | 503;
+  readonly message?: string;
+  readonly status: "degraded" | "healthy" | "unhealthy";
+}
+
+/**
+ * Derives the health status, HTTP code, and operator message from browser connectivity and stream utilization. Unhealthy (browser down) outranks degraded
+ * (utilization at or past the 0.8 threshold); otherwise healthy. Pure and total - no I/O - so the branch precedence and the threshold live in exactly one place.
+ * @param browserConnected - Whether the shared browser is currently connected.
+ * @param streamUtilization - Active streams divided by the configured concurrency limit.
+ * @returns The tri-state decision consumed by the /health handler.
+ */
+export function deriveHealthStatus(browserConnected: boolean, streamUtilization: number): HealthDecision {
+
+  if(!browserConnected) {
+
+    return { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" };
+  }
+
+  if(streamUtilization >= 0.8) {
+
+    return { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" };
+  }
+
+  return { httpStatus: 200, status: "healthy" };
+}
+
 /**
  * Creates a health check endpoint for monitoring application status with detailed metrics.
  * @param app - The Express application.
+ * @param deps - The state readers the handler folds into its payload; defaults to defaultHealthDeps, injectable so a test can drive every branch in memory.
  */
-export function setupHealthEndpoint(app: Express): void {
+export function setupHealthEndpoint(app: Express, deps: HealthDeps = defaultHealthDeps): void {
 
   app.get("/health", async (_req: Request, res: Response): Promise<void> => {
 
-    const browserConnected = isBrowserConnected();
+    const browserConnected = deps.isBrowserConnected();
 
     let pageCount = 0;
 
@@ -31,7 +83,7 @@ export function setupHealthEndpoint(app: Express): void {
 
       try {
 
-        const pages = await getBrowserPages();
+        const pages = await deps.getBrowserPages();
 
         pageCount = pages.length;
       } catch(_error) {
@@ -41,16 +93,16 @@ export function setupHealthEndpoint(app: Express): void {
     }
 
     const memoryUsage = process.memoryUsage();
-    const segmentMemory = getTotalSegmentMemory();
+    const segmentMemory = deps.getTotalSegmentMemory();
     const ffmpegAvailable = await isFFmpegAvailable();
 
     // Aggregate client data across all active streams for the system-wide summary.
     const allClientTypes = new Map<ClientType, number>();
     let totalClients = 0;
 
-    for(const streamInfo of getAllStreams()) {
+    for(const streamInfo of deps.getAllStreams()) {
 
-      const summary = getClientSummary(streamInfo.id);
+      const summary = deps.getClientSummary(streamInfo.id);
 
       totalClients += summary.total;
 
@@ -62,17 +114,9 @@ export function setupHealthEndpoint(app: Express): void {
 
     // Stream utilization is the fraction of the configured concurrency limit currently in use. Once it reaches 80% we report "degraded" and surface a capacity
     // warning below, giving monitoring and alerting systems headroom to react while streams can still be served rather than only flagging trouble at full saturation.
-    const streamUtilization = getStreamCount() / CONFIG.streaming.maxConcurrentStreams;
+    const streamUtilization = deps.getStreamCount() / CONFIG.streaming.maxConcurrentStreams;
 
-    let status: "degraded" | "healthy" | "unhealthy" = "healthy";
-
-    if(!browserConnected) {
-
-      status = "unhealthy";
-    } else if(streamUtilization >= 0.8) {
-
-      status = "degraded";
-    }
+    const decision = deriveHealthStatus(browserConnected, streamUtilization);
 
     const health: HealthStatus = {
 
@@ -82,7 +126,7 @@ export function setupHealthEndpoint(app: Express): void {
         pageCount: pageCount
       },
       captureMode: CONFIG.streaming.captureMode,
-      chrome: getChromeVersion(),
+      chrome: deps.getChromeVersion(),
       clients: {
 
         byType: Array.from(allClientTypes.entries()).toSorted(([a], [b]) => a.localeCompare(b)).map(([ type, count ]) => ({ count, type })),
@@ -96,10 +140,10 @@ export function setupHealthEndpoint(app: Express): void {
         rss: memoryUsage.rss,
         segmentBuffers: segmentMemory
       },
-      status: status,
+      status: decision.status,
       streams: {
 
-        active: getStreamCount(),
+        active: deps.getStreamCount(),
         limit: CONFIG.streaming.maxConcurrentStreams
       },
       timestamp: new Date().toISOString(),
@@ -107,17 +151,11 @@ export function setupHealthEndpoint(app: Express): void {
       version: getPackageVersion()
     };
 
-    if(!browserConnected) {
+    if(decision.message !== undefined) {
 
-      health.message = "Browser is not connected.";
-    } else if(streamUtilization >= 0.8) {
-
-      health.message = "Approaching stream capacity limit.";
+      health.message = decision.message;
     }
 
-    // Map the health status onto the HTTP status code so monitors react to the code alone, treating only the unhealthy state as a service failure.
-    const httpStatus = status === "unhealthy" ? 503 : 200;
-
-    res.status(httpStatus).json(health);
+    res.status(decision.httpStatus).json(health);
   });
 }

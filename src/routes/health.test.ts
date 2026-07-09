@@ -5,12 +5,10 @@
  * can detect degraded state via status code, returns HTTP 200 with status "degraded" when stream utilization crosses 80%, and returns HTTP 200 with status
  * "healthy" otherwise.
  *
- * Why mock.module + dynamic import. The handler captures its dependencies (isBrowserConnected, getStreamCount, getAllStreams, getClientSummary, ...) at module
- * load time via static imports. ESM bindings are read-only after the fact, so neither monkey-patching the namespace object nor reassigning a global would
- * propagate into health.ts's call sites. mock.module replaces the modules' exports for all subsequent imports, and dynamic-importing health.ts AFTER the mocks
- * are registered is the canonical way to make the spies visible inside the handler. Static-importing health.ts in this file would resolve before mock.module
- * runs and bind the real exports - defeating the seam. The pattern follows Suite 12's precedent (test/e2e/streaming/pretune.test.ts) and is the established
- * mock.module + dynamic-import-after-mock invocation in this codebase.
+ * How the dependencies are substituted. setupHealthEndpoint accepts its state readers (isBrowserConnected, getBrowserPages, getChromeVersion, the registry
+ * counts, getClientSummary) as an injected HealthDeps parameter, defaulting to the real modules. The suite passes one deps object whose readers return the
+ * per-test mockState, so every status branch, the getBrowserPages-error suppression, and the client-aggregation fold are exercised through the real handler on a
+ * real Express server - no loader mock. The extracted pure deriveHealthStatus decision is additionally pinned directly at the end of the file.
  *
  * Coverage tiers in this file:
  *
@@ -29,12 +27,14 @@
  *      preserved verbatim from the prior fixture. Their assertions still hold against the mocked dependencies because mockState defaults reproduce the
  *      "browser disconnected, no streams" environment those tests previously assumed.
  */
-import type * as HealthModule from "./health.ts";
 import type { AddressInfo, Server } from "node:net";
 import type { ClientSummary, ClientType } from "../streaming/clients.ts";
-import { after, before, beforeEach, describe, mock, test } from "node:test";
+import { after, before, beforeEach, describe, test } from "node:test";
+import { deriveHealthStatus, setupHealthEndpoint } from "./health.ts";
 import type { Express } from "express";
+import type { HealthDeps } from "./health.ts";
 import type { Nullable } from "../types/index.ts";
+import type { Page } from "puppeteer-core";
 import type { StreamRegistryEntry } from "../streaming/registry.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../testing.helpers.ts";
@@ -75,7 +75,6 @@ interface HealthBody {
 }
 
 let mockState: MockState;
-let setupHealthEndpoint: typeof HealthModule.setupHealthEndpoint;
 
 let sharedServer: Server;
 let sharedPort = 0;
@@ -132,74 +131,38 @@ function defaultMockState(): MockState {
   };
 }
 
-before(async () => {
+// The injected health readers: the browser/registry/clients state the handler folds into its payload, backed by the per-test mockState. This one object replaces
+// the three module mocks the suite previously installed; each field reads mockState at call time so a test drives every branch by mutating mockState. Typed as the
+// production HealthDeps port so the doubles cannot drift from it.
+const deps: HealthDeps = {
 
-  // Capture the real exports of every module health.ts depends on so any export not in the override list passes through unchanged. Without this, mock.module
-  // would treat its namedExports map as the FULL export set and any incidental access to a non-listed name would resolve to undefined.
-  const realBrowser = await import("../browser/index.ts");
-  const realRegistry = await import("../streaming/registry.ts");
-  const realClients = await import("../streaming/clients.ts");
+  getAllStreams: (): StreamRegistryEntry[] => mockState.streams as unknown as StreamRegistryEntry[],
+  getBrowserPages: async (): Promise<Page[]> => {
+
+    if(mockState.pageError) {
+
+      throw mockState.pageError;
+    }
+
+    // The handler reads only pages.length, so the elements are minimal stubs cast to Page - the accepted Puppeteer-double convention where only a subset matters.
+    return Array.from({ length: mockState.pageCount }, (_, i) => ({ pageId: i })) as unknown as Page[];
+  },
+  getChromeVersion: (): Nullable<string> => mockState.chromeVersion,
+  getClientSummary: (streamId: number): ClientSummary => mockState.streamSummaries.get(streamId) ?? { clients: [], total: 0 },
+  getStreamCount: (): number => mockState.streamCount,
+  getTotalSegmentMemory: (): number => mockState.totalSegmentMemory,
+  isBrowserConnected: (): boolean => mockState.browserConnected
+};
+
+before(async () => {
 
   mockState = defaultMockState();
 
-  const browserUrl = new URL("../browser/index.ts", import.meta.url).href;
-  const registryUrl = new URL("../streaming/registry.ts", import.meta.url).href;
-  const clientsUrl = new URL("../streaming/clients.ts", import.meta.url).href;
-
-  // The Node 22 type definitions surface the option as namedExports; the runtime renamed it to exports in a later minor and emits a deprecation warning. We
-  // keep namedExports until @types/node catches up - the runtime path is unaffected and the type definition is authoritative for the build. Same precedent
-  // as Suite 12 (test/e2e/streaming/pretune.test.ts).
-  mock.module(browserUrl, {
-
-    namedExports: {
-
-      ...realBrowser,
-      getBrowserPages: async (): Promise<unknown[]> => {
-
-        if(mockState.pageError) {
-
-          throw mockState.pageError;
-        }
-
-        return Array.from({ length: mockState.pageCount }, (_, i) => ({ pageId: i }));
-      },
-      getChromeVersion: (): Nullable<string> => mockState.chromeVersion,
-      isBrowserConnected: (): boolean => mockState.browserConnected
-    }
-  });
-
-  mock.module(registryUrl, {
-
-    namedExports: {
-
-      ...realRegistry,
-      // The handler only reads streamInfo.id from each entry - we cast our minimal stubs through unknown to satisfy the StreamRegistryEntry signature.
-      getAllStreams: (): StreamRegistryEntry[] => mockState.streams as unknown as StreamRegistryEntry[],
-      getStreamCount: (): number => mockState.streamCount,
-      getTotalSegmentMemory: (): number => mockState.totalSegmentMemory
-    }
-  });
-
-  mock.module(clientsUrl, {
-
-    namedExports: {
-
-      ...realClients,
-      getClientSummary: (streamId: number): ClientSummary => mockState.streamSummaries.get(streamId) ?? { clients: [], total: 0 }
-    }
-  });
-
-  // Now that the mocks are in place, dynamic-import health.ts so its captured references resolve to the mocks rather than the real exports. This must happen
-  // here, not at the top of the file - a static import would resolve before the mocks are registered.
-  const healthModule = await import("./health.ts");
-
-  setupHealthEndpoint = healthModule.setupHealthEndpoint;
-
-  // The install callback closes over the module-scope setupHealthEndpoint binding; because it registers a single synchronous GET /health route, one server can
-  // serve every test and rely on mockState mutations to drive scenarios.
+  // One server serves every test: setupHealthEndpoint registers a single synchronous GET /health route reading through the injected deps, so tests drive
+  // scenarios purely by mutating mockState.
   const created = await makeServer((app) => {
 
-    setupHealthEndpoint(app);
+    setupHealthEndpoint(app, deps);
   });
 
   sharedServer = created.server;
@@ -546,5 +509,29 @@ describe("setupHealthEndpoint - GET /health (client aggregation loop)", () => {
 
     assert.deepEqual(body.clients.byType.map((entry) => entry.type), [ "hls", "mpegts" ],
       "byType ordering is alphabetical regardless of source stream's client list order");
+  });
+});
+
+describe("deriveHealthStatus - the pure decision core", () => {
+
+  test("browser disconnected is unhealthy (503) regardless of utilization", () => {
+
+    // Branch precedence: browser-down outranks any utilization. Pins the single source of truth the handler now derives status, message, and HTTP code from.
+    assert.deepEqual(deriveHealthStatus(false, 0), { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" });
+    assert.deepEqual(deriveHealthStatus(false, 0.9), { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" },
+      "browser-down outranks a high utilization");
+  });
+
+  test("connected and below 0.8 utilization is healthy (200, no message)", () => {
+
+    assert.deepEqual(deriveHealthStatus(true, 0.79), { httpStatus: 200, status: "healthy" });
+  });
+
+  test("connected at or above 0.8 utilization is degraded (200)", () => {
+
+    // The 0.8 threshold is inclusive and cliff-then-stay - the exact contract the handler tests exercise through the server, pinned here in isolation.
+    assert.deepEqual(deriveHealthStatus(true, 0.8), { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" },
+      "the threshold is inclusive at 0.8");
+    assert.deepEqual(deriveHealthStatus(true, 1.5), { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" });
   });
 });

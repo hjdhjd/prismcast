@@ -5,15 +5,17 @@
  * master-priority arbitration, timeout safety nets, dispose paths, and TC39 using-syntax integration. The pure selectInterceptedManifest helper that backs
  * finalize()'s resolution is tested in the companion file manifestInterceptor.selection.test.ts.
  *
- * Why mock.module + dynamic import. The orchestrators sit one layer above hlsPlaylistObserver.observeHlsPlaylists(), which itself sits above the tab network
- * observer + CDP. Driving the real lower layers would require a Puppeteer browser. mock.module is the canonical seam for swapping the dependency without
- * touching production code; we substitute a controlled observer that captures the onPlaylist callback so the test can synthesize playlist observations on demand.
- * A static import of manifestInterceptor.ts at the top of the file would bind the real observeHlsPlaylists before the mock could register, so the import is
- * deferred to a dynamic import inside before().
+ * How the observer is substituted. The orchestrators sit one layer above hlsPlaylistObserver.observeHlsPlaylists(), which itself rides on the tab network
+ * observer + CDP; driving the real lower layers would require a Puppeteer browser. Both orchestrators accept the observer factory as an injected parameter
+ * (default observeHlsPlaylists), so we pass a controlled factory that captures the onPlaylist callback and lets tests synthesize playlist observations on
+ * demand. The factory is typed as observeHlsPlaylists' own contract, so the double cannot drift from the real signature.
  */
-import type * as ManifestInterceptorModule from "./manifestInterceptor.ts";
-import { before, beforeEach, describe, mock, test } from "node:test";
+import type { HlsPlaylistObserver, HlsPlaylistObserverOptions } from "./hlsPlaylistObserver.ts";
+import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "./manifestInterceptor.ts";
+import { awaitMatchingManifest, installManifestInterceptor } from "./manifestInterceptor.ts";
+import { beforeEach, describe, mock, test } from "node:test";
 import type { HlsPlaylistKind } from "../native/probe.ts";
+import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
@@ -21,37 +23,25 @@ import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-/* ControlledObserver is the test-side handle returned by the mocked observeHlsPlaylists. It captures the onPlaylist callback at construction so tests can call
+/* ControlledObserver is the test-side handle returned by the injected observe factory. It captures the onPlaylist callback at construction so tests can call
  * fire() to synthesize a playlist observation, and exposes a read-only disposed flag so tests can assert the disposal lifecycle. dispose() and Symbol.dispose
- * are the same function reference to match the real observer's contract.
+ * are the same function reference to match the real observer's contract, so the object satisfies HlsPlaylistObserver.
  */
-interface ControlledObserver {
+interface ControlledObserver extends HlsPlaylistObserver {
 
   // Read-only view of the observer's disposed state. Backed by a closure variable inside the factory so the property is observable without permitting outside
   // mutation - tests assert on it but cannot flip it from the outside.
   readonly disposed: boolean;
 
-  readonly dispose: () => void;
-
   // Fires a synthetic playlist observation through the captured onPlaylist callback. No-op when the observer has already been disposed.
   readonly fire: (kind: HlsPlaylistKind, url: string) => void;
-
-  readonly [Symbol.dispose]: () => void;
-}
-
-/* MockObserveOptions mirrors the shape of the real observeHlsPlaylists option bag at the surface our mock cares about. Promoted to module scope rather than
- * declared inside before() so it can be referenced anywhere in the file and is grep-discoverable alongside the other types.
- */
-interface MockObserveOptions {
-
-  onPlaylist: (playlist: { kind: HlsPlaylistKind; url: string }) => void;
 }
 
 /* createControlledObserver constructs a fresh test-side observer. The disposed state lives in a closure variable so it cannot be mutated from outside the
  * factory; the public surface exposes it as a getter. dispose() and Symbol.dispose are the same function reference, satisfying the production observer's
- * identity contract.
+ * identity contract. options is the real HlsPlaylistObserverOptions so fire() delivers a genuine ObservedHlsPlaylist.
  */
-function createControlledObserver(options: MockObserveOptions): ControlledObserver {
+function createControlledObserver(options: HlsPlaylistObserverOptions): ControlledObserver {
 
   let disposed = false;
 
@@ -78,53 +68,45 @@ function createControlledObserver(options: MockObserveOptions): ControlledObserv
   };
 }
 
-// Per-test mock state. installShouldFail makes the next call to observeHlsPlaylists return null (simulating the underlying tab observer failing to install);
-// pendingObserver receives the ControlledObserver created on each successful call so tests can drive it. Declared as separate `let` bindings rather than fields
-// on a container object so per-field mutability is explicit at the declaration site.
+// Per-test mock state. mockInstallShouldFail makes the next call to the observe factory return null (simulating the underlying tab observer failing to install);
+// mockPendingObserver receives the ControlledObserver created on each successful call so tests can drive it. Declared as separate `let` bindings rather than
+// fields on a container object so per-field mutability is explicit at the declaration site.
 let mockInstallShouldFail = false;
 let mockPendingObserver: ControlledObserver | null = null;
 
-let installManifestInterceptor: typeof ManifestInterceptorModule.installManifestInterceptor;
-let awaitMatchingManifest: typeof ManifestInterceptorModule.awaitMatchingManifest;
+/* The injected observe factory: returns null when mockInstallShouldFail is set, otherwise constructs a ControlledObserver, parks it in mockPendingObserver so the
+ * test can drive it, and returns it as the observer handle. Typed as observeHlsPlaylists' own contract so any drift in the real signature surfaces here at compile
+ * time - the fidelity a module mock could not enforce.
+ */
+const mockObserveFactory = async (_page: Page, options: HlsPlaylistObserverOptions): Promise<Nullable<HlsPlaylistObserver>> => {
 
-before(async () => {
+  if(mockInstallShouldFail) {
 
-  const moduleUrl = new URL("./hlsPlaylistObserver.ts", import.meta.url).href;
+    return null;
+  }
 
-  // The mocked observeHlsPlaylists factory: returns null when mockInstallShouldFail is set, otherwise constructs a ControlledObserver, parks it in
-  // mockPendingObserver so the test can drive it, and returns it as the observer handle.
-  const observeHlsPlaylists = async (_page: Page, options: MockObserveOptions): Promise<ControlledObserver | null> => {
+  const observer = createControlledObserver(options);
 
-    if(mockInstallShouldFail) {
+  mockPendingObserver = observer;
 
-      return null;
-    }
+  return observer;
+};
 
-    const observer = createControlledObserver(options);
+// fakePage is a Page stub that satisfies the orchestrators' parameter type. The orchestrators never call methods on the page directly - they pass it through to
+// the observe factory, which in our double ignores it. A minimal cast suffices.
+const fakePage = {} as unknown as Page;
 
-    mockPendingObserver = observer;
+// Install/await helpers that inject the controlled observe factory (and the fake page and default timeout), so individual tests read as behavior rather than
+// wiring. Every test drives its observer through mockPendingObserver after calling these.
+function install(): Promise<Nullable<ManifestInterceptorHandle>> {
 
-    return observer;
-  };
+  return installManifestInterceptor(fakePage, undefined, mockObserveFactory);
+}
 
-  // The Node 22 type definitions surface the option as namedExports; the runtime renamed it to exports in a later minor and emits a deprecation warning. We
-  // keep namedExports until @types/node catches up - the runtime path is unaffected and the type definition is authoritative for the build. Same precedent as
-  // streaming/hls.loginMode.test.ts and config/persistence.integrity.test.ts.
-  mock.module(moduleUrl, {
+function awaitMatch(predicate: (url: string) => boolean, timeout: number): Promise<Nullable<string>> {
 
-    namedExports: {
-
-      observeHlsPlaylists
-    }
-  });
-
-  // After the mock is in place, dynamic-import manifestInterceptor.ts so its captured observeHlsPlaylists binding points at the mock. A static import at the
-  // top of this file would resolve before the mock was registered.
-  const mod = await import("./manifestInterceptor.ts");
-
-  installManifestInterceptor = mod.installManifestInterceptor;
-  awaitMatchingManifest = mod.awaitMatchingManifest;
-});
+  return awaitMatchingManifest(fakePage, predicate, timeout, mockObserveFactory);
+}
 
 beforeEach(() => {
 
@@ -134,10 +116,6 @@ beforeEach(() => {
   mockPendingObserver = null;
 });
 
-// fakePage is a Page stub that satisfies the orchestrators' parameter type. The orchestrators never call methods on the page directly - they pass it through to
-// observeHlsPlaylists, which in our mock ignores it. A minimal cast suffices.
-const fakePage = {} as unknown as Page;
-
 describe("installManifestInterceptor", () => {
 
   test("returns null when the underlying HLS observer fails to install", async () => {
@@ -146,7 +124,7 @@ describe("installManifestInterceptor", () => {
     // returning a handle whose promise would never resolve.
     mockInstallShouldFail = true;
 
-    const interceptor = await installManifestInterceptor(fakePage);
+    const interceptor = await install();
 
     assert.equal(interceptor, null, "install failure surfaces as null");
   });
@@ -155,7 +133,7 @@ describe("installManifestInterceptor", () => {
 
     // The direct-tune fast path: when the navigated URL itself selects the channel and the player has already loaded the master manifest, finalize(true) must
     // settle the promise without waiting the FINALIZE_SETTLE_DELAY. The first-master-URL-wins selection rule is what this test pins.
-    const interceptor = await installManifestInterceptor(fakePage);
+    const interceptor = await install();
 
     assert.ok(interceptor, "interceptor installed");
 
@@ -182,7 +160,7 @@ describe("installManifestInterceptor", () => {
 
     try {
 
-      const interceptor = await installManifestInterceptor(fakePage);
+      const interceptor = await install();
 
       assert.ok(interceptor, "interceptor installed");
 
@@ -219,7 +197,7 @@ describe("installManifestInterceptor", () => {
 
     try {
 
-      const interceptor = await installManifestInterceptor(fakePage);
+      const interceptor = await install();
 
       assert.ok(interceptor, "interceptor installed");
 
@@ -252,7 +230,7 @@ describe("installManifestInterceptor", () => {
 
     try {
 
-      const interceptor = await installManifestInterceptor(fakePage);
+      const interceptor = await install();
 
       assert.ok(interceptor, "interceptor installed");
 
@@ -284,7 +262,7 @@ describe("installManifestInterceptor", () => {
 
     try {
 
-      const interceptor = await installManifestInterceptor(fakePage);
+      const interceptor = await install();
 
       assert.ok(interceptor, "interceptor installed");
 
@@ -315,7 +293,7 @@ describe("installManifestInterceptor", () => {
 
     try {
 
-      const interceptor = await installManifestInterceptor(fakePage);
+      const interceptor = await install();
 
       assert.ok(interceptor, "interceptor installed");
 
@@ -339,7 +317,7 @@ describe("installManifestInterceptor", () => {
 
     // Cancellation path: a caller may abandon the interception before finalize fires (e.g., the upstream tune step threw). dispose() must settle the promise so
     // awaiters do not hang and the underlying observer must be released.
-    const interceptor = await installManifestInterceptor(fakePage);
+    const interceptor = await install();
 
     assert.ok(interceptor, "interceptor installed");
 
@@ -361,7 +339,7 @@ describe("installManifestInterceptor", () => {
 
     // Boundary: the cleanup paths in PrismCast can invoke dispose from multiple code paths. After finalize has already settled the promise, dispose must not
     // throw, must not re-resolve, and must not re-dispose the observer.
-    const interceptor = await installManifestInterceptor(fakePage);
+    const interceptor = await install();
 
     assert.ok(interceptor, "interceptor installed");
 
@@ -389,7 +367,7 @@ describe("installManifestInterceptor", () => {
 
     // Identity contract for TC39 ERM: callers can use either explicit dispose() or "using" and get identical behavior because Symbol.dispose IS dispose - not
     // just an alias by convention. Matches the same expectation on TabNetworkObserver and HlsPlaylistObserver.
-    const interceptor = await installManifestInterceptor(fakePage);
+    const interceptor = await install();
 
     assert.ok(interceptor, "interceptor installed");
     assert.equal(typeof interceptor[Symbol.dispose], "function", "Symbol.dispose hook present");
@@ -402,12 +380,12 @@ describe("installManifestInterceptor", () => {
 
     // End-to-end TC39 ERM contract: at scope exit, V8/Node invokes Symbol.dispose, which calls dispose(), which resolves the pending promise with null and
     // tears down the observer. We capture the promise outside the using scope so it can be awaited after disposal.
-    let capturedPromise!: Promise<ManifestInterceptorModule.ManifestInterceptionResult | null>;
+    let capturedPromise!: Promise<Nullable<ManifestInterceptionResult>>;
     let capturedObserver!: ControlledObserver;
 
     {
 
-      using interceptor = await installManifestInterceptor(fakePage);
+      using interceptor = await install();
 
       assert.ok(interceptor, "interceptor installed inside the using scope");
 
@@ -426,12 +404,12 @@ describe("installManifestInterceptor", () => {
 
     // Exception-safety contract: TC39 ERM guarantees disposal on the throw path. This is the load-bearing reason to use Symbol.dispose at all - otherwise an
     // explicit dispose() call inside a finally block would suffice.
-    let capturedPromise!: Promise<ManifestInterceptorModule.ManifestInterceptionResult | null>;
+    let capturedPromise!: Promise<Nullable<ManifestInterceptionResult>>;
     let capturedObserver!: ControlledObserver;
 
     await assert.rejects(async () => {
 
-      using interceptor = await installManifestInterceptor(fakePage);
+      using interceptor = await install();
 
       assert.ok(interceptor, "interceptor installed inside the using scope");
 
@@ -455,7 +433,7 @@ describe("awaitMatchingManifest", () => {
     // Boundary: same propagation contract as installManifestInterceptor - install failure surfaces as null.
     mockInstallShouldFail = true;
 
-    const result = await awaitMatchingManifest(fakePage, () => true, 100);
+    const result = await awaitMatch(() => true, 100);
 
     assert.equal(result, null, "install failure surfaces as null");
   });
@@ -464,7 +442,7 @@ describe("awaitMatchingManifest", () => {
 
     // The predicate is consulted only for master playlists. We feed two masters; only the second matches the predicate, and the function must resolve with
     // that URL.
-    const interceptor = awaitMatchingManifest(fakePage, (url) => url.includes("target"), 1000);
+    const interceptor = awaitMatch((url) => url.includes("target"), 1000);
 
     // Yield to the microtask queue so the observer is installed before we drive observations.
     await Promise.resolve();
@@ -492,7 +470,7 @@ describe("awaitMatchingManifest", () => {
     let predicateCalls = 0;
     const recordedUrls: string[] = [];
 
-    const interceptor = awaitMatchingManifest(fakePage, (url) => {
+    const interceptor = awaitMatch((url) => {
 
       predicateCalls++;
       recordedUrls.push(url);
@@ -526,7 +504,7 @@ describe("awaitMatchingManifest", () => {
 
     try {
 
-      const interceptor = awaitMatchingManifest(fakePage, () => false, 200);
+      const interceptor = awaitMatch(() => false, 200);
 
       await Promise.resolve();
 

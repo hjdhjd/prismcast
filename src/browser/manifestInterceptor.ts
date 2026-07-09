@@ -138,9 +138,11 @@ export interface ManifestInterceptorHandle extends Disposable {
  *
  * @param page - The puppeteer page to monitor.
  * @param timeout - Maximum time in milliseconds to wait for a manifest. Acts as a safety net if finalize() is never called.
+ * @param observeFactory - The HLS playlist observer factory (default observeHlsPlaylists); injectable so the selection state machine can run without a live browser.
  * @returns The interceptor handle, or null if the observer could not be installed.
  */
-export async function installManifestInterceptor(page: Page, timeout: number = INTERCEPTION_TIMEOUT): Promise<Nullable<ManifestInterceptorHandle>> {
+export async function installManifestInterceptor(page: Page, timeout: number = INTERCEPTION_TIMEOUT,
+  observeFactory: typeof observeHlsPlaylists = observeHlsPlaylists): Promise<Nullable<ManifestInterceptorHandle>> {
 
   const elapsed = startTimer();
 
@@ -156,7 +158,7 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
 
   const { promise, resolve } = Promise.withResolvers<Nullable<ManifestInterceptionResult>>();
 
-  const observer: Nullable<HlsPlaylistObserver> = await observeHlsPlaylists(page, {
+  const observer: Nullable<HlsPlaylistObserver> = await observeFactory(page, {
 
     logCategory: "native:intercept",
     onPlaylist: (playlist: ObservedHlsPlaylist): void => {
@@ -280,10 +282,11 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
  * @param page - The puppeteer page to monitor.
  * @param predicate - Test applied to each verified master manifest URL. Return true to accept the URL and resolve.
  * @param timeout - Maximum time in milliseconds to wait for a matching manifest.
+ * @param observeFactory - The HLS playlist observer factory (default observeHlsPlaylists); injectable so the verification state machine can run without a live browser.
  * @returns The matching URL, or null on timeout.
  */
 export async function awaitMatchingManifest(page: Page, predicate: (url: string) => boolean,
-  timeout: number = VERIFICATION_TIMEOUT): Promise<Nullable<string>> {
+  timeout: number = VERIFICATION_TIMEOUT, observeFactory: typeof observeHlsPlaylists = observeHlsPlaylists): Promise<Nullable<string>> {
 
   const elapsed = startTimer();
   let resolved = false;
@@ -293,7 +296,7 @@ export async function awaitMatchingManifest(page: Page, predicate: (url: string)
   // Tune verification is a multi-channel concept that only applies to master playlists - direct-tune media-only sources do not run a guide-click verification
   // step because the page navigation itself selects the channel. We reject media playlists at the consumer level rather than asking the observer to filter so
   // the observer keeps a single canonical contract (forward all recognized HLS playlists with their kind).
-  const observer: Nullable<HlsPlaylistObserver> = await observeHlsPlaylists(page, {
+  const observer: Nullable<HlsPlaylistObserver> = await observeFactory(page, {
 
     logCategory: "native:intercept",
     onPlaylist: (playlist: ObservedHlsPlaylist): void => {

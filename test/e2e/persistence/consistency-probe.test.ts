@@ -4,88 +4,39 @@
  * The probe's auto-fix path (unknown-service-tag) is covered separately in cross-store-consistency.test.ts; this file owns the paths that emit a warning but
  * have no auto-fix - dangling-variant-canonical and dangling-domain-profile - plus the exception-swallow safety net inside runConsistencyProbeAtStartup.
  *
- * The warn-only paths cannot be observed via on-disk side effects (there is no auto-fix to land), so the suite must capture LOG output. We mock-module the
- * utils barrel with a proxy LOG that forwards to a per-test capturer, then dynamically import the modules under test so their static LOG bindings resolve
- * to the mock. The pattern follows src/config/persistence.integrity.test.ts and the precedents in src/routes/health.test.ts and test/e2e/streaming/pretune.test.ts.
+ * The warn-only paths have no on-disk side effect to observe (there is no auto-fix to land), so the suite captures LOG output. The probe logs through the
+ * process-wide LOG, whose entries also flow to the SSE emitter before the console/file branch; we subscribe to that emitter (subscribeToLogs) and assert
+ * against the captured level and formatted message - the same observable an operator sees on the Logs tab. Console logging defaults off under test, so the
+ * subscription is silent.
  */
-import type * as ConsistencyProbeModule from "../../../src/config/consistencyProbe.ts";
-import type * as IntegrationHelpers from "../../helpers/integration.helpers.ts";
-import type * as Services from "../../../src/config/services.ts";
-import type * as UserChannels from "../../../src/config/userChannels.ts";
-import type * as UserConfig from "../../../src/config/userConfig.ts";
-import type * as UserProfiles from "../../../src/config/userProfiles.ts";
-import { type CapturedLogLine, type TestLogger, capturingLog, silentLog } from "../../../src/testing.helpers.ts";
-import { before, beforeEach, describe, mock, test } from "node:test";
+import { afterEach, beforeEach, describe, test } from "node:test";
+import { createIntegrationContext, initializePersistence, pathInDataDir } from "../../helpers/integration.helpers.ts";
 import type { IntegrationContext } from "../../helpers/integration.helpers.ts";
+import type { LogEntry } from "../../../src/utils/logEmitter.ts";
 import assert from "node:assert/strict";
+import { mutateChannels } from "../../../src/config/userChannels.ts";
+import { mutateConfig } from "../../../src/config/userConfig.ts";
+import { mutateProfiles } from "../../../src/config/userProfiles.ts";
+import { runConsistencyProbeAtStartup } from "../../../src/config/consistencyProbe.ts";
+import { setEnabledServices } from "../../../src/config/services.ts";
+import { subscribeToLogs } from "../../../src/utils/logEmitter.ts";
 import { writeFile } from "node:fs/promises";
 
-// Per-test active logger; the proxy LOG installed via mock.module forwards every call here. Tests assign their own capturingLog before triggering the probe.
-let activeLogger: TestLogger = silentLog();
+// Every emitted log entry for the duration of a test. Populated by the subscribeToLogs subscription installed in beforeEach and reset per test so one test's
+// probe output cannot leak into another's assertions. Filtered by level and message substring the same way an operator would scan the Logs tab.
+let captured: LogEntry[];
 
-// Lazily-bound modules. Populated in `before` after mock.module installs the LOG proxy.
-let createIntegrationContext: typeof IntegrationHelpers.createIntegrationContext;
-let initializePersistence: typeof IntegrationHelpers.initializePersistence;
-let pathInDataDir: typeof IntegrationHelpers.pathInDataDir;
-let mutateChannels: typeof UserChannels.mutateChannels;
-let mutateProfiles: typeof UserProfiles.mutateProfiles;
-let mutateConfig: typeof UserConfig.mutateConfig;
-let setEnabledServices: typeof Services.setEnabledServices;
-let runConsistencyProbeAtStartup: typeof ConsistencyProbeModule.runConsistencyProbeAtStartup;
-
-before(async () => {
-
-  // Pass-through every export of the utils barrel that we do not override, so the dynamically-imported modules under test can still resolve stringifySorted,
-  // formatError, and the rest of the surface.
-  const realUtils = await import("../../../src/utils/index.ts");
-
-  const proxyLog: TestLogger = {
-
-    debug: (category: string, message: string, ...args: unknown[]): void => { activeLogger.debug(category, message, ...args); },
-    error: (message: string, ...args: unknown[]): void => { activeLogger.error(message, ...args); },
-    info: (message: string, ...args: unknown[]): void => { activeLogger.info(message, ...args); },
-    warn: (message: string, ...args: unknown[]): void => { activeLogger.warn(message, ...args); },
-    withStreamId: (streamId: string) => activeLogger.withStreamId(streamId)
-  };
-
-  mock.module(new URL("../../../src/utils/index.ts", import.meta.url).href, {
-
-    namedExports: { ...realUtils, LOG: proxyLog }
-  });
-
-  // Dynamic-import the modules under test so their static `import { LOG } from "../utils/index.ts"` bindings resolve to the proxy. The integration helper's
-  // bootstrapping (createIntegrationContext, initializePersistence) and the probe entrypoint must all flow through this re-import, otherwise the persistence
-  // store loading inside initialize* still emits to the real LOG and the test's capturer is silent.
-  const integration = await import("../../helpers/integration.helpers.ts");
-
-  createIntegrationContext = integration.createIntegrationContext;
-  initializePersistence = integration.initializePersistence;
-  pathInDataDir = integration.pathInDataDir;
-
-  const userChannels = await import("../../../src/config/userChannels.ts");
-
-  mutateChannels = userChannels.mutateChannels;
-
-  const userProfiles = await import("../../../src/config/userProfiles.ts");
-
-  mutateProfiles = userProfiles.mutateProfiles;
-
-  const userConfig = await import("../../../src/config/userConfig.ts");
-
-  mutateConfig = userConfig.mutateConfig;
-
-  const services = await import("../../../src/config/services.ts");
-
-  setEnabledServices = services.setEnabledServices;
-
-  const consistencyProbe = await import("../../../src/config/consistencyProbe.ts");
-
-  runConsistencyProbeAtStartup = consistencyProbe.runConsistencyProbeAtStartup;
-});
+let unsubscribe: () => void;
 
 beforeEach(() => {
 
-  activeLogger = silentLog();
+  captured = [];
+  unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+});
+
+afterEach(() => {
+
+  unsubscribe();
 });
 
 describe("consistency probe - dangling-variant-canonical detection", () => {
@@ -100,10 +51,6 @@ describe("consistency probe - dangling-variant-canonical detection", () => {
      * The seed: a stored variant with a canonicalKey that does not exist in either source. We use a randomized variant key plus a clearly-not-real canonical
      * so the test cannot accidentally collide with a future predefined entry.
      */
-    const { logger, lines } = capturingLog();
-
-    activeLogger = logger;
-
     await using ctx = await createIntegrationContext();
 
     await initializePersistence(ctx);
@@ -119,7 +66,7 @@ describe("consistency probe - dangling-variant-canonical detection", () => {
     await runConsistencyProbeAtStartup();
 
     // Assert: a warn line carries the dangling-variant-canonical category, names the variant, and names the missing canonical.
-    const matching = lines().filter((line: CapturedLogLine) => {
+    const matching = captured.filter((line) => {
 
       return (line.level === "warn") && line.message.includes("dangling-variant-canonical") && line.message.includes("fake-variant-x9z2");
     });
@@ -128,7 +75,7 @@ describe("consistency probe - dangling-variant-canonical detection", () => {
     assert.match(matching[0]?.message ?? "", /definitely-missing-canonical-y7a3/, "the missing canonical key is included for operator triage");
 
     // No error-level lines for this category - dangling canonicals are warn-only by design.
-    const errors = lines().filter((line: CapturedLogLine) => (line.level === "error") && line.message.includes("dangling-variant-canonical"));
+    const errors = captured.filter((line) => (line.level === "error") && line.message.includes("dangling-variant-canonical"));
 
     assert.equal(errors.length, 0, "dangling-variant-canonical is warn-only; the probe must not escalate to error severity");
   });
@@ -142,10 +89,6 @@ describe("consistency probe - dangling-domain-profile detection", () => {
      * profile store (getUserProfiles). A domain surfaces as dangling only when its profile exists in neither table, so the test mapping points at a key that
      * exists in no profile table at all.
      */
-    const { logger, lines } = capturingLog();
-
-    activeLogger = logger;
-
     await using ctx = await createIntegrationContext();
 
     await initializePersistence(ctx);
@@ -159,7 +102,7 @@ describe("consistency probe - dangling-domain-profile detection", () => {
 
     await runConsistencyProbeAtStartup();
 
-    const matching = lines().filter((line: CapturedLogLine) => {
+    const matching = captured.filter((line) => {
 
       return (line.level === "warn") && line.message.includes("dangling-domain-profile") && line.message.includes("test-domain-q4r1.example");
     });
@@ -167,7 +110,7 @@ describe("consistency probe - dangling-domain-profile detection", () => {
     assert.ok(matching.length >= 1, "at least one warn-level line names the dangling domain mapping and the missing profile");
     assert.match(matching[0]?.message ?? "", /missing-profile-p5s8/, "the missing profile key is included for operator triage");
 
-    const errors = lines().filter((line: CapturedLogLine) => (line.level === "error") && line.message.includes("dangling-domain-profile"));
+    const errors = captured.filter((line) => (line.level === "error") && line.message.includes("dangling-domain-profile"));
 
     assert.equal(errors.length, 0, "dangling-domain-profile is warn-only by design");
   });
@@ -178,10 +121,6 @@ describe("consistency probe - dangling-domain-profile detection", () => {
     // (getUserProfiles), so mapping a domain onto a profile the user created is a valid configuration the save-path validator accepts and the probe must not warn
     // about. Consulting only the builtin table would surface this valid custom configuration as a false "dangling-domain-profile", which is exactly the outcome this
     // guard asserts against.
-    const { logger, lines } = capturingLog();
-
-    activeLogger = logger;
-
     await using ctx = await createIntegrationContext();
 
     await initializePersistence(ctx);
@@ -195,7 +134,7 @@ describe("consistency probe - dangling-domain-profile detection", () => {
 
     await runConsistencyProbeAtStartup();
 
-    const danglingForOurDomain = lines().filter((line: CapturedLogLine) => {
+    const danglingForOurDomain = captured.filter((line) => {
 
       return line.message.includes("dangling-domain-profile") && line.message.includes("test-domain-w7x2.example");
     });
@@ -221,10 +160,6 @@ describe("consistency probe - auto-fix exception swallow", () => {
      * If the rejection were not inspected and logged, the FileStoreParseError would surface as a process-level unhandled rejection (Node's --test runner would
      * treat it as a test failure or even abort the run). Inspecting each settlement keeps the rest of startup safe.
      */
-    const { logger, lines } = capturingLog();
-
-    activeLogger = logger;
-
     await using ctx: IntegrationContext = await createIntegrationContext();
 
     await initializePersistence(ctx);
@@ -248,12 +183,12 @@ describe("consistency probe - auto-fix exception swallow", () => {
     await assert.doesNotReject(() => runConsistencyProbeAtStartup(),
       "the probe must complete cleanly even when an autoFix throws - the catch is the safety net for partial-progress startup");
 
-    // The rejected-settlement branch surfaces the failed category for operator triage. The exact log shape is "Consistency probe auto-fix failed for %s: %s."
-    // with the category as the first argument.
-    const swallowed = lines().filter((line: CapturedLogLine) => (line.level === "warn") && line.message.includes("Consistency probe auto-fix failed"));
+    // The rejected-settlement branch surfaces the failed category in the operator-visible log line for triage. The message shape is "Consistency probe auto-fix
+    // failed for <category>: <reason>."; we assert the category appears in that formatted line - the same text an operator reads on the Logs tab.
+    const swallowed = captured.filter((line) => (line.level === "warn") && line.message.includes("Consistency probe auto-fix failed"));
 
     assert.ok(swallowed.length >= 1, "the swallowed autoFix failure is logged at warn level");
-    assert.equal(swallowed[0]?.args[0], "unknown-service-tag",
-      "the failing category surfaces as a structured arg so operators can identify which auto-fix broke");
+    assert.ok(swallowed[0]?.message.includes("unknown-service-tag"),
+      "the failing category surfaces in the log line so operators can identify which auto-fix broke");
   });
 });

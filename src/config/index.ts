@@ -46,6 +46,19 @@ import path from "node:path";
  */
 export type CliOverrides = Record<string, unknown>;
 
+/* ConfigStore is the disk-persistence boundary config/index.ts composes on: the read-load and write-back operations backed by the file store. It is injected as a
+ * default parameter on the persistence-facing functions so a test can substitute an in-memory store at the same seam - no loader mock - while production uses the
+ * real defaultConfigStore. mergeConfiguration and the normalization helpers stay direct because they are pure and touch no disk. This mirrors the Clock port
+ * (utils/clock.ts): a typed interface plus a module-const default, consumed through a defaulted parameter.
+ */
+export interface ConfigStore {
+
+  readonly mutateConfig: typeof mutateConfig;
+  readonly readConfig: typeof readConfig;
+}
+
+const defaultConfigStore: ConfigStore = { mutateConfig, readConfig };
+
 // The CONFIG object is initialized during startup. It starts as a copy of DEFAULTS and is replaced by the merged configuration.
 export let CONFIG: Config = structuredClone(DEFAULTS);
 
@@ -80,12 +93,12 @@ let captureConfigCoercedAtStartup = false;
  * must be called at startup before any code accesses CONFIG. After initialization, the CONFIG object contains the final merged values.
  * @param cliOverrides - Optional CLI flag overrides, applied at the highest priority level.
  */
-export async function initializeConfiguration(cliOverrides?: CliOverrides): Promise<void> {
+export async function initializeConfiguration(cliOverrides?: CliOverrides, io: ConfigStore = defaultConfigStore): Promise<void> {
 
   // Load user configuration from file. Schema migrations (legacy provider field renames, foxcom -> foxone in enabledServices) run automatically inside the
   // file store framework via the declarative configMigrations registry; ensureMigrated (called by the release boot coordinator at startup) persists any
   // upgrades to disk before this function runs. The data returned here is always at CURRENT_CONFIG_SCHEMA_VERSION.
-  const result = await readConfig();
+  const result = await io.readConfig();
 
   configParseError = result.parseError;
   configParseErrorMessage = result.parseErrorMessage;
@@ -128,11 +141,11 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides): Prom
  * configuration into the live binding without passing through validateConfiguration. The reject-on-invalid path is exercised by index.reload.test.ts.
  * @returns The aggregate result of dispatching the diff.
  */
-export async function reloadConfiguration(): Promise<ApplyResult> {
+export async function reloadConfiguration(io: ConfigStore = defaultConfigStore): Promise<ApplyResult> {
 
   // Re-read the on-disk config snapshot that mutateConfig just wrote, then build the new in-memory shape in isolation so normalizations do not mutate the
   // previous snapshot before the diff is computed.
-  const result = await readConfig();
+  const result = await io.readConfig();
 
   configParseError = result.parseError;
   configParseErrorMessage = result.parseErrorMessage;
@@ -534,7 +547,7 @@ export function validateConfiguration(): void {
  * filterDefaults strips any value equal to its default on write, so a config coerced back to the FFmpeg/h264 defaults leaves a clean file with no capture override.
  * Failures degrade gracefully: the live CONFIG is already coerced, so a write failure only means the divergence persists until the next successful save or boot.
  */
-export async function persistCoercedConfig(): Promise<void> {
+export async function persistCoercedConfig(io: ConfigStore = defaultConfigStore): Promise<void> {
 
   if(!captureConfigCoercedAtStartup) {
 
@@ -543,7 +556,7 @@ export async function persistCoercedConfig(): Promise<void> {
 
   try {
 
-    await mutateConfig((config) => {
+    await io.mutateConfig((config) => {
 
       config.streaming ??= {};
       config.streaming.captureCodecs = Array.from(CONFIG.streaming.captureCodecs);

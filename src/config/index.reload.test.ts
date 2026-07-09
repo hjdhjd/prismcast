@@ -1,7 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.reload.test.ts: Atomicity and validation tests for reloadConfiguration. Two contracts are exercised here, both requiring the mock.module + dynamic-
- * import dance so a stubbed readConfig binds before config/index.ts resolves its static import:
+ * index.reload.test.ts: Atomicity and validation tests for reloadConfiguration, plus the persistCoercedConfig write-back. Two reload contracts are exercised:
  *
  *   1. Atomicity on read failure: a thrown readConfig mid-reload must leave the in-memory CONFIG unchanged - the operator sees an error from the settings
  *      handler and the running CONFIG continues to reflect the previous valid state.
@@ -9,12 +8,14 @@
  *   2. Reject-on-invalid: a merged-from-disk configuration that carries a hard error or would need a capture coercion is rejected (CONFIG untouched, every
  *      diffed change reported rejected) rather than silently coerced, while a valid change still commits and dispatches normally.
  *
- * We drive (2) by overriding readConfig to return a synthetic on-disk shape, so reloadConfiguration's real merge + validation path runs against a controlled
- * config without touching the actual config file. The companion happy-path dispatch coverage lives in reactivity.test.ts and hdhr/index.test.ts.
+ * config/index.ts composes its disk-persistence I/O behind the injectable ConfigStore port (readConfig/mutateConfig, defaulting to the real file store). We pass
+ * an in-memory store at that seam: readConfig returns a synthetic on-disk shape (or throws) so reloadConfiguration's real merge + validation path runs against a
+ * controlled config without touching the real file, and mutateConfig records each write-back as a probe. The companion happy-path dispatch coverage lives in
+ * reactivity.test.ts and hdhr/index.test.ts.
  */
-import type * as IndexModule from "./index.ts";
-import type * as UserConfigModule from "./userConfig.ts";
-import { before, beforeEach, describe, mock, test } from "node:test";
+import * as indexModule from "./index.ts";
+import type { UserConfig, UserConfigLoadResult } from "./userConfig.ts";
+import { before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { getCurrentPattern } from "../utils/index.ts";
@@ -22,83 +23,59 @@ import { getCurrentPattern } from "../utils/index.ts";
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-// Mock state. When true, the next readConfig invocation throws the captured error; tests flip the flag to arm the failure for one call.
+// Store-double state. When armReadConfigFailure is true, the next readConfig throws the captured error; when readConfigOverride is set, readConfig returns that
+// synthetic load result instead of reading disk; mutateConfigProbes captures each persistCoercedConfig write-back. Declared as separate `let` bindings so per-
+// field mutability is explicit at the declaration site.
 let armReadConfigFailure = false;
 const readConfigFailureMessage = "synthetic readConfig failure for atomicity test";
+let readConfigOverride: UserConfigLoadResult | null = null;
+let mutateConfigProbes: UserConfig[] = [];
 
-// When set, readConfig returns this synthetic load result instead of reading disk. Tests use it to drive reloadConfiguration's merge + validation path against
-// a controlled on-disk shape (an invalid or coercion-needing config) without touching the real config file. Reset in each test's finally block by the validation suite.
-let readConfigOverride: UserConfigModule.UserConfigLoadResult | null = null;
+/* The injected config store: substitutes config/index.ts's disk-persistence boundary so reloadConfiguration's merge + validation and persistCoercedConfig's write-
+ * back run against controlled state without touching the real config file. Typed as the production ConfigStore port so the double cannot drift from it. Every
+ * reload test arms a failure or an override before driving reloadConfiguration; readConfig throws on the un-armed path rather than falling through to a real disk
+ * read, so a test that forgets to arm one fails loudly instead of silently reading production config.
+ */
+const io: indexModule.ConfigStore = {
 
-// Captures each mutateConfig mutation as a probe object so the persistCoercedConfig write-back can be asserted without touching the real config file. The mock
-// invokes the caller's mutator against a fresh empty UserConfig and records the result.
-let mutateConfigProbes: UserConfigModule.UserConfig[] = [];
+  mutateConfig: async (fn) => {
 
-let indexModule: typeof IndexModule;
-let CONFIG: typeof IndexModule.CONFIG;
-let reloadConfiguration: typeof IndexModule.reloadConfiguration;
+    const probe: UserConfig = {};
 
-before(async () => {
+    fn(probe);
+    mutateConfigProbes.push(probe);
+  },
+  readConfig: () => {
 
-  // Capture the real exports so any name we do not override passes through unchanged. mergeConfiguration is statically imported by config/index.ts; without
-  // spreading the real exports the dynamic import would resolve mergeConfiguration to undefined and fail before our throw path runs.
-  const realUserConfig = await import("./userConfig.ts");
+    if(armReadConfigFailure) {
 
-  const userConfigUrl = new URL("./userConfig.ts", import.meta.url).href;
-
-  // The Node 22 type definitions surface the option as namedExports; the runtime renamed it to exports in a later minor and emits a deprecation warning. We
-  // keep namedExports until @types/node catches up.
-  mock.module(userConfigUrl, {
-
-    namedExports: {
-
-      ...realUserConfig,
-      mutateConfig: (async (fn: (current: UserConfigModule.UserConfig) => void): Promise<void> => {
-
-        const probe: UserConfigModule.UserConfig = {};
-
-        fn(probe);
-        mutateConfigProbes.push(probe);
-      }) as typeof UserConfigModule.mutateConfig,
-      readConfig: ((): ReturnType<typeof UserConfigModule.readConfig> => {
-
-        if(armReadConfigFailure) {
-
-          throw new Error(readConfigFailureMessage);
-        }
-
-        if(readConfigOverride) {
-
-          return Promise.resolve(readConfigOverride);
-        }
-
-        return realUserConfig.readConfig();
-      }) as typeof UserConfigModule.readConfig
+      throw new Error(readConfigFailureMessage);
     }
-  });
 
-  // Dynamic-import config/index.ts AFTER the mock is installed so its static `import { readConfig } from "./userConfig.ts"` resolves through the mock layer. A
-  // static import at the top of this file would bind the real export before mock.module had a chance to register.
-  indexModule = await import("./index.ts");
+    if(readConfigOverride) {
 
-  CONFIG = indexModule.CONFIG;
-  reloadConfiguration = indexModule.reloadConfiguration;
-});
+      return Promise.resolve(readConfigOverride);
+    }
+
+    throw new Error("readConfig was called without an armed failure or override - the test must set one before driving reloadConfiguration.");
+  }
+};
 
 describe("reloadConfiguration - atomicity on read failure", () => {
 
   test("a thrown readConfig leaves CONFIG reference-identical to its pre-call value", async () => {
 
+    // Read the live CONFIG binding before and after so the assertion actually observes a reassignment: reloadConfiguration builds the next shape in isolation and
+    // only reassigns the live binding after read + merge + normalize + validate succeed, so a thrown readConfig must leave CONFIG referentially unchanged. A local
+    // snapshot copy would not track the binding and could not fail.
     armReadConfigFailure = true;
-    const before = CONFIG;
+    const before = indexModule.CONFIG;
 
     try {
 
-      await assert.rejects(() => reloadConfiguration(), { message: readConfigFailureMessage });
+      await assert.rejects(() => indexModule.reloadConfiguration(io), { message: readConfigFailureMessage });
 
-      // The binding may have been reassigned by anything that imports config/index.ts and mutates CONFIG separately; the load-bearing claim is that the failed
-      // reload did not commit any reassignment of its own. Comparing reference identity locks the "we did not reach the CONFIG = nextConfig line" invariant.
-      assert.equal(CONFIG, before, "CONFIG binding was not reassigned by the failed reload");
+      assert.equal(indexModule.CONFIG, before, "CONFIG binding was not reassigned by the failed reload");
     } finally {
 
       armReadConfigFailure = false;
@@ -110,7 +87,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
 
   // Each test arms a synthetic on-disk shape; clear it afterward so a later test (or the atomicity suite, if reordered) reads the real config again. The reject
   // tests never commit, so CONFIG stays pristine for them; the commit test runs last and is the only one that reassigns the live binding.
-  let snapshot: typeof IndexModule.CONFIG;
+  let snapshot: typeof indexModule.CONFIG;
 
   before(() => {
 
@@ -123,7 +100,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
 
     try {
 
-      const result = await reloadConfiguration();
+      const result = await indexModule.reloadConfiguration(io);
 
       // The live binding stays on the previous valid state - native mode never becomes live - and the operator is told why.
       assert.equal(indexModule.CONFIG, snapshot, "CONFIG binding was not reassigned");
@@ -148,7 +125,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
 
     try {
 
-      const result = await reloadConfiguration();
+      const result = await indexModule.reloadConfiguration(io);
 
       assert.equal(indexModule.CONFIG, before, "CONFIG binding was not reassigned");
       assert.equal(result.applied.length, 0, "nothing applied on the reject path");
@@ -166,7 +143,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
 
     try {
 
-      const result = await reloadConfiguration();
+      const result = await indexModule.reloadConfiguration(io);
 
       assert.equal(indexModule.CONFIG, snapshot, "CONFIG binding was not reassigned");
       assert.deepEqual(result.rejected.map((r) => r.change.path), ["server.port"]);
@@ -183,7 +160,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
 
     try {
 
-      const result = await reloadConfiguration();
+      const result = await indexModule.reloadConfiguration(io);
 
       // A valid save is not blocked by the reject path: CONFIG commits and the change dispatches. With no "server." handler registered in this process it lands
       // in the deferred bucket, which is exactly the legacy "restart to apply" behavior for an un-opted-in subsystem.
@@ -213,7 +190,7 @@ describe("persistCoercedConfig - startup capture write-back", () => {
     indexModule.validateConfiguration();
     assert.equal(indexModule.CONFIG.streaming.captureMode, "ffmpeg");
 
-    await indexModule.persistCoercedConfig();
+    await indexModule.persistCoercedConfig(io);
 
     assert.equal(mutateConfigProbes.length, 1, "the coercion is written back to disk");
     assert.ok(mutateConfigProbes.every((p) => (p.streaming?.captureMode === "ffmpeg")), "the persisted capture mode is the coerced ffmpeg value");
@@ -224,7 +201,7 @@ describe("persistCoercedConfig - startup capture write-back", () => {
     indexModule.CONFIG.streaming.captureMode = "ffmpeg";
 
     indexModule.validateConfiguration();
-    await indexModule.persistCoercedConfig();
+    await indexModule.persistCoercedConfig(io);
 
     assert.equal(mutateConfigProbes.length, 0, "no write-back without a coercion");
   });

@@ -1,67 +1,71 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * hls.loginMode.test.ts: Unit tests for the login-mode 503 branch of validateChannel. The login-mode flag is owned by browser/login.ts and exposed via
- * isLoginModeActive() re-exported from browser/index.ts; the only public path that flips the flag to true is startLoginMode(), which spawns a real Puppeteer
- * tab and is not viable for a unit test. mock.module + dynamic import is the canonical seam for swapping the accessor without driving a browser. The
- * companion happy-path and 404 tests live in hls.test.ts and use static imports - mixing static and dynamic imports of hls.ts in one file would force every
- * test in that file through the mock.module setup, so the seam is isolated here.
+ * hls.loginMode.test.ts: Unit tests for the login-mode 503 branch of validateChannel. Login mode is owned by browser/login.ts, and validateChannel reads it
+ * through isLoginModeActive() (re-exported via browser/index.ts). Rather than substitute the accessor, we drive the REAL flag by calling the production
+ * startLoginMode() through the injected setBrowserAccessors() seam with a stub browser and page - the same seam browser/index.ts wires at startup and
+ * precaching.revalidation.test.ts uses - so the test exercises the real login-mode mechanism end to end. clearLoginState() resets the flag and cancels the
+ * 15-minute login timeout between tests. The companion happy-path and 404 tests live in hls.test.ts.
  */
-import type * as HlsModule from "./hls.ts";
-import { before, beforeEach, describe, mock, test } from "node:test";
+import type { Browser, Page } from "puppeteer-core";
+import { afterEach, beforeEach, describe, test } from "node:test";
+import { clearLoginState, setBrowserAccessors, startLoginMode } from "../browser/login.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
+import { validateChannel } from "./hls.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-let mockLoginModeActive = false;
-let validateChannel: typeof HlsModule.validateChannel;
+// Minimal login-page stub. startLoginMode opens a page and calls goto/on/unminimizeWindow against it, none of which need real behavior here; the stub mirrors the
+// login.test.ts and precaching.revalidation.test.ts shape.
+function makeLoginPageStub(): Page {
 
-before(async () => {
+  return {
 
-  /* Capture the real exports of browser/index.ts so any export not in our override list passes through unchanged. Mocking the barrel without spreading the
-   * real exports would leave any incidental access to a non-listed name resolving to undefined, breaking unrelated imports inside hls.ts (emitCurrentSystemStatus
-   * and unregisterManagedPage are also imported from the same barrel).
-   */
-  const realBrowser = await import("../browser/index.ts");
+    close: async (): Promise<void> => { /* Nothing to close on a stub. */ },
+    goto: async (): Promise<void> => { /* Nothing to navigate on a stub. */ },
+    isClosed: (): boolean => false,
+    on: (): void => { /* Close-handler registration is irrelevant here. */ }
+  } as unknown as Page;
+}
 
-  const browserUrl = new URL("../browser/index.ts", import.meta.url).href;
+// A connected stub browser whose newPage yields the login-page stub, so the real startLoginMode reaches its success path (browser.connected + newPage) without a
+// real Chrome.
+function makeStubBrowser(): Browser {
 
-  // The Node 22 type definitions surface the option as namedExports; the runtime renamed it to exports in a later minor and emits a deprecation warning. We
-  // keep namedExports until @types/node catches up - the runtime path is unaffected and the type definition is authoritative for the build. Same precedent
-  // as routes/health.test.ts.
-  mock.module(browserUrl, {
-
-    namedExports: {
-
-      ...realBrowser,
-      isLoginModeActive: (): boolean => mockLoginModeActive
-    }
-  });
-
-  // Now that the mock is in place, dynamic-import hls.ts so its captured `import { isLoginModeActive } from "../browser/index.ts"` resolves to the mock. A
-  // static import at the top of this file would bind the real export before mock.module had a chance to register the override.
-  const hlsModule = await import("./hls.ts");
-
-  validateChannel = hlsModule.validateChannel;
-});
+  return { connected: true, newPage: async (): Promise<Page> => makeLoginPageStub() } as unknown as Browser;
+}
 
 beforeEach(() => {
 
-  // Reset the mock state to default-off so per-test mutations cannot leak.
-  mockLoginModeActive = false;
+  // Start each test from a clean login state so one test's login mode cannot leak into the next; also cancels any pending 15-minute login timeout.
+  clearLoginState();
+});
+
+afterEach(() => {
+
+  // Clear state and cancel the login timeout so the 15-minute timer does not hold the runner open.
+  clearLoginState();
 });
 
 describe("validateChannel - login mode 503 branch", () => {
 
-  test("returns valid: false with status 503 and a structured error body when login mode is active", () => {
+  test("returns valid: false with status 503 and a structured error body when login mode is active", async () => {
 
     /* The 503 branch is the only validateChannel arm that returns an OBJECT body (not a string); the discriminated union's body field is Record<string, string>
      * here, which sendValidationError downstream dispatches via res.json rather than res.send. A regression that returned a plain string would still produce a
      * 503 status but would silently lose the structured error/message fields the Channels DVR client uses to surface the login-in-progress hint. We assert on
      * both fields explicitly so any drop in either would surface here.
      */
-    mockLoginModeActive = true;
+
+    // Drive the real login-mode flag true through the production setBrowserAccessors seam: startLoginMode opens the stub login page and flips isLoginModeActive().
+    setBrowserAccessors({
+
+      getBrowserInstance: (): Browser => makeStubBrowser(),
+      minimizeBrowserWindow: async (): Promise<void> => { /* Not exercised in this test. */ }
+    });
+
+    await startLoginMode("https://www.stub-login.test/login");
 
     const result = validateChannel("abc");
 
@@ -80,12 +84,10 @@ describe("validateChannel - login mode 503 branch", () => {
 
   test("does NOT block the request when login mode is inactive (negative control)", () => {
 
-    /* Companion to the previous test: when isLoginModeActive() returns false (the default), validateChannel proceeds past the login check and returns a
-     * non-503 result. We assert that the result is not the 503 shape - either it is valid: true (success) or it is one of the other 4xx/5xx arms - to lock
-     * the symmetry that login mode is the ONLY producer of the 503 contract.
+    /* Companion to the previous test: when login mode is inactive (the beforeEach clean state, no startLoginMode call), validateChannel proceeds past the login
+     * check and returns a non-503 result. We assert that the result is not the 503 shape - either it is valid: true (success) or it is one of the other 4xx/5xx
+     * arms - to lock the symmetry that login mode is the ONLY producer of the 503 contract.
      */
-    mockLoginModeActive = false;
-
     const result = validateChannel("abc");
 
     if(!result.valid) {

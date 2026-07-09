@@ -1384,6 +1384,24 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
   }
 }
 
+/* VideoTuneDeps is the set of cross-module tune collaborators initializePlayback and its failure-path diagnosis compose on: channel selection and the overlay-
+ * handling poll on the main path, plus the provider lookup and blocked-page classifier on the failure path. It is injected as a default parameter so a test can
+ * substitute stubs at the same seam - no loader mock - while production uses the real defaultVideoTuneDeps. The default is a shared module const, allocated once at
+ * load, because initializePlayback is on the streaming hot path (every stream start and every recovery tune) and a per-call deps object would allocate on each
+ * tune. It is cycle-safe: none of channelSelection/consent/blockedPage import video.ts, and all four members are hoisted function declarations, so the const's
+ * references resolve at load with no temporal-dead-zone hazard. markDomainAuthRequired stays a direct import - it is not a substituted collaborator (the test
+ * asserts the real domain-auth state). This is the collaborator-injection form of the Clock port (utils/clock.ts).
+ */
+export interface VideoTuneDeps {
+
+  readonly classifyBlockedPage: typeof classifyBlockedPage;
+  readonly getProvidersForDomain: typeof getProvidersForDomain;
+  readonly selectChannel: typeof selectChannel;
+  readonly startOverlayHandling: typeof startOverlayHandling;
+}
+
+const defaultVideoTuneDeps: VideoTuneDeps = { classifyBlockedPage, getProvidersForDomain, selectChannel, startOverlayHandling };
+
 // Upper bound on the blocked-page classification during a failed tune. classifyBlockedPage() never throws but is not internally time-bounded (its DOM probes run
 // without a timeout wrapper), so a hung renderer could otherwise stall the failure path indefinitely. Four seconds accommodates the probes on a responsive page
 // while keeping the added window negligible inside the 45-second playback-initialization race in setup.ts.
@@ -1399,16 +1417,16 @@ const BLOCKED_PAGE_CLASSIFY_TIMEOUT = 4000;
  * @param originalError - The failure that triggered the diagnosis, rethrown as-is when the page classifies as unknown.
  * @returns Never resolves - every classification outcome throws.
  */
-async function diagnoseBlockedTune(page: Page, requestedUrl: string, originalError: unknown): Promise<never> {
+async function diagnoseBlockedTune(page: Page, requestedUrl: string, originalError: unknown, deps: VideoTuneDeps): Promise<never> {
 
   const domain = extractDomain(requestedUrl);
 
   // Resolve the provider whose guide lives on this domain, when one is registered. Its declared auth wall indicators (when defined) sharpen the classification,
   // and a provider match is what authorizes the needs-sign-in mark below.
-  const provider = getProvidersForDomain(domain)[0];
+  const provider = deps.getProvidersForDomain(domain)[0];
 
   // Time-bound the classification so the failure path stays bounded: on timeout the page is simply unknown and the original failure stands.
-  const classification = await raceWithTimeout(classifyBlockedPage(page, { indicators: provider?.authWallIndicators, requestedUrl }),
+  const classification = await raceWithTimeout(deps.classifyBlockedPage(page, { indicators: provider?.authWallIndicators, requestedUrl }),
     BLOCKED_PAGE_CLASSIFY_TIMEOUT).catch((): BlockedPageClassification => ({ kind: "unknown" }));
 
   switch(classification.kind) {
@@ -1486,7 +1504,8 @@ export interface InitializePlaybackOptions {
  * @param options - Optional behaviors. See InitializePlaybackOptions.
  * @returns The video context (frame or page) for subsequent monitoring, and a directTune flag when the channel was tuned via API interception.
  */
-export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, options: InitializePlaybackOptions = {}): Promise<TuneResult> {
+export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, options: InitializePlaybackOptions = {},
+  deps: VideoTuneDeps = defaultVideoTuneDeps): Promise<TuneResult> {
 
   const elapsed = startTimer();
   const { persistResolution, requestedUrl, skipChannelSelection = false } = options;
@@ -1503,7 +1522,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
   if(!skipChannelSelection) {
 
-    let channelResult = await selectChannel(page, profile, { persistResolution });
+    let channelResult = await deps.selectChannel(page, profile, { persistResolution });
 
     if(!channelResult.success) {
 
@@ -1514,7 +1533,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
         await dismissGuideOverlay(page);
 
-        channelResult = await selectChannel(page, profile, { persistResolution });
+        channelResult = await deps.selectChannel(page, profile, { persistResolution });
       }
 
       if(!channelResult.success) {
@@ -1525,7 +1544,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
         // where the guide should be. An unknown classification rethrows this same error, so the undiagnosed outcome is identical to the plain throw below.
         if(requestedUrl !== undefined) {
 
-          await diagnoseBlockedTune(page, requestedUrl, selectionError);
+          await diagnoseBlockedTune(page, requestedUrl, selectionError, deps);
         }
 
         throw selectionError;
@@ -1550,7 +1569,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
     if(requestedUrl !== undefined) {
 
-      await diagnoseBlockedTune(page, requestedUrl, contextError);
+      await diagnoseBlockedTune(page, requestedUrl, contextError, deps);
     }
 
     throw contextError;
@@ -1591,7 +1610,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
   // Abandons the in-flight video wait when an embed gate is accepted, so the superseded wait rejects silently instead of logging a misleading readiness timeout.
   const waitController = new AbortController();
 
-  void startOverlayHandling(page, profile, {
+  void deps.startOverlayHandling(page, profile, {
 
     onEmbedGateAccepted: (): void => {
 
@@ -1633,7 +1652,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
       // Stop the overlay poll before probing the page, so it cannot keep clicking mid-classification. The finally below remains the safety net for every exit.
       overlayController.abort();
 
-      await diagnoseBlockedTune(page, requestedUrl, videoError);
+      await diagnoseBlockedTune(page, requestedUrl, videoError, deps);
     }
 
     throw videoError;
