@@ -196,6 +196,45 @@ const MPEGTS_OUTPUT_FLAGS = [
   "-flush_packets", "1"
 ];
 
+// FFmpeg Exit Classification.
+
+/**
+ * The outcome of classifying an FFmpeg process exit event. A discriminated union on outcome so callers can branch without inspecting an optional message field.
+ */
+export type FfmpegExitOutcome = { outcome: "error"; message: string } | { outcome: "normal" };
+
+/**
+ * Classifies an FFmpeg process exit from its reported code and signal. Pure: the shuttingDown suppression happens in the caller before this function is ever
+ * invoked, so this function only ever classifies exits the caller actually wants judged. SIGTERM is graceful termination via kill() and always classifies as
+ * normal regardless of the exit code, because a killed process can still report whatever code it happened to be mid-exit with. A non-zero code is checked before
+ * signal presence, so a non-zero code accompanied by a signal still yields the code-based message; a truthy signal that is not SIGTERM (e.g. SIGKILL, SIGSEGV)
+ * only produces its own message when the code was null.
+ * @param code - The process exit code, or null if the process was terminated by a signal.
+ * @param signal - The signal that terminated the process, or null if it exited via a normal code.
+ * @param label - Descriptive label for the error message (e.g., "FFmpeg", "MPEG-TS remuxer").
+ * @returns The classified outcome: normal, or error with a formatted message.
+ */
+export function classifyFfmpegExit(code: number | null, signal: NodeJS.Signals | null, label: string): FfmpegExitOutcome {
+
+  if(signal === "SIGTERM") {
+
+    // Normal termination via kill() - do not treat as error.
+    return { outcome: "normal" };
+  }
+
+  if((code !== null) && (code !== 0)) {
+
+    return { message: label + " exited with code " + String(code) + ".", outcome: "error" };
+  }
+
+  if(signal) {
+
+    return { message: label + " killed by signal " + signal + ".", outcome: "error" };
+  }
+
+  return { outcome: "normal" };
+}
+
 // Internal Helper.
 
 /**
@@ -251,18 +290,11 @@ function spawnFFmpegProcess({ args, ffmpegBin, label, onError, streamId }: {
       return;
     }
 
-    if(signal === "SIGTERM") {
+    const result = classifyFfmpegExit(code, signal, label);
 
-      // Normal termination via kill() - do not treat as error.
-      return;
-    }
+    if(result.outcome === "error") {
 
-    if((code !== null) && (code !== 0)) {
-
-      onError(new Error(label + " exited with code " + String(code) + "."));
-    } else if(signal) {
-
-      onError(new Error(label + " killed by signal " + signal + "."));
+      onError(new Error(result.message));
     }
   });
 

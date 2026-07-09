@@ -2,11 +2,12 @@
  *
  * showInfo.test.ts: Unit tests for the show name and channel logo subsystem. showInfo.ts integrates with the Channels DVR API to discover the active DVR host,
  * fetch active recording jobs and program guide entries, and populate channel logos in two tiers. The module exposes a small public API (getDvrHost, setDvrHost,
- * getShowName, clearShowName, triggerShowNameUpdate, fetchFromDvr, getDeviceMappings, updateChannelLogo) plus the start/stop polling lifecycle. Tests focus on
- * the pure helpers (getShowName/clearShowName, getDvrHost/setDvrHost, fetchFromDvr success/timeout paths) and avoid the polling start/stop which spawns intervals.
+ * getShowName, clearShowName, triggerShowNameUpdate, fetchFromDvr, getDeviceMappings, matchesM3uDevice, updateChannelLogo) plus the start/stop polling
+ * lifecycle. Tests focus on the pure helpers (getShowName/clearShowName, getDvrHost/setDvrHost, fetchFromDvr success/timeout paths, matchesM3uDevice's overlap
+ * boundaries) and avoid the polling start/stop which spawns intervals.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { clearShowName, fetchFromDvr, getDvrHost, getShowName, setDvrHost } from "./showInfo.ts";
+import { clearShowName, fetchFromDvr, getDvrHost, getShowName, matchesM3uDevice, setDvrHost } from "./showInfo.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 
@@ -205,5 +206,87 @@ describe("fetchFromDvr", () => {
     await fetchFromDvr<unknown>("dvr.example.invalid", "/dvr/jobs");
 
     assert.equal(observedHeaders?.get("accept"), "application/json");
+  });
+});
+
+describe("matchesM3uDevice", () => {
+
+  test("matches at exactly 80% overlap", () => {
+
+    // Device and prismcast sets are both size 5, sharing 4 entries (a, b, c, d). maxSize is 5, so overlapRatio is exactly 0.8. The accept test is
+    // `!(overlapRatio < 0.8)`, which must accept the boundary value itself - a regression to `overlapRatio >= 0.8` would also pass this case, but a regression
+    // that rounds or truncates the ratio before comparing would not.
+    const deviceChannelIds = new Set([ "a", "b", "c", "d", "f" ]);
+    const prismcastChannelKeys = new Set([ "a", "b", "c", "d", "e" ]);
+
+    const overlap = matchesM3uDevice(deviceChannelIds, prismcastChannelKeys);
+
+    assert.equal(overlap.overlapCount, 4);
+    assert.equal(overlap.maxSize, 5);
+    assert.equal(overlap.overlapRatio, 0.8);
+    assert.equal(overlap.matches, true);
+  });
+
+  test("does not match just below 80% overlap", () => {
+
+    // Negative path: the passing gate is exercised elsewhere (getDeviceMappings' own integration coverage), but the reject branch was previously untested.
+    // 3 of 5 keys overlap (a, b, c), giving overlapRatio 0.6 - well under the 0.8 threshold.
+    const deviceChannelIds = new Set([ "a", "b", "c" ]);
+    const prismcastChannelKeys = new Set([ "a", "b", "c", "d", "e" ]);
+
+    const overlap = matchesM3uDevice(deviceChannelIds, prismcastChannelKeys);
+
+    assert.equal(overlap.overlapCount, 3);
+    assert.equal(overlap.maxSize, 5);
+    assert.equal(overlap.overlapRatio, 0.6);
+    assert.equal(overlap.matches, false);
+  });
+
+  test("matches on full overlap with ratio 1", () => {
+
+    // Identical sets: every key overlaps, and neither set has an extra entry to dilute the ratio.
+    const deviceChannelIds = new Set([ "a", "b", "c" ]);
+    const prismcastChannelKeys = new Set([ "a", "b", "c" ]);
+
+    const overlap = matchesM3uDevice(deviceChannelIds, prismcastChannelKeys);
+
+    assert.equal(overlap.overlapCount, 3);
+    assert.equal(overlap.maxSize, 3);
+    assert.equal(overlap.overlapRatio, 1);
+    assert.equal(overlap.matches, true);
+  });
+
+  test("a superset device dilutes the ratio via the larger maxSize denominator", () => {
+
+    // Every prismcast key (a, b, c, d) is found in the device, so a denominator drawn from the smaller (prismcast) set would wrongly report 100% overlap.
+    // The device carries two extra channels (e, f) that PrismCast does not have, so maxSize must be drawn from the larger device set (6), yielding
+    // overlapRatio 4/6 - below the 0.8 threshold. This pins Math.max(deviceChannelIds.size, prismcastChannelKeys.size) as the denominator rather than either
+    // set's size alone.
+    const deviceChannelIds = new Set([ "a", "b", "c", "d", "e", "f" ]);
+    const prismcastChannelKeys = new Set([ "a", "b", "c", "d" ]);
+
+    const overlap = matchesM3uDevice(deviceChannelIds, prismcastChannelKeys);
+
+    assert.equal(overlap.overlapCount, 4);
+    assert.equal(overlap.maxSize, 6);
+    assert.ok(overlap.overlapRatio < 0.8);
+    assert.equal(overlap.matches, false);
+  });
+
+  test("both-empty sets yield a NaN ratio that is treated as a match", () => {
+
+    // Edge case: 0 overlapping keys divided by a maxSize of 0 is NaN in JavaScript. `!(NaN < 0.8)` evaluates to true, so the function accepts this case -
+    // this is why the implementation is written as a negated less-than rather than `overlapRatio >= 0.8` (`NaN >= 0.8` is false, which would reject). In
+    // practice getDeviceMappings never reaches this function with an empty deviceChannelIds, because it continues past any device whose Channels list is
+    // empty before calling matchesM3uDevice - this test documents the predicate's own boundary behavior in isolation.
+    const deviceChannelIds = new Set<string>();
+    const prismcastChannelKeys = new Set<string>();
+
+    const overlap = matchesM3uDevice(deviceChannelIds, prismcastChannelKeys);
+
+    assert.equal(overlap.overlapCount, 0);
+    assert.equal(overlap.maxSize, 0);
+    assert.ok(Number.isNaN(overlap.overlapRatio));
+    assert.equal(overlap.matches, true);
   });
 });

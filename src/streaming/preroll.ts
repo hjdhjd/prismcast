@@ -290,7 +290,7 @@ async function spawnAndCollect(ffmpegBin: string, args: string[]): Promise<Buffe
   const { promise: exitPromise, resolve: signalExit, reject: signalExitFailure } = Promise.withResolvers<void>();
 
   ffmpeg.on("error", signalExitFailure);
-  ffmpeg.on("exit", (code) => {
+  ffmpeg.on("exit", (code, signal) => {
 
     if(code === 0) {
 
@@ -299,7 +299,10 @@ async function spawnAndCollect(ffmpegBin: string, args: string[]): Promise<Buffe
       return;
     }
 
-    signalExitFailure(new Error("FFmpeg exited with code " + String(code) + "."));
+    // A signal-killed process reports a null code, so name the signal rather than logging the uninformative "exited with code null". Unlike the capture path,
+    // preroll never terminates its own FFmpeg - this is a one-shot startup encode - so any signal here is an abnormal interruption that stays a failure rather
+    // than a graceful stop.
+    signalExitFailure(new Error(signal ? ("FFmpeg killed by signal " + signal + ".") : ("FFmpeg exited with code " + String(code) + ".")));
   });
 
   const [output] = await Promise.all([ streamToBuffer(ffmpeg.stdout), exitPromise ]);
@@ -509,9 +512,52 @@ export function buildPrerollEntries(options: PrerollEntryOptions): PlaylistSegme
 }
 
 /**
- * Computes how many preroll segments should be visible based on elapsed wall-clock time since the preroll started. The initial window (PREROLL_INITIAL_WINDOW segments)
- * is revealed immediately so the client has enough content to begin playback per the HLS 3-from-end rule. Additional segments are revealed one at a time as wall-clock
- * time passes - each new segment appears when enough time has elapsed for the client to have consumed the prior content beyond the initial window.
+ * Computes how many segments should be revealed given elapsed wall-clock time and a codec's segment durations. This is the pure reveal math, isolated from the
+ * prerollVariants cache and Date.now() so it can be exercised directly with plain arguments - no seeded variant, no timer mocking required. The initial window
+ * (initialWindow segments) is revealed immediately so the client has enough content to begin playback per the HLS 3-from-end rule. Additional segments are revealed
+ * one at a time as wall-clock time passes - each new segment appears when enough time has elapsed for the client to have consumed the prior content beyond the
+ * initial window.
+ *
+ * @param totalSegments - The number of segments available (from variant.mediaSegments.length). Distinct from durations.length - the durations array is tracked
+ *   separately and may differ in length.
+ * @param durations - Per-segment duration in seconds (from variant.durations). A missing entry at a given index falls back to 2 seconds.
+ * @param elapsedSec - Elapsed wall-clock time in seconds since the preroll began. May be negative if the start time is in the future.
+ * @param initialWindow - Number of segments revealed immediately, regardless of elapsed time. Defaults to PREROLL_INITIAL_WINDOW.
+ * @returns The number of segments to reveal.
+ */
+export function computeReveal(totalSegments: number, durations: readonly number[], elapsedSec: number, initialWindow = PREROLL_INITIAL_WINDOW): number {
+
+  let revealCount = Math.min(initialWindow, totalSegments);
+
+  // Compute the total duration of the initial window. Segments beyond this threshold are revealed progressively - each one becomes visible when elapsed time
+  // exceeds the cumulative duration of all segments before it, minus the initial window's duration (since those were available from the start).
+  let initialWindowDuration = 0;
+
+  for(let i = 0; i < Math.min(initialWindow, totalSegments); i++) {
+
+    initialWindowDuration += durations[i] ?? 2;
+  }
+
+  let cumulativeDuration = initialWindowDuration;
+
+  for(let i = initialWindow; i < totalSegments; i++) {
+
+    cumulativeDuration += durations[i] ?? 2;
+
+    if(elapsedSec < (cumulativeDuration - initialWindowDuration)) {
+
+      break;
+    }
+
+    revealCount = i + 1;
+  }
+
+  return revealCount;
+}
+
+/**
+ * Computes how many preroll segments should be visible based on elapsed wall-clock time since the preroll started. Thin adapter over computeReveal: looks up the
+ * codec's cached variant, converts prerollStartTime into elapsed seconds, and delegates the reveal math.
  *
  * @param codec - The preroll codec variant.
  * @param prerollStartTime - Wall-clock time when the preroll began.
@@ -526,35 +572,9 @@ export function computeProgressiveReveal(codec: CaptureCodec, prerollStartTime: 
     return 0;
   }
 
-  const totalSegments = variant.mediaSegments.length;
   const elapsedSec = (Date.now() - prerollStartTime.getTime()) / 1000;
 
-  let revealCount = Math.min(PREROLL_INITIAL_WINDOW, totalSegments);
-
-  // Compute the total duration of the initial window. Segments beyond this threshold are revealed progressively - each one becomes visible when elapsed time
-  // exceeds the cumulative duration of all segments before it, minus the initial window's duration (since those were available from the start).
-  let initialWindowDuration = 0;
-
-  for(let i = 0; i < Math.min(PREROLL_INITIAL_WINDOW, totalSegments); i++) {
-
-    initialWindowDuration += variant.durations[i] ?? 2;
-  }
-
-  let cumulativeDuration = initialWindowDuration;
-
-  for(let i = PREROLL_INITIAL_WINDOW; i < totalSegments; i++) {
-
-    cumulativeDuration += variant.durations[i] ?? 2;
-
-    if(elapsedSec < (cumulativeDuration - initialWindowDuration)) {
-
-      break;
-    }
-
-    revealCount = i + 1;
-  }
-
-  return revealCount;
+  return computeReveal(variant.mediaSegments.length, variant.durations, elapsedSec);
 }
 
 // Playlist Generation.

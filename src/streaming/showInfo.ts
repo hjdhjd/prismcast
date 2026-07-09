@@ -473,6 +473,55 @@ async function updateShowNamesForHost(host: string, hostStreams: { channelKey: s
 }
 
 /**
+ * Result of measuring channel ID overlap between a Channels DVR M3U device and PrismCast's own channel set.
+ */
+export interface DeviceOverlap {
+
+  // Whether the overlap ratio clears the acceptance threshold. Computed as `!(overlapRatio < 0.8)` rather than `overlapRatio >= 0.8` - the two forms agree for
+  // finite ratios but diverge when both sets are empty, where overlapRatio is NaN and only the negated form accepts.
+  matches: boolean;
+
+  // Size of the larger of the two sets - the denominator for overlapRatio.
+  maxSize: number;
+
+  // Count of prismcastChannelKeys entries also present in deviceChannelIds (the intersection size).
+  overlapCount: number;
+
+  // overlapCount divided by maxSize. NaN when both sets are empty.
+  overlapRatio: number;
+}
+
+/**
+ * Measures channel ID overlap between a Channels DVR M3U device's channel set and PrismCast's own channel keys, and reports whether the overlap clears the
+ * acceptance threshold used to identify which M3U device in Channels DVR is PrismCast's own source. We use overlap-based matching rather than exact matching
+ * because the channel set can drift: the user may disable channels after Channels DVR imports the playlist, or add new channels that haven't been refreshed
+ * yet in the DVR. Pure and side-effect free.
+ * @param deviceChannelIds - Channel IDs reported by the Channels DVR M3U device.
+ * @param prismcastChannelKeys - PrismCast's own channel keys.
+ * @returns The overlap counts, ratio, and accept/reject decision.
+ */
+export function matchesM3uDevice(deviceChannelIds: Set<string>, prismcastChannelKeys: Set<string>): DeviceOverlap {
+
+  let overlapCount = 0;
+
+  for(const key of prismcastChannelKeys) {
+
+    if(deviceChannelIds.has(key)) {
+
+      overlapCount++;
+    }
+  }
+
+  const maxSize = Math.max(deviceChannelIds.size, prismcastChannelKeys.size);
+  const overlapRatio = overlapCount / maxSize;
+
+  // Written as a negated less-than so that the both-empty case (overlapRatio = NaN) accepts: `!(NaN < 0.8)` is true, while `NaN >= 0.8` is false. In practice
+  // getDeviceMappings only reaches this function for devices with a non-empty Channels list, so the NaN branch fires only when prismcastChannelKeys is also
+  // empty.
+  return { matches: !(overlapRatio < 0.8), maxSize, overlapCount, overlapRatio };
+}
+
+/**
  * Gets device channel mappings for a DVR host, refreshing the cache if needed.
  * @param host - The DVR server hostname or IP address.
  * @returns Map of DeviceID -> (Map of GuideNumber -> channel ID).
@@ -512,33 +561,21 @@ export async function getDeviceMappings(host: string): Promise<Map<string, Map<s
       continue;
     }
 
-    // Identify PrismCast's M3U source by measuring channel ID overlap. We use overlap-based matching rather than exact matching because the channel set can drift:
-    // the user may disable channels after Channels DVR imports the playlist, or add new channels that haven't been refreshed yet in the DVR. We count how many of
-    // PrismCast's channel keys appear in the device, and accept the device if overlap exceeds 80% of the larger set.
+    // Identify PrismCast's M3U source by measuring channel ID overlap via matchesM3uDevice() - see that function for why overlap-based matching is used instead
+    // of exact matching, and why the accept threshold is written as a negated less-than.
     const deviceChannelIds = new Set(device.Channels.map((ch) => ch.ID));
-    let overlapCount = 0;
+    const overlap = matchesM3uDevice(deviceChannelIds, prismcastChannelKeys);
 
-    for(const key of prismcastChannelKeys) {
-
-      if(deviceChannelIds.has(key)) {
-
-        overlapCount++;
-      }
-    }
-
-    const maxSize = Math.max(deviceChannelIds.size, prismcastChannelKeys.size);
-    const overlapRatio = overlapCount / maxSize;
-
-    if(overlapRatio < 0.8) {
+    if(!overlap.matches) {
 
       LOG.debug("streaming:showinfo", "Skipping M3U device %s: low channel overlap (%d/%d = %d%%).",
-        device.DeviceID, overlapCount, maxSize, Math.round(overlapRatio * 100));
+        device.DeviceID, overlap.overlapCount, overlap.maxSize, Math.round(overlap.overlapRatio * 100));
 
       continue;
     }
 
     LOG.debug("streaming:showinfo", "Matched M3U device %s as PrismCast source (%d channels, %d%% overlap).",
-      device.DeviceID, device.Channels.length, Math.round(overlapRatio * 100));
+      device.DeviceID, device.Channels.length, Math.round(overlap.overlapRatio * 100));
 
     // Build guide number -> channel ID map for this device and extract logo URLs. Logo URLs are cached by station ID (resolved from the channel key via
     // getChannelStationId) so that Pacific channels and service variants all share the same logo entry.

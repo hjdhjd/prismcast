@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module. setup.ts has four synchronously testable exports -
- * StreamSetupError, generateStreamId, validateStreamUrl, and withSignInGuidance - all of which earn full coverage here. The async exports (createPageWithCapture,
- * setupStream, verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are
- * deferred to e2e. We cover every throw reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
+ * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module - StreamSetupError, generateStreamId, shouldReverifyCapture,
+ * validateStreamUrl, and withSignInGuidance - all of which earn full coverage here. The async exports (createPageWithCapture, setupStream, verifyCaptureSystem)
+ * drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are deferred to e2e. We cover every throw
+ * reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
  */
-import { StreamSetupError, generateStreamId, validateStreamUrl, withSignInGuidance } from "./setup.ts";
+import { StreamSetupError, generateStreamId, shouldReverifyCapture, validateStreamUrl, withSignInGuidance } from "./setup.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { loadHealthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -262,5 +262,49 @@ describe("withSignInGuidance", () => {
      * unguarded lookup against "" could match a malformed entry and mislabel an unrelated failure.
      */
     assert.equal(withSignInGuidance("Failed to start stream.", "definitely-not-a-channel-key", "Example"), "Failed to start stream.");
+  });
+});
+
+describe("shouldReverifyCapture", () => {
+
+  test("returns true when nothing is in flight, a browser is available, and no other stream is active (empty registry)", () => {
+
+    // Traced path: the common real-world shape - setup fails before the stream is even registered, so activeStreamIds is empty. [].every(...) is vacuously
+    // true, and a regression that swapped every for some (or checked length !== 0) would flip this to false.
+    assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 7, hasBrowser: true, reverificationInProgress: false }), true);
+  });
+
+  test("returns false when a re-verification is already in progress, even with every other input passing", () => {
+
+    // Traced path: the single-flight guard must win regardless of the isolation and browser checks. A regression that dropped this term (or reordered the
+    // short-circuit incorrectly) would return true here.
+    assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 7, hasBrowser: true, reverificationInProgress: true }), false);
+  });
+
+  test("returns false when an active stream id other than the failing stream is present", () => {
+
+    // Traced path: the isolation check must block re-verification whenever any other stream is active, since that stream is either demonstrably capturing or
+    // will drain on its own. A regression that used some(...) instead of every(...), or dropped the exclusion entirely, would return true here.
+    assert.equal(shouldReverifyCapture({ activeStreamIds: [ 7, 12 ], failingStreamId: 7, hasBrowser: true, reverificationInProgress: false }), false);
+  });
+
+  test("returns false when no browser is available to probe", () => {
+
+    // Traced path: a readiness probe needs a connected browser to exercise. A regression that dropped this term would return true here.
+    assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 7, hasBrowser: false, reverificationInProgress: false }), false);
+  });
+
+  test("returns true when the only active stream id is the failing stream's own entry", () => {
+
+    // Traced path: the failing stream's own registry entry must not count as "another stream" - the exclusion (id === failingStreamId) is what makes this
+    // the only-active-stream case, not an empty list. A regression that dropped the exclusion (e.g. checking activeStreamIds.length === 0) would return false.
+    assert.equal(shouldReverifyCapture({ activeStreamIds: [7], failingStreamId: 7, hasBrowser: true, reverificationInProgress: false }), true);
+  });
+
+  test("returns true for an empty registry, the common real case where setup fails before the stream is even registered", () => {
+
+    // Traced path: this is the PARITY-critical assertion pinned separately from the general happy-path test above - an empty registry must not regress to
+    // false, since this is the ordinary shape of a capture-infrastructure failure (it fails during setup, before getNextStreamId's entry is registered).
+    assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 42, hasBrowser: true, reverificationInProgress: false }), true);
   });
 });

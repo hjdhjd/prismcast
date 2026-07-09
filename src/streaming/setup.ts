@@ -1325,6 +1325,29 @@ async function probeCaptureSerialized(browser: Browser, timeout: number): Promis
 }
 
 /**
+ * Pure decision for whether a mid-life capture-infrastructure failure warrants re-verifying the browser. Re-verification is warranted iff no other re-verification
+ * is already in flight, a browser is published to probe, and the failing stream is the only active stream - any other active stream means either the browser is
+ * demonstrably capturing (so this failure is stream-specific - never invalidate) or those streams will trip their own circuit breakers and drain, after which a
+ * later failure reaches the zero-other case. An empty registry (setup failed before the stream was registered) satisfies the isolation check vacuously and is the
+ * common real-world shape of this failure.
+ * @param inputs - The decision inputs.
+ * @param inputs.activeStreamIds - The ids of every stream currently in the registry.
+ * @param inputs.failingStreamId - The id of the stream whose setup just failed, excluded from the isolation check.
+ * @param inputs.hasBrowser - Whether a browser instance is currently published to probe.
+ * @param inputs.reverificationInProgress - Whether a re-verification is already deciding the browser's fate.
+ * @returns True when the failure should trigger a re-verification probe.
+ */
+export function shouldReverifyCapture(inputs: {
+  activeStreamIds: readonly number[];
+  failingStreamId: number;
+  hasBrowser: boolean;
+  reverificationInProgress: boolean;
+}): boolean {
+
+  return !inputs.reverificationInProgress && inputs.hasBrowser && inputs.activeStreamIds.every((id) => id === inputs.failingStreamId);
+}
+
+/**
  * Passive mid-life capture-death detection, called from the stream-setup failure path when the failure carries a capture-infrastructure signature. If the failing
  * stream is the only active stream, it re-verifies the browser's capture capability with a queue-serialized probe in the background and, on confirmed failure,
  * invalidates the browser for a governed relaunch - catching a browser that is still connected (no "disconnected" event) but can no longer capture. Fire-and-forget
@@ -1333,24 +1356,21 @@ async function probeCaptureSerialized(browser: Browser, timeout: number): Promis
  */
 function noteCaptureInfrastructureFailure(failingStreamId: number): void {
 
-  // Single-flight: a re-verification is already deciding the browser's fate; do not stack another.
+  // Single-flight: a re-verification is already deciding the browser's fate; do not stack another. Read first so a re-verify already in flight short-circuits
+  // before the registry and browser lookups below are even performed.
   if(captureReverificationInProgress) {
 
     return;
   }
 
-  // Isolation guard: only re-verify when the failing stream is the only active stream. Any other active stream means either the browser is demonstrably capturing
-  // (so this failure is stream-specific - never invalidate) or those streams will trip their own circuit breakers and drain, after which a later failure reaches
-  // this zero-other case. We never tear down a browser other streams are using.
-  if(getAllStreams().some((entry) => entry.id !== failingStreamId)) {
-
-    return;
-  }
-
-  // A readiness probe needs a connected browser to exercise. If none is published, a disconnect already handled the readiness loss.
+  // A readiness probe needs a connected browser to exercise. If none is published, a disconnect already handled the readiness loss. The !browser check is
+  // combined into this one condition (rather than a separate guard) so TypeScript narrows browser from Nullable<Browser> to Browser for the probe and
+  // invalidateBrowser calls below. hasBrowser and reverificationInProgress are passed as the values their guards already guarantee here - true (the !browser
+  // guard has passed) and false (the single-flight guard above already returned if it were true).
   const browser = getBrowserInstance();
 
-  if(!browser) {
+  if(!browser || !shouldReverifyCapture({ activeStreamIds: getAllStreams().map((entry) => entry.id), failingStreamId, hasBrowser: true,
+    reverificationInProgress: false })) {
 
     return;
   }

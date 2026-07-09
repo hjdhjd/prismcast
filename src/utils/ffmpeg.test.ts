@@ -16,7 +16,7 @@
  * resolveFFmpegPath and isFFmpegAvailable are the production-cached singletons that probe the real filesystem; they have no test seam and no parameters because
  * their caching contract is intentionally sealed.
  */
-import { buildMpegTsRemuxerArgs, buildSpawnFFmpegArgs, getBundledFFmpegPath, probeFFmpegPath } from "./ffmpeg.ts";
+import { buildMpegTsRemuxerArgs, buildSpawnFFmpegArgs, classifyFfmpegExit, getBundledFFmpegPath, probeFFmpegPath } from "./ffmpeg.ts";
 import { describe, test } from "node:test";
 import type { FFmpegContext } from "./ffmpeg.ts";
 import assert from "node:assert/strict";
@@ -304,6 +304,49 @@ describe("probeFFmpegPath", () => {
     await probeFFmpegPath(context);
 
     assert.equal(probeCalls.length, 2, "each call probed independently");
+  });
+});
+
+describe("classifyFfmpegExit", () => {
+
+  /* The classifier is pure and receives only (code, signal, label) - the caller's shuttingDown gate is applied before this function is ever invoked, so it is
+   * not part of what these tests exercise. Each case is synthetic and pins the exact precedence and message shape a regression could silently break.
+   */
+
+  test("SIGTERM outranks a non-zero code (kill() during shutdown reports normal)", () => {
+
+    assert.deepEqual(classifyFfmpegExit(1, "SIGTERM", "FFmpeg"), { outcome: "normal" });
+  });
+
+  test("code 0 with no signal classifies as normal", () => {
+
+    assert.deepEqual(classifyFfmpegExit(0, null, "FFmpeg"), { outcome: "normal" });
+  });
+
+  test("a non-zero code with no signal classifies as error with the exact message", () => {
+
+    assert.deepEqual(classifyFfmpegExit(1, null, "FFmpeg"), { message: "FFmpeg exited with code 1.", outcome: "error" });
+  });
+
+  test("a different non-zero code still classifies as error with the code substituted into the message", () => {
+
+    assert.deepEqual(classifyFfmpegExit(255, null, "MPEG-TS remuxer"), { message: "MPEG-TS remuxer exited with code 255.", outcome: "error" });
+  });
+
+  test("a non-SIGTERM signal with a null code classifies as error with the exact signal message", () => {
+
+    assert.deepEqual(classifyFfmpegExit(null, "SIGKILL", "FFmpeg"), { message: "FFmpeg killed by signal SIGKILL.", outcome: "error" });
+  });
+
+  test("both code and signal null classifies as normal", () => {
+
+    assert.deepEqual(classifyFfmpegExit(null, null, "FFmpeg"), { outcome: "normal" });
+  });
+
+  test("a non-zero code with a non-SIGTERM signal present yields the code message, not the signal message", () => {
+
+    // Precedence: the code branch is checked before the signal branch, so a non-zero code paired with a signal must still produce the code-based message.
+    assert.deepEqual(classifyFfmpegExit(1, "SIGKILL", "FFmpeg"), { message: "FFmpeg exited with code 1.", outcome: "error" });
   });
 });
 

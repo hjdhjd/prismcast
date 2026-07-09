@@ -6,7 +6,7 @@
  * real subprocess and HTTP fixtures and are deferred to e2e.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { buildPrerollEntries, computePrerollWindow, computeProgressiveReveal, generatePrerollPlaylist, getPrerollCodec, getPrerollMaxDuration,
+import { buildPrerollEntries, computePrerollWindow, computeProgressiveReveal, computeReveal, generatePrerollPlaylist, getPrerollCodec, getPrerollMaxDuration,
   getPrerollSegmentCount, getPrerollSegmentDuration, getPrerollTotalDurationSec, isPrerollReady, setupPrerollRoutes } from "./preroll.ts";
 import { makeExpressStub, makeReqRes } from "../routes/express.helpers.ts";
 import type { Express } from "express";
@@ -268,6 +268,70 @@ describe("computeProgressiveReveal", () => {
     const reveal = computeProgressiveReveal("hevc", new Date(1_700_000_000_000));
 
     assert.equal(reveal, 0);
+  });
+});
+
+describe("computeReveal", () => {
+
+  test("reveals all segments when totalSegments <= initialWindow", () => {
+
+    // Boundary: Math.min(initialWindow, totalSegments) collapses to totalSegments itself. A mutant that swapped min for max would reveal the default window (4)
+    // instead of the true segment count (3).
+    const reveal = computeReveal(3, [ 2, 2, 2 ], 0);
+
+    assert.equal(reveal, 3, "all three segments revealed since totalSegments is below the initial window");
+  });
+
+  test("returns 0 when totalSegments is 0", () => {
+
+    // Boundary: an empty (or not-yet-seeded) variant has no segments to reveal regardless of elapsed time.
+    assert.equal(computeReveal(0, [], 0), 0);
+    assert.equal(computeReveal(0, [], 60), 0);
+  });
+
+  test("reveals exactly the initial window at elapsedSec 0 when more segments remain", () => {
+
+    // With 10 segments all lasting 2s and the default initial window of 4, no time has elapsed yet - only the initial window is visible.
+    const durations = [ 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 ];
+    const reveal = computeReveal(10, durations, 0);
+
+    assert.equal(reveal, 4, "only the initial window is visible before any time elapses");
+  });
+
+  test("reveals one additional segment as elapsed time crosses each subsequent segment's cumulative threshold", () => {
+
+    /* With 10 segments all lasting 2s and the default initial window of 4, the initial window's duration is 8s. Segment index 4 (the 5th segment, first one
+     * beyond the window) becomes visible once elapsed time reaches 2s (8 + 2 - 8). Segment index 5 becomes visible once elapsed time reaches 4s. The strict "<"
+     * comparison means "just below" the threshold must still show the prior count, and "at" the threshold must show the count one higher - a flipped comparison
+     * (<=) or a dropped break would blur this boundary.
+     */
+    const durations = [ 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 ];
+
+    assert.equal(computeReveal(10, durations, 1.999), 4, "just below the 2s threshold still shows only the initial window");
+    assert.equal(computeReveal(10, durations, 2), 5, "at the 2s threshold, one more segment is revealed");
+    assert.equal(computeReveal(10, durations, 3.999), 5, "just below the 4s threshold holds at 5");
+    assert.equal(computeReveal(10, durations, 4), 6, "at the 4s threshold, one more segment is revealed");
+  });
+
+  test("falls back to a 2-second duration for entries missing from a short durations array", () => {
+
+    /* totalSegments is 6 but durations only covers the first 4 entries (the initial window). Segments 4 and 5 fall through the "?? 2" fallback at both
+     * summation sites. If the fallback were dropped, durations[4] would be undefined and the cumulative-duration arithmetic would produce NaN, which fails
+     * every "<" comparison and would reveal all 6 segments immediately at elapsedSec 0 instead of holding at the initial window.
+     */
+    const durations = [ 2, 2, 2, 2 ];
+
+    assert.equal(computeReveal(6, durations, 0), 4, "elapsedSec 0 holds at the initial window even with defaulted trailing durations");
+    assert.equal(computeReveal(6, durations, 2), 5, "the defaulted 2s duration for segment 4 still drives the reveal threshold at 2s");
+    assert.equal(computeReveal(6, durations, 4), 6, "the defaulted 2s duration for segment 5 still drives the reveal threshold at 4s");
+  });
+
+  test("reveals just the initial window when elapsedSec is negative (future start time)", () => {
+
+    // A negative elapsedSec (prerollStartTime in the future) must not reveal anything beyond the initial window - every progressive threshold check fails.
+    const durations = [ 2, 2, 2, 2, 2, 2, 2, 2 ];
+
+    assert.equal(computeReveal(8, durations, -5), 4, "negative elapsed time reveals only the initial window");
   });
 });
 
