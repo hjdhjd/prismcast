@@ -957,19 +957,29 @@ export async function mutateServiceSelections(updates: Record<string, string>): 
   });
 }
 
+/* The default selection lookup consults the module-level serviceSelections cache, which mirrors the last committed configuration. Injecting it as a default
+ * parameter of resolveServiceKey keeps every read-only caller (the tuning, playlist, and table-rendering hot paths) unchanged, while letting a caller that is
+ * mid-mutation supply its own draft instead. It is a stable module const so the default carries no per-call allocation on the hot path.
+ */
+const readModuleServiceSelection = (canonicalKey: string): string | undefined => serviceSelections.get(canonicalKey);
+
 /**
- * Resolves a canonical channel key to the actual channel key based on user selection. If the user has selected a specific service for this channel, returns that
- * service's key. Otherwise returns the canonical key (default service). When the service filter is active, falls back to the first enabled variant if the stored
- * selection's service is filtered out.
+ * Resolves a canonical channel key to the actual channel key based on the current service selection. If a specific service is selected for this channel, returns
+ * that service's key; otherwise the canonical key (default service). When the service filter is active, falls back to the first enabled variant if the selected
+ * service is filtered out.
  *
- * Pure resolver with no side effects. Stale selection cleanup belongs to buildServiceGroups(), which validates all stored selections against the rebuilt variant
- * structure on startup and after runtime channel mutations. Reads are safe to call from any context, including inside other mutations.
+ * The selection source is injected via getSelection, defaulting to the committed module cache. Stale-selection cleanup belongs to buildServiceGroups(), which
+ * validates stored selections against the rebuilt variant structure on startup and after runtime mutations. A caller resolving inside a mutation that has already
+ * changed the selection must pass a lookup over its draft (for example (key) => data.serviceSelections[key]); otherwise the resolution reflects the stale committed
+ * cache and, for instance, clearing a selection mid-transaction would resolve back to the just-removed variant.
  * @param canonicalKey - The canonical channel key.
+ * @param getSelection - Looks up the stored selection for a canonical key. Defaults to the committed module cache; pass a draft lookup when resolving inside a
+ *   mutation that has changed the selection.
  * @returns The resolved service key to use for streaming.
  */
-export function resolveServiceKey(canonicalKey: string): string {
+export function resolveServiceKey(canonicalKey: string, getSelection: (canonicalKey: string) => string | undefined = readModuleServiceSelection): string {
 
-  const selection = serviceSelections.get(canonicalKey);
+  const selection = getSelection(canonicalKey);
 
   // No selection stored - use the canonical key (default service). If the canonical's service tag is filtered out, fall back to the first enabled variant.
   if(!selection) {

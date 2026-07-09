@@ -169,7 +169,10 @@ export function registerBrowseRoutes(app: Express): void {
           // Clear the selection by deleting it (selecting the canonical default is represented as no entry).
           Reflect.deleteProperty(data.serviceSelections, canonicalKey);
 
-          const resolvedKey = resolveServiceKey(canonicalKey);
+          // Resolve against the in-transaction draft, not the committed module cache: we just cleared this canonical's selection on the draft, so the resolver must
+          // observe that clearance to fall back to an alternative variant or the canonical default. Reading the stale committed cache here would resolve back to the
+          // just-removed service and wrongly disable a multi-service channel.
+          const resolvedKey = resolveServiceKey(canonicalKey, (key) => data.serviceSelections[key]);
           const resolvedTag = getServiceTagForChannel(resolvedKey);
 
           if(resolvedTag === serviceSlug) {
