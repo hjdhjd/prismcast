@@ -34,11 +34,40 @@ let precacheInProgress = false;
 // Handle for the scheduled precache cycle, tracked so a graceful shutdown can cancel it before it fires. Null when no cycle is pending.
 let precacheTimer: Nullable<ReturnType<typeof setTimeout>> = null;
 
+/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate,
+ * and the provider lookups. It is injected as a default parameter threaded through all four functions so a test can substitute stubs at the same seam - no loader
+ * mock - while production uses the real defaultPrecachingDeps built from the functions this module already imports. It is kept as an in-module const, NOT a
+ * separate *.context.ts adapter: browser/index.ts imports startPrecaching and precaching.ts imports these accessors, so a separate adapter file would sit inside
+ * that value-import cycle, whereas the in-module const adds no new import edge. This is the collaborator-injection form of the Clock port (utils/clock.ts).
+ */
+export interface PrecachingDeps {
+
+  readonly getCurrentBrowser: typeof getCurrentBrowser;
+  readonly getProviderBySlug: typeof getProviderBySlug;
+  readonly getProvidersForDomain: typeof getProvidersForDomain;
+  readonly isGracefulShutdown: typeof isGracefulShutdown;
+  readonly minimizeBrowserWindow: typeof minimizeBrowserWindow;
+  readonly registerManagedPage: typeof registerManagedPage;
+  readonly unregisterManagedPage: typeof unregisterManagedPage;
+}
+
+const defaultPrecachingDeps: PrecachingDeps = {
+
+  getCurrentBrowser,
+  getProviderBySlug,
+  getProvidersForDomain,
+  isGracefulShutdown,
+  minimizeBrowserWindow,
+  registerManagedPage,
+  unregisterManagedPage
+};
+
 /**
  * Starts the precaching cycle if services are configured. Called from launchBrowser() after the browser is ready. If no services are selected, a shutdown is in
  * progress, or a precache cycle is already in progress, returns immediately. The actual work is scheduled via setTimeout to avoid blocking browser launch.
+ * @param deps - The injected browser and provider-registry dependencies; defaults to defaultPrecachingDeps.
  */
-export function startPrecaching(): void {
+export function startPrecaching(deps: PrecachingDeps = defaultPrecachingDeps): void {
 
   if(CONFIG.channels.precacheServices.length === 0) {
 
@@ -47,7 +76,7 @@ export function startPrecaching(): void {
 
   // Never schedule a precache during graceful shutdown. launchBrowser() can be reached during teardown; without this guard the scheduled cycle would fire after the
   // browser is closed and relaunch Chrome.
-  if(isGracefulShutdown()) {
+  if(deps.isGracefulShutdown()) {
 
     return;
   }
@@ -67,7 +96,7 @@ export function startPrecaching(): void {
   precacheTimer = setTimeout(() => {
 
     precacheTimer = null;
-    void runPrecacheCycle();
+    void runPrecacheCycle(deps);
   }, PRECACHE_DELAY);
 }
 
@@ -160,14 +189,14 @@ export async function recordDiscoveryOutcome(provider: ProviderModule, channels:
  * @param provider - The provider to precache.
  * @returns The discovered channels (possibly empty).
  */
-export async function precacheService(provider: ProviderModule): Promise<DiscoveredChannel[]> {
+export async function precacheService(provider: ProviderModule, deps: PrecachingDeps = defaultPrecachingDeps): Promise<DiscoveredChannel[]> {
 
   const serviceElapsed = startTimer();
 
   // Clear the service's cache before discovery to ensure a complete walk, even if a tune partially warmed the cache during the startup delay.
   provider.strategy.clearCache?.();
 
-  const browser = await getCurrentBrowser();
+  const browser = await deps.getCurrentBrowser();
   const page = await browser.newPage();
 
   // Suppress audio on precache pages. Services like Hulu auto-play a default livestream when their guide loads. Since Chrome's --mute-audio is deliberately
@@ -186,7 +215,7 @@ export async function precacheService(provider: ProviderModule): Promise<Discove
     };
   });
 
-  registerManagedPage(page);
+  deps.registerManagedPage(page);
 
   try {
 
@@ -206,7 +235,7 @@ export async function precacheService(provider: ProviderModule): Promise<Discove
     return channels;
   } finally {
 
-    unregisterManagedPage(page);
+    deps.unregisterManagedPage(page);
 
     try {
 
@@ -220,7 +249,7 @@ export async function precacheService(provider: ProviderModule): Promise<Discove
     // discovery finishing mid-login never minimizes the window under the user.
     if(!isLoginModeActive()) {
 
-      await minimizeBrowserWindow();
+      await deps.minimizeBrowserWindow();
     }
   }
 }
@@ -236,7 +265,7 @@ export async function precacheService(provider: ProviderModule): Promise<Discove
  * @param url - The login session's URL; its extracted domain selects the providers to revalidate.
  * @returns A promise that resolves when revalidation completes or is skipped. It never rejects.
  */
-export async function revalidateDomainAuth(url: string): Promise<void> {
+export async function revalidateDomainAuth(url: string, deps: PrecachingDeps = defaultPrecachingDeps): Promise<void> {
 
   try {
 
@@ -257,7 +286,7 @@ export async function revalidateDomainAuth(url: string): Promise<void> {
       return;
     }
 
-    if(isGracefulShutdown()) {
+    if(deps.isGracefulShutdown()) {
 
       return;
     }
@@ -273,7 +302,7 @@ export async function revalidateDomainAuth(url: string): Promise<void> {
 
     // Match every provider whose guide lives on the domain the user just signed in to. The observer's URL may be a DOMAIN_CONFIG loginUrl override rather than a
     // channel URL, but both extract to the same registrable domain the guide URLs use.
-    const providers = getProvidersForDomain(domain);
+    const providers = deps.getProvidersForDomain(domain);
 
     if(providers.length === 0) {
 
@@ -294,7 +323,7 @@ export async function revalidateDomainAuth(url: string): Promise<void> {
         try {
 
           // eslint-disable-next-line no-await-in-loop
-          await precacheService(provider);
+          await precacheService(provider, deps);
         } catch(error) {
 
           // A provider still behind its wall commonly times out the guide navigation. Contain the failure per provider and keep going - the flag simply stays set.
@@ -315,12 +344,12 @@ export async function revalidateDomainAuth(url: string): Promise<void> {
  * Executes the sequential precaching cycle. Discovers channel lineups for each configured service, clearing the service's cache first to ensure a complete walk.
  * Services not in the active service filter are silently skipped when the filter is non-empty.
  */
-async function runPrecacheCycle(): Promise<void> {
+async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
 
   // Bail if a graceful shutdown began while this cycle was queued. Discovery opens browser pages via getCurrentBrowser(), which would relaunch Chrome after shutdown
   // closed it; this guard makes the cycle a no-op during teardown regardless of how the timer-cancellation race resolves. Reset the in-progress flag since the
   // early return skips the finally block below.
-  if(isGracefulShutdown()) {
+  if(deps.isGracefulShutdown()) {
 
     precacheInProgress = false;
 
@@ -346,12 +375,12 @@ async function runPrecacheCycle(): Promise<void> {
       // Stop opening new discovery pages once a graceful shutdown begins mid-cycle. The entry guard above only covers a cycle that has not started; without this,
       // a cycle already in its loop when shutdown closes the browser would call getCurrentBrowser() below and relaunch Chrome. Break rather than continue so no
       // further service is processed; the in-flight service (if any) finishes and closes its own page via its finally.
-      if(isGracefulShutdown()) {
+      if(deps.isGracefulShutdown()) {
 
         break;
       }
 
-      const provider = getProviderBySlug(slug);
+      const provider = deps.getProviderBySlug(slug);
 
       if(!provider) {
 
@@ -370,7 +399,7 @@ async function runPrecacheCycle(): Promise<void> {
       try {
 
         // eslint-disable-next-line no-await-in-loop
-        const channels = await precacheService(provider);
+        const channels = await precacheService(provider, deps);
 
         // An empty walk cached nothing, so it is counted honestly as empty rather than folded into the success count.
         if(channels.length > 0) {
