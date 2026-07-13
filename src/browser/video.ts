@@ -1616,6 +1616,7 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
       embedGate.resolve("gate");
     },
+    phase: "videoWait",
     signal: overlayController.signal
   });
 
