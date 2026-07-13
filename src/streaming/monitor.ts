@@ -242,18 +242,18 @@ export function monitorPlaybackHealth(
   // Recovery grace periods in milliseconds, indexed by recovery level (L0 = no recovery, L1 = play/unmute, L2 = source reload, L3 = page reload). After a recovery
   // action we wait this long before checking for new issues to give the action time to take effect. L1 is a quick action. L2 and L3 need more time for
   // rebuffering or navigation to complete.
-  const recoveryGracePeriods: readonly [number, number, number, number] = [ 0, 3_000, 10_000, 10_000 ];
+  const recoveryGracePeriods: readonly [number, number, number, number] = [ 0, 3000, 10000, 10000 ];
 
   // Segment stall timeout (10 seconds). After L2/L3 recovery completes, if no new segments are produced within this window, the capture pipeline is considered
   // dead and we escalate directly to tab replacement. This catches the case where recovery reports success but the MediaRecorder/FFmpeg pipeline has silently died.
-  const SEGMENT_STALL_TIMEOUT = 10_000;
+  const SEGMENT_STALL_TIMEOUT = 10000;
 
   // Tiny segment detection thresholds. Used for continuous segment size monitoring to detect dead capture pipelines. When video capture dies but audio continues,
   // segments contain only audio data. Audio is transcoded at a controlled bitrate (max 512Kbps), so audio-only segments are at most ~128KB for 2-second segments (the
   // default hls.segmentDuration). The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset
   // (480p/3Mbps ~ 750KB/segment, also a 2-second basis).
   // The default count trigger (10) requires roughly 20 seconds of consecutive tiny segments before action is taken, balancing responsiveness against false positives.
-  const TINY_SEGMENT_THRESHOLD = 512_000;
+  const TINY_SEGMENT_THRESHOLD = 512000;
   const TINY_SEGMENT_COUNT_TRIGGER = 10;
 
   // Resolve the service-specific tiny segment count threshold once at monitor startup. Services with extended static content (e.g., Xfinity commercial
@@ -265,7 +265,7 @@ export function monitorPlaybackHealth(
   // Segment staleness timeout. When no new segments have been produced for this duration, the capture pipeline is considered dead even though the video element may
   // appear healthy. This catches the case where Chrome's MediaRecorder silently stops emitting data without raising an error - the input stream stays "open" but no
   // data events fire. The 20-second threshold is 4x the maximum expected moof delivery interval (5 seconds) to avoid false positives during normal bursty delivery.
-  const SEGMENT_STALENESS_TIMEOUT = 20_000;
+  const SEGMENT_STALENESS_TIMEOUT = 20000;
 
   // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the configured viewport, the service's ABR is delivering
   // low-quality content. The threshold is expressed as a ratio - if either dimension is below this fraction of the viewport, the resolution is considered degraded.

@@ -17,7 +17,7 @@ import { getResumeFilePath } from "../config/paths.ts";
  */
 
 // TTL for resume entries. Entries older than this are discarded on load.
-const RESUME_TTL = 90_000;
+const RESUME_TTL = 90000;
 
 /** Serialized format for JSON persistence. BigInt values are stored as strings; Buffer as base64. */
 interface ResumeEntryJSON {

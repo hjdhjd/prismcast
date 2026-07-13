@@ -57,7 +57,7 @@ import { triggerShowNameUpdate } from "./showInfo.ts";
 // Delay before seeding the preroll playlist in milliseconds. If stream setup completes before this timer fires, the preroll is skipped and the client receives real
 // content directly. This ensures fast-tuning services (native HLS at 2-3s, most capture services at 4-7s) never see preroll, while slow services (Xfinity/Cox at
 // 13-15s) get preroll content after the delay to prevent HTTP timeouts.
-const PREROLL_DELAY_MS = 9_000;
+const PREROLL_DELAY_MS = 9000;
 
 /**
  * Builds the onError/onStop callbacks for createFMP4Segmenter. Both callbacks share the same termination chain (skip-if-already-terminating guard, log error,
@@ -574,7 +574,7 @@ async function sendPlaylistResponse(streamId: number, clientAddress: string, res
   // which resolves when either source provides a playlist. The 30-second timeout covers pathological cases like setup hanging.
   if(!playlist) {
 
-    const ready = await waitForPlaylist(streamId, 30_000);
+    const ready = await waitForPlaylist(streamId, 30000);
 
     if(ready) {
 

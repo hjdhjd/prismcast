@@ -158,7 +158,7 @@ const BROWSER_MAX_AGE = 6 * 60 * 60 * 1000;
 const BROWSER_RESTART_QUIET_PERIOD = 5 * 60 * 1000;
 
 // How often to check whether the browser qualifies for a restart (30 seconds).
-const BROWSER_RESTART_CHECK_INTERVAL = 30_000;
+const BROWSER_RESTART_CHECK_INTERVAL = 30000;
 
 // Timer handle for the quiet period countdown. When set, the browser has exceeded BROWSER_MAX_AGE and we are waiting for BROWSER_RESTART_QUIET_PERIOD to
 // elapse with zero active streams. Cancelled if a stream starts during the quiet period.

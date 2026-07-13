@@ -7,9 +7,9 @@
  */
 import type { BlockedPageClassification, ClassifyBlockedPageOptions } from "./blockedPage.ts";
 import type { ChannelSelectorResult, ProviderModule } from "../types/index.ts";
-import type { OverlayPhase } from "./consent.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { LOG } from "../utils/index.ts";
+import type { OverlayPhase } from "./consent.ts";
 import type { Page } from "puppeteer-core";
 import type { VideoTuneDeps } from "./video.ts";
 import assert from "node:assert/strict";

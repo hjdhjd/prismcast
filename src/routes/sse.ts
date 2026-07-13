@@ -6,7 +6,7 @@
 import type { Response } from "express";
 
 // Heartbeat cadence in milliseconds. Sent as a named heartbeat event to keep the connection alive through proxies and let clients detect staleness.
-const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_INTERVAL_MS = 30000;
 
 /**
  * SSE transport handle returned by installSseStream. Callers use sendEvent to push events with JSON payloads (eventType=null for an unnamed data event), and
