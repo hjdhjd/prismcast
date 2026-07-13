@@ -34,6 +34,7 @@ import { monitorPlaybackHealth } from "./monitor.ts";
 import { mutateChannels } from "../config/userChannels.ts";
 import { pipeline } from "node:stream/promises";
 import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
+import { startOverlayHandling } from "../browser/consent.ts";
 
 /* This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
  *
@@ -467,6 +468,22 @@ function disposePage(page: Page): void {
   }
 }
 
+/* CreatePageWithCaptureDeps is the cross-module collaborator set createPageWithCapture composes on at the browser boundary: the shared-browser accessor, the
+ * puppeteer-stream capture launcher, and the overlay-handling poll the static-capture branch fires. It is injected as a default parameter, mirroring VideoTuneDeps in
+ * browser/video.ts and PrecachingDeps in browser/precaching.ts, so a test can substitute stubs at the same seam - no loader mock - while production uses the real
+ * defaultCreatePageWithCaptureDeps built from the functions this module already imports. The remaining browser calls (registerManagedPage, unregisterManagedPage,
+ * minimizeBrowserWindow) stay direct imports: they mutate an in-process page set or early-return without a live browser, so they need no substitution. This is the
+ * collaborator-injection form of the Clock port (utils/clock.ts).
+ */
+export interface CreatePageWithCaptureDeps {
+
+  readonly getCurrentBrowser: typeof getCurrentBrowser;
+  readonly getStream: typeof getStream;
+  readonly startOverlayHandling: typeof startOverlayHandling;
+}
+
+const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { getCurrentBrowser, getStream, startOverlayHandling };
+
 /**
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
  * recovery. It handles:
@@ -482,10 +499,13 @@ function disposePage(page: Page): void {
  * - Handling cleanup on failure
  *
  * @param options - Options for page and capture creation.
+ * @param deps - The injected browser and overlay-poll collaborators; defaults to defaultCreatePageWithCaptureDeps. Threaded so a test drives this function without a
+ * live Chrome by substituting the shared-browser accessor, the capture launcher, and the static-capture overlay poll.
  * @returns The page, context, and capture session (which owns the raw capture stream and any FFmpeg child).
  * @throws Error if page creation, capture initialization, or navigation fails.
  */
-export async function createPageWithCapture(options: CreatePageWithCaptureOptions): Promise<CreatePageWithCaptureResult> {
+export async function createPageWithCapture(options: CreatePageWithCaptureOptions,
+  deps: CreatePageWithCaptureDeps = defaultCreatePageWithCaptureDeps): Promise<CreatePageWithCaptureResult> {
 
   const captureElapsed = startTimer();
   const { comment, onFFmpegError, profile, streamId, url } = options;
@@ -497,7 +517,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   using resources = new DisposableStack();
 
   // Create browser page.
-  const browser = await getCurrentBrowser();
+  const browser = await deps.getCurrentBrowser();
   const page = await browser.newPage();
 
   registerManagedPage(page);
@@ -584,10 +604,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
         throw new Error("Browser crashed too many times during capture initialization.");
       }
 
-      return await createPageWithCapture({ ...options, _pageClosedRetries: retryCount + 1 });
+      return await createPageWithCapture({ ...options, _pageClosedRetries: retryCount + 1 }, deps);
     }
 
-    const streamPromise = getStream(page, streamOptions);
+    const streamPromise = deps.getStream(page, streamOptions);
 
     // Release the slot as soon as getStream settles successfully, so the next caller's init can overlap this stream's remaining setup. On failure the catch block
     // releases instead; the rejection handler is a no-op to suppress the unhandled-rejection warning, since the actual error handling happens in the catch below.
@@ -741,6 +761,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     } else {
 
       await page.goto(url);
+
+      // A static capture navigates once and takes the page as-is, with no channel selection or video wait, so it never reaches the tune path's overlay poll. Launch
+      // a bounded staticCapture poll so a cookie banner or per-site modal is dismissed on the captured page. There is no controller: the phase's window bounds it and
+      // a closed page stops it via the tick-error taxonomy. Any dismissal click lands in the captured pixels, which is exactly the intent for a static capture.
+      void deps.startOverlayHandling(page, profile, { phase: "staticCapture" });
+
       context = page;
     }
   } catch(error) {

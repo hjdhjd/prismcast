@@ -10,7 +10,9 @@ import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts"
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
 import { classifyBlockedPage } from "./blockedPage.ts";
+import { getProfileForUrl } from "../config/profiles.ts";
 import { isLoginModeActive } from "./login.ts";
+import { startOverlayHandling } from "./consent.ts";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
  * sequentially - discovery opens a browser page and navigates to a heavy SPA, so running all services concurrently would stress CPU and GPU on resource-constrained
@@ -22,7 +24,8 @@ import { isLoginModeActive } from "./login.ts";
  *
  * This module also owns the discovery-outcome policy (recordDiscoveryOutcome): the single source of truth for how a completed discovery walk translates into domain
  * auth state, shared by the precache cycle here and the /services/:slug/channels endpoint. The routes layer never calls a health mutator directly - it calls the
- * recorder, which does.
+ * recorder, which does. The page session itself is owned by withProviderGuidePage: the single guarded-page primitive both the precache cycle and that endpoint walk
+ * their guides through.
  */
 
 // Delay in milliseconds before precaching begins after browser launch. This gives the browser time to settle after initialization.
@@ -35,10 +38,12 @@ let precacheInProgress = false;
 let precacheTimer: Nullable<ReturnType<typeof setTimeout>> = null;
 
 /* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate,
- * and the provider lookups. It is injected as a default parameter threaded through all four functions so a test can substitute stubs at the same seam - no loader
- * mock - while production uses the real defaultPrecachingDeps built from the functions this module already imports. It is kept as an in-module const, NOT a
- * separate *.context.ts adapter: browser/index.ts imports startPrecaching and precaching.ts imports these accessors, so a separate adapter file would sit inside
- * that value-import cycle, whereas the in-module const adds no new import edge. This is the collaborator-injection form of the Clock port (utils/clock.ts).
+ * the provider lookups, and the discovery-phase overlay-poll launcher. It is injected as a default parameter threaded through the module's functions so a test can
+ * substitute stubs at the same seam - no loader mock - while production uses the real defaultPrecachingDeps built from the functions this module already imports.
+ * startOverlayHandling belongs here for the same reason the browser accessors do: run for real it drives a poll against the page, so a test injects a recording stub
+ * to observe the discovery poll's phase and abort timing without a live poll. It is kept as an in-module const, NOT a separate *.context.ts adapter: browser/index.ts
+ * imports startPrecaching and precaching.ts imports these accessors, so a separate adapter file would sit inside that value-import cycle, whereas the in-module const
+ * adds no new import edge. This is the collaborator-injection form of the Clock port (utils/clock.ts).
  */
 export interface PrecachingDeps {
 
@@ -48,6 +53,7 @@ export interface PrecachingDeps {
   readonly isGracefulShutdown: typeof isGracefulShutdown;
   readonly minimizeBrowserWindow: typeof minimizeBrowserWindow;
   readonly registerManagedPage: typeof registerManagedPage;
+  readonly startOverlayHandling: typeof startOverlayHandling;
   readonly unregisterManagedPage: typeof unregisterManagedPage;
 }
 
@@ -59,6 +65,7 @@ const defaultPrecachingDeps: PrecachingDeps = {
   isGracefulShutdown,
   minimizeBrowserWindow,
   registerManagedPage,
+  startOverlayHandling,
   unregisterManagedPage
 };
 
@@ -183,9 +190,127 @@ export async function recordDiscoveryOutcome(provider: ProviderModule, channels:
 }
 
 /**
- * Precaches a single service: opens a browser page, navigates to the provider's guide, runs discovery, records the discovery outcome, and cleans the page up. The
- * per-service primitive behind the precache cycle. Errors propagate to the caller, and no service filtering happens here - the cycle loop owns both the filter skip
- * and the per-service error containment.
+ * Options for withProviderGuidePage().
+ */
+interface WithProviderGuidePageOptions {
+
+  // Runs after the discovery walk completes, with the still-open (and now poll-quiet) page and the discovered channels. Used to record the discovery outcome while
+  // the page still holds its evidence.
+  readonly afterWalk?: (page: Page, channels: DiscoveredChannel[]) => Promise<void>;
+
+  // Aborts the walk. When it fires, the page is closed, which throws any in-progress Puppeteer operation and propagates the cancellation through discoverChannels.
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Opens a guarded browser page for a provider's guide, runs its discovery walk under a consent-overlay poll, and cleans the page up. This is the single owner of the
+ * discovery page session shared by the precache cycle and the /services/:slug/channels endpoint: it holds the page lifecycle (creation, managed-page registration,
+ * close), the abort mechanics (close-on-abort plus the pre-navigation early-abort), the audio-mute override, and the discovery-phase overlay poll that dismisses
+ * cookie banners and per-site modals during the walk. The overlay poll is aborted the instant the walk completes, so the page is quiet by construction before the
+ * afterWalk hook inspects it - a poll still clicking could dismiss the very overlay a classification is about to report.
+ * @param provider - The provider whose guide to walk.
+ * @param options - The optional post-walk hook and abort signal. See WithProviderGuidePageOptions.
+ * @param deps - The injected browser and overlay-poll dependencies; defaults to defaultPrecachingDeps.
+ * @returns The discovered channels (possibly empty).
+ */
+export async function withProviderGuidePage(provider: ProviderModule, options: WithProviderGuidePageOptions = {},
+  deps: PrecachingDeps = defaultPrecachingDeps): Promise<DiscoveredChannel[]> {
+
+  const { afterWalk, signal } = options;
+  const browser = await deps.getCurrentBrowser();
+  const page = await browser.newPage();
+
+  // Close the page the moment the caller aborts, so any in-progress Puppeteer operation throws and propagates the cancellation through discoverChannels without each
+  // provider having to poll the signal. The helper owns this mechanism because it owns page creation - no caller ever holds the page reference, so close-on-abort
+  // must live beside the lifecycle it cancels. The listener is registered the instant the page exists and removed in the finally.
+  const onAbort = (): void => {
+
+    void page.close().catch(() => { /* Page may already be closed. */ });
+  };
+
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  // The overlay poll that dismisses cookie banners and per-site modals during the walk. Its controller is aborted the instant the walk completes, so the page is
+  // quiet by construction before any classification the afterWalk hook performs - a poll still clicking could dismiss the very overlay a classification is about to
+  // report.
+  const overlayController = new AbortController();
+
+  try {
+
+    // If the caller aborted between entering this helper and creating the page, the abort listener fired while the page did not yet exist, so it never closed the
+    // just-created page. Bail now - the finally closes it - and let the discovery caller map this to its abort sentinel.
+    if(signal?.aborted) {
+
+      throw new Error("Discovery aborted before navigation.");
+    }
+
+    // Suppress audio on the guide page. Services like Hulu auto-play a default livestream when their guide loads. Since Chrome's --mute-audio is deliberately
+    // disabled (puppeteer-stream needs audio capture for active streams), we intercept play() at the prototype level to mute before any media element can produce
+    // audio. evaluateOnNewDocument runs before site JavaScript, so nothing slips through.
+    await page.evaluateOnNewDocument((): void => {
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const originalPlay = HTMLMediaElement.prototype.play;
+
+      HTMLMediaElement.prototype.play = async function(this: HTMLMediaElement): Promise<void> {
+
+        this.muted = true;
+
+        return originalPlay.call(this);
+      };
+    });
+
+    deps.registerManagedPage(page);
+
+    // Launch the discovery-phase overlay poll before navigation: a handlesOwnNavigation provider navigates inside discoverChannels, and the tick-error taxonomy lets
+    // the poll survive that navigation. The phase's window is the backstop; the abort after the walk is the terminator. The guide page is not a tune, so the phase
+    // forbids the embed-gate accept - only cookie rejection and per-site modal dismissal run here.
+    const { profile } = getProfileForUrl(provider.guideUrl);
+
+    void deps.startOverlayHandling(page, profile, { phase: "discovery", signal: overlayController.signal });
+
+    // Navigate to the service's guide URL unless the provider module handles its own navigation (e.g., sets up response interception before navigating). We use
+    // networkidle2 rather than load because SPA-based services (e.g., Hulu) have heavy async initialization that can prevent the load event from firing reliably.
+    if(!provider.handlesOwnNavigation) {
+
+      await page.goto(provider.guideUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
+    }
+
+    const channels = await provider.discoverChannels(page);
+
+    // The walk is complete. Abort the overlay poll so the page is quiet by construction before the afterWalk hook classifies it.
+    overlayController.abort();
+
+    await afterWalk?.(page, channels);
+
+    return channels;
+  } finally {
+
+    signal?.removeEventListener("abort", onAbort);
+    overlayController.abort();
+    deps.unregisterManagedPage(page);
+
+    try {
+
+      await page.close();
+    } catch {
+
+      // Page may already be closed if the browser disconnected during discovery or the abort handler already closed it.
+    }
+
+    // Re-minimize the browser window. Opening the temporary discovery page may have restored the window on macOS. Skipped while login mode is active so a
+    // discovery finishing mid-login never minimizes the window under the user.
+    if(!isLoginModeActive()) {
+
+      await deps.minimizeBrowserWindow();
+    }
+  }
+}
+
+/**
+ * Precaches a single service: clears the service's cache, then walks its guide through the shared guarded page session, logging the timing and recording the
+ * discovery outcome once the walk completes. The per-service primitive behind the precache cycle. Errors propagate to the caller, and no service filtering happens
+ * here - the cycle loop owns both the filter skip and the per-service error containment.
  * @param provider - The provider to precache.
  * @returns The discovered channels (possibly empty).
  */
@@ -196,62 +321,16 @@ export async function precacheService(provider: ProviderModule, deps: Precaching
   // Clear the service's cache before discovery to ensure a complete walk, even if a tune partially warmed the cache during the startup delay.
   provider.strategy.clearCache?.();
 
-  const browser = await deps.getCurrentBrowser();
-  const page = await browser.newPage();
+  return withProviderGuidePage(provider, {
 
-  // Suppress audio on precache pages. Services like Hulu auto-play a default livestream when their guide loads. Since Chrome's --mute-audio is deliberately
-  // disabled (puppeteer-stream needs audio capture for active streams), we intercept play() at the prototype level to mute before any media element can produce
-  // audio. evaluateOnNewDocument runs before site JavaScript, so nothing slips through.
-  await page.evaluateOnNewDocument((): void => {
+    afterWalk: async (page, channels): Promise<void> => {
 
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    const originalPlay = HTMLMediaElement.prototype.play;
+      LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (serviceElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
 
-    HTMLMediaElement.prototype.play = async function(this: HTMLMediaElement): Promise<void> {
-
-      this.muted = true;
-
-      return originalPlay.call(this);
-    };
-  });
-
-  deps.registerManagedPage(page);
-
-  try {
-
-    // Navigate to the service's guide URL unless the provider module handles its own navigation (e.g., sets up response interception before navigating).
-    if(!provider.handlesOwnNavigation) {
-
-      await page.goto(provider.guideUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
+      // Record the domain auth consequences while the page is still open - an empty result classifies the page it walked.
+      await recordDiscoveryOutcome(provider, channels, page);
     }
-
-    const channels = await provider.discoverChannels(page);
-
-    LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (serviceElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
-
-    // Record the domain auth consequences while the page is still open - an empty result classifies the page it walked.
-    await recordDiscoveryOutcome(provider, channels, page);
-
-    return channels;
-  } finally {
-
-    deps.unregisterManagedPage(page);
-
-    try {
-
-      await page.close();
-    } catch {
-
-      // Page may already be closed if the browser disconnected during discovery.
-    }
-
-    // Re-minimize the browser window. Opening the temporary discovery page may have restored the window on macOS. Skipped while login mode is active so a
-    // discovery finishing mid-login never minimizes the window under the user.
-    if(!isLoginModeActive()) {
-
-      await deps.minimizeBrowserWindow();
-    }
-  }
+  }, deps);
 }
 
 /**

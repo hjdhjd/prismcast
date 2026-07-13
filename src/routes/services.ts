@@ -7,13 +7,10 @@ import type { Express, Request, Response } from "express";
 import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.ts";
 import { getChannelServiceLabel, getResolvedChannel, getServiceGroup, getServiceTagForChannel, isServiceTagEnabled,
   resolveServiceKey } from "../config/services.ts";
-import { getCurrentBrowser, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "../browser/index.ts";
 import { getProviderBySlug, normalizeChannelName } from "../browser/channelSelection.ts";
+import { recordDiscoveryOutcome, withProviderGuidePage } from "../browser/precaching.ts";
 import { sendError, sendNotFoundError } from "./config/http/envelope.ts";
-import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
-import type { Page } from "puppeteer-core";
-import { recordDiscoveryOutcome } from "../browser/precaching.ts";
 
 /* The services endpoint exposes channel discovery for each registered service. A GET request to /services/:slug/channels creates a temporary browser page,
  * navigates to the service's guide, runs the service's discoverChannels implementation, and returns a sorted JSON array of discovered channels. The temporary
@@ -59,66 +56,49 @@ function sendDiscoveryError(res: Response, label: string, error: unknown): void 
   sendError(res, 500, { error: "Channel discovery failed: " + message + "." });
 }
 
+/* ServiceDiscoveryDeps is the cross-module collaborator set the discovery route composes on: the provider-registry lookup that resolves a slug to its module, plus
+ * the two precaching primitives the discovery walk delegates to - the guarded guide-page session and the discovery-outcome policy. It is injected as a default
+ * parameter threaded from setupServicesEndpoint through the route handler into runDiscovery, so a test can substitute stubs at the same seam - no loader mock - while
+ * production uses the real defaultServiceDiscoveryDeps built from the functions this module already imports. getProviderBySlug earns its place here because the
+ * provider registry is module-private with no registration hook, so injecting the lookup is the only way a test drives the route with a stub provider. This is the
+ * collaborator-injection form of the Clock port (utils/clock.ts), matching VideoTuneDeps in browser/video.ts and PrecachingDeps in browser/precaching.ts.
+ */
+export interface ServiceDiscoveryDeps {
+
+  readonly getProviderBySlug: typeof getProviderBySlug;
+  readonly recordDiscoveryOutcome: typeof recordDiscoveryOutcome;
+  readonly withProviderGuidePage: typeof withProviderGuidePage;
+}
+
+const defaultServiceDiscoveryDeps: ServiceDiscoveryDeps = { getProviderBySlug, recordDiscoveryOutcome, withProviderGuidePage };
+
 /**
- * Runs service channel discovery in a temporary browser page. Opens a new page, navigates to the service's guide URL, runs the discovery function, and returns
- * the sorted results. The page is always closed in a finally block. If the abort signal fires (from a refresh=true request), the page is closed mid-discovery,
- * causing Puppeteer operations to throw and the promise to reject with a DiscoveryAbortError.
+ * Runs service channel discovery through the shared guarded guide-page session, applying this endpoint's discovery-outcome policy. The helper owns the page
+ * lifecycle, the consent-overlay poll, and the close-on-abort mechanics; this function contributes only the endpoint's policy: record the discovery outcome unless
+ * the walk was aborted, sort the results, and translate any abort into a DiscoveryAbortError the retry loop understands.
  * @param provider - The provider module to discover channels for.
  * @param signal - Abort signal for cancellation by refresh requests.
+ * @param deps - The injected discovery collaborators; the walk and the outcome recording run through deps.withProviderGuidePage and deps.recordDiscoveryOutcome.
  * @returns Sorted array of discovered channels.
  */
-async function runDiscovery(provider: ProviderModule, signal: AbortSignal): Promise<DiscoveredChannel[]> {
-
-  let page: Page | null = null;
-
-  // Close the page when the abort signal fires. This causes any in-progress Puppeteer operations to throw, propagating the cancellation through the discovery
-  // function without requiring explicit signal checking in each provider's implementation. The finally block also closes the page unconditionally - the
-  // redundant close is idempotent (caught by try/catch).
-  const onAbort = (): void => {
-
-    if(page) {
-
-      void page.close().catch(() => {
-
-        // Page may already be closed.
-      });
-    }
-  };
-
-  signal.addEventListener("abort", onAbort, { once: true });
+async function runDiscovery(provider: ProviderModule, signal: AbortSignal, deps: ServiceDiscoveryDeps): Promise<DiscoveredChannel[]> {
 
   try {
 
-    const browser = await getCurrentBrowser();
+    const channels = await deps.withProviderGuidePage(provider, {
 
-    page = await browser.newPage();
-    registerManagedPage(page);
+      afterWalk: async (page, discovered): Promise<void> => {
 
-    // Check if we were aborted between entering runDiscovery and creating the page. The onAbort handler would have fired when page was still null, so the page
-    // we just opened would never be interrupted. Bail out now and let the finally block close it.
-    if(signal.aborted) {
+        // Record the domain auth consequences of this discovery while the page is still open - an empty result classifies the page it walked, and a non-empty result
+        // supplies the success evidence that verifies the domain or clears a standing needs-sign-in flag. Skipped when the walk was aborted by a refresh=true
+        // request, since an aborted walk says nothing about the provider.
+        if(!signal.aborted) {
 
-      throw new DiscoveryAbortError();
-    }
-
-    // Navigate to the service's guide URL unless the provider handles its own navigation (e.g., Hulu and Sling set up response interception before navigating).
-    // We use networkidle2 rather than load because SPA-based services (e.g., Hulu) have heavy async initialization that can prevent the load event from firing
-    // reliably. Network idle ensures all initial API data has arrived before the discovery function reads the DOM.
-    if(!provider.handlesOwnNavigation) {
-
-      await page.goto(provider.guideUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
-    }
-
-    const channels = await provider.discoverChannels(page);
-
-    // Record the domain auth consequences of this discovery while the page is still open - an empty result classifies the page it walked, and a non-empty result
-    // supplies the success evidence that verifies the domain or clears a standing needs-sign-in flag. Skipped when the walk was aborted by a refresh=true request,
-    // since an aborted walk says nothing about the provider.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- The early abort guard narrows aborted to false, but the awaits since can flip it.
-    if(!signal.aborted) {
-
-      await recordDiscoveryOutcome(provider, channels, page);
-    }
+          await deps.recordDiscoveryOutcome(provider, discovered, page);
+        }
+      },
+      signal
+    });
 
     // Sort by name for consistent output. Discovery functions sort at cache time, but fresh (uncached) results from the first call may not be sorted yet.
     channels.sort((a, b) => a.name.localeCompare(b.name));
@@ -134,25 +114,6 @@ async function runDiscovery(provider: ProviderModule, signal: AbortSignal): Prom
     }
 
     throw error;
-  } finally {
-
-    signal.removeEventListener("abort", onAbort);
-
-    if(page) {
-
-      unregisterManagedPage(page);
-
-      try {
-
-        await page.close();
-      } catch {
-
-        // Page may already be closed if the browser disconnected or the abort handler already closed it.
-      }
-
-      // Re-minimize the browser window. Opening the temporary discovery page may have restored the window on macOS, and we want it minimized to reduce GPU usage.
-      await minimizeBrowserWindow();
-    }
   }
 }
 
@@ -343,13 +304,15 @@ function annotateWithLineupState(channels: DiscoveredChannel[], serviceSlug: str
 /**
  * Creates the service channel discovery endpoint.
  * @param app - The Express application.
+ * @param deps - The injected discovery collaborators; defaults to defaultServiceDiscoveryDeps. Threaded into the handler so a test drives the route with a stub
+ * provider and a stubbed guide-page session without a loader mock.
  */
-export function setupServicesEndpoint(app: Express): void {
+export function setupServicesEndpoint(app: Express, deps: ServiceDiscoveryDeps = defaultServiceDiscoveryDeps): void {
 
   app.get("/services/:slug/channels", async (req: Request, res: Response): Promise<void> => {
 
     const slug = req.params["slug"] as string;
-    const provider = getProviderBySlug(slug);
+    const provider = deps.getProviderBySlug(slug);
 
     if(!provider) {
 
@@ -400,7 +363,7 @@ export function setupServicesEndpoint(app: Express): void {
     if(!entry) {
 
       const controller = new AbortController();
-      const promise = runDiscovery(provider, controller.signal).finally(() => {
+      const promise = runDiscovery(provider, controller.signal, deps).finally(() => {
 
         // Only remove our own entry. A refresh=true request may have already replaced it with a new one.
         if(inflight.get(slug)?.controller === controller) {

@@ -1,9 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * precaching.revalidation.test.ts: Unit tests for the post-login revalidation flow (revalidateDomainAuth) and the login-mode minimize guard in precaching.ts.
- * Running a revalidation drives getCurrentBrowser/newPage, which would launch a real Chrome; precaching.ts accepts its browser accessors and provider-registry
- * lookups as an injected PrecachingDeps parameter, so we pass a deps object of stubs at that seam and never drive a browser. The health and login modules are
- * real - state assertions go through getDomainAuthState, and login mode is driven through the real startLoginMode/clearLoginState with stub accessors.
+ * precaching.revalidation.test.ts: Unit tests for the post-login revalidation flow (revalidateDomainAuth), the login-mode minimize guard, and the guarded guide-page
+ * session (withProviderGuidePage) in precaching.ts. Running a revalidation or a guide-page walk drives getCurrentBrowser/newPage, which would launch a real Chrome;
+ * precaching.ts accepts its browser accessors, provider-registry lookups, and the discovery-phase overlay-poll launcher as an injected PrecachingDeps parameter, so
+ * we pass a deps object of stubs at that seam and never drive a browser. The injected startOverlayHandling stub records each poll's options, so the guide-page tests
+ * observe the discovery phase and its abort timing without a live poll. The health and login modules are real - state assertions go through getDomainAuthState, and
+ * login mode is driven through the real startLoginMode/clearLoginState with stub accessors.
  */
 import type { Browser, Page } from "puppeteer-core";
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
@@ -11,22 +13,30 @@ import { LOG, extractDomain } from "../utils/index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearLoginState, setBrowserAccessors, startLoginMode } from "./login.ts";
 import { getDomainAuthState, markDomainAuthRequired } from "../config/health.ts";
-import { precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching } from "./precaching.ts";
+import { precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching, withProviderGuidePage } from "./precaching.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Nullable } from "../types/index.ts";
 import type { PrecachingDeps } from "./precaching.ts";
+import type { StartOverlayHandlingOptions } from "./consent.ts";
 import assert from "node:assert/strict";
+import { setImmediate as immediate } from "node:timers/promises";
 
-// Mutable state the module mocks read, so each test can shape the provider registry and browser behavior without re-registering mocks.
+// Mutable state the deps stubs read, so each test can shape the provider registry and browser behavior without re-registering stubs.
 let mockGuideUrls: Record<string, string> = {};
 let mockProviders: Record<string, ProviderModule> = {};
 let minimizeCalls = 0;
 let stubBrowser: Browser;
 
-/* The injected precaching dependencies: the browser accessors and page bookkeeping plus the provider-registry lookups, substituted at precaching's PrecachingDeps
- * seam so revalidation and discovery run against stubs with no real Chrome. Each field reads the mutable module state above at call time, so a test shapes the
- * registry and browser behavior by reassigning those lets. Typed as the production port so the doubles cannot drift; getProviderGuideUrls is deliberately absent
- * because precaching.ts does not consume it. The health and login modules stay real.
+// The overlay-handling options recorded by the injected startOverlayHandling stub (in call order), and an ordered log of the page operations the guarded session
+// performs, so the withProviderGuidePage tests can assert the phase, the abort state, and the mute-before-navigation ordering without a live Chrome.
+let overlayHandlingCalls: StartOverlayHandlingOptions[] = [];
+let pageEvents: string[] = [];
+
+/* The injected precaching dependencies: the browser accessors and page bookkeeping, the provider-registry lookups, and the discovery-phase overlay-poll launcher,
+ * substituted at precaching's PrecachingDeps seam so revalidation and discovery run against stubs with no real Chrome. Each field reads the mutable module state
+ * above at call time, so a test shapes the registry and browser behavior by reassigning those lets. startOverlayHandling stands in for the real poll, recording each
+ * call's options (phase and abort signal) into overlayHandlingCalls and logging its launch into pageEvents so the guide-page tests can pin the discovery phase and
+ * its abort timing. Typed as the production port so the doubles cannot drift. The health and login modules stay real.
  */
 const deps: PrecachingDeps = {
 
@@ -40,18 +50,25 @@ const deps: PrecachingDeps = {
     minimizeCalls++;
   },
   registerManagedPage: (): void => { /* Stub pages need no bookkeeping. */ },
+  startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => {
+
+    pageEvents.push("poll:" + options.phase);
+    overlayHandlingCalls.push(options);
+  },
   unregisterManagedPage: (): void => { /* Stub pages need no bookkeeping. */ }
 };
 
-// Builds a stub Page satisfying the surface precacheService touches. The evaluate stub reports "no consent overlay / no containers" so empty discoveries classify
-// unknown; the revalidation happy paths return non-empty discoveries and never reach classification.
+// Builds a stub Page satisfying the surface the guarded guide-page session touches. The evaluate stub reports "no consent overlay / no containers" so empty
+// discoveries classify unknown; the revalidation happy paths return non-empty discoveries and never reach classification. Every page operation pushes to pageEvents
+// so the withProviderGuidePage tests can assert the order of the mute injection, the navigation, and the close.
 function makeStubPage(): Page {
 
   return {
 
-    close: async (): Promise<void> => { /* Nothing to close on a stub. */ },
+    close: async (): Promise<void> => { pageEvents.push("close"); },
     evaluate: async (): Promise<unknown> => false,
-    evaluateOnNewDocument: async (): Promise<void> => { /* The mute injection is a no-op on a stub. */ },
+    evaluateOnNewDocument: async (): Promise<void> => { pageEvents.push("mute"); },
+    goto: async (): Promise<void> => { pageEvents.push("goto"); },
     isClosed: (): boolean => false,
     url: (): string => "https://www.stub-revalidate.test/guide"
   } as unknown as Page;
@@ -541,5 +558,150 @@ describe("precacheService - navigation and cleanup", () => {
 
     await assert.doesNotReject(() => precacheService(makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL), deps),
       "a close() failure never rejects the precache");
+  });
+});
+
+describe("withProviderGuidePage", () => {
+
+  beforeEach(() => {
+
+    overlayHandlingCalls = [];
+    pageEvents = [];
+    minimizeCalls = 0;
+    stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
+
+    clearLoginState();
+    mock.timers.enable({ apis: ["setTimeout"] });
+  });
+
+  afterEach(() => {
+
+    clearLoginState();
+    mock.timers.reset();
+  });
+
+  /* Builds a stub ProviderModule for the guarded guide-page session. handlesOwnNavigation controls whether the helper drives page.goto or the provider is presumed
+   * to navigate inside discoverChannels. The double-cast documents that the session touches this subset, not the full provider surface.
+   */
+  function guideProvider(handlesOwnNavigation: boolean, discoverChannels: (page: Page) => Promise<DiscoveredChannel[]>): ProviderModule {
+
+    return {
+
+      discoverChannels,
+      guideUrl: "https://www.stub-guide.test/guide",
+      handlesOwnNavigation,
+      label: "Stub Guide",
+      slug: "stub-guide",
+      strategy: {}
+    } as unknown as ProviderModule;
+  }
+
+  test("installs the mute override and launches the discovery poll before navigation, then hands afterWalk a poll-quiet page", async () => {
+
+    /* Traced path: the helper's happy sequence for a caller-navigated provider. The event log pins the mute-before-navigation and poll-before-navigation ordering,
+     * the recorded poll pins the discovery phase, and the abort snapshot taken inside afterWalk pins that the poll is already stopped before any classification runs -
+     * a resolved-without-throwing check would prove none of these.
+     */
+    let signalAbortedInAfterWalk: boolean | null = null;
+
+    const provider = guideProvider(false, async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL);
+
+    const channels = await withProviderGuidePage(provider, {
+
+      afterWalk: async (): Promise<void> => {
+
+        const firstPoll = overlayHandlingCalls[0];
+
+        signalAbortedInAfterWalk = firstPoll ? (firstPoll.signal?.aborted ?? null) : null;
+      }
+    }, deps);
+
+    assert.deepEqual(channels, ONE_CHANNEL, "the walk's channels are returned");
+    assert.equal(overlayHandlingCalls.length, 1, "exactly one overlay poll was launched");
+
+    const firstPoll = overlayHandlingCalls[0];
+
+    assert.ok(firstPoll, "the overlay poll was recorded");
+    assert.equal(firstPoll.phase, "discovery", "the guide walk runs under the discovery phase");
+    assert.ok(pageEvents.indexOf("mute") < pageEvents.indexOf("goto"), "the mute override installs before navigation");
+    assert.ok(pageEvents.indexOf("poll:discovery") < pageEvents.indexOf("goto"), "the discovery poll launches before navigation");
+    assert.equal(signalAbortedInAfterWalk, true, "the overlay poll is aborted before afterWalk classifies the page");
+  });
+
+  test("launches the discovery poll for a handlesOwnNavigation provider without a caller-driven navigation", async () => {
+
+    // A handlesOwnNavigation provider navigates inside discoverChannels, so the helper drives no goto - but the discovery poll still launches (before that internal
+    // navigation) and survives it by the tick-error taxonomy.
+    const provider = guideProvider(true, async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL);
+
+    await withProviderGuidePage(provider, {}, deps);
+
+    const firstPoll = overlayHandlingCalls[0];
+
+    assert.ok(firstPoll, "the overlay poll was recorded");
+    assert.equal(firstPoll.phase, "discovery", "the walk still runs under the discovery phase");
+    assert.ok(pageEvents.includes("poll:discovery"), "the discovery poll launches");
+    assert.ok(!pageEvents.includes("goto"), "the helper drives no navigation for a handlesOwnNavigation provider");
+  });
+
+  test("throws and closes the page without navigating when the caller has already aborted", async () => {
+
+    // Traced path: the pre-navigation early-abort guard. The listener cannot have closed the page (an already-aborted signal never fires the abort event), so the
+    // guard must throw and the finally must close the page - and no mute, poll, or navigation happens.
+    const controller = new AbortController();
+
+    controller.abort();
+
+    const provider = guideProvider(false, async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL);
+
+    await assert.rejects(withProviderGuidePage(provider, { signal: controller.signal }, deps), "an early abort rejects so the caller can map it to an abort");
+
+    assert.ok(pageEvents.includes("close"), "the just-created page is closed");
+    assert.ok(!pageEvents.includes("goto"), "no navigation happens after an early abort");
+    assert.ok(!pageEvents.includes("mute"), "no mute injection happens after an early abort");
+    assert.equal(overlayHandlingCalls.length, 0, "no overlay poll is launched after an early abort");
+  });
+
+  test("closes the page the instant the caller aborts mid-walk", async () => {
+
+    /* Traced path: the close-on-abort listener the helper owns. The walk pends until a gate resolves; aborting while it pends must close the page immediately, before
+     * the walk completes. The pre-abort "not yet closed" check and the post-abort "closed" check pin the close to the abort itself rather than the finally.
+     */
+    const controller = new AbortController();
+    const gate = Promise.withResolvers<DiscoveredChannel[]>();
+    const provider = guideProvider(true, async (): Promise<DiscoveredChannel[]> => gate.promise);
+
+    const pending = withProviderGuidePage(provider, { signal: controller.signal }, deps);
+
+    // Let the helper advance to the pending walk.
+    await immediate();
+    await immediate();
+
+    assert.ok(!pageEvents.includes("close"), "the page is still open mid-walk");
+
+    controller.abort();
+
+    // Let the close-on-abort listener's page.close() run.
+    await immediate();
+
+    assert.ok(pageEvents.includes("close"), "the abort closed the page mid-walk");
+
+    // Release the walk so the helper unwinds cleanly.
+    gate.resolve(ONE_CHANNEL);
+
+    await pending.catch(() => { /* The unwind path is not under test here. */ });
+  });
+
+  test("closes the page when the walk fails", async () => {
+
+    // Traced path: the finally cleanup on a rejected walk. A discoverChannels failure must still close the page and propagate the error.
+    const provider = guideProvider(true, async (): Promise<DiscoveredChannel[]> => {
+
+      throw new Error("walk failed");
+    });
+
+    await assert.rejects(withProviderGuidePage(provider, {}, deps), /walk failed/);
+
+    assert.ok(pageEvents.includes("close"), "the failed walk still closes the page");
   });
 });

@@ -15,8 +15,9 @@ import { consentOverlayPresent } from "./consent.ts";
  * consentOverlayPresent from consent.ts (never duplicated) plus one in-page collector (collectSignInContainers) that reports candidate sign-in containers.
  *
  * Decision order: (a) provider-declared indicators, (b) consent overlay, (c) the generic container-scoped sign-in shape, (d) unknown. Consent is checked before the
- * generic shape because a CMP banner can mask a wall behind it - we cannot see through the mask, so consent is the more actionable signal today; the
- * overlay-handling arc dismisses the banner on a later pass and lets a re-run see whatever it was hiding.
+ * generic shape because a CMP banner can mask a wall behind it - we cannot see through the mask, so consent is the more actionable signal. The discovery walk runs
+ * its own consent-overlay poll (see consent.ts), which dismisses the banner proactively, so a consentOverlay classification here means that poll could not clear it
+ * - the banner is the standing obstacle, and dismissing it manually is the actionable next step.
  *
  * classifyBlockedPage never throws: classification is best-effort advisory evidence, so any internal failure (the page closed or navigated mid-probe, an evaluate
  * error) degrades to the unknown classification rather than propagating into the discovery path.
