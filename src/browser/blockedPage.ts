@@ -5,6 +5,7 @@
 import type { AuthWallIndicators, Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import { consentOverlayPresent } from "./consent.ts";
+import { raceWithTimeout } from "../utils/index.ts";
 
 /* When a channel discovery walk returns zero channels, the page it walked is still open - and what is on that page is evidence. This module classifies that
  * still-open page as a provider authentication wall, a consent overlay, or unknown, so the discovery-outcome policy in precaching.ts can persist the needs-sign-in
@@ -39,6 +40,11 @@ const SIGN_IN_PHRASING_SOURCE = "\\b(sign[ -]?in|log[ -]?in|sign[ -]?on|enter(in
 
 // The compiled sign-in phrasing matcher used by the pure decision core.
 const SIGN_IN_PHRASING_RE = new RegExp(SIGN_IN_PHRASING_SOURCE, "i");
+
+// Upper bound in milliseconds on the blocked-page classification. classifyBlockedPage bounds its own signal gathering with this budget, so it is never-throwing AND
+// never-hanging: a hung renderer cannot stall a caller's failure path, and no caller needs a timeout wrapper of its own. Four seconds accommodates the DOM probes on
+// a responsive page while keeping the added window negligible inside the callers' own time budgets (the tune's playback-initialization race, the precache cycle).
+const BLOCKED_PAGE_CLASSIFY_TIMEOUT = 4000;
 
 /**
  * The classification of a page whose discovery walk returned zero channels.
@@ -275,47 +281,65 @@ export function decideBlockedPage(signals: BlockedPageSignals): BlockedPageClass
 }
 
 /**
- * Classifies a still-open page whose discovery walk returned zero channels. Gathers signals lazily in decision order - each probe is skipped once an earlier
- * signal already decides the outcome - and hands them to the pure decision core. Never throws: any internal failure resolves to the unknown classification.
+ * Classifies a still-open page whose discovery walk returned zero channels. Gathers signals lazily in decision order - each probe is skipped once an earlier signal
+ * already decides the outcome - and hands them to the pure decision core. The gathering is bounded by BLOCKED_PAGE_CLASSIFY_TIMEOUT internally, so the classifier is
+ * both never-throwing AND never-hanging: every caller gets an advisory result within the budget with no wrapper of its own.
  * @param page - The still-open discovery page.
  * @param options - The provider's optional auth wall indicators and the originally requested URL.
  * @returns The page's classification.
  */
 export async function classifyBlockedPage(page: Page, options: ClassifyBlockedPageOptions): Promise<BlockedPageClassification> {
 
-  try {
+  /* The signal gathering, in its own never-throwing chain: any internal failure (the page closed or navigated mid-probe, an evaluate error) degrades to the unknown
+   * classification. Because this chain never rejects, a probe that outruns the budget below and settles late - against a page that has since closed - resolves
+   * harmlessly to unknown rather than surfacing an unhandled rejection after the race has already been decided by the timeout.
+   */
+  const gather = async (): Promise<BlockedPageClassification> => {
 
-    const landedUrl = page.url();
-    const landedHost = hostnameOf(landedUrl);
-    const indicatorHostMatched = (landedHost !== null) && (options.indicators?.hosts ?? []).some((pattern) => hostMatchesPattern(landedHost, pattern));
+    try {
 
-    // Probe the provider's DOM selectors only when the host indicator has not already decided.
-    let indicatorSelectorMatched = false;
+      const landedUrl = page.url();
+      const landedHost = hostnameOf(landedUrl);
+      const indicatorHostMatched = (landedHost !== null) && (options.indicators?.hosts ?? []).some((pattern) => hostMatchesPattern(landedHost, pattern));
 
-    if(!indicatorHostMatched) {
+      // Probe the provider's DOM selectors only when the host indicator has not already decided.
+      let indicatorSelectorMatched = false;
 
-      for(const selector of options.indicators?.selectors ?? []) {
+      if(!indicatorHostMatched) {
 
-        // eslint-disable-next-line no-await-in-loop
-        if((await page.$(selector)) !== null) {
+        for(const selector of options.indicators?.selectors ?? []) {
 
-          indicatorSelectorMatched = true;
+          // eslint-disable-next-line no-await-in-loop
+          if((await page.$(selector)) !== null) {
 
-          break;
+            indicatorSelectorMatched = true;
+
+            break;
+          }
         }
       }
+
+      const indicatorMatched = indicatorHostMatched || indicatorSelectorMatched;
+      const consentPresent = indicatorMatched ? false : await consentOverlayPresent(page);
+      const containers = (indicatorMatched || consentPresent) ? [] :
+        await page.evaluate(collectSignInContainers, { maxDepth: CONTAINER_SEARCH_DEPTH, textLimit: CONTAINER_TEXT_LIMIT });
+
+      return decideBlockedPage({ consentOverlayPresent: consentPresent, containers, indicatorHostMatched, indicatorSelectorMatched, landedUrl,
+        requestedUrl: options.requestedUrl });
+    } catch {
+
+      // The page closed or navigated mid-probe, or an evaluate failed. Classification is advisory evidence - an unreadable page is simply unknown.
+      return { kind: "unknown" };
     }
+  };
 
-    const indicatorMatched = indicatorHostMatched || indicatorSelectorMatched;
-    const consentPresent = indicatorMatched ? false : await consentOverlayPresent(page);
-    const containers = (indicatorMatched || consentPresent) ? [] :
-      await page.evaluate(collectSignInContainers, { maxDepth: CONTAINER_SEARCH_DEPTH, textLimit: CONTAINER_TEXT_LIMIT });
+  // Bound the gathering so a hung renderer cannot stall the caller: on timeout the raced rejection lands here and becomes unknown, the same outcome a slow-but-empty
+  // page would produce.
+  try {
 
-    return decideBlockedPage({ consentOverlayPresent: consentPresent, containers, indicatorHostMatched, indicatorSelectorMatched, landedUrl,
-      requestedUrl: options.requestedUrl });
+    return await raceWithTimeout(gather(), BLOCKED_PAGE_CLASSIFY_TIMEOUT);
   } catch {
 
-    // The page closed or navigated mid-probe, or an evaluate failed. Classification is advisory evidence - an unreadable page is simply unknown.
     return { kind: "unknown" };
   }
 }

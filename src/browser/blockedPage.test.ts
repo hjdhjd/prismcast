@@ -6,12 +6,13 @@
  * fixtures below exercise the production decision path end to end without a browser.
  */
 import type { BlockedPageSignals, SignInContainerRecord } from "./blockedPage.ts";
+import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { classifyBlockedPage, collectSignInContainers, decideBlockedPage } from "./blockedPage.ts";
 import { closePuppeteerStreamWssOnIdle, firstOf } from "../testing.helpers.ts";
-import { describe, test } from "node:test";
 import type { Page } from "puppeteer-core";
 import { Window } from "happy-dom";
 import assert from "node:assert/strict";
+import { setImmediate as immediate } from "node:timers/promises";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly (consent.ts loads transitively).
 closePuppeteerStreamWssOnIdle();
@@ -407,5 +408,43 @@ describe("classifyBlockedPage - never throws", () => {
     const result = await classifyBlockedPage(page, { requestedUrl: "https://www.example.test/guide" });
 
     assert.equal(result.kind, "unknown");
+  });
+});
+
+describe("classifyBlockedPage - time budget", () => {
+
+  beforeEach(() => {
+
+    // Park the internal classification-budget timer so the test can drive its expiry explicitly.
+    mock.timers.enable({ apis: ["setTimeout"] });
+  });
+
+  afterEach(() => {
+
+    mock.timers.reset();
+  });
+
+  test("resolves unknown when the signal gathering outruns the internal time budget", async () => {
+
+    /* Traced path: the raceWithTimeout the classifier wraps its own gathering in. A page whose evaluate never settles makes the gathering hang; the classifier must
+     * abandon it at the budget and classify unknown, entirely on its own - no caller wrapper. Driving the parked timer past the budget is what discriminates the
+     * self-bounded classifier from the old unbounded one, which would leave this promise pending forever.
+     */
+    const page = {
+
+      $: async (): Promise<null> => null,
+      evaluate: (): Promise<never> => Promise.withResolvers<never>().promise,
+      url: (): string => "https://www.example.test/guide"
+    } as unknown as Page;
+
+    const pending = classifyBlockedPage(page, { requestedUrl: "https://www.example.test/guide" });
+
+    // Let the classifier reach the internal race (register the budget timer), then expire it past the four-second budget.
+    await immediate();
+    mock.timers.tick(5000);
+
+    const result = await pending;
+
+    assert.equal(result.kind, "unknown", "a classification that outruns its budget resolves unknown");
   });
 });

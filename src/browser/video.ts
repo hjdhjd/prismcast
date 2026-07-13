@@ -6,7 +6,6 @@ import { EvaluateAbortError, LOG, delay, evaluateWithAbort, extractDomain, forma
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.ts";
 import { getProvidersForDomain, invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
-import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
 import type { OverlayPhase } from "./consent.ts";
 import { classifyBlockedPage } from "./blockedPage.ts";
@@ -1403,16 +1402,11 @@ export interface VideoTuneDeps {
 
 const defaultVideoTuneDeps: VideoTuneDeps = { classifyBlockedPage, getProvidersForDomain, selectChannel, startOverlayHandling };
 
-// Upper bound on the blocked-page classification during a failed tune. classifyBlockedPage() never throws but is not internally time-bounded (its DOM probes run
-// without a timeout wrapper), so a hung renderer could otherwise stall the failure path indefinitely. Four seconds accommodates the probes on a responsive page
-// while keeping the added window negligible inside the 45-second playback-initialization race in setup.ts.
-const BLOCKED_PAGE_CLASSIFY_TIMEOUT = 4000;
-
 /**
  * Diagnoses a failed tune by classifying the still-open page, which holds the evidence of why the tune failed. A confirmed provider authentication wall marks the
  * domain needs-sign-in and replaces the generic failure with an actionable error; a wall on a domain with no registered provider is reported without marking (there
  * is no channel-table row to point at, and an unmarked ad-hoc entry would have no clearing path); a consent overlay surfaces the standing detect-and-guide text;
- * anything unrecognized - including a classification that outruns its time budget - rethrows the original failure unchanged.
+ * anything unrecognized - including a classification that outruns its own time budget - rethrows the original failure unchanged.
  * @param page - The Puppeteer page object, still open at the point of failure.
  * @param requestedUrl - The URL this tune navigated to; its registrable domain selects the provider and receives any needs-sign-in mark.
  * @param originalError - The failure that triggered the diagnosis, rethrown as-is when the page classifies as unknown.
@@ -1426,9 +1420,9 @@ async function diagnoseBlockedTune(page: Page, requestedUrl: string, originalErr
   // and a provider match is what authorizes the needs-sign-in mark below.
   const provider = deps.getProvidersForDomain(domain)[0];
 
-  // Time-bound the classification so the failure path stays bounded: on timeout the page is simply unknown and the original failure stands.
-  const classification = await raceWithTimeout(deps.classifyBlockedPage(page, { indicators: provider?.authWallIndicators, requestedUrl }),
-    BLOCKED_PAGE_CLASSIFY_TIMEOUT).catch((): BlockedPageClassification => ({ kind: "unknown" }));
+  // classifyBlockedPage is never-throwing and self-bounded, so the call needs no timeout wrapper and no fallback catch: a timed-out or unreadable page classifies
+  // unknown internally, and the original failure stands.
+  const classification = await deps.classifyBlockedPage(page, { indicators: provider?.authWallIndicators, requestedUrl });
 
   switch(classification.kind) {
 

@@ -118,8 +118,7 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
     overlayCalls = [];
     classifyTuneSetupAborted = [];
 
-    // Suppress the health flush debounce timer so nothing fires against a real data directory, and park raceWithTimeout's classification-budget timer so the
-    // timeout test can drive its expiry explicitly.
+    // Suppress the health flush debounce timer so nothing fires against a real data directory during these diagnosis tests.
     mock.timers.enable({ apis: ["setTimeout"] });
   });
 
@@ -226,35 +225,6 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
 
     assert.equal(classifyCalls.length, 1, "the failure routed through the classifier before rethrowing");
     assert.equal(getDomainAuthState("stub-d.test"), null, "an unknown page never marks the domain");
-  });
-
-  test("treats a classification that outruns its budget as unknown and rethrows the original error", async () => {
-
-    /* Traced path: the raceWithTimeout wrapper around classifyBlockedPage in diagnoseBlockedTune - a classification promise that never settles must be abandoned
-     * at the budget and treated as unknown, so the original selection error surfaces byte-identical. The budget timer is driven explicitly through mocked
-     * setTimeout; ticking past the four-second classification budget fires it.
-     */
-    mockSelectResult = { reason: "Station code FBN not found.", success: false };
-    classifyResult = (): Promise<BlockedPageClassification> => Promise.withResolvers<BlockedPageClassification>().promise;
-
-    const pending = initializePlayback(makeStubPage(), makeProfile(), { requestedUrl: "https://www.stub-e.test/guide" }, deps);
-
-    const rejection = assert.rejects(pending, (error: unknown) => {
-
-      assert.ok(error instanceof Error, "the original failure is an Error");
-      assert.equal(error.message, "Channel selection failed: Station code FBN not found.", "the original selection error surfaces byte-identical");
-
-      return true;
-    });
-
-    // Let the tune reach the classification race (pure microtasks up to the timer registration), then expire the budget.
-    await immediate();
-    mock.timers.tick(5000);
-
-    await rejection;
-
-    assert.equal(classifyCalls.length, 1, "the classifier was invoked before its budget expired");
-    assert.equal(getDomainAuthState("stub-e.test"), null, "a timed-out classification never marks the domain");
   });
 
   test("throws today's exact selection error with zero classifier invocation when requestedUrl is absent", async () => {
