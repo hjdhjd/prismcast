@@ -8,9 +8,29 @@
  */
 import { describe, test } from "node:test";
 import { generateCustomProfilesPanel, generateProfileWizardModal, setupProfileRoutes } from "./services.ts";
+import type { ChannelSelectionConfig } from "../../types/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
 import { makeExpressStub } from "../express.helpers.ts";
+import { validateProfile } from "../../config/userProfiles.ts";
+
+/* Extracts a serialized wizard registry from the modal HTML by slicing the JSON between its assignment marker and the next statement boundary. The data block is
+ * `window.__wizardProfiles = {...};window.__wizardStrategies = [...];window.__wizardFields = [...];</script>`, so each registry is bounded on both sides by a literal
+ * the others cannot contain.
+ */
+function extractRegistry(html: string, startMarker: string, endMarker: string): unknown {
+
+  const start = html.indexOf(startMarker);
+
+  assert.ok(start >= 0, "the data block contains " + startMarker);
+
+  const from = start + startMarker.length;
+  const end = html.indexOf(endMarker, from);
+
+  assert.ok(end >= 0, "the data block terminates " + startMarker);
+
+  return JSON.parse(html.slice(from, end));
+}
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -151,13 +171,13 @@ describe("generateProfileWizardModal", () => {
 
   test("embeds the wizard registries as JSON in a single <script> data block", () => {
 
-    // The data-driven wizard pulls profile groupings, strategies, and flags from window.__wizardProfiles/__wizardStrategies/__wizardFlags. All three
+    // The data-driven wizard pulls profile groupings, strategies, and fields from window.__wizardProfiles/__wizardStrategies/__wizardFields. All three
     // must be set in a single <script> tag that the wizard reads on init.
     const html = generateProfileWizardModal();
 
     assert.match(html, /window\.__wizardProfiles\s*=/, "profile registry is embedded");
     assert.match(html, /window\.__wizardStrategies\s*=/, "strategy registry is embedded");
-    assert.match(html, /window\.__wizardFlags\s*=/, "flag registry is embedded");
+    assert.match(html, /window\.__wizardFields\s*=/, "field registry is embedded");
   });
 
   test("strategy registry includes the three user-configurable strategies (tileClick, thumbnailRow, none)", () => {
@@ -183,7 +203,7 @@ describe("generateProfileWizardModal", () => {
     assert.doesNotMatch(html, /"id":"youtubeGrid"/, "youtubeGrid is excluded");
   });
 
-  test("flag registry includes the six user-configurable flags", () => {
+  test("field registry includes every user-configurable boolean flag", () => {
 
     // The flags step exposes selectReadyVideo, lockVolumeProperties, clickToPlay, needsIframeHandling, waitForNetworkIdle, useRequestFullscreen. Lock
     // them all so a registry edit forces a test update.
@@ -233,6 +253,61 @@ describe("generateProfileWizardModal", () => {
     const b = generateProfileWizardModal();
 
     assert.equal(a, b, "two calls produce identical HTML");
+  });
+
+  test("field registry exposes the hide-selector and dismiss-selector text fields", () => {
+
+    // hideSelector and dismissSelector are text-type entries in the unified field registry - the wizard renders them as inputs and round-trips their values. The
+    // dismissSelector field is what lets a user configure per-site modal dismissal from the builder.
+    const html = generateProfileWizardModal();
+    const fields = extractRegistry(html, "window.__wizardFields = ", ";</script>") as { id: string; type: string }[];
+
+    const byId = new Map(fields.map((field) => [ field.id, field ]));
+
+    assert.equal(byId.get("hideSelector")?.type, "text", "hideSelector is a text field");
+    assert.equal(byId.get("dismissSelector")?.type, "text", "dismissSelector is a text field");
+  });
+
+  test("every wizard profile field is a SiteProfile field accepted by validateProfile", () => {
+
+    /* The registry-subset invariant: the wizard must never render a field the validator would reject, or a complete-object resave would 400. Each field id is fed
+     * through the real validateProfile as a single-field profile; the "unrecognized flag" rejection must never name it. This is the guard that keeps the blessed
+     * complete-object round-trip from surfacing a builder-authored field as a validation error.
+     */
+    const html = generateProfileWizardModal();
+    const fields = extractRegistry(html, "window.__wizardFields = ", ";</script>") as { id: string; type: string }[];
+
+    for(const field of fields) {
+
+      const value = (field.type === "boolean") ? true : "x";
+      const errors = validateProfile("wizard-subset-test", { extends: "default", [field.id]: value });
+      const rejection = errors.find((error) => error.includes("unrecognized flag '" + field.id + "'"));
+
+      assert.ok(!rejection, "wizard field '" + field.id + "' must be a valid SiteProfile field: " + (rejection ?? ""));
+    }
+  });
+
+  test("every wizard strategy field id is a legal ChannelSelectionConfig key", () => {
+
+    /* The strategy fields the wizard renders are written into channelSelection, so each id must be a real ChannelSelectionConfig key. The Record type forces every
+     * config key to be listed (a renamed or removed key is a compile error here), and the runtime membership check pins that the serialized registry only renders
+     * legal keys.
+     */
+    const configKeys: Record<keyof ChannelSelectionConfig, true> = {
+
+      listSelector: true, matchSelector: true, playSelector: true, scrollSelector: true, scrollTarget: true, scrollToBottom: true, strategy: true
+    };
+
+    const html = generateProfileWizardModal();
+    const strategies = extractRegistry(html, "window.__wizardStrategies = ", ";window.__wizardFields") as { fields: { id: string }[] }[];
+
+    for(const strategy of strategies) {
+
+      for(const field of strategy.fields) {
+
+        assert.ok(field.id in configKeys, "strategy field '" + field.id + "' must be a ChannelSelectionConfig key");
+      }
+    }
   });
 });
 

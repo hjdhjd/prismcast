@@ -51,7 +51,7 @@ async function setupChannelsRuntime(options?: DomTestContextOptions & { readonly
   /* Three scripts are loaded together:
    *   1. shared.ts (marker: "window.channelTable = {") - the namespace and wizard controller channels.ts depends on.
    *   2. The profile-wizard data block (marker: "window.__wizardStrategies") - one-line <script> emitted by generateProfileWizardModal that planted the data
-   *      registries (window.__wizardProfiles / window.__wizardStrategies / window.__wizardFlags). channels.ts's editUserProfile / saveProfile / startProfileTest
+   *      registries (window.__wizardProfiles / window.__wizardStrategies / window.__wizardFields). channels.ts's editUserProfile / saveProfile / startProfileTest
    *      handlers all read these registries; without them the handlers throw on .find().
    *   3. channels.ts (marker: "window.openTagManager") - the script under test.
    *
@@ -116,16 +116,43 @@ function getDisplay(ctx: DisposableDomTestContext, id: string): string {
  * @param spec - Profile shape to inject. Mirrors the GET /config/profiles entry shape: { key, profile, domains }.
  */
 async function seedProfileWizardEdit(ctx: DisposableDomTestContext, spec: {
-  domains?: { domain: string; service?: string; serviceTag?: string }[];
+  domains?: { config?: Record<string, unknown>; domain: string; service?: string; serviceTag?: string }[];
+  extraDomains?: Record<string, unknown>;
   key: string;
   profile: Record<string, unknown>;
 }): Promise<void> {
 
+  /* Mirror the real GET /config/profiles projection: each per-profile domain row carries the full raw DomainConfig under `config`, with service and serviceTag also
+   * surfaced flat. Callers may pass `config` directly (to seed unrendered domain-level fields for a round-trip test) or the flat service/serviceTag (a convenience
+   * that builds the config). extraDomains seeds the top-level domains record - which the wizard must NOT consult - so a cross-profile scoping test can prove the
+   * save never pulls another profile's domains in.
+   */
+  const projectedDomains = (spec.domains ?? []).map((d) => {
+
+    const config: Record<string, unknown> = d.config ?? { profile: spec.key };
+
+    if(d.config === undefined) {
+
+      if(d.service !== undefined) {
+
+        config["service"] = d.service;
+      }
+
+      if(d.serviceTag !== undefined) {
+
+        config["serviceTag"] = d.serviceTag;
+      }
+    }
+
+    return { config, domain: d.domain, service: config["service"] ?? "", serviceTag: config["serviceTag"] ?? "" };
+  });
+
   const payload = JSON.stringify({
 
+    domains: spec.extraDomains ?? {},
     profiles: [{
 
-      domains: spec.domains ?? [],
+      domains: projectedDomains,
       key: spec.key,
       profile: spec.profile
     }],
@@ -452,6 +479,124 @@ describe("channels.ts: window.saveProfile", () => {
     assert.equal(getDisplay(ctx, "wizard-modal"), "flex", "wizard must remain open on save failure");
     assert.equal(ctx.document.getElementById("wizard-error")?.textContent, "Conflict.");
   });
+
+  test("round-trips unrendered profile, channelSelection, and domain fields while a cleared rendered field is deleted", async () => {
+
+    /* The complete-object round-trip: saveProfile copies the fetched profile and deletes only the rendered vocabulary, so fields the wizard never renders survive at
+     * every level - a profile flag (staticCapture), a channelSelection sub-field the strategy does not expose (scrollSelector), and domain-level config (videoTimeout,
+     * loginUrl). Clearing a rendered field (hideSelector) in step 3 must still delete it, proving the vocabulary is authoritative for exactly what it renders.
+     */
+    await using ctx = await setupChannelsRuntime();
+
+    await seedProfileWizardEdit(ctx, {
+
+      domains: [{ config: { loginUrl: "https://login.pres.test", profile: "pres", service: "Pres", serviceTag: "pres", videoTimeout: 25000 }, domain: "pres.test" }],
+      key: "pres",
+      profile: {
+
+        channelSelection: { matchSelector: ".cell", scrollSelector: ".shelf", strategy: "tileClick" },
+        extends: "default",
+        hideSelector: ".overlay",
+        staticCapture: true
+      }
+    });
+
+    // Advance to step 3 (step 1 -> 2 -> 3), draining the controller's async validate/advance queue after each click, then clear the rendered hideSelector field.
+    clickWizardNext(ctx, "wizard-modal");
+    await ctx.flushAsync();
+    clickWizardNext(ctx, "wizard-modal");
+    await ctx.flushAsync();
+    ctx.evaluate("const hi = document.getElementById('wizard-field-hideSelector'); hi.value = ''; hi.dispatchEvent(new Event('input', { bubbles: true }));");
+
+    installFetchSpy(ctx, { success: true });
+    ctx.evaluate("window.saveProfile(false)");
+    await ctx.flushAsync();
+
+    const calls = ctx.evaluateJson("window.harnessFetchCalls") as CapturedFetchCall[];
+
+    assert.equal(calls.length, 1);
+
+    interface PreservationBody {
+
+      domains: Record<string, Record<string, unknown>>;
+      profile: { channelSelection?: Record<string, unknown>; hideSelector?: string; staticCapture?: boolean };
+    }
+
+    const body = JSON.parse(calls[0]!.body ?? "{}") as PreservationBody;
+    const cs = body.profile.channelSelection;
+    const presDomain = body.domains["pres.test"];
+
+    assert.ok(cs, "the profile carries a channelSelection block");
+    assert.ok(presDomain, "the domain entry is present in the save body");
+    assert.equal(body.profile.staticCapture, true, "the unrendered profile flag rides through");
+    assert.equal(cs["scrollSelector"], ".shelf", "the unrendered channelSelection sub-field rides through");
+    assert.equal(cs["matchSelector"], ".cell", "the rendered strategy field is preserved");
+    assert.equal(Object.hasOwn(body.profile, "hideSelector"), false, "the cleared rendered field is deleted from the round-tripped profile");
+    assert.equal(presDomain["videoTimeout"], 25000, "the unrendered domain videoTimeout rides through");
+    assert.equal(presDomain["loginUrl"], "https://login.pres.test", "the unrendered domain loginUrl rides through");
+    assert.equal(presDomain["profile"], "pres", "the domain still points at the saved profile");
+  });
+
+  test("scopes the save to the edited profile's own domains, ignoring the top-level domains record", async () => {
+
+    /* The per-profile domain projection is the wizard's single source of truth; the GET response's top-level domains record (which carries every profile's domains)
+     * is no longer consulted. Seeding a second profile's domain into that record and asserting it never appears in the save body pins the cross-profile scoping - a
+     * regression that read the top-level record would leak another profile's domains into this save and the server's whole-replace would clobber them.
+     */
+    await using ctx = await setupChannelsRuntime();
+
+    await seedProfileWizardEdit(ctx, {
+
+      domains: [{ domain: "a.test", service: "A", serviceTag: "a" }],
+      extraDomains: { "b.test": { profile: "otherProfile", service: "B", serviceTag: "b" } },
+      key: "p1",
+      profile: { extends: "default" }
+    });
+
+    installFetchSpy(ctx, { success: true });
+    ctx.evaluate("window.saveProfile(false)");
+    await ctx.flushAsync();
+
+    const calls = ctx.evaluateJson("window.harnessFetchCalls") as CapturedFetchCall[];
+    const body = JSON.parse(calls[0]!.body ?? "{}") as { domains: Record<string, unknown> };
+
+    assert.deepEqual(Object.keys(body.domains), ["a.test"], "the save carries only the edited profile's domains");
+  });
+
+  test("switching strategy does not resurrect the previous strategy's stale rendered value", async () => {
+
+    /* Risk-4 guard: the channelSelection rebuild subtracts the CHOSEN strategy's rendered field ids from the base copy before applying current values, so a field
+     * cleared after switching strategies cannot ride through from the base. Seed tileClick with a playSelector, switch to thumbnailRow, clear the carried-over
+     * playSelector in the re-rendered step-2 form, and assert the saved channelSelection drops playSelector while keeping the new strategy and an unrendered sub-field.
+     */
+    await using ctx = await setupChannelsRuntime();
+
+    await seedProfileWizardEdit(ctx, {
+
+      key: "sw",
+      profile: { channelSelection: { matchSelector: ".old", playSelector: ".oldplay", scrollSelector: ".shelf", strategy: "tileClick" }, extends: "default" }
+    });
+
+    // Advance to step 2 (draining the controller's async advance), switch the strategy to thumbnailRow, then clear the carried-over playSelector in the re-render.
+    clickWizardNext(ctx, "wizard-modal");
+    await ctx.flushAsync();
+    ctx.evaluate("const r = Array.from(document.querySelectorAll('input[name=\"strategy\"]')).find((x) => x.value === 'thumbnailRow'); " +
+      "r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true }));");
+    ctx.evaluate("const ps = document.querySelector('#wizard-content input[data-field=\"playSelector\"]'); " +
+      "if(ps) { ps.value = ''; ps.dispatchEvent(new Event('input', { bubbles: true })); }");
+
+    installFetchSpy(ctx, { success: true });
+    ctx.evaluate("window.saveProfile(false)");
+    await ctx.flushAsync();
+
+    const calls = ctx.evaluateJson("window.harnessFetchCalls") as CapturedFetchCall[];
+    const body = JSON.parse(calls[0]!.body ?? "{}") as { profile: { channelSelection?: Record<string, unknown> } };
+    const cs = body.profile.channelSelection ?? {};
+
+    assert.equal(cs["strategy"], "thumbnailRow", "the newly chosen strategy is saved");
+    assert.equal(Object.hasOwn(cs, "playSelector"), false, "the cleared playSelector does not resurrect from the base copy");
+    assert.equal(cs["scrollSelector"], ".shelf", "an unrendered channelSelection sub-field still rides through the switch");
+  });
 });
 
 describe("channels.ts: profile wizard validation gates (driven via clickWizardNext)", () => {
@@ -624,6 +769,43 @@ describe("channels.ts: profile test flow handlers", () => {
     const body = JSON.parse(checkCall.body ?? "{}") as { selectors: Record<string, string> };
 
     assert.deepEqual(body.selectors, { hideSelector: ".overlay", matchSelector: ".cell", playSelector: ".play" });
+  });
+
+  test("Save & Test carries the dismiss selector into the test-selectors payload", async () => {
+
+    /* dismissSelector is a rendered text field now, so a Save & Test must offer it for checking alongside the hide selector. Seed a profile carrying dismissSelector,
+     * run the test flow, and assert the selector map shipped to /config/profiles/test/check includes it - the pin for the new field's Save & Test wiring.
+     */
+    await using ctx = await setupChannelsRuntime();
+
+    await seedProfileWizardEdit(ctx, {
+
+      key: "p1",
+      profile: {
+
+        channelSelection: { matchSelector: ".cell", strategy: "tileClick" },
+        dismissSelector: ".watch-live-modal",
+        extends: "default",
+        hideSelector: ".overlay"
+      }
+    });
+
+    installFetchSpy(ctx, { success: true });
+    ctx.evaluate("window.startProfileTest('example.test')");
+    await ctx.flushAsync();
+
+    ctx.evaluate("window.checkSelectors()");
+    await ctx.flushAsync();
+
+    const calls = ctx.evaluateJson("window.harnessFetchCalls") as CapturedFetchCall[];
+    const checkCall = calls[1]!;
+
+    assert.equal(checkCall.url, "/config/profiles/test/check");
+
+    const body = JSON.parse(checkCall.body ?? "{}") as { selectors: Record<string, string> };
+
+    assert.equal(body.selectors["dismissSelector"], ".watch-live-modal", "the dismiss selector is offered for checking");
+    assert.equal(body.selectors["hideSelector"], ".overlay", "the hide selector is still offered alongside it");
   });
 
   test("endProfileTest POSTs /config/profiles/test/done and hides the test modal", async () => {

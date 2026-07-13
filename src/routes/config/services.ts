@@ -19,6 +19,54 @@ import { generateWizardModal } from "../components.ts";
 import { getProfiles } from "../../config/profiles.ts";
 
 /**
+ * One field the profile wizard renders and round-trips. The same descriptor shape types both the per-strategy field lists (WIZARD_STRATEGIES) and the flat
+ * profile-field registry (WIZARD_FIELDS), so the client renders either from one data-driven convention: a "boolean" field is a checkbox described by its description,
+ * a "text" field is an input described by its hint. placeholder is a text-arm convention (a boolean field never carries one). required is honored only by the
+ * strategy fields' step-2 validation.
+ */
+interface WizardFieldDescriptor {
+
+  // Longer explanatory text shown beneath a boolean field's checkbox.
+  readonly description?: string;
+
+  // Short hint shown beneath a text field's input.
+  readonly hint?: string;
+
+  // The profile (or channelSelection sub-field) key this descriptor reads and writes.
+  readonly id: string;
+
+  // The field's visible label.
+  readonly label: string;
+
+  // Placeholder text for a text field's input.
+  readonly placeholder?: string;
+
+  // Whether step-2 validation requires a strategy text field to be non-empty.
+  readonly required?: boolean;
+
+  // Whether the field is a checkbox ("boolean") or a text input ("text").
+  readonly type: "boolean" | "text";
+}
+
+/**
+ * One user-configurable channel-selection strategy in the wizard: its id, display name, description, and the fields it exposes.
+ */
+interface WizardStrategy {
+
+  // Short description of when to use the strategy.
+  readonly description: string;
+
+  // The strategy's configurable fields, rendered in step 2.
+  readonly fields: readonly WizardFieldDescriptor[];
+
+  // The strategy identifier persisted as channelSelection.strategy.
+  readonly id: string;
+
+  // The strategy's display name.
+  readonly name: string;
+}
+
+/**
  * Counts channels per user profile key by scanning the channel listing. Returns a record mapping profile key to channel count.
  * @param profileKeys - The set of user profile keys to count channels for.
  * @returns Record of profile key to channel count.
@@ -239,9 +287,10 @@ export function generateProfileWizardModal(): string {
   };
 
   // Server-side registries for the wizard. Strategies define user-configurable channel selection approaches (service-specific strategies like foxGrid, slingGrid,
-  // etc. are builtin only and never appear in the wizard). Flags define boolean profile flags exposed in step 3. Both are serialized as JSON so the wizard client
-  // code is fully data-driven - adding a new strategy field or flag only requires updating these arrays.
-  const WIZARD_STRATEGIES = [
+  // etc. are builtin only and never appear in the wizard). WIZARD_FIELDS defines the profile-level fields exposed in step 3 - boolean flags plus text selectors -
+  // rendered by type. Both are serialized as JSON so the wizard client code is fully data-driven: adding a new strategy field or profile field only requires
+  // updating these arrays. Every WIZARD_FIELDS id must be a valid SiteProfile field so the save round-trips through validateProfile.
+  const WIZARD_STRATEGIES: readonly WizardStrategy[] = [
     {
 
       description: "Click a channel tile, optionally click a play button.",
@@ -279,13 +328,16 @@ export function generateProfileWizardModal(): string {
     }
   ];
 
-  const WIZARD_FLAGS = [
-    { description: "Find video with readyState >= 3. For pages with multiple video elements.", id: "selectReadyVideo", label: "Select ready video" },
-    { description: "Prevent the site from auto-muting.", id: "lockVolumeProperties", label: "Lock volume properties" },
-    { description: "Click an element to start playback.", id: "clickToPlay", label: "Click to play" },
-    { description: "Video is embedded in an iframe.", id: "needsIframeHandling", label: "Needs iframe handling" },
-    { description: "Wait for network to settle before capture.", id: "waitForNetworkIdle", label: "Wait for network idle" },
-    { description: "Force JavaScript requestFullscreen() API.", id: "useRequestFullscreen", label: "Use request fullscreen" }
+  const WIZARD_FIELDS: readonly WizardFieldDescriptor[] = [
+    { description: "Find video with readyState >= 3. For pages with multiple video elements.", id: "selectReadyVideo", label: "Select ready video", type: "boolean" },
+    { description: "Prevent the site from auto-muting.", id: "lockVolumeProperties", label: "Lock volume properties", type: "boolean" },
+    { description: "Click an element to start playback.", id: "clickToPlay", label: "Click to play", type: "boolean" },
+    { description: "Video is embedded in an iframe.", id: "needsIframeHandling", label: "Needs iframe handling", type: "boolean" },
+    { description: "Wait for network to settle before capture.", id: "waitForNetworkIdle", label: "Wait for network idle", type: "boolean" },
+    { description: "Force JavaScript requestFullscreen() API.", id: "useRequestFullscreen", label: "Use request fullscreen", type: "boolean" },
+    { hint: "Overlay elements to hide during capture.", id: "hideSelector", label: "Hide Selector (CSS)", placeholder: "e.g., .overlay, .ad-banner", type: "text" },
+    { hint: "A CSS selector for a site modal to dismiss automatically while tuning. Save & Test checks it, and a malformed selector is disabled at runtime with a " +
+      "logged warning.", id: "dismissSelector", label: "Dismiss Selector (CSS)", placeholder: "e.g., .watch-live-modal", type: "text" }
   ];
 
   return generateWizardModal({
@@ -301,7 +353,7 @@ export function generateProfileWizardModal(): string {
     contentId: "wizard-content",
     dataBlocks: [
       "<script>window.__wizardProfiles = " + JSON.stringify(profileData) + ";window.__wizardStrategies = " + JSON.stringify(WIZARD_STRATEGIES) +
-        ";window.__wizardFlags = " + JSON.stringify(WIZARD_FLAGS) + ";</script>"
+        ";window.__wizardFields = " + JSON.stringify(WIZARD_FIELDS) + ";</script>"
     ],
     errorId: "wizard-error",
     id: "wizard-modal",
@@ -331,9 +383,12 @@ export function setupProfileRoutes(app: Express): void {
       // Build a summary for each profile including its domain mappings and channel count.
       const profileList = Object.entries(profiles).toSorted(([a], [b]) => a.localeCompare(b)).map(([ key, profile ]) => {
 
-        // Find domains that reference this profile.
+        // Find domains that reference this profile. The `config.profile === key` join is the projection's single source of truth - the client never re-implements
+        // it. Each row carries the full raw DomainConfig so the wizard can round-trip every domain-level field it does not render (videoTimeout, loginUrl,
+        // maxContinuousPlayback, dismissSelector) rather than dropping them on an edit-resave; service and serviceTag are surfaced flat for the rendered inputs.
         const profileDomains = Object.entries(domains).filter(([ , config ]) => (config.profile === key)).map(([ domain, config ]) => ({
 
+          config,
           domain,
           service: config.service ?? "",
           serviceTag: config.serviceTag ?? ""

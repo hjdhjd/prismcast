@@ -64,17 +64,26 @@ export function generateChannelsSubtabScript(): string {
     "          else if(ef.type === 'boolean' && editCs[ef.id]) { strategyFields[ef.id] = true; }",
     "        }",
     "      }",
+    // Rehydrate the rendered profile fields from the registry: boolean flags into flags, text selectors into fieldValues. This is truthy-only capture, so an
+    // explicit-false or explicit-null value of a RENDERED field is not represented (a known, unchanged limitation); every field the wizard does not render survives
+    // via baseProfileFields below.
     "      const flags = {};",
-    "      const wizFlags = window.__wizardFlags;",
-    "      for(const wf of wizFlags) { if(p[wf.id]) flags[wf.id] = true; }",
+    "      const fieldValues = {};",
+    "      for(const wf of window.__wizardFields) {",
+    "        if(wf.type === 'boolean') { if(p[wf.id]) flags[wf.id] = true; }",
+    "        else if(p[wf.id]) { fieldValues[wf.id] = p[wf.id]; }",
+    "      }",
+    // Each domain row keeps its full raw config so unrendered domain-level fields (videoTimeout, loginUrl, maxContinuousPlayback, dismissSelector) ride through a
+    // resave; service and serviceTag drive the rendered inputs.
     "      const domains = (match.domains && match.domains.length > 0) ?",
-    "        match.domains.map((d) => ({ domain: d.domain, service: d.service || '', serviceTag: d.serviceTag || '' })) :",
-    "        [{ domain: '', service: '', serviceTag: '' }];",
+    "        match.domains.map((d) => ({ config: d.config || {}, domain: d.domain, service: d.service || '', serviceTag: d.serviceTag || '' })) :",
+    "        [{ config: {}, domain: '', service: '', serviceTag: '' }];",
+    // Keep the full fetched profile as baseProfileFields. saveProfile starts from a copy of it and deletes only the rendered vocabulary, so unrendered profile-level
+    // fields (channelSelector, clickSelector, fullscreenKey, fullscreenSelector, staticCapture) survive an edit-resave unchanged.
     "      profileWizard.state = {",
-    "        editKey: key, editMode: true, profileName: key,",
-    "        baseProfile: p.extends || '', strategy: strat,",
-    "        strategyFields: strategyFields, flags: flags,",
-    "        hideSelector: p.hideSelector || '', domains: domains, description: p.description || ''",
+    "        baseProfile: p.extends || '', baseProfileFields: p, description: p.description || '',",
+    "        domains: domains, editKey: key, editMode: true, fieldValues: fieldValues, flags: flags,",
+    "        profileName: key, strategy: strat, strategyFields: strategyFields",
     "      };",
     "      profileWizard.open({ highestStep: 5, title: 'Edit Service Profile' });",
     "    } catch(e) { console.error('Profile data failed to load.', e); showToast('Failed to load profile data.', 'error'); }",
@@ -338,13 +347,15 @@ export function generateChannelsSubtabScript(): string {
     "      }",
     "    }",
 
-    // Step 3: Override Flags. Flags are rendered from the server-side registry (window.__wizardFlags).
+    // Step 3: Profile Fields. Both the boolean flags and the text selectors are rendered from the server-side registry (window.__wizardFields), branching on type:
+    // booleans are checkboxes described by their description, text fields are inputs described by their hint.
     "    if(step === 3) {",
     "      html += '<label class=\"wizard-label\">Profile Flags</label>';",
     "      html += '<div class=\"field-hint\" style=\"margin-bottom: 12px;\">These override the base profile. ' +",
     "        'Only change what differs from ' + s.baseProfile + '.</div>';",
-    "      const wizFlags = window.__wizardFlags;",
-    "      for(const f of wizFlags) {",
+    "      const wizFields = window.__wizardFields;",
+    "      for(const f of wizFields) {",
+    "        if(f.type !== 'boolean') continue;",
     "        const checked = s.flags[f.id] ? ' checked' : '';",
     "        html += '<label class=\"wizard-flag\">';",
     "        html += '<input type=\"checkbox\" name=\"flag-' + f.id + '\"' + checked + '>';",
@@ -352,12 +363,17 @@ export function generateChannelsSubtabScript(): string {
     "        html += '<div class=\"wizard-flag-desc\">' + f.description + '</div></div>';",
     "        html += '</label>';",
     "      }",
-    "      html += '<div class=\"field-group\" style=\"margin-top: 12px;\">';",
-    "      html += '<label class=\"wizard-label\" for=\"wizard-hide-selector\">Hide Selector (CSS) <span style=\"color: var(--text-muted);\">(optional)</span></label>';",
-    "      html += '<input type=\"text\" id=\"wizard-hide-selector\" value=\"' + s.hideSelector.replaceAll('\"', '&quot;') +",
-    "        '\" placeholder=\"e.g., .overlay, .ad-banner\">';",
-    "      html += '<div class=\"field-hint\">Overlay elements to hide during capture.</div>';",
-    "      html += '</div>';",
+    "      for(const f of wizFields) {",
+    "        if(f.type !== 'text') continue;",
+    "        const fieldVal = (s.fieldValues[f.id] || '').replaceAll('\"', '&quot;');",
+    "        html += '<div class=\"field-group\" style=\"margin-top: 12px;\">';",
+    "        html += '<label class=\"wizard-label\" for=\"wizard-field-' + f.id + '\">' + f.label +",
+    "          ' <span style=\"color: var(--text-muted);\">(optional)</span></label>';",
+    "        html += '<input type=\"text\" class=\"wizard-field-input\" data-field-id=\"' + f.id + '\" id=\"wizard-field-' + f.id + '\" value=\"' + fieldVal +",
+    "          '\" placeholder=\"' + (f.placeholder || '') + '\">';",
+    "        html += '<div class=\"field-hint\">' + (f.hint || '') + '</div>';",
+    "        html += '</div>';",
+    "      }",
     "    }",
 
     // Step 4: Domain Mapping.
@@ -413,7 +429,11 @@ export function generateChannelsSubtabScript(): string {
     "      if(flagNames.length > 0) {",
     "        html += '<tr><td>Flags</td><td>' + escapeHtml(flagNames.join(', ')) + '</td></tr>';",
     "      }",
-    "      if(s.hideSelector) html += '<tr><td>Hide Selector</td><td><code>' + escapeHtml(s.hideSelector) + '</code></td></tr>';",
+    "      for(const rtf of window.__wizardFields) {",
+    "        if(rtf.type !== 'text') continue;",
+    "        const rtv = s.fieldValues[rtf.id];",
+    "        if(rtv) html += '<tr><td>' + escapeHtml(rtf.label.replace(/ \\(CSS\\)/, '')) + '</td><td><code>' + escapeHtml(rtv) + '</code></td></tr>';",
+    "      }",
     "      html += '</table>';",
     "      html += '<div class=\"field-group\" style=\"margin-top: 16px;\">';",
     "      html += '<label class=\"wizard-label\" for=\"wizard-description\">Description <span style=\"color: var(--text-muted);\">(optional)</span></label>';",
@@ -457,7 +477,7 @@ export function generateChannelsSubtabScript(): string {
     "      });",
     "    }",
 
-    // Step 3: flag checkboxes and hide selector.
+    // Step 3: flag checkboxes and text selector inputs. Text fields bind by their data-field-id into fieldValues.
     "    const flagCbs = document.querySelectorAll('input[name^=\"flag-\"]');",
     "    for(const flagCb of flagCbs) {",
     "      flagCb.addEventListener('change', function() {",
@@ -465,8 +485,10 @@ export function generateChannelsSubtabScript(): string {
     "        if(this.checked) { s.flags[flagName] = true; } else { delete s.flags[flagName]; }",
     "      });",
     "    }",
-    "    const hideInput = document.getElementById('wizard-hide-selector');",
-    "    if(hideInput) hideInput.addEventListener('input', function() { s.hideSelector = this.value; });",
+    "    const fieldInputs = document.querySelectorAll('.wizard-field-input[data-field-id]');",
+    "    for(const fieldInput of fieldInputs) {",
+    "      fieldInput.addEventListener('input', function() { s.fieldValues[this.getAttribute('data-field-id')] = this.value; });",
+    "    }",
 
     // Step 4: add-domain button and domain inputs with auto-fill for service tag. Per-iteration let bindings from for...of.entries() capture the correct index
     // in each closure - no IIFE wrapper needed.
@@ -523,26 +545,40 @@ export function generateChannelsSubtabScript(): string {
     // Open the profile builder wizard and reset state for a new profile.
     "  window.openWizard = () => {",
     "    profileWizard.state = {",
-    "      editKey: null, editMode: false, profileName: '', baseProfile: '', strategy: 'none',",
-    "      strategyFields: {}, flags: {}, hideSelector: '',",
-    "      domains: [{ domain: '', service: '', serviceTag: '' }], description: ''",
+    "      baseProfile: '', baseProfileFields: {}, description: '',",
+    "      domains: [{ config: {}, domain: '', service: '', serviceTag: '' }], editKey: null, editMode: false,",
+    "      fieldValues: {}, flags: {}, profileName: '', strategy: 'none', strategyFields: {}",
     "    };",
     "    profileWizard.open({ title: 'New Service Profile' });",
     "  };",
 
     // Add another domain row to step 4 and re-render.
     "  function addWizardDomain() {",
-    "    profileWizard.state.domains.push({ domain: '', service: '', serviceTag: '' });",
+    "    profileWizard.state.domains.push({ config: {}, domain: '', service: '', serviceTag: '' });",
     "    renderProfileStep(profileWizard.getStep());",
     "  }",
 
-    // Save the profile to the server.
+    // Save the profile to the server. Concurrent edits of the same profile resolve last-save-wins: the rebuild starts from the snapshot fetched when the wizard opened,
+    // matching the server's whole-replace semantics. The profile is a copy of the full fetched profile (empty for a new one) with only the wizard's rendered vocabulary
+    // deleted and
+    // re-applied, so every field the wizard does not render round-trips unchanged while a cleared rendered field is a real deletion. The server's whole-replace
+    // semantics are unchanged; a field outside the SiteProfile allowlist that rode through here surfaces as an explicit validation error, which is the honest outcome.
     "  window.saveProfile = async (andTest) => {",
     "    const s = profileWizard.state;",
-    "    const profile = { extends: s.baseProfile };",
+    // The wizard's rendered vocabulary: every field id it renders plus the structural keys it owns. Deleting these from the base copy is what makes a cleared field a
+    // deletion; everything else in the copy is preserved verbatim.
+    "    const vocabulary = window.__wizardFields.map((f) => f.id).concat(['extends', 'description', 'channelSelection']);",
+    "    const profile = Object.assign({}, s.baseProfileFields || {});",
+    "    for(const vk of vocabulary) { delete profile[vk]; }",
+    "    profile.extends = s.baseProfile;",
+    // Rebuild channelSelection rather than dropping it: preserve the base's unrendered sub-fields (listSelector, scrollSelector, scrollTarget) by starting from a copy
+    // and removing only the CHOSEN strategy's rendered field ids, so a strategy switch cannot leave stale rendered values behind. When the strategy is 'none' no
+    // channelSelection key is written at all - the sub-fields configure a strategy the user just removed.
     "    if(s.strategy !== 'none') {",
-    "      const cs = { strategy: s.strategy };",
     "      const saveStrat = window.__wizardStrategies.find((st) => st.id === s.strategy);",
+    "      const cs = Object.assign({}, (s.baseProfileFields && s.baseProfileFields.channelSelection) || {});",
+    "      if(saveStrat) { for(const rf of saveStrat.fields) { delete cs[rf.id]; } }",
+    "      cs.strategy = s.strategy;",
     "      if(saveStrat) {",
     "        for(const sf of saveStrat.fields) {",
     "          const sfVal = s.strategyFields[sf.id];",
@@ -552,16 +588,23 @@ export function generateChannelsSubtabScript(): string {
     "      }",
     "      profile.channelSelection = cs;",
     "    }",
-    "    const flagKeys = Object.keys(s.flags).filter((k) => s.flags[k]);",
-    "    for(const fk of flagKeys) { profile[fk] = true; }",
-    "    if(s.hideSelector) profile.hideSelector = s.hideSelector;",
+    // Re-apply the rendered profile fields: boolean flags that are set, text selectors that are non-empty. A cleared text field or an unchecked flag simply is not
+    // re-added, which - because the vocabulary was deleted above - deletes it from the round-tripped profile.
+    "    for(const f of window.__wizardFields) {",
+    "      if(f.type === 'boolean') { if(s.flags[f.id]) profile[f.id] = true; }",
+    "      else { const tv = (s.fieldValues[f.id] || '').trim(); if(tv) profile[f.id] = tv; }",
+    "    }",
     "    if(s.description) profile.description = s.description;",
+    // Each domain entry preserves its full raw config (unrendered fields ride through), then re-applies the profile key and the rendered service/serviceTag - deleting
+    // them when the inputs are cleared. A row whose domain string was edited carries its config to the new domain key (rename semantics).
     "    const domains = {};",
     "    for(const d of s.domains) {",
     "      if(d.domain.trim()) {",
-    "        domains[d.domain.trim()] = { profile: s.profileName };",
-    "        if(d.service.trim()) domains[d.domain.trim()].service = d.service.trim();",
-    "        if(d.serviceTag.trim()) domains[d.domain.trim()].serviceTag = d.serviceTag.trim();",
+    "        const entry = Object.assign({}, d.config || {});",
+    "        entry.profile = s.profileName;",
+    "        if(d.service.trim()) entry.service = d.service.trim(); else delete entry.service;",
+    "        if(d.serviceTag.trim()) entry.serviceTag = d.serviceTag.trim(); else delete entry.serviceTag;",
+    "        domains[d.domain.trim()] = entry;",
     "      }",
     "    }",
     "    const body = { domains: domains, key: s.profileName, profile: profile };",
@@ -596,7 +639,8 @@ export function generateChannelsSubtabScript(): string {
     "    testSelectors = {};",
     "    if(s.strategy !== 'none' && s.strategyFields.matchSelector) testSelectors.matchSelector = s.strategyFields.matchSelector;",
     "    if(s.strategyFields.playSelector) testSelectors.playSelector = s.strategyFields.playSelector;",
-    "    if(s.hideSelector) testSelectors.hideSelector = s.hideSelector;",
+    "    if(s.fieldValues.hideSelector) testSelectors.hideSelector = s.fieldValues.hideSelector;",
+    "    if(s.fieldValues.dismissSelector) testSelectors.dismissSelector = s.fieldValues.dismissSelector;",
     "    const testUrl = url.includes('://') ? url : 'https://' + url;",
     "    try {",
     "      const res = await fetch('/config/profiles/test', {",

@@ -356,7 +356,8 @@ describe("GET /config/profiles - list projection", () => {
 
     // The envelope: sendSuccess flattens data to the top level, so success/profiles/domains all sit at the root of the parsed body.
     const body = await response.json() as {
-      profiles?: { channelCount?: number; domains?: { domain?: string; service?: string; serviceTag?: string }[]; extends?: string; key?: string;
+      profiles?: { channelCount?: number; domains?: { config?: Record<string, unknown>; domain?: string; service?: string; serviceTag?: string }[];
+        extends?: string; key?: string;
         strategy?: string; }[];
       success?: boolean;
     };
@@ -383,11 +384,13 @@ describe("GET /config/profiles - list projection", () => {
     assert.equal(zebra.extends, "fullscreenApi", "a profile with an explicit base must project that base verbatim");
     assert.equal(zebra.strategy, "tileClick", "a profile with an explicit strategy must project that strategy verbatim");
 
-    // Reverse-looked-up domains: exactly the mapping that references each profile, with the service/serviceTag `?? ""` fallback applied. The bystander mapping
-    // for a non-existent profile must appear in neither array.
-    assert.deepEqual(alpha.domains, [{ domain: "a1.example.test", service: "AlphaTV", serviceTag: "alpha" }],
+    // Reverse-looked-up domains: exactly the mapping that references each profile, with the service/serviceTag `?? ""` fallback applied and the full raw
+    // DomainConfig carried as config (the wizard round-trips unrendered domain-level fields from it). The bystander mapping for a non-existent profile must
+    // appear in neither array.
+    assert.deepEqual(alpha.domains,
+      [{ config: { profile: "alpha", service: "AlphaTV", serviceTag: "alpha" }, domain: "a1.example.test", service: "AlphaTV", serviceTag: "alpha" }],
       "alpha's domains must be exactly its one mapping with service/serviceTag preserved");
-    assert.deepEqual(zebra.domains, [{ domain: "z1.example.test", service: "", serviceTag: "" }],
+    assert.deepEqual(zebra.domains, [{ config: { profile: "zebra" }, domain: "z1.example.test", service: "", serviceTag: "" }],
       "zebra's domains must carry the '' fallback for the absent service/serviceTag fields");
   });
 });
