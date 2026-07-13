@@ -8,6 +8,7 @@ import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } fro
 import { getProvidersForDomain, invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
+import type { OverlayPhase } from "./consent.ts";
 import { classifyBlockedPage } from "./blockedPage.ts";
 import { markDomainAuthRequired } from "../config/health.ts";
 import { startOverlayHandling } from "./consent.ts";
@@ -1491,6 +1492,35 @@ export interface InitializePlaybackOptions {
 }
 
 /**
+ * Runs a span of the tune under a phase-scoped overlay-handling poll. Creates the abort controller, launches the poll fire-and-forget for the given phase, hands the
+ * body an abort() it calls before diagnosing a blocked page (so the poll cannot keep clicking mid-classification), and always aborts the poll when the body settles.
+ * The video wait manages its own poll directly because it composes the poll with the embed-gate race and the paired reload; every other span of the tune uses this
+ * helper, which is why the phase is typed to exclude videoWait. The poll is launched through the injected deps, so every phase shares the single startOverlayHandling
+ * seam the video wait already uses.
+ * @param page - The Puppeteer page object.
+ * @param profile - The resolved site profile.
+ * @param phase - The overlay phase covering this span (any phase but videoWait, whose choreography is bespoke).
+ * @param deps - The injected tune collaborators; the covering poll is launched through deps.startOverlayHandling.
+ * @param run - The span to run; receives an abort() that stops the covering poll immediately, for use before a blocked-page diagnosis.
+ * @returns The span's result.
+ */
+async function withOverlayGuard<T>(page: Page, profile: ResolvedSiteProfile, phase: Exclude<OverlayPhase, "videoWait">, deps: VideoTuneDeps,
+  run: (abort: () => void) => Promise<T>): Promise<T> {
+
+  const controller = new AbortController();
+
+  void deps.startOverlayHandling(page, profile, { phase, signal: controller.signal });
+
+  try {
+
+    return await run(() => { controller.abort(); });
+  } finally {
+
+    controller.abort();
+  }
+}
+
+/**
  * Performs all post-navigation channel initialization: selects the channel, finds the video context, clicks to play if needed, waits for video readiness, and
  * ensures playback with fullscreen styling. This function is separated from navigateToPage() so that retryOperation() in setup.ts can wrap only navigation with a
  * timeout, while channel selection and video setup run with their own internal time budgets (click retry loops, videoTimeout, etc.) without being killed by the
@@ -1515,86 +1545,103 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
   // ensurePlayback() unmutes the correct channel. For providers where no video exists yet, this is a harmless no-op.
   await muteExistingVideos(page);
 
-  // For multi-channel players (like usanetwork.com/live with multiple channels), select the desired channel from the UI. The selectChannel function checks the
-  // profile's channelSelection strategy and channelSelector to determine if/how to select a channel. Skipped when navigating directly to a cached watch URL,
-  // since the URL already targets the correct channel.
-  let directTune = false;
+  // The channel-selection walk, video-context resolution, and click-to-play run under a tuneSetup overlay poll, so a cookie banner or per-site modal that appears
+  // during those phases is dismissed rather than silently burning their budgets. The guard aborts the poll at the phase boundary (its finally) before the video
+  // wait launches its own poll, and each in-span failure aborts it explicitly before the blocked-page diagnosis so the poll cannot keep clicking mid-classification.
+  const setup = await withOverlayGuard(page, profile, "tuneSetup", deps, async (abortGuard): Promise<{ context: Frame | Page; directTune: boolean }> => {
 
-  if(!skipChannelSelection) {
+    // For multi-channel players (like usanetwork.com/live with multiple channels), select the desired channel from the UI. The selectChannel function checks the
+    // profile's channelSelection strategy and channelSelector to determine if/how to select a channel. Skipped when navigating directly to a cached watch URL,
+    // since the URL already targets the correct channel.
+    let directTune = false;
 
-    let channelResult = await deps.selectChannel(page, profile, { persistResolution });
+    if(!skipChannelSelection) {
 
-    if(!channelResult.success) {
-
-      // For guideGrid strategy, a stale overlay from a previous failed click attempt may be covering the guide. Dismiss it and retry channel selection once.
-      if(profile.channelSelection.strategy === "guideGrid") {
-
-        LOG.warn("Guide grid channel selection failed: %s. Dismissing overlay and retrying.", channelResult.reason ?? "Unknown reason");
-
-        await dismissGuideOverlay(page);
-
-        channelResult = await deps.selectChannel(page, profile, { persistResolution });
-      }
+      let channelResult = await deps.selectChannel(page, profile, { persistResolution });
 
       if(!channelResult.success) {
 
-        const selectionError = new Error("Channel selection failed: " + (channelResult.reason ?? "Unknown reason."));
+        // For guideGrid strategy, a stale overlay from a previous failed click attempt may be covering the guide. Dismiss it and retry channel selection once.
+        if(profile.channelSelection.strategy === "guideGrid") {
 
-        // With the requested URL in hand, diagnose the still-open page before failing - the selection may have failed because a sign-in wall or consent prompt is
-        // where the guide should be. An unknown classification rethrows this same error, so the undiagnosed outcome is identical to the plain throw below.
-        if(requestedUrl !== undefined) {
+          LOG.warn("Guide grid channel selection failed: %s. Dismissing overlay and retrying.", channelResult.reason ?? "Unknown reason");
 
-          await diagnoseBlockedTune(page, requestedUrl, selectionError, deps);
+          await dismissGuideOverlay(page);
+
+          channelResult = await deps.selectChannel(page, profile, { persistResolution });
         }
 
-        throw selectionError;
+        if(!channelResult.success) {
+
+          const selectionError = new Error("Channel selection failed: " + (channelResult.reason ?? "Unknown reason."));
+
+          // With the requested URL in hand, diagnose the still-open page before failing - the selection may have failed because a sign-in wall or consent prompt is
+          // where the guide should be. An unknown classification rethrows this same error, so the undiagnosed outcome is identical to the plain throw below.
+          if(requestedUrl !== undefined) {
+
+            // Stop the tuneSetup poll before probing the page, so it cannot keep clicking mid-classification; the guard's finally remains the safety net.
+            abortGuard();
+
+            await diagnoseBlockedTune(page, requestedUrl, selectionError, deps);
+          }
+
+          throw selectionError;
+        }
       }
+
+      directTune = channelResult.directTune ?? false;
+
+      LOG.debug("timing:tune", "Channel selection complete. (+%sms)", elapsed());
     }
 
-    directTune = channelResult.directTune ?? false;
-
-    LOG.debug("timing:tune", "Channel selection complete. (+%sms)", elapsed());
-  }
-
-  // Find the video context, which may be an iframe for embedded players. Some streaming sites embed their video player in an iframe, requiring us to search
-  // through frames to find the one containing the video element. For iframe-handling profiles this can reject with a raw selector timeout when the player iframe
-  // never appears, so with the requested URL in hand the failure routes through the blocked-page diagnosis; an unknown classification rethrows the original
-  // rejection unchanged.
-  let context: Frame | Page;
-
-  try {
-
-    context = await findVideoContext(page, profile);
-  } catch(contextError) {
-
-    if(requestedUrl !== undefined) {
-
-      await diagnoseBlockedTune(page, requestedUrl, contextError, deps);
-    }
-
-    throw contextError;
-  }
-
-  LOG.debug("timing:tune", "Video context found. (+%sms)", elapsed());
-
-  // For clickToPlay sites, we need to click an element to start playback. These players require user interaction to begin playing, even with autoplay enabled. If
-  // clickSelector is set, we click that element (typically a play button overlay); otherwise we click the video element directly.
-  if(profile.clickToPlay) {
-
-    const clickTarget = profile.clickSelector ?? "video";
+    // Find the video context, which may be an iframe for embedded players. Some streaming sites embed their video player in an iframe, requiring us to search
+    // through frames to find the one containing the video element. For iframe-handling profiles this can reject with a raw selector timeout when the player iframe
+    // never appears, so with the requested URL in hand the failure routes through the blocked-page diagnosis; an unknown classification rethrows the original
+    // rejection unchanged.
+    let context: Frame | Page;
 
     try {
 
-      // Wait for the click target to appear in the DOM. Play button overlays may be rendered after initial page load.
-      await context.waitForSelector(clickTarget, { timeout: CONFIG.streaming.videoTimeout });
-      await context.click(clickTarget);
+      context = await findVideoContext(page, profile);
+    } catch(contextError) {
 
-      LOG.debug("timing:tune", "Click-to-play complete. (+%sms)", elapsed());
-    } catch(clickError) {
+      if(requestedUrl !== undefined) {
 
-      LOG.warn("Could not click %s to initiate playback: %s.", clickTarget, formatError(clickError));
+        // Stop the tuneSetup poll before probing the page, so it cannot keep clicking mid-classification; the guard's finally remains the safety net.
+        abortGuard();
+
+        await diagnoseBlockedTune(page, requestedUrl, contextError, deps);
+      }
+
+      throw contextError;
     }
-  }
+
+    LOG.debug("timing:tune", "Video context found. (+%sms)", elapsed());
+
+    // For clickToPlay sites, we need to click an element to start playback. These players require user interaction to begin playing, even with autoplay enabled. If
+    // clickSelector is set, we click that element (typically a play button overlay); otherwise we click the video element directly.
+    if(profile.clickToPlay) {
+
+      const clickTarget = profile.clickSelector ?? "video";
+
+      try {
+
+        // Wait for the click target to appear in the DOM. Play button overlays may be rendered after initial page load.
+        await context.waitForSelector(clickTarget, { timeout: CONFIG.streaming.videoTimeout });
+        await context.click(clickTarget);
+
+        LOG.debug("timing:tune", "Click-to-play complete. (+%sms)", elapsed());
+      } catch(clickError) {
+
+        LOG.warn("Could not click %s to initiate playback: %s.", clickTarget, formatError(clickError));
+      }
+    }
+
+    return { context, directTune };
+  });
+
+  let context = setup.context;
+  const directTune = setup.directTune;
 
   // Wait for the video to become playable (readyState >= 3), while a fire-and-forget overlay-handling poll runs concurrently to reject cookie-consent banners,
   // accept embedded-player consent gates, and dismiss the profile's per-site modal. The poll never blocks the wait. If it accepts an embed gate, the in-flight wait
@@ -1636,13 +1683,20 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
       await reloadPage(page, profile);
 
-      context = await findVideoContext(page, profile);
+      // The consent granted on the first pass persists, so the reload re-renders the page with the player iframe present and the video resolves. Context resolution
+      // and this second wait run under the postGateReload poll, so a cookie banner or per-site modal that re-renders after the reload is still cleared. That poll's
+      // policy forbids the embed-gate accept: a second acceptance would re-detect unrelated consent overlays elsewhere on the page (carousel video tiles on a site
+      // like france24), scroll one into view, and click it - yanking the main player offscreen and suppressing its autoplay. The phase makes that misfire
+      // structurally impossible while keeping cookie rejection and modal dismissal live. A consent overlay that genuinely persists past the reload falls through to
+      // the detect-and-guide path below.
+      context = await withOverlayGuard(page, profile, "postGateReload", deps, async (): Promise<Frame | Page> => {
 
-      // The consent granted on the first pass persists, so the reload re-renders the page with the player iframe present and the video resolves. We intentionally do
-      // NOT run a fresh overlay poll alongside this second wait: the embed-gate heuristic would re-detect unrelated consent overlays elsewhere on the page (e.g.
-      // carousel video tiles on a site like france24), scroll one into view, and click it - yanking the main player offscreen and suppressing its autoplay. A consent
-      // overlay that genuinely persists past the reload falls through to the detect-and-guide path below.
-      await waitForVideoReady(context, profile);
+        const reloadedContext = await findVideoContext(page, profile);
+
+        await waitForVideoReady(reloadedContext, profile);
+
+        return reloadedContext;
+      });
     }
   } catch(videoError) {
 
