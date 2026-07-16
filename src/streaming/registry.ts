@@ -77,6 +77,10 @@ export interface HLSState {
   // any media segments.
   initSegment: Nullable<Buffer>;
 
+  // The fMP4 initialization segment for the audio track, for streams with separate audio renditions. Mirrors initSegment - sent once, retained for the stream's
+  // lifetime.
+  audioInitSegment: Nullable<Buffer>;
+
   // Map of media segment filenames to their binary data.
   segments: Map<string, Buffer>;
 
@@ -325,6 +329,7 @@ export function createHLSState(): HLSState {
 
   return {
 
+    audioInitSegment: null,
     audioPlaylist: "",
     audioSegmentBytes: 0,
     audioSegments: new Map(),

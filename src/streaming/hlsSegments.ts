@@ -261,6 +261,43 @@ export function storeInitSegment(streamId: number, data: Buffer): void {
 }
 
 /**
+ * Stores the fMP4 initialization segment for a stream's audio track. Mirrors storeInitSegment() for streams with separate audio renditions, where video and audio
+ * carry independent init segments (separate moov boxes, separate track IDs).
+ * @param streamId - The numeric stream ID.
+ * @param data - The init segment data.
+ */
+export function storeAudioInitSegment(streamId: number, data: Buffer): void {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    LOG.debug("streaming:hls", "Attempted to store audio init segment for unknown stream %s.", streamId);
+
+    return;
+  }
+
+  stream.hls.audioInitSegment = data;
+}
+
+/**
+ * Gets the fMP4 initialization segment for a stream's audio track.
+ * @param streamId - The numeric stream ID.
+ * @returns The audio init segment data, or undefined if not found or not yet received.
+ */
+export function getAudioInitSegment(streamId: number): Buffer | undefined {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    return undefined;
+  }
+
+  return stream.hls.audioInitSegment ?? undefined;
+}
+
+/**
  * Gets the fMP4 initialization segment for a stream.
  * @param streamId - The numeric stream ID.
  * @returns The init segment data, or undefined if not found or not yet received.

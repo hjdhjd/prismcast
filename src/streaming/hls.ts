@@ -13,7 +13,7 @@ import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsRe
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.ts";
 import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.ts";
 import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../config/userChannels.ts";
-import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.ts";
+import { getAudioInitSegment, getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.ts";
 import { getAuthDomainForChannel, getResolvedChannel, getServiceTagForChannel, isChannelAvailableByService, resolveServiceKey } from "../config/services.ts";
 import { getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.ts";
 import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
@@ -355,6 +355,23 @@ export function handleHLSSegment(req: Request, res: Response): void {
 
     updateLastAccess(streamId);
     sendSegment(initSegment, "init.mp4", res);
+
+    return;
+  }
+
+  if(segmentName === "audio-init.mp4") {
+
+    const audioInitSegment = getAudioInitSegment(streamId);
+
+    if(!audioInitSegment) {
+
+      res.status(404).send("Audio init segment not found.");
+
+      return;
+    }
+
+    updateLastAccess(streamId);
+    sendSegment(audioInitSegment, "audio-init.mp4", res);
 
     return;
   }

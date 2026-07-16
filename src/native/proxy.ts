@@ -5,7 +5,15 @@
 import { LOG, chromeFetch, realClock, startTimer } from "../utils/index.ts";
 import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.ts";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.ts";
-import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.ts";
+import {
+  storeAudioInitSegment,
+  storeAudioSegment,
+  storeInitSegment,
+  storeSegment,
+  updateAudioPlaylist,
+  updatePlaylist,
+  updateVideoPlaylist
+} from "../streaming/hlsSegments.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { Clock } from "../utils/index.ts";
@@ -185,6 +193,9 @@ interface ParsedSegment {
 
   // Absolute segment URL.
   url: string;
+
+  // Absolute URI from the most recent #EXT-X-MAP preceding this segment, or null if none is in effect.
+  mapUri: Nullable<string>;
 }
 
 /**
@@ -229,6 +240,9 @@ interface SegmentMetadata {
   // Total number of discontinuities observed across all segments ever stored. Used with the count of discontinuities in the current playlist window to compute the
   // #EXT-X-DISCONTINUITY-SEQUENCE header value.
   totalDiscontinuities: number;
+
+  // Absolute #EXT-X-MAP URI in effect for each segment, keyed by local filename.
+  mapUris: Map<string, string>;
 }
 
 // Proxy State Types.
@@ -267,6 +281,7 @@ interface VideoTrackingState {
   highWaterSequence: number;
   lastMediaSequence: number;
   lastSegmentSize: Nullable<number>;
+  lastStoredMapUri: Nullable<string>;
   lastSegmentTime: number;
   lastTargetDuration: number;
   metadata: SegmentMetadata;
@@ -286,6 +301,7 @@ interface AudioTrackingState {
   fetchedSequences: Set<number>;
   highWaterSequence: number;
   lastTargetDuration: number;
+  lastStoredMapUri: Nullable<string>;
   metadata: SegmentMetadata;
   segmentIndex: number;
   segmentTracker: SegmentFetchTracker;
@@ -390,6 +406,7 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
   let currentSequence = mediaSequence;
   let currentManifestKeyUrl: Nullable<string> = null;
   let currentIvHex: Nullable<string> = null;
+  let currentMapUri: Nullable<string> = null;
 
   // Pending metadata flags - accumulated from tags between segments and attached to the next #EXTINF.
   let pendingCueIn = false;
@@ -423,6 +440,16 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
       }
 
       continue;
+    }
+
+    if(trimmed.startsWith("#EXT-X-MAP:")) {
+
+      const uri = /URI="([^"]+)"/.exec(trimmed)?.[1];
+
+      if(uri) { currentMapUri = resolveUrl(uri, baseUrl); }
+
+      continue;
+
     }
 
     if(trimmed === "#EXT-X-DISCONTINUITY") {
@@ -491,6 +518,7 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
       duration,
       ivHex: currentIvHex,
       keyUrl: currentManifestKeyUrl,
+      mapUri: currentMapUri,
       programDateTime: pendingProgramDateTime,
       sequence: currentSequence,
       url: resolveUrl(segUrl, baseUrl)
@@ -547,7 +575,11 @@ function buildVariantPlaylist(segmentEntries: string[], metadata: SegmentMetadat
 
   const entries = segmentEntries.map((filename) => buildEntryFromMetadata(filename, metadata, targetDuration));
 
-  return buildPlaylist({ discontinuitySequence, mediaSequence, targetDuration, version: 3 }, entries);
+  // Determine the initial EXT-X-MAP URI for this playlist window from the first segment's metadata. Required for fMP4 sources so clients know where to fetch the
+  // init segment (codec configuration) before requesting any media segment. Absent for MPEG-TS sources, which carry codec info in every segment.
+  const initialMapUri = firstEntry ? metadata.mapUris.get(firstEntry) : undefined;
+
+  return buildPlaylist({ discontinuitySequence, initialMapUri, mediaSequence, targetDuration, version: initialMapUri ? 7 : 3 }, entries);
 }
 
 /**
@@ -563,6 +595,7 @@ function createSegmentMetadata(): SegmentMetadata {
     cueOuts: new Map<string, string>(),
     discontinuities: new Map<string, boolean>(),
     durations: new Map<string, number>(),
+    mapUris: new Map<string,string>(),
     timestamps: new Map<string, string>(),
     totalDiscontinuities: 0
   };
@@ -576,7 +609,7 @@ function createSegmentMetadata(): SegmentMetadata {
  * @param filename - The local segment filename (e.g., "segment0.ts").
  * @param seg - The parsed segment with upstream metadata.
  */
-function storeSegmentMetadata(meta: SegmentMetadata, filename: string, seg: ParsedSegment): void {
+function storeSegmentMetadata(meta: SegmentMetadata, filename: string, seg: ParsedSegment, mapUriPath?: string): void {
 
   meta.durations.set(filename, seg.duration);
 
@@ -604,6 +637,12 @@ function storeSegmentMetadata(meta: SegmentMetadata, filename: string, seg: Pars
   if(seg.cueOutCont !== null) {
 
     meta.cueOutConts.set(filename, seg.cueOutCont);
+  }
+
+  if(seg.mapUri && mapUriPath) {
+
+
+    meta.mapUris.set(filename, mapUriPath);
   }
 }
 
@@ -677,6 +716,7 @@ function pruneMetadata(meta: SegmentMetadata, activeSegments: Set<string>): void
       meta.discontinuities.delete(key);
       meta.durations.delete(key);
       meta.timestamps.delete(key);
+      meta.mapUris.delete(key);
     }
   }
 }
@@ -817,6 +857,18 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
       break;
     }
 
+    if(seg.mapUri && (seg.mapUri !== audio.lastStoredMapUri)) {
+
+      // eslint-disable-next-line no-await-in-loop
+      const initData = await fetchSegment(audio.segmentTracker, seg.mapUri, seg.sequence, null, null);
+
+      if(initData) {
+
+        storeAudioInitSegment(ctx.streamId, initData);
+        audio.lastStoredMapUri = seg.mapUri;
+      }
+    }
+
     // eslint-disable-next-line no-await-in-loop
     const segmentData = await fetchSegment(audio.segmentTracker, seg.url, seg.sequence, seg.ivHex, seg.keyUrl);
 
@@ -830,7 +882,7 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
     storeAudioSegment(ctx.streamId, filename, segmentData);
     audio.fetchedSequences.add(seg.sequence);
     audio.highWaterSequence = Math.max(audio.highWaterSequence, seg.sequence);
-    storeSegmentMetadata(audio.metadata, filename, seg);
+    storeSegmentMetadata(audio.metadata, filename, seg, "audio-init.mp4");
     storedAny = true;
 
     audio.segmentIndex++;
@@ -981,6 +1033,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     lastMediaSequence: -1,
     lastSegmentSize: null,
     lastSegmentTime: 0,
+    lastStoredMapUri: null,
     lastTargetDuration: 6,
     metadata: createSegmentMetadata(),
     segmentIndex: prerollSegmentCount,
@@ -995,6 +1048,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     consecutiveManifestFailures: 0,
     fetchedSequences: new Set<number>(),
     highWaterSequence: -1,
+    lastStoredMapUri: null,
     lastTargetDuration: 6,
     metadata: createSegmentMetadata(),
     segmentIndex: 0,
@@ -1262,6 +1316,20 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
         break;
       }
 
+      if(seg.mapUri && (seg.mapUri !== video.lastStoredMapUri)) {
+
+
+        // eslint-disable-next-line no-await-in-loop
+        const initData = await fetchTrackedSegment(video.segmentTracker, seg.mapUri, seg.sequence, null, null);
+
+        if(initData) {
+
+
+          storeInitSegment(streamId, initData);
+          video.lastStoredMapUri = seg.mapUri;
+        }
+      }
+
       // eslint-disable-next-line no-await-in-loop
       const segmentData = await fetchTrackedSegment(video.segmentTracker, seg.url, seg.sequence, seg.ivHex, seg.keyUrl);
 
@@ -1279,7 +1347,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       storeSegment(streamId, filename, segmentData);
       video.fetchedSequences.add(seg.sequence);
       video.highWaterSequence = Math.max(video.highWaterSequence, seg.sequence);
-      storeSegmentMetadata(video.metadata, filename, seg);
+      storeSegmentMetadata(video.metadata, filename, seg, "init.mp4");
       storedAny = true;
 
       video.lastSegmentSize = segmentData.length;
