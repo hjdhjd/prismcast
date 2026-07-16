@@ -1779,7 +1779,6 @@ export function monitorPlaybackHealth(
 
       // Re-establish stream context for this interval tick before running the native health check. AsyncLocalStorage context is lost when entering setInterval
       // callbacks, so without this wrapper the native path's non-debug warnings would emit without the stream-ID prefix. This mirrors the capture-mode branch below.
-      // eslint-disable-next-line @typescript-eslint/require-await -- runWithStreamContext requires a promise-returning callback; checkNativeStreamHealth is synchronous.
       void runWithStreamContext(streamContext, async () => {
 
         checkNativeStreamHealth(nativeEntry);

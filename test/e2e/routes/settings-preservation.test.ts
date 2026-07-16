@@ -20,9 +20,10 @@
  *      field. The drift-check test at the top of the sweep block fails loudly if the seed table and the registry get out of sync. This is the structural
  *      counter to the next 4afa8a0: a regression on a field nobody hand-picked for a test surfaces here automatically the moment it's added to the registry.
  */
-import { PRESERVED_FIELDS, type PreservedField, getNestedValue, mutateConfig, setNestedValue } from "../../../src/config/userConfig.ts";
+import { PRESERVED_FIELDS, getNestedValue, mutateConfig, setNestedValue } from "../../../src/config/userConfig.ts";
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import type { PreservedField } from "../../../src/config/userConfig.ts";
 import assert from "node:assert/strict";
 
 describe("POST /config - settings-form save preserves non-form fields", () => {

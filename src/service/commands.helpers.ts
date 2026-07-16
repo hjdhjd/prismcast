@@ -5,8 +5,7 @@
  * factory. The default-context tests (commands.test.ts) and the literal-context handler tests (commands.install.test.ts, commands.lifecycle.test.ts,
  * commands.status.test.ts) all consume these.
  */
-/* eslint-disable @typescript-eslint/require-await -- Methods on the fake generator fulfill the async ServiceGenerator interface; their bodies are deliberately
- * synchronous (state mutation only). The async signatures preserve type compatibility with production code that awaits them. */
+
 import type { ServiceContext, StreamsResponse } from "./commands.ts";
 import type { ServiceDefinition, ServiceGenerator, ServicePaths, StalePathResult } from "./generators.ts";
 import type { Nullable } from "../types/index.ts";

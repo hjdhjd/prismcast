@@ -115,10 +115,10 @@ describe("createIntegrationContext - cleanup ordering", () => {
 
       await using ctx = await createIntegrationContext();
 
-      // Registered first → runs LAST during LIFO drain.
+      // Registered first -> runs LAST during LIFO drain.
       ctx.registerCleanup(() => { ran.push("first-registered"); });
       ctx.registerCleanup(() => { ran.push("middle"); });
-      // Registered last → runs FIRST during LIFO drain. This one throws.
+      // Registered last -> runs FIRST during LIFO drain. This one throws.
       ctx.registerCleanup(() => { ran.push("last-registered-throws"); throw new Error("boom"); });
     }, /boom/);
 
@@ -181,7 +181,7 @@ describe("createIntegrationContext - error surfacing", () => {
     assert.ok(captured instanceof AggregateError, "multiple cleanup failures should surface as AggregateError");
     assert.equal(captured.errors.length, 3, "every cleanup failure should be captured");
 
-    // The reasons should be present in the .errors array. Order reflects the LIFO drain (third registered → drained first → captured first).
+    // The reasons should be present in the .errors array. Order reflects the LIFO drain (third registered -> drained first -> captured first).
     const messages = (captured.errors as Error[]).map((e) => e.message);
 
     assert.deepEqual(messages, [ "third", "second", "first" ], "cleanup errors should appear in LIFO drain order");

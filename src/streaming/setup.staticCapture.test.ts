@@ -14,6 +14,7 @@ import { before, beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import { PassThrough } from "node:stream";
+import type { PuppeteerStream } from "puppeteer-stream";
 import type { StartOverlayHandlingOptions } from "../browser/consent.ts";
 import assert from "node:assert/strict";
 import { createPageWithCapture } from "./setup.ts";
@@ -52,7 +53,9 @@ function makeStubPage(): Page {
 const deps: CreatePageWithCaptureDeps = {
 
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
-  getStream: async (): Promise<PassThrough> => new PassThrough(),
+  // getStream returns a real PassThrough augmented with a no-op stop so it satisfies puppeteer-stream's PuppeteerStream type, which requires a stop method, while
+  // still handing createCaptureSession a genuine stream to own and destroy.
+  getStream: async (): Promise<PuppeteerStream> => Object.assign(new PassThrough(), { stop: (): Promise<void> => Promise.resolve() }),
   startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => { overlayCalls.push(options); }
 };
 

@@ -1834,7 +1834,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
         return await originalFetch(input, Object.assign({}, init ?? {}, { body }));
       }
 
-      // Marked async to satisfy @typescript-eslint/promise-function-async since the function returns Promise<Response>.
+      // The fetch replacement is async because it awaits the underlying fetch and request-body reads while rewriting matching requests.
       window.fetch = async function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
 
         const url = (typeof input === "string") ? input : (input instanceof URL) ? input.href : input.url;

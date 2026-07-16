@@ -247,7 +247,6 @@ async function hboGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
  * @param _page - Unused. Present to satisfy the async resolveDirectUrl signature.
  * @returns The cached watch URL or null.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/require-await
 async function resolveHboDirectUrlAsync(channelSelector: string, _page: Page): Promise<Nullable<string>> {
 
   return resolveHboDirectUrl(channelSelector);

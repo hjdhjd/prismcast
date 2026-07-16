@@ -57,7 +57,7 @@ async function setupConfigRuntime(options?: DomTestContextOptions): Promise<Disp
    *      unguarded streamData seed, this block is loaded for behavioral fidelity rather than to avert an exception.
    *   3. config.ts (marker: "window.submitSettingsForm") - the script under test.
    *
-   * The runScripts harness executes selected scripts in their source order regardless of predicate iteration, so shared.ts → provider-data → config.ts is the
+   * The runScripts harness executes selected scripts in their source order regardless of predicate iteration, so shared.ts -> provider-data -> config.ts is the
    * established document order.
    */
   const ran = ctx.runScripts((s) => s.content.includes("window.channelTable = {") ||
@@ -514,7 +514,7 @@ describe("config.ts: window.submitSettingsForm", () => {
 
   test("success without willRestart shows the data.message as an info toast (no restart polling)", async () => {
 
-    /* The simple success path: response.ok && data.success && !willRestart → toast with data.message. We confirm the message lands.
+    /* The simple success path: response.ok && data.success && !willRestart -> toast with data.message. We confirm the message lands.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -755,7 +755,7 @@ describe("config.ts: window.importChannels and importM3U", () => {
 
   test("importM3U sends conflictMode='replace' when the m3u-replace-duplicates checkbox is checked", async () => {
 
-    /* The conflictMode is read from the #m3u-replace-duplicates checkbox: checked → 'replace', unchecked → 'skip'. We toggle the checkbox and assert the body.
+    /* The conflictMode is read from the #m3u-replace-duplicates checkbox: checked -> 'replace', unchecked -> 'skip'. We toggle the checkbox and assert the body.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -804,7 +804,7 @@ describe("config.ts: window.submitChannelForm", () => {
 
   test("action='add' POSTs /config/channels with the form data as the body", async () => {
 
-    /* The split: add → POST /config/channels; edit → PUT /config/channels/:key. We synthesize a form with name+key, dispatch a submit-like call, and assert.
+    /* The split: add -> POST /config/channels; edit -> PUT /config/channels/:key. We synthesize a form with name+key, dispatch a submit-like call, and assert.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -948,7 +948,7 @@ describe("config.ts: window.bulkToggleHdhr", () => {
 
   test("POSTs /config/channels/hdhr-bulk with enable inverted from the toggle's checked state", async () => {
 
-    /* The toggle's checked state represents the current bulk state. Clicking inverts it: from checked (all enabled) → enable=false (disable all). We set the
+    /* The toggle's checked state represents the current bulk state. Clicking inverts it: from checked (all enabled) -> enable=false (disable all). We set the
      * toggle to checked and confirm enable=false in the body.
      */
     await using ctx = await setupConfigRuntime();
@@ -1051,7 +1051,7 @@ describe("config.ts: window.autoNumberChannels", () => {
 
   test("an empty start input clears channel numbers (start=0, with the 'clear' confirm message)", async () => {
 
-    /* Empty input → clear path → start=0. We blank the production-rendered input rather than adding a duplicate id.
+    /* Empty input -> clear path -> start=0. We blank the production-rendered input rather than adding a duplicate id.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -1596,7 +1596,7 @@ describe("config.ts: window.openChangelogModal and closeChangelogModal", () => {
 
   test("an empty items array shows the .changelog-error text instead of populating .changelog-content", async () => {
 
-    /* Empty items → error visible. We confirm display:block on .changelog-error and display:none on .changelog-content.
+    /* Empty items -> error visible. We confirm display:block on .changelog-error and display:none on .changelog-content.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -1617,7 +1617,7 @@ describe("config.ts: window.checkForUpdates", () => {
 
   test("POSTs /version/check; on update available, mutates the .version link to show old → new", async () => {
 
-    /* The handler updates the .version anchor's text to "v<old> → v<new>" and adds the .version-update class. We synthesize a clean version anchor (the page may
+    /* The handler updates the .version anchor's text to "v<old> -> v<new>" and adds the .version-update class. We synthesize a clean version anchor (the page may
      * or may not render one depending on update state) and confirm the mutation.
      */
     await using ctx = await setupConfigRuntime();
@@ -1803,7 +1803,7 @@ describe("config.ts: window.startUpgrade", () => {
 
   test("upgradeable + zero streams POSTs /upgrade and toasts based on the response", async () => {
 
-    /* No streams, no confirm, just go: GET /upgrade/info → POST /upgrade. We confirm both calls and a positive toast on success+willRestart.
+    /* No streams, no confirm, just go: GET /upgrade/info -> POST /upgrade. We confirm both calls and a positive toast on success+willRestart.
      */
     await using ctx = await setupConfigRuntime();
 

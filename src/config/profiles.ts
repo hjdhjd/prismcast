@@ -79,7 +79,6 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
 
   // Apply current profile properties, excluding metadata fields that should not be in the resolved profile. The category, description, extends, and summary
   // properties are for UI categorization, documentation, inheritance specification, and UI display only.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { category: _category, description: _description, extends: _extends, summary: _summary, ...profileFlags } = profile;
 
   resolved = { ...resolved, ...profileFlags };

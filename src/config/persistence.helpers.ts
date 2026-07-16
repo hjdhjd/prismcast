@@ -135,7 +135,6 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
   // await would force ceremonial Promise.resolve() shapes that obscure the contract).
   const defaults: StorageBackend = {
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     access: async (path: string): Promise<void> => {
 
       // access succeeds only when the path is a known file. Directories are not tracked, so we infer presence by whether any file has the directory as a prefix.
@@ -159,7 +158,6 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
       throw makeErrnoError("ENOENT", path);
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     copyFile: async (source: string, destination: string): Promise<void> => {
 
       const content = files.get(source);
@@ -177,7 +175,6 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
     // write" - in memory, that is automatic.
     mkdir: async (): Promise<void> => Promise.resolve(),
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     readFile: async (path: string): Promise<string> => {
 
       const content = files.get(path);
@@ -192,7 +189,6 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
 
     readdir: async (path: string): Promise<string[]> => Promise.resolve(listDirectory(files, path)),
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     rename: async (source: string, destination: string): Promise<void> => {
 
       const content = files.get(source);
@@ -210,7 +206,6 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
       mtimes.set(destination, sourceMtime);
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     stat: async (path: string): Promise<{ mtimeMs: number }> => {
 
       const mtime = mtimes.get(path);
@@ -223,7 +218,6 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
       return { mtimeMs: mtime };
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     unlink: async (path: string): Promise<void> => {
 
       if(!files.has(path)) {
@@ -235,7 +229,6 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
       mtimes.delete(path);
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     writeFile: async (path: string, content: string): Promise<void> => {
 
       files.set(path, content);

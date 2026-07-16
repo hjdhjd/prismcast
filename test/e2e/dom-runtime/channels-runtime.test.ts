@@ -55,7 +55,7 @@ async function setupChannelsRuntime(options?: DomTestContextOptions & { readonly
    *      handlers all read these registries; without them the handlers throw on .find().
    *   3. channels.ts (marker: "window.openTagManager") - the script under test.
    *
-   * The runScripts harness executes selected scripts in their source order regardless of predicate iteration, so shared.ts → wizard-data → channels.ts is the
+   * The runScripts harness executes selected scripts in their source order regardless of predicate iteration, so shared.ts -> wizard-data -> channels.ts is the
    * established document order.
    */
   const ran = ctx.runScripts((s) => s.content.includes("window.channelTable = {") ||
@@ -646,7 +646,7 @@ describe("channels.ts: profile wizard validation gates (driven via clickWizardNe
   test("step 4 rejects when no domain row contains a non-blank domain (after navigating from step 1 to step 4 in edit mode)", async () => {
 
     /* Step 4 is the domain-mapping step. Validation requires at least one non-blank domain row. To reach step 4 we seed an edit-mode wizard with a baseProfile
-     * (so step 1 passes) and the default empty domains array (so step 4 will fail). We click Next 3 times to traverse 1→2→3→4 (each prior step validates clean
+     * (so step 1 passes) and the default empty domains array (so step 4 will fail). We click Next 3 times to traverse 1->2->3->4 (each prior step validates clean
      * because there is no required strategy field with strategy='none' and step 3 has no validation), then click Next once more on step 4 to fire the gate.
      */
     await using ctx = await setupChannelsRuntime();
@@ -1171,7 +1171,7 @@ describe("channels.ts: window.createTag", () => {
 
   test("surfaces server validation errors via the inline error div without a toast", async () => {
 
-    /* The error display path: data.success === false → the error message is written to #tag-manager-error and shown. No toast is emitted in this path (per the
+    /* The error display path: data.success === false -> the error message is written to #tag-manager-error and shown. No toast is emitted in this path (per the
      * implementation; toasts are reserved for non-tag-manager surfaces).
      */
     await using ctx = await setupChannelsRuntime();
@@ -1488,7 +1488,7 @@ describe("channels.ts: playlist hint dropdown", () => {
 
   test("showPlaylistHint constructs the exclude form when fewer tags are unchecked than checked", async () => {
 
-    /* The reverse of the above: 4 checked, 1 unchecked → exclude form (?tag=-c).
+    /* The reverse of the above: 4 checked, 1 unchecked -> exclude form (?tag=-c).
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -1558,7 +1558,7 @@ describe("channels.ts: setup wizard handlers", () => {
     await using ctx = await setupChannelsRuntime();
 
     /* Open the wizard via the public entry point so the closure-scoped controller is in the open state when we call skipSetup. Without the open call, the
-     * close from skipSetup would still execute (it's idempotent) but we want to assert the open→closed transition.
+     * close from skipSetup would still execute (it's idempotent) but we want to assert the open->closed transition.
      */
     ctx.evaluate("window.openSetupWizard()");
 
@@ -1607,7 +1607,7 @@ describe("channels.ts: window.applyTagResponse", () => {
   test("updates the tag-manager-modal-content innerHTML and the tag-filter-menu innerHTML, then applies the patch", async () => {
 
     /* applyTagResponse is the cross-script helper used by both channels.ts (createTag, deleteTag, restoreTag, startTagRename) and config.ts (bulkToggleTag). It
-     * has three side effects: (1) modalBody → #tag-manager-modal-content innerHTML, (2) filterContent → #tag-filter-menu innerHTML, (3) patch →
+     * has three side effects: (1) modalBody -> #tag-manager-modal-content innerHTML, (2) filterContent -> #tag-filter-menu innerHTML, (3) patch ->
      * channelTable.applyPatch. We pin all three.
      */
     await using ctx = await setupChannelsRuntime();

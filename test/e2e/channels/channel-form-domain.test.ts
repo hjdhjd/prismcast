@@ -5,11 +5,12 @@
  * findMatchingVariant - which queries getServiceGroup() for the user-resolved channel and walks each variant - requires the runtime serviceGroups module
  * cache to be populated, which only happens after initializeUserChannels has run. This file lands the iteration coverage at the right tier.
  */
-import { type ChannelFormValues, findMatchingVariant } from "../../../src/config/channelForm.ts";
 import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import type { ChannelFormValues } from "../../../src/config/channelForm.ts";
 import { PREDEFINED_CHANNELS } from "../../../src/channels/index.ts";
 import assert from "node:assert/strict";
+import { findMatchingVariant } from "../../../src/config/channelForm.ts";
 import { getResolvedChannel } from "../../../src/config/services.ts";
 
 /* makeForm builds a ChannelFormValues literal with empty/undefined sentinels by default. Callers override the fields they want to test.

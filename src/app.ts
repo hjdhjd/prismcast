@@ -350,7 +350,6 @@ async function buildApp(): Promise<Express> {
   setupRoutes(app);
 
   // Global error handler. Express error handlers require 4 parameters even if unused.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction): void => {
 
     LOG.error("Unhandled error in request: %s.", formatError(err));

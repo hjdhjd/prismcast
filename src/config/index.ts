@@ -244,7 +244,6 @@ function commitDebugFilter(): void {
  */
 // The ConfigChangeHandler contract is async (handlers that do real work, like the HDHomeRun handler, await it), but this handler's classification is purely
 // synchronous - there is nothing to await. We keep the async signature so every handler reads the same way and conforms to the type directly.
-// eslint-disable-next-line @typescript-eslint/require-await
 export async function applyLoggingConfigChanges(changes: readonly ConfigChange[]): Promise<readonly ChangeOutcome[]> {
 
   return changes.map((change) => {

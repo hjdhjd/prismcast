@@ -248,8 +248,8 @@ describe("bulk operations × service filter scoping", () => {
 
     await mutateEnabledServices(["hulu"]);
 
-    /* "Sports" is a predefined tag in the active vocabulary. abcnews's predefined tags are ["News"] (Sports absent → would gain Sports if visible).
-     * amcthrillers's predefined tags are ["Entertainment", "Movies"] (Sports absent → would gain Sports if visible). With the hulu filter, only abcnews is
+    /* "Sports" is a predefined tag in the active vocabulary. abcnews's predefined tags are ["News"] (Sports absent -> would gain Sports if visible).
+     * amcthrillers's predefined tags are ["Entertainment", "Movies"] (Sports absent -> would gain Sports if visible). With the hulu filter, only abcnews is
      * visible; the bulk-add must touch abcnews and skip amcthrillers.
      */
     const response = await fetch(urlFor("/config/channels/bulk-tags"), {

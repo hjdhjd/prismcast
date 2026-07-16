@@ -1028,7 +1028,7 @@ describe("shared.ts: window.channelTable namespace", () => {
 
   test("applyPatch processes logos by stamping data-logo on the parent td of the matching display row", async () => {
 
-    /* The patch.logos field is a key→URL map. For each entry, the patch finds display-row-{key}, locates the .channel-name-cell within it, and stamps
+    /* The patch.logos field is a key->URL map. For each entry, the patch finds display-row-{key}, locates the .channel-name-cell within it, and stamps
      * data-logo on the parent td (which processLogos then consumes). We seed a minimal display row inside a synthetic table at the body level - inserting
      * a bare <tr> via insertAdjacentHTML on the production tbody is dropped by happy-dom's parser (the <tr> needs proper table context to be parsed). The
      * row id is what the patch handler queries, so location in document is irrelevant.
@@ -1136,7 +1136,7 @@ describe("shared.ts: window.channelTable namespace", () => {
   test("sort on a different field sets ascending; clicking the same field again flips to descending", async () => {
 
     /* Sort interaction is direction-toggling on the SAME field, ascending-resetting when the field changes. We seed the table with a known starting state
-     * (sort-field=other, sort-dir=asc) then click 'name' (different field → asc) then click 'name' again (same field → flips to desc). We override
+     * (sort-field=other, sort-dir=asc) then click 'name' (different field -> asc) then click 'name' again (same field -> flips to desc). We override
      * window.fetch to capture the calls and confirm the persisted directions.
      */
     await using ctx = await setupSharedRuntime();

@@ -2,7 +2,7 @@
  *
  * eslint.config.mjs: Linting configuration for PrismCast.
  */
-import hbPluginUtils from "homebridge-plugin-utils/build/eslint-rules.mjs";
+import hbPluginUtils from "homebridge-plugin-utils/eslint";
 
 /* Project-local ESLint rules. Each rule enforces a convention specific to this codebase that has caused regressions in the past:
  *
@@ -104,11 +104,10 @@ export default hbPluginUtils({
 
   /* Project-level ESLint overrides applied after the homebridge-plugin-utils base. The first block defers dot-notation to the TS-aware rule so it stops fighting
    * the tsconfig's noPropertyAccessFromIndexSignature - bracket access on index-signature properties is required by tsc and must be allowed by ESLint. The
-   * second block relaxes a small set of rules for *.test.ts files: describe/test from node:test return Promise<void> by design (no-floating-promises would fire
-   * on every test invocation), tests own their preconditions and use `value!` when reading out fixture-shaped data (no-non-null-assertion), and test callbacks
-   * frequently pass values through trivial Promise-returning thunks where async/await would be ceremony (promise-function-async, require-await). The third
-   * block enforces the project-local helper-location rule against everything under src/types/. The fourth block enforces barrel-only imports for the testing
-   * helpers under src/<...> excluding src/testing/<...> itself, which is the barrel's implementation and must import from its own submodules.
+   * second block relaxes two rules for *.test.ts files: describe/test from node:test return Promise<void> by design (no-floating-promises would fire on every test
+   * invocation), and tests own their preconditions and use `value!` when reading out fixture-shaped data (no-non-null-assertion). The third block enforces the
+   * project-local helper-location rule against everything under src/types/. The fourth block enforces barrel-only imports for the testing helpers under
+   * src/<...> excluding src/testing/<...> itself, which is the barrel's implementation and must import from its own submodules.
    */
   extraConfigs: [
     {
@@ -126,9 +125,7 @@ export default hbPluginUtils({
       rules: {
 
         "@typescript-eslint/no-floating-promises": "off",
-        "@typescript-eslint/no-non-null-assertion": "off",
-        "@typescript-eslint/promise-function-async": "off",
-        "@typescript-eslint/require-await": "off"
+        "@typescript-eslint/no-non-null-assertion": "off"
       }
     },
     {

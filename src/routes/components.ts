@@ -104,8 +104,8 @@ export function generateButton(label: string, options: ButtonOptions): string {
     classes.push(className);
   }
 
-  // The attribute set is serialized through serializeAttrs so the leading-space contract, HTML escaping, and conditional emission (undefined/false → omit;
-  // boolean true → bare attribute name) all live in one place. Property order is alphabetical to match the project's style.
+  // The attribute set is serialized through serializeAttrs so the leading-space contract, HTML escaping, and conditional emission (undefined/false -> omit;
+  // boolean true -> bare attribute name) all live in one place. Property order is alphabetical to match the project's style.
   return "<button" + serializeAttrs({
 
     "class": classes.join(" "),

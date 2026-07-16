@@ -6,8 +6,7 @@
  * and generators.test.ts (getServiceGenerator dispatch) all consume these. The path-resolution stubs (withParserStubs, FAKE_PLIST, FAKE_UNIT, FAKE_LAUNCHER)
  * are scoped to generators.paths.test.ts and live there directly.
  */
-/* eslint-disable @typescript-eslint/require-await -- Methods on the fake IO fulfill the async GeneratorIO interface; their bodies are deliberately synchronous
- * (push to call array only). The async signatures preserve type compatibility with production code that awaits them. */
+
 import type { GeneratorIO, ServiceDefinition } from "./generators.ts";
 import type { FakeExecFile } from "../testing.helpers.ts";
 import type { Platform } from "../utils/platform.ts";

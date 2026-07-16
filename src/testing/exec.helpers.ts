@@ -59,7 +59,7 @@ export function makeExecFileError(message: string, stderr: Buffer | string, stdo
 }
 
 /**
- * Builds an execFile implementation from a keyed map of "file args.join(' ')" → FakeExecFileResult. Strict by default: unknown commands throw a "no result
+ * Builds an execFile implementation from a keyed map of "file args.join(' ')" -> FakeExecFileResult. Strict by default: unknown commands throw a "no result
  * configured" error so test setups that miss a command surface immediately rather than silently no-op'ing. This is the typical execFile shape for tests of
  * launchctl/systemctl/etc. invocations whose argv is fixed and known up front.
  * @param map - The keyed result map. Keys are "file args.join(' ')" strings.
@@ -67,11 +67,10 @@ export function makeExecFileError(message: string, stderr: Buffer | string, stdo
  */
 export function execFileFromMap(map: Record<string, FakeExecFileResult>): FakeExecFile {
 
-  /* The returned function is async because promise-function-async requires it and the codebase consistently prefers async for promise-returning functions.
-   * No await is needed - failure paths use throw (which async automatically converts to a Promise rejection) - so require-await is suppressed inline; the async
+  /* The returned function is async because it doubles execFile, whose real implementation returns a promise, and the codebase consistently prefers async for
+   * promise-returning functions. No await is needed - failure paths use throw (which async automatically converts to a Promise rejection) - so the async
    * keyword's value here is the throw-becomes-rejection semantics, not parallelism.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
   return async (file: string, args: string[]): Promise<{ stderr: string; stdout: string }> => {
 
     const key = file + " " + args.join(" ");
@@ -103,8 +102,6 @@ export function execFileAlwaysSucceeds(stdout: Buffer | string = "", stderr: Buf
   // Encoding normalization happens once at factory time so each invocation can return the same precomputed result without recomputing.
   const resolved = { stderr: bufferOrStringToString(stderr), stdout: bufferOrStringToString(stdout) };
 
-  // Async to satisfy the codebase's promise-function-async preference; require-await is suppressed because the function intentionally has no await - the
-  // returned value is fully precomputed at factory time.
-  // eslint-disable-next-line @typescript-eslint/require-await
+  // Async because it doubles the promise-returning execFile signature; the body has no await because the returned value is fully precomputed at factory time.
   return async (): Promise<{ stderr: string; stdout: string }> => resolved;
 }

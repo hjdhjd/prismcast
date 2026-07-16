@@ -430,7 +430,6 @@ async function youtubeGridStrategy(page: Page, profile: ChannelSelectionProfile)
  * @param _page - Unused. Present to satisfy the async resolveDirectUrl signature.
  * @returns The cached watch URL or null.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/require-await
 async function resolveYttvDirectUrl(channelSelector: string, _page: Page): Promise<Nullable<string>> {
 
   return findWatchUrl(channelSelector);
