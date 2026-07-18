@@ -573,8 +573,30 @@ function buildVariantPlaylist(segmentEntries: string[], metadata: SegmentMetadat
   const discSeq = metadata.totalDiscontinuities - windowDiscontinuities;
   const discontinuitySequence = (discSeq > 0) ? discSeq : undefined;
 
-  const entries = segmentEntries.map((filename) => buildEntryFromMetadata(filename, metadata, targetDuration));
+  const entries: PlaylistSegmentEntry[] = [];
+  let previousMapUri: string | undefined = firstEntry ? metadata.mapUris.get(firstEntry) : undefined;
 
+  for(const filename of segmentEntries) {
+
+    const entry = buildEntryFromMetadata(filename, metadata, targetDuration);
+    const currentMapUri = metadata.mapUris.get(filename);
+
+    // Re-emit EXT-X-MAP inline whenever the map URI changes mid-window - this is what tells an
+    // fMP4/CMAF client (Channels DVR's remuxer) to reinitialize its demuxer at a discontinuity
+    // boundary (ad break, codec change). The very first segment is already covered by the
+    // playlist-level initialMapUri below, so skip it here to avoid a redundant duplicate tag.
+    if(currentMapUri && (filename !== firstEntry) && (currentMapUri !== previousMapUri)) {
+
+      entry.mapUri = currentMapUri;
+    }
+
+    if(currentMapUri) {
+
+      previousMapUri = currentMapUri;
+    }
+
+    entries.push(entry);
+  }
   // Determine the initial EXT-X-MAP URI for this playlist window from the first segment's metadata. Required for fMP4 sources so clients know where to fetch the
   // init segment (codec configuration) before requesting any media segment. Absent for MPEG-TS sources, which carry codec info in every segment.
   const initialMapUri = firstEntry ? metadata.mapUris.get(firstEntry) : undefined;
