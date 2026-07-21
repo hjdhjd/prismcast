@@ -284,6 +284,7 @@ interface VideoTrackingState {
   lastStoredMapUri: Nullable<string>;
   lastSegmentTime: number;
   lastTargetDuration: number;
+  mapVersion: number;
   metadata: SegmentMetadata;
   segmentIndex: number;
   segmentTracker: SegmentFetchTracker;
@@ -302,6 +303,7 @@ interface AudioTrackingState {
   highWaterSequence: number;
   lastTargetDuration: number;
   lastStoredMapUri: Nullable<string>;
+  mapVersion: number;
   metadata: SegmentMetadata;
   segmentIndex: number;
   segmentTracker: SegmentFetchTracker;
@@ -888,6 +890,7 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
 
         storeAudioInitSegment(ctx.streamId, initData);
         audio.lastStoredMapUri = seg.mapUri;
+        audio.mapVersion++;
       }
     }
 
@@ -904,7 +907,7 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
     storeAudioSegment(ctx.streamId, filename, segmentData);
     audio.fetchedSequences.add(seg.sequence);
     audio.highWaterSequence = Math.max(audio.highWaterSequence, seg.sequence);
-    storeSegmentMetadata(audio.metadata, filename, seg, "audio-init.mp4");
+    storeSegmentMetadata(audio.metadata, filename, seg, "audio-init.mp4?v=" + String(audio.mapVersion));
     storedAny = true;
 
     audio.segmentIndex++;
@@ -1057,6 +1060,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     lastSegmentTime: 0,
     lastStoredMapUri: null,
     lastTargetDuration: 6,
+    mapVersion: 0,
     metadata: createSegmentMetadata(),
     segmentIndex: prerollSegmentCount,
     segmentTracker: { consecutiveFailures: 0, debugLabel: "Segment", label: "segment" },
@@ -1072,6 +1076,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     highWaterSequence: -1,
     lastStoredMapUri: null,
     lastTargetDuration: 6,
+    mapVersion: 0,
     metadata: createSegmentMetadata(),
     segmentIndex: 0,
     segmentTracker: { consecutiveFailures: 0, debugLabel: "Audio segment", label: "audio segment" },
@@ -1349,6 +1354,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
           storeInitSegment(streamId, initData);
           video.lastStoredMapUri = seg.mapUri;
+          video.mapVersion++;
         }
       }
 
@@ -1369,7 +1375,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       storeSegment(streamId, filename, segmentData);
       video.fetchedSequences.add(seg.sequence);
       video.highWaterSequence = Math.max(video.highWaterSequence, seg.sequence);
-      storeSegmentMetadata(video.metadata, filename, seg, "init.mp4");
+      storeSegmentMetadata(video.metadata, filename, seg, "init.mp4?v=" + String(video.mapVersion));
       storedAny = true;
 
       video.lastSegmentSize = segmentData.length;
