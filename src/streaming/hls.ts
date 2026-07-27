@@ -6,8 +6,8 @@ import type { HLSState, StreamRegistryEntry } from "./registry.ts";
 import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
-import { StreamSetupError, createPageWithCapture, generateStreamId, setupStream } from "./setup.ts";
-import { createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
+import { StreamSetupError, createPageWithCapture, generateStreamId, setupStream, validateStreamUrl } from "./setup.ts";
+import { cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
 import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.ts";
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.ts";
@@ -517,6 +517,22 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
     return;
   }
 
+  /* Reject a URL that cannot work before anything is reserved on its behalf. initializeStream takes a concurrent-stream slot and registers a pending entry
+   * before the deeper validation inside setupStream runs, so a URL destined to be refused would otherwise hold capacity a real stream could need, and would
+   * reach the redirect probe that issues an outbound request on its behalf first. The placement is deliberate in both directions: ahead of initializeStream so
+   * nothing is reserved, and behind the login-mode check so a URL submitted during login still answers 503 rather than 400. The same validator also runs inside
+   * setupStream, which is where channel-based streams meet it; one shared rule called from each entry point, not a second copy of the rule.
+   */
+  const validation = validateStreamUrl(url);
+
+  if(!validation.valid) {
+
+    LOG.error("Invalid URL requested: %s - %s.", url, validation.reason ?? "Unknown error");
+    res.status(400).send(validation.reason ?? "Invalid URL.");
+
+    return;
+  }
+
   // Capture client IP for Channels DVR API integration.
   const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
 
@@ -801,6 +817,28 @@ function createTabReplacementHandler(
 
     LOG.debug("timing:tab", "New page with capture created. (+%sms)", tabElapsed());
 
+    // Re-check the stream before adopting the fresh resources. The awaited createPageWithCapture above yields the event loop, so the stream can terminate mid-await;
+    // the entry writes below would then attach the new page and capture session to an entry that termination already disposed, orphaning both. Tear the fresh resources
+    // down in the same order the old-pipeline teardown above uses - dispose the capture session first so chrome.tabCapture releases cleanly, then unregister the
+    // managed page, then close it - and abandon the replacement.
+    if(!getStream(numericStreamId)) {
+
+      captureResult.captureSession.dispose();
+      unregisterManagedPage(captureResult.page);
+
+      if(!captureResult.page.isClosed()) {
+
+        captureResult.page.close().catch((error: unknown) => {
+
+          LOG.debug("recovery:tab", "Page close error during aborted tab replacement: %s.", formatError(error));
+        });
+      }
+
+      LOG.debug("recovery:tab", "Stream %s terminated during tab replacement - discarded the fresh page and capture session.", streamId);
+
+      return null;
+    }
+
     // Create a new segmenter for the new capture stream. Continue from the current segment index for playlist continuity, pass the per-track timestamp counters
     // for monotonic baseMediaDecodeTime, and mark the first segment with a discontinuity tag so clients know the stream parameters may have changed.
     const newSegmenter = createFMP4Segmenter({
@@ -963,7 +1001,8 @@ function registerPendingStream(channelName: string, channel: ResolvedChannel, cl
 
   // Create HLS state with a deferred preroll timer. The timer fires after PREROLL_DELAY_MS - if stream setup hasn't completed by then, preroll is seeded and the
   // playlist response is unblocked. For resume streams, the preroll's MEDIA-SEQUENCE is offset by the saved segment index so it continues from the prior session's
-  // sequence range. The timer is cancelled by completeStreamSetup() when the segmenter or native proxy is created, preventing races.
+  // sequence range. The timer is disarmed through cancelPrerollTimer() once real content arrives or preroll state is otherwise invalidated, so it cannot fire against
+  // state that has moved on.
   const hls = createHLSState();
 
   // Snapshot the resume segment index once at registration. Both the preroll timer callback and completeStreamSetup() use this single snapshot, eliminating the TTL
@@ -1203,11 +1242,17 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
 
   // Update the registry entry to reflect native mode. For streams with separate audio, clear preroll state - preroll is muxed video+audio and can't be
   // split into separate renditions. For muxed-audio streams, preserve preroll state so the proxy can build composite playlists with preroll entries.
+  //
+  // The separate-audio path disarms the preroll timer alongside nulling the fields. The timer's callback closed over its own base-URL and codec copies at
+  // registration, so nulling the fields silences only sendPlaylistResponse's per-poll regeneration, not the one-shot overwrite the callback would still perform when
+  // it fires. Disarming here completes the invalidation. One residual is inherent to preroll-for-hasAudio: if the native tune already exceeded PREROLL_DELAY_MS the
+  // timer has already fired, so the nulled fields freeze the already-written preroll playlist until the proxy's first real content arrives - bounded, not a stall.
   currentStream.captureSession = null;
   currentStream.hls.hasAudio = nativeResult.hasAudio;
 
   if(nativeResult.hasAudio) {
 
+    cancelPrerollTimer(currentStream.hls);
     currentStream.hls.prerollBaseUrl = null;
     currentStream.hls.prerollCodec = null;
     currentStream.hls.prerollSegmentCount = 0;

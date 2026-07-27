@@ -5,10 +5,10 @@
  * without depending on real timers - the race is exactly the pattern Node's synchronous mock.timers.tick cannot drive reliably.
  */
 import { LOG, realClock } from "../utils/index.ts";
+import { cancelPrerollTimer, getStream } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "../utils/index.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
-import { getStream } from "./registry.ts";
 
 /* This module provides functions for storing and retrieving HLS segments, playlists, and init segments. All data is stored in the stream registry's HLSState, which is
  * the single source of truth for stream data. Key responsibilities:
@@ -307,11 +307,7 @@ export function updatePlaylist(streamId: number, content: string): void {
     // Cancel the deferred preroll timer now that real content is available. The timer may still be running for native streams where browser setup completed quickly
     // but the proxy's first poll cycle took longer than the preroll delay (PREROLL_DELAY_MS). Without this, the timer would fire after real content is already
     // flowing, uselessly seeding preroll state. For streams where the timer already fired (preroll is active), this is a no-op - the timer handle is already null.
-    if(stream.hls.prerollTimer) {
-
-      clearTimeout(stream.hls.prerollTimer);
-      stream.hls.prerollTimer = null;
-    }
+    cancelPrerollTimer(stream.hls);
 
     const elapsed = ((Date.now() - stream.startTime.getTime()) / 1000).toFixed(3);
 
@@ -375,5 +371,21 @@ async function waitForReady(streamId: number, getPromise: (stream: StreamRegistr
     return false;
   }
 
-  return clock.raceWithTimeout(getPromise(stream).then(() => true), timeout).catch(() => false);
+  // Third race arm: a one-shot "terminated" listener resolving false. Without it, a terminateStream landing mid-wait would leave the caller hanging the full timeout,
+  // because termination never resolves the readiness promise (its registry contract stays pure - only real content resolves it). The listener is attached
+  // synchronously here, right after the getStream read, so no emit can be missed: terminateStream runs synchronously from its "terminated" emit through unregisterStream
+  // with no suspension point in between. It is removed in the finally, whichever arm settles first.
+  const emitter = stream.hls.segmentEmitter;
+  const { promise: terminated, resolve: resolveTerminated } = Promise.withResolvers<boolean>();
+  const onTerminated = (): void => resolveTerminated(false);
+
+  emitter.once("terminated", onTerminated);
+
+  try {
+
+    return await clock.raceWithTimeout(Promise.race([ getPromise(stream).then(() => true), terminated ]), timeout).catch(() => false);
+  } finally {
+
+    emitter.off("terminated", onTerminated);
+  }
 }

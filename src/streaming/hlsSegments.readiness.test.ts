@@ -116,3 +116,108 @@ describe("waitForInitSegment", () => {
     assert.equal(await waitForInitSegment(999_999, 5), false);
   });
 });
+
+describe("readiness waits resolve on stream termination", () => {
+
+  test("waitForPlaylist resolves false promptly when the stream terminates, without resolving playlistReady", async () => {
+
+    const entry = makeRegistryEntry();
+
+    registerStream(entry);
+
+    // Probe the readiness promise itself: termination must settle the WAIT via the third race arm without resolving playlistReady, whose contract stays pure. We
+    // attach the probe before the emit and flush microtasks after, so an implementation that resolved the promise on termination would flip the flag and be caught.
+    let readinessSettled = false;
+
+    void entry.hls.playlistReady.then(() => {
+
+      readinessSettled = true;
+    });
+
+    // The default fake clock forwards the inner promise and never fires a timeout, so only the readiness or terminated arm can settle the race.
+    const { clock } = makeFakeClock();
+    const pending = waitForPlaylist(entry.id, 30000, clock);
+
+    // Emit terminated directly on the entry's emitter. The real terminateStream additionally strips every listener, which would mask the hygiene assertions below, so
+    // these tests drive the emitter directly to isolate the race behavior.
+    entry.hls.segmentEmitter.emit("terminated");
+
+    const ready = await pending;
+
+    await Promise.resolve();
+
+    assert.equal(ready, false, "the terminated arm resolves the wait false");
+    assert.equal(readinessSettled, false, "playlistReady itself is never resolved by termination");
+
+    unregisterStream(entry.id);
+  });
+
+  test("waitForInitSegment resolves false promptly when the stream terminates, without resolving initSegmentReady", async () => {
+
+    const entry = makeRegistryEntry();
+
+    registerStream(entry);
+
+    let readinessSettled = false;
+
+    void entry.hls.initSegmentReady.then(() => {
+
+      readinessSettled = true;
+    });
+
+    const { clock } = makeFakeClock();
+    const pending = waitForInitSegment(entry.id, 30000, clock);
+
+    entry.hls.segmentEmitter.emit("terminated");
+
+    const ready = await pending;
+
+    await Promise.resolve();
+
+    assert.equal(ready, false, "the terminated arm resolves the wait false");
+    assert.equal(readinessSettled, false, "initSegmentReady itself is never resolved by termination");
+
+    unregisterStream(entry.id);
+  });
+
+  test("removes the terminated listener after both the terminated-wins and readiness-wins outcomes", async () => {
+
+    // Terminated-wins: baseline is zero, the wait attaches one, and settling via the terminated arm returns it to zero.
+    const terminatedEntry = makeRegistryEntry();
+
+    registerStream(terminatedEntry);
+
+    assert.equal(terminatedEntry.hls.segmentEmitter.listenerCount("terminated"), 0, "no terminated listeners before the wait");
+
+    const { clock: terminatedClock } = makeFakeClock();
+    const terminatedPending = waitForPlaylist(terminatedEntry.id, 30000, terminatedClock);
+
+    assert.equal(terminatedEntry.hls.segmentEmitter.listenerCount("terminated"), 1, "the wait attaches exactly one terminated listener");
+
+    terminatedEntry.hls.segmentEmitter.emit("terminated");
+
+    await terminatedPending;
+
+    assert.equal(terminatedEntry.hls.segmentEmitter.listenerCount("terminated"), 0, "the terminated listener is removed after the terminated arm wins");
+
+    unregisterStream(terminatedEntry.id);
+
+    // Readiness-wins: the same lifecycle, settled by the playlist becoming ready instead of by termination.
+    const readyEntry = makeRegistryEntry();
+
+    registerStream(readyEntry);
+
+    const { clock: readyClock } = makeFakeClock();
+    const readyPending = waitForPlaylist(readyEntry.id, 30000, readyClock);
+
+    assert.equal(readyEntry.hls.segmentEmitter.listenerCount("terminated"), 1, "the wait attaches exactly one terminated listener");
+
+    updatePlaylist(readyEntry.id, "#EXTM3U");
+
+    await readyPending;
+
+    assert.equal(readyEntry.hls.segmentEmitter.listenerCount("terminated"), 0, "the terminated listener is removed after the readiness arm wins");
+
+    unregisterStream(readyEntry.id);
+  });
+});

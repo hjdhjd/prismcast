@@ -6,7 +6,7 @@
  * arithmetic in getStreamMemoryUsage, and the shape of a freshly-minted HLSState.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { createHLSState, getAllStreams, getLastSegmentHasVideo, getLastSegmentSize, getNextStreamId, getStream, getStreamCount,
+import { cancelPrerollTimer, createHLSState, getAllStreams, getLastSegmentHasVideo, getLastSegmentSize, getNextStreamId, getStream, getStreamCount,
   getStreamMemoryUsage, getTotalSegmentMemory, registerStream, unregisterStream, updateLastAccess } from "./registry.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
 import type { Readable } from "node:stream";
@@ -335,6 +335,45 @@ describe("createHLSState", () => {
     const state = createHLSState();
 
     assert.equal(state.segmentEmitter.getMaxListeners(), 20);
+  });
+});
+
+describe("cancelPrerollTimer", () => {
+
+  test("disarms an armed timer so its callback never runs and nulls the handle", async () => {
+
+    // Arm a real short timer that flips a flag, cancel it, then wait well past the original delay. A helper that failed to clear the timer would let the callback run
+    // and flip the flag - this assertion fails against a broken no-op helper, which is what makes it discriminating rather than merely asserting the handle is null.
+    const state = createHLSState();
+
+    let fired = false;
+
+    state.prerollTimer = setTimeout(() => {
+
+      fired = true;
+    }, 20);
+
+    cancelPrerollTimer(state);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(fired, false, "the cancelled timer's callback never ran");
+    assert.equal(state.prerollTimer, null, "the timer handle is nulled after cancellation");
+  });
+
+  test("is a no-op when no timer is armed and leaves the handle null", () => {
+
+    // A fresh state has a null handle; cancelling must neither throw nor invent a handle.
+    const state = createHLSState();
+
+    assert.equal(state.prerollTimer, null, "fresh state has no armed timer");
+
+    assert.doesNotThrow(() => {
+
+      cancelPrerollTimer(state);
+    });
+
+    assert.equal(state.prerollTimer, null, "the handle stays null after a no-op cancel");
   });
 });
 

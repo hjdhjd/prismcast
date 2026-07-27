@@ -123,8 +123,7 @@ export interface HLSState {
 
   // Timer handle for deferred preroll seeding. The timer fires after PREROLL_DELAY_MS; if real content hasn't arrived yet, preroll is seeded and playlistReady is
   // signaled. Deliberately NOT cancelled in completeStreamSetup() - the timer must survive setup completion for native streams where the proxy's first poll cycle
-  // takes 10-15+ seconds. Cancelled in two places: updatePlaylist() in hlsSegments.ts (when the first real playlist arrives) and terminateStream() in lifecycle.ts
-  // (on stream teardown).
+  // takes 10-15+ seconds. Every path that invalidates preroll state disarms it through cancelPrerollTimer(), the single disarm point.
   prerollTimer: Nullable<ReturnType<typeof setTimeout>>;
 
   // Resume continuity.
@@ -340,6 +339,22 @@ export function createHLSState(): HLSState {
     signalPlaylistReady,
     videoPlaylist: ""
   };
+}
+
+/**
+ * Disarms a stream's deferred preroll timer and clears the handle. This is the single disarm point for the preroll timer: every path that invalidates preroll state -
+ * the first real playlist arriving (updatePlaylist in hlsSegments.ts), a native-mode commit that nulls the preroll fields (startNativeProxy in hls.ts), and stream
+ * teardown (terminateStream in lifecycle.ts) - routes through here so the timer can never fire against state that has already moved on. Safe to call when no timer is
+ * armed: the handle is already null and the call is a no-op.
+ * @param hls - The HLS state whose preroll timer to disarm.
+ */
+export function cancelPrerollTimer(hls: HLSState): void {
+
+  if(hls.prerollTimer) {
+
+    clearTimeout(hls.prerollTimer);
+    hls.prerollTimer = null;
+  }
 }
 
 // Memory Usage.

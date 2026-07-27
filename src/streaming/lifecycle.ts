@@ -4,9 +4,9 @@
  */
 import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.ts";
 import { LOG, formatDuration, formatError, getAbortController, unregisterAbortController } from "../utils/index.ts";
+import { cancelPrerollTimer, getStream, unregisterStream } from "./registry.ts";
 import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.ts";
 import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recovery.ts";
-import { getStream, unregisterStream } from "./registry.ts";
 import type { Nullable } from "../types/index.ts";
 import type { RecoveryMetrics } from "./recovery.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
@@ -116,11 +116,7 @@ function disposeStreamResources(entry: StreamRegistryEntry): void {
   entry.monitor?.dispose();
 
   // Cancel the deferred preroll timer so it cannot fire after teardown and write to the soon-to-be-unregistered HLS state.
-  if(entry.hls.prerollTimer) {
-
-    clearTimeout(entry.hls.prerollTimer);
-    entry.hls.prerollTimer = null;
-  }
+  cancelPrerollTimer(entry.hls);
 
   // Dispose the active pipeline. The CaptureSession kills its FFmpeg child, then destroys its capture stream, then stops its segmenter; the native proxy stops
   // its polling loop and token-refresh timer. Only one is present for a given stream.

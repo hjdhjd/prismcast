@@ -606,6 +606,14 @@ export function monitorPlaybackHealth(
     // attached to it).
     const outcome = await executeTabReplacement("native fallback to capture");
 
+    // The monitor stopped while tab replacement was in flight (the stream terminated). Nothing was applied and there is nothing to switch to, so return without
+    // mutating the entry or clearing the probe cache. This branch is explicit because the chain below ends in a catch-all else that would otherwise log a false
+    // "fallback failed" for a stop that is not a failure.
+    if(outcome.outcome === "stopped") {
+
+      return;
+    }
+
     if(outcome.outcome === "success") {
 
       // Tab replacement succeeded. Update the registry to reflect capture mode. The tab replacement handler already set the page and the new capture session (with
@@ -812,9 +820,22 @@ export function monitorPlaybackHealth(
   }
 
   /**
-   * Tab replacement result type. Indicates whether the replacement succeeded, failed (but stream continues), or terminated (circuit breaker tripped).
+   * Stops the monitoring interval. Pairs the two operations that must always happen together: setting intervalCleared so any in-flight async tick short-circuits at
+   * its next stop check, and clearing the interval so no further ticks fire. Every path that stops the monitor - the tick's own guards, the circuit-breaker
+   * terminations, and dispose() - routes through here, so a stopped monitor can never look un-stopped to a resuming await that would otherwise trip the breaker
+   * against a newer stream re-registered under the same channel.
    */
-  type TabReplacementOutcome = { outcome: "success" } | { outcome: "failed" } | { outcome: "terminated" };
+  function stopMonitoring(): void {
+
+    intervalCleared = true;
+    clearInterval(interval);
+  }
+
+  /**
+   * Tab replacement result type. Indicates whether the replacement succeeded, failed (but stream continues), terminated (circuit breaker tripped), or was abandoned
+   * because the monitor stopped while the replacement was in flight (stopped - nothing was applied and the caller must not act on it).
+   */
+  type TabReplacementOutcome = { outcome: "success" } | { outcome: "failed" } | { outcome: "terminated" } | { outcome: "stopped" };
 
   /**
    * Handles tab replacement failure by checking the circuit breaker. If the breaker trips, terminates the stream. Returns the appropriate outcome for the caller.
@@ -823,13 +844,20 @@ export function monitorPlaybackHealth(
    */
   function handleTabReplacementFailure(context: string): TabReplacementOutcome {
 
+    // Entry stop check, mirroring the tick's intervalCleared-first ordering (see the main interval's check-order note): a settlement that resumed after the monitor
+    // stopped must return the stopped outcome and trip nothing, since onCircuitBreak resolves by channel name and could terminate a newer stream on this channel.
+    if(intervalCleared) {
+
+      return { outcome: "stopped" };
+    }
+
     const cbResult = checkCircuitBreaker(circuitBreaker, Date.now());
 
     if(cbResult.shouldTrip) {
 
       LOG.error("Recovery exhausted (%s) - terminating stream.", context);
 
-      clearInterval(interval);
+      stopMonitoring();
       onCircuitBreak();
 
       return { outcome: "terminated" };
@@ -872,6 +900,13 @@ export function monitorPlaybackHealth(
    */
   function handleExhaustedTabReplacement(context: string): TabReplacementOutcome {
 
+    // Entry stop check, mirroring the tick's intervalCleared-first ordering (see the main interval's check-order note): a settlement that resumed after the monitor
+    // stopped must return the stopped outcome without clearing metrics or tripping the breaker, since onCircuitBreak could terminate a newer stream on this channel.
+    if(intervalCleared) {
+
+      return { outcome: "stopped" };
+    }
+
     // Clear stale recovery metrics so the deferred-success check does not falsely log "Recovered" from leftover state set by recordRecoveryAttempt.
     metrics.currentRecoveryStartTime = null;
     metrics.currentRecoveryMethod = null;
@@ -887,7 +922,7 @@ export function monitorPlaybackHealth(
 
       LOG.error("Tab replacement failed and the original page is no longer available - terminating stream.");
 
-      clearInterval(interval);
+      stopMonitoring();
       onCircuitBreak();
 
       return { outcome: "terminated" };
@@ -945,6 +980,14 @@ export function monitorPlaybackHealth(
 
       if(result) {
 
+        // The stream can terminate during the awaited onTabReplacement above; a settlement that resumed after the monitor stopped must not adopt the fresh capture
+        // resources or reset recovery state. Report the stop and apply nothing - the fresh page and capture session were already torn down at the source by the
+        // hls.ts handler's own post-await re-check, so there is nothing to clean up here.
+        if(intervalCleared) {
+
+          return { outcome: "stopped" };
+        }
+
         applyTabReplacementSuccess(result);
 
         return { outcome: "success" };
@@ -962,6 +1005,12 @@ export function monitorPlaybackHealth(
         const retryResult = await onTabReplacement();
 
         if(retryResult) {
+
+          // Same post-await stop check as the try path: a settlement that resumed after the monitor stopped applies nothing and reports the stop.
+          if(intervalCleared) {
+
+            return { outcome: "stopped" };
+          }
 
           applyTabReplacementSuccess(retryResult);
 
@@ -1137,6 +1186,14 @@ export function monitorPlaybackHealth(
     // After 3+ consecutive failures, escalate to full page navigation recovery.
     LOG.warn("Video element not found - recovering via %s.", RECOVERY_METHODS.pageNavigation);
 
+    // Post-await stop check guarding both breaker branches below. The only await on the path to here is checkVideoPresence above; a tick that resumed after the
+    // monitor stopped must not trip the breaker (onCircuitBreak resolves by channel name and could terminate a newer stream on this channel) nor navigate a
+    // terminated stream. No await separates the two breaker branches, so this single check makes both inert.
+    if(intervalCleared) {
+
+      return;
+    }
+
     // Check circuit breaker for too many failures.
     const cbResult = checkCircuitBreaker(circuitBreaker, now);
 
@@ -1144,7 +1201,7 @@ export function monitorPlaybackHealth(
 
       LOG.error("Recovery failed after %s attempts - terminating stream.", cbResult.totalCount);
 
-      clearInterval(interval);
+      stopMonitoring();
       onCircuitBreak();
 
       return;
@@ -1166,7 +1223,7 @@ export function monitorPlaybackHealth(
       LOG.error("Page navigation rate limit reached (%s in %s minutes) - cannot recover without video element.",
         CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
-      clearInterval(interval);
+      stopMonitoring();
       onCircuitBreak();
 
       return;
@@ -1580,6 +1637,14 @@ export function monitorPlaybackHealth(
       return true;
     }
 
+    // Post-await stop check for the breaker branch below. The tick awaited getVideoState before calling this; a tick that resumed after the monitor stopped must not
+    // trip the breaker, since onCircuitBreak resolves by channel name and could terminate a newer stream re-registered under this channel. Return terminal so the
+    // tick exits without further work.
+    if(intervalCleared) {
+
+      return true;
+    }
+
     // Check circuit breaker for too many failures.
     const cbResult = checkCircuitBreaker(circuitBreaker, now);
 
@@ -1589,7 +1654,7 @@ export function monitorPlaybackHealth(
 
       LOG.error("Recovery failed after %s attempts in %ss - terminating stream.", cbResult.totalCount, elapsedSeconds);
 
-      clearInterval(interval);
+      stopMonitoring();
       onCircuitBreak();
 
       return true;
@@ -1743,7 +1808,7 @@ export function monitorPlaybackHealth(
     // Stop monitoring if cleanup was requested.
     if(intervalCleared) {
 
-      clearInterval(interval);
+      stopMonitoring();
 
       return;
     }
@@ -1760,7 +1825,7 @@ export function monitorPlaybackHealth(
     // Stop monitoring if the page was closed outside of recovery. This handles cases like browser disconnect or explicit stream termination.
     if(currentPage.isClosed()) {
 
-      clearInterval(interval);
+      stopMonitoring();
 
       return;
     }
@@ -1799,7 +1864,7 @@ export function monitorPlaybackHealth(
 
         if(abortSignal?.aborted) {
 
-          clearInterval(interval);
+          stopMonitoring();
 
           return;
         }
@@ -2081,7 +2146,7 @@ export function monitorPlaybackHealth(
         // If the session or page was closed, stop monitoring gracefully.
         if(isSessionClosedError(error) || currentPage.isClosed()) {
 
-          clearInterval(interval);
+          stopMonitoring();
 
           return;
         }
@@ -2143,8 +2208,7 @@ export function monitorPlaybackHealth(
    */
   const dispose = (): void => {
 
-    intervalCleared = true;
-    clearInterval(interval);
+    stopMonitoring();
   };
 
   /* Return the monitor handle. getMetrics() exposes the live recovery metrics (read in the termination prologue for the summary log); dispose() / [Symbol.dispose]
