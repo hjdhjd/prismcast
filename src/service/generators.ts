@@ -425,9 +425,12 @@ function createSystemdGenerator(io: GeneratorIO): ServiceGenerator {
         // Ignore if systemctl isn't available (shouldn't happen on systemd systems).
       }
 
-      // Enable and start the service.
+      /* Enable the unit so it comes up at login, then bring it up now. The verb is restart rather than start because install also serves reinstallation: on an
+       * inactive unit restart does exactly what start does, and on a unit that is already running it replaces the process so the service runs against the unit
+       * definition daemon-reload has just loaded. A start would report success and leave the old process in place against the old definition.
+       */
       await runAndSurfaceStderr("systemctl enable failed", async () => io.execFile("systemctl", [ "--user", "enable", "prismcast.service" ]));
-      await runAndSurfaceStderr("systemctl start failed", async () => io.execFile("systemctl", [ "--user", "start", "prismcast.service" ]));
+      await runAndSurfaceStderr("systemctl restart failed", async () => io.execFile("systemctl", [ "--user", "restart", "prismcast.service" ]));
     },
 
     async isInstalled(): Promise<boolean> {

@@ -12,8 +12,12 @@ import { getServiceGenerator } from "./generators.ts";
 
 describe("createSystemdGenerator (via getServiceGenerator on linux)", () => {
 
-  test("install: writes the systemd unit and runs daemon-reload + enable + start", async () => {
+  test("install: writes the systemd unit and runs daemon-reload + enable + restart", async () => {
 
+    // The final verb is restart, not start, so a --force reinstall over a running unit replaces the process against the freshly reloaded unit definition. Both
+    // the fixture key and the asserted sequence below carry that expectation. Against source that still issues start, the failure surfaces at the exec rather
+    // than at the assertion: the map holds no entry for that command, so execFileFromMap throws "no result configured for systemctl --user start
+    // prismcast.service". That names the stale verb outright, which is a more direct read than spotting the difference between two arrays would be.
     const installPath = "/Users/test/.config/systemd/user/prismcast.service";
     const { calls, io, writes } = makeFakeIO({
 
@@ -22,7 +26,7 @@ describe("createSystemdGenerator (via getServiceGenerator on linux)", () => {
 
         "systemctl --user daemon-reload": { stdout: "" },
         "systemctl --user enable prismcast.service": { stdout: "" },
-        "systemctl --user start prismcast.service": { stdout: "" }
+        "systemctl --user restart prismcast.service": { stdout: "" }
       }),
       platform: "linux",
       serviceFileDirectory: "/Users/test/.config/systemd/user",
@@ -47,7 +51,7 @@ describe("createSystemdGenerator (via getServiceGenerator on linux)", () => {
     assert.deepEqual(execSequence, [
       "--user daemon-reload",
       "--user enable prismcast.service",
-      "--user start prismcast.service"
+      "--user restart prismcast.service"
     ]);
   });
 
