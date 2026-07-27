@@ -4,9 +4,9 @@
  */
 import type { Express, Request, Response } from "express";
 import { HDHR_FIRMWARE_NAME, HDHR_MANUFACTURER, HDHR_MODEL_NUMBER } from "./identity.ts";
+import { escapeXml, getPackageVersion } from "../utils/index.ts";
 import { CONFIG } from "../config/index.ts";
 import { buildChannelMap } from "./channelMap.ts";
-import { getPackageVersion } from "../utils/index.ts";
 import { getTunerStates } from "./tunerState.ts";
 
 /* These endpoints implement the HDHomeRun HTTP API that Plex uses to identify, configure, and monitor tuners. Plex auto-detects PrismCast on the LAN through
@@ -96,6 +96,12 @@ export function setupHdhrEndpoints(app: Express): void {
     const baseUrl = "http://" + hostname + ":" + String(CONFIG.hdhr.port);
     const deviceId = CONFIG.hdhr.deviceId.toUpperCase();
 
+    /* Every value interpolated below is escaped, the compile-time constants included, which is the convention the launchd plist generator follows: escaping at
+     * each interpolation point rather than trusting the shape of any particular value. The values outside our control are the ones somebody else supplies:
+     * friendlyName is free text the operator types, and baseUrl derives from the client-supplied Host or X-Forwarded-Host header that resolveHostname reads
+     * without sanitizing, so an unescaped ampersand or angle bracket from either source yields a document a client cannot parse. Escaping the constants costs
+     * nothing and means changing one of them can never reintroduce that.
+     */
     const xml = [
       "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
       "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">",
@@ -103,15 +109,15 @@ export function setupHdhrEndpoints(app: Express): void {
       "    <major>1</major>",
       "    <minor>0</minor>",
       "  </specVersion>",
-      "  <URLBase>" + baseUrl + "</URLBase>",
+      "  <URLBase>" + escapeXml(baseUrl) + "</URLBase>",
       "  <device>",
       "    <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>",
-      "    <friendlyName>" + CONFIG.hdhr.friendlyName + "</friendlyName>",
-      "    <manufacturer>" + HDHR_MANUFACTURER + "</manufacturer>",
-      "    <modelName>" + HDHR_MODEL_NUMBER + "</modelName>",
-      "    <modelNumber>" + HDHR_MODEL_NUMBER + "</modelNumber>",
-      "    <serialNumber>" + deviceId + "</serialNumber>",
-      "    <UDN>uuid:" + deviceId + "</UDN>",
+      "    <friendlyName>" + escapeXml(CONFIG.hdhr.friendlyName) + "</friendlyName>",
+      "    <manufacturer>" + escapeXml(HDHR_MANUFACTURER) + "</manufacturer>",
+      "    <modelName>" + escapeXml(HDHR_MODEL_NUMBER) + "</modelName>",
+      "    <modelNumber>" + escapeXml(HDHR_MODEL_NUMBER) + "</modelNumber>",
+      "    <serialNumber>" + escapeXml(deviceId) + "</serialNumber>",
+      "    <UDN>uuid:" + escapeXml(deviceId) + "</UDN>",
       "  </device>",
       "</root>"
     ].join("\n");

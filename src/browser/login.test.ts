@@ -350,6 +350,58 @@ describe("startLoginMode", () => {
 
     assert.equal(isLoginModeActive(), false, "close handler ran endLoginMode and cleared active state");
   });
+
+  test("a superseded session's close listener cannot end the session that replaced it", async () => {
+
+    /* Session A's close listener outlives session A: clearLoginState drops the module's reference to A's page but nothing detaches the listener from it, so a
+     * later close of A's tab still fires. The handler must recognize that the page it was registered for is not the one the module now holds and do nothing.
+     * Ending session B here would close a login the user is still working through, and the login-end observer firing would tell the composition root that a
+     * session it never saw begin had finished.
+     */
+    const observed: string[] = [];
+    const pageA = makePageStub();
+
+    // The observer is installed here rather than in a hook because this describe has none; the finally below restores a no-op the way the observer suite's own
+    // afterEach does, so this closure cannot receive notifications from later tests.
+    setLoginModeEndObserver((url) => {
+
+      observed.push(url);
+    });
+
+    try {
+
+      installAccessors(makeBrowserStub({ pageStub: pageA }));
+
+      await startLoginMode("https://example.test/session-a");
+
+      assert.equal(pageA.onCloseHandlers.length, 1, "session A registered exactly one close handler");
+
+      // Drop session A the way a browser crash does, then open session B against a different page.
+      clearLoginState();
+
+      const pageB = makePageStub();
+
+      installAccessors(makeBrowserStub({ pageStub: pageB }));
+
+      await startLoginMode("https://example.test/session-b");
+
+      assert.equal(isLoginModeActive(), true, "session B is the active session");
+
+      // Fire session A's orphaned listener and drain the microtask queue, so a wrongly-accepted endLoginMode would have completed by the time we assert.
+      pageA.onCloseHandlers[0]?.();
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      assert.equal(isLoginModeActive(), true, "session B survives the superseded session's close event");
+      assert.equal(getLoginPage(), pageB as unknown as Page, "session B's page remains the module's login page");
+      assert.deepEqual(observed, [], "the login-end observer stays silent - the composition root is never told a session ended");
+    } finally {
+
+      setLoginModeEndObserver(() => { /* No-op between tests. */ });
+    }
+  });
 });
 
 describe("endLoginMode", () => {

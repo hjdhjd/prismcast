@@ -8,16 +8,19 @@
  * restart. We drive the toggle in-process through initDebugFilter (the same runtime primitive the CLI and the /debug POST handler use) rather than by launching a
  * real browser, which the integration harness never does: getBrowserInstance() returns null here, so the "enabled but no browser" branch is naturally exercised.
  *
- * Scope. Only the HTTP 404/503 gate is bootApp-testable. The WebSocket upgrade path (attachCdpUpgradeHandler) and the CdpProxySession multiplexer require a real
- * socket upgrade and a live Puppeteer Browser/Connection, neither of which the harness provides, so they are out of scope for this suite and are recorded as
- * skipped rather than exercised against a fake. This suite is a sibling of streams.test.ts: both pin route-shape rules by seeding the exact state the handler
- * reads (there, the stream registry; here, the debug-category filter) instead of launching a real capture.
+ * Scope. Every gate reachable from bootApp is pinned here: the discovery handlers' 404/503 pair over ordinary HTTP, and the WebSocket upgrade
+ * handler's origin gate, driven by writing a raw upgrade request at the booted listener once attachCdpUpgradeHandler has bound to its server. What stays out of
+ * scope is the CdpProxySession multiplexer behind them, which needs a live Puppeteer Browser/Connection the harness never launches; it is recorded here rather
+ * than exercised against a fake. This suite is a sibling of streams.test.ts: both pin route-shape rules by seeding the exact state the handler reads (there, the
+ * stream registry; here, the debug-category filter) instead of launching a real capture.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import { getCurrentPattern, initDebugFilter } from "../../../src/utils/debugFilter.ts";
 import type { IntegrationContext } from "../../helpers/integration.helpers.ts";
 import assert from "node:assert/strict";
+import { attachCdpUpgradeHandler } from "../../../src/routes/cdp.ts";
+import http from "node:http";
 
 // The discovery endpoints that share the identical two-stage gate, listed alphabetically. /cdp/json and /cdp/json/list are aliases of one handler and
 // /cdp/json/version is its own handler, but every endpoint here opens with the same isCategoryEnabled("cdp") + getBrowserInstance() guard, so a regression that
@@ -37,6 +40,42 @@ function withDebugFilter(ctx: IntegrationContext, pattern: string): void {
 
   ctx.registerCleanup((): void => { initDebugFilter(previous); });
   initDebugFilter(pattern);
+}
+
+/**
+ * Writes a raw WebSocket upgrade request at the CDP proxy path and resolves with the HTTP status the server answered it with. A refused handshake is answered
+ * by writing a status line straight to the socket rather than through the Express response pipeline, so we read the status off the wire instead of asking a
+ * WebSocket client library to surface it - a client library reports a refusal as an opaque error and would cost us the very thing being asserted.
+ * @param port - The bound port of the listener under test.
+ * @param origin - The Origin header to send, or omitted to send none, which is the shape every non-browser CDP client presents.
+ * @returns The HTTP status code the server answered the handshake with.
+ */
+function attemptCdpUpgrade(port: number, origin?: string): Promise<number> {
+
+  const { promise, reject, resolve } = Promise.withResolvers<number>();
+  const headers: Record<string, string> = {
+
+    "Connection": "Upgrade",
+    "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "Sec-WebSocket-Version": "13",
+    "Upgrade": "websocket"
+  };
+
+  if(origin !== undefined) {
+
+    headers["Origin"] = origin;
+  }
+
+  const request = http.request({ headers, host: "127.0.0.1", path: "/cdp/devtools/browser/prismcast", port });
+
+  // A refused handshake arrives as an ordinary response and an accepted one arrives as an upgrade. Both carry the status code, so both arms resolve the same
+  // promise and the caller never has to know which shape came back.
+  request.on("response", (response): void => { response.resume(); resolve(response.statusCode ?? 0); });
+  request.on("upgrade", (response, socket): void => { socket.destroy(); resolve(response.statusCode ?? 0); });
+  request.on("error", reject);
+  request.end();
+
+  return promise;
 }
 
 describe("CDP discovery endpoints - category gate (disabled)", () => {
@@ -134,5 +173,35 @@ describe("CDP discovery endpoints - category gate (enabled, no browser)", () => 
     const body = await response.text();
 
     assert.equal(body, "Browser not running", "the no-browser body is returned once the category gate passes");
+  });
+});
+
+describe("CDP WebSocket upgrade - origin gate", () => {
+
+  test("admits handshakes with no Origin or the allowlisted DevTools origin and refuses every other origin", async (): Promise<void> => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    // The upgrade handler runs the category gate first, so the cdp category has to be on for any handshake to reach the origin gate at all.
+    withDebugFilter(ctx, "cdp");
+
+    const { port, server } = await bootApp(ctx);
+
+    // The proxy's WebSocketServer is a module-level singleton and attachCdpUpgradeHandler returns early once it is set, so only the first call in a process
+    // binds the upgrade listener. Every case below therefore shares one boot and one attach instead of booting per case.
+    attachCdpUpgradeHandler(server);
+
+    // No browser runs in the integration harness, so a handshake that clears the origin gate falls through to the browser check and answers 503. That 503 is
+    // what the admitted cases assert on: it is reachable only by passing the gate, which by design sits ahead of the browser lookup.
+    assert.equal(await attemptCdpUpgrade(port), 503, "a handshake carrying no Origin passes the gate");
+    assert.equal(await attemptCdpUpgrade(port, "devtools://devtools"), 503, "the allowlisted DevTools frontend origin passes the gate");
+    assert.equal(await attemptCdpUpgrade(port, "https://evil.test"), 403, "an arbitrary page origin is refused");
+
+    // Matching is exact rather than containment. An origin that merely embeds the allowlisted string is a different origin, and a substring test would readmit
+    // precisely the page this gate exists to keep out, so both the embedded and the prefixed forms are asserted.
+    assert.equal(await attemptCdpUpgrade(port, "https://evil.test/devtools://devtools"), 403, "an origin embedding the allowlisted value is refused");
+    assert.equal(await attemptCdpUpgrade(port, "devtools://devtools.evil.test"), 403, "an origin extending the allowlisted value is refused");
   });
 });

@@ -45,6 +45,13 @@ import { getBrowserInstance } from "../browser/index.ts";
  */
 let wss: WebSocketServer | null = null;
 
+/* Browser-hosted origins permitted to open a CDP debugging socket. Chrome serves its own DevTools frontend from devtools://devtools, which is the origin the
+ * frontend reached through chrome://inspect presents. Nothing else belongs here: the devtoolsFrontendUrl the discovery endpoint hands out is a path relative to
+ * PrismCast's own origin that PrismCast serves no route for, matching Chrome's convention of letting the browser supply its own frontend, so no hosted frontend
+ * is ever loaded on this proxy's behalf. Admitting another frontend is a one-line addition here.
+ */
+const CDP_ALLOWED_ORIGINS: ReadonlySet<string> = new Set(["devtools://devtools"]);
+
 /* CDP wire types. We model what the proxy exchanges over the WebSocket; the Protocol namespace from devtools-protocol gives us the per-domain types so the
  * synthesized Target.* messages stay byte-compatible with what Chrome itself would emit.
  */
@@ -1003,6 +1010,24 @@ export function attachCdpUpgradeHandler(server: HttpServer): void {
     if(!isCategoryEnabled("cdp")) {
 
       socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+
+      return;
+    }
+
+    /* The Same-Origin Policy does not restrict WebSocket handshakes, so any page on any site can open a socket to this endpoint and the browser will carry it
+     * out...the server is the only place the decision can be made. The rule is an allowlist rather than a blanket rejection of every Origin, and it covers both
+     * kinds of client this proxy serves. Every non-browser client (puppeteer.connect, curl, chrome-remote-interface) sends no Origin header at all and is
+     * admitted by the first arm; the DevTools frontend is browser-hosted, does send one, and is admitted by the second. A hostile page can present neither
+     * case, because the browser sets Origin from the page's own origin and script cannot override it, which is why an allowlist of frontend origins gives up
+     * nothing in defense. The check sits ahead of the browser lookup so a refused origin gets the same answer whether or not Chrome happens to be running.
+     */
+    const origin = req.headers.origin;
+
+    if((origin !== undefined) && !CDP_ALLOWED_ORIGINS.has(origin)) {
+
+      LOG.warn("Refused a CDP debugging connection from origin %s.", origin);
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       socket.destroy();
 
       return;

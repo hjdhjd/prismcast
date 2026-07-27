@@ -30,10 +30,11 @@
  * call to initializeDataDir (which createIntegrationContext does at construction time) ensures stores read from and write to a fresh tree without needing to
  * reset module state - the deferred path resolvers built into the file-store framework pick up the new directory automatically.
  */
-import type { AddressInfo, Server } from "node:net";
 import { getDataDir, initializeDataDir } from "../../src/config/paths.ts";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
 import type { Express } from "express";
+import type { Server } from "node:http";
 import { delay } from "../../src/utils/delay.ts";
 import { ensureAllMigrated } from "../../src/config/persistence.ts";
 import express from "express";
@@ -253,6 +254,12 @@ export interface BootedApp {
   /** Bound port number (ephemeral - assigned by the OS at listen time). */
   port: number;
 
+  /**
+   * The Node HTTP server backing the listener. Exposed for tests that need the server itself rather than the Express app: the WebSocket upgrade path binds to
+   * the server's "upgrade" event, which the app never sees.
+   */
+  server: Server;
+
   /** Composes a full URL against the listener for the given path (must start with "/"). Convenience over manual string concatenation. */
   urlFor: (path: string) => string;
 }
@@ -268,7 +275,7 @@ export interface BootedApp {
  *
  * @param ctx - The integration context. Persistence must already be initialized (initializePersistence) before calling bootApp because the route handlers
  *   read CONFIG and the in-memory channel state at handler-invocation time.
- * @returns A BootedApp with the listening port and a URL composer.
+ * @returns A BootedApp carrying the app, the bound port, the HTTP server behind the listener, and a URL composer.
  */
 export async function bootApp(ctx: IntegrationContext): Promise<BootedApp> {
 
@@ -308,6 +315,7 @@ export async function bootApp(ctx: IntegrationContext): Promise<BootedApp> {
 
     app,
     port,
+    server,
     urlFor: (subPath: string): string => "http://127.0.0.1:" + String(port) + subPath
   };
 }
@@ -340,7 +348,7 @@ export async function waitForHealthFlush(): Promise<void> {
  *
  * @param ctx - The integration context. The listener is closed via the context's cleanup hook at scope exit.
  * @param configure - Callback that receives the bare Express app. Install routes, middleware, or any other handlers here.
- * @returns The app, the bound ephemeral port, and a urlFor composer that builds full URLs against this listener.
+ * @returns The app, the bound ephemeral port, the HTTP server behind the listener, and a urlFor composer that builds full URLs against it.
  */
 export async function bootStubServer(ctx: IntegrationContext, configure: (app: Express) => void): Promise<BootedApp> {
 
@@ -370,6 +378,7 @@ export async function bootStubServer(ctx: IntegrationContext, configure: (app: E
 
     app,
     port,
+    server,
     urlFor: (subPath: string): string => "http://127.0.0.1:" + String(port) + subPath
   };
 }

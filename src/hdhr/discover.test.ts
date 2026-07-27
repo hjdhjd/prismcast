@@ -106,6 +106,39 @@ describe("setupHdhrEndpoints - GET /device.xml", () => {
     }
   });
 
+  test("escapes XML metacharacters in the configured friendlyName", async () => {
+
+    const original = CONFIG.hdhr.friendlyName;
+
+    // friendlyName is free text the operator types, so an ampersand or an angle bracket in it reaches the document verbatim unless the handler escapes it. The
+    // negative assertions matter as much as the positive ones: a document carrying a raw "<" is one a client cannot parse, whatever else it also contains.
+    CONFIG.hdhr.friendlyName = "Prism & <Cast>";
+
+    try {
+
+      const res = await fetch(urlFor("/device.xml"));
+      const body = await res.text();
+
+      assert.match(body, /<friendlyName>Prism &amp; &lt;Cast&gt;<\/friendlyName>/);
+      assert.doesNotMatch(body, /Prism & </);
+    } finally {
+
+      CONFIG.hdhr.friendlyName = original;
+    }
+  });
+
+  test("escapes XML metacharacters arriving through X-Forwarded-Host", async () => {
+
+    // The advertised URLBase is composed from a client-supplied header that resolveHostname reads without sanitizing, which makes the header a second route to
+    // a malformed document. We drive it through X-Forwarded-Host rather than an explicit Host header because Node's fetch overrides Host from the request URL,
+    // which would leave the assertion proving nothing.
+    const res = await fetch(urlFor("/device.xml"), { headers: { "X-Forwarded-Host": "evil&host<tag>" } });
+    const body = await res.text();
+
+    assert.match(body, /<URLBase>http:\/\/evil&amp;host&lt;tag&gt;:/);
+    assert.doesNotMatch(body, /evil&host</);
+  });
+
   test("includes an uppercased deviceId in the serialNumber and UDN fields", async () => {
 
     const original = CONFIG.hdhr.deviceId;

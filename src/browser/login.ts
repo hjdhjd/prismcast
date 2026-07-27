@@ -142,11 +142,17 @@ export async function startLoginMode(url: string): Promise<{ error?: string; suc
 
     loginPage = page;
 
-    // Set up handler for tab close detection. If the user closes the tab manually, we should end login mode automatically.
+    /* Set up handler for tab close detection. If the user closes the tab manually, we should end login mode automatically.
+     *
+     * The guard compares the page this listener was registered for against the one the module currently holds, so a listener left behind by a superseded
+     * session cannot end the session that replaced it. Guarding by identity is preferred to detaching the listener at teardown: a stale listener that compares
+     * identity is inert wherever it fires, whereas detachment would have to be remembered at every teardown path, including the browser-crash path that
+     * deliberately performs no page operations at all. The loginModeActive conjunct stays alongside it because loginPage is assigned before loginModeActive is
+     * set, leaving a window where the page matches but the session has not begun.
+     */
     page.on("close", () => {
 
-      // Only auto-end if this is still the active login page.
-      if(loginModeActive && loginPage) {
+      if(loginModeActive && (loginPage === page)) {
 
         LOG.info("Login tab was closed. Ending login mode.");
 

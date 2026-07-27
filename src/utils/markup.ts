@@ -4,9 +4,9 @@
  */
 
 /* This module is the single source of truth for escape-style markup encoding. HTML escaping (used pervasively across the routes layer to embed user-provided
- * values in server-rendered pages) and XML escaping (used by the macOS launchd plist generator) cover the same reserved characters; only the apostrophe entity
- * differs - HTML5 spells it &#39; and XML spells it &apos;. Centralizing both surfaces over a shared regex and a Readonly entity map keeps the character class
- * in one place so adding an entity to one flavor can't silently desync the other.
+ * values in server-rendered pages) and XML escaping (used by the macOS launchd plist generator and the HDHomeRun device description) cover the same reserved
+ * characters; only the apostrophe entity differs - HTML5 spells it &#39; and XML spells it &apos;. Centralizing both surfaces over a shared regex and a
+ * Readonly entity map keeps the character class in one place so adding an entity to one flavor can't silently desync the other.
  */
 
 // The shared character class for both HTML and XML escape sweeps. Defined once so the two escape variants never disagree about which characters they encode.
@@ -55,7 +55,8 @@ export function escapeHtml(value: string): string {
 }
 
 /**
- * Escapes XML special characters in a string for safe embedding in XML documents. Used by the macOS launchd plist generator; the other platforms do not emit XML.
+ * Escapes XML special characters in a string for safe embedding in XML documents. Every XML surface PrismCast emits, the macOS launchd plist and the HDHomeRun
+ * UPnP device description among them, escapes at each interpolation point rather than trusting the shape of any particular value.
  * @param value - The text to escape.
  * @returns The escaped text safe for XML embedding.
  */
