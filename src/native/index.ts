@@ -158,7 +158,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   // Probe the intercepted URL and normalize the result to a MediaFeed. The probe handles both master and media playlists transparently; this code path does not
   // need to know which kind arrived.
-  const mediaFeed = await probeManifest(interception.masterManifestUrl, channelName);
+  const mediaFeed = await probeManifest(interception.manifestUrl, channelName);
 
   if(!mediaFeed) {
 
@@ -231,7 +231,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
   scheduleTokenRefresh({
 
     channelName,
-    masterUrl: interception.masterManifestUrl,
+    masterUrl: interception.manifestUrl,
     page,
     proxy,
     streamIdStr,
@@ -477,7 +477,7 @@ export async function refreshNativeManifest(options: {
 
     // Probe the new manifest to get the updated variant URL. The interceptor has already released its observer by the time the promise resolves, so a probe
     // failure here only requires giving up on this refresh attempt - no session bookkeeping to unwind.
-    const refreshedFeed = await probeManifest(newInterception.masterManifestUrl, channelName);
+    const refreshedFeed = await probeManifest(newInterception.manifestUrl, channelName);
 
     if(!refreshedFeed) {
 
@@ -507,7 +507,7 @@ export async function refreshNativeManifest(options: {
     scheduleTokenRefresh({
 
       channelName,
-      masterUrl: newInterception.masterManifestUrl,
+      masterUrl: newInterception.manifestUrl,
       page,
       proxy,
       streamIdStr,

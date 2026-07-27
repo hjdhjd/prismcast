@@ -148,7 +148,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "drm-channel-test",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
     });
 
     clearProbeCache("drm-channel-test");
@@ -179,7 +179,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "clear-channel-test",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
     });
 
     clearProbeCache("clear-channel-test");
@@ -228,7 +228,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "aes-prefetch-channel",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
     });
 
     clearProbeCache("aes-prefetch-channel");
@@ -261,7 +261,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "dai-channel-test",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl }),
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" }),
       mpegTsClient: true
     });
 
@@ -295,7 +295,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "dai-hls-channel",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
     });
 
     clearProbeCache("dai-hls-channel");
@@ -321,7 +321,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "probe-fail-channel",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
     });
 
     clearProbeCache("probe-fail-channel");
@@ -350,7 +350,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "onerror-channel",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl }),
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" }),
       onError: (): void => {
 
         onErrorCalls++;
@@ -447,7 +447,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "exp-channel",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
     });
 
     clearProbeCache("exp-channel");
@@ -492,7 +492,7 @@ describe("attemptNativeStreaming", () => {
     const options = makeAttemptOptions({
 
       channelName: "aes-ok-channel",
-      interceptionPromise: Promise.resolve({ masterManifestUrl: masterUrl })
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
     });
 
     clearProbeCache("aes-ok-channel");

@@ -475,7 +475,14 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
           currentManifestKeyUrl = resolveUrl(uri, baseUrl);
         }
 
-        currentIvHex = /IV=([0-9a-fA-Fx]+)/.exec(trimmed)?.[1] ?? null;
+        // A quoted attribute value - most often the URI - may legally contain commas and arbitrary text, including a literal "IV=" sequence, so no attribute regex
+        // may scan across one. We blank every quoted span to an empty "" before scanning for the IV attribute, while the URI extraction above still reads the
+        // original line. The [:,] boundary ties IV= to the start of an attribute, right after the tag colon or a separating comma, so a coincidental attribute-name
+        // suffix such as FOOIV= cannot match, and the \s* tolerates the whitespace-after-comma layout some services emit. The capture takes the raw attribute value
+        // and defers every format judgment - the 0x or 0X prefix and the 32-hex length - to parseExplicitIv, the single owner of IV format rules.
+        const attributeResidue = trimmed.replace(/"[^"]*"/g, "\"\"");
+
+        currentIvHex = /[:,]\s*IV=([^,\s]+)/.exec(attributeResidue)?.[1] ?? null;
       } else if(method === "NONE") {
 
         currentManifestKeyUrl = null;

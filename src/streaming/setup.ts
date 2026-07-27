@@ -7,8 +7,9 @@ import { BrowserSupersededError, BrowserUnavailableError, getBrowserInstance, ge
   registerManagedPage, setCaptureProbe, unregisterManagedPage } from "../browser/index.ts";
 import { CaptureAbandonedError, createCaptureLock } from "./captureLock.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
-import { LOG, delay, extractDomain, formatError, isStaleCaptureMutexError, raceWithTimeout, realClock, registerAbortController, resolveFFmpegPath, retryOperation,
-  runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.ts";
+import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
+import { LOG, delay, extractDomain, formatError, isStaleCaptureMutexError, maxRetryDuration, raceWithTimeout, realClock, registerAbortController, resolveFFmpegPath,
+  retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
 import { getAllStreams, getNextStreamId } from "./registry.ts";
@@ -28,7 +29,6 @@ import { getCaptureMimeType } from "./codec.ts";
 import { getDomainAuthState } from "../config/health.ts";
 import { getDomainConfig } from "../config/sites.ts";
 import { getEffectiveViewport } from "../config/presets.ts";
-import { installManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
@@ -86,6 +86,17 @@ const STOP_RECORDING_SETTLE_MS = 500;
 // allowance lets the destroy-plus-STOP_RECORDING-settle teardown complete inside the turn without counting against that criterion. A teardown that hangs past the
 // allowance trips the outer deadline and is reported as a capture-infrastructure failure.
 const PROBE_TEARDOWN_ALLOWANCE_MS = 3000;
+
+// The playback-initialization safety-net timeout. Channel selection plus video setup runs after navigation with no outer timeout racing its internal click
+// retries; for guideGrid strategies a selection failure triggers an overlay dismiss and retry, which doubles the channel-selection budget. 45 seconds accommodates
+// that retry while still preventing a pathological hang if multiple internal timeouts chain sequentially. Consumed by both the phase-2 race and the interception
+// budget below.
+const PLAYBACK_INIT_TIMEOUT = 45000;
+
+// Margin folded into the interception budget beyond the phases it explicitly sizes: the small span between phase-2 finishing and finalize firing (the window
+// resize and minimize, setupStream's pre-verification work) plus true slack. The interception window is a leak bound for a tune that dies without unwinding, not a
+// latency bound - no healthy path waits on it - so its generosity costs nothing.
+const INTERCEPTION_BUDGET_MARGIN_MS = 5000;
 
 // The caller-visible capture-timeout messages, each defined once so the lock's deadline errors and any pin test read the exact text. Both match
 // isCaptureInfrastructureError via its "timed out" substring, so they are exported for the classification pin that locks that contract.
@@ -540,16 +551,6 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // initializePlayback (startVideoPlayback, applyVideoStyles, verifyFullscreen, lockVolumeProperties) and subsequent health monitoring (getVideoState).
   await injectVideoSelector(page);
 
-  // Install CDP manifest interceptor before navigation. This listener captures .m3u8 URLs from the browser's network requests, enabling native HLS streaming for
-  // services that use clear or AES-128 encrypted streams. Skipped for tab replacements (native proxy is independent of capture) and for channels already known to
-  // use DRM (avoids 15 seconds of wasted CDP overhead per tune). The await ensures the CDP session and Network domain are ready before navigation begins.
-  const manifestInterception = (!options.tabReplacement && !options.skipManifestInterception) ? await installManifestInterceptor(page) : null;
-
-  if(manifestInterception) {
-
-    resources.use(manifestInterception);
-  }
-
   // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable. The
   // codec decision (H.264 vs HEVC) is delegated to the codec module, which considers the user's allowlist and GPU hardware capabilities.
   const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
@@ -758,6 +759,31 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   let strategyDirectTune = false;
   let usedDirectUrl = false;
 
+  // Install the CDP manifest interceptor immediately before the navigate-and-tune fork, so its observation window opens after the capture-lock and getStream phase
+  // (which the observer would otherwise idle through) and spans exactly the phases that produce manifests: navigation with retry, channel selection, and video
+  // setup. The install decision is gated on tab replacement and the skip flag only - static-capture profiles install too, since they stay native-HLS eligible
+  // through the interception's presence, so the guard sits upstream of the fork and both branches inherit it. The window is sized to outlive those phases: the
+  // worst-case navigation-retry duration (including its backoff sleeps), the playback-init safety net, the finalize settle the interceptor waits, and a margin. A
+  // window that expired mid-tune would resolve with whatever page load captured, which is the failure this budget forecloses; because no healthy path waits on the
+  // timer (it is a leak bound for a tune that dies without unwinding), its generosity - which also covers direct tunes - costs nothing.
+  const interceptionBudgetMs = maxRetryDuration({
+
+    backoffJitter: CONFIG.recovery.backoffJitter,
+    maxAttempts: CONFIG.streaming.maxNavigationRetries,
+    maxBackoffDelay: CONFIG.recovery.maxBackoffDelay,
+    timeoutMs: CONFIG.streaming.navigationTimeout
+  }) + PLAYBACK_INIT_TIMEOUT + FINALIZE_SETTLE_DELAY + INTERCEPTION_BUDGET_MARGIN_MS;
+
+  const manifestInterception = (!options.tabReplacement && !options.skipManifestInterception) ? await installManifestInterceptor(page, interceptionBudgetMs) : null;
+
+  // Register the interception on the resource stack after the capture session, so on an unwind it disposes first. Its disposal is a CDP observer detach with no
+  // ordering dependency on the capture session or the page; the only ordered teardown pair is capture-session-before-page (STOP_RECORDING while the browser is
+  // still connected), which both this stack and the later owned stack preserve.
+  if(manifestInterception) {
+
+    resources.use(manifestInterception);
+  }
+
   try {
 
     if(!profile.staticCapture) {
@@ -788,11 +814,13 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       });
 
       // Phase 2: Channel selection + video setup. When navigating to a cached direct URL, skip channel selection since the URL already targets the correct
-      // channel. Runs after navigation succeeds with no outer timeout racing against internal click retries. Each sub-step (selectChannel, waitForVideoReady,
-      // etc.) has its own internal timeout via videoTimeout and click retry constants. For guideGrid strategies, a channel selection failure triggers an overlay
-      // dismiss and retry, which doubles the channel selection time budget. The 45-second safety-net timeout accommodates this retry while still preventing
-      // pathological hangs if multiple internal timeouts chain sequentially.
-      const PLAYBACK_INIT_TIMEOUT = 45000;
+      // channel. Runs after navigation succeeds with no outer timeout racing against internal click retries; each sub-step (selectChannel, waitForVideoReady, etc.)
+      // has its own internal timeout via videoTimeout and click retry constants. The module-scope PLAYBACK_INIT_TIMEOUT is the safety-net bound for the whole phase.
+
+      // Channel selection begins here, so the interceptor's observation epoch is stamped now - manifests observed earlier belong to page load (a guide page's
+      // auto-played default channel), and guide-tune selection prefers a master observed after this point. Direct tunes are stamped too but never consult the mark
+      // (the direct branch and the epoch-free timeout keep that true); static captures never reach this statement.
+      manifestInterception?.markChannelSelectionStart();
 
       const tuneResult = await raceWithTimeout(
         initializePlayback(page, profile, { persistResolution: options.persistResolution, requestedUrl: navigationUrl, skipChannelSelection: usedDirectUrl }),
@@ -1111,20 +1139,20 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
     const { captureSession, context, directTune, manifestInterception, page } = captureResult;
 
-    // Hold the page, interceptor, and capture session on a scope guard so a tune-verification failure below disposes them structurally rather than repeating the
-    // teardown inline. Push order matters: the capture session must be registered last so it disposes first, destroying the capture stream and firing
-    // STOP_RECORDING while the browser is still connected, ahead of the page close. On success we move() the guard and hand ownership to the cleanup closure (and,
-    // once the session is installed on the registry entry, to terminateStream).
+    // Hold the page, capture session, and interceptor on a scope guard so a tune-verification failure below disposes them structurally rather than repeating the
+    // teardown inline. Push order mirrors the capture-setup resource stack (page, capture session, interception): the interception is registered last so it disposes
+    // first, but its disposal is a CDP observer detach with no ordering dependency on either peer; the pair that must stay ordered is capture-session-before-page,
+    // so the capture stream is destroyed and STOP_RECORDING fires while the browser is still connected, ahead of the page close. On success we move() the guard and
+    // hand ownership to the cleanup closure (and, once the session is installed on the registry entry, to terminateStream).
     using owned = new DisposableStack();
 
     owned.adopt(page, disposePage);
+    owned.use(captureSession);
 
     if(manifestInterception) {
 
       owned.use(manifestInterception);
     }
-
-    owned.use(captureSession);
 
     // Tune verification. Finalize the manifest interceptor and confirm the captured master manifest URL belongs to the channel that was just tuned. This step
     // makes setupStream "verified by construction" - every consumer of StreamSetupResult (HLS preroll, HLS blocking, MPEG-TS, native proxy, capture mode) receives
@@ -1146,9 +1174,13 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
         const interception = await manifestInterception.promise;
 
-        if(interception) {
+        // Gate verification to master-kind selections. A provider verifier like Fox's reads the channel call sign from a fixed segment of the master CDN URL and
+        // fails open only on shapes it does not recognize; a media (chunklist) URL, which the override path can legitimately select, has a different path shape the
+        // verifier was never calibrated for and could misread as a mismatch - a false tune-failure on a correct stream. An unverifiable kind skips verification
+        // rather than risk that. If a captured chunklist URL ever proves to carry the same call-sign shape, widening this gate is a one-line change.
+        if(interception?.selectedKind === "master") {
 
-          const verifyError = provider.verifyManifestForChannel(interception.masterManifestUrl, profile.channelSelector);
+          const verifyError = provider.verifyManifestForChannel(interception.manifestUrl, profile.channelSelector);
 
           if(verifyError) {
 

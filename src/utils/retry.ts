@@ -9,6 +9,14 @@ import type { Clock } from "./clock.ts";
 import { LOG } from "./logger.ts";
 import { realClock } from "./clock.ts";
 
+// Default maximum jitter added to each backoff sleep in milliseconds. Prevents synchronized retries across concurrent operations. Read by both retryOperation's
+// destructuring default and maxRetryDuration, so the worst-case estimate cannot drift from the loop that produces the sleeps.
+const DEFAULT_BACKOFF_JITTER = 1000;
+
+// Default cap on each backoff sleep in milliseconds. Bounds the exponential growth so a long retry chain never sleeps unboundedly. Read by both retryOperation's
+// destructuring default and maxRetryDuration, so the worst-case estimate cannot drift from the loop that produces the sleeps.
+const DEFAULT_MAX_BACKOFF_DELAY = 3000;
+
 /**
  * Options for retryOperation. Groups all parameters into a single object to avoid positional parameter sprawl and make the function extensible.
  */
@@ -55,7 +63,8 @@ export interface RetryOptions<T> {
  */
 export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | undefined> {
 
-  const { backoffJitter = 1000, clock = realClock, description, earlySuccessCheck, maxAttempts, maxBackoffDelay = 3000, operation, shouldAbort, timeoutMs } = options;
+  const { backoffJitter = DEFAULT_BACKOFF_JITTER, clock = realClock, description, earlySuccessCheck, maxAttempts, maxBackoffDelay = DEFAULT_MAX_BACKOFF_DELAY,
+    operation, shouldAbort, timeoutMs } = options;
 
   let lastError: unknown = null;
 
@@ -126,4 +135,45 @@ export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | u
   // When maxAttempts < 1 the loop body never runs and lastError is still its initial null; throwing it here is the intentional, predictable failure mode for an
   // out-of-contract maxAttempts.
   throw lastError;
+}
+
+/**
+ * The timing fields maxRetryDuration reads from a retry configuration. A narrow subset of RetryOptions so the estimator depends only on what its closed form
+ * needs, never on the operation, clock, or callbacks.
+ */
+export interface RetryDurationTiming {
+
+  // Maximum jitter added to each backoff sleep in milliseconds. Defaults to the same constant retryOperation uses.
+  backoffJitter?: number;
+
+  // Maximum number of attempts before giving up.
+  maxAttempts: number;
+
+  // Maximum backoff delay in milliseconds between attempts. Defaults to the same constant retryOperation uses.
+  maxBackoffDelay?: number;
+
+  // Timeout in milliseconds for each individual attempt.
+  timeoutMs: number;
+}
+
+/**
+ * Computes the worst-case wall-clock duration of a retryOperation run: every attempt consuming its full per-attempt timeout, plus one backoff sleep per retry
+ * after the first, each taken at its ceiling (the backoff cap plus the full jitter). The estimate reads the same default constants the loop reads, so it cannot
+ * drift from the loop's arithmetic. The loop seeds each backoff at one second and doubles, capped at maxBackoffDelay, so every gap is at or below
+ * maxBackoffDelay + backoffJitter; taking that ceiling for each gap makes the result an upper bound - a leak bound for a caller sizing a window that must outlive
+ * the retries, never an under-count. The closed form holds only for configurations whose operation carries no unbounded callback: earlySuccessCheck runs awaited
+ * on the timeout path and can add time beyond the per-attempt timeout, so a caller relying on the bound must pass a configuration without one.
+ *
+ * @param timing - The attempt count, per-attempt timeout, and optional backoff tuning.
+ * @returns The worst-case duration in milliseconds.
+ */
+export function maxRetryDuration(timing: RetryDurationTiming): number {
+
+  const { backoffJitter = DEFAULT_BACKOFF_JITTER, maxAttempts, maxBackoffDelay = DEFAULT_MAX_BACKOFF_DELAY, timeoutMs } = timing;
+
+  // One backoff sleep sits between consecutive attempts, so a run of N attempts has N-1 gaps. Clamped at zero so an out-of-contract attempt count below one never
+  // produces a negative gap count.
+  const gaps = Math.max(0, maxAttempts - 1);
+
+  return (maxAttempts * timeoutMs) + (gaps * (maxBackoffDelay + backoffJitter));
 }

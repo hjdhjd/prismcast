@@ -185,7 +185,10 @@ export async function observeTabResponses(page: Page, options: TabNetworkObserve
 
     sessions.add(session);
 
-    // Listen for responses on this session. The handler captures sessionId by closure so the consumer can identify the originating target.
+    // Listen for responses on this session. The handler captures sessionId by closure so the consumer can identify the originating target. Two wire facts the HLS
+    // membership and sequence-fence design rests on: params.response.url is the FINAL, post-redirect URL (CDP reports 3xx hops as redirectResponse on the next
+    // requestWillBeSent, so responseReceived only fires for the resource actually served), and onResponse is invoked synchronously here in CDP event-arrival order,
+    // so a consumer that assigns an arrival ordinal at the head of its handler captures the wire order before any async work reorders it.
     session.on("Network.responseReceived", (params: NetworkResponseReceivedParams): void => {
 
       if(disposed) {

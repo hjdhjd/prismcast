@@ -2,6 +2,7 @@
  *
  * format.ts: Formatting utilities for PrismCast.
  */
+import type { Nullable } from "../types/index.ts";
 
 /**
  * Formats the current date and time as a log timestamp string: `yyyy/mm/dd hh:mm:ss.mmm AM/PM`. Uses 12-hour time with decimalized seconds and AM/PM.
@@ -117,6 +118,26 @@ export function extractDomain(url: string): string {
   } catch {
 
     return url;
+  }
+}
+
+/**
+ * Extracts the pathname portion of a URL - everything from the leading slash up to but excluding the query string and fragment - or null when the URL cannot be
+ * parsed. Placed beside extractDomain as the shared home for URL-part extraction, but with the opposite parse-failure contract: extractDomain returns the original
+ * string as a display fallback, while extractPathname returns null so a caller can tell could-not-parse apart from a genuinely parsed pathname. Membership
+ * comparisons need that distinction - treating an unparseable URL as a non-matching pathname would be actively wrong, so null lets the caller stay
+ * member-conservative instead.
+ * @param url - The URL to extract the pathname from.
+ * @returns The pathname, or null when parsing fails.
+ */
+export function extractPathname(url: string): Nullable<string> {
+
+  try {
+
+    return new URL(url).pathname;
+  } catch {
+
+    return null;
   }
 }
 

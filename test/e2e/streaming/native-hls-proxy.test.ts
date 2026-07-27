@@ -247,6 +247,389 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     assert.deepEqual(stored.hls.segments.get("segment1.ts"), plain1, "segment1 must be DECRYPTED in storage, not the ciphertext");
   });
 
+  test("decrypts an AES-128 segment whose #EXT-X-KEY carries an explicit lowercase IV=0x value", async () => {
+
+    /* Parity pin for the explicit-IV path. RFC 8216 lets a segment key declare its own IV as IV=0x followed by 32 hex digits, overriding the sequence-derived
+     * default. We choose an IV that differs from the sequence-derived value and encrypt the segment with it, so a correct round-trip proves the manifest's explicit
+     * IV was the one used - a decrypt that silently fell back to the sequence-derived IV would produce garbage and fail the byte comparison.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const key = randomBytes(16);
+    const plain = randomBytes(256);
+
+    // An explicit IV distinct from deriveIvFromSequence(500), so the round-trip can only succeed via the explicit path; the assertion below enforces the distinction.
+    const ivHex = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    const iv = Buffer.from(ivHex, "hex");
+
+    assert.notDeepEqual(iv, deriveIvFromSequence(500), "the chosen IV must differ from the sequence-derived IV or the pin proves nothing about the explicit path");
+
+    const cipher = aes128Encrypt(plain, key, iv);
+
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.get("/key", (_req, res) => { res.type("application/octet-stream").send(key); });
+
+      app.get("/manifest.m3u8", (req, res) => {
+
+        const keyUrl = "http://127.0.0.1:" + String((req.socket.localPort ?? 0)) + "/key";
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:500",
+          "#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\",IV=0x" + ivHex,
+          "#EXTINF:4.000,",
+          "seg0.ts",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/seg0.ts", (_req, res) => { res.type("video/mp2t").send(cipher); });
+    });
+
+    const entry = makeRegistryEntry({ channelName: "stub-iv-lower" });
+
+    registerStream(entry);
+    activeStreamId = entry.id;
+
+    const proxy = createNativeProxy({
+
+      audioVariantUrl: null,
+      channelName: "stub-iv-lower",
+      encryption: "aes128",
+      keyUrl: stub.urlFor("/key"),
+      onError: (): void => undefined,
+      prefetchedKey: null,
+      prerollSegmentCount: 0,
+      streamId: entry.id,
+      streamIdStr: entry.streamIdStr,
+      variantUrl: stub.urlFor("/manifest.m3u8")
+    });
+
+    activeProxy = proxy;
+    proxy.start();
+
+    await waitFor(() => proxy.getSegmentIndex() >= 1, 5000, "the explicit-IV segment is fetched, decrypted, and stored");
+
+    const stored = getStream(entry.id);
+
+    assert.ok(stored, "registry entry survives the explicit-IV poll cycle");
+    assert.deepEqual(stored.hls.segments.get("segment0.ts"), plain, "the segment must decrypt with the manifest's explicit lowercase IV");
+  });
+
+  test("decrypts an AES-128 segment whose #EXT-X-KEY carries an explicit uppercase IV=0X value", async () => {
+
+    /* IV prefix casing. RFC 8216 permits either 0x or 0X, and parseExplicitIv accepts both. This pin encrypts a segment with an explicit IV, declares it with the
+     * uppercase 0X prefix, and requires a clean decrypt: the extraction must pass the whole prefixed value to the parser rather than deciding prefix casing itself.
+     * We choose an IV that differs from the sequence-derived value so the round-trip can only succeed via the explicit path.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const key = randomBytes(16);
+    const plain = randomBytes(256);
+
+    // An explicit IV distinct from deriveIvFromSequence(600), declared below with the uppercase 0X prefix that the extraction must pass through to the parser.
+    const ivHex = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+    const iv = Buffer.from(ivHex, "hex");
+
+    assert.notDeepEqual(iv, deriveIvFromSequence(600), "the chosen IV must differ from the sequence-derived IV or the pin proves nothing about the explicit path");
+
+    const cipher = aes128Encrypt(plain, key, iv);
+
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.get("/key", (_req, res) => { res.type("application/octet-stream").send(key); });
+
+      app.get("/manifest.m3u8", (req, res) => {
+
+        const keyUrl = "http://127.0.0.1:" + String((req.socket.localPort ?? 0)) + "/key";
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:600",
+          "#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\",IV=0X" + ivHex,
+          "#EXTINF:4.000,",
+          "seg0.ts",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/seg0.ts", (_req, res) => { res.type("video/mp2t").send(cipher); });
+    });
+
+    const entry = makeRegistryEntry({ channelName: "stub-iv-upper" });
+
+    registerStream(entry);
+    activeStreamId = entry.id;
+
+    const proxy = createNativeProxy({
+
+      audioVariantUrl: null,
+      channelName: "stub-iv-upper",
+      encryption: "aes128",
+      keyUrl: stub.urlFor("/key"),
+      onError: (): void => undefined,
+      prefetchedKey: null,
+      prerollSegmentCount: 0,
+      streamId: entry.id,
+      streamIdStr: entry.streamIdStr,
+      variantUrl: stub.urlFor("/manifest.m3u8")
+    });
+
+    activeProxy = proxy;
+    proxy.start();
+
+    await waitFor(() => proxy.getSegmentIndex() >= 1, 5000, "the uppercase-prefix explicit-IV segment is fetched, decrypted, and stored");
+
+    const stored = getStream(entry.id);
+
+    assert.ok(stored, "registry entry survives the uppercase-IV poll cycle");
+    assert.deepEqual(stored.hls.segments.get("segment0.ts"), plain, "the segment must decrypt with the manifest's explicit uppercase IV");
+  });
+
+  test("rejects every segment when the #EXT-X-KEY carries a malformed explicit IV, driving the error threshold through the manifest parser", async () => {
+
+    /* Parity guard for the raw-value capture. The extraction hands format judgment to parseExplicitIv, so a value that is not 32 hex digits must still reject rather
+     * than decrypt with a wrong or truncated IV. We publish five keyed segments under a malformed IV; each fetch resolves the IV through the real parseVariantManifest
+     * path, is rejected, and counts a failure, so the fifth consecutive rejection trips MAX_SEGMENT_FAILURES and fires onError - the same fallback signal the
+     * production proxy raises. No segment reaches the registry.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const key = randomBytes(16);
+    let errorFired = false;
+
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.get("/key", (_req, res) => { res.type("application/octet-stream").send(key); });
+
+      app.get("/manifest.m3u8", (req, res) => {
+
+        const keyUrl = "http://127.0.0.1:" + String((req.socket.localPort ?? 0)) + "/key";
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:700",
+          "#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\",IV=notavalidivvalue",
+          "#EXTINF:4.000,",
+          "seg0.ts",
+          "#EXTINF:4.000,",
+          "seg1.ts",
+          "#EXTINF:4.000,",
+          "seg2.ts",
+          "#EXTINF:4.000,",
+          "seg3.ts",
+          "#EXTINF:4.000,",
+          "seg4.ts",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/seg0.ts", (_req, res) => { res.type("video/mp2t").send(randomBytes(64)); });
+      app.get("/seg1.ts", (_req, res) => { res.type("video/mp2t").send(randomBytes(64)); });
+      app.get("/seg2.ts", (_req, res) => { res.type("video/mp2t").send(randomBytes(64)); });
+      app.get("/seg3.ts", (_req, res) => { res.type("video/mp2t").send(randomBytes(64)); });
+      app.get("/seg4.ts", (_req, res) => { res.type("video/mp2t").send(randomBytes(64)); });
+    });
+
+    const entry = makeRegistryEntry({ channelName: "stub-iv-malformed" });
+
+    registerStream(entry);
+    activeStreamId = entry.id;
+
+    const proxy = createNativeProxy({
+
+      audioVariantUrl: null,
+      channelName: "stub-iv-malformed",
+      encryption: "aes128",
+      keyUrl: stub.urlFor("/key"),
+      onError: (): void => { errorFired = true; },
+      prefetchedKey: null,
+      prerollSegmentCount: 0,
+      streamId: entry.id,
+      streamIdStr: entry.streamIdStr,
+      variantUrl: stub.urlFor("/manifest.m3u8")
+    });
+
+    activeProxy = proxy;
+    proxy.start();
+
+    await waitFor(() => errorFired, 5000, "five malformed-IV rejections trip the error threshold and fire onError");
+
+    const stored = getStream(entry.id);
+
+    assert.ok(stored, "registry entry survives the malformed-IV poll cycle");
+    assert.equal(stored.hls.segments.size, 0, "no segment may be stored when the explicit IV fails to parse");
+    assert.equal(proxy.getSegmentIndex(), 0, "the segment index stays at zero because every segment was rejected");
+  });
+
+  test("uses the real IV attribute when a quoted URI value contains a decoy IV= substring", async () => {
+
+    /* Adversarial pin for the quoted-string blanking. A quoted attribute value may legally contain commas and arbitrary text, including a literal ",IV=deadbeef".
+     * An unanchored scan of the raw line would match that decoy inside the URI and decrypt with the wrong IV. The extraction blanks quoted spans before scanning,
+     * so only the genuine IV attribute outside the quotes is captured. We embed the decoy in the key URI and encrypt with the real IV; a correct round-trip proves
+     * the decoy was ignored.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const key = randomBytes(16);
+    const plain = randomBytes(256);
+
+    // The real IV, distinct from deriveIvFromSequence(800) and from the "deadbeef" decoy planted inside the quoted URI value.
+    const ivHex = "112233445566778899aabbccddeeff00";
+    const iv = Buffer.from(ivHex, "hex");
+
+    assert.notDeepEqual(iv, deriveIvFromSequence(800), "the chosen IV must differ from the sequence-derived IV or the pin proves nothing about the explicit path");
+
+    const cipher = aes128Encrypt(plain, key, iv);
+
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.get("/key", (_req, res) => { res.type("application/octet-stream").send(key); });
+
+      app.get("/manifest.m3u8", (req, res) => {
+
+        // The key URI carries a query string containing a decoy ",IV=deadbeef"; Express still routes /key regardless of the query, so the key fetch succeeds.
+        const decoyKeyUrl = "http://127.0.0.1:" + String((req.socket.localPort ?? 0)) + "/key?pad=,IV=deadbeef";
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:800",
+          "#EXT-X-KEY:METHOD=AES-128,URI=\"" + decoyKeyUrl + "\",IV=0x" + ivHex,
+          "#EXTINF:4.000,",
+          "seg0.ts",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/seg0.ts", (_req, res) => { res.type("video/mp2t").send(cipher); });
+    });
+
+    const entry = makeRegistryEntry({ channelName: "stub-iv-decoy" });
+
+    registerStream(entry);
+    activeStreamId = entry.id;
+
+    const proxy = createNativeProxy({
+
+      audioVariantUrl: null,
+      channelName: "stub-iv-decoy",
+      encryption: "aes128",
+      keyUrl: stub.urlFor("/key"),
+      onError: (): void => undefined,
+      prefetchedKey: null,
+      prerollSegmentCount: 0,
+      streamId: entry.id,
+      streamIdStr: entry.streamIdStr,
+      variantUrl: stub.urlFor("/manifest.m3u8")
+    });
+
+    activeProxy = proxy;
+    proxy.start();
+
+    await waitFor(() => proxy.getSegmentIndex() >= 1, 5000, "the segment decrypts with the genuine IV attribute, not the decoy inside the URI");
+
+    const stored = getStream(entry.id);
+
+    assert.ok(stored, "registry entry survives the decoy-URI poll cycle");
+    assert.deepEqual(stored.hls.segments.get("segment0.ts"), plain, "the segment must decrypt with the real IV, proving the decoy inside the quoted URI was ignored");
+  });
+
+  test("captures the IV attribute when it appears immediately after the #EXT-X-KEY: colon", async () => {
+
+    /* Boundary pin for the colon anchor. Attribute order in #EXT-X-KEY is not significant, so IV can be the first attribute, sitting right after the tag colon with
+     * no preceding comma. The extraction anchors IV= to either the tag colon or a separating comma; a comma-only anchor would miss this layout, fall back to the
+     * sequence-derived IV, and decrypt to garbage. We place IV first and encrypt with it; a correct round-trip proves the colon boundary is honored.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const key = randomBytes(16);
+    const plain = randomBytes(256);
+
+    // An explicit IV distinct from deriveIvFromSequence(900), placed as the first attribute so only the colon boundary precedes it.
+    const ivHex = "fedcba9876543210fedcba9876543210";
+    const iv = Buffer.from(ivHex, "hex");
+
+    assert.notDeepEqual(iv, deriveIvFromSequence(900), "the chosen IV must differ from the sequence-derived IV or the pin proves nothing about the explicit path");
+
+    const cipher = aes128Encrypt(plain, key, iv);
+
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.get("/key", (_req, res) => { res.type("application/octet-stream").send(key); });
+
+      app.get("/manifest.m3u8", (req, res) => {
+
+        const keyUrl = "http://127.0.0.1:" + String((req.socket.localPort ?? 0)) + "/key";
+
+        res.type("application/vnd.apple.mpegurl");
+        res.send([
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:4",
+          "#EXT-X-MEDIA-SEQUENCE:900",
+          "#EXT-X-KEY:IV=0x" + ivHex + ",METHOD=AES-128,URI=\"" + keyUrl + "\"",
+          "#EXTINF:4.000,",
+          "seg0.ts",
+          ""
+        ].join("\n"));
+      });
+
+      app.get("/seg0.ts", (_req, res) => { res.type("video/mp2t").send(cipher); });
+    });
+
+    const entry = makeRegistryEntry({ channelName: "stub-iv-colon" });
+
+    registerStream(entry);
+    activeStreamId = entry.id;
+
+    const proxy = createNativeProxy({
+
+      audioVariantUrl: null,
+      channelName: "stub-iv-colon",
+      encryption: "aes128",
+      keyUrl: stub.urlFor("/key"),
+      onError: (): void => undefined,
+      prefetchedKey: null,
+      prerollSegmentCount: 0,
+      streamId: entry.id,
+      streamIdStr: entry.streamIdStr,
+      variantUrl: stub.urlFor("/manifest.m3u8")
+    });
+
+    activeProxy = proxy;
+    proxy.start();
+
+    await waitFor(() => proxy.getSegmentIndex() >= 1, 5000, "the colon-anchored IV attribute is captured, decrypted, and stored");
+
+    const stored = getStream(entry.id);
+
+    assert.ok(stored, "registry entry survives the colon-boundary poll cycle");
+    assert.deepEqual(stored.hls.segments.get("segment0.ts"), plain, "the segment must decrypt with the IV placed immediately after the #EXT-X-KEY: colon");
+  });
+
   test("re-fetches the upstream manifest on the polling cadence and picks up newly-published segments", async () => {
 
     /* The live-edge contract: the proxy must keep polling the manifest at MANIFEST_BACKOFF_BASE intervals so the registry's segment list and playlist stay

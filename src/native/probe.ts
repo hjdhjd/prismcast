@@ -41,6 +41,13 @@ export type EncryptionType = "aes128" | "clear" | "drm";
 export type HlsPlaylistKind = "master" | "media" | "unknown";
 
 /**
+ * The two playlist kinds the observer actually delivers - the recognized subset of HlsPlaylistKind with "unknown" removed, since unknown bodies are never
+ * forwarded. Named once here so the observer's union arms, the interceptor's SelectedManifest, and the interception result's selectedKind share a single definition
+ * of "a kind that was delivered" rather than re-spelling the literal pair at each site.
+ */
+export type RecognizedHlsPlaylistKind = Exclude<HlsPlaylistKind, "unknown">;
+
+/**
  * Classifies an HLS playlist body by inspecting its directives. Master detection short-circuits on the first #EXT-X-STREAM-INF tag because that directive only
  * appears in master playlists; media detection accumulates positive signals (#EXTINF, #EXT-X-TARGETDURATION) across the body. Bodies with neither signal are
  * not HLS playlists. This is the single source of truth for the master/media decision - both the manifest interceptor (transport-layer "is this HLS?" gate) and
@@ -74,6 +81,126 @@ export function classifyHlsPlaylist(body: string): HlsPlaylistKind {
   }
 
   return mediaSignal ? "media" : "unknown";
+}
+
+/**
+ * Extracts the value of a URI="..." attribute from a single tag line. This is the one home for the URI attribute pattern in this module: the #EXT-X-KEY key
+ * location, #EXT-X-MEDIA rendition URIs, and the master child walk all read a quoted URI the same way, so the pattern lives in exactly one place. Returns null when
+ * the line carries no URI attribute.
+ *
+ * @param line - A single trimmed HLS tag line.
+ * @returns The URI attribute value, or null when the line has none.
+ */
+function uriAttribute(line: string): Nullable<string> {
+
+  return /URI="([^"]+)"/.exec(line)?.[1] ?? null;
+}
+
+/**
+ * Resolves a single child URI against the master URL, returning null when resolution throws (a malformed relative reference). Keeps extractChildPlaylistUrls total:
+ * one bad child reference drops only itself rather than aborting the whole walk.
+ *
+ * @param uri - The child playlist URI (relative or absolute).
+ * @param masterUrl - The master manifest URL for resolving relative references.
+ * @returns The resolved absolute URL, or null when resolution throws.
+ */
+function resolveChildUri(uri: string, masterUrl: string): Nullable<string> {
+
+  try {
+
+    return resolveUrl(uri, masterUrl);
+  } catch {
+
+    return null;
+  }
+}
+
+/**
+ * Enumerates every child playlist URI a master manifest declares, resolved to absolute URLs. Two child sources are walked: each #EXT-X-STREAM-INF variant, whose
+ * URI is the immediately following non-tag line (the same single-line walk selectBestVariant uses, so membership sees exactly the children variant selection would),
+ * and each #EXT-X-MEDIA rendition of any type that carries a URI attribute (descriptive-only renditions without a URI are skipped). probe is the single home of
+ * manifest-format knowledge, so this extraction lives here and feeds the HLS playlist observer's master observations; membership judgment against these children
+ * lives in the interceptor's selection policy, not here. Each URI resolves inside a per-entry guard so a single malformed reference skips only that entry and the
+ * helper never throws; the returned list is deduplicated.
+ *
+ * @param masterBody - The master manifest text.
+ * @param masterUrl - The master manifest URL for resolving relative child URIs.
+ * @returns The deduplicated absolute child playlist URLs.
+ */
+export function extractChildPlaylistUrls(masterBody: string, masterUrl: string): string[] {
+
+  const lines = masterBody.split("\n");
+  const childUrls = new Set<string>();
+
+  for(let i = 0; i < lines.length; i++) {
+
+    const line = lines[i]?.trim() ?? "";
+
+    // A variant stream's URI is the next non-tag line, matching selectBestVariant's walk exactly so membership and variant selection agree on the child set.
+    if(line.startsWith("#EXT-X-STREAM-INF:")) {
+
+      const variantLine = lines[i + 1]?.trim() ?? "";
+
+      if(variantLine && !variantLine.startsWith("#")) {
+
+        const resolved = resolveChildUri(variantLine, masterUrl);
+
+        if(resolved !== null) {
+
+          childUrls.add(resolved);
+        }
+      }
+
+      continue;
+    }
+
+    // A rendition's URI is a same-line attribute; renditions of every type participate, and descriptive-only entries without a URI are skipped.
+    if(line.startsWith("#EXT-X-MEDIA:")) {
+
+      const uri = uriAttribute(line);
+
+      if(uri) {
+
+        const resolved = resolveChildUri(uri, masterUrl);
+
+        if(resolved !== null) {
+
+          childUrls.add(resolved);
+        }
+      }
+    }
+  }
+
+  return Array.from(childUrls);
+}
+
+/**
+ * Reports whether a media playlist is live - one that may still grow. A playlist is live unless it carries an #EXT-X-ENDLIST marker (the producer has declared the
+ * playlist complete) or an #EXT-X-PLAYLIST-TYPE:VOD tag (a fixed, fully-available asset); an EVENT-typed playlist counts as live because a live-event playlist only
+ * ever appends segments. The scan is line-anchored (trim then startsWith) rather than a substring test so an ENDLIST or VOD token appearing inside a segment URI or
+ * comment does not flip the classification.
+ *
+ * @param mediaBody - The media playlist text.
+ * @returns True when the playlist is live (no ENDLIST marker and not VOD-typed).
+ */
+export function isLiveMediaPlaylist(mediaBody: string): boolean {
+
+  for(const rawLine of mediaBody.split("\n")) {
+
+    const line = rawLine.trim();
+
+    if(line.startsWith("#EXT-X-ENDLIST")) {
+
+      return false;
+    }
+
+    if(line.startsWith("#EXT-X-PLAYLIST-TYPE:VOD")) {
+
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -486,7 +613,7 @@ async function classifyEncryption(resolved: ResolvedMedia, channelName: string):
     if(method === "AES-128") {
 
       // Parse URI attribute for the key URL.
-      const uri = /URI="([^"]+)"/.exec(trimmed)?.[1];
+      const uri = uriAttribute(trimmed);
 
       if(!uri) {
 
@@ -590,7 +717,7 @@ function parseAudioRendition(masterBody: string, masterUrl: string): Nullable<st
     }
 
     // Extract the URI attribute. Not all #EXT-X-MEDIA:TYPE=AUDIO tags have a URI - some are descriptive-only when audio is muxed into the video variant.
-    const uri = /URI="([^"]+)"/.exec(trimmed)?.[1];
+    const uri = uriAttribute(trimmed);
 
     if(uri) {
 

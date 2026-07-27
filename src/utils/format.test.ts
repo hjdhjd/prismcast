@@ -5,7 +5,7 @@
  * on-disk file shape without warning, so it earns the heaviest boundary coverage.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { capitalize, extractDomain, formatDuration, formatTimeAgo, formatTimestamp, stringifySorted } from "./format.ts";
+import { capitalize, extractDomain, extractPathname, formatDuration, formatTimeAgo, formatTimestamp, stringifySorted } from "./format.ts";
 import assert from "node:assert/strict";
 
 describe("formatTimestamp", () => {
@@ -231,6 +231,32 @@ describe("extractDomain", () => {
   test("strips arbitrarily deep subdomains down to the last two segments", () => {
 
     assert.equal(extractDomain("https://a.b.c.d.example.com/path"), "example.com", "deep subdomains collapse to last two");
+  });
+});
+
+describe("extractPathname", () => {
+
+  test("returns the pathname of a well-formed URL, excluding the query string", () => {
+
+    assert.equal(extractPathname("https://cdn.test/a/b/seg.ts?token=abc"), "/a/b/seg.ts");
+  });
+
+  test("returns null when the URL cannot be parsed", () => {
+
+    // The null-on-failure contract is deliberately the opposite of extractDomain's return-the-original fallback: a membership caller needs could-not-parse to be
+    // distinguishable from a parsed pathname.
+    assert.equal(extractPathname("not a url"), null);
+    assert.equal(extractPathname(""), null);
+  });
+
+  test("preserves exact-pathname semantics: trailing slash, percent-encoding, and case are all significant", () => {
+
+    // Membership compares pathnames verbatim by design, so a trailing slash, a percent-encoding difference, or a case difference each reads as a distinct path. An
+    // encoding mismatch therefore degrades to member-conservative or right-channel-media-only, never wrong-channel.
+    assert.equal(extractPathname("https://cdn.test/path/"), "/path/");
+    assert.notEqual(extractPathname("https://cdn.test/path/"), extractPathname("https://cdn.test/path"));
+    assert.equal(extractPathname("https://cdn.test/a%20b/seg.ts"), "/a%20b/seg.ts");
+    assert.equal(extractPathname("https://cdn.test/Path/Seg.TS"), "/Path/Seg.TS");
   });
 });
 

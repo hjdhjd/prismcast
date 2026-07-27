@@ -16,9 +16,11 @@ import { observeHlsPlaylists } from "./hlsPlaylistObserver.ts";
 // Schedule background-server cleanup on a 0ms unref'd timer so the runner exits cleanly after the suite resolves.
 closePuppeteerStreamWssOnIdle();
 
-// Synthetic manifest bodies. Master declares one variant; media declares one segment; junk is body content that classifyHlsPlaylist returns "unknown" for.
+// Synthetic manifest bodies. Master declares one variant; media declares one segment; the VOD media adds an ENDLIST so its liveness is false; junk is body content
+// that classifyHlsPlaylist returns "unknown" for.
 const MASTER_BODY = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nvariant.m3u8\n";
 const MEDIA_BODY = "#EXTM3U\n#EXTINF:6,\nsegment.ts\n";
+const MEDIA_VOD_BODY = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:6,\nsegment.ts\n#EXT-X-ENDLIST\n";
 const UNKNOWN_BODY = "<html><body>not an HLS playlist</body></html>";
 
 /* makeFetchCounter installs a globalThis.fetch mock that returns a configurable body per URL and counts invocations per URL. Tests use it to assert that the
@@ -391,6 +393,163 @@ describe("observeHlsPlaylists", () => {
 
     assert.equal(observed.length, 0, "repeat observation still produces no callback");
     assert.equal(counts.get(url), 1, "repeat observation issues NO additional fetch (dedup gate held)");
+
+    observer.dispose();
+  });
+
+  test("a master observation carries its declared child URLs resolved against the observed URL", async () => {
+
+    // The master arm carries childUrls for the interceptor's membership judgment. The single-variant fixture's URI resolves relative to the observed master URL.
+    const connection = new FakeConnection();
+    const rootSession = new FakeCdpSession(connection);
+    const masterUrl = "https://cdn.test/dir/master.m3u8";
+
+    makeFetchCounter({ [masterUrl]: MASTER_BODY });
+
+    const observed: ObservedHlsPlaylist[] = [];
+    const observer = await observeHlsPlaylists(makeFakeCdpPage(rootSession), {
+
+      logCategory: "test:hls",
+      onPlaylist: (p): void => { observed.push(p); }
+    });
+
+    assert.ok(observer, "observer installed");
+
+    rootSession.emitResponse(masterUrl);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const first = observed[0];
+
+    assert.ok(first, "callback captured");
+    assert.ok(first.kind === "master", "kind classified as master");
+    assert.deepEqual(first.childUrls, ["https://cdn.test/dir/variant.m3u8"], "the variant URI is resolved against the master URL");
+
+    observer.dispose();
+  });
+
+  test("a media observation carries live=true for a sliding-window playlist and live=false for a VOD/ENDLIST playlist", async () => {
+
+    // The media arm carries liveness, computed by isLiveMediaPlaylist. Both polarities are pinned: the bare media body is live, the VOD/ENDLIST body is not.
+    const connection = new FakeConnection();
+    const rootSession = new FakeCdpSession(connection);
+    const liveUrl = "https://cdn.test/live.m3u8";
+    const vodUrl = "https://cdn.test/vod.m3u8";
+
+    makeFetchCounter({ [liveUrl]: MEDIA_BODY, [vodUrl]: MEDIA_VOD_BODY });
+
+    const observed: ObservedHlsPlaylist[] = [];
+    const observer = await observeHlsPlaylists(makeFakeCdpPage(rootSession), {
+
+      logCategory: "test:hls",
+      onPlaylist: (p): void => { observed.push(p); }
+    });
+
+    assert.ok(observer, "observer installed");
+
+    rootSession.emitResponse(liveUrl);
+    rootSession.emitResponse(vodUrl);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const live = observed.find((p) => p.url === liveUrl);
+    const vod = observed.find((p) => p.url === vodUrl);
+
+    assert.ok(live?.kind === "media", "live media delivered");
+    assert.equal(live.live, true, "the sliding-window playlist is live");
+    assert.ok(vod?.kind === "media", "vod media delivered");
+    assert.equal(vod.live, false, "the VOD/ENDLIST playlist is not live");
+
+    observer.dispose();
+  });
+
+  test("currentSequence() is 0 before any observation and tracks the wire-arrival ordinal in observation order", async () => {
+
+    // Sequences start at 1, so currentSequence() is 0 before any observation. Two distinct URLs observed in order carry ordinals 1 and 2, and currentSequence
+    // reflects the most recently assigned. The double in manifestInterceptor.test.ts mirrors this convention.
+    const connection = new FakeConnection();
+    const rootSession = new FakeCdpSession(connection);
+    const urlOne = "https://cdn.test/one.m3u8";
+    const urlTwo = "https://cdn.test/two.m3u8";
+
+    makeFetchCounter({ [urlOne]: MASTER_BODY, [urlTwo]: MEDIA_BODY });
+
+    const observed: ObservedHlsPlaylist[] = [];
+    const observer = await observeHlsPlaylists(makeFakeCdpPage(rootSession), {
+
+      logCategory: "test:hls",
+      onPlaylist: (p): void => { observed.push(p); }
+    });
+
+    assert.ok(observer, "observer installed");
+    assert.equal(observer.currentSequence(), 0, "no observation yet, so currentSequence is 0");
+
+    rootSession.emitResponse(urlOne);
+    rootSession.emitResponse(urlTwo);
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(observed.find((p) => p.url === urlOne)?.sequence, 1, "the first-observed URL carries wire-arrival ordinal 1");
+    assert.equal(observed.find((p) => p.url === urlTwo)?.sequence, 2, "the second-observed URL carries wire-arrival ordinal 2");
+    assert.equal(observer.currentSequence(), 2, "currentSequence tracks the most recently assigned ordinal");
+
+    observer.dispose();
+  });
+
+  test("assigns wire-arrival sequences synchronously even when body fetches resolve out of order", async () => {
+
+    // The sequence is assigned at the dedup gate, before the async body fetch, so a fetch that resolves late does not reorder the ordinals. The first-observed
+    // URL's fetch is held until the second-observed URL has already delivered; the held URL then delivers last but still carries the lower ordinal.
+    const connection = new FakeConnection();
+    const rootSession = new FakeCdpSession(connection);
+    const urlFirst = "https://cdn.test/first.m3u8";
+    const urlSecond = "https://cdn.test/second.m3u8";
+
+    let releaseFirst!: (response: Response) => void;
+    const firstPending = new Promise<Response>((resolve) => { releaseFirst = resolve; });
+
+    mock.method(globalThis, "fetch", async (input: string | URL): Promise<Response> => {
+
+      const url = input.toString();
+
+      if(url === urlFirst) {
+
+        return firstPending;
+      }
+
+      return new Response(MEDIA_BODY, { status: 200 });
+    });
+
+    const observed: ObservedHlsPlaylist[] = [];
+    const observer = await observeHlsPlaylists(makeFakeCdpPage(rootSession), {
+
+      logCategory: "test:hls",
+      onPlaylist: (p): void => { observed.push(p); }
+    });
+
+    assert.ok(observer, "observer installed");
+
+    // Observe first, then second - fixing their wire-arrival ordinals (1 then 2) synchronously, before either fetch resolves.
+    rootSession.emitResponse(urlFirst);
+    rootSession.emitResponse(urlSecond);
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(observed.length, 1, "only the second URL has delivered so far - its fetch resolved first");
+
+    const secondDelivery = observed[0];
+
+    assert.ok(secondDelivery, "the second URL's observation captured");
+    assert.equal(secondDelivery.url, urlSecond, "the second-observed URL delivered first");
+    assert.equal(secondDelivery.sequence, 2, "it carries wire-arrival ordinal 2, not a delivery-order 1");
+
+    releaseFirst(new Response(MASTER_BODY, { status: 200 }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(observed.length, 2, "the first URL delivers after its held fetch resolves");
+
+    const firstDelivery = observed[1];
+
+    assert.ok(firstDelivery, "the first URL's observation captured");
+    assert.equal(firstDelivery.url, urlFirst, "the first-observed URL delivered second");
+    assert.equal(firstDelivery.sequence, 1, "it carries wire-arrival ordinal 1 despite delivering last");
 
     observer.dispose();
   });

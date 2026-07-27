@@ -6,7 +6,7 @@
  * production write path; the classifier and URL resolver are pure functions and are tested directly without I/O.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { classifyHlsPlaylist, clearProbeCache, getCachedEncryption, probeManifest, resolveUrl } from "./probe.ts";
+import { classifyHlsPlaylist, clearProbeCache, extractChildPlaylistUrls, getCachedEncryption, isLiveMediaPlaylist, probeManifest, resolveUrl } from "./probe.ts";
 import assert from "node:assert/strict";
 
 /* makeFetchRouter installs a mock for globalThis.fetch that dispatches to URL-keyed responses. Tests register their fixtures keyed by URL prefix; any request to
@@ -267,5 +267,147 @@ describe("classifyHlsPlaylist", () => {
     ].join("\n");
 
     assert.equal(classifyHlsPlaylist(body), "media");
+  });
+});
+
+describe("extractChildPlaylistUrls", () => {
+
+  const masterUrl = "https://cdn.test/path/master.m3u8";
+
+  test("resolves STREAM-INF variant URIs relative and absolute against the master URL", () => {
+
+    const body = [
+      "#EXTM3U",
+      "#EXT-X-STREAM-INF:BANDWIDTH=1000000",
+      "relative/variant.m3u8",
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+      "https://other.test/abs/variant.m3u8"
+    ].join("\n");
+
+    const result = extractChildPlaylistUrls(body, masterUrl);
+
+    assert.deepEqual(result.toSorted(), [ "https://cdn.test/path/relative/variant.m3u8", "https://other.test/abs/variant.m3u8" ]);
+  });
+
+  test("skips a STREAM-INF whose next line is a tag rather than a URI (single-line walk, not a forward scan)", () => {
+
+    // The walk reads only the line immediately after each STREAM-INF, matching selectBestVariant. A forward-scanner would instead skip past the tag and claim the
+    // orphan URI two lines down; that orphan belongs to no variant, so it must not appear. The valid variant of the first STREAM-INF proves the walk still works.
+    const body = [
+      "#EXTM3U",
+      "#EXT-X-STREAM-INF:BANDWIDTH=1000000",
+      "variant-a.m3u8",
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+      "#EXT-X-DISCONTINUITY",
+      "orphan-child.m3u8"
+    ].join("\n");
+
+    const result = extractChildPlaylistUrls(body, masterUrl);
+
+    assert.deepEqual(result, ["https://cdn.test/path/variant-a.m3u8"], "only the first STREAM-INF's directly-following URI is collected");
+    assert.ok(!result.includes("https://cdn.test/path/orphan-child.m3u8"), "the orphan URI a forward-scanner would grab is absent");
+  });
+
+  test("includes EXT-X-MEDIA URIs of every type and skips descriptive-only renditions without a URI", () => {
+
+    // AUDIO, SUBTITLES, and a VIDEO rendition (a type beyond audio/subtitles) all carry URIs and are collected - the any-type contract. The CLOSED-CAPTIONS entry
+    // is descriptive-only (no URI attribute) and is skipped.
+    const body = [
+      "#EXTM3U",
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",URI=\"audio-en.m3u8\"",
+      "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"s\",NAME=\"English\",URI=\"subs-en.m3u8\"",
+      "#EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID=\"cc\",NAME=\"CC1\",INSTREAM-ID=\"CC1\"",
+      "#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"v\",NAME=\"Angle2\",URI=\"video-angle2.m3u8\"",
+      "#EXT-X-STREAM-INF:BANDWIDTH=1000000,AUDIO=\"a\",SUBTITLES=\"s\"",
+      "variant.m3u8"
+    ].join("\n");
+
+    const result = extractChildPlaylistUrls(body, masterUrl);
+
+    assert.deepEqual(result.toSorted(), [
+      "https://cdn.test/path/audio-en.m3u8",
+      "https://cdn.test/path/subs-en.m3u8",
+      "https://cdn.test/path/variant.m3u8",
+      "https://cdn.test/path/video-angle2.m3u8"
+    ]);
+  });
+
+  test("deduplicates identical child URIs declared by more than one variant", () => {
+
+    const body = [
+      "#EXTM3U",
+      "#EXT-X-STREAM-INF:BANDWIDTH=1000000",
+      "dup.m3u8",
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+      "dup.m3u8"
+    ].join("\n");
+
+    const result = extractChildPlaylistUrls(body, masterUrl);
+
+    assert.deepEqual(result, ["https://cdn.test/path/dup.m3u8"], "the repeated child URI appears once");
+  });
+
+  test("returns an empty array for a master declaring no variants or renditions", () => {
+
+    const body = [ "#EXTM3U", "#EXT-X-VERSION:4", "#EXT-X-INDEPENDENT-SEGMENTS" ].join("\n");
+
+    assert.deepEqual(extractChildPlaylistUrls(body, masterUrl), []);
+  });
+
+  test("drops a malformed child URI and keeps the valid one without throwing", () => {
+
+    // The malformed entry is a protocol-relative URI with a space in the host, which throws in new URL against the master base. A garbage string that resolved as a
+    // relative path would make the negative control vacuous, so this fixture genuinely throws and must be dropped while the valid variant survives.
+    const body = [
+      "#EXTM3U",
+      "#EXT-X-STREAM-INF:BANDWIDTH=1000000",
+      "good/variant.m3u8",
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+      "//h ost/x.m3u8"
+    ].join("\n");
+
+    const result = extractChildPlaylistUrls(body, masterUrl);
+
+    assert.deepEqual(result, ["https://cdn.test/path/good/variant.m3u8"], "only the valid child survives; the malformed URI is dropped and no throw escapes");
+  });
+});
+
+describe("isLiveMediaPlaylist", () => {
+
+  test("classifies a bare sliding-window media playlist as live", () => {
+
+    const body = [ "#EXTM3U", "#EXT-X-TARGETDURATION:6", "#EXTINF:6,", "seg-1.ts", "#EXTINF:6,", "seg-2.ts" ].join("\n");
+
+    assert.equal(isLiveMediaPlaylist(body), true);
+  });
+
+  test("classifies an EVENT-typed playlist as live because it only appends segments", () => {
+
+    const body = [ "#EXTM3U", "#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-TARGETDURATION:6", "#EXTINF:6,", "seg-1.ts" ].join("\n");
+
+    assert.equal(isLiveMediaPlaylist(body), true);
+  });
+
+  test("classifies a playlist carrying #EXT-X-ENDLIST as not live", () => {
+
+    const body = [ "#EXTM3U", "#EXT-X-TARGETDURATION:6", "#EXTINF:6,", "seg-1.ts", "#EXT-X-ENDLIST" ].join("\n");
+
+    assert.equal(isLiveMediaPlaylist(body), false);
+  });
+
+  test("classifies a VOD-typed playlist as not live", () => {
+
+    const body = [ "#EXTM3U", "#EXT-X-PLAYLIST-TYPE:VOD", "#EXT-X-TARGETDURATION:6", "#EXTINF:6,", "seg-1.ts" ].join("\n");
+
+    assert.equal(isLiveMediaPlaylist(body), false);
+  });
+
+  test("stays live when the ENDLIST token appears only inside a comment line (line-anchored, not a substring test)", () => {
+
+    // A naive body.includes("#EXT-X-ENDLIST") would fire on the token embedded in the comment and wrongly report the playlist complete. The line-anchored walk
+    // only matches a line that starts with the tag, so this playlist stays live.
+    const body = [ "#EXTM3U", "#EXT-X-TARGETDURATION:6", "# a note mentioning #EXT-X-ENDLIST inline", "#EXTINF:6,", "seg-1.ts" ].join("\n");
+
+    assert.equal(isLiveMediaPlaylist(body), true);
   });
 });

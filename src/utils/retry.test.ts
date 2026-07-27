@@ -2,12 +2,13 @@
  *
  * retry.test.ts: Unit tests for retryOperation. The function consumes a Clock (see clock.ts) for sleeps between attempts and for the per-attempt timeout race;
  * tests pass a fake clock built by makeFakeClock (clock.helpers.ts) that resolves sleeps instantly and forwards (or selectively rejects) the timeout race. No
- * real-time delays, no mock.timers - the fake-clock literal is the entire test substrate, deterministic and budget-free.
+ * real-time delays, no mock.timers - the fake-clock literal is the entire test substrate, deterministic and budget-free. The pure maxRetryDuration estimator is
+ * tested directly against the same default constants retryOperation reads, so the worst-case closed form stays pinned to the loop that produces the sleeps.
  */
 import { describe, mock, test } from "node:test";
+import { maxRetryDuration, retryOperation } from "./retry.ts";
 import assert from "node:assert/strict";
 import { makeFakeClock } from "./clock.helpers.ts";
-import { retryOperation } from "./retry.ts";
 
 describe("retryOperation", () => {
 
@@ -414,5 +415,34 @@ describe("retryOperation", () => {
 
     assert.equal(result, "wired");
     assert.equal(attempts, 1);
+  });
+});
+
+describe("maxRetryDuration", () => {
+
+  test("sums every attempt's timeout plus one ceilinged backoff gap per retry using the shared defaults", () => {
+
+    // The closed form is maxAttempts * timeoutMs + (maxAttempts - 1) * (maxBackoffDelay + backoffJitter). With retry.ts's defaults - a 3000ms backoff cap and a
+    // 1000ms jitter ceiling, the same constants the loop's destructuring reads - three attempts of 10000ms with two gaps of 4000ms gives 38000ms.
+    assert.equal(maxRetryDuration({ maxAttempts: 3, timeoutMs: 10000 }), (3 * 10000) + (2 * (3000 + 1000)));
+    assert.equal(maxRetryDuration({ maxAttempts: 3, timeoutMs: 10000 }), 38000);
+  });
+
+  test("honors explicit backoff overrides in place of the defaults", () => {
+
+    // Four attempts of 5000ms with three gaps, each capped at 2000ms plus 500ms of jitter, gives 20000 + 7500 = 27500ms.
+    assert.equal(maxRetryDuration({ backoffJitter: 500, maxAttempts: 4, maxBackoffDelay: 2000, timeoutMs: 5000 }), (4 * 5000) + (3 * (2000 + 500)));
+  });
+
+  test("adds no backoff for a single attempt", () => {
+
+    // With one attempt there are zero gaps, so the estimate is just the one per-attempt timeout.
+    assert.equal(maxRetryDuration({ maxAttempts: 1, timeoutMs: 8000 }), 8000);
+  });
+
+  test("clamps the gap count at zero for an out-of-contract attempt count below one", () => {
+
+    // maxAttempts of 0 yields no attempts and no gaps, mirroring retryOperation's own zero-attempt boundary rather than producing a negative term.
+    assert.equal(maxRetryDuration({ maxAttempts: 0, timeoutMs: 8000 }), 0);
   });
 });

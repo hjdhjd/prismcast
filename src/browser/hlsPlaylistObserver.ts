@@ -3,11 +3,10 @@
  * hlsPlaylistObserver.ts: HLS-aware observer layered on top of the tab-wide network observer.
  */
 import { LOG, chromeFetch } from "../utils/index.ts";
-import type { HlsPlaylistKind } from "../native/probe.ts";
+import { classifyHlsPlaylist, extractChildPlaylistUrls, isLiveMediaPlaylist } from "../native/probe.ts";
 import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import type { TabNetworkObserver } from "./tabNetworkObserver.ts";
-import { classifyHlsPlaylist } from "../native/probe.ts";
 import { observeTabResponses } from "./tabNetworkObserver.ts";
 
 /* This module is the HLS-aware layer on top of tabNetworkObserver. Its job is to deliver every recognized HLS playlist (URL + kind) observed anywhere in the tab
@@ -19,10 +18,11 @@ import { observeTabResponses } from "./tabNetworkObserver.ts";
  *   - Per-URL deduplication: the same `.m3u8` URL fired multiple times during the observation window (typical: hls.js re-polling the chunklist every ~2s)
  *     produces exactly one body fetch and exactly one callback delivery
  *
- * It does not know about first vs latest URL selection, master priority, finalize semantics, or predicate-based verification - those are consumer concerns and
- * live in manifestInterceptor.ts (the long-lived interception path and the short-lived predicate-match path). This module is the single source of truth for
- * "given a tab, observe its HLS playlists"; any future feature that needs the same primitive (debug logging of every observed playlist, playlist content
- * archiving, etc.) consumes this module rather than re-implementing the filter + fetch + classify pipeline.
+ * It does not know about manifest selection policy - the channel-selection epoch, playlist membership, the liveness override, finalize semantics, or
+ * predicate-based verification - those are consumer concerns and live in manifestInterceptor.ts (the long-lived interception path and the short-lived
+ * predicate-match path). This module is the single source of truth for "given a tab, observe its HLS playlists"; any future feature that needs the same primitive
+ * (debug logging of every observed playlist, playlist content archiving, etc.) consumes this module rather than re-implementing the filter + fetch + classify
+ * pipeline.
  *
  * Dedup rationale. During a typical interception window the hls.js player inside an OOPIF re-polls its chunklist multiple times. Without dedup we would fetch
  * and classify the chunklist body once per poll, wasting CPU and network. Dedup is applied at the URL gate (before fetch is initiated) so an in-flight fetch is
@@ -36,13 +36,43 @@ import { observeTabResponses } from "./tabNetworkObserver.ts";
 const MANIFEST_BODY_FETCH_TIMEOUT = 5000;
 
 /**
- * A recognized HLS playlist observed by the tab. Carries the URL the player loaded and the classification result (master multivariant playlist or media segment
- * playlist). Unknown bodies (no `#EXT-X-STREAM-INF` and no `#EXTINF`/`#EXT-X-TARGETDURATION`) are not delivered.
+ * A recognized HLS playlist observed by the tab, delivered as a discriminated union on kind so master-only and media-only facts each live on the arm that owns
+ * them. Every arm carries the URL the player loaded and the wire-arrival sequence; the master arm adds its declared child playlist URLs, the media arm its
+ * liveness. Unknown bodies (no `#EXT-X-STREAM-INF` and no `#EXTINF`/`#EXT-X-TARGETDURATION`) are never delivered.
  */
-export interface ObservedHlsPlaylist {
+export type ObservedHlsPlaylist = ObservedHlsMasterPlaylist | ObservedHlsMediaPlaylist;
 
-  // Master multivariant playlist (`#EXT-X-STREAM-INF` present) or media segment playlist (`#EXTINF` / `#EXT-X-TARGETDURATION` present).
-  readonly kind: HlsPlaylistKind;
+/**
+ * The master (multivariant) arm of ObservedHlsPlaylist, delivered for a body carrying `#EXT-X-STREAM-INF`.
+ */
+export interface ObservedHlsMasterPlaylist {
+
+  // The master's declared child playlist URIs resolved to absolute URLs - both variant streams and media renditions.
+  readonly childUrls: readonly string[];
+
+  // Master multivariant playlist marker (`#EXT-X-STREAM-INF` present).
+  readonly kind: "master";
+
+  // The wire-arrival ordinal assigned when this playlist was first observed, shared across kinds; see currentSequence for its 0-versus-first-observation meaning.
+  readonly sequence: number;
+
+  // Absolute URL of the HLS playlist.
+  readonly url: string;
+}
+
+/**
+ * The media (segment) arm of ObservedHlsPlaylist, delivered for a body carrying `#EXTINF` / `#EXT-X-TARGETDURATION`.
+ */
+export interface ObservedHlsMediaPlaylist {
+
+  // Media segment playlist marker (`#EXTINF` / `#EXT-X-TARGETDURATION` present).
+  readonly kind: "media";
+
+  // True when the playlist carries neither an `#EXT-X-ENDLIST` marker nor a VOD playlist type, so it may still grow.
+  readonly live: boolean;
+
+  // The wire-arrival ordinal assigned when this playlist was first observed, shared across kinds; see currentSequence for its 0-versus-first-observation meaning.
+  readonly sequence: number;
 
   // Absolute URL of the HLS playlist.
   readonly url: string;
@@ -67,6 +97,10 @@ export interface HlsPlaylistObserverOptions {
  */
 export interface HlsPlaylistObserver extends Disposable {
 
+  // Returns the most recently assigned wire-arrival sequence, or 0 before any playlist has been observed. Consumers fence "everything observed so far" against
+  // this value without racing in-flight body-fetch deliveries: the ordinal is assigned synchronously at observation, ahead of the async fetch that delivers it.
+  readonly currentSequence: () => number;
+
   // Releases the underlying tab network observer and stops further classification work. Safe to call multiple times; subsequent calls are no-ops.
   readonly dispose: () => void;
 
@@ -90,6 +124,13 @@ export async function observeHlsPlaylists(page: Page, options: HlsPlaylistObserv
   const { logCategory, onPlaylist } = options;
 
   let disposed = false;
+
+  // Wire-arrival sequence counter. Each eligible unique URL is assigned the next ordinal synchronously at the dedup gate - before its body fetch begins - so the
+  // ordinal reflects the order responses arrived on the wire rather than the order their independent, racing body fetches happen to resolve. Sequences start at 1,
+  // so a currentSequence() of 0 means nothing has been observed yet and an epoch fenced at 0 reads every later observation as post-epoch. The honest bound: the
+  // ordinal reflects CDP-event arrival order at the client, and Chrome does not guarantee cross-session event ordering for OOPIF targets, so the fence approximates
+  // wire order within event-delivery latency - a residual window of milliseconds, in place of the seconds-wide body-fetch race a delivery-time ordering would carry.
+  let sequenceCounter = 0;
 
   // Per-URL dedup state. We add a URL to seenUrls the moment we decide to fetch it - before the asynchronous chromeFetch resolves - so a second observation of
   // the same URL arriving while the first fetch is in flight does not initiate a duplicate fetch. URLs remain in the set for the observer's lifetime; the
@@ -123,7 +164,11 @@ export async function observeHlsPlaylists(page: Page, options: HlsPlaylistObserv
 
     seenUrls.add(url);
 
-    LOG.debug(logCategory, "Observed .m3u8 response: %s.", url.slice(0, 120));
+    // Assign the wire-arrival ordinal synchronously, immediately past the dedup gate and before the first await, so it reflects the order this response arrived
+    // rather than the order its body fetch resolves against every other in-flight fetch. The local rides through the fetch and is delivered on the observation.
+    const sequence = ++sequenceCounter;
+
+    LOG.debug(logCategory, "Observed .m3u8 response (seq %s): %s.", sequence, url.slice(0, 120));
 
     try {
 
@@ -159,7 +204,14 @@ export async function observeHlsPlaylists(page: Page, options: HlsPlaylistObserv
         return;
       }
 
-      onPlaylist({ kind, url });
+      // Build the arm the consumer sees. The per-kind facts are computed here, in the single pass over a body already fetched: a master carries its declared
+      // children (for membership judgment upstream), a media carries its liveness (whether it may still grow). Both helpers never throw, so a degraded fact never
+      // drops the whole observation.
+      const playlist: ObservedHlsPlaylist = (kind === "master") ?
+        { childUrls: extractChildPlaylistUrls(body, url), kind: "master", sequence, url } :
+        { kind: "media", live: isLiveMediaPlaylist(body), sequence, url };
+
+      onPlaylist(playlist);
     } catch(error) {
 
       LOG.debug(logCategory, "Could not fetch .m3u8 body: %s.", String(error));
@@ -178,6 +230,10 @@ export async function observeHlsPlaylists(page: Page, options: HlsPlaylistObserv
 
   LOG.debug(logCategory, "HLS playlist observer installed.");
 
+  // Reports the most recently assigned wire-arrival ordinal (0 before any observation). Consumers stamp an epoch against this so observations that arrive after
+  // the stamp read as post-epoch, without racing the in-flight body-fetch deliveries that would arrive out of order under delivery-time ordering.
+  const currentSequence = (): number => sequenceCounter;
+
   const dispose = (): void => {
 
     if(disposed) {
@@ -190,5 +246,5 @@ export async function observeHlsPlaylists(page: Page, options: HlsPlaylistObserv
     seenUrls.clear();
   };
 
-  return { dispose, [Symbol.dispose]: dispose };
+  return { currentSequence, dispose, [Symbol.dispose]: dispose };
 }
