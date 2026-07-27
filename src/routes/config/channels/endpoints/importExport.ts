@@ -8,12 +8,13 @@
 import type { Channel, StoredChannelMap } from "../../../../types/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, parseM3U, sanitizeString, stringifySorted } from "../../../../utils/index.ts";
+import { getBuiltinProfile, getProfiles } from "../../../../config/profiles.ts";
 import { getChannelListing, getUserChannels, mutateChannels, resolveStoredChannel, validateChannelName, validateChannelUrl,
   validateImportedChannels } from "../../../../config/userChannels.ts";
 import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import type { UserChannel } from "../../../../config/userChannels.ts";
 import { buildChannelTablePatch } from "../table.ts";
-import { getProfiles } from "../../../../config/profiles.ts";
+import { getUserProfiles } from "../../../../config/userProfiles.ts";
 import { route } from "../http/handler.ts";
 
 type ConflictMode = "replace" | "skip";
@@ -45,8 +46,11 @@ export function registerImportExportRoutes(app: Express): void {
   app.post("/config/channels/import", route("import channels", async (req: Request, res: Response) => {
 
     const rawData: unknown = req.body;
-    const validProfiles = getProfiles().map((p) => p.name);
-    const validationResult = validateImportedChannels(rawData, validProfiles);
+
+    // A channel may name any profile that exists: a builtin from any source through the single lookup, or one of the user's own. Profile existence questions go
+    // through that lookup rather than the UI profile catalog, which omits the provider profiles a channel may legitimately reference.
+    const isKnownProfile = (name: string): boolean => Boolean(getBuiltinProfile(name)) || (name in getUserProfiles());
+    const validationResult = validateImportedChannels(rawData, isKnownProfile);
 
     if(!validationResult.valid) {
 

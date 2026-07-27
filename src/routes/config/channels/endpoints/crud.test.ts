@@ -506,6 +506,63 @@ describe("DELETE /config/channels/:key and POST /config/channels/:key/revert (va
   });
 });
 
+describe("POST /config/channels - profile reference validation", () => {
+
+  let dir: string;
+  let create: RequestHandler;
+
+  beforeEach(async () => {
+
+    dir = await setupTempDataDir();
+
+    const { app, routes } = makeMockApp();
+
+    registerCrudRoutes(app);
+
+    create = findRoute(routes, "post", "/config/channels");
+  });
+
+  afterEach(async () => {
+
+    await rm(dir, { force: true, recursive: true });
+  });
+
+  test("accepts a channel whose profile names a provider profile", async () => {
+
+    /* The editor save answers the profile-existence question through the single builtin lookup. disneyNow lives in the provider table and never appears in the
+     * web UI's profile picker, so an oracle built from that catalog would reject this save as an unknown profile.
+     */
+    const { json, req, res } = makeReqRes({
+
+      body: { key: "disney-user", name: "Disney Channel", profile: "disneyNow", url: "https://example.com/live.m3u8" }
+    });
+
+    await create(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true, "the save succeeds; errors: " + JSON.stringify(body["errors"] ?? body["error"]));
+  });
+
+  test("rejects a channel whose profile names nothing at all", async () => {
+
+    // The lookup is wider than the UI catalog, not absent - a name no source owns still draws a field error naming the rejected value.
+    const { json, req, res, status } = makeReqRes({
+
+      body: { key: "bogus-user", name: "Bogus", profile: "noSuchProfileAnywhere", url: "https://example.com/live.m3u8" }
+    });
+
+    await create(req, res, () => undefined);
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 400);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+    const errors = body["errors"] as Record<string, string>;
+
+    assert.equal(errors["profile"], "Unknown profile: noSuchProfileAnywhere.");
+  });
+});
+
 describe("PATCH /config/channels/:key", () => {
 
   let dir: string;

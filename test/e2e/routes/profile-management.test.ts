@@ -98,6 +98,37 @@ describe("POST /config/profiles - create and update", () => {
     assert.equal(domainEntry?.profile, "integration-test", "the domain mapping's profile reference must point at the just-created profile key");
   });
 
+  test("a POST whose domain mapping references a provider profile is accepted", async () => {
+
+    /* Mapping a domain onto a provider profile is coherent - the builtin DOMAIN_CONFIG entries do exactly that. disneyNow is absent from the UI profile
+     * catalog, which lists only the general table plus the user's own profiles, so this mapping validates only because the reference is tested against the
+     * single builtin lookup rather than that catalog.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const body = makePostBody("provider-ref-test", "provider reference profile", {
+
+      "providerref.example.test": { profile: "disneyNow", service: "MyService", serviceTag: "myservice" }
+    });
+
+    const response = await fetch(urlFor("/config/profiles"), {
+
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "a domain mapping naming a provider profile must save; body: " + (await response.clone().text()).slice(0, 200));
+
+    const persisted = await readPersistedJson(ctx, "profiles.json") as { domains?: Record<string, { profile?: string }> };
+
+    assert.equal(persisted.domains?.["providerref.example.test"]?.profile, "disneyNow", "the domain mapping persists its provider-profile reference");
+  });
+
   test("a POST update to one profile leaves all other profile entries byte-identical on disk", async () => {
 
     /* The cross-profile isolation rule. The wizard's edit flow loads one profile, lets the user mutate it, and POSTs the result. The route handler

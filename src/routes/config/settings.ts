@@ -7,7 +7,7 @@ import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from
 import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault, mutateConfig, readConfig,
   setNestedValue } from "../../config/userConfig.ts";
 import type { Express, Request, Response } from "express";
-import { LOG, escapeHtml, isRunningAsService, stringifySorted } from "../../utils/index.ts";
+import { LOG, escapeHtml, isRunningAsService, sanitizeString, stringifySorted } from "../../utils/index.ts";
 import { applyConfigurationChange, describeConfigurationOutcome } from "./index.ts";
 import { sendErrorResponse, sendFormErrors, sendSuccess, sendValidationError } from "./http/envelope.ts";
 import { ACTIONS } from "../clientActions.ts";
@@ -143,6 +143,12 @@ function getDisplayUnit(setting: SettingMetadata): string | undefined {
 
   return setting.displayUnit ?? setting.unit;
 }
+
+/**
+ * The setting types whose values are free text a user types or pastes, as opposed to a number, a boolean, or a structured list. Values of these types are
+ * sanitized at every ingress, which is what the matching arm of parseFormValue does for the form save and what the import handler does for a JSON document.
+ */
+const TEXT_SETTING_TYPES = new Set<SettingMetadata["type"]>([ "host", "path", "string" ]);
 
 /**
  * Mapping of units that require pluralization to their singular and plural forms. Abbreviations like "ms", "kbps", "fps" do not need pluralization and are not
@@ -672,6 +678,11 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
 /**
  * Validates a single setting value (in storage units, after conversion from display units).
+ *
+ * The validator is the shared gate for both value ingress paths - the settings form save and the whole-document JSON import - so it assumes nothing about
+ * upstream coercion and checks the runtime type of every value it accepts. It rejects, it never repairs: the value that passes here is the value that is
+ * persisted, so a document whose field carries the wrong type draws an error naming that field rather than landing on disk and taking effect at the next boot.
+ *
  * @param setting - The setting metadata.
  * @param value - The value to validate (in storage units).
  * @returns Validation error message if invalid, undefined if valid.
@@ -700,8 +711,11 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
 
     case "boolean": {
 
-      // parseFormValue coerces any submitted string to a boolean (value === "true"), so the result is always a valid boolean
-      // regardless of whether the field rendered as a checkbox or a select.
+      if(typeof value !== "boolean") {
+
+        return setting.label + " must be true or false";
+      }
+
       return undefined;
     }
 
@@ -730,16 +744,24 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
     case "integer":
     case "port": {
 
-      const numValue = Number(value);
-      const error = validatePositiveInt(setting.label, numValue, setting.min, setting.max);
+      if(typeof value !== "number") {
+
+        return setting.label + " must be a number";
+      }
+
+      const error = validatePositiveInt(setting.label, value, setting.min, setting.max);
 
       return error ?? undefined;
     }
 
     case "float": {
 
-      const numValue = Number(value);
-      const error = validatePositiveNumber(setting.label, numValue, setting.min, setting.max);
+      if(typeof value !== "number") {
+
+        return setting.label + " must be a number";
+      }
+
+      const error = validatePositiveNumber(setting.label, value, setting.min, setting.max);
 
       return error ?? undefined;
     }
@@ -756,19 +778,29 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
 
     case "path": {
 
-      // Path can be any string or empty.
+      // A path is any string. The empty and null forms mean autodetect and were already accepted by the guard at the top.
+      if(typeof value !== "string") {
+
+        return setting.label + " must be a string";
+      }
+
       return undefined;
     }
 
     case "string": {
 
-      // String without validValues - no validation needed.
+      // A free-form string carries no value constraint beyond being one. Settings that restrict their values declare validValues and were handled above.
+      if(typeof value !== "string") {
+
+        return setting.label + " must be a string";
+      }
+
       return undefined;
     }
 
     default: {
 
-      return undefined;
+      throw new Error("Unsupported setting type: " + String(setting.type) + ".");
     }
   }
 }
@@ -781,8 +813,14 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
  */
 function parseFormValue(setting: SettingMetadata, value: string): Nullable<boolean | number | string | string[]> {
 
-  // Handle empty values for path type.
-  if((setting.type === "path") && (value.trim() === "")) {
+  /* Host, path, and free-string values pass through the shared data-collection sanitizer, which strips non-printable characters as well as padding at the point
+   * submitted data enters the system - a pasted browser path carrying a trailing newline would otherwise be stored verbatim and break the launcher. The value
+   * is computed once so the cleared-path check below and the text arm of the switch agree on what was submitted.
+   */
+  const sanitized = sanitizeString(value);
+
+  // An empty path means autodetect - null is the sentinel the rest of the system reads as unset.
+  if((setting.type === "path") && (sanitized === "")) {
 
     return null;
   }
@@ -833,12 +871,12 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
     case "path":
     case "string": {
 
-      return value;
+      return sanitized;
     }
 
     default: {
 
-      return value;
+      throw new Error("Unsupported setting type: " + String(setting.type) + ".");
     }
   }
 }
@@ -1159,28 +1197,30 @@ export function setupSettingsRoutes(app: Express): void {
 
         for(const setting of settings) {
 
-          const pathParts = setting.path.split(".");
-          let value: unknown = importedConfig;
-
-          for(const part of pathParts) {
-
-            if((value === null) || (value === undefined) || (typeof value !== "object")) {
-
-              value = undefined;
-
-              break;
-            }
-
-            value = (value as Record<string, unknown>)[part];
-          }
+          const value = getNestedValue(importedConfig, setting.path);
 
           if(value === undefined) {
 
             continue;
           }
 
+          /* Text values are sanitized where the document enters the system, matching the convention the sibling JSON importers follow - parseServicePack
+           * sanitizes the imported pack name, validateImportedChannels sanitizes imported channel fields - for the same reason: hand-assembled JSON carries
+           * padding and the occasional null byte. Only values that are already strings are touched, so a mistyped value still reaches the validator unrepaired
+           * and is rejected there.
+           *
+           * The sanitized value is written back into the document because the merge at the end of this handler reads the document. Validating a local copy
+           * would validate one value and persist another, which is the divergence this validator exists to close.
+           */
+          const sanitized = (TEXT_SETTING_TYPES.has(setting.type) && (typeof value === "string")) ? sanitizeString(value) : value;
+
+          if(sanitized !== value) {
+
+            setNestedValue(importedConfig as Record<string, unknown>, setting.path, sanitized);
+          }
+
           // Validate the value.
-          const error = validateSettingValue(setting, value);
+          const error = validateSettingValue(setting, sanitized);
 
           if(error) {
 

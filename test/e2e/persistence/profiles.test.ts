@@ -10,12 +10,12 @@
  */
 import { createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { deleteUserProfile, getProfilesParseErrorMessage, getUserDomains, getUserProfiles, hasProfilesParseError, initializeUserProfiles,
-  mutateProfiles, validateProfileKey } from "../../../src/config/userProfiles.ts";
+  mutateProfiles, validateProfile, validateProfileKey } from "../../../src/config/userProfiles.ts";
 import { describe, test } from "node:test";
 import { getAllServiceTags, getChannelServiceLabel, getResolvedChannel, getServiceTagForChannel } from "../../../src/config/services.ts";
+import { getProfiles, resolveProfile } from "../../../src/config/profiles.ts";
 import assert from "node:assert/strict";
 import { firstOf } from "../../../src/testing.helpers.ts";
-import { getProfiles } from "../../../src/config/profiles.ts";
 import { mutateChannels } from "../../../src/config/userChannels.ts";
 import { writeFile } from "node:fs/promises";
 
@@ -259,5 +259,231 @@ describe("profile-derived accessors", () => {
 
     assert.ok(message, "a duplicate key returns an error message");
     assert.match(message, /already exists/, "the duplicate-key message states that the key already exists");
+  });
+});
+
+/* Resolution has to be total over whatever profiles.json holds. The profile editor rejects a user profile that extends another user profile, but the file is
+ * hand-editable and a service pack can be assembled by hand, so the store can carry an extends chain that closes back on itself. Resolution runs on the
+ * playlist, channel table, and tune paths, so a stored cycle that resolution could not survive would take the settings page, the M3U feed, or a timer-driven
+ * tune down with it.
+ *
+ * These fixtures live at the integration tier because the resolver reads the module-level user profile map, which is populated only by real file I/O -
+ * mutateProfiles writes the store and initializeUserProfiles loads it back, exactly as a restart would.
+ */
+describe("profile resolution over stored user profiles", () => {
+
+  test("a two-profile cycle resolves to the collected chain over defaults instead of exhausting the stack", async () => {
+
+    /* The mutual-reference case: cycleAlpha extends cycleBeta, which extends cycleAlpha. Both profiles set channelSelector, to different values, so the
+     * assertion proves merge ORDER rather than mere presence - the named profile's value has to win over the value of what it extends. cycleBeta also sets a
+     * flag cycleAlpha leaves alone, so the assertions prove that both members of the cycle contribute.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["cycleAlpha"] = { channelSelector: "alpha-wins", extends: "cycleBeta" };
+      data.profiles["cycleBeta"] = { channelSelector: "beta-loses", extends: "cycleAlpha", lockVolumeProperties: true };
+    });
+
+    await initializeUserProfiles();
+
+    const resolved = resolveProfile("cycleAlpha");
+
+    assert.equal(resolved.channelSelector, "alpha-wins", "the named profile's value overrides the value of the profile it extends");
+    assert.equal(resolved.lockVolumeProperties, true, "the profile reached through the extends hop still contributes its own flags");
+    assert.equal(resolved.staticCapture, false, "flags set by neither profile fall back to the default");
+
+    // Resolving the same cycle a second time must produce the same result. The visited set is per-call state; hoisting or memoizing it would leak the first
+    // resolution's bookkeeping into the second and silently truncate the chain here.
+    assert.deepEqual(resolveProfile("cycleAlpha"), resolved, "a second resolution of the same cyclic profile returns an identical result");
+  });
+
+  test("a profile that extends itself resolves to its own flags over defaults", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["selfExtending"] = { channelSelector: "self-wins", extends: "selfExtending", waitForNetworkIdle: true };
+    });
+
+    await initializeUserProfiles();
+
+    const resolved = resolveProfile("selfExtending");
+
+    assert.equal(resolved.channelSelector, "self-wins", "the profile's own flags apply");
+    assert.equal(resolved.waitForNetworkIdle, true, "every flag the profile sets applies");
+    assert.equal(resolved.useRequestFullscreen, false, "unset flags fall back to the default");
+  });
+
+  test("a user profile extending a builtin resolves to the builtin's flags with the user profile's own flags on top", async () => {
+
+    /* The parity pin for the ordinary case, over a chain that reaches through a builtin into a second builtin: embeddedPlayer contributes needsIframeHandling
+     * and extends fullscreenApi, which contributes useRequestFullscreen. The user profile sets useRequestFullscreen to the OPPOSITE of what its grandparent
+     * sets, so the assertion proves precedence across two hops rather than mere inheritance - a merge applied in the wrong order resolves it to true here.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["userOverBuiltin"] = { channelSelector: "user-value", extends: "embeddedPlayer", useRequestFullscreen: false };
+    });
+
+    await initializeUserProfiles();
+
+    const resolved = resolveProfile("userOverBuiltin");
+
+    assert.equal(resolved.needsIframeHandling, true, "the builtin ancestor's flag is inherited");
+    assert.equal(resolved.useRequestFullscreen, false, "the user profile's value overrides the value set further up the chain");
+    assert.equal(resolved.channelSelector, "user-value", "the user profile's own flag applies");
+    assert.equal(resolved.selectReadyVideo, false, "flags no profile in the chain sets fall back to the default");
+  });
+
+  test("a builtin chain two hops deep resolves every ancestor's flags and carries no metadata fields", async () => {
+
+    /* embeddedDynamicMultiVideo extends embeddedPlayer, which extends fullscreenApi - a distinct flag contributed at every level of the chain, and metadata
+     * carried at every level too. Asserting that the metadata keys are structurally ABSENT is what catches an implementation that strips them from only the
+     * last entry it merges: object spread accepts the extra properties, so flag equality alone would pass against a resolved profile still carrying a stale
+     * category or extends.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+    await initializeUserProfiles();
+
+    const resolved = resolveProfile("embeddedDynamicMultiVideo");
+
+    assert.equal(resolved.useRequestFullscreen, true, "the root ancestor's flag is inherited");
+    assert.equal(resolved.needsIframeHandling, true, "the intermediate ancestor's flag is inherited");
+    assert.equal(resolved.selectReadyVideo, true, "the named profile's own flags apply");
+    assert.equal(resolved.waitForNetworkIdle, true, "every flag the named profile sets applies");
+
+    for(const metadataField of [ "category", "description", "extends", "summary" ]) {
+
+      assert.equal(metadataField in resolved, false, "the resolved profile carries no " + metadataField + " field from any level of the chain");
+    }
+  });
+
+  test("an extends target that exists nowhere ends the walk and the flags collected before it still apply", async () => {
+
+    /* The unresolvable hop sits BEYOND the first one, so the fixture proves the walk keeps what it collected rather than discarding the whole chain. Against a
+     * resolver that abandoned the collection on a miss, chainHead would resolve to bare defaults.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["chainHead"] = { channelSelector: "head-value", extends: "chainMiddle" };
+      data.profiles["chainMiddle"] = { extends: "noSuchProfileAnywhere", lockVolumeProperties: true };
+    });
+
+    await initializeUserProfiles();
+
+    const resolved = resolveProfile("chainHead");
+
+    assert.equal(resolved.channelSelector, "head-value", "the named profile's flags apply");
+    assert.equal(resolved.lockVolumeProperties, true, "the resolvable hop before the missing one still contributes");
+    assert.equal(resolved.waitForNetworkIdle, false, "flags no collected profile sets fall back to the default");
+  });
+
+  test("validateProfile names the user-to-user extends rule when the target is a profile in the store", async () => {
+
+    /* The reporting half of the same story: resolution degrades quietly, validation is what tells the user which rule the stored profile breaks. A target that
+     * exists as a user profile is the hop every cycle is built from, and calling it non-existent would send the user looking for a profile they can plainly
+     * see. validateProfile is called directly here because initializeUserProfiles does not invoke it - that wiring lives in validateProfiles on the boot path.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["parentProfile"] = { extends: "fullscreenApi" };
+    });
+
+    await initializeUserProfiles();
+
+    const userTargetErrors = validateProfile("childProfile", { extends: "parentProfile" });
+
+    assert.equal(userTargetErrors.length, 1, "a user-profile extends target produces exactly one error");
+    assert.match(firstOf(userTargetErrors), /extends references user profile 'parentProfile'/, "the message names the target as a user profile");
+    assert.match(firstOf(userTargetErrors), /must extend a builtin profile/, "the message states the rule that was broken");
+
+    // A target that exists in neither the builtin tables nor the store keeps the not-found message, so the sharper wording is scoped to the case it describes.
+    const missingTargetErrors = validateProfile("childProfile", { extends: "noSuchProfileAnywhere" });
+
+    assert.match(firstOf(missingTargetErrors), /non-existent builtin profile 'noSuchProfileAnywhere'/, "an unresolvable target keeps the not-found message");
+  });
+});
+
+/* Builtin profile keys are reserved for names that are not already user data, which makes the rule depend on the loaded user store - module state that only
+ * real file I/O populates. The unit tier covers the reservation itself against an empty store; the grandfather clause needs a key to already be there, so its
+ * pins live here.
+ */
+describe("validateProfileKey grandfathering of keys already in the store", () => {
+
+  test("a stored key that shadows a provider profile stays editable", async () => {
+
+    /* A profile saved under a provider-profile name before the reservation covered that table is permanently shadowed at resolution, but it is still the user's
+     * data. Rejecting the key on every save would leave it uneditable and undeletable behind a message asking for a name the user cannot change. isNew is false
+     * (the edit path) so the pre-existing duplicate-key check cannot be what decides this case - only the builtin-collision clause is in play.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["disneyNow"] = { description: "A legacy shadowed profile.", extends: "fullscreenApi" };
+    });
+
+    await initializeUserProfiles();
+
+    assert.equal(validateProfileKey("disneyNow", false), undefined, "a stored key that shadows a provider profile is accepted on edit");
+  });
+
+  test("a stored key that shadows a general builtin profile stays editable", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["fullscreenApi"] = { description: "A legacy shadowed profile.", extends: "keyboardFullscreen" };
+    });
+
+    await initializeUserProfiles();
+
+    assert.equal(validateProfileKey("fullscreenApi", false), undefined, "a stored key that shadows a general builtin profile is accepted on edit");
+  });
+
+  test("a builtin-colliding key absent from the store is rejected on both the create and the import framing", async () => {
+
+    /* The other side of the clause. The store here holds an unrelated profile, so the key under test is absent from it and the reservation applies whichever
+     * value isNew carries - an implementation that keyed the reservation off the isNew flag instead of store membership would accept the false case.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["unrelatedProfile"] = { extends: "fullscreenApi" };
+    });
+
+    await initializeUserProfiles();
+
+    assert.match(validateProfileKey("disneyNow", true) ?? "", /conflicts with a builtin/, "the create framing is rejected");
+    assert.match(validateProfileKey("disneyNow", false) ?? "", /conflicts with a builtin/, "the import framing is rejected");
   });
 });

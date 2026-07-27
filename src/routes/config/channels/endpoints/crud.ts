@@ -26,7 +26,8 @@ import type { ChannelFormValues } from "../../../../config/channelForm.ts";
 import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
 import type { UserChannel } from "../../../../config/userChannels.ts";
 import { buildServiceFilterWarning } from "../http/serviceWarning.ts";
-import { getProfiles } from "../../../../config/profiles.ts";
+import { getBuiltinProfile } from "../../../../config/profiles.ts";
+import { getUserProfiles } from "../../../../config/userProfiles.ts";
 import { route } from "../http/handler.ts";
 import { updateChannelLogo } from "../../../../streaming/showInfo.ts";
 
@@ -81,14 +82,25 @@ function parseFormBody(body: Record<string, string | undefined>): { formValues: 
 }
 
 /**
+ * Answers whether a profile name exists, consulting the single builtin lookup and the user's own profiles. Profile existence questions go through that lookup
+ * rather than the UI profile catalog, which omits the provider profiles a channel may legitimately reference.
+ * @param name - The profile name to test.
+ * @returns True when the name resolves to a builtin or a user-defined profile.
+ */
+function isKnownProfile(name: string): boolean {
+
+  return Boolean(getBuiltinProfile(name)) || (name in getUserProfiles());
+}
+
+/**
  * Validates submitted form values and returns a map of field errors. An empty map means validation passed.
  * @param formValues - The normalized form values.
  * @param key - The channel key being created or edited.
  * @param isCreate - True for create (validate key), false for edit (key already exists).
- * @param validProfiles - List of valid profile names for the profile field check.
+ * @param isKnownProfile - Predicate answering whether the submitted profile name exists.
  * @returns Map of field name to error message. Empty when valid.
  */
-function validateFormValues(formValues: ChannelFormValues, key: string, isCreate: boolean, validProfiles: string[]): Record<string, string> {
+function validateFormValues(formValues: ChannelFormValues, key: string, isCreate: boolean, isKnownProfile: (name: string) => boolean): Record<string, string> {
 
   const errors: Record<string, string> = {};
 
@@ -125,7 +137,7 @@ function validateFormValues(formValues: ChannelFormValues, key: string, isCreate
     errors["url"] = urlError;
   }
 
-  const profileError = validateChannelProfile(formValues.profile, validProfiles);
+  const profileError = validateChannelProfile(formValues.profile, isKnownProfile);
 
   if(profileError) {
 
@@ -389,8 +401,7 @@ export function registerCrudRoutes(app: Express): void {
     }
 
     const { formValues, tags } = parseFormBody(body);
-    const profiles = getProfiles();
-    const errors = validateFormValues(formValues, key, true, profiles.map((p) => p.name));
+    const errors = validateFormValues(formValues, key, true, isKnownProfile);
 
     if(Object.keys(errors).length > 0) {
 
@@ -438,8 +449,7 @@ export function registerCrudRoutes(app: Express): void {
 
     const body = req.body as Record<string, string | undefined>;
     const { formValues, tags } = parseFormBody(body);
-    const profiles = getProfiles();
-    const errors = validateFormValues(formValues, key, false, profiles.map((p) => p.name));
+    const errors = validateFormValues(formValues, key, false, isKnownProfile);
 
     if(Object.keys(errors).length > 0) {
 

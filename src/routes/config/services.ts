@@ -10,13 +10,13 @@ import { deleteUserProfile, getUserDomains, getUserProfiles, mutateProfiles, val
   validateProfileKey } from "../../config/userProfiles.ts";
 import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.ts";
 import { exportServicePack, importServicePack, parseServicePack } from "../../config/servicePacks.ts";
+import { getBuiltinProfile, getProfiles } from "../../config/profiles.ts";
 import { getChannelListing, validateChannelUrl } from "../../config/userChannels.ts";
 import { sendErrorResponse, sendNotFoundError, sendSuccess, sendValidationError } from "./http/envelope.ts";
 import { ACTIONS } from "../clientActions.ts";
 import type { ProfileInfo } from "../../config/profiles.ts";
 import { categorizeProfiles } from "./index.ts";
 import { generateWizardModal } from "../components.ts";
-import { getProfiles } from "../../config/profiles.ts";
 
 /**
  * One field the profile wizard renders and round-trips. The same descriptor shape types both the per-strategy field lists (WIZARD_STRATEGIES) and the flat
@@ -505,18 +505,17 @@ export function setupProfileRoutes(app: Express): void {
         return;
       }
 
-      // Validate domain mappings if provided. Build the available profiles set from builtin + existing user profiles + the profile being saved.
+      // Validate domain mappings if provided. A mapping may reference any builtin profile, any profile already in the user store, or the profile being saved.
+      // Profile existence questions go through the single builtin lookup rather than an enumerated table, which is what lets a mapping name a provider profile
+      // or a provider module's registered profile - neither appears in the UI profile catalog.
       if(domainMappings && (Object.keys(domainMappings).length > 0)) {
 
-        const availableProfiles = new Set(getProfiles().map((p) => p.name));
-
-        availableProfiles.add(key);
-
+        const isKnownProfile = (name: string): boolean => Boolean(getBuiltinProfile(name)) || (name in existingProfiles) || (name === key);
         const domainErrors: string[] = [];
 
         for(const [ domain, config ] of Object.entries(domainMappings)) {
 
-          domainErrors.push(...validateDomain(domain, config, availableProfiles));
+          domainErrors.push(...validateDomain(domain, config, isKnownProfile));
         }
 
         if(domainErrors.length > 0) {
@@ -608,8 +607,9 @@ export function setupProfileRoutes(app: Express): void {
       const rawData = req.body as Record<string, unknown>;
       const skipChannels = rawData["skipChannels"] === true;
 
-      // Parse and validate the service pack. The parseServicePack function ignores unknown keys like skipChannels.
-      const parseResult = parseServicePack(rawData);
+      // Parse and validate the service pack. The skipChannels flag read above is threaded into both stages of the import, so a pack whose channels are being
+      // skipped is not judged on them: the parse leaves them out of the result and the import never looks for them.
+      const parseResult = parseServicePack(rawData, { skipChannels });
 
       if(!parseResult.pack) {
 

@@ -189,6 +189,37 @@ describe("POST /config/channels/import", () => {
     assert.equal(body["success"], true);
     assert.match(body["message"] as string, /Imported 1 channel/);
   });
+
+  test("accepts a channel whose profile names a provider profile", async () => {
+
+    /* A channel may legitimately reference a provider profile - disneyNow lives in the provider table, not the general one, and never appears in the web UI's
+     * profile picker. The handler answers the existence question through the single builtin lookup, so this document validates; an oracle built from the UI
+     * profile catalog would reject it as an unknown profile.
+     */
+    const payload = { disney: { name: "Disney Channel", profile: "disneyNow", url: "https://example.com/live.m3u8" } };
+    const { json, req, res } = makeReqRes({ body: payload });
+
+    await importer(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true, "the import succeeds; error: " + String(body["error"]));
+  });
+
+  test("rejects a channel whose profile names nothing at all", async () => {
+
+    // The complement of the case above: the lookup is wider than the UI catalog, not absent, so a name no source owns is still rejected.
+    const payload = { bogus: { name: "Bogus", profile: "noSuchProfileAnywhere", url: "https://example.com/live.m3u8" } };
+    const { json, req, res, status } = makeReqRes({ body: payload });
+
+    await importer(req, res, () => undefined);
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 400);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.match(body["error"] as string, /Unknown profile: noSuchProfileAnywhere\./);
+  });
 });
 
 describe("POST /config/channels/import-m3u", () => {

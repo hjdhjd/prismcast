@@ -258,3 +258,61 @@ describe("POST /config - parameterized preservation sweep over PRESERVED_FIELDS"
     });
   }
 });
+
+/* Text a user types or pastes into the settings form arrives with whatever the clipboard carried. A path copied out of a terminal brings a trailing newline; a
+ * value copied out of a web page can bring a zero-width space. Both are invisible in the field and both break the consumer downstream - a Chrome executable path
+ * with a stray character fails to launch. The form save routes host, path, and free-string values through the shared data-collection sanitizer, so what lands on
+ * disk is the visible content of what was submitted.
+ *
+ * These pins verify the stored bytes rather than the handler's response, because a pre-I/O assertion cannot tell a trimmed value from a padded one.
+ */
+describe("POST /config - text settings are sanitized before they are persisted", () => {
+
+  test("a padded path value is stored trimmed and stripped of non-printable characters", async () => {
+
+    /* The fixture embeds a zero-width space between two visible segments as well as surrounding padding. A bare trim would leave that character in the middle of
+     * the stored path, so this assertion is what distinguishes the shared sanitizer from a trim.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config"), {
+
+      body: JSON.stringify({ paths: { logFile: "  /var/log/prism​cast.log\n" } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "the settings POST should succeed; body: " + (await response.clone().text()).slice(0, 200));
+
+    const persisted = await readPersistedJson(ctx, "config.json");
+
+    assert.equal(getNestedValue(persisted, "paths.logFile"), "/var/log/prismcast.log", "the stored path carries only the visible content of what was submitted");
+  });
+
+  test("a padded host value is stored trimmed", async () => {
+
+    // host and path share one arm of the parse switch alongside free strings, so pinning a second type proves the arm rather than a single setting.
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config"), {
+
+      body: JSON.stringify({ server: { host: "  127.0.0.1  " } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "the settings POST should succeed; body: " + (await response.clone().text()).slice(0, 200));
+
+    const persisted = await readPersistedJson(ctx, "config.json");
+
+    assert.equal(getNestedValue(persisted, "server.host"), "127.0.0.1", "the stored host carries no padding");
+  });
+});

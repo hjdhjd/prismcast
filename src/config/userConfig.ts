@@ -3,8 +3,8 @@
  * userConfig.ts: User configuration file management for PrismCast.
  */
 import type { Config, Nullable } from "../types/index.ts";
+import { LOG, sanitizeString } from "../utils/index.ts";
 import type { CliOverrides } from "./index.ts";
-import { LOG } from "../utils/index.ts";
 import type { Migration } from "./persistence.ts";
 import { createFileStore } from "./persistence.ts";
 import { getConfigFilePath } from "./paths.ts";
@@ -1209,6 +1209,11 @@ export const DEFAULTS: Config = {
  */
 function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<boolean | number | string | string[]> | undefined {
 
+  /* The host, path, and free-string arms below run their value through the shared data-collection sanitizer, which is the treatment the settings form and the
+   * config import already give those same types. The environment deserves it for the same reason they do - a value carrying padding or a non-printable
+   * character is almost never what the operator meant - and it deserves it more, because this is the one ingress with no validation behind it: an environment
+   * value is written straight into the configuration, so anything unusual in it lands there silently instead of being refused with a message.
+   */
   switch(type) {
 
     case "boolean": {
@@ -1236,7 +1241,7 @@ function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<b
 
     case "host": {
 
-      return value;
+      return sanitizeString(value);
     }
 
     case "checkboxList": {
@@ -1247,13 +1252,23 @@ function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<b
 
     case "path": {
 
-      // An empty path env var means "use default" - return null so the downstream code sees the same sentinel as an unset config field.
-      return (value.trim() === "") ? null : value;
+      /* An empty path env var means "use default" - return null so the downstream code sees the same sentinel as an unset config field. The sanitized value is
+       * computed once and used for both the emptiness test and the return, so the sentinel decision and the stored value are made from the same text.
+       */
+      const sanitized = sanitizeString(value);
+
+      return (sanitized === "") ? null : sanitized;
+    }
+
+    case "string": {
+
+      // A free-form string setting takes the environment variable's value, cleaned of padding and non-printable characters.
+      return sanitizeString(value);
     }
 
     default: {
 
-      return value;
+      throw new Error("Unsupported setting type: " + String(type) + ".");
     }
   }
 }

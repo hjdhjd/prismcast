@@ -170,6 +170,162 @@ describe("parseServicePack", () => {
     assert.ok(result.pack?.channels?.["my-channel"]);
   });
 
+  test("rejects a channel whose url is not http or https", () => {
+
+    // The channel URL goes through the same shared check every other channel ingress uses, so a non-http(s) scheme is refused here rather than being stored and
+    // failing later at tune time. The message is composed in this file's per-channel shape so it reads like every other channel error the pack can produce.
+    const result = parseServicePack({
+
+
+      channels: {
+
+        "bad-scheme": { name: "Bad", url: "ftp://example.com/live" }
+      },
+      name: "test",
+      profiles: {
+
+        p: { extends: "fullscreenApi" }
+      },
+      version: 1
+    });
+
+    assert.match(result.errors.join(" "), /Channel 'bad-scheme': URL must use http or https protocol\./);
+    assert.equal(result.pack, undefined, "a pack carrying an unusable channel URL yields no pack");
+  });
+
+  test("accepts a pack of ordinary https channels unchanged", () => {
+
+    // The complement of the rejection case: adding the URL check must not narrow what already imports. Two well-formed channels, both kept, no errors.
+    const result = parseServicePack({
+
+
+      channels: {
+
+        "ch-one": { name: "One", url: "https://example.com/one" },
+        "ch-two": { name: "Two", url: "http://example.com/two" }
+      },
+      name: "test",
+      profiles: {
+
+        p: { extends: "fullscreenApi" }
+      },
+      version: 1
+    });
+
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.pack?.channels?.["ch-one"]);
+    assert.ok(result.pack.channels["ch-two"]);
+  });
+
+  test("one unusable channel url rejects the whole pack, profiles and valid channels included", () => {
+
+    /* The failure granularity is stated outright here because it differs from the sibling channel ingresses. errors is function-scoped and parseServicePack returns
+     * only the errors once any are present, so a mixed-validity pack yields nothing at all - not a pack with the good channel and a warning about the bad one.
+     * A service pack is a curated artifact imported as a unit, and this file already treats a missing name or url the same way.
+     */
+    const result = parseServicePack({
+
+
+      channels: {
+
+        "bad-ch": { name: "Bad", url: "javascript:alert(1)" },
+        "good-ch": { name: "Good", url: "https://example.com/good" }
+      },
+      domains: {
+
+        "custom-site.example": { profile: "p" }
+      },
+      name: "test",
+      profiles: {
+
+        p: { extends: "fullscreenApi" }
+      },
+      version: 1
+    });
+
+    assert.match(result.errors.join(" "), /Channel 'bad-ch': URL must use http or https protocol\./);
+    assert.equal(result.pack, undefined, "no pack is produced, so the valid channel, the profile, and the domain are all discarded with it");
+  });
+
+  test("skipChannels leaves an unusable channel url unjudged and the pack importable", () => {
+
+    /* The import route lets a caller take a pack's profiles and domains while ignoring its channels, and the people who reach for that are exactly the people
+     * whose packs carry channels they do not trust. Judging a channel nobody is importing would block the profiles they came for, so the flag has to reach the
+     * parse and not just the import.
+     */
+    const result = parseServicePack({
+
+
+      channels: {
+
+        "bad-scheme": { name: "Bad", url: "ftp://example.com/live" }
+      },
+      name: "test",
+      profiles: {
+
+        p: { extends: "fullscreenApi" }
+      },
+      version: 1
+    }, { skipChannels: true });
+
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.pack, "the pack survives because its channels were never judged");
+    assert.equal(result.pack.channels, undefined, "a pack parsed with channels skipped carries none, so no unvalidated channel can be imported later");
+    assert.ok(result.pack.profiles["p"], "the profiles the caller came for are present");
+  });
+
+  test("the same unusable channel url still rejects the whole pack without skipChannels", () => {
+
+    // The complement of the case above, and the one that shows the flag narrowed nothing about the validation itself: the identical pack parsed without the
+    // flag is still refused in full.
+    const result = parseServicePack({
+
+
+      channels: {
+
+        "bad-scheme": { name: "Bad", url: "ftp://example.com/live" }
+      },
+      name: "test",
+      profiles: {
+
+        p: { extends: "fullscreenApi" }
+      },
+      version: 1
+    });
+
+    assert.match(result.errors.join(" "), /Channel 'bad-scheme': URL must use http or https protocol\./);
+    assert.equal(result.pack, undefined, "without the flag the pack is still rejected in full");
+  });
+
+  test("skipChannels drops valid channels too while profiles and domains survive", () => {
+
+    // Skipping is about what the caller asked to import, not about whether the channels were any good, so a pack of perfectly valid channels loses them just
+    // the same. What must survive is everything the caller did ask for.
+    const result = parseServicePack({
+
+
+      channels: {
+
+        "good-ch": { name: "Good", url: "https://example.com/good" }
+      },
+      domains: {
+
+        "custom-site.example": { profile: "p" }
+      },
+      name: "test",
+      profiles: {
+
+        p: { extends: "fullscreenApi" }
+      },
+      version: 1
+    }, { skipChannels: true });
+
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.pack?.channels, undefined, "valid channels are dropped as well when the caller skips channels");
+    assert.ok(result.pack?.domains?.["custom-site.example"], "domain mappings survive");
+    assert.ok(result.pack.profiles["p"], "profiles survive");
+  });
+
   test("rejects channels with non-object value entries (silently ignored - boundary)", () => {
 
     // Boundary: non-object channel entries are silently dropped, not reported as errors. The pack just won't have that channel.

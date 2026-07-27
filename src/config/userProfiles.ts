@@ -2,7 +2,7 @@
  *
  * userProfiles.ts: User profile and domain mapping persistence for PrismCast.
  */
-import { DOMAIN_CONFIG, SITE_PROFILES, getBuiltinProfile, isProviderProfile } from "./sites.ts";
+import { DOMAIN_CONFIG, getBuiltinProfile, isProviderProfile } from "./sites.ts";
 import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "../types/index.ts";
 import { LOG, containsNonPrintable } from "../utils/index.ts";
 import type { Migration } from "./persistence.ts";
@@ -436,8 +436,15 @@ export function validateProfileKey(key: string, isNew: boolean): string | undefi
     return "Profile key must be 50 characters or less.";
   }
 
-  // Builtin profile keys are reserved.
-  if(key in SITE_PROFILES) {
+  /* Builtin profile keys are reserved, checked through getBuiltinProfile() so that every source counts - the general table, the provider table, and the profiles
+   * that provider modules register at import time. A profile saved under a name that any of those sources already owns is permanently shadowed at resolution,
+   * because resolution consults the builtin sources first.
+   *
+   * The reservation applies only to keys that are not already user data. A key that is present in the store is grandfathered: its shadowing is a condition that
+   * already exists, and rejecting the key here would leave that profile uneditable and undeletable behind a message asking for a name the user cannot change.
+   * Deleting a grandfathered profile and later asking for the same name again is a create, so it is rejected.
+   */
+  if(getBuiltinProfile(key) && !(key in loadedUserProfiles)) {
 
     return "Profile key '" + key + "' conflicts with a builtin profile. Choose a different name.";
   }
@@ -474,7 +481,20 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
   // a streaming service's DOM structure and cannot be meaningfully extended by user profiles.
   if(!getBuiltinProfile(profile.extends)) {
 
-    errors.push("Profile '" + key + "': extends references non-existent builtin profile '" + profile.extends + "'.");
+    /* Name the rule that was actually broken. A target that exists in the user store is a user-to-user extends hop - the shape every user profile cycle takes -
+     * and telling the user that a profile they can see does not exist sends them looking for the wrong problem. A target that exists nowhere is a typo or a
+     * reference to a deleted profile.
+     *
+     * Profiles arriving together in one import batch are validated against the store as it stands before the write, so a batch-internal reference to a sibling
+     * reads as not-found and draws the not-found message. Either message rejects, so the outcome is the same.
+     */
+    if(profile.extends in loadedUserProfiles) {
+
+      errors.push("Profile '" + key + "': extends references user profile '" + profile.extends + "'. User profiles must extend a builtin profile.");
+    } else {
+
+      errors.push("Profile '" + key + "': extends references non-existent builtin profile '" + profile.extends + "'.");
+    }
   } else if(isProviderProfile(profile.extends)) {
 
     errors.push("Profile '" + key + "': '" + profile.extends + "' is a service-specific profile and cannot be extended. " +
@@ -522,10 +542,11 @@ export function validateProfile(key: string, profile: SiteProfile): string[] {
  * and maxContinuousPlayback and videoTimeout type and range.
  * @param domain - The domain hostname.
  * @param config - The domain configuration.
- * @param availableProfiles - Set of available profile names (builtin + user, including profiles in the same import batch).
+ * @param isKnownProfile - Predicate answering whether a referenced profile name exists. Callers test each name against the single builtin lookup plus whatever
+ * user-side names apply at their site (the loaded store, an import batch, a profile being saved).
  * @returns Array of error messages (empty if valid).
  */
-export function validateDomain(domain: string, config: DomainConfig, availableProfiles: Set<string>): string[] {
+export function validateDomain(domain: string, config: DomainConfig, isKnownProfile: (name: string) => boolean): string[] {
 
   const errors: string[] = [];
 
@@ -562,8 +583,9 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
     errors.push("Domain '" + domain + "': dismissSelector must be a non-empty string.");
   }
 
-  // profile must reference an existing profile if specified.
-  if(config.profile && !availableProfiles.has(config.profile)) {
+  // profile must reference an existing profile if specified. Mapping a domain to a provider profile is coherent - the builtin DOMAIN_CONFIG entries do exactly
+  // that - so the caller's predicate decides, and it asks the single builtin lookup rather than reading any one table.
+  if(config.profile && !isKnownProfile(config.profile)) {
 
     errors.push("Domain '" + domain + "': references non-existent profile '" + config.profile + "'.");
   }
@@ -680,13 +702,11 @@ export function validateImportedProfiles(data: unknown): ProfilesValidationResul
     }
   }
 
-  // Build the set of available profile names for domain validation: builtin profiles + successfully validated user profiles from this import + existing user
-  // profiles.
-  const availableProfiles = new Set([
-    ...Object.keys(SITE_PROFILES),
-    ...Object.keys(validProfiles),
-    ...Object.keys(loadedUserProfiles)
-  ]);
+  /* A domain mapping in this batch may reference any builtin profile, any profile the batch itself just validated, or any profile already in the store. Profile
+   * existence questions go through the single builtin lookup rather than an enumerated table, so a mapping that points at a provider profile or at a profile a
+   * provider module registered resolves as known instead of being rejected as a typo.
+   */
+  const isKnownProfile = (name: string): boolean => Boolean(getBuiltinProfile(name)) || (name in validProfiles) || (name in loadedUserProfiles);
 
   // Validate domains.
   if(parsed.domains) {
@@ -698,7 +718,7 @@ export function validateImportedProfiles(data: unknown): ProfilesValidationResul
 
       for(const [ domain, config ] of Object.entries(parsed.domains)) {
 
-        const domainErrors = validateDomain(domain, config, availableProfiles);
+        const domainErrors = validateDomain(domain, config, isKnownProfile);
 
         if(domainErrors.length > 0) {
 

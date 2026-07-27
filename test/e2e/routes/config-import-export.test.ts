@@ -163,3 +163,221 @@ describe("GET /config/export - sorted-key attachment round-trips the current con
     assert.deepEqual(getNestedValue(parsed, "hls.segmentDuration"), 5, "the seeded metadata field appears in the export");
   });
 });
+
+/* The import handler validates raw JSON values, so it is the only ingress that can present a value whose runtime type is wrong. The form save coerces every
+ * submitted field to its declared type before validation, which means a form-path fixture cannot tell a type-honest validator apart from one that assumes
+ * coercion already ran - every pin below therefore goes through POST /config/import.
+ *
+ * A mistyped value that passes validation is not a cosmetic problem: it is written to config.json verbatim and read back at the next boot, so a quoted "false"
+ * for a boolean field would silently invert that setting until someone re-saved the form.
+ */
+describe("POST /config/import - values are validated by runtime type", () => {
+
+  test("a quoted boolean is rejected with the field named", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    // Seed a value so config.json exists on disk and the no-mutation assertion below has a before-state to compare against.
+    await mutateConfig((config) => {
+
+      config.hls ??= {};
+      config.hls.segmentDuration = 5;
+    });
+
+    const before = await readPersistedJson(ctx, "config.json");
+
+    const response = await fetch(urlFor("/config/import"), {
+
+      body: JSON.stringify({ hdhr: { enabled: "false" } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 400, "a string in a boolean field is a validation error");
+
+    const body = await response.json() as { error: string; success: boolean };
+
+    assert.equal(body.success, false, "the error envelope carries success: false");
+    assert.match(body.error, /HDHomeRun/, "the error names the field that failed; got: " + body.error);
+
+    assert.deepEqual(await readPersistedJson(ctx, "config.json"), before, "a rejected import must not modify config.json");
+  });
+
+  test("a quoted number in a port field is rejected even when the number itself is in range", async () => {
+
+    /* 5589 sits inside the port field's declared 1-65535 range, so the pre-existing bounds check has nothing to say about it. Only the runtime type check can
+     * reject this document, which is what makes the fixture prove the type check rather than the bounds check.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config/import"), {
+
+      body: JSON.stringify({ server: { port: "5589" } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 400, "an in-range numeric string in a port field is a validation error");
+  });
+
+  test("a quoted number in a float field is rejected", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config/import"), {
+
+      body: JSON.stringify({ playback: { stallThreshold: "0.5" } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 400, "an in-range numeric string in a float field is a validation error");
+  });
+
+  test("a number in a free-string field is rejected", async () => {
+
+    // hdhr.friendlyName declares no validValues, so it takes the free-string arm of the validator - the arm with no constraint other than being a string.
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config/import"), {
+
+      body: JSON.stringify({ hdhr: { friendlyName: 42 } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 400, "a number in a free-string field is a validation error");
+  });
+
+  test("a number in a path field is rejected", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config/import"), {
+
+      body: JSON.stringify({ paths: { logFile: 42 } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 400, "a number in a path field is a validation error");
+  });
+
+  test("a cleared path imports cleanly as an empty string and as null", async () => {
+
+    // The guard at the top of the validator treats both forms as "autodetect". Both are shapes a real export or a hand-edit produces, and neither is a type error.
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    /**
+     * Posts an import document whose only entry is a cleared path value.
+     * @param cleared - The cleared form to send, either the empty string or null.
+     * @returns The import response.
+     */
+    const importClearedPath = async (cleared: string | null): Promise<Response> => fetch(urlFor("/config/import"), {
+
+      body: JSON.stringify({ browser: { executablePath: cleared } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    const emptyStringResponse = await importClearedPath("");
+    const nullResponse = await importClearedPath(null);
+
+    assert.equal(emptyStringResponse.status, 200, "an empty-string path imports cleanly; body: " + (await emptyStringResponse.text()).slice(0, 200));
+    assert.equal(nullResponse.status, 200, "a null path imports cleanly; body: " + (await nullResponse.text()).slice(0, 200));
+  });
+
+  test("a well-typed export re-imports cleanly", async () => {
+
+    /* The parity round-trip, built from a REAL export rather than a hand-written fixture, so it cannot drift from the shape the export endpoint actually emits.
+     * Every value in that document carries the type its metadata declares, so the stricter validators have to accept all of them.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    /* Each seeded value differs from its default, because the file store strips default-equal values on write - a value equal to its default would be absent
+     * from both the export and the post-import file, and the assertions below could not tell a successful round-trip from a dropped field.
+     */
+    await mutateConfig((config) => {
+
+      config.hdhr ??= {};
+      config.hdhr.enabled = false;
+      config.hls ??= {};
+      config.hls.segmentDuration = 5;
+      config.playback ??= {};
+      config.playback.stallThreshold = 0.5;
+      config.server ??= {};
+      config.server.port = 5599;
+    });
+
+    const exported = await (await fetch(urlFor("/config/export"))).text();
+
+    const response = await fetch(urlFor("/config/import"), {
+
+      body: exported,
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "a well-typed export re-imports cleanly; body: " + (await response.clone().text()).slice(0, 200));
+
+    const persisted = await readPersistedJson(ctx, "config.json");
+
+    assert.equal(getNestedValue(persisted, "server.port"), 5599, "the round-tripped port survives");
+    assert.equal(getNestedValue(persisted, "playback.stallThreshold"), 0.5, "the round-tripped float survives");
+    assert.equal(getNestedValue(persisted, "hdhr.enabled"), false, "the round-tripped boolean survives");
+  });
+
+  test("a padded text value in the imported document is stored sanitized", async () => {
+
+    /* The value that reaches disk has to be the value that was validated. The handler sanitizes text values in the document itself before validating, because
+     * the merge at the end of the handler reads the document - writing the sanitized value anywhere else would validate one value and persist another. The
+     * fixture embeds a zero-width space as well as padding, so an implementation that reached for a bare trim would fail on the stored value.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    const response = await fetch(urlFor("/config/import"), {
+
+      body: JSON.stringify({ hdhr: { friendlyName: "  Living\u200BRoom  " } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "a padded text value imports cleanly; body: " + (await response.clone().text()).slice(0, 200));
+
+    const persisted = await readPersistedJson(ctx, "config.json");
+
+    assert.equal(getNestedValue(persisted, "hdhr.friendlyName"), "LivingRoom", "the stored value is trimmed and stripped of non-printable characters");
+  });
+});

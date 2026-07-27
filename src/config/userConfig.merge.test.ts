@@ -155,6 +155,55 @@ describe("mergeConfiguration", () => {
     assert.equal(result.paths.logFile, null, "empty path env var means use default (null)");
   });
 
+  test("text env vars are sanitized at the ingress across all three text types", () => {
+
+    /* The host, path, and string arms all clean their value the way the settings form and the config import already clean these same types. Each vehicle below
+     * carries both kinds of contamination the sanitizer exists for: surrounding padding, and an embedded non-printable character that no amount of trimming
+     * would remove. Reaching CONFIG uncleaned matters here because nothing downstream validates an environment value - a host with a trailing newline or a path
+     * with an embedded null byte would be used as written.
+     */
+    process.env["HOST"] = "  192.168.1.50\u0000  ";
+    process.env["HDHR_FRIENDLY_NAME"] = " Living\u200bRoom Tuner ";
+    process.env["PRISMCAST_LOG_FILE"] = "  /var/log/prismcast.log\u0000 ";
+
+    const result = mergeConfiguration({});
+
+    assert.equal(result.server.host, "192.168.1.50", "the host env var is trimmed and stripped of non-printables");
+    assert.equal(result.hdhr.friendlyName, "LivingRoom Tuner", "the string env var is trimmed and stripped of non-printables");
+    assert.equal(result.paths.logFile, "/var/log/prismcast.log", "the path env var is trimmed and stripped of non-printables");
+  });
+
+  test("a path env var yields the null sentinel when it holds nothing visible", () => {
+
+    /* Two boundaries share one arm. A whitespace-only value has always collapsed to the sentinel, because trimming alone is enough to empty it. A value made
+     * entirely of non-printable characters does not - trimming leaves it intact - so it is the case that separates cleaning from trimming. Both must land on
+     * null, because a path holding nothing visible means "use the default", and for paths.logFile the alternative is a value that fails the absolute-path check
+     * and takes startup down with it.
+     */
+    process.env["PRISMCAST_LOG_FILE"] = "   ";
+
+    assert.equal(mergeConfiguration({}).paths.logFile, null, "a whitespace-only path env var means use the default");
+
+    process.env["PRISMCAST_LOG_FILE"] = "\u0001";
+
+    assert.equal(mergeConfiguration({}).paths.logFile, null, "a path env var holding only a control character means use the default");
+  });
+
+  test("the non-text arms are left alone - a padded boolean env var is still not truthy", () => {
+
+    /* Scope pin. Sanitization covers exactly the text types named by TEXT_SETTING_TYPES, which is the codebase's own definition of a text setting, and nothing
+     * beyond them. The boolean arm compares the raw lowercased value against its accepted words, so a padded "true" matches none of them and the arm returns
+     * false. Note what that means here: the default for this setting is true, so the override still applies and turns it off - the padded value is not ignored,
+     * it is read as a negative. Widening sanitization to this arm would make the padded value match and flip the result back to true, which is why the
+     * assertion is written against the padded form.
+     */
+    process.env["HDHR_ENABLED"] = " true ";
+
+    const result = mergeConfiguration({});
+
+    assert.equal(result.hdhr.enabled, false, "the boolean arm does not trim, so a padded value does not read as true");
+  });
+
   test("integer env var with invalid value falls through for non-PORT settings (e.g., VIDEO_BITRATE)", () => {
 
     /* The merge has integer-parsing fall-through for every integer field, not just PORT. We pin VIDEO_BITRATE to lock that the per-type branch fires

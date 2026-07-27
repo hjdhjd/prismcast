@@ -3,7 +3,7 @@
  * servicePacks.ts: Service pack import/export logic for PrismCast.
  */
 import type { ChannelMap, DomainConfig, ProfilesValidationResult, ServicePack, SiteProfile } from "../types/index.ts";
-import { getChannelListing, mutateChannels } from "./userChannels.ts";
+import { getChannelListing, mutateChannels, validateChannelUrl } from "./userChannels.ts";
 import { getUserDomains, getUserProfiles, mutateProfiles, normalizeLegacyProfileFlags, validateImportedProfiles } from "./userProfiles.ts";
 import { sanitizeString } from "../utils/index.ts";
 
@@ -53,9 +53,11 @@ export interface ImportSummary {
  * Parses and validates a raw service pack import. Checks the version field, validates profiles and domains via the userProfiles validation functions, validates
  * channel structure (each channel requires 'name' and 'url'), and sanitizes the pack name and channel string fields to strip non-printable characters.
  * @param data - The raw JSON data to parse.
+ * @param options - Parse options. skipChannels leaves the pack's channels out of both the validation and the result, matching the option of the same name on
+ *   importServicePack so one name means one thing across both stages of an import.
  * @returns Parse result with validated pack or errors.
  */
-export function parseServicePack(data: unknown): ParseResult {
+export function parseServicePack(data: unknown, options: { skipChannels?: boolean } = {}): ParseResult {
 
   const errors: string[] = [];
 
@@ -111,10 +113,15 @@ export function parseServicePack(data: unknown): ParseResult {
     return { errors: validationResult.errors };
   }
 
-  // Validate channels if present using basic checks (full channel validation happens on import).
+  /* Validate channels if present using basic checks (full channel validation happens on import).
+   *
+   * A caller that asks to skip channels gets the whole block skipped, not merely the validation: channels nobody is importing are not judged, so a pack someone
+   * wants only the profiles from is never held back by a channel they never asked for. The result carries no channels either, which keeps "parsed with channels
+   * skipped" from producing a pack whose channels were never checked - a later import without the flag would otherwise take unvalidated data.
+   */
   const channels: ChannelMap = {};
 
-  if(raw["channels"]) {
+  if(!options.skipChannels && raw["channels"]) {
 
     if((typeof raw["channels"] !== "object") || Array.isArray(raw["channels"])) {
 
@@ -130,9 +137,27 @@ export function parseServicePack(data: unknown): ParseResult {
 
           if((typeof ch["url"] === "string") && (typeof ch["name"] === "string")) {
 
-            // Sanitize channel string fields to strip non-printable characters before storing.
+            // Sanitize channel string fields to strip non-printable characters before storing. The URL's cleaned value is held in a local so the check below
+            // judges exactly the text that gets stored.
+            const sanitizedUrl = sanitizeString(ch["url"]);
+
             ch["name"] = sanitizeString(ch["name"]);
-            ch["url"] = sanitizeString(ch["url"]);
+            ch["url"] = sanitizedUrl;
+
+            /* Judge the sanitized value, matching the order every other channel ingress uses, so a padded or non-printable-bearing URL is cleaned before it is
+             * measured against the rule. The rule itself is the shared channel-URL check rather than a copy of it.
+             *
+             * Note the failure granularity here, which differs from the sibling ingresses on purpose. errors is function-scoped and parseServicePack returns
+             * only the errors once any are present, so a single bad channel URL rejects the whole pack - profiles, domains, and every valid channel included.
+             * importExport.ts and userChannels.ts skip a bad channel and keep going. This file already rejects the whole pack for a missing name or url, and a
+             * service pack is a curated artifact imported as a unit, so all-or-nothing is the behavior that fits it.
+             */
+            const urlError = validateChannelUrl(sanitizedUrl);
+
+            if(urlError) {
+
+              errors.push("Channel '" + key + "': " + urlError);
+            }
 
             if(typeof ch["channelSelector"] === "string") {
 

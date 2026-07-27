@@ -33,18 +33,21 @@ export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, 
  */
 
 /**
- * Resolves a named profile from SITE_PROFILES, handling inheritance and merging with the default profile to ensure all required properties are present. Inheritance
- * is resolved recursively, with child profile properties overriding parent properties.
+ * Resolves a named profile from any builtin source or the user profile store, following its inheritance chain and merging with the default profile so that every
+ * behavior flag has a value.
  *
  * The resolution process:
  *
- * 1. Start with a copy of DEFAULT_SITE_PROFILE.
- * 2. If the profile extends another, recursively resolve the parent and merge its properties.
- * 3. Merge the current profile's properties, overriding any inherited values.
- * 4. Return the fully-resolved profile with all flags set.
+ * 1. Follow extends hops outward from the named profile, collecting each profile that resolves into an ordered chain.
+ * 2. Start with a copy of DEFAULT_SITE_PROFILE.
+ * 3. Apply the collected chain from the root ancestor forward, so that a child's values override the values of what it extends.
  *
- * Metadata properties (category, description, extends, summary) are stripped during resolution - they exist only for UI categorization, documentation, inheritance
- * specification, and UI display.
+ * Resolution is total over any stored data: a name that resolves to nothing, whether it is unknown or is reached through a chain that closes back on itself,
+ * contributes nothing, and the flags collected before that point still apply over the defaults. Rule violations in stored profiles are reported by
+ * validateProfiles(), not here.
+ *
+ * Metadata properties (category, description, extends, summary) are stripped from every chain entry during resolution - they exist only for UI categorization,
+ * documentation, inheritance specification, and UI display.
  *
  * @param profileName - The name of the profile to resolve.
  * @returns The merged site profile containing all behavior flags.
@@ -57,31 +60,49 @@ export function resolveProfile(profileName: string | undefined): ResolvedSitePro
     return { ...DEFAULT_SITE_PROFILE };
   }
 
-  // Check all profile sources: static builtin tables (general + provider) and registered provider module profiles via getBuiltinProfile(), then user-defined
-  // profiles. User profiles can only extend builtin profiles (not other user profiles), so the resolution chain always terminates at a builtin profile.
-  const profile = getBuiltinProfile(profileName) ?? (getUserProfiles()[profileName]);
+  const chain: SiteProfile[] = [];
+  const visited = new Set<string>();
+  let userProfiles: Record<string, SiteProfile> | undefined;
+  let current: string | undefined = profileName;
 
-  if(!profile) {
+  /* Walk the extends chain from the named profile toward its root ancestor. The visited set bounds the walk: a name already collected ends the collection, so a
+   * stored profile whose chain points back into itself resolves to the flags gathered before the loop closed instead of exhausting the stack.
+   *
+   * Resolution stays silent about both a name that resolves to nothing and a chain that closes on itself - it degrades to whatever it collected over the
+   * defaults, which is how an entirely unknown name resolves as well. Reporting a rule violation in stored data belongs to the validation layer, which runs at
+   * every ingress (startup, profile editor save, service pack import); a message from here would restate a fixed condition at request frequency on the playlist,
+   * channel table, and tune paths.
+   */
+  while(current && !visited.has(current)) {
 
-    return { ...DEFAULT_SITE_PROFILE };
+    visited.add(current);
+
+    // Check all profile sources: static builtin tables (general + provider) and registered provider module profiles via getBuiltinProfile(), then user-defined
+    // profiles. The user map is a snapshot copy, so it is taken at most once per resolution and only once a name misses every builtin source - resolving the
+    // builtin chains that the playlist, table, and tune paths ask for never copies it.
+    const profile: SiteProfile | undefined = getBuiltinProfile(current) ?? ((userProfiles ??= getUserProfiles())[current]);
+
+    if(!profile) {
+
+      break;
+    }
+
+    chain.push(profile);
+    current = profile.extends;
   }
 
-  // Start with default values. This ensures all flags have a value even if not specified in the profile.
+  // Start with default values. This ensures all flags have a value even if not specified in any profile along the chain.
   let resolved: ResolvedSiteProfile = { ...DEFAULT_SITE_PROFILE };
 
-  // Apply parent profile first if inheritance exists. This allows child profiles to override parent properties while inheriting the rest.
-  if(profile.extends) {
+  // Apply the chain from the root ancestor forward, which is what gives a child profile precedence over what it extends. Every entry sheds its metadata fields
+  // on the way in: the category, description, extends, and summary properties are for UI categorization, documentation, inheritance specification, and UI
+  // display only, and belong to no resolved profile at any depth.
+  for(const profile of chain.toReversed()) {
 
-    const parent = resolveProfile(profile.extends);
+    const { category: _category, description: _description, extends: _extends, summary: _summary, ...profileFlags } = profile;
 
-    resolved = { ...resolved, ...parent };
+    resolved = { ...resolved, ...profileFlags };
   }
-
-  // Apply current profile properties, excluding metadata fields that should not be in the resolved profile. The category, description, extends, and summary
-  // properties are for UI categorization, documentation, inheritance specification, and UI display only.
-  const { category: _category, description: _description, extends: _extends, summary: _summary, ...profileFlags } = profile;
-
-  resolved = { ...resolved, ...profileFlags };
 
   return resolved;
 }
@@ -340,7 +361,10 @@ export function validateProfiles(): void {
   // Validate user-defined profiles and domain mappings. These are warnings, not fatal errors - broken user profiles should not prevent the server from starting.
   // The user can fix them via the web UI.
   const userWarnings: string[] = [];
-  const allProfileNames = new Set(allBuiltinProfiles.keys()).union(new Set(Object.keys(userProfiles)));
+
+  // A user domain mapping may reference any builtin profile or any profile in the user store. Profile existence questions go through the single builtin lookup
+  // rather than an enumerated table, so a mapping onto a provider profile or a provider module's registered profile validates as known.
+  const isKnownProfile = (name: string): boolean => Boolean(getBuiltinProfile(name)) || (name in userProfiles);
 
   for(const [ key, profile ] of Object.entries(userProfiles)) {
 
@@ -353,7 +377,7 @@ export function validateProfiles(): void {
 
   for(const [ domain, config ] of Object.entries(userDomains)) {
 
-    const domainErrors = validateDomain(domain, config, allProfileNames);
+    const domainErrors = validateDomain(domain, config, isKnownProfile);
 
     userWarnings.push(...domainErrors);
   }

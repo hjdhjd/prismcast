@@ -14,7 +14,7 @@ import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
 import { getAllStreams, getNextStreamId } from "./registry.ts";
 import { getAuthDomainForChannel, getServiceDisplayName, resolveServiceKey } from "../config/services.ts";
-import { getProfileForChannel, getProfileForUrl, getProfiles, resolveProfile } from "../config/profiles.ts";
+import { getBuiltinProfile, getProfileForChannel, getProfileForUrl, resolveProfile } from "../config/profiles.ts";
 import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
 import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
 import { CONFIG } from "../config/index.ts";
@@ -29,6 +29,7 @@ import { getCaptureMimeType } from "./codec.ts";
 import { getDomainAuthState } from "../config/health.ts";
 import { getDomainConfig } from "../config/sites.ts";
 import { getEffectiveViewport } from "../config/presets.ts";
+import { getUserProfiles } from "../config/userProfiles.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
@@ -1005,9 +1006,9 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     // Apply profile override if specified.
     if(profileOverride) {
 
-      const validProfiles = getProfiles().map((p) => p.name);
-
-      if(validProfiles.includes(profileOverride)) {
+      // An override may name any profile that exists: a builtin from any source through the single lookup, or one of the user's own. The UI profile catalog is
+      // not the oracle here - it omits the provider profiles, which a direct override may legitimately ask for.
+      if(Boolean(getBuiltinProfile(profileOverride)) || (profileOverride in getUserProfiles())) {
 
         profile = resolveProfile(profileOverride);
         profileName = profileOverride;

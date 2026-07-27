@@ -8,6 +8,7 @@ import { describe, test } from "node:test";
 import { normalizeLegacyProfileFlags, validateDomain, validateImportedProfiles, validateProfile, validateProfileKey } from "./userProfiles.ts";
 import type { SiteProfile } from "../types/index.ts";
 import assert from "node:assert/strict";
+import { registerProviderModuleProfile } from "./sites.ts";
 
 describe("normalizeLegacyProfileFlags", () => {
 
@@ -109,8 +110,31 @@ describe("validateProfileKey", () => {
 
   test("rejects keys that collide with builtin profiles", () => {
 
+    /* These names live in the general SITE_PROFILES table. Every call here passes isNew=false - the framing an import takes - and is still rejected, which is
+     * also the pin against gating the builtin check on the isNew flag: an implementation that only reserved builtin names while creating would let an import
+     * introduce a shadowed key here.
+     */
     assert.match(validateProfileKey("keyboardFullscreen", false) ?? "", /conflicts with a builtin/);
     assert.match(validateProfileKey("fullscreenApi", false) ?? "", /conflicts with a builtin/);
+  });
+
+  test("rejects a key that collides with a provider profile", () => {
+
+    // disneyNow lives in the PROVIDER_PROFILES table rather than the general one. A profile saved under this name would be permanently shadowed at resolution,
+    // because resolution consults every builtin source before the user store.
+    assert.match(validateProfileKey("disneyNow", true) ?? "", /conflicts with a builtin/);
+    assert.match(validateProfileKey("disneyPlus", false) ?? "", /conflicts with a builtin/);
+  });
+
+  test("rejects a key that collides with a profile a provider module registered", () => {
+
+    /* Provider modules register their profiles at import time, so those names exist in neither static table. The registry has no unregister call and this
+     * process outlives the test, so the name below is deliberately synthetic and used by no other suite - registering a real provider name here would collide
+     * with the static-table guard in registerProviderModuleProfile.
+     */
+    registerProviderModuleProfile("syntheticProviderProfileForKeyValidation", { description: "Registered by this test only.", extends: "fullscreenApi" });
+
+    assert.match(validateProfileKey("syntheticProviderProfileForKeyValidation", true) ?? "", /conflicts with a builtin/);
   });
 
   test("isNew=true returns undefined for a non-colliding key (no duplicate among loaded user profiles in unit-test state)", () => {
@@ -264,93 +288,97 @@ describe("validateProfile", () => {
 
 describe("validateDomain", () => {
 
+  // The profile-reference check consults a caller-supplied predicate rather than a name table, so each case supplies the oracle its assertion needs. Cases that
+  // exercise a check unrelated to the profile field answer that no name is known.
+  const noKnownProfiles = (): boolean => false;
+
   test("rejects empty domain", () => {
 
-    const errors = validateDomain("", {}, new Set());
+    const errors = validateDomain("", {}, noKnownProfiles);
 
     assert.match(errors[0] ?? "", /required/);
   });
 
   test("rejects domain with invalid hostname format (missing TLD)", () => {
 
-    const errors = validateDomain("nodot", {}, new Set());
+    const errors = validateDomain("nodot", {}, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("invalid hostname format")));
   });
 
   test("accepts a valid domain", () => {
 
-    const errors = validateDomain("custom-site.example", {}, new Set());
+    const errors = validateDomain("custom-site.example", {}, noKnownProfiles);
 
     assert.equal(errors.length, 0);
   });
 
   test("rejects collision with builtin DOMAIN_CONFIG entry", () => {
 
-    const errors = validateDomain("hulu.com", {}, new Set());
+    const errors = validateDomain("hulu.com", {}, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("already mapped to builtin service")));
   });
 
-  test("rejects profile reference that's not in the available set", () => {
+  test("rejects a profile reference the caller's predicate does not recognize", () => {
 
-    const errors = validateDomain("custom-site.example", { profile: "missing-profile" }, new Set(["other-profile"]));
+    const errors = validateDomain("custom-site.example", { profile: "missing-profile" }, (name) => name === "other-profile");
 
     assert.ok(errors.some((e) => e.includes("references non-existent profile")));
   });
 
-  test("accepts profile reference that is in the available set", () => {
+  test("accepts a profile reference the caller's predicate recognizes", () => {
 
-    const errors = validateDomain("custom-site.example", { profile: "myProfile" }, new Set(["myProfile"]));
+    const errors = validateDomain("custom-site.example", { profile: "myProfile" }, (name) => name === "myProfile");
 
     assert.equal(errors.length, 0);
   });
 
   test("rejects empty service string", () => {
 
-    const errors = validateDomain("custom-site.example", { service: "" }, new Set());
+    const errors = validateDomain("custom-site.example", { service: "" }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("service must be a non-empty string")));
   });
 
   test("rejects empty serviceTag", () => {
 
-    const errors = validateDomain("custom-site.example", { serviceTag: "" }, new Set());
+    const errors = validateDomain("custom-site.example", { serviceTag: "" }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("serviceTag must be a non-empty string")));
   });
 
   test("rejects loginUrl that's not a valid URL", () => {
 
-    const errors = validateDomain("custom-site.example", { loginUrl: "not a url" }, new Set());
+    const errors = validateDomain("custom-site.example", { loginUrl: "not a url" }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("not a valid URL")));
   });
 
   test("rejects loginUrl with non-http(s) protocol", () => {
 
-    const errors = validateDomain("custom-site.example", { loginUrl: "ftp://example.com" }, new Set());
+    const errors = validateDomain("custom-site.example", { loginUrl: "ftp://example.com" }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("must use http or https")));
   });
 
   test("accepts a valid http loginUrl", () => {
 
-    const errors = validateDomain("custom-site.example", { loginUrl: "https://login.example.com" }, new Set());
+    const errors = validateDomain("custom-site.example", { loginUrl: "https://login.example.com" }, noKnownProfiles);
 
     assert.equal(errors.length, 0);
   });
 
   test("rejects negative or zero maxContinuousPlayback", () => {
 
-    const errors = validateDomain("custom-site.example", { maxContinuousPlayback: 0 }, new Set());
+    const errors = validateDomain("custom-site.example", { maxContinuousPlayback: 0 }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("maxContinuousPlayback must be a positive number")));
   });
 
   test("rejects non-integer videoTimeout", () => {
 
-    const errors = validateDomain("custom-site.example", { videoTimeout: 1.5 }, new Set());
+    const errors = validateDomain("custom-site.example", { videoTimeout: 1.5 }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("videoTimeout must be a positive integer")));
   });
@@ -360,14 +388,14 @@ describe("validateDomain", () => {
     /* The validator accepts a missing dismissSelector but rejects an explicit empty string. Pins the asymmetry so a future refactor that flipped to "any
      * string is fine" loses no signal here.
      */
-    const errors = validateDomain("custom-site.example", { dismissSelector: "" }, new Set());
+    const errors = validateDomain("custom-site.example", { dismissSelector: "" }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("dismissSelector must be a non-empty string")));
   });
 
   test("rejects a non-string dismissSelector (defensive against hand-edited JSON)", () => {
 
-    const errors = validateDomain("custom-site.example", { dismissSelector: 42 as unknown as string }, new Set());
+    const errors = validateDomain("custom-site.example", { dismissSelector: 42 as unknown as string }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("dismissSelector must be a non-empty string")));
   });
@@ -377,7 +405,7 @@ describe("validateDomain", () => {
     /* Companion to the non-integer rejection: the validator also rejects zero and negative integer values. We test -1 to lock the lower bound; positive
      * integers and the existing non-integer rejection cover the rest of the space.
      */
-    const errors = validateDomain("custom-site.example", { videoTimeout: -1 }, new Set());
+    const errors = validateDomain("custom-site.example", { videoTimeout: -1 }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("videoTimeout must be a positive integer")));
   });
@@ -387,14 +415,14 @@ describe("validateDomain", () => {
     /* The validator's Number.isFinite gate rejects Infinity and NaN explicitly, beyond the typeof === number check. Pins the gate so a refactor that loosened
      * to typeof-only would surface here.
      */
-    const errors = validateDomain("custom-site.example", { maxContinuousPlayback: Number.POSITIVE_INFINITY }, new Set());
+    const errors = validateDomain("custom-site.example", { maxContinuousPlayback: Number.POSITIVE_INFINITY }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("maxContinuousPlayback must be a positive number")));
   });
 
   test("rejects Infinity for videoTimeout (Number.isFinite gate)", () => {
 
-    const errors = validateDomain("custom-site.example", { videoTimeout: Number.POSITIVE_INFINITY }, new Set());
+    const errors = validateDomain("custom-site.example", { videoTimeout: Number.POSITIVE_INFINITY }, noKnownProfiles);
 
     assert.ok(errors.some((e) => e.includes("videoTimeout must be a positive integer")));
   });
@@ -474,9 +502,9 @@ describe("validateImportedProfiles", () => {
 
   test("a domain referencing a profile from the same import batch resolves to that profile", () => {
 
-    /* The cross-reference rule: the import builds an availableProfiles set that includes builtin profiles + profiles validated earlier in this batch +
-     * existing user profiles. A domain mapping that references a profile validated within the SAME batch must resolve cleanly without "non-existent profile"
-     * errors. Pins that the in-batch resolution actually fires (a regression that built availableProfiles only from builtins would fail here).
+    /* The cross-reference rule: a referenced name counts as known when it is a builtin, a profile validated earlier in this same batch, or a profile already in
+     * the store. A domain mapping that references a profile validated within the SAME batch must resolve cleanly without "non-existent profile" errors. Pins
+     * that in-batch resolution actually fires (an implementation that only recognized builtins would fail here).
      */
     const result = validateImportedProfiles({
 
@@ -494,6 +522,23 @@ describe("validateImportedProfiles", () => {
     assert.equal(result.valid, true, "domain referencing a same-batch profile is valid");
     assert.ok(result.profiles["newCustomProfile"], "profile included in result");
     assert.ok(result.domains["custom-cross-ref.example"], "domain included in result");
+  });
+
+  test("a domain referencing a provider profile is accepted", () => {
+
+    /* Mapping a domain onto a provider profile is coherent - the builtin DOMAIN_CONFIG entries do exactly that - so an imported mapping naming one has to
+     * validate. disneyNow is absent from the general profile table, so only a check that asks every builtin source can accept this document.
+     */
+    const result = validateImportedProfiles({
+
+      domains: {
+
+        "provider-ref.example": { profile: "disneyNow" }
+      }
+    });
+
+    assert.equal(result.valid, true, "a domain naming a provider profile is valid; errors: " + result.errors.join(" "));
+    assert.ok(result.domains["provider-ref.example"], "the domain mapping is collected");
   });
 });
 

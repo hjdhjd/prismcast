@@ -2909,10 +2909,11 @@ export function validateChannelName(name: string): string | undefined {
 /**
  * Validates a profile name.
  * @param profile - The profile name to validate (can be empty for autodetect).
- * @param validProfiles - Array of valid profile names.
+ * @param isKnownProfile - Predicate answering whether a profile name exists. Callers test each name against the single builtin lookup plus the user's own
+ * profiles, so that a channel may reference a provider profile as well as a general or user-defined one.
  * @returns Error message if invalid, undefined if valid.
  */
-export function validateChannelProfile(profile: string | undefined, validProfiles: string[]): string | undefined {
+export function validateChannelProfile(profile: string | undefined, isKnownProfile: (name: string) => boolean): string | undefined {
 
   // Empty profile means autodetect, which is valid.
   if(!profile || (profile.trim() === "")) {
@@ -2920,10 +2921,13 @@ export function validateChannelProfile(profile: string | undefined, validProfile
     return undefined;
   }
 
-  // Check if profile exists.
-  if(!validProfiles.includes(profile)) {
+  /* Check if profile exists. The message names the rejected value alone. The set of acceptable names includes the provider profiles, which the web UI's profile
+   * picker deliberately omits, so spelling that set out here would offer names the picker will never present. The picker is the discovery surface for a valid
+   * profile name; this message's job is to say which value was not one.
+   */
+  if(!isKnownProfile(profile)) {
 
-    return "Unknown profile: " + profile + ". Valid profiles: " + validProfiles.join(", ") + ".";
+    return "Unknown profile: " + profile + ".";
   }
 
   return undefined;
@@ -2947,10 +2951,10 @@ export interface ChannelsValidationResult {
 /**
  * Validates an imported channels object for structure and content.
  * @param data - The raw imported data to validate.
- * @param validProfiles - Array of valid profile names.
+ * @param isKnownProfile - Predicate answering whether a referenced profile name exists, passed through to the per-channel profile check.
  * @returns Validation result with errors if invalid.
  */
-export function validateImportedChannels(data: unknown, validProfiles: string[]): ChannelsValidationResult {
+export function validateImportedChannels(data: unknown, isKnownProfile: (name: string) => boolean): ChannelsValidationResult {
 
   const errors: string[] = [];
 
@@ -3025,7 +3029,7 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
 
     // Validate optional profile field. Sanitize after type check.
     const profile = (typeof channelData["profile"] === "string") ? sanitizeString(channelData["profile"]) : undefined;
-    const profileError = validateChannelProfile(profile, validProfiles);
+    const profileError = validateChannelProfile(profile, isKnownProfile);
 
     if(profileError) {
 
