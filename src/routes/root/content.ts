@@ -266,7 +266,8 @@ export function generateOverviewContent(baseUrl: string): string {
 }
 
 /**
- * Generates the Help tab content with updating instructions, platform notes, troubleshooting, and known limitations.
+ * Generates the Help tab content with updating instructions, backup and migration guidance, display and resolution requirements, platform notes,
+ * troubleshooting, and known limitations.
  * @returns HTML content for the Help tab.
  */
 export function generateHelpContent(): string {
@@ -793,7 +794,8 @@ export function generateApiReferenceContent(): string {
 }
 
 /**
- * Generates the Channels tab content. This wraps the channels panel from config.ts and includes the login modal for channel authentication.
+ * Generates the Channels tab content. This wraps the channels panel from routes/config/channels/table.ts, the Custom Profiles panel and
+ * profile wizard modal from routes/config/services.ts, and includes the profile-test dialog and the login modal for channel authentication.
  * @returns HTML content for the Channels tab.
  */
 export function generateChannelsTabContent(): string {

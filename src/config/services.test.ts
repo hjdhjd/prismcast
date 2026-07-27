@@ -451,7 +451,8 @@ describe("getServiceTagForChannel: missing-channel fallback", () => {
     setServiceSelections({});
     buildServiceGroups({});
 
-    // The key is not in PREDEFINED_CHANNELS either, so both lookup sources miss and the fallback path (lines 113-116) returns the sentinel.
+    // The key is not in PREDEFINED_CHANNELS either, so both lookup sources miss and the getServiceTagForChannel fallback for an
+    // unresolved channel (its "if(!channel) return direct" branch) returns the sentinel.
     assert.equal(PREDEFINED_CHANNELS["definitely-not-a-real-channel-key-q7z"], undefined, "guard: the probe key is genuinely unknown");
     assert.equal(getServiceTagForChannel("definitely-not-a-real-channel-key-q7z"), "direct");
   });

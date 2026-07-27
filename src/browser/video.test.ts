@@ -374,7 +374,8 @@ describe("injectVideoSelector", () => {
   test("a second call results in a second registration (idempotency is not enforced at this layer)", async () => {
 
     // Boundary: the helper does not gate on a registered flag - duplicate calls register duplicate handlers, so the injected script runs twice on each new document.
-    // Each run merely reassigns the same idempotent window.__prismcastSelectVideo global, so the net effect is a no-op; we lock the surface contract here.
+    // Each run merely reassigns the same window.__prismcastSelectVideo global, which is safe to call more than once, so the net effect is a no-op; we lock the
+    // surface contract here.
     const { page, stub } = makePageStub();
 
     await injectVideoSelector(page);

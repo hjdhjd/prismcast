@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * variant-vs-canonical.test.ts: Integration coverage for variant resolution invariants. A predefined channel can have multiple service variants (e.g., abc
+ * variant-vs-canonical.test.ts: Integration coverage for the rules governing variant resolution. A predefined channel can have multiple service variants (e.g., abc
  * has abc-hulu, abc-yttv, etc.); the user selects which service to use via setServiceSelection, and the resolved channel layers identity from the canonical
  * with binding from the variant. Switching the active service must update the binding (url, channelSelector, channelSelection) without disturbing the
  * identity (name, channelNumber, stationId, tags, etc.).
@@ -99,8 +99,8 @@ describe("default canonical resolution for multi-service predefined channels", (
 
   /* The canonical resolution rule documented in the "Canonical resolution rules" comment in src/channels/index.ts: if "site" exists in services, the canonical
    * always gets the site URL; otherwise, the alphabetically-first service key (computed via Object.keys().sort(), not source-order) becomes canonical.
-   * Re-pinning this as an integration-level invariant means a future flattener change that breaks the rule fails this suite immediately rather than surfacing
-   * as a user-visible misrouted canonical URL.
+   * Pinning this rule at the integration level means a future flattener change that breaks it fails this suite immediately rather than surfacing as a
+   * user-visible misrouted canonical URL.
    *
    * Tests work against the public PREDEFINED_CHANNELS surface (the resolved output of flattenChannelDefinitions) - the flattener itself is not exported, but its
    * effective output is what every consumer sees. The chosen channels exercise: (a) site-presence wins; (b) alphabetical-first wins among many services with

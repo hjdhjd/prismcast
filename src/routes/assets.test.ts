@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * assets.test.ts: Unit tests for the static asset routes in assets.ts. The single export setupAssetEndpoints registers four GET routes (favicon.svg,
- * favicon.png, logo.png, logo.svg) that read files from the project root, cache them in memory, and serve them with a one-day Cache-Control header. The tests
+ * assets.test.ts: Unit tests for the static asset routes in assets.ts. The single export setupAssetEndpoints registers GET routes for favicon.svg,
+ * favicon.png, logo.png, and logo.svg that read files from the project root, cache them in memory, and serve them with a one-day Cache-Control header. The tests
  * spin up an ephemeral-port Express server, make real HTTP requests, and verify the response shape - status, content-type, cache-control, and body. The actual
  * file presence depends on the project root containing the prismcast.svg/png assets, which are committed to the repository.
  */
@@ -152,7 +152,7 @@ describe("setupAssetEndpoints - 404 routes", () => {
 
   test("returns 404 for an unregistered asset path", async () => {
 
-    // Negative test: only the four documented paths are registered. Anything else falls through to Express's default 404. The default sends "Cannot GET /path"
+    // Negative test: only the routes setupAssetEndpoints registers respond; anything else falls through to Express's default 404. The default sends "Cannot GET /path"
     // with status 404; we just check the status to avoid coupling to the exact message.
     const res = await fetch(urlFor("/no-such-asset.png"));
 

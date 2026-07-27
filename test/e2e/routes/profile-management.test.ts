@@ -10,12 +10,15 @@
  *   1. POST /config/profiles creates a profile and its domain mappings together as one transaction - both land on disk in the right shape, and the domain's
  *      `profile` reference points at the just-created key (no orphan domain entries).
  *   2. POST /config/profiles is a per-key partial update - posting an update to one profile leaves the other profiles' on-disk bytes byte-identical. This is
- *      the cross-profile analog of cross-store-isolation (which pinned the cross-FILE invariant; this suite pins the cross-PROFILE invariant inside one file).
+ *      the cross-profile analog of cross-store-isolation (which pinned the cross-FILE rule; this suite pins the cross-PROFILE rule inside one file).
  *   3. DELETE /config/profiles/:key cascades to every domain mapping that referenced that profile - no orphan domain entries remain, and other profiles'
  *      domain mappings are untouched.
  *   4. POST /config/profiles with an invalid profile body produces a 400 envelope and zero on-disk state mutation - profiles.json is byte-identical pre/post.
  *   5. Concurrent POSTs to two distinct profile keys both succeed and both land on disk - the per-store mutator queue serializes the writes correctly without
  *      either losing the other's update.
+ *   6. GET /config/profiles projects each profile into one summary entry: channelCount, the reverse-looked-up domains that reference it, the extends and
+ *      channel-selection-strategy fields (falling back to the "default"/"inherited" sentinels when the profile declares neither), and the whole list sorted
+ *      by key.
  *
  * Why bootApp instead of calling mutateProfiles directly: every route handler ships its own validation, sanitization, and merge logic ahead of the mutator
  * call, and those layers ARE under test. Calling the mutator directly would exercise the persistence layer but skip the HTTP-side logic that the UI depends
@@ -97,7 +100,7 @@ describe("POST /config/profiles - create and update", () => {
 
   test("a POST update to one profile leaves all other profile entries byte-identical on disk", async () => {
 
-    /* The cross-profile isolation invariant. The wizard's edit flow loads one profile, lets the user mutate it, and POSTs the result. The route handler
+    /* The cross-profile isolation rule. The wizard's edit flow loads one profile, lets the user mutate it, and POSTs the result. The route handler
      * cleans up stale domain mappings for the targeted profile and merges the new profile entry into the existing profiles map. Both happen in-place inside the
      * mutateProfiles callback: the stale-mapping loop deletes domains whose `profile` field matches the key, then the per-key write `data.profiles[key] = profile`
      * adds or replaces just that one entry without disturbing any other. A regression that wholesale-replaced profile state - that re-emitted the profiles map
@@ -261,11 +264,11 @@ describe("POST /config/profiles - per-store mutator queue under contention", () 
 
   test("concurrent POSTs to different keys both land on disk - the route handler does its read-modify-write inside the mutator callback", async () => {
 
-    /* The serialized RMW contract. The route handler at services.ts:475-491 does its merge inside the mutateProfiles callback so each write applies against the
-     * latest serialized state under the per-store queue's lock. Two concurrent POSTs to different keys serialize correctly: the first mutator writes profile A,
+    /* The serialized RMW contract. The route handler's mutateProfiles callback (services.ts:533-548) does the merge so each write applies against the latest
+     * serialized state under the per-store queue's lock. Two concurrent POSTs to different keys serialize correctly: the first mutator writes profile A,
      * the second's callback then sees profiles = { A: ... } as its starting state and adds B alongside it. Both keys land on disk; neither overwrites the other.
      *
-     * This pins the architectural invariant: any read-modify-write against profiles.json must happen inside the mutator's callback. A regression that lifts the
+     * This pins the rule that any read-modify-write against profiles.json must happen inside the mutator's callback. A regression that lifts the
      * read out of the callback - even partially, e.g., by capturing a snapshot of `data.profiles` before mutating - reintroduces the lost-update bug because the
      * snapshot freezes a baseline that may already be stale by the time the mutate function returns. Pinned here so any such regression fails loud immediately.
      */
@@ -306,7 +309,7 @@ describe("GET /config/profiles - list projection", () => {
 
   test("the list maps each profile to its channel count, reverse-looked-up domains, extends/strategy fallbacks, sorted by key", async () => {
 
-    /* The read-side projection contract. The GET handler at services.ts:321-358 is what the Custom Profiles subtab fetches to render (and re-render after a
+    /* The read-side projection contract. The GET handler at services.ts:373-413 is what the Custom Profiles subtab fetches to render (and re-render after a
      * mutation). For every user profile it emits, in one entry: channelCount (scanned from the channel listing), the reverse-looked-up domain mappings that
      * reference the profile, the extends base (falling back to "default" when the profile declares no base), and the channel-selection strategy (falling back to
      * "inherited" when the profile declares no channelSelection block). The whole list is sorted by key via localeCompare. A regression in any one of those five
@@ -317,7 +320,7 @@ describe("GET /config/profiles - list projection", () => {
      *
      * We seed two profiles that exercise both sides of the fallbacks: "zebra" declares an explicit base ("fullscreenApi") and an explicit strategy ("tileClick"),
      * while "alpha" declares neither, so it must project extends "default" and strategy "inherited". The keys are chosen so insertion order (alpha seeded after
-     * zebra below) is the reverse of sorted order, which makes the sort assertion load-bearing. Channels and domains are seeded to distinct profiles so the
+     * zebra below) is the reverse of sorted order, which makes the sort assertion meaningful. Channels and domains are seeded to distinct profiles so the
      * per-profile counts and reverse-lookups are unambiguous, plus a profile-less channel that must be counted against nobody.
      */
     await using ctx = await createIntegrationContext();

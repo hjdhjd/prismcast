@@ -781,7 +781,7 @@ async function tryFastPathTune(page: Page, entry: Nullable<HuluChannelEntry>, ch
 
         // The __prismcast* bridge functions are installed on window by the evaluateOnNewDocument fetch interceptor earlier in this module. The double cast reads
         // them off window without committing to a global declaration, and the typeof === "function" guard below tolerates their absence when the interceptor was
-        // not installed (for example on a profile that does not use fetch interception). The same rationale applies to the two sibling reads in this module.
+        // not installed (for example on a profile that does not use fetch interception). The same rationale applies to the other reads of these bridge functions.
         const resolver = (window as unknown as Record<string, unknown>)["__prismcastResolveDirectTune"];
 
         if(typeof resolver === "function") {
@@ -870,8 +870,8 @@ async function releaseHeldPlaylist(page: Page): Promise<void> {
  * path (discoverHuluChannels) call this immediately after navigation so they share one source of truth for the profile-selector workaround.
  *
  * Selection policy: always the first profile. We do not expose a configurable name because the typical PrismCast deployment has a single primary profile, and an
- * operator who wants a different one can reorder profiles in Hulu's account settings. The selected profile name is captured in the audit log so the operator
- * always knows which one was picked.
+ * operator who wants a different one can reorder profiles in Hulu's account settings. The selected profile name is logged at INFO so the operator always
+ * knows which one was picked.
  *
  * The probe is cheap when no modal is present (one DOM evaluate) and best-effort when it is: any failure between detection and post-click navigation is logged
  * and returns silently. The downstream #CHANNELS-wait timeout becomes the failure signal of last resort, so the existing error path stays intact.
@@ -947,10 +947,12 @@ async function handleProfileSelectorIfPresent(page: Page): Promise<void> {
  * virtualized list - only ~13 of ~124 rows exist in the DOM at any time, positioned absolutely within a tall spacer div. The virtualizer renders rows based on
  * the page scroll position (`document.documentElement.scrollTop`), so we scroll to bring the target channel into the DOM, then interact with it directly.
  *
- * Three mechanisms handle different channel types:
+ * Four mechanisms handle different channel types:
  * 1. Binary search with passive row number caching - primary mechanism for most channels (~800ms first time, ~200ms on cache hit)
  * 2. Position-based inference - handles local affiliates when searching by network name (e.g., "ABC" finds the local call sign at the right sort position)
  * 3. Linear scan fallback - safety net for raw call sign searches or any channel the binary search cannot find (~2.4 seconds)
+ * 4. Fast-path direct tune (tryFastPathTune) - after the channel is located, attempts a direct tune via unified cache injection or interceptor
+ *    self-resolution; a successful outcome returns success without reaching the on-now-cell click or play-button steps
  *
  * The selection process:
  * 1. Clear any "Who's Watching?" profile-selector modal that intercepts before guide interaction (see handleProfileSelectorIfPresent)
@@ -959,8 +961,9 @@ async function handleProfileSelectorIfPresent(page: Page): Promise<void> {
  * 4. Check the unified cache for a row number direct-scroll shortcut
  * 5. Binary search: scroll to the midpoint row, read rendered channels (caching row numbers), check for exact match or infer local affiliate
  * 6. If binary search fails, linear scan from top to bottom as a universal fallback
- * 7. Click the on-now program cell (`.LiveGuideProgram--first`) in the target channel's row to open the playback overlay
- * 8. If playSelector is provided, wait for and click the play button to start live playback
+ * 7. Attempt a fast-path direct tune via tryFastPathTune; on success, return immediately, skipping steps 8 and 9
+ * 8. Click the on-now program cell (`.LiveGuideProgram--first`) in the target channel's row to open the playback overlay
+ * 9. If playSelector is provided, wait for and click the play button to start live playback
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile with a non-null channelSelector (channel name) and channelSelection config.
  * @returns Result object with success status and optional failure reason.

@@ -2,7 +2,7 @@
  *
  * status.test.ts: Unit tests for the client-side status display script generator. The module exports a single function that returns an HTML <script> block
  * containing the SSE handlers for stream and system status, the streams table renderer, and the popover/tooltip support code. We test the generated string for
- * structural invariants - presence of expected SSE event handlers, render functions, and helpers - without executing the script in any DOM runtime.
+ * structural properties - presence of expected SSE event handlers, render functions, and helpers - without executing the script in any DOM runtime.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -108,9 +108,9 @@ describe("generateStatusScript", () => {
 
   test("exposes the popover toggle, copy URL helper, and restart status callback on window", () => {
 
-    // toggleStreamPopover is wired to the header button onclick. copyOverviewPlaylistUrl is invoked from the Quick Start copy button. updateRestartDialogStatus
-    // is referenced by the streamRemoved handler to advance a deferred restart, via ctx.externals.updateRestartDialogStatus?.(). The optional-chain expression
-    // encodes "call only if present" semantics.
+    // toggleStreamPopover is triggered by the project-wide action dispatcher via data-click-action on the header stream-count button, and copyOverviewPlaylistUrl
+    // is dispatched the same way from the Quick Start copy button. updateRestartDialogStatus is referenced by the streamRemoved handler to advance a deferred
+    // restart, via ctx.externals.updateRestartDialogStatus?.(). The optional-chain expression encodes "call only if present" semantics.
     const script = generateStatusScript();
 
     assert.match(script, /window\.toggleStreamPopover\s*=/);
@@ -140,7 +140,7 @@ describe("generateStatusScript", () => {
   test("routes channelUpdate patches through the channelTable namespace", () => {
 
     // handleChannelUpdate is the sole client entry point for channel row changes - both snapshot catch-up (data.channelPatch) and live events flow through
-    // channelTable.applyPatch. There are no client-side composers of row state to assert; that is the architectural invariant healthBridge enforces server-side.
+    // channelTable.applyPatch. There are no client-side composers of row state to assert; that is the rule healthBridge enforces server-side.
     const script = generateStatusScript();
 
     assert.match(script, /function handleChannelUpdate\(/);

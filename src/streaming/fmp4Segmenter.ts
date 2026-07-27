@@ -15,8 +15,9 @@ import type { Readable } from "node:stream";
 import { buildPlaylist } from "./playlistBuilder.ts";
 import { getStream } from "./registry.ts";
 
-/* This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is: (1) receive MP4 data from puppeteer-stream (H.264 + AAC from
- * either native capture or FFmpeg transcoding), (2) parse MP4 box structure to identify ftyp + moov (initialization segment) and moof + mdat pairs (media fragments),
+/* This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is: (1) receive MP4 data from puppeteer-stream (the configured
+ * capture codec, H.264 or HEVC per codec.ts, paired with AAC audio, from either native capture or FFmpeg transcoding), (2) parse MP4 box structure to identify ftyp
+ * + moov (initialization segment) and moof + mdat pairs (media fragments),
  * (3) store init segment and accumulate media fragments into segments, and (4) generate and update the m3u8 playlist.
  *
  * Keyframe detection is available for diagnostics by setting KEYFRAME_DEBUG to true. When enabled, each moof's traf/trun sample flags are parsed (ISO 14496-12) to
@@ -87,7 +88,7 @@ export interface KeyframeStats {
   // Average interval between keyframes in milliseconds. Computed from totalKeyframeIntervalMs / (keyframeCount - 1).
   averageKeyframeIntervalMs: number;
 
-  // Total number of moof boxes where keyframe detection returned null (indeterminate).
+  // Total number of moof boxes where keyframe status could not be determined, whether from a null detection result or a parse failure.
   indeterminateCount: number;
 
   // Total number of moof boxes that started with a keyframe.
@@ -481,8 +482,8 @@ export function computeDiscontinuitySequence(options: { discontinuityIndices: Se
 // Segmenter Implementation.
 
 /**
- * Creates an fMP4 segmenter that transforms MP4 input into HLS segments. The segmenter parses MP4 boxes, extracts the init segment, detects keyframes in each moof
- * fragment, and accumulates media fragments into segments based on the configured duration.
+ * Creates an fMP4 segmenter that transforms MP4 input into HLS segments. The segmenter parses MP4 boxes, extracts the init segment, optionally detects keyframes
+ * in each moof fragment when KEYFRAME_DEBUG is enabled, and accumulates media fragments into segments based on the configured duration.
  * @param options - Segmenter options including stream ID and callbacks.
  * @returns The segmenter interface with pipe, stop, and keyframe stats methods.
  */
@@ -939,6 +940,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
             if(codecConfig.audio) {
 
+              // ISO/IEC 14496-3 AAC sampling-frequency index table, indexed by codecConfig.audio.sampleRateIndex.
               const sampleRates = [ 96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 ];
               const sampleRate = sampleRates[codecConfig.audio.sampleRateIndex] ?? 0;
 

@@ -4,15 +4,15 @@
  * and GET /config/export. These are the layer-replacement counterparts to the settings-form save path pinned by settings-preservation.test.ts: where the form
  * save merges a partial CONFIG_METADATA body into the existing config, import replaces the entire user-settings layer while leaving the system-state layer intact.
  *
- * The load-bearing distinction is the two-layer model. CONFIG_METADATA is the single source of truth for which fields are user settings (port, timeouts, quality
+ * The key distinction is the two-layer model. CONFIG_METADATA is the single source of truth for which fields are user settings (port, timeouts, quality
  * preset, HLS segment duration, ...) versus system state (channelsDvr.host, hdhr.deviceId, disabledPredefined, enabledServices, ...). Import clears every
  * CONFIG_METADATA-tracked path before merging the imported body, so a metadata field ABSENT from the import reverts to its default (absent on disk equals default
  * because the file-store framework's filterDefaults strips default-equal values), while every system-state field survives untouched because it is never in
  * CONFIG_METADATA and therefore never cleared. Export is the inverse read side: it serializes readConfig() as sorted-key JSON with an attachment disposition so a
  * browser download round-trips byte-for-byte back through import.
  *
- * settings-preservation.test.ts pins the merge-preserves-non-form-fields invariant for the form save; this suite pins the clear-then-merge invariant for import
- * and the sorted-key attachment invariant for export, which the form-save suite does not exercise.
+ * settings-preservation.test.ts pins the merge-preserves-non-form-fields rule for the form save; this suite pins the clear-then-merge rule for import
+ * and the sorted-key attachment rule for export, which the form-save suite does not exercise.
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -150,7 +150,7 @@ describe("GET /config/export - sorted-key attachment round-trips the current con
     // The body parses to a JSON object.
     const parsed = JSON.parse(rawBody) as Record<string, unknown>;
 
-    // Sorted-key invariant: re-serializing the parsed value through the SSOT serializer must reproduce the exact bytes the handler sent (including the trailing
+    // Sorted-key rule: re-serializing the parsed value through the SSOT serializer must reproduce the exact bytes the handler sent (including the trailing
     // newline it appends). A regression that swapped stringifySorted for a plain JSON.stringify would reorder keys and break this equality.
     assert.equal(rawBody, stringifySorted(parsed) + "\n", "the export body must be sorted-key JSON with a trailing newline");
 

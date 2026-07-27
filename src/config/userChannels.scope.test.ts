@@ -53,7 +53,7 @@ describe("pickIdentity", () => {
 
   test("defensively copies tags so mutations on the result do not leak to the source", () => {
 
-    /* The defensive copy via tags &&= identity.tags.slice() is the load-bearing line. A regression here would create a shared reference and downstream callers
+    /* Without the defensive copy via tags &&= identity.tags.slice(), the result would share a reference with the source, and downstream callers
      * mutating identity.tags (e.g., during variant overlay) would corrupt the canonical's tags array.
      */
     const original = [ "Local", "News" ];

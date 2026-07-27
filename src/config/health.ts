@@ -105,8 +105,8 @@ export interface HealthSnapshot {
 // Health event emitter. Fires on every domain auth or channel health mutation so SSE clients receive real-time indicator updates.
 const healthEmitter = new EventEmitter();
 
-// Every /streams/status SSE subscriber registers a listener on this emitter, so we lift the cap from Node's default of 10 to 100 to accommodate many concurrent
-// subscribers without triggering a spurious MaxListenersExceededWarning.
+// The health bridge (installHealthBridge) is the only production subscriber, holding one listener for the life of the process. We still lift the cap from Node's
+// default of 10 to 100 as headroom for the test suite's repeated subscribe/unsubscribe cycles within a shared process, avoiding a spurious MaxListenersExceededWarning.
 healthEmitter.setMaxListeners(100);
 
 // Constants.
@@ -187,7 +187,7 @@ const healthMigrations: Record<number, Migration<HealthState>> = {
     apply: (data: HealthState): void => {
 
       /* Cast to the pre-migration shape: v1 files store bare-number timestamps that the parser passes through unmodified so this migration can transform them.
-       * Values already in the entry shape pass through the converter untouched, which makes the migration idempotent over partially-converted content.
+       * Values already in the entry shape pass through the converter untouched, so the migration is safe to run more than once over partially-converted content.
        */
       const domains = data.domains as Record<string, number | DomainAuthEntry>;
 
@@ -375,8 +375,8 @@ export async function flushHealthStateNow(): Promise<void> {
   }
 }
 
-// Write chokepoints. Every domain auth transition flows through exactly one of the three private mutators below (verified, needs-sign-in, removal), so the entry
-// shape and the flush-plus-emit sequence are each written in one place.
+// Write chokepoints. Every domain auth transition flows through one of two private mutators below (verified, removal) or the inline needs-sign-in write in
+// markDomainAuthRequired, so the entry shape and the flush-plus-emit sequence for each transition are written in exactly one place.
 
 /* Sets a domain's auth entry to verified, schedules a flush, and emits the change event. The single write chokepoint for the verified transition - both
  * markChannelSuccess's markAuth path (channel-scoped event) and markDomainAuth (domain-scoped event with an empty channelKey) flow through here, so each caller
@@ -391,7 +391,7 @@ function setDomainVerified(channelKey: string, domain: string, timestamp: number
 }
 
 /* Removes a domain's auth entry, returning the domain to the unknown state, then schedules a flush and emits the change event. The single deletion chokepoint. The
- * emitted status is "failed": the event union has no member for unknown because no consumer discriminates on status (the health bridge re-renders affected rows from
+ * emitted status is "failed": the event union has no member for unknown because no consumer branches on status (the health bridge re-renders affected rows from
  * current truth), and "failed" is the one value that collides with neither the verified transition ("success") nor the needs-sign-in transition ("needsLogin"),
  * keeping the three domain-scoped transitions distinguishable to subscribers.
  */

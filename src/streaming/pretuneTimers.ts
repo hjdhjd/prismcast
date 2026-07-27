@@ -21,8 +21,8 @@ const safetyTimers = new Map<number, ReturnType<typeof setTimeout>>();
 export function setPretuneSafetyTimer(streamId: number, timer: ReturnType<typeof setTimeout>): void {
 
   // Cancel any prior reaper for this stream before tracking the new one, so the registry holds at most one live timer per stream and an overwritten handle can never
-  // survive to fire against the same stream later. In practice a stream is pretuned once, so this is a no-op; it keeps the registry's one-timer-per-stream invariant
-  // robust against any future re-registration.
+  // survive to fire against the same stream later. In practice a stream is pretuned once, so this is a no-op; it keeps the registry holding at most one live timer
+  // per stream even if a stream is ever re-registered.
   clearPretuneSafetyTimer(streamId);
 
   safetyTimers.set(streamId, timer);

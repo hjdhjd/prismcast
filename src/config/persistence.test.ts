@@ -3,10 +3,11 @@
  * persistence.test.ts: Core unit tests for the transactional file store framework. The framework is the SSOT for atomic writes, serialized mutations, declarative
  * schema migrations, post-write integrity verification, and snapshot management - every config file (channels, config, profiles, health) goes through it.
  *
- * This file owns the framework's CORE behaviors - error class, construction validation, read happy paths, mutate happy paths, queue serialization. Three
- * sibling files (persistence.snapshots.test.ts, persistence.integrity.test.ts, persistence.migrations.test.ts) own the snapshot system, the integrity-and-
- * recovery branches, and the migration runner respectively. The split is by concern, not alphabet, so each file's title corresponds directly to a section of
- * the framework's contract.
+ * This file owns the framework's CORE behaviors - error class, construction validation, read happy paths, mutate happy paths, queue serialization - plus the
+ * recovery-guard behavior that intersects with mutate specifically (the corrupt-main rotation guard and the distinct temp-path contract between a
+ * read-triggered recovery and an in-flight mutate). Three sibling files (persistence.snapshots.test.ts, persistence.integrity.test.ts,
+ * persistence.migrations.test.ts) own the snapshot system, the remaining integrity-and-recovery branches, and the migration runner respectively. The split
+ * is by concern, not alphabet, so each file's title corresponds directly to a section of the framework's contract.
  */
 import { FileStoreParseError, createFileStore } from "./persistence.ts";
 import { describe, test } from "node:test";

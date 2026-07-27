@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userConfig.test.ts: Unit tests for the pure-function surface of the user-config layer - the DEFAULTS shape invariant, the CONFIG_METADATA structure that
+ * userConfig.test.ts: Unit tests for the pure-function surface of the user-config layer - the DEFAULTS shape, the CONFIG_METADATA structure that
  * drives the UI, and the small primitives (getNestedValue/setNestedValue/isEqualToDefault) plus the UI-tab/section accessors. The merge priority order, env
  * var handling, and filterDefaults are covered in userConfig.merge.test.ts so this file stays under the conventions' 500-line guidance.
  */
@@ -13,7 +13,7 @@ describe("DEFAULTS", () => {
 
   test("is a complete Config shape with every top-level group populated", () => {
 
-    // Locking the top-level groups guards against accidental deletion during refactors. The validateConfiguration tests cover field-level invariants.
+    // Locking the top-level groups guards against accidental deletion during refactors. The validateConfiguration tests cover field-level rules.
     assert.ok(DEFAULTS.browser, "browser group present");
     assert.ok(DEFAULTS.channels, "channels group present");
     assert.ok(DEFAULTS.hdhr, "hdhr group present");

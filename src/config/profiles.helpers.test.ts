@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * profiles.helpers.test.ts: Tests for the makeProfile factory. The factory is consumed across types/, browser/, and routes/ test files; a bug in defaults or
- * override-merging would cascade into every dependent suite.
+ * profiles.helpers.test.ts: Tests for the makeProfile factory. The factory is consumed across types/, browser/, and streaming/ test files; a bug in defaults
+ * or override-merging would cascade into every dependent suite.
  */
 import { RESOLVED_SITE_PROFILE_KEYS, makeProfile } from "./profiles.helpers.ts";
 import { describe, test } from "node:test";

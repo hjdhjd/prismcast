@@ -9,7 +9,7 @@
  * the system-health element id. These regressions ship past the unit suite (the string shape is still right) and past the rendering suite (the static HTML shell
  * is still right) but blow up the moment a status event arrives and the operator stares at a wrong number, a missing badge, or an empty popover.
  *
- * Architectural note: this suite is structurally different from the three sibling DOM-runtime suites (shared/channels/config). Those scripts have their handler
+ * Architectural note: this suite is structurally different from the sibling DOM-runtime suites (shared/channels/config). Those scripts have their handler
  * logic tangled with their IIFE init code, so the only way to exercise their behavior is to execute the emitted script string in a synthetic DOM via runScripts.
  * status.handlers.ts exposes every handler, formatter, renderer, and DOM mutator as free-standing TypeScript functions over a HandlerContext literal. That makes
  * them directly importable as TS - this suite calls them with synthetic context literals instead of running the emitted script. The trade-off is masterclass-worthy:
@@ -23,12 +23,12 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin invariants, not historical incidents. "renderStreamsTable emits a row per stream with the data-id attribute" is the contract; a regression that dropped
+ *   - Pin the contract, not historical incidents. "renderStreamsTable emits a row per stream with the data-id attribute" is the contract; a regression that dropped
  *     the data-id attribute from rendered rows is a symptom to derive coverage from but not the test name.
  *   - For pure functions, prefer literal inputs and direct return-value assertions. No DOM context, no externals plumbing.
  *   - For DOM mutators, build the HandlerContext via the file-local makeHandlerContext factory and let createDomTestContext provide the rendered page fixtures.
  *   - For SSE handlers, the assertion targets are state mutations, recorded externals invocations, and DOM side effects.
- *   - When a runtime invariant reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
+ *   - When a runtime rule reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
  *     Do NOT fix the production module in this suite - fixes are a separate authorized arc.
  */
 import * as handlers from "../../../src/routes/root/scripts/status.handlers.ts";
@@ -238,7 +238,7 @@ describe("status.handlers: HANDLER_CONSTANTS registry", () => {
 
   test("healthColorVars carries CSS-variable tokens for every health discriminant the wire emits", () => {
 
-    /* The discriminant set (healthy/buffering/recovering/stalled/error) is the StreamSummary.health union. Each must map to a `var(--*)` token so the badge dot
+    /* The health-state values (healthy/buffering/recovering/stalled/error) are the StreamSummary.health union. Each must map to a `var(--*)` token so the badge dot
      * picks up the theme color. We pin presence of every key plus the var() prefix so a refactor that swapped to literal hex codes (which would break theming)
      * surfaces here.
      */
@@ -964,7 +964,7 @@ describe("status.handlers: buildStreamPopoverContent (DOM mutator)", () => {
      * break out of the text context and inject a live element. We seed a show name with a <b> tag plus an ampersand and apostrophe and assert the raw innerHTML
      * carries the angle brackets and ampersand as entities, with no live tag surviving. We inspect innerHTML (raw markup) rather than textContent, which would
      * decode the entities and mask a missing escape. Note: the DOM serializer round-trips a quote/apostrophe in text content back to the literal character (both
-     * are inert there), so this DOM-level test pins the breakout-prevention invariant; the byte-exact &quot;/&#39; entity contract is pinned in the clientEscape
+     * are inert there), so this DOM-level test pins the breakout-prevention guarantee; the byte-exact &quot;/&#39; entity contract is pinned in the clientEscape
      * parity suite (clientEscape.test.ts).
      */
     return (async (): Promise<void> => {
@@ -1230,7 +1230,7 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
     /* The show cell is built by concatenating the show name directly into the table innerHTML. External show-name data carrying < or > must be entity-encoded so
      * it cannot break out of the cell and inject a live element. We inspect the cell's innerHTML (raw markup) rather than textContent, which would decode the
      * entities and hide a missing escape. The strict &quot;/&#39; entity contract is pinned in the clientEscape parity suite; here we pin the breakout-prevention
-     * invariant that survives the DOM serializer's round-trip.
+     * guarantee that survives the DOM serializer's round-trip.
      */
     return (async (): Promise<void> => {
 
@@ -1256,7 +1256,7 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
     /* The expanded detail panel concatenates the stream URL directly into the .details-url innerHTML. Stream URLs routinely carry & in their query strings, and a
      * user-supplied channel URL could carry markup characters. The ampersand and any angle brackets must be entity-encoded. We seed a URL with an ampersand-laden
      * query string plus an injected angle-bracket payload and assert the raw innerHTML carries those as entities with no live element parsed out. The strict
-     * &quot;/&#39; entity contract is pinned in the clientEscape parity suite; here we pin the breakout-prevention invariant that survives the DOM serializer.
+     * &quot;/&#39; entity contract is pinned in the clientEscape parity suite; here we pin the breakout-prevention guarantee that survives the DOM serializer.
      */
     return (async (): Promise<void> => {
 
@@ -1631,7 +1631,7 @@ describe("status.handlers: handleStreamHealthChanged (SSE handler)", () => {
 
   test("uses the targeted updateStreamRow path when nothing structural changed (same logo, same mode, same hardwareAccelerated, same captureCodec)", () => {
 
-    /* The cheap path: the row stays in place, only the health cell is mutated. We pre-render, then deliver an event whose only diff is the health discriminant.
+    /* The cheap path: the row stays in place, only the health cell is mutated. We pre-render, then deliver an event whose only diff is the health field.
      * The row identity must be preserved.
      */
     return (async (): Promise<void> => {
@@ -1805,7 +1805,7 @@ describe("status.handlers: toggleStreamPopover (window-bound trampoline)", () =>
 
       assert.equal(harness.recorder.dropdownsCloseCount, 1, "dropdowns.close must fire to dismiss");
 
-      // Note: dropdowns.close() in production removes .show; the stub does not, but the !isOpen guard means we don't re-add it. We assert the no-re-open invariant.
+      // Note: dropdowns.close() in production removes .show; the stub does not, but the !isOpen guard means we don't re-add it. We assert that reopening does not happen.
       assert.equal(menu?.classList.contains("show"), true,
         "stub dropdowns.close does not remove .show; the test pins the no-re-open invariant via the absence of buildStreamPopoverContent (no channelDisplayCalls)");
       assert.equal(harness.recorder.channelDisplayCalls.length, 0,
@@ -2086,10 +2086,10 @@ describe("status.handlers: render schedulers (rAF gates)", () => {
 
 describe("status.handlers: status-field render-boundary escaping", () => {
 
-  /* These fields are server-provided and today constrained (captureCodec is a two-value enum, nativeResolution is regex-sanitized to digits-x-digits at the probe,
-   * lastIssueType and client types are internal enums), so they carry no live attacker vector now. The render boundary escapes them anyway, uniformly, so the
-   * status display's safety does not depend on a provenance argument that could silently break if a source loosened (nativeResolution, for instance, derives from
-   * the upstream HLS manifest). Each test feeds a crafted value and asserts it survives as entities with no live element parsed out.
+  /* These fields are server-provided and constrained (captureCodec is drawn from a small, closed set of recognized codecs, nativeResolution is regex-sanitized to
+   * digits-x-digits at the probe, lastIssueType and client types are internal enums), so they carry no live attacker vector now. The render boundary escapes them
+   * anyway, uniformly, so the status display's safety does not depend on a provenance argument that could silently break if a source loosened (nativeResolution,
+   * for instance, derives from the upstream HLS manifest). Each test feeds a crafted value and asserts it survives as entities with no live element parsed out.
    */
 
   test("renderDetailCodec entity-encodes the captureCodec", () => {

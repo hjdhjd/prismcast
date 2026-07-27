@@ -17,8 +17,8 @@ describe("clientEscapeHtml", () => {
 
     /* The five characters that can break out of a text or attribute context - & < > " ' - must each render as an entity. We pin each character to its entity: the
      * ampersand, the angle brackets, the double quote (the attribute-breakout vector), and the apostrophe (HTML5 numeric reference &#39;). Assertion order is
-     * presentational, not load-bearing: the escaper is a single character-class regex pass that matches and replaces each character exactly once, so escaping order
-     * is irrelevant to correctness. Ordinary alphanumerics pass through verbatim.
+     * presentational, not meaningful for correctness: the escaper is a single character-class regex pass that matches and replaces each character exactly once,
+     * so escaping order is irrelevant to correctness. Ordinary alphanumerics pass through verbatim.
      */
     assert.equal(clientEscapeHtml("&"), "&amp;");
     assert.equal(clientEscapeHtml("<"), "&lt;");

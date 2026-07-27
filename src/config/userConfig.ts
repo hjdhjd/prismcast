@@ -898,8 +898,8 @@ const configMigrations: Record<number, Migration<UserConfig>> = {
  * (a rare hand-edited collision), the current name wins and the legacy key is deleted - operator intent on the new name takes precedence over the auto-rename.
  *
  * Behavioral contract: this is a pure transformation on the on-disk shape. Configs without a `channels` block are left untouched (early return); configs that
- * already have the v2 shape (no legacy keys present) are unchanged at the field level (idempotent), though the foxcom-to-foxone map runs unconditionally over
- * the present `enabledServices` array because that operation is itself a no-op for already-migrated tags.
+ * already have the v2 shape (no legacy keys present) are unchanged at the field level (repeat runs make no further change), though the foxcom-to-foxone map
+ * runs unconditionally over the present `enabledServices` array because that operation is itself a no-op for already-migrated tags.
  *
  * Exported for unit-test coverage of the rename cases (each rename, collision wins, foxcom remap, no-channels early return). Production callers reach this
  * only through the schema migration runner, never directly.
@@ -946,14 +946,14 @@ export function applyChannelsProviderRenameMigration(data: UserConfig): void {
 }
 
 /**
- * Splits a legacy `dvrHost` value into the new `channelsDvr.host` / `channelsDvr.port` namespace. The host portion is host-only by invariant; legacy values
- * carrying an embedded port (e.g., `192.168.1.5:8089`) are split so the host lands at `channelsDvr.host` and the port lands at `channelsDvr.port` IFF the
- * user has not already customized the port. When both an embedded port and an explicit user-set port exist, the explicit port wins (a warning is logged) and
- * the embedded port is discarded - the user's deliberate choice takes precedence over implicit legacy data.
+ * Splits a legacy `dvrHost` value into the new `channelsDvr.host` / `channelsDvr.port` namespace. The host portion is always host-only, never host:port;
+ * legacy values carrying an embedded port (e.g., `192.168.1.5:8089`) are split so the host lands at `channelsDvr.host` and the port lands at
+ * `channelsDvr.port` IFF the user has not already customized the port. When both an embedded port and an explicit user-set port exist, the explicit port
+ * wins (a warning is logged) and the embedded port is discarded - the user's deliberate choice takes precedence over implicit legacy data.
  *
- * Splits at the LAST colon so bracket-wrapped IPv6 forms like `[::1]:8089` survive (the production setDvrHost invariant rejects bare-colon values, but disk
- * files may carry hand-edited content the framework cannot vet). When the trailing portion does not parse as a valid port number (1..65535), the entire input
- * is treated as a host-only value rather than fabricating a bogus port.
+ * Splits at the LAST colon so bracket-wrapped IPv6 forms like `[::1]:8089` survive (the production setDvrHost function always rejects bare-colon values,
+ * but disk files may carry hand-edited content the framework cannot vet). When the trailing portion does not parse as a valid port number (1..65535), the
+ * entire input is treated as a host-only value rather than fabricating a bogus port.
  *
  * Exported for unit-test coverage of the splitting cases (host-only, host+default-port, host+non-default-port collision). Production callers reach this only
  * through the schema migration runner, never directly.
@@ -1656,7 +1656,8 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
     return false;
   }
 
-  // Compare as strings for consistent comparison across types (handles number/string coercion). Config values are always primitives.
+  // Compared via String() coercion; array-typed values (checkboxList settings) also reach this function and compare as their comma-joined form, which can
+  // misclassify a reordered-but-equivalent list as different. See PRESERVED_FIELDS for the array-aware comparison used when persisting.
   const primitive: string | number | boolean = value as string | number | boolean;
   const defaultPrimitive: string | number | boolean = defaultValue as string | number | boolean;
 

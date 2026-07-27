@@ -81,7 +81,8 @@ const CALLSIGN_SUFFIXES =
     ...BASE_SUFFIXES
   ])].sort((a, b) => (b.length - a.length) || a.localeCompare(b));
 
-// Duration in milliseconds to poll for the Watch Now modal button, after which the modal is assumed not to be coming for this channel.
+// Duration in milliseconds to poll for the Watch Now modal button, after which the modal is assumed not to be coming for this channel. Set well beyond the
+// ~2-3 second in-page channel switch the modal follows, giving it room to render on slower channels without the fire-and-forget poll running indefinitely.
 const WATCH_NOW_POLL_DURATION = 5000;
 
 // Interval in milliseconds between Watch Now modal poll checks. Mirrors the overlay-handling poll cadence in browser/consent.ts (OVERLAY_POLL_INTERVAL).
@@ -264,8 +265,8 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
   }
 
   /**
-   * Caches a single channel entry with multi-key lookups. Creates up to four cache keys per channel: (a) lowercased callSign, (b) stripped callSign with common
-   * suffixes removed, (c) lowercased branchOf/company/callSign, and (d) broadcast network abbreviation for local affiliates.
+   * Caches a single channel entry with multi-key lookups. Creates a cache key for each of the following when applicable: lowercased callSign, stripped
+   * callSign with common suffixes removed, lowercased branchOf/company/callSign, and broadcast network abbreviation for local affiliates.
    *
    * Priority rules for shared keys (stripped, branchOf): non-Pacific entries override Pacific entries, otherwise first-write-wins. This ensures that
    * display-name-based lookups (e.g., channelSelector "A&E") resolve to the primary East feed regardless of processing order. Primary callSign keys always use
@@ -320,9 +321,9 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
   }
 
   /**
-   * Processes a channelmap API response and populates the unified channel cache using three-pass tiered filtering. Channels are prioritized: non-TVE HD entitled
-   * first (cable HD - optimal for a home-network server), then TVE entitled (fallback for channels without a cable HD entry), then non-TVE SD entitled (safety net
-   * for SD-only channels). All passes share a single seenCallSigns set for exact callSign deduplication. Cross-tier dedup is handled naturally by
+   * Processes a channelmap API response and populates the unified channel cache using tiered entitlement filtering, from highest to lowest priority: non-TVE
+   * HD entitled first (cable HD - optimal for a home-network server), then TVE entitled (fallback for channels without a cable HD entry), then non-TVE SD
+   * entitled (safety net for SD-only channels). All passes share a single seenCallSigns set for exact callSign deduplication. Cross-tier dedup is handled naturally by
    * cacheChannelEntry's first-write-wins guards - lower-tier entries cannot overwrite cache keys already occupied by higher-tier entries.
    *
    * Local affiliates are detected via callSignVoiceOverHint matching against BROADCAST_HINTS and preferred over national feeds (e.g., local KOMOD over national
@@ -547,7 +548,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
   }
 
   /**
-   * Looks up a channel in the unified cache using three-tier matching:
+   * Looks up a channel in the unified cache using layered matching, from most to least exact:
    *
    * 1. Exact match: cache key equals the lowercased input (matches callSigns, stripped callSigns, and branchOf names).
    * 2. Suffix-tolerant: input + "hd" or input + "d" matches a cache key (e.g., "cnn" -> "cnnhd", "espn" -> "espnd").

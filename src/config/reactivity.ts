@@ -105,7 +105,7 @@ export function registerConfigChangeHandler(prefix: string, handler: ConfigChang
 }
 
 /**
- * Clears the config-change handler registry. Primarily a test seam - tests register handlers per case, run the dispatch, and reset between cases to keep
+ * Clears the config-change handler registry. Primarily a testing hook - tests register handlers per case, run the dispatch, and reset between cases to keep
  * isolation strong. Production code never calls this; handlers are registered once at module load by each subsystem and remain for the process lifetime.
  */
 export function resetConfigChangeHandlers(): void {
@@ -168,7 +168,7 @@ export async function applyConfigChanges(diff: readonly ConfigChange[]): Promise
   // Dispatch each bucket to its handler in parallel via Promise.allSettled so a thrown handler does not short-circuit the rest of the apply. Materializing
   // the buckets up front lets us pair each settled result with its source bucket by index - allSettled preserves array length, so settled[i] aligns with
   // buckets[i] for the lifetime of this dispatch. A handler that throws is treated as having rejected every change in its bucket: the formatted error message
-  // becomes the rejection reason for each change, so the dispatcher's invariant ("every input change gets an outcome") holds even when handlers fail.
+  // becomes the rejection reason for each change, so the dispatcher's guarantee that every input change gets an outcome holds even when handlers fail.
   const buckets = Array.from(byPrefix.entries());
   const settled = await Promise.allSettled(buckets.map(async ([ prefix, changes ]) => {
 
@@ -200,7 +200,7 @@ export async function applyConfigChanges(diff: readonly ConfigChange[]): Promise
       return { changes, outcomes: result.value };
     }
 
-    // Handler threw - synthesize a rejected outcome for every change in the bucket so the dispatcher's per-change invariant holds.
+    // Handler threw - synthesize a rejected outcome so every change in the bucket still gets an outcome.
     const reason = formatError(result.reason);
     const outcomes: readonly ChangeOutcome[] = changes.map((c) => ({ kind: "rejected", path: c.path, reason }));
 
@@ -213,8 +213,8 @@ export async function applyConfigChanges(diff: readonly ConfigChange[]): Promise
   const rejected: { change: ConfigChange; reason: string }[] = [];
 
   // Index outcomes by path for O(1) lookup during the merge below. A handler is only authoritative for the changes it was actually given, so we accept an
-  // outcome only when its path was in that handler's input batch. Ignoring foreign-path outcomes upholds the documented contract and, crucially, prevents one
-  // handler from overriding another handler's classification of a shared path via last-write-wins into this map. Ignored entries are surfaced at debug level so
+  // outcome only when its path was in that handler's input batch. Ignoring foreign-path outcomes upholds the documented contract and prevents one handler
+  // from overriding another handler's classification of a shared path via last-write-wins into this map. Ignored entries are surfaced at debug level so
   // a misbehaving handler is diagnosable without polluting the operator-facing log.
   const outcomeByPath = new Map<string, ChangeOutcome>();
 

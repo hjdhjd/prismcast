@@ -2,8 +2,8 @@
  *
  * upgrade.test.ts: Unit tests for the upgrade routes in upgrade.ts. setupUpgradeEndpoint registers GET /upgrade/info and POST /upgrade. The full upgrade path
  * (executing the install command, restarting the service) requires environment-specific binaries and a process restart - that coverage lives in the e2e suite.
- * Here we cover the two response shapes the routes produce: the GET /upgrade/info JSON envelope (with the documented keys), the success and failure branches
- * of fetchLatestVersion (mocked), and the not-upgradeable short-circuit on POST /upgrade.
+ * Here we cover the two response shapes the routes produce: the GET /upgrade/info JSON envelope (covering both the success and failure branches of
+ * fetchLatestVersion, mocked) and the not-upgradeable short-circuit on POST /upgrade.
  */
 import type { AddressInfo, Server } from "node:net";
 import { after, afterEach, before, beforeEach, describe, mock, test } from "node:test";

@@ -95,10 +95,10 @@ describe("assertSameShape", () => {
 
 describe("declareKeysOf", () => {
 
-  /* The primary contract is compile-time: a const array passed to declareKeysOf<T>() must exhaust every key of T or the call fails to compile. We can't test
-   * the compile-time failure path inside a runtime test (that would be a tsc-must-fail check, which lives in a separate negative-build test pattern not yet
-   * established here). The runtime tests below verify the trivial pass-through behavior - the function returns the array unchanged - which is the load-bearing
-   * runtime contract.
+  /* The primary contract is compile-time: a const array passed to declareKeysOf<T>() must exhaust every key of T or the call fails to compile. This suite does
+   * not exercise that failure path directly. The codebase's established @ts-expect-error convention (as used in src/types/channels.test.ts) could pin the
+   * missing-key compile error here too, but is omitted so this suite stays focused on the runtime contract below. The runtime tests below verify the
+   * pass-through behavior - the function returns the array unchanged - which is the contract this suite actually verifies.
    */
 
   interface Sample { a: number; b: string; c: boolean }

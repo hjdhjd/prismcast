@@ -84,7 +84,8 @@ export function registerPrefsRoutes(app: Express): void {
   }));
 
   // POST /config/channels/setup-completed - Mark the Service Setup flow as completed. Called when the wizard finishes or the user explicitly skips. Returns a
-  // counts-only patch so the client can refresh summary counters after the wizard's browse step may have added channels and changed the service filter.
+  // counts-only patch so the client can refresh summary counters after the wizard's service-selection step changed the service filter (selecting new services
+  // may reveal previously-filtered channels).
   app.post("/config/channels/setup-completed", route("save setup state", async (_req: Request, res: Response) => {
 
     await markSetupCompleted();

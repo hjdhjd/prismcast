@@ -10,7 +10,7 @@
  *
  * Scope. Only the HTTP 404/503 gate is bootApp-testable. The WebSocket upgrade path (attachCdpUpgradeHandler) and the CdpProxySession multiplexer require a real
  * socket upgrade and a live Puppeteer Browser/Connection, neither of which the harness provides, so they are out of scope for this suite and are recorded as
- * skipped rather than exercised against a fake. This suite is a sibling of streams.test.ts: both pin route-shape invariants by seeding the exact state the handler
+ * skipped rather than exercised against a fake. This suite is a sibling of streams.test.ts: both pin route-shape rules by seeding the exact state the handler
  * reads (there, the stream registry; here, the debug-category filter) instead of launching a real capture.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
@@ -19,9 +19,9 @@ import { getCurrentPattern, initDebugFilter } from "../../../src/utils/debugFilt
 import type { IntegrationContext } from "../../helpers/integration.helpers.ts";
 import assert from "node:assert/strict";
 
-// The three discovery endpoints that share the identical two-stage gate. Listed alphabetically; /cdp/json and /cdp/json/list are aliases of one handler and
-// /cdp/json/version is its own handler, but all three open with the same isCategoryEnabled("cdp") + getBrowserInstance() guard, so a regression that loosened the
-// gate on any one of them must surface here.
+// The discovery endpoints that share the identical two-stage gate, listed alphabetically. /cdp/json and /cdp/json/list are aliases of one handler and
+// /cdp/json/version is its own handler, but every endpoint here opens with the same isCategoryEnabled("cdp") + getBrowserInstance() guard, so a regression that
+// loosened the gate on any one of them must surface here.
 const DISCOVERY_ENDPOINTS = [ "/cdp/json", "/cdp/json/list", "/cdp/json/version" ];
 
 /**

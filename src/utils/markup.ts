@@ -4,9 +4,9 @@
  */
 
 /* This module is the single source of truth for escape-style markup encoding. HTML escaping (used pervasively across the routes layer to embed user-provided
- * values in server-rendered pages) and XML escaping (used by the macOS launchd plist generator) escape the same five characters; only the apostrophe entity
+ * values in server-rendered pages) and XML escaping (used by the macOS launchd plist generator) cover the same reserved characters; only the apostrophe entity
  * differs - HTML5 spells it &#39; and XML spells it &apos;. Centralizing both surfaces over a shared regex and a Readonly entity map keeps the character class
- * in one place so adding a sixth entity to one flavor can't silently desync the other.
+ * in one place so adding an entity to one flavor can't silently desync the other.
  */
 
 // The shared character class for both HTML and XML escape sweeps. Defined once so the two escape variants never disagree about which characters they encode.
@@ -65,7 +65,7 @@ export function escapeXml(value: string): string {
 }
 
 /**
- * Serializes a record of HTML attribute names to values into the inline fragment suitable for embedding in an opening tag. Three value semantics keep this tied
+ * Serializes a record of HTML attribute names to values into the inline fragment suitable for embedding in an opening tag. Value semantics keep this tied
  * to the way HTML actually shapes attributes: undefined and boolean false are omitted entirely; boolean true emits the attribute name alone (HTML5 boolean
  * attribute form, e.g. {@code <input disabled>}); string values are HTML-escaped via {@link escapeHtml} and emitted as {@code name="value"}. The returned
  * fragment begins with a leading space when non-empty, so callers concatenate it directly after a preceding attribute without any spacing arithmetic of their

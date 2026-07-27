@@ -15,13 +15,14 @@
  *   5. Load the served HTML into the Window. With script evaluation disabled, the parser creates <script> elements but does not execute them; the harness
  *      extracts the inline bodies into an array indexed in document order.
  *   6. Tests opt in to which scripts to run via runScripts(predicate) or evaluate(code). This is deliberate: the emitted scripts have side-effecting init
- *      code (status.ts opens an EventSource, channels.ts kicks off DOM scans) and EventSource is one happy-dom v20 web standard not implemented. Default-
+ *      code (status.ts opens an EventSource, channels.ts kicks off DOM scans) and EventSource is one happy-dom web standard not implemented. Default-
  *      executing every script would crash before the test body runs. Tests pick the surface they want to exercise.
  *
  * Why happy-dom and not jsdom: shared.ts's DOM usage is narrow and standard (querySelector, classList, addEventListener, getBoundingClientRect, localStorage,
  * fetch). happy-dom resolves these ~3-5x faster than jsdom and has no Custom Elements or Shadow DOM dependencies that would require jsdom's wider coverage.
- * The one happy-dom gap (EventSource) is sidestepped by selective script execution rather than papered over with a stub - papering over would mask real
- * regressions in status.ts. When the next session covers status.ts, the harness can opt-in to a polyfilled EventSource at that point.
+ * The one happy-dom gap (EventSource) is sidestepped by selective script execution rather than papered over with a stub in the harness itself - papering
+ * over would mask real regressions in status.ts. Tests that exercise status.ts (see test/e2e/dom-runtime/status-iife-runtime.test.ts) install their own
+ * EventSource stub on the Window via evaluate() before running the script, keeping the polyfill scoped to the test that needs it.
  *
  * Disposal: composed from createIntegrationContext. The Window is registered as a cleanup hook so it closes BEFORE the bootApp listener tears down - happy-dom
  * has open async tasks (microtasks, timers) that need to settle before the surrounding context completes. The disposal protocol drains LIFO via the structural
@@ -153,7 +154,8 @@ export type DisposableDomTestContext = DomTestContext & AsyncDisposable;
  * Why we don't auto-execute the served scripts: the emitted scripts have side-effecting init code (status.ts opens EventSource on load; happy-dom does not
  * implement EventSource). Executing every script by default would crash the harness before the test body could run. Tests opt in to which scripts to run via
  * runScripts(), which is the right scope for behavioral tests anyway - they should pin the runtime behavior of the script under test, not collateral effects
- * from other scripts loading alongside it. A future status.ts session can layer in an EventSource polyfill at the harness level if desired.
+ * from other scripts loading alongside it. Tests that need EventSource (see status-iife-runtime.test.ts) stub it directly via evaluate() rather than the
+ * harness providing a global polyfill.
  *
  * @param options - Optional path / persistence-bypass overrides. See DomTestContextOptions.
  * @returns A disposable DOM-runtime context. Bind via `await using ctx = await createDomTestContext()`.

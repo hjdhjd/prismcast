@@ -2,8 +2,8 @@
  *
  * commands.helpers.ts: Shared test helpers for the service command suite. Hosts the FakeGenerator fixture (ServiceGenerator double that records every method
  * invocation), the makeFakeGenerator factory, the ContextHarness shape (captured stdout/stderr arrays + the synthetic ServiceContext), and the makeContextHarness
- * factory. The default-context tests (commands.test.ts) and the literal-context handler tests (commands.install.test.ts, commands.lifecycle.test.ts,
- * commands.status.test.ts) all consume these.
+ * factory. The literal-context handler tests (commands.install.test.ts, commands.lifecycle.test.ts, commands.status.test.ts) consume these; commands.test.ts
+ * uses its own local platform and HOME stubbing instead.
  */
 
 import type { ServiceContext, StreamsResponse } from "./commands.ts";
@@ -26,6 +26,11 @@ export interface FakeGenerator extends ServiceGenerator {
   uninstallShouldThrow: Nullable<Error>;
 }
 
+/* Builds a FakeGenerator: a ServiceGenerator double whose install/start/stop/uninstall methods record every invocation (via the *Calls counters and the
+ * installs array) and mutate installed/running state to reflect a real service manager's lifecycle. Each *ShouldThrow override lets a test force the
+ * corresponding method to reject with the given error on its next call, exercising the caller's error-handling path. Any FakeGenerator field can be
+ * overridden directly through the overrides argument, including installed/running to seed a starting state.
+ */
 export function makeFakeGenerator(overrides: Partial<FakeGenerator> = {}): FakeGenerator {
 
   const generator: FakeGenerator = {
@@ -120,16 +125,28 @@ export interface ContextOverrides {
 
   detectStalePaths?: () => Nullable<StalePathResult>;
   fetchActiveStreams?: (port: number) => Promise<Nullable<StreamsResponse>>;
+
+  /* Three states are distinguished here: omitted (undefined) seeds the harness with a fresh default FakeGenerator, an explicit FakeGenerator is used as
+   * given, and an explicit null simulates a platform with no available service manager (getGenerator() then returns null, as the real ServiceContext does
+   * on an unsupported platform).
+   */
   generator?: FakeGenerator | null;
   getServerPort?: () => Promise<number>;
   getServicePaths?: () => Nullable<ServicePaths>;
   platform?: string;
 }
 
+/* Builds a ContextHarness: a synthetic ServiceContext backed by literal values and stdout/stderr capture arrays, plus the FakeGenerator instance the
+ * context's getGenerator() resolves to (or null - see the ContextOverrides.generator states above). Every ContextOverrides field lets a test replace the
+ * corresponding ServiceContext method or value; anything left unspecified falls back to a fixed darwin-flavored default (paths under /Users/test, port
+ * 5589, launchd). The returned stdout/stderr arrays accumulate every line the handler under test writes, for assertion after the call.
+ */
 export function makeContextHarness(overrides: ContextOverrides = {}): ContextHarness {
 
   const stdout: string[] = [];
   const stderr: string[] = [];
+
+  // See the ContextOverrides.generator comment above for the three states this ternary distinguishes.
   const generator = overrides.generator === null ? null : (overrides.generator ?? makeFakeGenerator());
 
   const definition: ServiceDefinition = {
@@ -150,6 +167,9 @@ export function makeContextHarness(overrides: ContextOverrides = {}): ContextHar
     getEntryPoint: (): string => "/usr/local/lib/prismcast/dist/index.js",
     getGenerator: (): Nullable<ServiceGenerator> => generator,
     getNodePath: (): string => "/usr/local/bin/node",
+
+    // The cast widens the plain-string ContextOverrides.platform to ServiceContext's return type so tests can pass values (e.g. an unsupported platform
+    // name) that fall outside the real Platform union, exercising branches the real getPlatform() could never trigger.
     getPlatform: () => (overrides.platform ?? "darwin") as ReturnType<ServiceContext["getPlatform"]>,
     getServerPort: overrides.getServerPort ?? (async (): Promise<number> => 5589),
     getServiceFilePath: (): string => "/Users/test/Library/LaunchAgents/com.prismcast.plist",

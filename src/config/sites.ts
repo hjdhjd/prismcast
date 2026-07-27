@@ -274,9 +274,10 @@ export const PROVIDER_PROFILES: Record<string, SiteProfile> = {
  * overrides - getDomainConfig() tries the full hostname first, then falls back to the concise domain, so "tv.youtube.com" takes precedence over "youtube.com"
  * when the URL matches.
  *
- * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains without a service entry will display the
- * concise domain string (e.g., "hulu.com") in the UI. Entries with a serviceTag participate in the service filter system - channels whose canonical URL maps to
- * a tagged domain are identified as belonging to that subscription service rather than being tagged as "direct" (free network sites).
+ * Domains without a profile entry will use DEFAULT_SITE_PROFILE, which works for most standard video players. Domains with no service field configured, or with
+ * no entry in this map at all, will display the concise domain string (e.g., a hypothetical "example.com") in the UI. Entries with a serviceTag participate in
+ * the service filter system - channels whose canonical URL maps to a tagged domain are identified as belonging to that subscription service rather than being
+ * tagged as "direct" (free network sites).
  */
 export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
 
@@ -309,7 +310,7 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
   "nationalgeographic.com": { profile: "keyboardDynamicMultiVideo", service: "Nat Geo" },
   "nba.com": { profile: "fullscreenApi", service: "NBA.com" },
   // NBC.com enforces a session limit that cuts the stream after roughly four continuous hours of playback, so maxContinuousPlayback (measured in hours) drives a
-  // proactive page reload just before that cap is reached. No other configured domain imposes a continuous-playback limit, which is why the field appears here alone.
+  // proactive page reload just before that cap is reached.
   "nbc.com": { maxContinuousPlayback: 4, profile: "keyboardDynamic", service: "NBC.com" },
   "paramountplus.com": { dismissSelector: ".ppp-watch", iconUrl: "https://www.paramountplus.com/assets/images/pplus_App_Icon-Blue-144x144.png",
     profile: "fullscreenApi", service: "Paramount+", serviceTag: "paramountplus" },

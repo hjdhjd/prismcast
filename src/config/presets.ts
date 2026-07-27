@@ -186,10 +186,10 @@ export function getPresetViewport(config: Config): { height: number; width: numb
  * video capture works correctly even when the user has configured a resolution their display cannot support.
  *
  * The effective preset system:
- * 1. Detects maximum supported viewport during browser initialization (see browser/display.ts)
- * 2. Compares configured preset against display limits
- * 3. Selects the largest preset that fits within the display
- * 4. Provides status information for logging and UI display
+ * 1. Detects maximum supported viewport during browser initialization (see browser/display.ts).
+ * 2. Compares configured preset against display limits.
+ * 3. Selects the largest preset that fits within the display.
+ * 4. Provides status information for logging and UI display.
  */
 
 /**

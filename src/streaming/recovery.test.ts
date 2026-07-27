@@ -185,7 +185,7 @@ describe("isCaptureInfrastructureError", () => {
 
   test("matches each capture-infrastructure signature", () => {
 
-    // The three signatures the classifier owns - the SSOT consumed by both the 503 back-off decision and the browser supervisor's readiness detection.
+    // The capture-infrastructure signatures the classifier owns - consumed by both the 503 back-off decision and the browser supervisor's readiness detection.
     assert.equal(isCaptureInfrastructureError(new Error("Cannot capture a tab with an active stream")), true);
     assert.equal(isCaptureInfrastructureError(new Error("Capture queue wait timed out.")), true);
     assert.equal(isCaptureInfrastructureError(new Error("Stream initialization timed out.")), true);

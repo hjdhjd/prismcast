@@ -111,8 +111,8 @@ describe("PathHandle.hasSegmentChain", () => {
 
   test("matches a Windows path with backslash separators (the v1.10.2 detection-on-Windows regression class)", () => {
 
-    // This is the regression in isolation. Pre-PathHandle, the strategy's "/node_modules/" substring check could not see a "node_modules" segment in a
-    // backslash-delimited path. hasSegmentChain dispatches through path.win32's separator so the structural match succeeds where the substring check failed.
+    // hasSegmentChain dispatches through path.win32's separator, so a backslash-delimited Windows path structurally matches the "node_modules" segment
+    // chain even though the path never contains a "/node_modules/" substring.
     const handle = createPathHandle("C:\\Users\\jp\\AppData\\Roaming\\npm\\node_modules\\prismcast\\dist\\upgrade\\detection.js", { platform: "win32" });
 
     assert.equal(handle.hasSegmentChain("node_modules"), true);
@@ -161,8 +161,8 @@ describe("PathHandle.isUnder", () => {
 
   test("returns true for a strict descendant on Windows with backslash separators", () => {
 
-    // This is the second half of the v1.10.2 regression class: even after hasSegmentChain confirms the file is under SOME node_modules tree, the strategy still
-    // needs to verify it is under the npm-reported global prefix. Both sides use backslash on Windows; the comparison must succeed.
+    // isUnder verifies containment under the npm-reported global prefix, a check distinct from hasSegmentChain's node_modules tree confirmation. Both
+    // sides use backslash on Windows, so the comparison succeeds for a Windows-style path.
     const handle = createPathHandle("C:\\Users\\jp\\AppData\\Roaming\\npm\\node_modules\\prismcast\\dist\\x.js", { platform: "win32" });
 
     assert.equal(handle.isUnder("C:\\Users\\jp\\AppData\\Roaming\\npm"), true);

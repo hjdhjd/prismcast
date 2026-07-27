@@ -9,7 +9,7 @@
  *      diffed change reported rejected) rather than silently coerced, while a valid change still commits and dispatches normally.
  *
  * config/index.ts composes its disk-persistence I/O behind the injectable ConfigStore port (readConfig/mutateConfig, defaulting to the real file store). We pass
- * an in-memory store at that seam: readConfig returns a synthetic on-disk shape (or throws) so reloadConfiguration's real merge + validation path runs against a
+ * an in-memory store at that boundary: readConfig returns a synthetic on-disk shape (or throws) so reloadConfiguration's real merge + validation path runs against a
  * controlled config without touching the real file, and mutateConfig records each write-back as a probe. The companion happy-path dispatch coverage lives in
  * reactivity.test.ts and hdhr/index.test.ts.
  */
@@ -85,8 +85,9 @@ describe("reloadConfiguration - atomicity on read failure", () => {
 
 describe("reloadConfiguration - rejects an invalid or coercion-needing save", () => {
 
-  // Each test arms a synthetic on-disk shape; clear it afterward so a later test (or the atomicity suite, if reordered) reads the real config again. The reject
-  // tests never commit, so CONFIG stays pristine for them; the commit test runs last and is the only one that reassigns the live binding.
+  // Each test arms a synthetic on-disk shape; clear it afterward so a later test (or the atomicity suite, if reordered) does not accidentally reuse this
+  // override - an unarmed readConfig call throws loudly instead. The reject tests never commit, so CONFIG stays pristine for them; the commit test runs last
+  // and is the only one that reassigns the live binding.
   let snapshot: typeof indexModule.CONFIG;
 
   before(() => {

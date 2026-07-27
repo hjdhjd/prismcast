@@ -4,7 +4,7 @@
  * flushes HTTP headers, calls into initializeStream() to start a new stream, and serves either FFmpeg-remuxed or native pass-through MPEG-TS bytes to the client.
  * The full happy path requires a real Chrome instance and FFmpeg subprocess and is deferred to e2e. The unit tests cover the synchronous validation branches:
  * missing channel name, channel name not present, the existing-stream fast path (validation bypass), and the disabled-channel rejection arm that flows through
- * sendValidationError. Login mode is validated through the same shared hls.ts seam and is covered separately, not here; the service-filter rejection arm is
+ * sendValidationError. Login mode is validated through the same shared hls.ts validation path and is covered separately, not here; the service-filter rejection arm is
  * likewise not unit-tested in this file (see the explanatory block comment below).
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -62,7 +62,7 @@ describe("handleMpegTsStream", () => {
 
     /* The handler delegates to validateChannel(). For a predefined channel name in CONFIG.channels.disabledPredefined, validateChannel returns
      * { statusCode: 404, body: "Channel is disabled.", valid: false } and sendValidationError surfaces it. This pins the disabled-channel rejection arm of
-     * the validation seam (mirrors the hls.ts disabled-channel rejection through the same shared validation code path).
+     * the shared validation path (mirrors the hls.ts disabled-channel rejection through the same shared validation code path).
      */
     CONFIG.channels.disabledPredefined = ["abc"];
 

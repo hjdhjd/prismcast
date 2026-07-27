@@ -4,7 +4,7 @@
  */
 import type { Nullable } from "./shared.ts";
 
-/* The channel data model is partitioned into two orthogonal concerns:
+/* The channel data model is partitioned into two independent concerns:
  *
  * - Identity: properties of the channel itself (name, station ID, channel number, EPG metadata). Independent of which service streams it.
  * - Service binding: how to reach the channel on a particular service (URL, channelSelector, profile, scroll/dismiss DOM hints).
@@ -30,8 +30,8 @@ import type { Nullable } from "./shared.ts";
 export interface ChannelIdentity {
 
   // Numeric channel number for guide matching. When set, this number is used as the channel-number in the M3U playlist for Channels DVR and as the GuideNumber
-  // in the HDHomeRun lineup for Plex. When omitted, no channel number is included in the M3U playlist and a number is auto-assigned for HDHomeRun. A variant
-  // may override this on a per-service basis - see VariantChannel.channelNumber.
+  // in the HDHomeRun lineup for Plex. When omitted, no channel number is included in the M3U playlist and a number is auto-assigned for HDHomeRun. This field
+  // is canonical-only: VariantChannel carries no channelNumber field, so every variant inherits the canonical's value unchanged at resolution time.
   channelNumber?: number;
 
   // Human-readable title for electronic program guide display. When set, this value is emitted as the tvg-name attribute in the M3U playlist instead of the
@@ -111,14 +111,14 @@ export interface ChannelServiceBinding {
  *
  * Predefined canonicals are produced by the flattener; standalone user channels (no predefined parent) take this same shape.
  *
- * Sibling-variant non-overlap rule (storage invariant): a canonical override's binding fields exist to customize the canonical service's binding -
- * NOT to express "I'd rather default this channel to a sibling service." When the user wants a sibling service to be the default for a channel, that intent
- * is expressed via serviceSelections (config/services.ts), not by overriding the canonical URL. The storage layer enforces this: any canonical override whose
- * binding URL extracts to a sibling variant's domain is normalized at write time by inferTargetVariant + normalizeChannelDeltas in config/userChannels.ts.
- * Binding fields are stripped from the canonical override, propagated to the matching variant entry as a binding-only override (when they diverge from the
- * variant's predefined defaults), and serviceSelections[canonicalKey] is set to the matching variant key. The producer (the PUT handler in
- * routes/config/channels/endpoints/crud.ts), the startup heal in initializeUserChannels, and the normalizer all share one inferTargetVariant helper, so the
- * rule lives in exactly one place.
+ * Sibling-variant non-overlap rule (a storage-layer rule that always holds): a canonical override's binding fields exist to customize the canonical
+ * service's binding - NOT to express "I'd rather default this channel to a sibling service." When the user wants a sibling service to be the default
+ * for a channel, that intent is expressed via serviceSelections (config/services.ts), not by overriding the canonical URL. The storage layer enforces
+ * this: any canonical override whose binding URL extracts to a sibling variant's domain is normalized at write time by inferTargetVariant +
+ * normalizeChannelDeltas in config/userChannels.ts. Binding fields are stripped from the canonical override, propagated to the matching variant entry
+ * as a binding-only override (when they diverge from the variant's predefined defaults), and serviceSelections[canonicalKey] is set to the matching
+ * variant key. The producer (the PUT handler in routes/config/channels/endpoints/crud.ts), the startup heal in initializeUserChannels, and the
+ * normalizer all share one inferTargetVariant helper, so the rule lives in exactly one place.
  */
 export interface CanonicalChannel extends ChannelIdentity, ChannelServiceBinding {
 
@@ -142,12 +142,12 @@ export interface CanonicalChannel extends ChannelIdentity, ChannelServiceBinding
  *   4. PUT handler routing (handlePredefinedEdit in routes/config/channels/endpoints/crud.ts): identity-field edits route to the canonical entry, binding-
  *      field edits route to the active variant entry. Users cannot create identity-on-variant state through the UI.
  *
- * The structural invariant the type DOES enforce is the discriminator: canonicalKey is required (and structurally absent on CanonicalChannel via never), so a
- * value with a string canonicalKey is unambiguously a VariantChannel.
+ * The structural rule the type DOES enforce is the tag: canonicalKey is required (and structurally absent on CanonicalChannel via never), so a value with
+ * a string canonicalKey is unambiguously a VariantChannel.
  */
 export interface VariantChannel extends ChannelServiceBinding {
 
-  // Required - the discriminator that marks this entry as a variant of another channel.
+  // Required - the tag that marks this entry as a variant of another channel.
   canonicalKey: string;
 }
 
@@ -285,7 +285,8 @@ void _deltaCompleteness;
  */
 export interface ChannelDefinition {
 
-  // Numeric channel number for guide matching. Inherited by all service variants unless overridden on a specific ServiceVariant.
+  // Numeric channel number for guide matching. Inherited unchanged by all service variants - ServiceVariant carries no channelNumber field, so it cannot
+  // be overridden on a per-service basis.
   channelNumber?: number;
 
   // Human-readable channel name displayed in the M3U playlist and channel guide. Required for all channel definitions.

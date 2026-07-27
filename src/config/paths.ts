@@ -222,7 +222,7 @@ export function getLogFilePath(config: Config): string {
 
 /**
  * Returns the value of the PRISMCAST_DEBUG environment variable, if set. Centralizing this read keeps the index-signature access on process.env in one place and
- * gives tests a single seam to stub.
+ * gives tests a single place to stub.
  * @returns The PRISMCAST_DEBUG value, or undefined when unset.
  */
 export function getDebugEnv(): string | undefined {

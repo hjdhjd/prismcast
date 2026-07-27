@@ -80,8 +80,8 @@ export interface ChannelStrategyEntry {
  */
 export interface DiscoveredChannel {
 
-  // Parent network name when the channel is a local affiliate. Present for Hulu affiliates, YTTV local affiliates, and Fox FOXD2C entries. Omitted when not
-  // applicable.
+  // Parent network name when the channel is a local affiliate. Present for Hulu affiliates, YTTV local affiliates, Fox FOXD2C entries, Spectrum affiliates, and
+  // Xfinity/Cox (comcastPolymer) affiliates. Omitted when not applicable.
   affiliate?: string;
 
   // Category-selector membership. When the discovered channel belongs to a category that the provider declares in ProviderModule.categoryResolution.selectors, this field
@@ -102,8 +102,9 @@ export interface DiscoveredChannel {
   // tvc-guide-stationid M3U attribute. Currently populated by Spectrum (tmsid from channel logo URLs).
   stationId?: string;
 
-  // Channel tier: "paid" for subscription channels, "free" for free ad-supported channels. Present for Sling where the distinction matters (Freestream channels
-  // are free). Omitted for providers where all channels are paid.
+  // Channel tier: "paid" for subscription channels, "free" for free ad-supported channels, or "addon" for channels requiring TV provider authentication. Present
+  // for Sling, where the paid/free distinction matters (Freestream channels are free), and for Fox, where locked channels are tagged "addon". Omitted for
+  // providers where every channel shares the same tier.
   tier?: string;
 }
 
@@ -235,9 +236,9 @@ export interface CategoryResolutionFailure {
  * these two shapes - there is no null. This forces every resolver to articulate its outcome explicitly, which guarantees diagnostic detail on every failure and
  * removes ambiguity between "could not resolve" and "did not attempt to resolve."
  *
- * The union is structurally discriminated by the `callSign` and `reason` field names so consumers can use TypeScript's `"callSign" in result` narrowing without
- * needing a tagged enum. A future evolution that needs additional outcomes (e.g., resolution to a list of candidates for user disambiguation) can add a new
- * variant here as a new named interface without touching the existing two.
+ * Consumers tell the two variants apart by the `callSign` and `reason` field names, using TypeScript's `"callSign" in result` narrowing without needing a tagged
+ * enum. A future evolution that needs additional outcomes (e.g., resolution to a list of candidates for user disambiguation) can add a new variant here as a new
+ * named interface without touching the existing two.
  */
 export type CategoryResolution = CategoryResolutionSuccess | CategoryResolutionFailure;
 

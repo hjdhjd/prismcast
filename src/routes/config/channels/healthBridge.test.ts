@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * healthBridge.test.ts: Tests for the reactive bridge that translates health/auth state changes into channel table patches over SSE. The bridge enforces the
- * single-source-of-truth invariant for channel row presentation - server renders, client applies. These tests pin the routing behavior, the affected-keys
+ * single-source-of-truth rule for channel row presentation - server renders, client applies. These tests pin the routing behavior, the affected-keys
  * resolution, the snapshot-time catch-up patch, and the unsubscribe contract.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";

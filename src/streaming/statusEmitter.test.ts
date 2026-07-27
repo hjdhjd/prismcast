@@ -407,8 +407,8 @@ describe("getStatusSnapshot", () => {
   test("returns a default system status when none has been cached yet", () => {
 
     // The fallback default ships with active: 0 and connected: false. Provided only the snapshot side because the dedup-driven emit path may suppress emitting a
-    // first cached status. The test relies on whatever cached state exists, so we verify the shape and key invariants rather than concrete numbers - other tests in
-    // this module mutate cachedSystemStatus.
+    // first cached status. The test relies on whatever cached state exists, so we verify the shape and the field types the snapshot must hold rather than
+    // concrete numbers - other tests in this module mutate cachedSystemStatus.
     const snapshot = getStatusSnapshot();
 
     assert.ok(typeof snapshot.system.browser.connected === "boolean");

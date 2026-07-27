@@ -90,8 +90,8 @@ function countChannelsByProfile(profileKeys: Set<string>): Record<string, number
 }
 
 /**
- * Generates the Custom Profiles panel content for the Channels tab's Custom Profiles subtab. Shows a table of user-defined profiles with their domain mappings and delete
- * buttons. The toolbar provides New Profile, Import, and Export actions. The profile builder wizard is triggered from the toolbar.
+ * Generates the Custom Profiles panel content for the Channels tab's Custom Profiles subtab. Shows a table of user-defined profiles with their domain mappings and
+ * edit/delete buttons. The toolbar provides New Profile, Import, and Export actions. The profile builder wizard is triggered from the toolbar.
  * @returns HTML content for the Custom Profiles panel.
  */
 export function generateCustomProfilesPanel(): string {
@@ -262,8 +262,8 @@ export function generateCustomProfilesPanel(): string {
 }
 
 /**
- * Generates the profile builder 5-step wizard modal. Configures the shared wizard modal shell with profile-specific steps (Base, Strategy, Flags, Domain, Save),
- * navigation buttons, and embedded JSON data registries (profiles, strategies, flags) for the client-side wizard controller.
+ * Generates the profile builder's multi-step wizard modal. Configures the shared wizard modal shell with profile-specific steps (Base, Strategy, Flags, Domain,
+ * Save), navigation buttons, and embedded JSON data registries (profiles, strategies, flags) for the client-side wizard controller.
  * @returns HTML string for the wizard modal.
  */
 export function generateProfileWizardModal(): string {
@@ -717,7 +717,8 @@ export function setupProfileRoutes(app: Express): void {
     }
   });
 
-  // POST /config/profiles/test - Start a test flow by opening a URL with the user's profile applied.
+  // POST /config/profiles/test - Start a test flow by navigating a visible browser tab to the candidate profile's URL for manual selector
+  // verification (no profile behaviors are applied).
   app.post("/config/profiles/test", async (req: Request, res: Response): Promise<void> => {
 
     try {
@@ -794,6 +795,7 @@ export function setupProfileRoutes(app: Express): void {
             output[name] = document.querySelectorAll(sel).length;
           } catch {
 
+            // A negative sentinel signals an invalid selector back across the evaluate boundary; the caller treats any count below zero as invalid.
             output[name] = -1;
           }
         }

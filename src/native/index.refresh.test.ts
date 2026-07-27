@@ -14,9 +14,9 @@ import { clearProbeCache } from "./probe.ts";
 import { mock } from "node:test";
 import { refreshNativeManifest } from "./index.ts";
 
-/* puppeteer-stream's PuppeteerStream module starts a WebSocketServer at import time. index.ts pulls in browser/manifestInterceptor.ts and that triggers the server
- * creation, which keeps the event loop alive after every test resolves. We unref every Server handle and timers to drain handles immediately. The same pattern is
- * documented in streaming/lifecycle.test.ts and the companion index.test.ts.
+/* closePuppeteerStreamWssOnIdle() performs its own dynamic import of puppeteer-stream, which starts a WebSocketServer; that server is what keeps the event loop
+ * alive after every test resolves, and closePuppeteerStreamWssOnIdle() is also what closes it. We unref every Server handle and timers to drain handles
+ * immediately. The same pattern is documented in streaming/lifecycle.test.ts and the companion index.test.ts.
  */
 const originalSetTimeout = globalThis.setTimeout;
 
@@ -342,10 +342,9 @@ describe("refreshNativeManifest", () => {
 
   test("schedules a single boundary-targeted refresh, not a MIN_REFRESH_DELAY busy-loop, when the master token is inside the refresh margin", async () => {
 
-    /* Regression for the token-refresh busy-loop. A master URL whose token expires inside the 5-minute refresh margin used to reschedule at the MIN_REFRESH_DELAY
-     * floor (30s) after every successful direct fetch, re-probing the still-valid master every 30s for the final minutes before expiry. The fix aims the single
-     * reschedule at the actual expiry boundary instead. With a master expiring in ~90s and a variant carrying no token, the boundary is the master's 90s; the
-     * reschedule must fire at ~90s, NOT at the 30s floor. The 90s-vs-30s gap is precisely the difference between the fixed boundary schedule and the old busy-loop.
+    /* A master URL whose token expires inside the 5-minute refresh margin must resolve to a single reschedule aimed at the actual expiry boundary, not the
+     * MIN_REFRESH_DELAY floor (30s), so the schedule never degenerates into a per-cycle re-probe of the still-valid master. With a master expiring in ~90s and a
+     * variant carrying no token, the boundary is the master's 90s, so the reschedule must fire at ~90s and not at the 30s floor.
      */
     const expirySeconds = Math.floor(Date.now() / 1000) + 90;
     const masterUrl = "https://cdn.test/inside-margin-master.m3u8?exp=" + String(expirySeconds);

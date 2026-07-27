@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * concurrent-recovery.test.ts: Pins the per-stream-isolation invariant for the recovery state machine. PrismCast's design philosophy demands that "a problem
+ * concurrent-recovery.test.ts: Pins the per-stream isolation rule for the recovery state machine. PrismCast's design philosophy demands that "a problem
  * with one stream should never affect other streams" - the canonical statement of failure isolation in this codebase. The recovery layer realizes that
  * philosophy by making the state objects (RecoveryMetrics, CircuitBreakerState) per-stream values that the monitor instantiates one-per-stream and that the
  * helpers in src/streaming/recovery.ts mutate by parameter, never via module-level singletons. A regression that introduced shared state - a global breaker
@@ -8,7 +8,7 @@
  * modes: one stream's escalation would advance another's; one stream's tripped breaker would terminate another; one stream's reset would clear another's
  * accumulated counters.
  *
- * Phase 1's recovery-escalation.test.ts pins the single-stream sequence (escalation, accumulation, trip-and-reset). This suite pins the orthogonal axis: with
+ * Phase 1's recovery-escalation.test.ts pins the single-stream sequence (escalation, accumulation, trip-and-reset). This suite pins the independent axis: with
  * two streams driven through state mutations in interleaved order, neither's state must influence the other's. The integration value here is precisely what
  * the unit suite cannot exercise alone - the unit suite tests one state object at a time, by construction. Independence-under-concurrency is not visible at
  * that resolution.
@@ -99,7 +99,7 @@ describe("recovery state machine - per-stream isolation across concurrent stream
 
   test("circuit breaker trips per-stream: pushing stream A past threshold leaves stream B's breaker untouched", async () => {
 
-    /* The per-stream invariant for breakers. Production policy: each stream has its own CircuitBreakerState; the monitor calls checkCircuitBreaker against the
+    /* The per-stream isolation rule for breakers. Production policy: each stream has its own CircuitBreakerState; the monitor calls checkCircuitBreaker against the
      * per-stream state, never against a shared one. A regression that aliased the breaker (e.g., a module-level WeakMap that mis-keyed) would surface here as
      * stream B's breaker carrying stream A's failure count.
      *

@@ -1,8 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * serviceWarning.test.ts: Unit tests for buildServiceFilterWarning. The helper is the SSOT for the "service not in active filter" warning that the browse and
- * CRUD endpoints surface as a toast with a one-click enable action. Tests pin the four skip paths (no active filter, no known service tag, the "direct" tag,
- * and an already-enabled tag) and the positive case where a non-direct tag is missing from the active filter.
+ * CRUD endpoints surface as a toast with a one-click enable action. Tests pin the three skip paths (no active filter, the tag resolves but is already enabled,
+ * and the tag doesn't resolve at all, which also covers the literal "direct" tag since both take the same undefined-or-falsy-tag branch) and the positive case
+ * where a non-direct tag is missing from the active filter.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -61,8 +62,8 @@ describe("buildServiceFilterWarning", () => {
     // even when an active filter wouldn't include 'direct'.
     setEnabledServices([ "hulu", "yttv" ]);
 
-    // An unknown URL falls back to the "direct" tag via getDomainConfig. We use a freshly-invented domain to ensure no real DOMAIN_CONFIG entry maps it to a
-    // real service tag - the absence of a config entry forces the helper down the "direct" branch.
+    // An unregistered domain makes getDomainConfig return undefined, so the helper's tag is undefined too. The truthiness check on tag short-circuits before it
+    // ever reaches the tag !== "direct" comparison, which lands on the same undefined warning as a literal "direct" service tag would.
     const warning = buildServiceFilterWarning("https://no-such-service-domain.invalid/live");
 
     assert.equal(warning, undefined, "direct tag must never produce a warning");

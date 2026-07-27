@@ -154,7 +154,8 @@ export function getChannelServiceTags(canonicalKey: string): string[] {
 
     for(const variant of group.variants) {
 
-      // Skip predefined suffix variants - they share the canonical's tag (but derived from the predefined URL, which may differ from the user override).
+      // Skip predefined suffix variants - the :predefined variant represents the original service being reverted to, not an independently offered
+      // service, so its tag is excluded even when it differs from the canonical's current tag.
       if(variant.key.endsWith(PREDEFINED_SUFFIX)) {
 
         continue;
@@ -521,7 +522,8 @@ export function buildServiceGroups(channels: Record<string, ResolvedChannel>): s
   }
 
   // Build the domain-to-predefined-channel reverse index. This enables the manual add form to show an inline hint when the entered URL matches a predefined
-  // channel. Scans only canonical entries in PREDEFINED_CHANNELS (variants share the canonical's URL domain and would produce duplicate results).
+  // channel. Scans only canonical entries in PREDEFINED_CHANNELS: each service variant maps the same channel onto a different service's domain, so including
+  // them would flood a shared-service domain (e.g., hulu.com) with many unrelated channels instead of the single, meaningful hint the index is meant to give.
   predefinedByDomain.clear();
 
   for(const [ key, channel ] of Object.entries(PREDEFINED_CHANNELS)) {
@@ -1070,8 +1072,7 @@ export function resolvePredefinedVariant(key: string): ResolvedChannel | undefin
     return undefined;
   }
 
-  // Canonical entries (and standalones, but those are not in PREDEFINED_CHANNELS) carry full identity already. Narrow on the canonicalKey discriminator to
-  // confirm: undefined canonicalKey means CanonicalChannel.
+  // Canonical entries carry full identity already. Narrow on the canonicalKey field to confirm: undefined canonicalKey means CanonicalChannel.
   if(entry.canonicalKey === undefined) {
 
     return entry;

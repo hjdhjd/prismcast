@@ -47,8 +47,8 @@ import path from "node:path";
 export type CliOverrides = Record<string, unknown>;
 
 /* ConfigStore is the disk-persistence boundary config/index.ts composes on: the read-load and write-back operations backed by the file store. It is injected as a
- * default parameter on the persistence-facing functions so a test can substitute an in-memory store at the same seam - no loader mock - while production uses the
- * real defaultConfigStore. mergeConfiguration and the normalization helpers stay direct because they are pure and touch no disk. This mirrors the Clock port
+ * default parameter on the persistence-facing functions so a test can substitute an in-memory store in the same place - no loader mock - while production uses
+ * the real defaultConfigStore. mergeConfiguration and the normalization helpers stay direct because they are pure and touch no disk. This mirrors the Clock port
  * (utils/clock.ts): a typed interface plus a module-const default, consumed through a defaulted parameter.
  */
 export interface ConfigStore {
@@ -74,7 +74,8 @@ export let configParseErrorMessage: string | undefined;
 
 // Stashed CLI overrides from the most recent initializeConfiguration call. reloadConfiguration re-applies them so the priority chain (CLI > env > user > defaults)
 // stays consistent across reloads. CLI overrides are a startup-only concern in practice; capturing them once and replaying them avoids losing the binding when a
-// live reload runs in a process where the operator originally passed --port or --data-dir.
+// live reload runs in a process where the operator originally passed --port or --chrome-data-dir. The --data-dir flag is resolved separately, before
+// configuration loads, and never flows through this stash.
 let stashedCliOverrides: CliOverrides | undefined;
 
 // Whether a higher-priority debug source (the PRISMCAST_DEBUG env var or the --debug CLI flag) established the active debug filter before the persisted config
@@ -132,9 +133,9 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides, io: C
  * Atomicity contract: failures during the read, merge, or normalize steps leave CONFIG completely untouched - the function builds the new shape in isolation
  * and only reassigns the live binding after all of those steps succeed. Failures DURING handler dispatch, however, occur after the CONFIG reassignment: CONFIG
  * already reflects the new on-disk state, but the handler chain may have run partway. The conservative answer is that handlers must not throw; they should
- * report outcomes (including "rejected") instead. The atomicity-on-read invariant is exercised by index.reload.test.ts.
+ * report outcomes (including "rejected") instead. That atomicity-on-read behavior is exercised by index.reload.test.ts.
  *
- * Validation contract: before committing, the merged shape is re-checked against the same hard-error and capture-coercion invariants the startup path enforces.
+ * Validation contract: before committing, the merged shape is re-checked against the same hard-error and capture-coercion checks the startup path enforces.
  * A configuration that carries a hard error (out-of-range numeric, non-absolute path, conflicting HDHR port) or would need a capture coercion (native mode, a
  * captureCodecs list missing the h264 baseline) is rejected rather than silently coerced: CONFIG stays on the previous valid state and every diffed change is
  * reported as rejected so the operator sees why nothing took effect. This closes the window where a live save could commit an un-normalized capture
@@ -160,9 +161,10 @@ export async function reloadConfiguration(io: ConfigStore = defaultConfigStore):
   // every import { CONFIG } reads through the binding at access time, so there is no stale-reference window.
   const diff = computeConfigDiff(CONFIG, nextConfig);
 
-  // Re-validate the merged shape against the startup invariants. When it cannot be committed safely, leave CONFIG untouched and report every diffed change as
-  // rejected with the joined reason - the save was persisted to disk by the caller, but the live binding stays on the previous valid state until the operator
-  // corrects the source. The diff.length guard avoids fabricating rejected entries when there is nothing to apply (an empty diff cannot carry a regression).
+  // Re-validate the merged shape against the same hard-error and capture-coercion checks the startup path enforces. When it cannot be committed safely, leave
+  // CONFIG untouched and report every diffed change as rejected with the joined reason - the save was persisted to disk by the caller, but the live binding
+  // stays on the previous valid state until the operator corrects the source. The diff.length guard avoids fabricating rejected entries when there is nothing
+  // to apply (an empty diff cannot carry a regression).
   const rejection = collectReloadRejection(nextConfig);
 
   if((diff.length > 0) && (rejection !== null)) {
@@ -365,11 +367,11 @@ function checkBounds(name: string, value: number, min: number | undefined, max: 
 }
 
 /**
- * The capture-related coercions a configuration needs to satisfy the streaming invariants the startup path enforces. collectCoercions describes them without
+ * The capture-related coercions a configuration needs to satisfy the streaming requirements the startup path enforces. collectCoercions describes them without
  * mutating; applyCoercions applies them (startup); reloadConfiguration treats a non-empty set as grounds to reject a live save rather than coerce silently. The
  * preset and debug-filter normalizations are intentionally NOT modeled here - those are benign canonicalizations handled by normalizeConfig on both
- * the startup and reload paths, whereas these capture coercions guard safety-critical invariants (native mode corrupts output and disables HDHR; the h264
- * baseline is universal) and so must surface to the operator on reload rather than be silently rewritten.
+ * the startup and reload paths, whereas these capture coercions guard safety-critical requirements (native capture mode corrupts output after 20-30 minutes of
+ * recording; the h264 baseline is universal) and so must surface to the operator on reload rather than be silently rewritten.
  */
 interface ConfigCoercions {
 
@@ -497,9 +499,10 @@ function collectHardErrors(config: Config): string[] {
     errors.push("paths.logFile must be an absolute path, got: " + config.paths.logFile);
   }
 
-  // Validate the HDHomeRun port only when HDHR is enabled and the effective capture mode is FFmpeg. Native capture mode disables HDHR (and is itself a coercion
-  // surfaced by collectCoercions), so the HDHR port is never bound in that state and a port check against it would be moot. At startup applyCoercions has
-  // already forced FFmpeg mode by the time this runs, so the guard reduces to "HDHR enabled"; on reload a native-mode config is rejected before reaching here.
+  // Validate the HDHomeRun port only when HDHR is enabled and the effective capture mode is FFmpeg. At startup applyCoercions has already forced FFmpeg mode
+  // before this runs, so the captureMode check is a defensive no-op here and the guard reduces to just "HDHR enabled". On reload, an un-coerced native-mode
+  // config skips this specific port check, but collectReloadRejection separately rejects it via the forceFfmpegMode reason before it could ever be committed
+  // with native mode active.
   if(config.hdhr.enabled && (config.streaming.captureMode === "ffmpeg")) {
 
     check(validatePositiveInt("HDHR_PORT", config.hdhr.port, 1, 65535));
@@ -518,7 +521,7 @@ function collectHardErrors(config: Config): string[] {
  * Validates all configuration values and throws an error if any are invalid. This function runs at startup after configuration initialization. It first applies
  * the capture coercions in place (filtering captureCodecs, forcing FFmpeg mode, with the same operator-visible warning as before), then collects every hard
  * error against the coerced CONFIG and throws once with the complete list. Splitting the pure collectors (collectCoercions, collectHardErrors) from the in-place
- * application lets reloadConfiguration reuse the very same invariants without silently coercing a live save.
+ * application lets reloadConfiguration reuse the same hard-error and capture-coercion checks without silently coercing a live save.
  * @throws If any configuration value is invalid. The error message lists all invalid values.
  */
 export function validateConfiguration(): void {
@@ -572,7 +575,8 @@ export async function persistCoercedConfig(io: ConfigStore = defaultConfigStore)
 /**
  * Determines whether a freshly merged configuration must be rejected on reload rather than committed. Returns a single human-readable reason when the
  * configuration carries a hard error (an always-fatal value) or would require a capture coercion the reload path refuses to apply silently, or null when the
- * configuration is safe to commit live. The reasons are complete sentences because they are surfaced verbatim to the operator in the settings-save response.
+ * configuration is safe to commit live. Most of the collected reason strings carry no trailing punctuation and are joined with a single space, so the combined
+ * text reads as one flowing line rather than separate sentences when it is surfaced verbatim to the operator in the settings-save response.
  * @param config - The merged, normalized configuration about to be committed.
  * @returns The joined rejection reason, or null when the configuration may be committed.
  */

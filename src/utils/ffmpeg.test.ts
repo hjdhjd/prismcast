@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * ffmpeg.test.ts: Unit tests for the FFmpeg helpers in ffmpeg.ts. Three layers are exercised:
+ * ffmpeg.test.ts: Unit tests for the FFmpeg helpers in ffmpeg.ts. Four layers are exercised:
  *
  * 1. probeFFmpegPath - the pure path-resolution algorithm. Tested by passing inline FFmpegContext literals that fake the platform, filesystem, home directory,
  *    probe results, and the bundled FFmpeg path. No real spawn, no real fs, no real platform check.
@@ -10,11 +10,13 @@
  *
  * 3. getBundledFFmpegPath - pure existence check via context.
  *
+ * 4. classifyFfmpegExit - the pure exit-code and signal classifier. Tested by calling it directly with synthetic (code, signal, label) combinations.
+ *
  * The two spawner functions (spawnFFmpeg, spawnMpegTsRemuxer) drive real subprocesses and are not exercised here - they are thin wrappers around the spawn()
  * primitive plus the arg builders above. Their integration with the real FFmpeg binary belongs in e2e coverage.
  *
- * resolveFFmpegPath and isFFmpegAvailable are the production-cached singletons that probe the real filesystem; they have no test seam and no parameters because
- * their caching contract is intentionally sealed.
+ * resolveFFmpegPath and isFFmpegAvailable are the production-cached singletons that probe the real filesystem; they offer no way for tests to substitute
+ * their dependencies and take no parameters because their caching contract is intentionally sealed.
  */
 import { buildMpegTsRemuxerArgs, buildSpawnFFmpegArgs, classifyFfmpegExit, getBundledFFmpegPath, probeFFmpegPath } from "./ffmpeg.ts";
 import { describe, test } from "node:test";
@@ -480,7 +482,7 @@ describe("buildSpawnFFmpegArgs", () => {
 
   test("comment and platform options compose independently", () => {
 
-    // The two options are orthogonal - exercising both at once verifies neither overrides the other's behavior.
+    // The two options are independent - exercising both at once verifies neither overrides the other's behavior.
     const args = buildSpawnFFmpegArgs(256000, { comment: "channel", platform: "darwin" });
 
     assert.equal(args[args.indexOf("-c:a") + 1], "aac_at", "platform option still drives encoder choice");

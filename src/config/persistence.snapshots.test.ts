@@ -5,9 +5,10 @@
  * data-shape regression that escapes the primary safeguards.
  *
  * Why some tests use real fs and others use the in-memory backend: the snapshot CREATION path (snapshot label idempotence, copyFile-from-source semantics) is
- * exercised against real fs because the framework's atomicity guarantees only mean what they mean against a real filesystem. The PRUNING path (readdir +
- * per-entry stat + per-entry unlink in a Promise.all loop) needs failure injection to drive its uncovered branches, so those tests use the memory backend
- * with override hooks - real fs cannot reliably make individual fs.stat or fs.unlink calls fail mid-loop.
+ * exercised against real fs because the framework's atomicity guarantees only mean what they mean against a real filesystem. The pruning tests that need
+ * failure injection (readdir, per-entry stat, or per-entry unlink throwing mid-loop) use the memory backend with override hooks, since real fs cannot
+ * reliably make individual calls fail on demand. The one pruning test that needs no failure injection - the at-or-below-retention no-op boundary - has no
+ * need for the memory backend and is exercised against real fs like the creation-path tests.
  */
 import { describe, test } from "node:test";
 import { makeMemoryStorageBackend, makeMemoryStore, makeStore } from "./persistence.helpers.ts";
@@ -80,8 +81,9 @@ describe("FileStore.snapshot - pruning under retention", () => {
 
   test("a directory with snapshots at or below SNAPSHOT_RETENTION is left untouched", async () => {
 
-    /* The retention constant is 5. At or below that threshold, the prune step is a no-op short-circuit and removes nothing. We verify by creating exactly five
-     * labeled snapshots and confirming all five survive, since each snapshot()'s prune step finds <= 5 entries and returns early.
+    /* At or below SNAPSHOT_RETENTION, the prune step is a no-op short-circuit and removes nothing. We verify by creating exactly SNAPSHOT_RETENTION labeled
+     * snapshots and confirming all of them survive, since each snapshot()'s prune step finds a candidate count at or below the retention limit and returns
+     * early.
      */
     await withTempDir(async (dir) => {
 
@@ -135,8 +137,8 @@ describe("FileStore.snapshot - pruning under retention", () => {
       defaultValue: () => ({ value: 0 })
     });
 
-    // Trigger a fresh snapshot. The create flow proceeds (label "v8" does not exist yet), then the prune step runs - eight matching snapshots, retention is 5,
-    // so the three oldest (v1, v2, v3) get unlinked. v4..v8 survive.
+    // Trigger a fresh snapshot. The create flow proceeds (label "v8" does not exist yet), then the prune step runs: the matching snapshot count exceeds
+    // SNAPSHOT_RETENTION, so the oldest entries beyond the retention limit (v1, v2, v3) get unlinked; v4..v8 survive.
     await store.snapshot("v8");
 
     const entries = (await backend.readdir(snapshotDir)).filter((entry) => entry.startsWith("seven.json."));
@@ -269,8 +271,8 @@ describe("FileStore.snapshot - pruning under retention", () => {
 
     await assert.doesNotReject(() => store.snapshot("v8"), "snapshot must succeed even if individual unlink calls fail");
 
-    // v1 (the failing target) survives; v2 and v3 are also pruned candidates per the retention math (8 entries - 5 retained = 3 pruned). With v1's unlink
-    // failing but not propagating, we expect v1 + the five most-recent (v4..v8) to remain. v2 and v3's unlinks succeeded.
+    // v1 (the failing target) survives; v2 and v3 are also pruned candidates beyond SNAPSHOT_RETENTION. With v1's unlink failing but not propagating, we
+    // expect v1 plus the entries retained under SNAPSHOT_RETENTION (v4..v8) to remain. v2 and v3's unlinks succeeded.
     const entries = (await backend.readdir(snapshotDir)).filter((entry) => entry.startsWith("unlink-fail.json."));
     const surviving = entries.toSorted();
 

@@ -48,7 +48,8 @@ import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
  *    Recovery levels:
  *    - Level 1: Basic play/unmute and fullscreen (only for paused issues).
  *    - Level 2: Reload video source (first attempt has ~58% success rate).
- *    - Level 3: Full page navigation (always succeeds).
+ *    - Level 3: Full page navigation (the most disruptive option; two consecutive failures fall back to source reload, and repeated failures can trip the
+ *      circuit breaker or hit the page-reload rate limit).
  *
  * 5. Circuit breaker: If too many failures occur within a time window (default: 10 failures in 5 minutes), the stream is considered fundamentally broken and the
  *    circuit breaker trips, terminating the stream. This prevents endless recovery attempts that consume resources.
@@ -166,7 +167,8 @@ interface SegmentState {
  * @param streamInfo - Stream metadata for status updates.
  * @param onCircuitBreak - Callback function called when circuit breaker trips.
  * @param onTabReplacement - Optional callback for tab replacement recovery. When provided and 3+ consecutive timeouts occur, this is called to replace the hung tab.
- *                           If null/undefined, tab replacement is not available and timeouts will eventually trip the circuit breaker.
+ *                           If null/undefined, tab replacement is not available; sustained evaluate timeouts are only surfaced via status (lastIssueType) with no
+ *                           automatic recovery escalation.
  * @returns A MonitorHandle exposing the live recovery metrics (getMetrics) and a self-contained dispose that stops the monitor's polling interval.
  */
 export function monitorPlaybackHealth(
@@ -458,7 +460,7 @@ export function monitorPlaybackHealth(
       return;
     }
 
-    // L3: at 6x target duration, or at 4x once an L2 attempt has already been made, fall back to capture mode via tab replacement.
+    // L3: at 4x target duration once an L2 attempt has already been made and the stall persists, fall back to capture mode via tab replacement.
     if(decision.action === "l3") {
 
       LOG.warn("Falling back to capture mode for %s: native streaming stalled after recovery attempt.", storeKey);
@@ -899,9 +901,9 @@ export function monitorPlaybackHealth(
    * tab) consistently, including metrics recording, success/failure logging, circuit breaker checks, and state resets.
    *
    * On failure, retries onTabReplacement once before giving up. The handler destroys old resources (capture, segmenter, FFmpeg, page) before calling
-   * createPageWithCapture, so a retry is the only chance to save the stream when the first attempt fails. All handler cleanup steps are idempotent on retry:
-   * rawCaptureStream.destroyed guard, segmenter stop() checks state.stopped, FFmpeg kill() checks ffmpeg.killed, page close checks !oldPage.isClosed(), and
-   * unregisterManagedPage is idempotent.
+   * createPageWithCapture, so a retry is the only chance to save the stream when the first attempt fails. All handler cleanup steps are safe to call more than
+   * once on retry: rawCaptureStream.destroyed guard, segmenter stop() checks state.stopped, FFmpeg kill() checks ffmpeg.killed, page close checks
+   * !oldPage.isClosed(), and unregisterManagedPage is a no-op on repeat.
    * @param issueType - Description of what triggered the replacement (for logging and UI display).
    * @returns The tab replacement outcome.
    */
@@ -927,7 +929,7 @@ export function monitorPlaybackHealth(
 
       let result = await onTabReplacement();
 
-      // First attempt failed - retry once. See idempotency notes in the JSDoc above.
+      // First attempt failed - retry once. See the safe-to-retry notes in the JSDoc above.
       if(!result) {
 
         LOG.debug("recovery:tab", "Tab replacement attempt 1/2 failed. Retrying...");

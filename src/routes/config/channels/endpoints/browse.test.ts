@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * browse.test.ts: Tests for the browse-channels modal endpoint. The endpoint dispatches four action types ('add', 'enable', 'switch', 'remove') from a single
+ * browse.test.ts: Tests for the browse-channels modal endpoint. Every supported action ('add', 'enable', 'switch', 'remove') is dispatched from a single
  * batch. Coverage focuses on the validation surface, the no-op response, and the per-entry error reporting (missing fields, invalid URLs).
  */
 import type { Express, RequestHandler } from "express";

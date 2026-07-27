@@ -73,6 +73,10 @@ export function execFileFromMap(map: Record<string, FakeExecFileResult>): FakeEx
    */
   return async (file: string, args: string[]): Promise<{ stderr: string; stdout: string }> => {
 
+    /* The key is a simple space-joined concatenation of file and args, not a reversible encoding of the pair. Args containing embedded spaces can produce a
+     * key that collides with a different (file, args) split that happens to join to the same string. Test authors composing multi-word arguments should
+     * keep that possibility in mind when choosing map keys.
+     */
     const key = file + " " + args.join(" ");
     const result = map[key];
 

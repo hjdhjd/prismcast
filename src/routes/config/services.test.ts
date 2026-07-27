@@ -2,9 +2,9 @@
  *
  * services.test.ts: Unit tests for the user-profile UI generators and the route-aggregator wiring in services.ts. The two HTML generators are pure
  * functions of the user-profile registry and the channel listing - both empty in a fresh test process - so we exercise them through the public exports
- * and verify the rendered HTML shape, escaping, and embedded JSON shapes. The route-aggregator setupProfileRoutes registers handlers but the handlers
- * themselves require a live Express runtime and the user-profile filesystem layer; we lock the registration shape and flag the per-handler behavior as
- * integration-level.
+ * and verify the rendered HTML shape, escaping, and embedded JSON shapes. The route-aggregator setupProfileRoutes registers handlers whose pre-I/O
+ * validation branches we exercise directly via the Express stub; only the disk-mutating continuations (mutateProfiles, deleteUserProfile,
+ * importServicePack) remain untested here.
  */
 import { describe, test } from "node:test";
 import { generateCustomProfilesPanel, generateProfileWizardModal, setupProfileRoutes } from "./services.ts";
@@ -182,8 +182,8 @@ describe("generateProfileWizardModal", () => {
 
   test("strategy registry includes the three user-configurable strategies (tileClick, thumbnailRow, none)", () => {
 
-    // Service-specific strategies (foxGrid, slingGrid, etc.) are builtin only and must NOT appear in the wizard. The user-facing strategy list is
-    // exactly tileClick, thumbnailRow, and none.
+    // Service-specific strategies (foxGrid, slingGrid, etc.) are builtin only and must NOT appear in the wizard. This test confirms that tileClick,
+    // thumbnailRow, and none are present; the sibling test below confirms the named builtin-only strategies are absent.
     const html = generateProfileWizardModal();
 
     assert.match(html, /"id":"tileClick"/, "tileClick strategy");
@@ -206,7 +206,7 @@ describe("generateProfileWizardModal", () => {
   test("field registry includes every user-configurable boolean flag", () => {
 
     // The flags step exposes selectReadyVideo, lockVolumeProperties, clickToPlay, needsIframeHandling, waitForNetworkIdle, useRequestFullscreen. Lock
-    // them all so a registry edit forces a test update.
+    // them all so renaming or removing any of them fails this test.
     const html = generateProfileWizardModal();
 
     assert.match(html, /"id":"selectReadyVideo"/, "selectReadyVideo flag");
@@ -270,7 +270,7 @@ describe("generateProfileWizardModal", () => {
 
   test("every wizard profile field is a SiteProfile field accepted by validateProfile", () => {
 
-    /* The registry-subset invariant: the wizard must never render a field the validator would reject, or a complete-object resave would 400. Each field id is fed
+    /* The registry-subset rule: the wizard must never render a field the validator would reject, or a complete-object resave would 400. Each field id is fed
      * through the real validateProfile as a single-field profile; the "unrecognized flag" rejection must never name it. This is the guard that keeps the blessed
      * complete-object round-trip from surfacing a builder-authored field as a validation error.
      */

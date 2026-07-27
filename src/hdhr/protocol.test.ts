@@ -5,8 +5,9 @@
  * boundary (parse and build) and the failure modes (short packets, bad CRC, malformed TLV lengths) that the transport layer relies on the codec to detect.
  *
  * Fixtures are constructed via the shared packet builders in protocol.helpers.ts so the test reads like a spec: each request is built with a clearly-labelled
- * helper, and the resulting packet is verified end-to-end through buildPacket + parsePacket round-trip. Where literal byte offsets matter (header field
- * positions, CRC placement), we assert them directly so a refactor that silently changes the wire format would fail loudly.
+ * helper, and the resulting packet is verified against its expected byte layout - either by parsing it back through parsePacket or, for reply packets that
+ * have no parser, by manually recomputing the CRC over the built bytes. Where literal byte offsets matter (header field positions, CRC placement), we assert
+ * them directly so a refactor that silently changes the wire format would fail loudly.
  */
 import { HDHR_WILDCARD, PACKET_DISCOVER_REPLY, PACKET_DISCOVER_REQUEST, PACKET_GET_REPLY, PACKET_GET_REQUEST, PACKET_UPGRADE_REQUEST, TLV_BASE_URL, TLV_DEVICE_ID,
   TLV_DEVICE_TYPE, TLV_ERROR, TLV_GETSET_NAME, TLV_GETSET_VALUE, TLV_TUNER_COUNT, buildDiscoverReply, buildErrorReply, buildGetReply, parsePacket } from "./protocol.ts";
@@ -112,8 +113,9 @@ describe("buildDiscoverReply", () => {
 
   test("CRC verifies via parsePacket round-trip - sanity check that the build path produces parseable bytes", () => {
 
-    // We do not have a parseDiscoverReply function (the transport never parses replies it sent), but parsePacket validates the CRC for any packet shape. A
-    // build that produces a bad CRC would have parsePacket return null when fed back; this round-trip is the canonical wire-correctness check.
+    // We do not have a parseDiscoverReply function (the transport never parses replies it sent), so this test manually recomputes the CRC over the built
+    // header and payload bytes and compares it against the CRC the builder wrote into the trailer; a mismatch would mean the build path produces bytes no
+    // parser could ever validate.
     const packet = buildDiscoverReply(makeReplyFixture());
 
     // Manually re-verify the CRC the same way the parser would so the assertion message points at the CRC specifically if it fails.

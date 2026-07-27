@@ -4,8 +4,8 @@
  * fires PRETUNE_LEAD_MS (30s) before each upcoming recording, and tears down unclaimed pretuned streams after a safety timeout. The public surface is the
  * startPretunePolling()/stopPretunePolling() lifecycle pair plus clearPretuneSafetyTimer(), which terminateStream() calls to drop a pretuned stream's safety timer
  * when the stream is claimed and torn down normally. The polling functions depend on side effects (intervals, async DVR fetches, stream initialization) that
- * require deep mocking, so the honest test surface is verifying the start/stop pair is idempotent, that stop cleanly drains active timers, and that
- * clearPretuneSafetyTimer is a safe no-op for the non-pretuned streams that dominate the terminate path.
+ * require deep mocking, so the honest test surface is verifying the start/stop pair is safe to call more than once, that stop cleanly drains active
+ * timers, and that clearPretuneSafetyTimer is a safe no-op for the non-pretuned streams that dominate the terminate path.
  */
 import { describe, test } from "node:test";
 import { startPretunePolling, stopPretunePolling } from "./pretune.ts";
@@ -55,8 +55,8 @@ describe("startPretunePolling / stopPretunePolling", () => {
 
     // Each pair re-enters the start guard cleanly. We exercise three cycles to ensure the cleanup truly resets state. The trailing assert.ok(true) is intentional:
     // the loop body would throw on regression (start or stop raising, internal Maps growing without bound), and the success criterion is "this completes without
-    // throwing and the process can exit cleanly under the unref'd cleanup timer at the top of this file." There is no observable per-cycle invariant to assert on;
-    // the test's value is in exercising the lifecycle without regression.
+    // throwing and the process can exit cleanly under the unref'd cleanup timer at the top of this file." There is no observable per-cycle guarantee to assert
+    // on; the test's value is in exercising the lifecycle without regression.
     for(let i = 0; i < 3; i++) {
 
       startPretunePolling();
@@ -97,9 +97,9 @@ describe("clearPretuneSafetyTimer", () => {
 
   test("is idempotent - clearing the same stream ID twice leaves no entry and does not throw", () => {
 
-    // After the first clear, the safetyTimers entry for the stream ID is gone, so a second clear must find nothing and remain a no-op. This locks the invariant that
-    // terminateStream relies on: once the timer is cleared the Map entry is removed, so a redundant terminate (which the guard already tolerates) cannot resurrect or
-    // double-clear a stale timer.
+    // After the first clear, the safetyTimers entry for the stream ID is gone, so a second clear must find nothing and remain a no-op. This locks the guarantee
+    // that terminateStream relies on: once the timer is cleared the Map entry is removed, so a redundant terminate (which the guard already tolerates) cannot
+    // resurrect or double-clear a stale timer.
     clearPretuneSafetyTimer(424242);
 
     assert.doesNotThrow(() => {

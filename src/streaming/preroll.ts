@@ -117,7 +117,7 @@ export function getPrerollTotalDurationSec(codec: CaptureCodec): number {
 
 /**
  * Returns the maximum duration across all preroll segments for the specified codec, rounded up to the nearest integer. Used for TARGETDURATION computation in the
- * composite playlist.
+ * standalone preroll playlist built by generatePrerollPlaylist.
  * @param codec - The preroll codec variant.
  * @returns The ceiling of the maximum preroll segment duration.
  */

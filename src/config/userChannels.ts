@@ -127,8 +127,9 @@ export function getChannelsParseErrorMessage(): string | undefined {
 }
 
 /* Transactional store for channels.json. The store uses a compound type that carries channel data alongside metadata (serviceSelections, tagRegistry). The parse
- * function extracts all three from the JSON file. The mutateChannels() wrapper normalizes predefined channel deltas before the write and adapts the compound
- * type so callers work directly with StoredChannelMap. The beforeWrite hook injects metadata from module state.
+ * function extracts the channel data and its metadata fields from the JSON file. The mutateChannels() wrapper normalizes predefined channel deltas before the
+ * write and adapts the compound type so callers work directly with StoredChannelMap. The beforeWrite hook (prepareChannelsForWrite) derives every field of the
+ * on-disk shape from the mutation's data envelope itself, never from module state.
  */
 
 /* Current schema version for channels.json. Migrations are declared in channelsMigrations below; the framework runs them in order from the file's stored
@@ -181,7 +182,7 @@ function parseChannelsFile(raw: string): ChannelsFileData {
 
     if(key === "schemaVersion") {
 
-      // Tolerate bad data by falling back to version 1 - any plausibly-legacy value is fine, since migrations are idempotent when no work is needed.
+      // Tolerate bad data by falling back to version 1 - any plausibly-legacy value is fine, since migrations are a no-op when no work is needed.
       if((typeof value === "number") && Number.isFinite(value) && (value >= 1)) {
 
         schemaVersion = Math.floor(value);
@@ -350,9 +351,9 @@ function normalizeEntryAgainstBase(stored: StoredChannel, base: Channel): Stored
   return hasFields ? (cleaned) : null;
 }
 
-/* Every channel entry falls into one of three kinds. The classifier is the single source of truth for this taxonomy; every consumer (resolution, normalization,
- * export) routes through it so the rules live in one place. The variant case splits into "predefined variant" and "user variant" based on which source declared
- * canonicalKey, but both paths go through the same layered overlay at resolution time - so the union collapses them into one discriminant.
+/* Every channel entry falls into one of the classifier's kinds. The classifier is the single source of truth for this taxonomy; every consumer (resolution,
+ * normalization, export) routes through it so the rules live in one place. The variant case splits into "predefined variant" and "user variant" based on which
+ * source declared canonicalKey, but both paths go through the same layered overlay at resolution time - so the union collapses them into one kind.
  */
 
 /**
@@ -408,8 +409,8 @@ function classifyEntry(key: string, stored: StoredChannel | undefined): EntryCla
  * Computes the field-name allowlist for a stored entry's expected shape. Stored entries fall into two structural shapes determined by classification:
  *
  *  - Canonical-shaped (kind = canonical or standalone): allowed fields are DELTA_ELIGIBLE_IDENTITY_KEYS ∪ DELTA_ELIGIBLE_BINDING_KEYS. The full delta surface.
- *  - Variant-shaped (kind = variant): allowed fields are DELTA_ELIGIBLE_BINDING_KEYS plus the structural canonicalKey discriminator. Identity inherits from the
- *    canonical and must not appear on variants per the architectural principle.
+ *  - Variant-shaped (kind = variant): allowed fields are DELTA_ELIGIBLE_BINDING_KEYS plus the structural canonicalKey field that marks the kind. Identity
+ *    inherits from the canonical and must not appear on variants per the architectural principle.
  *
  * Single source of truth for the shape rule. Used by filterToDeltaSurface (normalizer pre-strip) and by the customization accessor's per-pass walks. Routes
  * shape determination through classifyEntry so any caller automatically picks up classifier improvements - no parallel logic for "is this a variant?".
@@ -480,7 +481,7 @@ function resolveVariant(canonical: ResolvedChannel, predefined: Channel | undefi
 
   // Identity-only base. The url field (required on ResolvedChannel) is supplied by the predefined variant or stored delta below; the cast acknowledges that
   // intermediate state. After the chain completes, the result has url populated when at least one of the binding-bearing layers (predefined or stored) is
-  // present - which is the documented invariant for any well-formed variant entry.
+  // present - which is the documented guarantee for any well-formed variant entry.
   let resolved = pickIdentity(canonical) as ResolvedChannel;
 
   // Variant overlays apply binding fields only - identity stays from the canonical per the architectural principle that variants are pure tuning data. Both
@@ -950,7 +951,7 @@ function normalizeChannelDeltas(data: ChannelsFileData): void {
     }
 
     // Variant. The normalization base is identity-from-canonical layered with the predefined variant's binding (if any) - the same shape the user sees in the
-    // form/table, so the delta records only what differs from that. Critically, this matches the inheritance shape used by resolveVariant: identity from
+    // form/table, so the delta records only what differs from that. This matches the inheritance shape used by resolveVariant: identity from
     // canonical, binding from variant. Without the pickIdentity strip, the canonical service's binding would leak into the normalization base and stored
     // overrides matching the canonical's binding would be incorrectly stripped as no-ops. A dangling canonical falls back to standalone-style normalization so
     // the user does not silently lose data.
@@ -1053,6 +1054,7 @@ const channelsMigrations: Record<number, Migration<ChannelsFileData>> = {
 
         if(selectedVariant.endsWith("-foxcom")) {
 
+          // Strip only "foxcom" (6 chars), not the full "-foxcom" guard (7), so the separating hyphen survives into the foxone-suffixed result.
           data.serviceSelections[canonicalKey] = selectedVariant.slice(0, -6) + "foxone";
         }
 
@@ -1066,6 +1068,7 @@ const channelsMigrations: Record<number, Migration<ChannelsFileData>> = {
 
         if(key.endsWith("-foxcom")) {
 
+          // Strip only "foxcom" (6 chars), not the full "-foxcom" guard (7), so the separating hyphen survives into the foxone-suffixed result.
           data.channels[key.slice(0, -6) + "foxone"] = value;
           Reflect.deleteProperty(data.channels, key);
         }
@@ -1312,7 +1315,7 @@ export async function mutateChannels(fn: (data: ChannelsFileData) => void): Prom
  * - Canonical-binding overlap heal: invoked indirectly by the post-callback normalizer (normalizeChannelDeltas) which runs against the freshly-read data
  *   inside mutateChannels. Any canonical override carrying binding whose URL extracts to a sibling variant's domain is healed in place - binding stripped
  *   from the canonical, propagated to the matching variant entry, serviceSelections updated. The normalizer always runs post-callback; the heal happening
- *   automatically is the load-bearing behavior, not the explicit body of this function.
+ *   automatically is required for the cleanup to take effect, not the explicit body of this function.
  *
  * Existence as a named function is the architectural point: a bare `mutateChannels(() => {})` would correctly trigger the normalizer but obscure the intent
  * at the call site. The name documents what the pass does so callers see "run startup cleanup" rather than "do nothing inside a mutation."
@@ -1967,7 +1970,7 @@ export function getAllChannels(): ResolvedChannelMap {
 
 /**
  * Returns a copy of the raw stored user channels map - the unresolved entries as they exist in channels.json. Used by the consistency probe to check
- * cross-store invariants without applying delta resolution. Callers should not rely on the shape for anything beyond key/canonicalKey inspection.
+ * cross-store consistency rules without applying delta resolution. Callers should not rely on the shape for anything beyond key/canonicalKey inspection.
  * @returns Shallow copy of the loaded user channels.
  */
 export function getStoredUserChannels(): StoredChannelMap {
@@ -2484,7 +2487,8 @@ export function getChannelStationId(channelKey: string): string | undefined {
   }
 
   // PREDEFINED_CHANNELS is a discriminated union; only canonicals carry stationId. The lookup here is by canonical-equivalent key (Pacific resolved to East),
-  // so a hit is structurally a canonical. Narrow via the canonicalKey discriminator: a defined canonicalKey marks a VariantChannel, which has no stationId.
+  // so a hit is structurally a canonical. Narrow via the canonicalKey field that marks the kind: a defined canonicalKey marks a VariantChannel, which has no
+  // stationId.
   const predefined = PREDEFINED_CHANNELS[effectiveKey];
 
   if(!predefined || (predefined.canonicalKey !== undefined)) {
@@ -2529,7 +2533,8 @@ export function isUserChannel(key: string): boolean {
 
 /**
  * Checks if a predefined channel is disabled. The disabled state is determined solely by the disabledPredefined list in config - the user's explicit visibility
- * intent. Property overrides (HDHR toggle, name change, tag edits) stored as deltas in channels.json are orthogonal and do not affect the enabled/disabled state.
+ * intent. Property overrides (HDHR toggle, name change, tag edits) stored as deltas in channels.json are independent and do not affect the enabled/disabled
+ * state.
  * @param key - The channel key to check.
  * @returns True if the channel is predefined and disabled.
  */
@@ -2588,8 +2593,9 @@ async function mutateDisabledPredefined(op: "add" | "delete", keys: readonly str
 }
 
 /**
- * Disables one or more predefined channels by adding their keys to the disabledPredefined list in user config. Idempotent.
- * @param keys - The predefined channel keys to disable. Duplicates within the input array and pre-existing disabled entries are handled idempotently.
+ * Disables one or more predefined channels by adding their keys to the disabledPredefined list in user config. Safe to call again with the same keys.
+ * @param keys - The predefined channel keys to disable. Duplicates within the input array and pre-existing disabled entries are handled without producing
+ * duplicate list entries.
  */
 export async function disablePredefinedChannels(keys: readonly string[]): Promise<void> {
 
@@ -2597,7 +2603,7 @@ export async function disablePredefinedChannels(keys: readonly string[]): Promis
 }
 
 /**
- * Enables one or more predefined channels by removing their keys from the disabledPredefined list in user config. Idempotent.
+ * Enables one or more predefined channels by removing their keys from the disabledPredefined list in user config. Safe to call again with the same keys.
  * @param keys - The predefined channel keys to enable. Entries that aren't in the disabled list are ignored.
  */
 export async function enablePredefinedChannels(keys: readonly string[]): Promise<void> {
@@ -3113,7 +3119,7 @@ export function validateImportedChannels(data: unknown, validProfiles: string[])
 /**
  * Sorts tags case-insensitively using locale-aware comparison. This is the single source of truth for tag ordering. Every write path (parseTagInput, PATCH
  * handlers, computePredefinedDelta, transformChannelTags, setTagRegistry) routes through this so stored tag arrays share one canonical ordering. The channels
- * normalizer is a READER of that invariant - it uses sortTags on both sides when comparing a delta's tags against a predefined's tags, making the
+ * normalizer depends on that ordering guarantee - it uses sortTags on both sides when comparing a delta's tags against a predefined's tags, making the
  * isDeepStrictEqual comparison canonical regardless of how either side was originally populated.
  * @param tags - Any iterable of tag strings (array, Set, generator). Not mutated.
  * @returns A new array with the same elements in canonical case-insensitive order.

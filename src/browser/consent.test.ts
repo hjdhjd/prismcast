@@ -2,10 +2,11 @@
  *
  * consent.test.ts: Unit tests for the Node-side orchestration in consent.ts - the unified auto-dismiss logging (logAutoDismiss), the phase-scoped overlay-handling
  * poll (startOverlayHandling), and the detect-and-guide probe (consentOverlayPresent). The in-page heuristics themselves (the embed-gate selector/keyword matching
- * and the coordinate resolution inside page.evaluate) run in a real DOM and are deferred to the browser-e2e tier; here a page stub returns scripted page.evaluate
- * results so the poll's decision flow - phase masking, reject-then-accept ordering, the embed-gate signal, the probe/act split, malformed-selector fault isolation,
- * the tick-error taxonomy, and abort handling - is locked without spinning up Chrome. Time is driven by an injected fake clock so multi-tick behavior is deterministic
- * with no real timers. LOG is spied via the test-context mock so the logging contract is asserted directly on the production LOG object.
+ * and the coordinate resolution inside page.evaluate) are pinned against a synthetic happy-dom document in the co-located consent.heuristics.test.ts; here a page
+ * stub returns scripted page.evaluate results so the poll's decision flow - phase masking, reject-then-accept ordering, the embed-gate signal, the probe/act split,
+ * malformed-selector fault isolation, the tick-error taxonomy, and abort handling - is locked without spinning up Chrome. Time is driven by an injected fake clock
+ * so multi-tick behavior is deterministic with no real timers. LOG is spied via the test-context mock so the logging contract is asserted directly on the
+ * production LOG object.
  */
 import { consentOverlayPresent, logAutoDismiss, startOverlayHandling } from "./consent.ts";
 import { describe, test } from "node:test";
@@ -249,7 +250,7 @@ describe("startOverlayHandling", () => {
     const controller = new AbortController();
 
     // The Didomi banner is present, and clicking its reject aborts the signal mid-tick. The abort check placed right after the CMP-reject group must then return
-    // "stop" before the same tick's embed-gate probe and per-site modal dismiss, so neither is ever issued within that tick. This discriminates the mid-tick check
+    // "stop" before the same tick's embed-gate probe and per-site modal dismiss, so neither is ever issued within that tick. This distinguishes the mid-tick check
     // from the between-tick checks in the poll loop: a between-tick check cannot suppress the later action groups of the tick that is already running.
     const { page, stub } = makePageStub((arg) => {
 
@@ -372,7 +373,7 @@ describe("startOverlayHandling", () => {
   });
 
   // Every non-videoWait phase masks the embed-gate accept: its policy forbids the gate, so the acting gate probe never runs, while cookie rejection and per-site
-  // modal dismissal stay live. The discriminator that would fail against an unmasked implementation is the zero gate-probe count.
+  // modal dismissal stay live. The assertion that would fail against an unmasked implementation is the zero gate-probe count.
   for(const phase of [ "discovery", "postGateReload", "staticCapture", "tuneSetup" ] as const) {
 
     test("the " + phase + " phase rejects a CMP banner and dismisses a modal but never runs the embed-gate probe", async (t) => {

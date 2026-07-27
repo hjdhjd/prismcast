@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * cdp.test.ts: Unit tests for the Chrome DevTools Protocol helpers in cdp.ts. The module exports three functions: withCDPSession (the lifecycle wrapper around a
- * CDP session that surfaces the browser window ID), resizeAndMinimizeWindow (the resize-then-minimize routine that drives Browser.setWindowBounds), and
+ * cdp.test.ts: Unit tests for the Chrome DevTools Protocol helpers in cdp.ts. The module exports withCDPSession (the lifecycle wrapper around a CDP session
+ * that surfaces the browser window ID), resizeAndMinimizeWindow (the resize-then-minimize routine that drives Browser.setWindowBounds), and
  * unminimizeWindow (the inverse one-shot that restores window state). The tests use plain stub objects shaped per the Page and CDPSession contracts - no real
  * browser is launched. The browser-chrome dimensions cache in display.ts is primed before each resize test so the page.evaluate fallback never runs.
  */
@@ -305,7 +305,7 @@ describe("resizeAndMinimizeWindow", () => {
      * the production code calls page.evaluate to measure window.outerHeight - innerHeight live; when it returns a value the evaluate fallback must not run.
      * getBrowserChrome() is a plain object-or-null cache - there is no isPrimed concept and a (0,0) value is a truthy object, not null. beforeEach primes the
      * cache to (0, 70), so here we provide a Page stub whose evaluate would record a call, then assert that evaluate is NOT invoked. (A separate test for the
-     * genuine empty-cache fallback would require a cache-reset seam exported from display.ts, which does not exist today.)
+     * genuine empty-cache fallback would require a way to reset the cache exported from display.ts, which does not exist today.)
      */
     const cdpStub = makeCdpStub();
 

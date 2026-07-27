@@ -117,8 +117,8 @@ export interface NonUpgradeableInstallStrategy<M extends string = string> extend
 }
 
 /**
- * Discriminated union of install-method strategies. Discriminator is `upgradeable`. Consumers narrow on it to access manualUpgradeMessage with type safety;
- * structurally impossible to declare an upgradeable strategy that carries manual instructions or a non-upgradeable strategy that omits them.
+ * Discriminated union of install-method strategies. The field that marks the kind is `upgradeable`. Consumers narrow on it to access manualUpgradeMessage with
+ * type safety; structurally impossible to declare an upgradeable strategy that carries manual instructions or a non-upgradeable strategy that omits them.
  */
 export type InstallStrategy<M extends string = string> = UpgradeableInstallStrategy<M> | NonUpgradeableInstallStrategy<M>;
 
@@ -143,7 +143,7 @@ const DOCKER_STRATEGY = {
 
 /**
  * Homebrew strategy. Matched via the "Cellar" + "prismcast" segment chain. Homebrew formula installs always live under <prefix>/Cellar/<formula>/<version>/, so
- * the pair is a reliable discriminator on both Intel (/usr/local/Cellar) and Apple Silicon (/opt/homebrew/Cellar) layouts. The chain is deliberately the pair
+ * the pair reliably identifies Homebrew installs on both Intel (/usr/local/Cellar) and Apple Silicon (/opt/homebrew/Cellar) layouts. The chain is deliberately the pair
  * rather than just "Cellar" so an npm-on-Homebrew install at /opt/homebrew/lib/node_modules/prismcast/ does not false-positive...that path contains "homebrew"
  * but not "Cellar/prismcast".
  */
@@ -253,7 +253,7 @@ interface InstallInfoBase extends ResolvableFields {
   // "Unknown".
   readonly displayName: string;
 
-  // The discriminator identifying which install method was detected.
+  // The field that marks which install method was detected.
   readonly method: InstallMethod;
 
   // The shell command the user (or the tool) would run to upgrade. Always populated, even for non-upgradeable methods, so callers can show manual instructions.
@@ -306,7 +306,7 @@ export const UNKNOWN_INSTALL: NonUpgradeableInstallInfo = {
  * Detects the installation method. Walks INSTALL_STRATEGIES in priority order; on the first match, builds an InstallInfo by composing the strategy's optional
  * resolver output with the strategy's constant fields. The resolver's return type is restricted to ResolvableFields, so it cannot override method, displayName,
  * or upgradeCommand; the spread order also places constants after the resolved fields as belt-and-suspenders. The strategy's `upgradeable`
- * discriminator selects which InstallInfo variant the dispatcher emits, carrying manualUpgradeMessage through for the non-upgradeable case.
+ * field selects which InstallInfo variant the dispatcher emits, carrying manualUpgradeMessage through for the non-upgradeable case.
  *
  * Pure function of DetectionContext - all I/O happens inside the context's runCommand and fileExists callbacks, which the default adapter wires to real system
  * calls and tests stub inline. Falls back to UNKNOWN_INSTALL when no strategy matches.

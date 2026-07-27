@@ -222,9 +222,9 @@ export function emitStreamHealthChanged(status: StreamStatus): void {
  */
 export function emitSystemStatusChanged(status: SystemStatus): void {
 
-  // Only emit if something meaningful changed. The optional chain on the second condition is load-bearing: cachedSystemStatus can be null here (the first emit
-  // before any cache is set), and a !== comparison does not narrow the optional-chained base to non-null. ESLint flags the second ?. as unnecessary, so the disable
-  // below preserves the null-safe access against that false positive.
+  // Only emit if something meaningful changed. The optional chain on the second condition is required, not incidental: cachedSystemStatus can be null here (the
+  // first emit before any cache is set), and a !== comparison does not narrow the optional-chained base to non-null. ESLint flags the second ?. as unnecessary,
+  // so the disable below preserves the null-safe access against that false positive.
   if((cachedSystemStatus?.browser.connected !== status.browser.connected) ||
      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
      (cachedSystemStatus?.streams.active !== status.streams.active)) {

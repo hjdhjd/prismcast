@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * cross-store-isolation.test.ts: Integration-level invariant - the production file stores (channels, config, profiles) operate against the same data directory
+ * cross-store-isolation.test.ts: Integration-level guarantee - the production file stores (channels, config, profiles) operate against the same data directory
  * without trampling each other. Each store owns its own file, its own .bak rotation, and its own snapshot lineage. A regression in one store's persistence
  * path - a stale path resolver, a misrouted .bak, a write that targets the wrong file - would silently corrupt unrelated state.
  *
  * Why integration coverage adds value here: persistence.test.ts (unit tier) verifies the file-store framework primitives in isolation against synthetic stores.
- * It does not verify that the real production stores - each with their own beforeWrite/validate/migrations - coexist correctly. The invariant this tier guards is
+ * It does not verify that the real production stores - each with their own beforeWrite/validate/migrations - coexist correctly. The rule this tier guards is
  * that a config save must never reach into channels-adjacent state - the disabled-channel list, the service filter, or the HDHomeRun device ID - and lose it,
  * because that is structurally a cross-store concern that unit coverage of a single store cannot catch.
  *
@@ -181,7 +181,7 @@ describe("persistence cross-store isolation", () => {
   test("each store maintains its own .bak rotation independent of the others", async () => {
 
     /* Per-store .bak: when channels.json is overwritten, only channels.json.bak rotates. config.json.bak must not rotate. The framework writes .bak via
-     * copyFile against the same path() resolver each store carries, so the path-resolution layer already enforces this - but it is the kind of invariant
+     * copyFile against the same path() resolver each store carries, so the path-resolution layer already enforces this - but it is the kind of rule
      * that breaks subtly in a refactor (e.g., a future change that uses getDataDir() directly instead of options.path()).
      */
     await using ctx = await createIntegrationContext();
@@ -226,12 +226,12 @@ describe("health.json cross-store isolation", () => {
    * (FLUSH_DELAY = 2000ms in src/config/health.ts). The original cross-store-isolation suite excluded it because its debounce makes byte-comparison timing
    * tricky; this block adds the missing coverage by waiting on the documented flush window.
    *
-   * Two invariants are pinned:
+   * Two rules are pinned:
    *   1. A mutation to channels / config / profiles must leave health.json byte-identical. A regression that mis-routes a write into health.json (e.g., a path
    *      resolver bug) would silently break the health indicators with no test failure today.
    *   2. A mutation to health.json must leave the other three stores byte-identical. The same routing failure mode in the other direction.
    *
-   * Together they pin health.json's place in the four-file store ecosystem: each file is owned exclusively by its module, and no module's writes leak across.
+   * Together they pin health.json's place in the file-store ecosystem: each file is owned exclusively by its module, and no module's writes leak across.
    */
 
   test("mutations to channels, config, and profiles leave health.json byte-identical", async () => {

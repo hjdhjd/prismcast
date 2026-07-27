@@ -16,7 +16,7 @@ import { getChannelListing } from "../../../../config/userChannels.ts";
 import { route } from "../http/handler.ts";
 
 /**
- * Registers the service-selection and service-filter endpoints on the Express application.
+ * Registers the service-selection, service-filter, and bulk service-assignment endpoints on the Express application.
  * @param app - The Express application.
  */
 export function registerServiceRoutes(app: Express): void {
@@ -192,6 +192,8 @@ export function registerServiceRoutes(app: Express): void {
 
       const group = getServiceGroup(key);
 
+      // The channel may have been removed or its service group may have collapsed since the bulk-assign snapshot was taken (e.g., the channel was deleted or
+      // its variants were edited down to a single service). Skip it rather than error, since the rest of the restore should still proceed.
       if(!group) {
 
         continue;

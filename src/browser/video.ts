@@ -63,7 +63,7 @@ export function buildVideoSelectorType(profile: ResolvedSiteProfile): VideoSelec
  * The one exception is checkVideoPresence(), which needs all video elements (count, max readyState) rather than selecting one. It uses the inline selection pattern
  * since its requirements differ from the standard single-element selection.
  *
- * - The selectorType parameter MUST be passed as the first argument to evaluateWithAbort
+ * - selectorType must be the first element of the args array passed to evaluateWithAbort.
  */
 
 /**
@@ -395,8 +395,8 @@ export async function startVideoPlayback(context: Frame | Page, selectorType: Vi
 /**
  * Navigates a browser page to the specified URL with site-appropriate wait conditions. The navigation strategy depends on the site's player implementation:
  *
- * - waitForNetworkIdle=true: Wait for network activity to settle (no requests for 500ms). This ensures all JavaScript has loaded and the player is fully
- *   initialized. Used for sites with complex async initialization.
+ * - waitForNetworkIdle=true: Wait for network activity to settle, allowing up to 2 concurrent connections for 500ms. This ensures all JavaScript has loaded
+ *   and the player is fully initialized. Used for sites with complex async initialization.
  *
  * - waitForNetworkIdle=false: Return as soon as the page fires load event. Used for sites that have persistent connections or polling that would prevent
  *   networkidle from ever completing.
@@ -413,8 +413,8 @@ export async function navigateToPage(page: Page, url: string, profile: ResolvedS
 
     try {
 
-      // Wait for network idle (no requests for 500ms). This ensures complex JavaScript players have fully initialized. The networkidle2 strategy allows up
-      // to 2 concurrent requests, which handles sites with persistent connections for analytics.
+      // Wait for network activity to settle. This ensures complex JavaScript players have fully initialized. The networkidle2 strategy allows up to 2
+      // concurrent requests, which handles sites with persistent connections for analytics.
       await page.goto(url, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
     } catch(error) {
 
@@ -491,7 +491,7 @@ export async function findVideoContext(page: Page, profile: ResolvedSiteProfile)
 
   // Poll for a video element to appear in any iframe. Complex embedded players (Brightcove, JW Player, etc.) load additional resources and scripts after the
   // iframe element appears, so the video may not be immediately available. We retry the search with brief pauses, using the configured delay as the overall
-  // timeout ceiling. This replaces a fixed delay with early exit - if the video appears quickly, we proceed immediately.
+  // timeout ceiling. Polling with early exit avoids waiting the full delay when the video appears quickly.
   const deadline = Date.now() + CONFIG.playback.iframeInitDelay;
 
   let iframeSearchComplete = false;
@@ -736,7 +736,7 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
  * This function uses Object.defineProperty to intercept property access, making it impossible for site JavaScript to change muted or volume values. The property
  * descriptors are set to configurable: true so the browser can still access the underlying values for playback.
  *
- * The function is idempotent - a __volumeLocked flag on the video element prevents applying the lock multiple times.
+ * The function is safe to call more than once - a __volumeLocked flag on the video element prevents applying the lock multiple times.
  * @param context - The frame or page containing the video element.
  * @param selectorType - The video selector type for finding the element.
  */
@@ -798,6 +798,9 @@ export async function lockVolumeProperties(context: Frame | Page, selectorType: 
 /**
  * Triggers fullscreen mode using the appropriate method for the site. Different sites have different fullscreen implementations:
  *
+ * - Fullscreen button (fullscreenSelector): When configured, this is tried first by clicking the site's own fullscreen control, which uses the site's native
+ *   mechanism and is the most reliable approach when the button is present.
+ *
  * - Keyboard shortcuts (fullscreenKey): Many players use "f" as a keyboard shortcut for fullscreen. We send this keypress to activate the player's native
  *   fullscreen mode.
  *
@@ -805,7 +808,7 @@ export async function lockVolumeProperties(context: Frame | Page, selectorType: 
  *   prompts or be blocked by CSP, but works on many sites.
  *
  * Note that we also apply CSS-based fullscreen styling separately (in applyVideoStyles), which provides a reliable fallback when native fullscreen methods fail.
- * @param page - The Puppeteer page object for keyboard input.
+ * @param page - The Puppeteer page object, used for keyboard input and for clicking the fullscreen button when fullscreenSelector is configured.
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile indicating fullscreen method.
  * @param selectorType - The video selector type for finding the element.
@@ -1085,7 +1088,8 @@ export async function ensureFullscreen(
   const useNativeFullscreen = profile.useRequestFullscreen && !skipNativeFullscreen;
 
   // Inject a persistent stylesheet to hide site-specific overlay elements (e.g., player control bars, toolbars) that would otherwise appear in the captured stream.
-  // The style tag persists for the page lifetime and is idempotent - duplicate injections from recovery calls are harmless since CSS rules are deduplicated.
+  // The style tag persists for the page lifetime. Duplicate injections from recovery calls are harmless because the reapplied rules produce the same computed
+  // style, though each call does add another <style> tag to the DOM.
   if(profile.hideSelector) {
 
     const css = profile.hideSelector + " { display: none !important; }";
@@ -1292,7 +1296,7 @@ interface EnsurePlaybackOptions {
 
 /**
  * Ensures the video is playing with proper audio settings. This is the core playback function that handles both initial setup and recovery from stalls. It is
- * designed to be idempotent - safe to call multiple times without adverse effects.
+ * safe to call more than once without adverse effects.
  *
  * Recovery escalation levels (higher levels include all lower-level actions):
  *
@@ -1386,11 +1390,11 @@ async function dismissGuideOverlay(page: Page): Promise<void> {
 
 /* VideoTuneDeps is the set of cross-module tune collaborators initializePlayback and its failure-path diagnosis compose on: channel selection and the overlay-
  * handling poll on the main path, plus the provider lookup and blocked-page classifier on the failure path. It is injected as a default parameter so a test can
- * substitute stubs at the same seam - no loader mock - while production uses the real defaultVideoTuneDeps. The default is a shared module const, allocated once at
- * load, because initializePlayback is on the streaming hot path (every stream start and every recovery tune) and a per-call deps object would allocate on each
- * tune. It is cycle-safe: none of channelSelection/consent/blockedPage import video.ts, and all four members are hoisted function declarations, so the const's
- * references resolve at load with no temporal-dead-zone hazard. markDomainAuthRequired stays a direct import - it is not a substituted collaborator (the test
- * asserts the real domain-auth state). This is the collaborator-injection form of the Clock port (utils/clock.ts).
+ * substitute stubs at the same injection point - no loader mock - while production uses the real defaultVideoTuneDeps. The default is a shared module const,
+ * allocated once at load, because initializePlayback is on the streaming hot path (every stream start and every recovery tune) and a per-call deps object would
+ * allocate on each tune. It is cycle-safe: none of channelSelection/consent/blockedPage import video.ts, and every member is a hoisted function declaration, so
+ * the const's references resolve at load with no temporal-dead-zone hazard. markDomainAuthRequired stays a direct import - it is not a substituted collaborator
+ * (the test asserts the real domain-auth state). This is the collaborator-injection form of the Clock port (utils/clock.ts).
  */
 export interface VideoTuneDeps {
 
@@ -1410,6 +1414,7 @@ const defaultVideoTuneDeps: VideoTuneDeps = { classifyBlockedPage, getProvidersF
  * @param page - The Puppeteer page object, still open at the point of failure.
  * @param requestedUrl - The URL this tune navigated to; its registrable domain selects the provider and receives any needs-sign-in mark.
  * @param originalError - The failure that triggered the diagnosis, rethrown as-is when the page classifies as unknown.
+ * @param deps - The injected tune collaborators used to resolve the provider and classify the blocked page.
  * @returns Never resolves - every classification outcome throws.
  */
 async function diagnoseBlockedTune(page: Page, requestedUrl: string, originalError: unknown, deps: VideoTuneDeps): Promise<never> {
@@ -1490,7 +1495,7 @@ export interface InitializePlaybackOptions {
  * body an abort() it calls before diagnosing a blocked page (so the poll cannot keep clicking mid-classification), and always aborts the poll when the body settles.
  * The video wait manages its own poll directly because it composes the poll with the embed-gate race and the paired reload; every other span of the tune uses this
  * helper, which is why the phase is typed to exclude videoWait. The poll is launched through the injected deps, so every phase shares the single startOverlayHandling
- * seam the video wait already uses.
+ * call the video wait already uses.
  * @param page - The Puppeteer page object.
  * @param profile - The resolved site profile.
  * @param phase - The overlay phase covering this span (any phase but videoWait, whose choreography is bespoke).
@@ -1526,6 +1531,7 @@ async function withOverlayGuard<T>(page: Page, profile: ResolvedSiteProfile, pha
  * @param page - The Puppeteer page object.
  * @param profile - The site profile containing all behavior flags.
  * @param options - Optional behaviors. See InitializePlaybackOptions.
+ * @param deps - Injected tune collaborators for testing; defaults to defaultVideoTuneDeps in production.
  * @returns The video context (frame or page) for subsequent monitoring, and a directTune flag when the channel was tuned via API interception.
  */
 export async function initializePlayback(page: Page, profile: ResolvedSiteProfile, options: InitializePlaybackOptions = {},

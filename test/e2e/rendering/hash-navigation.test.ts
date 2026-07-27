@@ -10,15 +10,15 @@
  * (in routes/ui.ts) and createSubtabSwitcher (in routes/root/scripts/shared.ts) read window.location.hash on the client and toggle classes accordingly.
  *
  * Therefore the server-side contract is narrow: GET / produces stable, URL-independent HTML carrying the default-active markers; deep-link reload behavior is
- * the client controller's responsibility (out of integration-tier scope; reserved for browser-e2e coverage if/when that tier exists). The four tests below pin
+ * the client controller's responsibility (out of integration-tier scope; reserved for browser-e2e coverage if/when that tier exists). The tests below pin
  * exactly that:
  *
  *   1. Default-active state on GET / - overview tab marked active, all other tabs inactive. Pins the deterministic baseline.
- *   2. URL query parameters do not influence the response - GET /?tab=channels and GET /?something=else produce HTML byte-identical to GET /. Pins the absence
- *      of server-side hash/query interpretation as a structural invariant.
+ *   2. URL query parameters do not influence the response - GET /?tab=channels and GET /?something=else produce HTML byte-identical to GET /. Pins the guarantee
+ *      that the server never interprets hash or query state.
  *   3. Subtab default-active state inside the rendered tabs - channels tab has the "channels" subtab active, config tab has the "settings" subtab active.
  *      Pins the per-tab subtab convention so a regression that defaulted to a different subtab would surface here, not on a deep-link reload bug report.
- *   4. The 6 tab content generators all render successfully against an empty seed state. Defensive coverage: a content generator that throws on empty data
+ *   4. Every tab content generator renders successfully against an empty seed state. Defensive coverage: a content generator that throws on empty data
  *      becomes a 500 on the landing page.
  *
  * Architectural note: an HTML-aware DOM library would simplify the assertions but adds a dependency for one suite. The substring/regex approach matches the
@@ -28,7 +28,7 @@ import { bootApp, createIntegrationContext, initializePersistence } from "../../
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-// The 6 top-level tabs in source order. Overview is the default active. Drives the parameterized "every other tab is inactive" assertion in test 1.
+// The top-level tabs in source order. Overview is the default active. Drives the parameterized "every other tab is inactive" assertion in test 1.
 const TAB_CATEGORIES = [ "overview", "channels", "logs", "config", "api", "help" ] as const;
 const DEFAULT_ACTIVE_TAB = "overview";
 
@@ -142,12 +142,12 @@ describe("GET / - server-side hash/tab navigation contract", () => {
 
   test("every tab content panel is non-empty against an empty seed state (defensive: no content generator throws on empty data)", async () => {
 
-    /* Defensive invariant. With a fresh data directory, all user channels, profiles, tags, and disabledPredefined lists are empty. Each of the 6 tab content
-     * generators runs against this empty state when GET / is invoked. A generator that threw on empty data (NPE on undefined.length, division by zero, an
+    /* Defensive invariant. With a fresh data directory, all user channels, profiles, tags, and disabledPredefined lists are empty. Every tab content
+     * generator runs against this empty state when GET / is invoked. A generator that threw on empty data (NPE on undefined.length, division by zero, an
      * invariant assuming at least one item) would render the entire landing page as a 500. This test runs the empty-state landing-page render and asserts that
      * (a) it returns 200, (b) every tab's panel <div> is present, (c) every tab's panel contains some HTML body content (not an empty <div>).
      *
-     * Suite 39 (empty-states.test.ts) covers empty-state rendering of the Channels, Profiles, Tags, and Streams surfaces; Suite 33's job here is the basic
+     * The empty-states.test.ts suite covers empty-state rendering of the Channels, Profiles, Tags, and Streams surfaces; this suite's job here is the basic
      * survival check: empty seed must not crash any tab generator.
      */
     await using ctx = await createIntegrationContext();

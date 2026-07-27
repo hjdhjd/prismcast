@@ -2,8 +2,11 @@
  *
  * persistence.integrity.test.ts: Tests for the file-store framework's integrity-and-recovery branches - the validator severity router, the post-write integrity
  * check that catches encoder bugs and partial writes, and the recovery branches inside tryRecoverFromBackup, doMutate's backup step, and read()'s file-read
- * fallback. Each branch is a safety net the framework relies on but the user-facing happy path never visits; the tests pin them so a refactor that breaks the
- * sequence (e.g., dropping the .bak restore on integrity failure, ENOENT-misclassifying a permission error) surfaces here rather than as user data loss.
+ * fallback. This file covers tryRecoverFromBackup's own restore-write-failure contract as exercised through read() (which is what doMutate calls internally
+ * before applying a mutation); the mutate-specific recovery-guard behavior - the corrupt-main rotation guard and the distinct temp-path contract between a
+ * read-triggered recovery and an in-flight mutate - is covered separately in persistence.test.ts. Each branch is a safety net the framework relies on but the
+ * user-facing happy path never visits; the tests pin them so a refactor that breaks the sequence (e.g., dropping the .bak restore on integrity failure,
+ * ENOENT-misclassifying a permission error) surfaces here rather than as user data loss.
  *
  * The tests use the in-memory storage backend with override hooks to drive failure modes deterministically. Real-fs reproduction of "writeFile lies about what
  * it wrote" or "readFile fails for a permission reason but not ENOENT" is fragile or impossible; the in-memory backend lets the test author specify the exact
@@ -103,8 +106,9 @@ describe("FileStore.mutate - post-write integrity check", () => {
      *
      * To drive this, we override writeFile so that the FIRST write to <filePath>.tmp stores tampered content rather than what the framework asked for. The
      * subsequent rename moves the tampered tmp to main, the readback returns tampered bytes, byte-comparison fails, .bak is restored, and the mutate rejects.
-     * We use a one-shot guard so the recovery's own write-to-tmp completes normally - otherwise the recovery would also be tampered and main would never be
-     * restored.
+     * We use a one-shot guard so a second write to the identical <filePath>.tmp path would not re-trigger the tamper injection, should the framework ever
+     * reuse that path within a single mutate. The recovery path itself writes through a distinctly-suffixed <filePath>.recover.tmp, so it is unaffected by
+     * this guard either way.
      */
     const backend = makeMemoryStorageBackend();
     const filePath = "/data/integrity-fail.json";

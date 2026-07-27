@@ -197,7 +197,7 @@ describe("sendValidationError", () => {
 
   test("string and ErrorPayload forms produce byte-identical responses when the payload contains only { error }", () => {
 
-    // The unifying invariant: the simple case is a true special case of the rich case. A string argument and a `{ error: <string> }` payload must produce the
+    // The unifying guarantee: the simple case is a true special case of the rich case. A string argument and a `{ error: <string> }` payload must produce the
     // same wire format, so callers can adopt either form without affecting clients. This pin protects the polymorphic refactor from drifting into two
     // divergent code paths.
     const { json: jsonString, res: resString } = makeReqRes();
@@ -215,7 +215,7 @@ describe("sendValidationError", () => {
   test("envelope-enforced success: false wins over a caller-supplied success: true (envelope marker cannot be hijacked)", () => {
 
     /* The spread order in sendError writes the body first and `success: false` last, so a payload that somehow declared `success: true` cannot override the
-     * failure flag. Lock that invariant against accidental overrides via the polymorphic input.
+     * failure flag. Lock that guarantee against accidental overrides via the polymorphic input.
      */
     const { json, res } = makeReqRes();
 
@@ -348,7 +348,7 @@ describe("sendErrorResponse", () => {
 
   test("rich-payload form: caller-supplied success: true is overridden by the envelope marker", () => {
 
-    // Mirror of the sendValidationError invariant. The rich-payload form must also enforce success: false regardless of what the caller passes - the envelope
+    // Mirror of the sendValidationError guarantee. The rich-payload form must also enforce success: false regardless of what the caller passes - the envelope
     // marker is reserved.
     const { json, res } = makeReqRes();
 
@@ -361,7 +361,7 @@ describe("sendErrorResponse", () => {
 
   test("rich-payload form: simple-case-as-special-case-of-rich-case is symmetric across both helpers", () => {
 
-    /* The unifying invariant for sendErrorResponse: a `{ error: "X" }` rich payload at status 500 produces the same wire format as a sendValidationError-style
+    /* The unifying guarantee for sendErrorResponse: a `{ error: "X" }` rich payload at status 500 produces the same wire format as a sendValidationError-style
      * single-line error envelope at status 500 would, modulo the envelope's status logic. This is the same special-case-of-rich-case relationship that
      * sendValidationError tests, but applied to the form-2 path. Together with the sendValidationError pin, both helpers are byte-symmetric on the simple case.
      */

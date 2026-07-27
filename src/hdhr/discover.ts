@@ -206,8 +206,9 @@ export function setupHdhrEndpoints(app: Express): void {
         SignalQualityPercent: 100,
         SignalStrengthPercent: 100,
         SymbolQualityPercent: 100,
-        // The channelNumber guard is null-only on purpose: its absent-sentinel is null, so a numeric 0 is a valid value that must still emit. Name and address
-        // gate on truthiness so an empty string is dropped rather than serialized. Normalizing these three to one style would silently change 0-valued behavior.
+        // The channelNumber guard checks (!== null) rather than truthiness because null is the only absent-sentinel this field carries; buildChannelMap never
+        // actually assigns a channelNumber of 0 today, but the explicit null check does not depend on that staying true. Name and address gate on truthiness
+        // instead because their absent case is naturally an empty string, so a truthy check is the right match for those two fields.
         ...((state.channelNumber !== null) ? { VctNumber: String(state.channelNumber) } : {}),
         ...(state.channelName ? { VctName: state.channelName } : {}),
         ...(state.clientAddress ? { TargetIP: state.clientAddress } : {})

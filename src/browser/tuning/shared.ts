@@ -65,8 +65,8 @@ const newDocumentScriptIdsByPage = new WeakMap<Page, Map<string, string>>();
  * than installOncePerPage - for in-page interceptors whose baked-in arguments can legitimately change between tunes on the same page. The canonical case is Hulu's
  * fetch interceptor, whose UUID/EAB tokens drift from a cold first tune to a warm recovery re-tune: installOncePerPage would freeze the first (cold) arguments and
  * starve the recovery tune, while re-installing without removal would stack duplicate scripts. This helper keeps exactly one live script carrying current arguments,
- * fixing both. installOncePerPage remains the right tool for installs that are genuinely idempotent - a request listener that reads live state, or a script whose
- * arguments never change. `install` must perform the page.evaluateOnNewDocument call and return its result so the script
+ * fixing both. installOncePerPage remains the right tool for installs that are genuinely safe to repeat - a request listener that reads live state, or a script
+ * whose arguments never change. `install` must perform the page.evaluateOnNewDocument call and return its result so the script
  * identifier can be tracked for the next removal.
  * @param page - The Puppeteer page the script targets. Used as the WeakMap key so the per-page record is released when the page is closed.
  * @param key - A stable identifier for this interceptor (e.g., "fetch-interceptor"). Distinct keys are tracked independently.

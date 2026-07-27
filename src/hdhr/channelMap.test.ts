@@ -2,8 +2,8 @@
  *
  * channelMap.test.ts: Unit tests for the HDHomeRun channel-number mapping. The module exposes two surfaces - buildChannelMap (rebuild on every call) and
  * getChannelKeyByNumber (lookup) - both of which derive their state from getAllChannels(). The tests exercise the live predefined channel set (no in-test
- * fixtures because the resolver state lives behind a closed module boundary), asserting structural invariants of the assignment algorithm: monotonic sort,
- * unique numbers, AUTO_ASSIGN_START floor, deterministic alphabetical ordering on auto-assigned keys, and the name-fallback contract (channel.name ?? key).
+ * fixtures because the resolver state lives behind a closed module boundary), asserting the structural rules the assignment algorithm must hold: monotonic
+ * sort, unique numbers, AUTO_ASSIGN_START floor, deterministic alphabetical ordering on auto-assigned keys, and the name-fallback contract (channel.name ?? key).
  */
 import { buildChannelMap, getChannelKeyByNumber } from "./channelMap.ts";
 import { describe, test } from "node:test";

@@ -4,7 +4,7 @@
  */
 
 /* This module is the single source of truth for vetting a URL before it is placed in a URL-bearing HTML attribute (an img src, an a href, ...) in client-rendered
- * markup. It is the companion to clientEscape.ts: scheme safety and attribute encoding are orthogonal concerns, so they are kept as two composable primitives -
+ * markup. It is the companion to clientEscape.ts: scheme safety and attribute encoding are independent concerns, so they are kept as two composable primitives -
  * clientSafeUrl decides whether a URL's scheme is allowed, and clientEscapeHtml encodes the result for the attribute context. Callers compose them as
  * escapeHtml(safeUrl(url)), and each concern has exactly one home. There is no server-side twin because the server never renders these values into a URL-executing
  * sink - it emits only inert data-* attributes (HTML-escaped at that boundary) which the client later reads and turns into a real img src; the client is therefore

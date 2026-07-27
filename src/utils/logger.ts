@@ -73,9 +73,9 @@ export function isDebugLogging(): boolean {
 
 /* The logger commits to emitting exactly one sentence terminator on every non-debug line so callers do not have to reason about whether the format string or an
  * interpolated value carries the punctuation. This encodes the "non-debug logs are complete sentences" project rule as logger behavior rather than as per-call-site
- * discipline - a producer changing its message punctuation can no longer silently regress an interpolated log line, and the historical split between formatError
- * (which strips trailing punctuation) and userMessage/validator strings (which carry it) becomes invisible to callers. Debug stays raw because debug is fragments
- * by convention.
+ * discipline - a producer changing its message punctuation can no longer silently regress an interpolated log line, and the differing punctuation conventions
+ * between formatError (which strips trailing punctuation) and userMessage/validator strings (which carry it) become invisible to callers. Debug stays raw because
+ * debug is fragments by convention.
  */
 
 /**
@@ -88,7 +88,7 @@ export function isDebugLogging(): boolean {
 function normalizeSentence(message: string): string {
 
   // Empty input stays empty. Forcing a bare "." into a zero-length message would be a worse outcome than leaving it - and in practice no caller passes an
-  // empty format string, so this guard is defensive rather than load-bearing.
+  // empty format string, so this guard exists defensively rather than to prevent a real regression.
   if(!message) {
 
     return message;
@@ -126,7 +126,8 @@ function emitToSubscribers(level: LogEntry["level"], message: string, categoryTa
 }
 
 /**
- * Core logging implementation shared by all log levels. Handles stream ID prefixing, SSE emission, and output routing.
+ * Interpolates the format string against its arguments and normalizes non-debug messages to a single trailing sentence terminator, then hands the result to
+ * emitFormatted for prefixing, SSE emission, and output routing. Debug messages skip normalization because debug output is fragments by convention.
  * @param level - The log level (error, warn, info, debug).
  * @param color - Color name accepted by node:util.styleText, or null for the default terminal color.
  * @param message - The format string.
@@ -164,6 +165,9 @@ function emitFormatted(level: LogEntry["level"], color: LogColor, formatted: str
 
   if(streamId) {
 
+    // An explicit stream ID means this call came through the withStreamId bound logger, which runs outside any AsyncLocalStorage stream context. Skip the
+    // ambient show-name resolver in that case so a bound logger for one stream can never surface another stream's show name from whatever context happens to
+    // be active when the call is made.
     const showName = explicitStreamId ? "" : resolveContextShowName();
     const showPrefix = showName ? " [" + showName + "]" : "";
 

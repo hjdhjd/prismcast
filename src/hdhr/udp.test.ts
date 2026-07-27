@@ -15,6 +15,10 @@
  *      drop, which fails the parser's length/CRC check - and a bind collision on the responder port resolves ensureUp false at warn level rather than throwing, so
  *      the HTTP HDHR surface survives a discovery-port conflict.
  *
+ *   5. The bind lifecycle: a second ensureUp call is idempotent and returns true without rebinding, ensureDown closes the socket and leaves the surface
+ *      reusable so a later ensureUp rebinds cleanly, and HDHR_DISCOVERY_PORT is pinned against the canonical SiliconDust value so a refactor cannot silently
+ *      change it.
+ *
  * The integration tests run on 127.0.0.1 with an ephemeral port so they cannot collide with a real HDHomeRun device or another emulator on the developer's
  * host. `await using` disposal tears the responder down at the end of each test, so there is no afterEach to forget. Request packet builders (makeDiscoverRequest,
  * makeGetRequest) and the shared framing helper (sealPacket) come from protocol.helpers.ts so both test files speak the same wire format.
@@ -364,8 +368,8 @@ describe("UdpSurface - round-trip", () => {
   });
 });
 
-// requireBoundPort reads the surface's bound port with a load-bearing non-null assertion so each test reads as "send to the responder's port". A malformed test
-// setup (forgetting ensureUp) surfaces as a clear failure rather than a confusing port-zero send.
+// requireBoundPort reads the surface's bound port with a non-null assertion so each test reads as "send to the responder's port". A forgotten ensureUp call in
+// test setup surfaces as a clear failure rather than a confusing port-zero send.
 function requireBoundPort(surface: UdpSurface): number {
 
   const port = surface.boundPort;

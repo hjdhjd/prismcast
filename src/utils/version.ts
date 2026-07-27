@@ -26,8 +26,9 @@ const CHANGELOG_URL = "https://raw.githubusercontent.com/hjdhjd/prismcast/main/C
 // How often to check for updates (2 hours in milliseconds).
 const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
 
-// Minimum interval between consecutive checkForUpdates() calls. Multiple invocations within this window collapse into a single check, preventing duplicate
-// network traffic when both the startup notification path and the periodic interval timer fire close together. Bypassed when the caller passes force=true.
+// Minimum interval between consecutive checkForUpdates() calls. Multiple invocations within this window collapse into a single check, so a caller that
+// invokes startUpdateChecking() (or checkForUpdates() directly) more than once in quick succession does not fire duplicate network requests. Bypassed
+// when the caller passes force=true.
 const UPDATE_CHECK_DEBOUNCE = 60 * 1000;
 
 // Cached version information.
@@ -320,7 +321,8 @@ export function startUpdateChecking(currentVersion: string): void {
   // Do an initial check.
   void checkForUpdates(current);
 
-  // Set up periodic checking.
+  // Set up periodic checking. The ??= guard makes repeated calls to startUpdateChecking() safe: only the first call establishes the interval, while the
+  // unconditional initial check above fires on every call, with UPDATE_CHECK_DEBOUNCE collapsing calls that arrive close together into a single request.
   updateCheckInterval ??= setInterval(() => void checkForUpdates(current), UPDATE_CHECK_INTERVAL);
 }
 

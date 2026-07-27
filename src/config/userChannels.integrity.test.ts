@@ -146,8 +146,9 @@ describe("detectIdentityFieldLoss", () => {
 
   test("array equality comparison handles different-length arrays without throwing", () => {
 
-    /* Boundary case: a stored tags array shorter or longer than the canonical's. The isDeepStrictEqual call must return false and the validator must flag the
-     * loss. This test pins that the array-equality path handles length mismatches correctly.
+    /* Boundary case: a stored tags array on a standalone channel with no predefined canonical entry. Since "mychannel" has no canonical fallback, the
+     * comparison never reaches isDeepStrictEqual - the drop is flagged directly through the no-canonical-fallback branch. This test pins that a non-empty
+     * array loss without a canonical fallback is always flagged, regardless of array length.
      */
     const before: StoredChannelMap = { mychannel: { name: "My Channel", tags: [ "A", "B", "C" ], url: "https://example.com" } };
     const after: StoredChannelMap = { mychannel: { name: "My Channel", url: "https://example.com" } };

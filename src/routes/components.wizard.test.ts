@@ -3,8 +3,9 @@
  * components.wizard.test.ts: Unit tests for the wizard modal generator in components.ts. The wizard modal is the most structurally complex component the
  * module exports - it builds an overlay, header, optional step indicator, content area, optional error display, and footer buttons across left/right slots.
  * The button-ownership rule (role-tagged buttons Back/Next/Close attach handlers via the wizard controller, custom buttons Save/Apply/Finish declare a
- * data-click-action dispatched by the project-wide action dispatcher, and no button carries an inline onclick) is the most subtle invariant locked here. The
- * other components (alerts, buttons, badges, inputs, selects, etc.) are tested in components.test.ts; we split this file out to keep both under the LOC cap.
+ * data-click-action dispatched by the project-wide action dispatcher, and no button carries an inline onclick) is the most easily broken contract locked
+ * here. The other components (alerts, buttons, badges, inputs, selects, etc.) are tested in components.test.ts; we split this file out to keep both under
+ * the LOC cap.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";

@@ -173,13 +173,14 @@ describe("POST /config/channels/bulk-tags", () => {
 describe("bulk operations × service filter scoping", () => {
 
   /* Bulk endpoints operate on getVisibleChannels() - the intersection of "enabled" and "available under the current service filter." A user toggling the filter
-   * and then running a bulk operation expects the bulk to apply to what they see, not to the full catalog. This is the UX contract that the d2ee7be / 80ad097
-   * regression families violate when filter scoping breaks.
+   * and then running a bulk operation expects the bulk to apply to what they see, not to the full catalog. This is the UX contract that a filter-scoping
+   * regression would violate.
    *
    * The canonical fixture for this suite: enabledServices = ["hulu"]. abcnews has variants { cox, directv, hulu, sling, xfinity, yttv } and no site, so its
-   * service tag set excludes "direct" - the filter is load-bearing for it. amcthrillers has only { sling, yttv } and no site, so it has no overlap with the
-   * filter and falls out of getVisibleChannels. Channels with a "site" entry (e.g., abc) are excluded from this fixture because their "direct" service tag is
-   * structurally always enabled by design, which would mask the filter-scoping rule under test.
+   * service tag set excludes "direct"; the service filter is the only thing that determines whether abcnews appears in getVisibleChannels. amcthrillers has
+   * only { sling, yttv } and no site, so it has no overlap with the filter and falls out of getVisibleChannels. Channels with a "site" entry (e.g., abc) are
+   * excluded from this fixture because their "direct" service tag is structurally always enabled by design, which would mask the filter-scoping rule under
+   * test.
    */
 
   test("bulk auto-number under an active service filter assigns numbers only to visible channels", async () => {
@@ -273,7 +274,7 @@ describe("bulk operations × service filter scoping", () => {
 
     /* Run an auto-number under a hulu-only filter, then clear the filter and inspect the listing. The visible channels (abcnews) carry the assigned numbers;
      * the previously-filtered-out channels (amcthrillers) carry no number. No orphan or duplicate entries appear - the bulk's filter scope was the only thing
-     * limiting its reach. This pins the cross-cutting state-consistency invariant: filter scoping is a soft window into a coherent global state, not a way to
+     * limiting its reach. This pins the cross-cutting state-consistency guarantee: filter scoping is a soft window into a coherent global state, not a way to
      * fork the state into two divergent halves.
      */
     await using ctx = await createIntegrationContext();

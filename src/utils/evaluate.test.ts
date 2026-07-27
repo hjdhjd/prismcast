@@ -214,8 +214,8 @@ describe("evaluateWithAbort with stream context", () => {
         (err: Error) => err instanceof EvaluateAbortError
       );
 
-      // Completes the listener-symmetry guarantee across all three exit paths (this is the abort path; normal completion and timeout are covered below): once the
-      // abort has fired and the call settled, no abort listener lingers on the signal.
+      // Completes the listener-symmetry guarantee across every exit path of evaluateWithAbort (this is the abort path; normal completion and timeout are covered
+      // below): once the abort has fired and the call settled, no abort listener lingers on the signal.
       assert.equal(getEventListeners(controller.signal, "abort").length, 0, "the abort listener is removed after the abort fires and the call settles");
     });
   });

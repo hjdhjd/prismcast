@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * commands.test.ts: Unit tests for the service CLI command handlers in commands.ts under the default-context tier - the legacy tests that use the real
- * ServiceContext with platform stubs and HOME redirects. Coverage focuses on the not-installed branches of every handler, the dispatcher, the handleStatus
+ * commands.test.ts: Unit tests for the service CLI command handlers in commands.ts under the default-context tier, which exercises the real ServiceContext with
+ * platform stubs and HOME redirects. Coverage focuses on the not-installed branches of every handler, the dispatcher, the handleStatus
  * default-context flow, printServiceUsage, and smoke routing through handleServiceCommand. Handlers under literal-context wiring (synthetic ServiceContext, happy
  * paths) are split by grouping: install/uninstall in commands.install.test.ts, runtime lifecycle (start/stop/restart) plus dispatch helpers in
  * commands.lifecycle.test.ts, and handleStatus literal in commands.status.test.ts.
@@ -51,8 +51,9 @@ function restoreHome(): void {
 
 before(() => {
 
-  // Initialize the data directory before any test runs - all the platform helpers consulted by commands.ts read from it. We point at a fresh temp location so the
-  // "service file not present" precondition is satisfied for the entire suite (the data dir won't contain a prismcast-service.ps1 either).
+  // Initializes the data directory so config, log, and PID paths resolve to a scratch location for the whole suite. On darwin and linux the "service file not
+  // present" precondition instead comes from each describe block's own HOME redirect (see makeFreshHome below); on Windows, this fresh data directory is what
+  // keeps prismcast-service.ps1 absent.
   initializeDataDir(path.join(os.tmpdir(), "prismcast-commands-test-" + String(Date.now())));
 });
 
@@ -79,7 +80,7 @@ describe("printServiceUsage", () => {
 
     printServiceUsage();
 
-    // The usage block spans at least a dozen lines (header, commands list, options, configuration note). This test locks only the multi-line shape - that the output
+    // The usage block spans multiple lines (header, commands list, options, configuration note). This test locks only the multi-line shape - that the output
     // spans several lines. The sibling tests below verify the canonical "Usage:" header on the first line and the presence of every documented subcommand name.
     assert.ok(logCalls.length > 5, "usage output should span multiple lines");
   });
@@ -215,7 +216,7 @@ describe("handleServiceCommand dispatcher", () => {
 
 /* The not-installed-state handlers (start/stop/uninstall) all exhibit the same shape: route to the right generator on each platform, observe that the service file
  * is missing, exit code 1 with a "not installed" stderr message. We share one describe block driven by a small fixture table to lock the contract across handlers
- * and platforms without copy-pasting six near-identical blocks.
+ * and platforms without copy-pasting a near-identical block per handler/platform combination.
  */
 
 describe("handlers report 'not installed' on a clean system", () => {
@@ -475,7 +476,8 @@ describe("handleServiceCommand routes to each handler (smoke tests)", () => {
    */
 });
 
-/* Literal-context fixture types and factories live in commands.helpers.ts. The tests that consume makeFakeGenerator and makeContextHarness are the sibling files
- * listed in this file's header - commands.install.test.ts, commands.lifecycle.test.ts, and commands.status.test.ts - not this file.
+/* Literal-context fixture types and factories live in commands.helpers.ts. The tests that consume makeFakeGenerator and makeContextHarness are
+ * commands.install.test.ts, commands.lifecycle.test.ts, and commands.status.test.ts. This file instead drives the default-context handlers directly through its
+ * own local process.platform and HOME stubbing.
  */
 

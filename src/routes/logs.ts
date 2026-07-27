@@ -130,7 +130,8 @@ async function readLogEntries(lines: number, levelFilter?: string): Promise<Logs
     const content = await fsPromises.readFile(logFilePath, "utf-8");
     const allLines = content.split("\n").filter((line) => line.trim().length > 0);
 
-    // Parse all lines into entries.
+    // parseLogLine returns null for a line that fails to match LOG_LINE_PATTERN; such lines are silently skipped here rather than surfaced as parse errors,
+    // since partial writes and non-log content in the file are an expected artifact, not an exceptional condition worth reporting to the caller.
     const allEntries: LogEntry[] = [];
 
     for(const line of allLines) {
@@ -145,7 +146,9 @@ async function readLogEntries(lines: number, levelFilter?: string): Promise<Logs
 
     const total = allEntries.length;
 
-    // Apply level filter if specified.
+    // The total above already reflects every parsed entry; filtering below only narrows what is returned in filteredEntries. The allowlist covers error,
+    // info, and warn only, since debug entries are gated at the logging source via the PRISMCAST_DEBUG category filter (see utils/debugFilter.ts) rather
+    // than through this query parameter, so debug is never a selectable level here.
     let filteredEntries = allEntries;
 
     if(levelFilter && [ "error", "info", "warn" ].includes(levelFilter)) {
@@ -185,6 +188,8 @@ export function setupLogsEndpoint(app: Express): void {
 
     // Parse query parameters.
     const linesParam = parseInt(req.query["lines"] as string, 10);
+    // The 1000-line ceiling bounds how much log content a single request can pull into a JSON response; 100 is the default because it matches the log
+    // viewer's initial page size, so an unqualified request returns exactly what the UI renders on first load.
     const lines = (!Number.isNaN(linesParam) && (linesParam > 0) && (linesParam <= 1000)) ? linesParam : 100;
     const level = req.query["level"] as string | undefined;
 
@@ -214,7 +219,8 @@ export function setupLogsEndpoint(app: Express): void {
 
     const sse = installSseStream(res);
 
-    // Optional level filter from query parameter.
+    // Optional level filter from query parameter. As with the /logs allowlist above, debug is never a selectable level here: debug entries are gated at
+    // the logging source via the PRISMCAST_DEBUG category filter (see utils/debugFilter.ts), not through this parameter.
     const levelFilter = req.query["level"] as string | undefined;
     const validLevels = [ "error", "info", "warn" ];
     const filterLevel = (levelFilter && validLevels.includes(levelFilter)) ? levelFilter : null;
@@ -230,6 +236,8 @@ export function setupLogsEndpoint(app: Express): void {
       sse.sendEvent(null, entry);
     });
 
+    // Unsubscribe from the shared log emitter and stop the SSE heartbeat when the client disconnects, so a departed client does not leave a listener
+    // registered on subscribeToLogs or receive writes attempted against an already-closed connection.
     req.on("close", () => {
 
       sse.close();

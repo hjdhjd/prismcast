@@ -1,14 +1,15 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * userchannels-public-api.test.ts: Integration-tier coverage for the smaller public exports of userChannels.ts that are reachable only after the persistence
- * subsystem is initialized. Each describe block pins one such export:
+ * subsystem is initialized. Each describe block pins one or more such exports:
  *
  *   - getStoredUserChannels: defensive copy contract.
  *   - isChannelAvailable: in-merged-map predicate.
  *   - getPredefinedScopeCounts: all/east/pacific counts under a service filter.
  *   - mutateChannelDisplayPrefs: partial-update + post-write CONFIG sync.
  *   - markSetupCompleted: one-shot transition.
- *   - mutateDisabledPredefined empty-keys early return: no write occurs when the input array is empty.
+ *   - disablePredefinedChannels/enablePredefinedChannels: empty-keys early return (mutateDisabledPredefined internal no-op) - no write occurs when the input
+ *     array is empty.
  *   - transformChannelTags: no-op skip via isDeepStrictEqual on sorted tags + null-empty-tags branch.
  */
 import { createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
@@ -123,7 +124,7 @@ describe("getPredefinedScopeCounts", () => {
 
     const after = getPredefinedScopeCounts();
 
-    assert.equal(after.all.total, before.all.total, "total is invariant to enable/disable");
+    assert.equal(after.all.total, before.all.total, "total is unaffected by enable/disable");
     assert.equal(after.all.enabled, before.all.enabled - 1, "enabled decreases by exactly 1");
 
     await enablePredefinedChannels(["abc"]);
@@ -219,7 +220,7 @@ describe("setupCompleted re-inference at startup (cross-store: services -> setup
   });
 });
 
-describe("mutateDisabledPredefined: empty-keys early return", () => {
+describe("disablePredefinedChannels/enablePredefinedChannels: empty-keys early return (mutateDisabledPredefined internal no-op)", () => {
 
   test("disablePredefinedChannels([]) is a no-op (no disk write, no exception)", async () => {
 

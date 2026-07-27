@@ -9,8 +9,8 @@ import type { Page } from "puppeteer-core";
 import type { ResolvedSiteProfile } from "../types/index.ts";
 
 /* This module is the single source of truth for getting consent overlays and interstitials out of the way on any page PrismCast navigates on the viewer's behalf -
- * a tune's channel-selection walk and video wait, a discovery or precache walk, a static capture. Three distinct overlay classes are handled, each with its own
- * correct action, because "consent overlay" is not one homogeneous pattern:
+ * a tune's channel-selection walk and video wait, a discovery or precache walk, a static capture. Each distinct overlay class is handled with its own correct
+ * action, because "consent overlay" is not one homogeneous pattern:
  *
  * 1. Cookie-consent CMP banners (Didomi, OneTrust, ...). These are vendor-standardized: every site using a given vendor renders the same markup, so a small,
  *    vendor-keyed registry (CMP_REGISTRY) - not a per-site whitelist - covers thousands of sites with a handful of entries. The correct action is to REJECT, which
@@ -27,13 +27,14 @@ import type { ResolvedSiteProfile } from "../types/index.ts";
  *    they remain per-site configuration rather than a global pattern. They are folded into this one poll so a single mechanism - and a single auto-dismiss logging
  *    convention - owns all "click an overlay out of the way" behavior.
  *
- * Which of these three actions a given poll may take, and how long it may run, is not a call-site decision: it is declared by an OverlayPhase and read from the
+ * Which of the permitted actions a given poll may take, and how long it may run, is not a call-site decision: it is declared by an OverlayPhase and read from the
  * PHASE_POLICY table below. The video wait is the only phase that composes with an embed-gate accept - accepting a gate is a page-mutating, reload-triggering action
  * whose only safe home is the caller that owns the reload - so every other phase forbids the accept and never runs the acting gate probe. This keeps the
- * privacy-sensitive auto-accept structurally confined to the one place that can follow through on it, while cookie rejection and per-site modal dismissal run on
- * every navigated surface. Detection stays specific by design: the embed-gate heuristic only fires when its 2-click-embed phrasing matches AND no video is already
- * playing, so a normal navigation (where nothing blocks the page) never triggers an accept. Where the heuristic cannot resolve a blocking overlay, the caller falls
- * back to detect-and-guide: it surfaces an actionable message telling the viewer to dismiss the prompt once in setup/login mode, instead of a cryptic timeout.
+ * privacy-sensitive auto-accept structurally confined to the one place that can follow through on it, while cookie rejection and per-site modal dismissal run on every
+ * navigated surface. Detection stays specific by design: the embed-gate heuristic only fires when its 2-click-embed phrasing matches AND no video is already buffered
+ * enough to play (readyState >= HAVE_FUTURE_DATA), so a normal navigation (where nothing blocks the page) never triggers an accept. Where the heuristic cannot resolve
+ * a blocking overlay, the caller falls back to detect-and-guide: it surfaces an actionable message telling the viewer to dismiss the prompt once in setup/login mode,
+ * instead of a cryptic timeout.
  */
 
 // Interval in milliseconds between overlay-handling poll checks. This cadence is responsive enough to catch a late-rendering overlay while keeping each tick cheap.
@@ -41,7 +42,7 @@ const OVERLAY_POLL_INTERVAL = 500;
 
 // Settle delay in milliseconds after scrolling an element into view, before dispatching a coordinate click. Mirrors the shared scrollAndClick helper's settle so
 // lazy-loaded content and scroll animations finish before the pointer-event chain is dispatched. Named here (matching OVERLAY_POLL_INTERVAL's convention) rather than
-// repeated as a bare literal across the two coordinate-click sites.
+// repeated as a bare literal across every coordinate-click site in this module.
 const SCROLL_SETTLE_DELAY = 200;
 
 // Source for the accept-affordance match - the visible text or aria-label of a button that grants consent. Kept narrow (no "watch"/"play"/"continue") so a generic
@@ -439,8 +440,9 @@ export function scanForEmbedGate(args: { accept: string; act: boolean; exclude: 
       continue;
     }
 
-    // Walk up a bounded number of ancestors looking for the container that carries the 2-click-embed phrasing. The bound keeps the search cheap and prevents a
-    // match against the whole document body, which would defeat the specificity guard.
+    // Walk up a bounded number of ancestors looking for the container that carries the 2-click-embed phrasing. The bound is deep enough to reach the typical
+    // wrapper nesting seen on embed-gate sites (verified against france24's markup), shallow enough to avoid matching the whole document body, which would
+    // defeat the specificity guard.
     let node: Element | null = candidate.parentElement;
     let containerText = "";
 

@@ -161,8 +161,8 @@ export function computePredefinedDelta(predefinedBase: ResolvedChannel, formValu
   }
 
   // Tags delta: compare against the base's effective (vocabulary-filtered) tags. Using effective tags prevents editing an unrelated field from baking a
-  // vocabulary deletion into the stored delta. sortTags on the stored value mirrors PATCH and transformChannelTags, keeping the storage-order invariant that the
-  // channels normalizer's JSON.stringify equality relies on.
+  // vocabulary deletion into the stored delta. sortTags on the stored value mirrors PATCH and transformChannelTags, keeping the storage order that the channels
+  // normalizer's JSON.stringify equality relies on.
   if(!tagsEqual(tags, getChannelEffectiveTags(predefinedBase))) {
 
     delta.tags = (tags.length > 0) ? sortTags(tags) : null;

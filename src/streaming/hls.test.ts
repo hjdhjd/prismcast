@@ -6,8 +6,8 @@
  * subprocess, and Express runtime to exercise honestly. The unit-testable surface here is the pure validation helpers - validateChannel and sendValidationError
  * - which translate channel keys and validation results into HTTP-shaped error responses without touching the browser or registry beyond config lookups.
  *
- * The login-mode 503 branch lives in a sibling file (hls.loginMode.test.ts) because exercising it requires mock.module + dynamic import to swap the
- * isLoginModeActive accessor; mixing the static and dynamic import strategies in one file would require all tests to use dynamic import.
+ * The login-mode 503 branch lives in a sibling file (hls.loginMode.test.ts), which drives the real isLoginModeActive() flag through the setBrowserAccessors()
+ * dependency injection point - the same one browser/index.ts wires at startup - with a stub browser and page, rather than substituting the accessor.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { hasStreamCapacity, sendValidationError, validateChannel } from "./hls.ts";
@@ -189,15 +189,14 @@ describe("hasStreamCapacity", () => {
 
   /* hasStreamCapacity is the pure single source of truth for the concurrent-stream capacity decision, extracted so the boundary arithmetic is pinnable without a
    * browser. The reservation it backs (reserveStreamSlot) is evaluated at the registration site BEFORE the new stream's pending entry is registered, so the count
-   * passed in excludes the stream being admitted. The regression these tests guard against is the capacity double-count: the new stream's own pending entry was
-   * counted against its own capacity check, so at the boundary (one slot free) the stream was admitted and given a preroll playlist, then a second, self-counting
-   * check rejected it with a 503 and tore it down. With the decision centralized here and evaluated on the self-excluded count, the final slot must be admitted.
+   * passed in always excludes the stream being admitted. Because the decision is centralized here and evaluated on that self-excluded count, the final free slot
+   * is always admitted rather than rejected.
    */
 
   test("admits the final slot - activeCount one below the limit returns true (the boundary regression)", () => {
 
-    // The load-bearing case: with the limit at 4 and three streams already active, a fourth stream (excluded from this count) must be admitted. The old code
-    // double-counted the pending entry here and rejected with a 503 after a preroll had already been sent.
+    // The regression case: with the limit at 4 and three streams already active, a fourth stream (excluded from this count) must be admitted rather than
+    // rejected with a 503 after a preroll has already been sent.
     assert.equal(hasStreamCapacity(3, 4), true, "the last free slot is admitted, not rejected");
 
     // The same boundary at a limit of 1: zero active streams must admit the first stream.

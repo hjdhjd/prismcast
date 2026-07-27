@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * errors.test.ts: Unit tests for the error formatting helpers in errors.ts. Both exports are pure functions; the tests cover the three input-shape branches in
- * formatError (Error instance, duck-typed message, fallback to String()) and the three documented unrecoverable patterns in isSessionClosedError.
+ * errors.test.ts: Unit tests for the error formatting helpers in errors.ts. Every export in this module is a pure function; the tests cover the
+ * input-shape branches in formatError (Error instance, duck-typed message, fallback to String()) and the documented unrecoverable patterns in
+ * isSessionClosedError.
  */
 import { describe, test } from "node:test";
 import { formatError, isSessionClosedError } from "./errors.ts";

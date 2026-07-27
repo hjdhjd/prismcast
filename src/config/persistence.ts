@@ -42,14 +42,14 @@ const SNAPSHOT_RETENTION = 5;
  */
 export interface StorageBackend {
 
-  // Throws when the path does not exist. Used by snapshot() to detect idempotent no-ops.
+  // Throws when the path does not exist. Used by snapshot() to detect that a repeat call is a no-op.
   readonly access: (path: string) => Promise<void>;
 
   // Copies source to destination. Overwrites destination when it exists. ENOENT thrown when source is missing.
   readonly copyFile: (source: string, destination: string) => Promise<void>;
 
-  // Creates a directory at the given path, recursively creating parent directories. Idempotent on existing directories. The framework only ever calls this with
-  // recursive semantics, so the surface bakes recursive in rather than exposing an options bag.
+  // Creates a directory at the given path, recursively creating parent directories. Safe to call more than once on existing directories. The framework only
+  // ever calls this with recursive semantics, so the surface bakes recursive in rather than exposing an options bag.
   readonly mkdir: (path: string) => Promise<void>;
 
   // Lists the names (basename, not full path) of every entry in the given directory. ENOENT when the directory does not exist.
@@ -103,8 +103,8 @@ export interface Migration<T> {
   // Human-readable description; logged when applied and recorded in the migration audit trail on the file.
   description: string;
 
-  // Mutates the data in place to upgrade it to this migration's target schema version. Must be idempotent across boots when paired with the version stamp -
-  // once the target version is recorded, the framework will not invoke this migration again.
+  // Mutates the data in place to upgrade it to this migration's target schema version. Must be safe to call more than once across boots when paired with the
+  // version stamp - once the target version is recorded, the framework will not invoke this migration again.
   apply: (data: T) => void;
 }
 
@@ -159,7 +159,7 @@ export interface FileStoreReadResult<T> {
 }
 
 /**
- * Options for creating a file store instance. The four required fields (defaultValue, label, parse, path) are the minimum surface required for any store. The
+ * Options for creating a file store instance. The required fields (defaultValue, label, parse, path) are the minimum surface required for any store. The
  * remaining fields opt in to schema versioning, migrations, and integrity validation - any store can adopt them as its data shape grows.
  * @template T - The in-memory data type that callers mutate.
  */
@@ -221,8 +221,8 @@ export interface FileStoreOptions<T> {
 export interface FileStore<T> {
 
   /**
-   * Verifies migrations are up-to-date and persists the upgrade if any were applied. Idempotent - when the file is already at the current schema version this
-   * is a single read with no write. Called once per store at startup by the release boot coordinator after snapshots have been captured.
+   * Verifies migrations are up-to-date and persists the upgrade if any were applied. A no-op on repeat - when the file is already at the current schema
+   * version this is a single read with no write. Called once per store at startup by the release boot coordinator after snapshots have been captured.
    * @returns The migration result so callers can log per-store outcomes.
    */
   ensureMigrated(): Promise<MigrationResult>;
@@ -243,9 +243,10 @@ export interface FileStore<T> {
   read(): Promise<FileStoreReadResult<T>>;
 
   /**
-   * Creates a labeled snapshot copy of the current file inside a `snapshots/` subdirectory next to the source file (named `<file>.<label>`). Idempotent on
-   * the label - if a snapshot with the same label already exists, this is a no-op. After a successful create, prunes older snapshots for the same file so at
-   * most SNAPSHOT_RETENTION remain (by mtime). Used to preserve a guaranteed restore point at release boundaries before any migrations can mutate the file.
+   * Creates a labeled snapshot copy of the current file inside a `snapshots/` subdirectory next to the source file (named `<file>.<label>`). Safe to call more
+   * than once for the same label - if a snapshot with the same label already exists, this is a no-op. After a successful create, prunes older snapshots for
+   * the same file so at most SNAPSHOT_RETENTION remain (by mtime). Used to preserve a guaranteed restore point at release boundaries before any migrations can
+   * mutate the file.
    * @param label - The filename suffix appended after the source file's basename and a dot. Typically a version string like `pre-v1.10.0`.
    */
   snapshot(label: string): Promise<void>;
@@ -270,7 +271,8 @@ export async function snapshotAllForRelease(label: string): Promise<void> {
 
 /**
  * Runs ensureMigrated() on every registered store. Called once at startup after snapshotAllForRelease so that any pending migrations execute against a file
- * that already has its pre-version snapshot captured. Idempotent within a release - subsequent boots see no pending migrations and skip the upgrade write.
+ * that already has its pre-version snapshot captured. Safe to call more than once within a release - subsequent boots see no pending migrations and skip
+ * the upgrade write.
  */
 export async function ensureAllMigrated(): Promise<void> {
 
@@ -289,10 +291,10 @@ export async function ensureAllMigrated(): Promise<void> {
  * - **Backup rotation:** before each write, the current file is copied to `.bak`. One-deep rotation provides a recovery path for the previous good version.
  * - **Auto-recovery:** when the main file fails to parse, `read()` transparently restores from `.bak` (atomic temp+rename) and surfaces `recoveredFromBackup`
  *   on the result so callers can banner the event. Only when both files are unparseable does the result fall back to defaults with `parseError: true`.
- * - **Versioned snapshots:** `snapshot(label)` writes a copy of the current file into a `snapshots/` subdirectory, named `<file>.<label>`, idempotent on the
- *   label. After each successful create the directory is pruned to at most SNAPSHOT_RETENTION entries per file (by mtime).
+ * - **Versioned snapshots:** `snapshot(label)` writes a copy of the current file into a `snapshots/` subdirectory, named `<file>.<label>`, safe to call more
+ *   than once for the same label. After each successful create the directory is pruned to at most SNAPSHOT_RETENTION entries per file (by mtime).
  * - **Declarative migrations:** when `migrations` and `currentSchemaVersion` are provided, `read()` runs any pending migrations in memory and returns the
- *   upgraded data. `ensureMigrated()` persists the upgrade if any were applied. Migrations are version-keyed and idempotent across boots.
+ *   upgraded data. `ensureMigrated()` persists the upgrade if any were applied. Migrations are version-keyed and safe to call more than once across boots.
  * - **Pre-write validation:** when `validate` is provided, `mutate()` invokes it with the pre-mutation snapshot and post-mutation state, surfacing integrity
  *   issues via the log.
  * - **Post-write integrity check:** after every successful rename, the file is read back and byte-compared against what was written. On mismatch, the .bak is
@@ -602,10 +604,10 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   }
 
   /**
-   * Creates a labeled snapshot copy of the current file inside a `snapshots/` subdirectory next to the source file. Idempotent on the label so repeated calls
-   * within the same release are no-ops after the first one. After a successful create, prunes old snapshots for this file so at most SNAPSHOT_RETENTION are
-   * retained (by mtime). Snapshots are version-keyed safety nets that survive normal .bak rotation, intended to be the restore-of-last-resort when a release
-   * introduces a data-shape regression that escapes the primary safeguards.
+   * Creates a labeled snapshot copy of the current file inside a `snapshots/` subdirectory next to the source file. Safe to call more than once for the same
+   * label, so repeated calls within the same release are no-ops after the first one. After a successful create, prunes old snapshots for this file so at most
+   * SNAPSHOT_RETENTION are retained (by mtime). Snapshots are version-keyed safety nets that survive normal .bak rotation, intended to be the restore of last
+   * resort when a release introduces a data-shape regression that escapes the primary safeguards.
    */
   async function snapshot(label: string): Promise<void> {
 
@@ -614,8 +616,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     const snapshotDir = path.join(path.dirname(filePath), "snapshots");
     const snapshotPath = path.join(snapshotDir, baseName + "." + label);
 
-    // Idempotent: skip if a snapshot with this label already exists. The first boot under a given release captures the snapshot; subsequent boots see it and
-    // skip, so the snapshot reflects the file's state at first-boot of that release.
+    // A no-op on repeat: skip if a snapshot with this label already exists. The first boot under a given release captures the snapshot; subsequent boots see
+    // it and skip, so the snapshot reflects the file's state at first-boot of that release.
     try {
 
       await backend.access(snapshotPath);
@@ -797,8 +799,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   }
 
   /**
-   * Verifies the file is at the current schema version, persisting any required upgrade. Idempotent - when the file is already current this is a single read
-   * with no write. The release boot coordinator calls this on every store after snapshots have been captured.
+   * Verifies the file is at the current schema version, persisting any required upgrade. A no-op on repeat - when the file is already current this is a
+   * single read with no write. The release boot coordinator calls this on every store after snapshots have been captured.
    */
   async function ensureMigrated(): Promise<MigrationResult> {
 

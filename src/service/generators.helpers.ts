@@ -2,9 +2,9 @@
  *
  * generators.helpers.ts: Shared test helpers for the service-generators suite. Hosts the FakeIO* shapes (a GeneratorIO double that captures every IO call into
  * arrays so tests can assert on the exact subprocess invocations and file-write content each generator emits) and the definitionFixture factory (a
- * ServiceDefinition with sensible defaults). Platform-specific tests (generators.launchAgent.test.ts, generators.systemd.test.ts, generators.windowsTask.test.ts)
- * and generators.test.ts (getServiceGenerator dispatch) all consume these. The path-resolution stubs (withParserStubs, FAKE_PLIST, FAKE_UNIT, FAKE_LAUNCHER)
- * are scoped to generators.paths.test.ts and live there directly.
+ * ServiceDefinition with sensible defaults). Platform-specific tests (generators.launchAgent.test.ts, generators.systemd.test.ts, generators.windowsTask.test.ts),
+ * generators.paths.test.ts, and generators.test.ts (getServiceGenerator dispatch) all consume these. The path-resolution stubs (withParserStubs, FAKE_PLIST,
+ * FAKE_UNIT, FAKE_LAUNCHER) are scoped to generators.paths.test.ts and live there directly.
  */
 
 import type { GeneratorIO, ServiceDefinition } from "./generators.ts";
@@ -42,6 +42,14 @@ export interface FakeIOHarness {
   writes: { content: string; path: string }[];
 }
 
+/**
+ * Builds a fake GeneratorIO adapter that records every call it receives into calls (and every file write into writes), so tests can assert on the exact
+ * subprocess invocations and file-write content a generator emits. access/existsSync/readFileSync answer from the existing/files maps in options; execFile
+ * delegates to options.execFile (default: execFileFromMap({}), which throws on any command a test forgot to configure); getPlatform/getServiceFileDirectory/
+ * getServiceFilePath answer from the matching options field or a darwin-flavored default.
+ * @param options - Overrides for the fake's platform, file-system state, and execFile behavior. Defaults to an empty options object.
+ * @returns A FakeIOHarness: the GeneratorIO double (io), its recorded call log (calls), and its recorded file writes (writes).
+ */
 export function makeFakeIO(options: FakeIOOptions = {}): FakeIOHarness {
 
   const calls: FakeIOCall[] = [];
@@ -109,6 +117,12 @@ export function makeFakeIO(options: FakeIOOptions = {}): FakeIOHarness {
   return { calls, io, writes };
 }
 
+/**
+ * Builds a ServiceDefinition with sensible test defaults (entry point, env vars, logs/working directories, node path) so generator tests can pass a ready-made
+ * definition to the generator under test without repeating the same boilerplate in every case.
+ * @param overrides - Fields to override on the default ServiceDefinition. Defaults to no overrides.
+ * @returns The resulting ServiceDefinition.
+ */
 export function definitionFixture(overrides: Partial<ServiceDefinition> = {}): ServiceDefinition {
 
   return {

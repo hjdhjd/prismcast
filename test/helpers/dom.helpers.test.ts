@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * dom.helpers.test.ts: Tests for the DOM-runtime test harness itself. Like integration.helpers.test.ts, this is load-bearing infrastructure - every DOM-runtime
- * suite depends on these guarantees holding correctly. The tests pin the harness's contract surface: served HTML is loaded into a synthetic Window, inline
+ * dom.helpers.test.ts: Tests for the DOM-runtime test harness itself. As with integration.helpers.test.ts, every DOM-runtime suite depends on these guarantees
+ * holding correctly. The tests pin the harness's contract surface: served HTML is loaded into a synthetic Window, inline
  * <script> bodies are extracted in document order, scripts only execute when the test explicitly opts in via runScripts(), arbitrary code can be evaluated in
  * the Window's global scope, and disposal closes the Window before the bootApp listener (LIFO) so happy-dom's async tasks settle before the listener tears down.
  *
@@ -155,8 +155,8 @@ describe("createDomTestContext - script execution", () => {
   test("runScripts executes selected scripts in document order regardless of predicate iteration", async () => {
 
     /* Document order matters because emitted scripts may build on each other (e.g., shared utilities defines window.channelTable; channels.ts may read it on
-     * load). Even if the predicate logic could short-circuit out of order, the harness must execute in source order. We pick two scripts that contain
-     * easily-identifiable, non-overlapping markers and confirm their ran-index list comes back ascending.
+     * load). Even if the predicate logic could short-circuit out of order, the harness must execute in source order. We pick the first two scripts
+     * unconditionally by their document-order index and confirm their ran-index list comes back ascending.
      */
     await using ctx = await createDomTestContext();
 
@@ -202,7 +202,7 @@ describe("createDomTestContext - integration with production state", () => {
   test("data mutated via mutateChannels surfaces in the page HTML across consecutive contexts", async () => {
 
     /* The harness routes through bootApp, which serves the production landing-page route. That route reads channel state from initializePersistence's loaded
-     * stores. Mutations applied between context creation and page fetch must therefore surface in the served HTML - this is the invariant that lets tests
+     * stores. Mutations applied between context creation and page fetch must therefore surface in the served HTML - this is the guarantee that lets tests
      * seed state then assert post-render.
      */
     await using ctx = await createDomTestContext();
@@ -236,8 +236,7 @@ describe("createDomTestContext - integration with production state", () => {
   test("the Window's location URL points at the bootApp listener so relative fetch resolves correctly", async () => {
 
     /* The harness sets the Window URL to the bootApp's origin. window.location.origin should match the bootApp's URL so emitted scripts that call
-     * fetch("/some/path") hit the real production listener. We assert the origin then issue a relative fetch via the Window's fetch implementation to confirm
-     * round-trip.
+     * fetch("/some/path") hit the real production listener. We assert that the origin matches the bootApp's own address.
      */
     await using ctx = await createDomTestContext();
 
@@ -251,9 +250,9 @@ describe("createDomTestContext - cleanup behavior", () => {
 
   test("registerCleanup hooks run at disposal (LIFO) alongside the harness's internal cleanups", async () => {
 
-    /* Tests can layer their own cleanup hooks on top of the harness via registerCleanup. The harness's own hook (Window close) was registered FIRST, so it
-     * drains LAST - tests that need to register cleanups whose order matters relative to Window teardown have a deterministic ordering: registered later
-     * means runs earlier.
+    /* Tests can layer their own cleanup hooks on top of the harness via registerCleanup. Internally, bootApp registers the listener-close hook first, then
+     * createDomTestContext registers the Window-close hook second, so at disposal the Window closes first and the listener closes last - tests that need to
+     * register cleanups whose order matters relative to Window teardown have a deterministic ordering: registered later means runs earlier.
      */
     const order: string[] = [];
 
@@ -272,7 +271,7 @@ describe("createDomTestContext - cleanup behavior", () => {
   test("disposal closes the Window so happy-dom's async tasks settle before the listener tears down", async () => {
 
     /* Window close drains microtasks and timers happy-dom queued internally. We can't directly observe the listener-after-window ordering through public API,
-     * so we assert a softer invariant: after disposal, evaluate against the Window throws or returns from a closed sandbox. This is the consumer-visible signal
+     * so we assert a softer guarantee: after disposal, evaluate against the Window throws or returns from a closed sandbox. This is the consumer-visible signal
      * that the Window did, in fact, close.
      */
     let capturedWindow: { evaluate: (code: string) => unknown } | null = null;

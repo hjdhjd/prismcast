@@ -28,7 +28,7 @@ import { __internalForTests } from "./userChannels.ts";
 const { normalizeChannelDeltas } = __internalForTests;
 
 /**
- * Builds a stored variant entry - a stored channel that carries a canonicalKey discriminator. Defaults to a minimal abc-hulu shape so callers only override
+ * Builds a stored variant entry - a stored channel that carries a canonicalKey tag. Defaults to a minimal abc-hulu shape so callers only override
  * what they're actually testing.
  * @param overrides - Field overrides; canonicalKey and binding fields are merged onto the defaults.
  * @returns A StoredChannel-typed variant entry.
@@ -137,9 +137,10 @@ export function normalize(channels: StoredChannelMap): StoredChannelMap {
  */
 export function getCanonical(key: string): CanonicalChannel {
 
-  // PREDEFINED_CHANNELS has a precise literal object type, so a direct index access does not surface a clean optional. We cast through an explicit
-  // Record<string, VariantChannel | CanonicalChannel | undefined> so the lookup yields a possibly-undefined union and the truthiness guard below reads cleanly;
-  // the runtime guard still matters because the catalog content evolves and a key may disappear.
+  // PREDEFINED_CHANNELS is typed as ChannelMap (Record<string, Channel>), and noUncheckedIndexedAccess already surfaces a direct index access as
+  // Channel | undefined. The cast through an explicit Record<string, VariantChannel | CanonicalChannel | undefined> restates that same optional union with
+  // its members spelled out, so the truthiness guard below reads cleanly without depending on the reader knowing the tsconfig flag; the runtime guard still
+  // matters because the catalog content evolves and a key may disappear.
   const channel = (PREDEFINED_CHANNELS as Record<string, VariantChannel | CanonicalChannel | undefined>)[key];
 
   if(!channel) {

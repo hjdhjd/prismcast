@@ -8,8 +8,9 @@
  * page.removeScriptToEvaluateOnNewDocument) - so both are unit-testable with a plain object stub standing in for the Page reference.
  *
  * normalizeChannelName, resolveMatchSelector, and logAvailableChannels are pure functions the tuning strategies and the channel-selection coordinator rely on for
- * name matching, selector resolution, and the "channels you must configure manually" diagnostic; they are pinned directly below. The remaining exports
- * (scrollAndClick and the locate/click helpers) drive Puppeteer through page.mouse and page.evaluate and are deferred to the e2e tier.
+ * name matching, selector resolution, and the "channels you must configure manually" diagnostic; they are pinned directly below. The remaining export,
+ * scrollAndClick, drives Puppeteer through page.mouse and page.evaluate and is deferred to the e2e tier; the locate-style helpers that call it live in the
+ * individual provider modules.
  */
 import type { NewDocumentScriptEvaluation, Page } from "puppeteer-core";
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -179,9 +180,9 @@ describe("installOrReplaceOnNewDocument", () => {
 
   test("removes the prior script before installing a fresh one on each subsequent call (never stacks)", async () => {
 
-    // This is the core of the Hulu fix: re-tuning the same page with drifting arguments must run exactly one interceptor carrying current values. Each call removes
-    // the script installed by the previous call, then installs anew. A regression that dropped the removal would let stale interceptor scripts stack and run
-    // competing window.fetch patches frozen at old argument values.
+    // This pins the critical Hulu guarantee: re-tuning the same page with drifting arguments must run exactly one interceptor carrying current values. Each call
+    // removes the script installed by the previous call, then installs anew. A regression that dropped the removal would let stale interceptor scripts stack and
+    // run competing window.fetch patches frozen at old argument values.
     const { page, removed } = makeReplacePage();
     const { install } = makeInstall();
 
@@ -283,8 +284,8 @@ describe("resolveMatchSelector", () => {
 describe("logAvailableChannels", () => {
 
   // logAvailableChannels calls the module-singleton LOG, whose formatted output is broadcast to the SSE emitter that subscribeToLogs taps. Asserting on the
-  // formatted message pins the operator-visible invariant (which channels are reported, and the covered/uncovered count) rather than a pre-format implementation
-  // detail. The subscription is installed per test and reset so one test's output cannot leak into another's assertions.
+  // formatted message pins what the operator sees (which channels are reported, and the covered/uncovered count) rather than a pre-format implementation detail.
+  // The subscription is installed per test and reset so one test's output cannot leak into another's assertions.
   let captured: LogEntry[];
 
   let unsubscribe: () => void;

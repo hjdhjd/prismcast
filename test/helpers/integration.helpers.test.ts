@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * integration.helpers.test.ts: Tests for the integration test harness itself. The harness is load-bearing infrastructure - every integration suite depends on
- * its disposal contract holding correctly - so a regression here cascades into every dependent suite. The tests below pin the language-level guarantees we
+ * integration.helpers.test.ts: Tests for the integration test harness itself. Every integration suite depends on its disposal contract holding correctly,
+ * so a regression here cascades into every dependent suite. The tests below pin the language-level guarantees we
  * rely on (Symbol.asyncDispose runs exactly once at scope exit, propagates body errors, surfaces cleanup errors) plus the harness-level guarantees we add on
  * top (LIFO cleanup ordering, AggregateError on multiple cleanup failures, temp dir removed at disposal, production resolvers point at the temp dir).
  *
- * These tests live under test/ because they exercise the integration tier and need the same runtime as integration tests (the npm run test:e2e harness runs
- * with a 120s timeout and the experimental-test-module-mocks flag). They run in the same e2e batch as the suites they support.
+ * These tests live under test/ because they exercise the integration tier and need the same runtime as integration tests (the npm run test:integration
+ * harness runs with a 120s timeout). They run in the same e2e batch as the suites they support.
  */
 import { access, readFile, writeFile } from "node:fs/promises";
 import { createIntegrationContext, pathInDataDir, readPersistedJson, writePersistedJson } from "./integration.helpers.ts";

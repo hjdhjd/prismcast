@@ -1,8 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * debugFilter.test.ts: Unit tests for the debug filter primitives in debugFilter.ts. The module holds module-scope mutable state (includeSet, excludeSet,
- * wildcardEnabled, anyEnabled) that initDebugFilter() resets on each call. We re-init at the start of every test to keep them independent. The DEBUG_CATEGORIES
- * registry is also covered - it is an SSOT consumed by the /debug UI, so changes to its shape would surface here.
+ * wildcardEnabled, anyEnabled) that initDebugFilter() resets on each call. Each describe block resets the filter via afterEach (and the isCategoryEnabled
+ * block additionally via beforeEach), so tests do not inherit state from one another. The DEBUG_CATEGORIES registry is also covered - it is an SSOT
+ * consumed by the /debug UI, so changes to its shape would surface here.
  */
 import { DEBUG_CATEGORIES, getCurrentPattern, initDebugFilter, isAnyDebugEnabled, isCategoryEnabled } from "./debugFilter.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -91,7 +92,7 @@ describe("initDebugFilter", () => {
 
   test("a pattern with only whitespace and commas leaves the filter disabled", () => {
 
-    // Boundary: the split/trim/filter yields zero tokens, so wildcard is false and both sets are empty - initDebugFilter sets anyEnabled to false.
+    // Boundary: the split/trim/filter yields zero tokens, so wildcard is false and the parsed sets are empty - initDebugFilter sets anyEnabled to false.
     initDebugFilter("  ,  ,  ");
 
     assert.equal(isAnyDebugEnabled(), false);
@@ -236,8 +237,8 @@ describe("getCurrentPattern", () => {
 
   test("preserves multi-entry insertion order within each segment", () => {
 
-    // Boundary: two excludes and two includes should land in their original relative order. If the implementation switched to Set's sometimes-non-insertion
-    // order (it doesn't, but a refactor could) this test would fail.
+    // Boundary: two excludes and two includes should land in their original relative order. If a refactor replaced the Sets with a structure that doesn't
+    // guarantee insertion order, this test would fail.
     initDebugFilter("*,-recovery:nav,-streaming:hls,tuning:fox,recovery:tab");
 
     assert.equal(getCurrentPattern(), "*,-recovery:nav,-streaming:hls,tuning:fox,recovery:tab",
@@ -255,7 +256,7 @@ describe("DEBUG_CATEGORIES", () => {
 
   test("every entry has both a category and a description", () => {
 
-    // Locking the shape of each entry. The UI relies on both fields - missing either would break rendering.
+    // Locking the shape of each entry. The UI relies on every field - missing any one would break rendering.
     for(const entry of DEBUG_CATEGORIES) {
 
       assert.equal(typeof entry.category, "string", "category is a string");

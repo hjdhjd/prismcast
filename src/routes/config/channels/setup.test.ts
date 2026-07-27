@@ -50,7 +50,7 @@ describe("setupChannelRoutes", () => {
 
     setupChannelRoutes(app);
 
-    /* The complete documented endpoint surface across the eight per-feature register functions. We assert each verb+path combination lands so a regression that
+    /* The complete documented endpoint surface across every per-feature register function. We assert each verb+path combination lands so a regression that
      * silently drops a feature group (e.g., forgetting to call registerTagRoutes) surfaces here as a missing route rather than only as a runtime 404 in
      * production.
      */
@@ -104,7 +104,7 @@ describe("setupChannelRoutes", () => {
 
     setupChannelRoutes(app);
 
-    // 25 documented endpoints across the eight feature groups; lock the count so any drift surfaces as a clear test diff.
+    // Lock the current route count so any drift surfaces as a clear test diff.
     assert.equal(routes.length, 25, "expected 25 channel-config routes");
   });
 });

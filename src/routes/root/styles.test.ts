@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * styles.test.ts: Unit tests for the landing page CSS generator. The module exports a single function that produces a long string of CSS rules. We do not run
- * the CSS through a parser (that would add a dependency) - instead we lock in the structural invariants: the output is a non-empty string, the major class
+ * the CSS through a parser (that would add a dependency) - instead we lock in these structural rules: the output is a non-empty string, the major class
  * groups (header, wizard modal, channel table, toast, etc.) are present, theme variables drive colors rather than literal hex codes for most rules, and the
  * generator stays composed from the OPTIONAL_COLUMNS source of truth.
  */
@@ -195,7 +195,7 @@ describe("generateLandingPageStyles", () => {
   test("opens and closes braces in matched pairs", () => {
 
     // Crude structural check - count opening vs. closing braces. A mismatched pair would mean the CSS will not parse correctly in the browser. This is a cheap
-    // syntactic invariant that does not require a full CSS parser.
+    // syntactic rule that does not require a full CSS parser.
     const css = generateLandingPageStyles();
     const opens = (css.match(/\{/g) ?? []).length;
     const closes = (css.match(/\}/g) ?? []).length;

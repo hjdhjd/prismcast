@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * channels.test.ts: Unit tests for the channels subtab client-side script generator. The module exports a single function that returns an HTML <script> block
- * exposing window.* handlers for the profile wizard, browse modal, setup wizard, service pack import/export, and tag manager. We test the generated string for
- * structural invariants - presence of expected window handlers, wizard initialization, and subtab wiring - without executing the script in any DOM runtime.
+ * exposing window.* handlers for the profile wizard, browse modal, setup wizard, service pack import/export, and tag manager. We test the generated string
+ * for the presence of expected window handlers, wizard initialization, and subtab wiring, without executing the script in any DOM runtime.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -59,8 +59,8 @@ describe("generateChannelsSubtabScript", () => {
 
   test("exposes the service pack import/export modal handlers", () => {
 
-    // Service packs round-trip through these four handlers. startServiceImport opens the file picker, executeImport sends the payload, and the export pair
-    // mirrors the same flow for download.
+    // Service packs round-trip through these six handlers: startServiceImport opens the file picker, closeImportModal dismisses it, executeImport sends
+    // the payload, and the export trio (startServiceExport, closeExportModal, executeExport) mirrors the same flow for download.
     const script = generateChannelsSubtabScript();
 
     assert.match(script, /window\.startServiceImport\s*=/);
@@ -143,8 +143,8 @@ describe("generateChannelsSubtabScript", () => {
 
   test("invokes channelTable.processLogos and processServiceDisplays on init", () => {
 
-    // The channels subtab script ends with a call to channelTable.processLogos() and processServiceDisplays() so the initial server-rendered DOM picks up
-    // logos and provider icons. Without these calls, page load would show plain-text channels rather than logos.
+    // The channels subtab script calls channelTable.processLogos() and processServiceDisplays() during initialization so the initial server-rendered DOM
+    // picks up logos and provider icons. Without these calls, page load would show plain-text channels rather than logos.
     const script = generateChannelsSubtabScript();
 
     assert.match(script, /channelTable\.processLogos\(\)/);

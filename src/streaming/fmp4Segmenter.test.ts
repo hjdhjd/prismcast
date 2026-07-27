@@ -3,9 +3,9 @@
  * fmp4Segmenter.test.ts: Unit tests for the pure helpers in the fMP4 segmenter module. The two formatters (formatKeyframeStatsSummary, formatSessionStatsSummary) are
  * pure string-builders that earn full coverage here. The two discontinuity-sequence helpers (pruneDiscontinuityIndices, computeDiscontinuitySequence) are the SSOT for
  * keeping discontinuityIndices bounded over a long stream while preserving a correct, monotonic #EXT-X-DISCONTINUITY-SEQUENCE across the prune boundary - the tests pin
- * both invariants. createFMP4Segmenter pipes a Readable input through createMP4BoxParser, accumulates fragments, stores them via hlsSegments.storeSegment, and emits
- * playlists via hlsSegments.updatePlaylist; it is driven here with synthetic ftyp/moov/moof/mdat boxes against a registered stream, pinning init-segment storage,
- * the fast-path first cut, the segment-duration boundary, final flush, and discontinuity marking. Real Chrome-capture fMP4 remains an e2e concern only for
+ * both properties at once. createFMP4Segmenter pipes a Readable input through createMP4BoxParser, accumulates fragments, stores them via hlsSegments.storeSegment,
+ * and emits playlists via hlsSegments.updatePlaylist; it is driven here with synthetic ftyp/moov/moof/mdat boxes against a registered stream, pinning init-segment
+ * storage, the fast-path first cut, the segment-duration boundary, final flush, and discontinuity marking. Real Chrome-capture fMP4 remains an e2e concern only for
  * codec/timescale fidelity.
  */
 import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.ts";
@@ -324,8 +324,8 @@ describe("computeDiscontinuitySequence", () => {
 
 describe("discontinuity-sequence bounded growth and prune-boundary correctness", () => {
 
-  // This integrated test replays the outputSegment() prune loop and the generatePlaylist() sequence computation over a long synthetic stream, asserting two invariants
-  // simultaneously: (1) discontinuityIndices stays bounded by the sliding window size, and (2) the emitted DISCONTINUITY-SEQUENCE matches an unbounded oracle at every
+  // This integrated test replays the outputSegment() prune loop and the generatePlaylist() sequence computation over a long synthetic stream, asserting two properties
+  // at once: (1) discontinuityIndices stays bounded by the sliding window size, and (2) the emitted DISCONTINUITY-SEQUENCE matches an unbounded oracle at every
   // step - including across the prune boundary where indices begin scrolling out of the set. The oracle reproduces the original unbounded behavior (a full set counted
   // with idx < startIndex), so any divergence after pruning would surface immediately.
   test("stays bounded while reproducing the unbounded discontinuity-sequence oracle at every step", () => {
@@ -499,7 +499,7 @@ function makeMoof(...trafs: Buffer[]): Buffer {
 }
 
 /* makeFtyp builds a minimal ftyp box. Its payload content is irrelevant to the segmenter - only its raw bytes matter, since storeInitSegment() persists
- * ftyp+moov verbatim and invariant 6 depends on feeding byte-identical ftyp+moov pairs across two segmenter instances.
+ * ftyp+moov verbatim and the byte-identical-init suppression test below depends on feeding byte-identical ftyp+moov pairs across two segmenter instances.
  */
 function makeFtyp(): Buffer {
 

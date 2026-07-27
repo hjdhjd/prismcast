@@ -59,7 +59,7 @@ const fakeClock: Clock = {
   sleep: async (ms: number): Promise<void> => { mock.timers.setTime(Date.now() + ms); }
 };
 
-/* The injected pretune dependencies: the DVR data-acquisition trio and the initializeStream go-action, substituted at pretune's PretuneDeps seam so the decision
+/* The injected pretune dependencies: the DVR data-acquisition trio and the initializeStream go-action, substituted at pretune's PretuneDeps port so the decision
  * logic runs against synthetic schedule data with no HTTP round-trip or real capture. getDeviceMappings returns one synthetic device whose guide map is the per-
  * test deviceGuideMap; getDvrHost is a stable stub. Typed as PretuneDeps so the doubles cannot drift from the production port.
  */
@@ -126,7 +126,7 @@ describe("pretune scheduling state machine", () => {
     assert.ok(fetchFromDvrSpy.mock.callCount() >= 1, "the DVR jobs endpoint must be polled at least once");
   });
 
-  test("a job for a channel that is already streaming does NOT trigger pretune (cf2e9c7 invariant)", async () => {
+  test("a job for a channel that is already streaming does NOT trigger pretune (cf2e9c7 regression guard)", async () => {
 
     /* The cf2e9c7 regression class: pretune must coexist with active streams without spawning duplicates. A scheduled program for channel X arriving in the
      * polling window when X is already streaming must end at the existingStreamId guard inside pretuneChannel - no second initializeStream call for X. The
@@ -288,7 +288,7 @@ describe("pretune scheduling state machine", () => {
 
   /* Phase 2.5 Suite 38: pretune contract for non-streamable channels.
    *
-   * The four tests below close coverage gaps adjacent to Suite 12's "already-streaming" invariant. Each pins what pretune does when the DVR job's resolved channel
+   * The tests below close coverage gaps adjacent to Suite 12's "already-streaming" invariant. Each pins what pretune does when the DVR job's resolved channel
    * is not currently streamable from PrismCast - either because the channel does not exist (test 1), is structurally hidden by the user's service filter
    * (test 2), or is on the user's predefined-disabled list (test 3). Test 4 is a positive control proving the new tests' assertions are informative: a
    * normally-available predefined channel still pretunes through the same code paths the negative tests share.

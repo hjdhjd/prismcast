@@ -5,8 +5,10 @@
 
 /* This module is the single source of truth for client-side HTML escaping. Every client script that concatenates an untrusted value into innerHTML - the shared
  * channel/service renderers in shared.ts, the status display in status.handlers.ts, the browse and profile wizards in channels.ts, the changelog modal in
- * config.ts, and the inline log viewer in content.ts - routes through the one window.escapeHtml this module emits, so there is exactly one client escaper rather
- * than the four hand-rolled copies that previously diverged in coverage.
+ * config.ts, and the inline log viewer in content.ts - routes through the one window.escapeHtml this module emits. The one documented exception is the browse
+ * and profile wizards in channels.ts, which pre-populate a handful of text-input value attributes with a quote-only replaceAll that maps the double quote to
+ * &quot; instead of the full escaper, since a double quote is the only attribute-breakout character those fields need to neutralize. There is exactly one
+ * client-side HTML escaper, installed on window.escapeHtml.
  *
  * It is the browser-side twin of the server-side escapeHtml single source of truth in utils/markup.ts. clientEscapeHtml cannot import markup.escapeHtml: its body
  * ships to the browser verbatim via Function.prototype.toString(), where the import binding would be undefined, so the two are necessarily separate function
@@ -16,7 +18,7 @@
 
 /**
  * Escapes the five HTML special characters - & < > " ' - to their HTML5 entities, including the numeric apostrophe reference &#39;. This is the client mirror of
- * markup.escapeHtml. The five-character coverage is load-bearing: client renderers concatenate escaped values into innerHTML in both text-node and attribute
+ * markup.escapeHtml. The five-character coverage is required: client renderers concatenate escaped values into innerHTML in both text-node and attribute
  * positions, and the double quote is the attribute-breakout vector, so a text-node-only escaper (a textContent round-trip pattern that leaves " and ' raw) would
  * be unsafe for the title/alt/value/data-* attribute sites that consume this. The body is deliberately self-contained - a literal
  * regex and an inline entity table, no module-scope helpers and no imports - because it is emitted to the browser via Function.prototype.toString() and may

@@ -4,7 +4,7 @@
  */
 import type { Nullable } from "../types/index.ts";
 
-/* This module provides a simple cache for display and GPU capabilities detected during browser initialization. Three sets of values are cached:
+/* This module provides a simple cache for display and GPU capabilities detected during browser initialization. Values cached:
  *
  * 1. Maximum supported viewport: The largest viewport that fits on the display after accounting for browser chrome. Used by the preset system to determine if the
  *    configured preset needs to be degraded.

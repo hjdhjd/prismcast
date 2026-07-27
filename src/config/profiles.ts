@@ -18,15 +18,15 @@ export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, 
  *
  * Resolution order (highest to lowest priority):
  *
- * 1. Channel's explicit profile property (if specified)
- * 2. URL-based detection via DOMAIN_CONFIG
- * 3. DEFAULT_SITE_PROFILE
+ * 1. Channel's explicit profile property (if specified).
+ * 2. URL-based detection via DOMAIN_CONFIG.
+ * 3. DEFAULT_SITE_PROFILE.
  *
  * Within a profile, inheritance works as follows:
  *
- * 1. Start with DEFAULT_SITE_PROFILE for base values
- * 2. Apply parent profile properties (if extends is set)
- * 3. Apply current profile properties (overriding parent)
+ * 1. Start with DEFAULT_SITE_PROFILE for base values.
+ * 2. Apply parent profile properties (if extends is set).
+ * 3. Apply current profile properties (overriding parent).
  *
  * This allows profiles like "embeddedDynamicMultiVideo" to inherit iframe handling from "embeddedPlayer" which inherits API fullscreen from "fullscreenApi",
  * building up the complete set of behavior flags through the inheritance chain.
@@ -38,10 +38,10 @@ export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, 
  *
  * The resolution process:
  *
- * 1. Start with a copy of DEFAULT_SITE_PROFILE
- * 2. If the profile extends another, recursively resolve the parent and merge its properties
- * 3. Merge the current profile's properties, overriding any inherited values
- * 4. Return the fully-resolved profile with all flags set
+ * 1. Start with a copy of DEFAULT_SITE_PROFILE.
+ * 2. If the profile extends another, recursively resolve the parent and merge its properties.
+ * 3. Merge the current profile's properties, overriding any inherited values.
+ * 4. Return the fully-resolved profile with all flags set.
  *
  * Metadata properties (category, description, extends, summary) are stripped during resolution - they exist only for UI categorization, documentation, inheritance
  * specification, and UI display.
@@ -200,7 +200,7 @@ export function getProfileForChannel(channel: {
 
   // Merge domain-level properties that apply regardless of how the profile was resolved. These represent site-specific behaviors or policies that must always be
   // applied based on the channel's URL even when the player profile is explicitly overridden. For the URL-based path above, getProfileForUrl() already merges
-  // these - the re-application here is idempotent. For the explicit-profile path, this fills the gap.
+  // these - the re-application here is a no-op on repeat. For the explicit-profile path, this fills the gap.
   if(channel.url) {
 
     profile = mergeDomainProperties(profile, getDomainConfig(channel.url));
@@ -241,10 +241,10 @@ export function getProfileForChannel(channel: {
 /* Before starting the server, we validate all profile configurations to catch errors early. Invalid configurations would cause runtime failures that are difficult
  * to diagnose:
  *
- * - Invalid profile references (typos in extends or profile properties)
- * - Circular inheritance chains (A extends B extends A)
- * - Domain mappings pointing to non-existent profiles
- * - Channel definitions referencing non-existent profiles
+ * - Invalid profile references (typos in extends or profile properties).
+ * - Circular inheritance chains (A extends B extends A).
+ * - Domain mappings pointing to non-existent profiles.
+ * - Channel definitions referencing non-existent profiles.
  *
  * By validating upfront at startup, we provide clear error messages and prevent the server from starting in a misconfigured state. This is especially important
  * because profile errors might not surface until a specific channel is streamed, which could be hours after startup.
@@ -257,10 +257,10 @@ export function getProfileForChannel(channel: {
  *
  * Validation checks:
  *
- * 1. Circular inheritance detection - walks the extends chain for each profile to detect cycles
- * 2. Invalid extends references - ensures all extends targets exist
- * 3. Domain mapping validation - ensures all domain profile references exist
- * 4. Channel profile validation - ensures all channel profile references exist
+ * 1. Circular inheritance detection - walks the extends chain for each profile to detect cycles.
+ * 2. Invalid extends references - ensures all extends targets exist.
+ * 3. Domain mapping validation - ensures all domain profile references exist.
+ * 4. Channel profile validation - ensures all channel profile references exist.
  *
  * @throws If any builtin profile, domain-mapping, or channel-reference configuration is invalid. User-defined profile and domain errors are logged as warnings
  * rather than thrown.

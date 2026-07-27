@@ -1,11 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * profiles.helpers.ts: Test-only factory for ResolvedSiteProfile fixtures. Co-located with profiles.ts, the production module that owns ResolvedSiteProfile
- * construction via resolveSiteProfile and the URL-to-profile matching pipeline. Consumed across types/, browser/, and routes/ test files. Excluded from the
+ * construction via resolveProfile and the URL-to-profile matching pipeline. Consumed across types/, browser/, and streaming/ test files. Excluded from the
  * build emit by the *.helpers.ts pattern in tsconfig.build.json.
  *
- * waitForNetworkIdle defaults to false, matching the production type's opt-in semantic for that flag. The browser-orchestration tests that need it enabled
- * override it explicitly via the overrides parameter.
+ * waitForNetworkIdle defaults to false, matching the production type's opt-in semantic for that flag.
  */
 import type { ResolvedSiteProfile } from "../types/index.ts";
 import { declareKeysOf } from "../testing.helpers.ts";

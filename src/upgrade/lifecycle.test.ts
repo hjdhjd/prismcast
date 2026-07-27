@@ -12,9 +12,6 @@ import { describe, test } from "node:test";
 import type { InstallInfo } from "./detection.ts";
 import assert from "node:assert/strict";
 
-/* makeLifecycleContext builds an UpgradeLifecycleContext literal with sensible defaults. Every field is captured for inspection by tests; the runner returns
- * success by default and spawnDetached pushes its arguments into an array rather than actually launching a child process.
- */
 interface CapturedLifecycle {
 
   context: UpgradeLifecycleContext;
@@ -31,6 +28,9 @@ interface ContextOverrides {
   readonly upgradeLogPath?: string;
 }
 
+/* makeLifecycleContext builds an UpgradeLifecycleContext literal with sensible defaults. Every field is captured for inspection by tests; the runner returns
+ * success by default and spawnDetached pushes its arguments into an array rather than actually launching a child process.
+ */
 function makeLifecycleContext(overrides: ContextOverrides = {}): CapturedLifecycle {
 
   const runCalls: { cmd: string; cwd: string | undefined }[] = [];
@@ -97,8 +97,9 @@ describe("UPGRADE_LIFECYCLES registry", () => {
 
   test("platforms across strategies do not overlap", () => {
 
-    // The dispatcher walks the registry in order and picks the FIRST match. Overlap would make the order load-bearing in a way the strategy authors might not
-    // expect. Locking non-overlap catches a future strategy that accidentally claims a platform another strategy already serves.
+    // The dispatcher walks the registry in order and picks the FIRST match. Overlap would make the registry's iteration order silently determine which
+    // strategy wins, in a way the strategy authors might not expect. Locking non-overlap catches a future strategy that accidentally claims a platform another
+    // strategy already serves.
     const seen = new Set<NodeJS.Platform>();
 
     for(const strategy of UPGRADE_LIFECYCLES) {
@@ -131,8 +132,8 @@ describe("selectLifecycle", () => {
 
   test("falls back to the POSIX in-process strategy for unknown platforms", () => {
 
-    // freebsd, sunos, aix, openbsd, etc. - any platform PrismCast has not specifically engineered for. The POSIX strategy is the most permissive default and
-    // matches the codebase's historical pre-Windows behavior; the dispatcher being total (never throwing on a one-off platform name) is the property we lock.
+    // freebsd, sunos, aix, openbsd, etc. - any platform PrismCast has not specifically engineered for. The dispatcher falls back to the POSIX strategy because
+    // it serves the broadest platform set; the dispatcher being total (never throwing on a one-off platform name) is the property we lock.
     assert.equal(selectLifecycle("freebsd").id, "posix-in-process");
     assert.equal(selectLifecycle("sunos").id, "posix-in-process");
     assert.equal(selectLifecycle("openbsd").id, "posix-in-process");
@@ -311,8 +312,8 @@ describe("performUpgrade with the Windows handoff strategy", () => {
 
   test("does not invoke runCommand on Windows", () => {
 
-    // Negative: the Windows strategy hands off; it never runs the upgrade in-process. A regression that called runCommand here would leak the EBUSY-prone
-    // in-process path on Windows, undoing the whole v1.10.3 fix.
+    // Negative: the Windows strategy hands off; it never runs the upgrade in-process. A regression that called runCommand here would reintroduce the
+    // EBUSY-prone in-process path on Windows, which is exactly what this strategy is designed to avoid.
     const cap = makeLifecycleContext({ platform: "win32" });
 
     performUpgrade(cap.context, makeInstallInfo());

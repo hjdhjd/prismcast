@@ -58,8 +58,8 @@ function sendDiscoveryError(res: Response, label: string, error: unknown): void 
 
 /* ServiceDiscoveryDeps is the cross-module collaborator set the discovery route composes on: the provider-registry lookup that resolves a slug to its module, plus
  * the two precaching primitives the discovery walk delegates to - the guarded guide-page session and the discovery-outcome policy. It is injected as a default
- * parameter threaded from setupServicesEndpoint through the route handler into runDiscovery, so a test can substitute stubs at the same seam - no loader mock - while
- * production uses the real defaultServiceDiscoveryDeps built from the functions this module already imports. getProviderBySlug earns its place here because the
+ * parameter threaded from setupServicesEndpoint through the route handler into runDiscovery, so a test can substitute stubs at the same injection point - no loader mock
+ * - while production uses the real defaultServiceDiscoveryDeps built from the functions this module already imports. getProviderBySlug earns its place here because the
  * provider registry is module-private with no registration hook, so injecting the lookup is the only way a test drives the route with a stub provider. This is the
  * collaborator-injection form of the Clock port (utils/clock.ts), matching VideoTuneDeps in browser/video.ts and PrecachingDeps in browser/precaching.ts.
  */

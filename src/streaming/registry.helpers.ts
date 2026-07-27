@@ -3,7 +3,7 @@
  * registry.helpers.ts: Test-only helper for constructing StreamRegistryEntry fixtures. Co-located with the registry module. Consumed across the streaming/ and
  * hdhr/ test suites to build entries with sensible defaults that any single test can override.
  *
- * This factory is the single source of test-data defaults, so every dependent suite reasons about the same StreamRegistryEntry invariants. Every test that
+ * This factory is the single source of test-data defaults, so every dependent suite reasons about the same StreamRegistryEntry defaults. Every test that
  * needs an entry imports the same factory and overrides only the fields its scenario cares about, rather than maintaining a per-file variant whose defaults
  * could drift subtly out of agreement.
  *

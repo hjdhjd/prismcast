@@ -1,21 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * escaping.test.ts: Integration coverage for the cross-cutting escaping invariants that bind every server-rendered surface (HTML rows, tag manager, M3U
- * playlist) to safe handling of user-supplied strings. The escapeHtml helper at src/utils/markup.ts maps {<, >, &, ", '} to HTML entities; the table renderer
+ * escaping.test.ts: Integration coverage for the guarantee that every server-rendered surface (HTML rows, tag manager, M3U playlist) safely handles
+ * user-supplied strings. The escapeHtml helper at src/utils/markup.ts maps {<, >, &, ", '} to HTML entities; the table renderer
  * uses it on every user-content position; the M3U generator at src/routes/playlist.ts uses escapeM3uAttribute (src/utils/m3u.ts) to backslash-escape the
  * structural characters of an M3U quoted-string (`"` and `\`) and to collapse forbidden line breaks into a single space. Each test below pins the contract
  * that surface is supposed to honor, and the tests use one fixture string with every dangerous character so a regression in any single replacement path
  * surfaces.
  *
- * Test 4 pins the M3U attribute escaping contract: a user-defined channel whose display name carries a literal double-quote must emit a backslash-escaped
- * quote inside tvg-name="..." so the attribute terminates correctly and downstream parsers see a well-formed EXTINF line. We use escapeM3uAttribute itself to
- * compute the expected substring so the test and the helper share a single source of truth - if the helper's strategy ever changes (different escape character,
- * percent-encoding, etc.), the test continues to pin the contract without rewrites.
+ * The M3U tvg-name escaping test pins the M3U attribute escaping contract: a user-defined channel whose display name carries a literal double-quote must
+ * emit a backslash-escaped quote inside tvg-name="..." so the attribute terminates correctly and downstream parsers see a well-formed EXTINF line. We use
+ * escapeM3uAttribute itself to compute the expected substring so the test and the helper share a single source of truth - if the helper's strategy ever
+ * changes (different escape character, percent-encoding, etc.), the test continues to pin the contract without rewrites.
  *
- * Why HTTP integration vs. function-level rendering: Tests 1-3 call generateChannelRowHtml / generateTagManagerBody directly, mirroring channels-table.test.ts
- * and variant-display.test.ts. Test 4 hits the playlist endpoint via bootApp because the M3U generator's emission path runs through Express's response pipeline
- * - we want wire-level bytes, not the in-process function output. Test 5 uses the export endpoint (HTTP) for the same reason: it's the surface a regression
- * would actually hit.
+ * Why HTTP integration vs. function-level rendering: the channel-name, channel-URL, and tag-name escaping tests call generateChannelRowHtml /
+ * generateTagManagerBody directly, mirroring channels-table.test.ts and variant-display.test.ts. The M3U tvg-name escaping test hits the playlist endpoint
+ * via bootApp because the M3U generator's emission path runs through Express's response pipeline - we want wire-level bytes, not the in-process function
+ * output. The export/re-import round-trip test uses the export endpoint (HTTP) for the same reason: it's the surface a regression would actually hit.
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -65,7 +65,7 @@ describe("HTML escaping invariants - table renderer", () => {
 
   test("a channel URL with quote and ampersand characters renders with the URL safely escaped in the edit row value attribute", async () => {
 
-    /* The edit row contains the channel URL inside an <input value="..."> attribute (table.ts:1176 -> generateTextField -> table.ts:131). A URL like
+    /* The edit row contains the channel URL inside an <input value="..."> attribute (table.ts:1180 -> generateTextField -> table.ts:131). A URL like
      * "https://example.test/path?a=1&b=2&c=\"3\"" carries both the ampersand (URL parameter separator) and the quote (a pathological but legal URL component
      * via percent-encoding upstream of us). The renderer must escape both so the attribute value is well-formed HTML. A regression here breaks the edit form's
      * field value (the input would render with an empty or truncated value) and is the kind of bug that only surfaces when a user happens to use unusual URLs.

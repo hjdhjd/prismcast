@@ -2,7 +2,7 @@
  *
  * empty-states.test.ts: Integration coverage for empty-state rendering across the Channels, Profiles, Tags, and Streams surfaces. Empty states are notorious
  * sources of UI breakage - missing-fallback render paths, NPE on undefined data, "0 of 0" labels with broken arithmetic, dropdowns with no options, tables
- * that throw because of an invariant assuming at least one row. Each test below renders a specific surface against an empty-or-near-empty seed and asserts
+ * that throw because they assume at least one row will always exist. Each test below renders a specific surface against an empty-or-near-empty seed and asserts
  * (a) no crash, (b) structurally valid output, (c) the documented empty-state messaging or shape (where applicable).
  *
  * The integration value over unit-tier coverage is wiring the production renderers to real CONFIG / channel / profile state initialized through the boot
@@ -11,9 +11,9 @@
  *
  * No renderer assumes at least one row: each surface either renders an explicit empty-state message (Custom Profiles panel: "No custom services installed"),
  * draws from an always-non-empty source (the tag vocabulary always carries the predefined tags), or returns an envelope that explicitly accommodates zero items
- * (GET /streams: { count: 0, limit, streams: [] }). Test 5 (all columns hidden) and test 6 (every channel filtered out) are intentionally redundant with adjacent
- * suites' coverage to provide an empty-state-specific assertion locus - if a future regression made those scenarios crash, the failure surfaces here even if the
- * adjacent suite's assertion happens to still pass.
+ * (GET /streams: { count: 0, limit, streams: [] }). The "all columns hidden" and "service filter excluding every non-direct channel" tests below are
+ * intentionally redundant with adjacent suites' coverage to provide an empty-state-specific assertion locus - if a future regression made those scenarios
+ * crash, the failure surfaces here even if the adjacent suite's assertion happens to still pass.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -122,9 +122,10 @@ describe("empty-state rendering across tabs", () => {
 
   test("display preferences with all columns hidden: channels panel renders without crashing", async () => {
 
-    /* The empty-state edge of column visibility. Suite 34 covers this from the filter-combinations angle; this test re-asserts the same invariant from the
+    /* The empty-state edge of column visibility. The "hiding all optional columns does not crash the renderer; the table renders with every hide-col-*
+     * class" test in filter-combinations.test.ts covers this from the filter-combinations angle; this test re-asserts the same invariant from the
      * empty-state surface so a future regression that broke the no-columns-visible scenario surfaces under both tags. The assertions differ in framing:
-     * Suite 34's test checks hide-col-* class enumeration; this test checks the panel is structurally complete (table element present, summary present,
+     * that test checks hide-col-* class enumeration; this test checks the panel is structurally complete (table element present, summary present,
      * toolbar present).
      */
     await using ctx = await createIntegrationContext();

@@ -45,7 +45,7 @@ describe("memoizeAsync", () => {
 
   test("dedupes concurrent first-callers via the in-flight promise", async () => {
 
-    /* The masterclass invariant: if N callers arrive before the first probe resolves, all N share the single in-flight promise and probe is invoked exactly
+    /* The rule this dedupes: if N callers arrive before the first probe resolves, all N share the single in-flight promise and the probe is invoked exactly
      * once. This is what prevents a "first-call thundering herd" when the cached resolver is awaited from many places at startup.
      *
      * The probe holds open until we explicitly resolve it. Eight callers enter before that happens. The probe must run exactly once.
@@ -90,7 +90,7 @@ describe("memoizeAsync", () => {
       return undefined;
     });
 
-    // The probe resolves to undefined; we only need to verify the cache invariant (probe runs exactly once across multiple awaits) - the resolved value itself
+    // The probe resolves to undefined; we only need to verify the caching rule (probe runs exactly once across multiple awaits) - the resolved value itself
     // is the test's premise, not its assertion.
     await memoized();
     await memoized();

@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * fs.helpers.ts: Filesystem-scoped test helpers. Currently exposes withTempDir, the canonical scope for tests that need a temporary directory with guaranteed
- * cleanup on failure or success. Equivalent to a `using` block for filesystem state.
+ * fs.helpers.ts: Filesystem-scoped test helpers. Exposes withTempDir, the canonical scope for tests that need a temporary directory with guaranteed cleanup on
+ * failure or success. Equivalent to a `using` block for filesystem state.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";

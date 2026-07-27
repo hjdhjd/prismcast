@@ -40,8 +40,8 @@ import path from "node:path";
  * Production wires it through createDefaultGeneratorIO (in generators.context.ts); tests pass an IO literal whose execFile/mkdir/writeFile/etc. are fakes that
  * record their inputs and return synthetic results.
  *
- * The platform field and getServiceFilePath/getServiceFileDirectory accessors are bundled here too so that generator selection and path resolution flow through
- * the same injection point - tests can simulate any platform without touching process.platform or the data-dir helpers.
+ * The getPlatform accessor and the getServiceFilePath/getServiceFileDirectory accessors are bundled here too so that generator selection and path resolution
+ * flow through the same injection point - tests can simulate any platform without touching process.platform or the data-dir helpers.
  */
 export interface GeneratorIO {
 
@@ -157,7 +157,7 @@ async function runAndSurfaceStderr(description: string, run: () => Promise<unkno
 
 /**
  * Returns the service definition's environment variables as a deterministically ordered array of [key, value] entries. Consumed by every generator to produce
- * byte-stable output across regenerations (essential for reliable stale-path detection and clean diffs when users inspect the generated files).
+ * byte-stable output across regenerations, for clean diffs when users inspect the generated files across upgrades.
  * @param envVars - The environment variable map to order.
  * @returns The entries sorted alphabetically by key.
  */
@@ -317,8 +317,8 @@ function createLaunchdGenerator(io: GeneratorIO): ServiceGenerator {
 
       const installPath = io.getServiceFilePath();
 
-      // Unload first to clear any stale loaded-but-not-running state. Without this, `launchctl load -w` is a no-op when the definition is already loaded (e.g.,
-      // after a crash or upgrade with changed paths), and the cached stale definition is reused.
+      // Unload first: `launchctl load -w` is a no-op when the definition is already loaded (e.g., after a crash or upgrade), so skipping this step would leave
+      // the previously loaded definition in effect instead of the freshly written one.
       try {
 
         await io.execFile("launchctl", [ "unload", installPath ]);
@@ -378,6 +378,9 @@ function createSystemdGenerator(io: GeneratorIO): ServiceGenerator {
    */
   function generateUnit(definition: ServiceDefinition): string {
 
+    // Unlike generatePlist's escapeXml calls and the PowerShell launcher's powerShellLiteral quoting, these values are wrapped in double quotes without further
+    // escaping. They come only from operator-controlled environment variables (PATH and the CONFIG_METADATA-declared allowlist) and PrismCast's own path
+    // helpers, never from arbitrary or network-supplied input, so no additional escaping is required here.
     const envLines = sortedEnvEntries(definition.envVars).map(([ key, value ]) => "Environment=\"" + key + "=" + value + "\"").join("\n");
 
     return [
@@ -505,8 +508,8 @@ function createSystemdGenerator(io: GeneratorIO): ServiceGenerator {
  *   surface exposed as typed cmdlets. We do not emit Task Scheduler XML and we do not invoke schtasks.exe. That choice eliminates the MSXML encoding dialect, the
  *   shell-quoting hazards of schtasks /TR, and the need to get the Task XML schema's element order exactly right.
  *
- * - Task Scheduler spawns `powershell.exe -WindowStyle Hidden -File <launcher.ps1>`. PowerShell with -WindowStyle Hidden suppresses the console window natively on
- *   Windows 10+, so no .vbs launcher is needed. VBScript was deprecated by Microsoft in 2024.
+ * - Task Scheduler spawns `powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "<launcher.ps1>"`. PowerShell with
+ *   -WindowStyle Hidden suppresses the console window natively on Windows 10+, so no .vbs launcher is needed. VBScript was deprecated by Microsoft in 2024.
  *
  * All PowerShell invocations from Node go through invokePowerShell(), which documents the single argument-escape rule in its docstring. Values flow through Node's
  * execFile without shell interpretation, and inside the PowerShell command string the one escape surface is single-quote doubling - see invokePowerShell below.
@@ -718,8 +721,8 @@ function createWindowsSchedulerGenerator(io: GeneratorIO): ServiceGenerator {
   }
 
   /**
-   * Removes the legacy three-file service artifacts (.cmd launcher, .vbs wrapper, .xml task definition) and the long-obsolete service-installed.marker file from
-   * prior PrismCast versions. Safe to call unconditionally; missing files are silently ignored.
+   * Removes legacy service artifacts (.cmd launcher, .vbs wrapper, .xml task definition, and the service-installed.marker file) from prior PrismCast versions.
+   * Safe to call unconditionally; missing files are silently ignored.
    * @param installDir - The service file directory.
    */
   async function removeLegacyWindowsArtifacts(installDir: string): Promise<void> {
@@ -924,8 +927,8 @@ export function getServicePaths(io: GeneratorIO = createDefaultGeneratorIO()): N
       return { entryPoint, nodePath };
     }
 
-    // Windows: paths are stored as "# node:<path>" and "# entry:<path>" metadata comments near the top of the PowerShell launcher. The .trim() handles CRLF line
-    // endings where \r would otherwise be captured by the regex.
+    // Windows: paths are stored as "# node: <path>" and "# entry: <path>" metadata comments near the top of the PowerShell launcher. The .trim() strips the
+    // leading space that follows the colon in that format.
     case "windows": {
 
       const nodePath = /^# node:(.+)$/m.exec(content)?.[1]?.trim();

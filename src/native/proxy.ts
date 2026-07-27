@@ -35,7 +35,9 @@ const SEGMENT_FETCH_TIMEOUT = 10000;
 // use double the threshold to tolerate transient CDN issues that typically self-resolve within a few retry cycles.
 const MAX_MANIFEST_FAILURES = 3;
 
-// Maximum consecutive segment fetch failures before reporting an error.
+// Maximum consecutive segment fetch failures before reporting an error. Segment fetches are smaller and far more numerous than manifest polls, so isolated
+// transient failures (a dropped connection on one segment) are more common here; this higher tolerance than MAX_MANIFEST_FAILURES avoids escalating on
+// blips that would otherwise self-resolve on the next fetch.
 const MAX_SEGMENT_FAILURES = 5;
 
 // Manifest poll backoff base delay and cap. On success, the poll interval returns to the base delay (a fixed 3000ms, ~half a typical 6s segment). On failure, the delay
@@ -47,8 +49,8 @@ const MANIFEST_BACKOFF_CAP = 15000;
  * Computes the consecutive-failure threshold for a manifest poll based on the HTTP status of the most recent failure. Client errors (4xx) typically indicate
  * permanent issues (auth expiry, content removed) that won't self-resolve, so they use the base threshold directly. Server errors (5xx), network errors, and
  * timeouts are transient CDN conditions that usually recover within a few retry cycles, so they get double the attempts. A missing status (network error, DNS
- * failure, connection reset, timeout) is treated as transient. This is the single source of truth for the 4xx-versus-else threshold decision across all four poll
- * sites - the video and audio, success-path and catch-path failure handlers - so audio and video share identical escalation logic.
+ * failure, connection reset, timeout) is treated as transient. This is the single source of truth for the 4xx-versus-else threshold decision across every
+ * manifest-poll call site - video and audio, success-path and catch-path failure handlers alike - so audio and video share identical escalation logic.
  *
  * @param status - The HTTP status code of the failed response, or undefined for network/timeout errors that never produced a response.
  * @returns The consecutive-failure threshold to compare against before reporting an error.
@@ -1577,8 +1579,9 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   /**
    * Generates playlists from the stored segments. For streams without separate audio, generates a single variant playlist. When preroll is active (muxed audio only),
    * produces a composite playlist with fMP4 preroll entries and MPEG-TS real entries bridged by a DISCONTINUITY tag. The preroll entries use the same fMP4 segments
-   * served during the standalone preroll phase, ensuring smooth MEDIA-SEQUENCE progression. For streams with separate audio, generates a master playlist referencing
-   * video.m3u8 and audio.m3u8, plus individual variant playlists for each (no preroll - preroll is muxed and can't be split into separate renditions).
+   * served during the standalone preroll phase, ensuring smooth MEDIA-SEQUENCE progression. For streams with separate audio, generates the video variant playlist
+   * and the master playlist referencing video.m3u8 and audio.m3u8 (no preroll - preroll is muxed and can't be split into separate renditions); the audio variant
+   * playlist is produced separately by generateAudioPlaylist(), which the poll loop calls alongside this function.
    *
    * @param targetDuration - The #EXT-X-TARGETDURATION value from the service's manifest.
    */
@@ -1679,8 +1682,9 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   /**
    * Schedules the next manifest poll after a delay. The sleep is awaited through the injected Clock port (defaulting to realClock) so tests can virtualize the
    * polling cadence without depending on real timers. Cancellation semantics: stop() flips lifecycle.stopped, and the post-sleep guard catches that flip before
-   * issuing the next poll. The in-flight sleep itself is not cancelled - in production a stopped proxy lingers for at most one MANIFEST_BACKOFF_BASE before the
-   * awaiter wakes and exits cleanly. This is the same shape as retryOperation in utils/retry.ts which already adopted the Clock port for the same reason.
+   * issuing the next poll. The in-flight sleep itself is not cancelled - in production a stopped proxy lingers for at most the currently scheduled poll delay,
+   * which can be as long as MANIFEST_BACKOFF_CAP once jittered, before the awaiter wakes and exits cleanly. This is the same shape as retryOperation in
+   * utils/retry.ts which already adopted the Clock port for the same reason.
    *
    * @param delayMs - Delay in milliseconds before the next poll.
    */

@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * chromeFetch.test.ts: Unit tests for the Chrome User-Agent fetch wrapper in chromeFetch.ts. The module holds a single piece of mutable state (currentUserAgent)
- * mutated through the setter; tests reset it between cases. The fetch boundary is replaced via mock.method on globalThis so we can inspect the URL/headers
- * passed to fetch without making real network calls.
+ * chromeFetch.test.ts: Unit tests for the Chrome User-Agent fetch wrapper in chromeFetch.ts. The module holds its Chrome UA as mutable state
+ * (currentUserAgent), mutated through the setter; tests reset it between cases. The fetch boundary is replaced via mock.method on globalThis so we can
+ * inspect the URL/headers passed to fetch without making real network calls.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { chromeFetch, getChromeUserAgent, setChromeUserAgent } from "./chromeFetch.ts";

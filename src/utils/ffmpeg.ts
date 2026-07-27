@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * ffmpeg.ts: FFmpeg process management for PrismCast. The path-resolution algorithm and the spawn-args builders are pure functions over an FFmpegContext; the
- * default I/O wiring lives in ffmpeg.context.ts. Tests construct context literals inline to exercise the resolution algorithm against synthetic filesystem
- * scenarios without spawning real probe processes.
+ * ffmpeg.ts: FFmpeg process management for PrismCast. The path-resolution algorithm is a pure function over an FFmpegContext; the spawn-args builders are pure
+ * functions over their own explicit parameters (audioBitrate/options, or none). The default I/O wiring for the FFmpegContext lives in ffmpeg.context.ts. Tests
+ * construct context literals inline to exercise the resolution algorithm against synthetic filesystem scenarios without spawning real probe processes.
  */
 import type { Readable, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
@@ -17,9 +17,9 @@ import { spawn } from "node:child_process";
 const FFMPEG_NOISE_PATTERNS = [ "Press [q] to stop", "frame=", "size=", "time=", "bitrate=", "speed=" ];
 
 /**
- * The runtime context resolveFFmpegPath consumes. Models the I/O boundary used by path resolution: filesystem existence checks, the user's home directory, the
- * detected platform, the spawn-based probe, and the bundled FFmpeg path from the ffmpeg-for-homebridge npm package. Production wires it through
- * createDefaultFFmpegContext (in ffmpeg.context.ts); tests pass a context literal.
+ * The runtime context probeFFmpegPath (and getBundledFFmpegPath) consume. Models the I/O boundary used by path resolution: filesystem existence checks, the
+ * user's home directory, the detected platform, the spawn-based probe, and the bundled FFmpeg path from the ffmpeg-for-homebridge npm package. Production wires
+ * it through createDefaultFFmpegContext (in ffmpeg.context.ts); tests pass a context literal.
  */
 export interface FFmpegContext {
 
@@ -147,8 +147,8 @@ export async function probeFFmpegPath(ctx: FFmpegContext = createDefaultFFmpegCo
 /**
  * Resolves the FFmpeg executable path against the production filesystem. Memoized via memoizeAsync: first call probes; subsequent calls return the cached
  * result. Used by production code paths (server startup, health checks, stream setup). Tests should use probeFFmpegPath against synthetic contexts instead -
- * this function intentionally has no parameters and no test seam so its caching contract is sealed. The memoization correctness (single-shot probe,
- * concurrent-caller dedup, sticky rejection) is exercised by memo.test.ts against the underlying primitive.
+ * this function intentionally takes no parameters, so tests have no way to substitute its dependencies and the caching contract stays sealed. The
+ * memoization correctness (single-shot probe, concurrent-caller dedup, sticky rejection) is exercised by memo.test.ts against the underlying primitive.
  *
  * Sticky-rejection caveat: memoizeAsync caches a probe rejection for the lifetime of the process - all future callers receive the same rejected promise
  * without re-probing. probeFFmpegPath today returns undefined for the "not found" case rather than throwing, so this branch never fires in practice. Future
@@ -465,8 +465,8 @@ export function spawnMpegTsRemuxer(ffmpegBin: string, onError: (error: Error) =>
 
 /**
  * Checks if FFmpeg is available on the system. Wraps the production-cached resolveFFmpegPath, so first call probes the filesystem and subsequent calls return
- * the memoized result. Tests should use probeFFmpegPath against synthetic contexts instead - this function delegates to the singleton resolver and has no test
- * seam.
+ * the memoized result. Tests should use probeFFmpegPath against synthetic contexts instead - this function delegates to the singleton resolver and offers no
+ * way for tests to substitute its dependencies.
  * @returns Promise resolving to true if FFmpeg is available, false otherwise.
  */
 export async function isFFmpegAvailable(): Promise<boolean> {

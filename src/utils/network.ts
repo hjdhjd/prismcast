@@ -4,8 +4,8 @@
  */
 
 /* Helpers for normalizing and inspecting the network addresses PrismCast exchanges with clients. The functions here operate on raw address strings as supplied by
- * Node and Express - they do not parse URLs or query DNS, so the rest of the codebase has a single, shared seam for "give me a canonical client address"
- * decisions without three sites carrying their own copies of the same one-liner.
+ * Node and Express - they do not parse URLs or query DNS, so the rest of the codebase has a single, shared function for "give me a canonical client address"
+ * decisions, instead of scattering copies of the same one-liner across call sites.
  */
 
 // The IPv6-mapped IPv4 prefix that Node and Express emit when a dual-stack listener serves an IPv4 client. Stripping it produces the human-recognizable IPv4

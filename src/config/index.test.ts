@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.test.ts: Unit tests for the CONFIG validation layer. The merge layer (mergeConfiguration) is exercised in userConfig.test.ts; here we focus on the
- * validation gate (validatePositiveInt, validatePositiveNumber, validateConfiguration), the per-CONFIG-clone behavior of getDefaults, the parse-error
+ * index.test.ts: Unit tests for the CONFIG validation layer. The merge layer (mergeConfiguration) is exercised in userConfig.merge.test.ts; here we focus on
+ * the validation gate (validatePositiveInt, validatePositiveNumber, validateConfiguration), the per-CONFIG-clone behavior of getDefaults, the parse-error
  * accessor surface, and the displayConfiguration log-output branches. Tests that mutate CONFIG save and restore the prior state in afterEach so they remain
  * independent of any other suite that touches CONFIG.
  */
@@ -168,8 +168,8 @@ describe("validateConfiguration", () => {
 
   afterEach(() => {
 
-    /* Restore by reassigning every top-level group on the live CONFIG. We cannot reassign CONFIG itself because it's an exported `let` consumed by reference
-     * across many modules - replacing the reference would leave them seeing the old value.
+    /* Restore by reassigning every top-level group on the live CONFIG. We cannot reassign CONFIG itself here because it's a named import, and ES module named
+     * and namespace imports are read-only bindings - this file has no way to assign to the imported name at all, only to mutate the object it points to.
      */
     Object.assign(CONFIG.browser, snapshot.browser);
     Object.assign(CONFIG.channels, snapshot.channels);
@@ -359,7 +359,8 @@ describe("displayConfiguration", () => {
     unsubscribe();
     warnSpy.mock.restore();
 
-    // Restore a generous viewport so subsequent suites do not see the small one a degradation test may have left behind. 8K width covers every preset.
+    // Restore a viewport at least as large as the largest defined quality preset so subsequent suites do not see the small one a degradation test may have
+    // left behind.
     setMaxSupportedViewport(7680, 4320);
   });
 
@@ -420,9 +421,9 @@ describe("displayConfiguration", () => {
 
 describe("configParseError exported state", () => {
 
-  /* The two `let` exports (configParseError, configParseErrorMessage) are reassigned by initializeConfiguration on every load. Tests that reach
-   * initializeConfiguration would leak into this assertion, so we only pin the type contract here - the values themselves are produced by the persistence
-   * layer and covered through the integration tier where load failures are exercised end-to-end.
+  /* The two `let` exports (configParseError, configParseErrorMessage) are reassigned by both initializeConfiguration and reloadConfiguration on every load.
+   * Tests that reach either function would leak into this assertion, so we only pin the type contract here - the values themselves are produced by the
+   * persistence layer and covered through the integration tier where load failures are exercised end-to-end.
    */
   test("module exports the parse-error pair with the documented types", () => {
 

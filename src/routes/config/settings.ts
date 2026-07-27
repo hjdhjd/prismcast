@@ -235,7 +235,7 @@ function getFieldWidthClass(setting: SettingMetadata): string {
       return "field-narrow";
     }
 
-    // Medium options (e.g., "filtered") get medium width.
+    // Medium-length options get medium width.
     if(maxLength <= 12) {
 
       return "field-medium";
@@ -270,7 +270,7 @@ function getFieldWidthClass(setting: SettingMetadata): string {
       digitCount = digitCount + 3;
     }
 
-    // 1-4 digits get narrow (e.g., port, small counts, converted timeouts like "30" seconds).
+    // 1-4 digits get narrow (e.g., small counts, converted timeouts like "30" seconds).
     if(digitCount <= 4) {
 
       return "field-narrow";
@@ -700,7 +700,8 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
 
     case "boolean": {
 
-      // After parseFormValue, value should be a boolean. No additional validation needed since the dropdown constrains input.
+      // parseFormValue coerces any submitted string to a boolean (value === "true"), so the result is always a valid boolean
+      // regardless of whether the field rendered as a checkbox or a select.
       return undefined;
     }
 
@@ -796,7 +797,8 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
 
     case "checkboxList": {
 
-      // The hidden input holds a JSON-encoded array of strings.
+      // The hidden input holds a JSON-encoded array of strings. A malformed payload throws here and is not caught
+      // per-setting, so it surfaces as a 500 from the route's outer catch rather than a field-level validation error.
       return JSON.parse(value) as string[];
     }
 
@@ -1010,7 +1012,8 @@ function mergeConfigValues(target: UserConfig, source: UserConfig): void {
  */
 export function setupSettingsRoutes(app: Express): void {
 
-  // POST /config - Save configuration and restart. Returns JSON response.
+  // POST /config - Save configuration, applying changes live where possible and scheduling a restart only for settings
+  // that require one. Returns JSON response.
   app.post("/config", async (req: Request, res: Response): Promise<void> => {
 
     try {
@@ -1039,7 +1042,9 @@ export function setupSettingsRoutes(app: Express): void {
             continue;
           }
 
-          // Parse the value (convert from display units to storage units if needed).
+          // Parse the value (convert from display units to storage units if needed). CONFIG_METADATA-driven form
+          // submissions are always primitive-valued at this path, so the cast below is a type-level acknowledgment
+          // of that assumption rather than a runtime guarantee over the otherwise-unknown request body.
           const primitive: string | number | boolean = rawValue as string | number | boolean;
           const parsedValue = parseFormValue(setting, String(primitive));
 
@@ -1259,7 +1264,8 @@ export function setupSettingsRoutes(app: Express): void {
 
     sendSuccess(res, { message: "Server is restarting..." });
 
-    // Close the browser first to avoid orphan Chrome processes.
+    // Close the browser first to avoid orphan Chrome processes. The delay gives the success response above time to
+    // reach the client before the process exits.
     setTimeout(() => {
 
       LOG.info("Exiting for forced service manager restart.");

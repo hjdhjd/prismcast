@@ -20,7 +20,7 @@ import { terminateStream } from "../streaming/lifecycle.ts";
  */
 
 /**
- * Creates an endpoint to list all active streams with their metadata.
+ * Configures the stream management endpoints: listing, termination, and real-time status.
  * @param app - The Express application.
  */
 export function setupStreamsEndpoint(app: Express): void {

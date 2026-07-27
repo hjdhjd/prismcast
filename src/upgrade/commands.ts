@@ -43,10 +43,12 @@ export interface UpgradeContext {
   // messaging and exit behavior.
   readonly performUpgrade: (info: InstallInfo) => UpgradeStep;
 
-  // stderr writer.
+  // Writes a line to stderr. This is the sole error-output surface handleUpgradeCommand uses - it never calls console.error directly - so tests can capture
+  // output without touching the real stderr stream.
   readonly stderr: (line: string) => void;
 
-  // stdout writer.
+  // Writes a line to stdout. This is the sole output surface handleUpgradeCommand uses - it never calls console.log directly - so tests can capture output
+  // without touching the real stdout stream.
   readonly stdout: (line: string) => void;
 }
 

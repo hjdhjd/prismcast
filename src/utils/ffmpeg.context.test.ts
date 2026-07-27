@@ -13,7 +13,7 @@ import { createDefaultFFmpegContext } from "./ffmpeg.context.ts";
 
 describe("createDefaultFFmpegContext", () => {
 
-  test("returns the documented six-field FFmpegContext shape", () => {
+  test("returns the documented five-field FFmpegContext shape", () => {
 
     // The context type has exactly five required keys (the bundled path is permitted to be undefined when ffmpeg-for-homebridge fails to resolve, but the field
     // itself is always present). A future refactor that drops a key would ripple into probeFFmpegPath as a runtime undefined; pin the shape so the regression

@@ -2,7 +2,7 @@
  *
  * consistencyProbe.ts: Cross-store consistency probe for PrismCast persistence.
  *
- * The probe runs once at startup after every initialize* function has loaded its store. It validates "foreign-key-style" invariants that span multiple stores
+ * The probe runs once at startup after every initialize* function has loaded its store. It validates "foreign-key-style" constraints that span multiple stores
  * - things the per-store schema migrations cannot enforce because they only see one file at a time:
  *
  *   - Variant entries with a canonicalKey (in channels.json) reference a canonical that exists in PREDEFINED_CHANNELS or the user's stored channels.
@@ -12,7 +12,8 @@
  * Each issue is logged loudly and, when an auto-fix is provided, applied immediately. Auto-fixes that need to mutate persistent state go through the same
  * mutate* functions as user code so the integrity validators and snapshot machinery cover them too.
  *
- * Adding a new check is a single function returning ConsistencyIssue[]; collectConsistencyIssues calls each check in turn and aggregates their results into one array.
+ * Adding a new check is a single function returning ConsistencyIssue[]; collectConsistencyIssues calls each registered check function and aggregates the
+ * results into one array.
  */
 import { LOG, formatError } from "../utils/index.ts";
 import { getAllServiceTags, mutateEnabledServices } from "./services.ts";
@@ -28,7 +29,8 @@ import { getStoredUserChannels } from "./userChannels.ts";
  */
 interface ConsistencyIssue {
 
-  // Optional auto-fix function. Idempotent and safe to call from the probe runner. Issues without an autoFix are surfaced for operator action only.
+  // Optional auto-fix function. Safe to call more than once, and safe to call from the probe runner. Issues without an autoFix are surfaced for operator
+  // action only.
   autoFix?: () => Promise<void>;
 
   // Stable category identifier. Used for log grouping and future filtering.
@@ -147,7 +149,7 @@ function checkDomainProfiles(): ConsistencyIssue[] {
 }
 
 /**
- * Aggregates issues from every consistency check. New checks should be added here as additional collector calls.
+ * Aggregates issues from each registered check function. New checks are added here as an additional call in the same list.
  */
 function collectConsistencyIssues(): ConsistencyIssue[] {
 
@@ -178,8 +180,8 @@ export async function runConsistencyProbeAtStartup(): Promise<void> {
 
     const message = "Consistency probe (" + issue.category + ", " + issue.severity + "): " + issue.description;
 
-    // Defensive: no current checker emits severity:"error" - all three checks return "warning" issues. The branch exists so a future check that needs operator
-    // attention rather than auto-cleanup can mark itself error and surface accordingly. Pin via a future test seam if/when an error-severity check is added.
+    // Defensive: no current checker emits severity:"error" - every check returns "warning" issues. The branch exists so a future check that needs operator
+    // attention rather than auto-cleanup can mark itself error and surface accordingly. Add a test to pin this behavior once an error-severity check exists.
     if(issue.severity === "error") {
 
       LOG.error(message);

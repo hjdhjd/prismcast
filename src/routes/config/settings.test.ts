@@ -3,7 +3,8 @@
  * settings.test.ts: Unit tests for the settings UI generators and the route-aggregator wiring in settings.ts. The HTML generators (Settings tab,
  * Advanced tab, collapsible section, footer) are pure functions of CONFIG, CONFIG_METADATA, getEnvOverrides, getSettingsTabSections, and
  * getAdvancedSections. Internal helpers (formatValueForDisplay, parseFormValue, validateSettingValue, etc.) are not exported and are exercised through
- * the public surface. The route-aggregator setupSettingsRoutes is verified for registration shape only because the handlers themselves require a live
+ * the public surface. The route-aggregator setupSettingsRoutes has its pre-I/O validation short-circuit branches exercised directly through the
+ * Express stub's invoke helper; only the disk-mutating and restart-scheduling continuations remain untested here because they require a live
  * Express runtime and the user-config filesystem layer.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -50,8 +51,9 @@ describe("generateSettingsTabContent", () => {
 
   test("renders one settings-section block per section", () => {
 
-    // The Settings tab is composed of ordered sections (Server, Browser, Streaming, etc.) each emitted as a settings-section div with a header. We
-    // count the section divs to ensure none are dropped silently. The exact count depends on SETTINGS_TAB_SECTIONS but must always be at least 1.
+    // The Settings tab is composed of ordered sections (Server, Browser, Startup, Capture, etc.) each emitted as a settings-section div with a
+    // header. We count the section divs to ensure none are dropped silently. The exact count depends on SETTINGS_TAB_SECTIONS but must always be
+    // at least 1.
     const html = generateSettingsTabContent();
     const sectionMatches = html.match(/class="settings-section"/g) ?? [];
 

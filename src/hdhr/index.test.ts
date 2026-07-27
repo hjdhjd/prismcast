@@ -1,9 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.test.ts: Unit tests for the HDHomeRun emulation server lifecycle. Coverage focuses on the four observable behaviors of startHdhrServer / stopHdhrServer:
- * the disabled short-circuit, automatic DeviceID generation when missing or invalid, graceful EADDRINUSE handling on port collision, and idempotent shutdown.
- * Each test uses an OS-assigned port (port 0) so it never collides with the production HDHR port; data-directory side effects are routed into a per-test temp
- * dir so persistence calls inside startHdhrServer cannot leak to the user's real ~/.prismcast directory.
+ * index.test.ts: Unit tests for the HDHomeRun emulation server lifecycle and its live-apply config-change handler. Coverage spans the observable behaviors
+ * of startHdhrServer / stopHdhrServer - the disabled short-circuit, automatic DeviceID generation when missing or invalid, graceful EADDRINUSE handling on
+ * port collision, and shutdown that is safe to call more than once - plus applyHdhrConfigChanges, including the end-to-end HTTP rebind on a port change
+ * and rejection of a change to an already-occupied port.
+ * Each test uses an OS-assigned port (port 0) so it never collides with the production HDHR port; data-directory side effects are routed into a per-test
+ * temp dir so persistence calls inside startHdhrServer cannot leak to the user's real ~/.prismcast directory.
  */
 import type { ChangeOutcome, ConfigChange } from "../config/reactivity.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -16,8 +18,8 @@ import { generateDeviceId } from "./deviceId.ts";
 import { initializeDataDir } from "../config/paths.ts";
 import { withTempDir } from "../testing.helpers.ts";
 
-// snapshotConfig captures the parts of CONFIG that startHdhrServer reads or writes so each test can restore the prior values verbatim. Saving the whole CONFIG
-// object would over-protect; the targeted snapshot makes intent explicit.
+// snapshotConfig captures the specific CONFIG.hdhr fields these tests mutate (deviceId, discoveryEnabled, enabled, port) so each test can restore the prior
+// values verbatim. It does not cover every field startHdhrServer reads, such as CONFIG.server.host, only the ones these tests exercise.
 function snapshotConfig(): { deviceId: string; discoveryEnabled: boolean; enabled: boolean; port: number } {
 
   return { deviceId: CONFIG.hdhr.deviceId, discoveryEnabled: CONFIG.hdhr.discoveryEnabled, enabled: CONFIG.hdhr.enabled, port: CONFIG.hdhr.port };
@@ -384,9 +386,9 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
 
   test("hdhr.port live-apply rebinds the HTTP server on the new port end-to-end", async () => {
 
-    // The full integration claim: after applyHdhrConfigChanges fires for hdhr.port, /discover.json is reachable on the new port and not on the old one. The
-    // test exercises the live-rebind close-then-bind sequencing - the masterclass concern that motivated awaiting the server close before the rebind inside
-    // HttpSurface.ensureBound.
+    // This test verifies that after applyHdhrConfigChanges fires for hdhr.port, /discover.json answers on the new port through the rebuilt server; it does
+    // not check that the old port stops responding. The test exercises the live-rebind close-then-bind sequencing that motivated awaiting the server close
+    // before the rebind inside HttpSurface.ensureBound.
     CONFIG.hdhr.enabled = true;
     CONFIG.hdhr.deviceId = generateDeviceId();
     CONFIG.hdhr.port = 0;

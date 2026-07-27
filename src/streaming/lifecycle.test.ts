@@ -2,8 +2,8 @@
  *
  * lifecycle.test.ts: Unit tests for the stream lifecycle module - the documented SSOT for stream termination. lifecycle.ts owns three concerns: the channel-name
  * to stream-id lookup index (channelToStreamId), the in-flight termination guard set (terminationInitiated), and the authoritative terminateStream() function that
- * tears down every resource associated with a stream. The terminateStream tests focus on the contract: idempotency, registry removal, channel-mapping cleanup,
- * preroll-timer cancellation, abort-controller signaling, segmenter.stop() invocation, FFmpeg.kill() invocation, and "terminated" event emission.
+ * tears down every resource associated with a stream. The terminateStream tests focus on the contract: safe repeated calls, registry removal, channel-mapping
+ * cleanup, preroll-timer cancellation, abort-controller signaling, segmenter.stop() invocation, FFmpeg.kill() invocation, and "terminated" event emission.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.ts";

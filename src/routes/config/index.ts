@@ -132,14 +132,16 @@ export async function applyConfigurationChange(reason: string): Promise<ApplyCon
 
 /**
  * Builds the user-facing message for a save response based on the apply and restart outcome. Picks the strongest signal: a restart message when a restart
- * was scheduled (preserves the legacy phrasing operators are accustomed to), a live-applied summary when the change took effect immediately, or a rejected
- * summary when handlers refused the change. The message is plain prose - the structured counts ride alongside in the data envelope for clients that want them.
+ * was scheduled (operators rely on this exact wording to recognize a pending restart), a live-applied summary when the change took effect immediately, or a
+ * rejected summary when handlers refused the change. The message is plain prose - the structured counts ride alongside in the data envelope for clients that
+ * want them.
  * @param result - The combined apply and restart result.
  * @returns Single-sentence message describing the outcome.
  */
 export function describeConfigurationOutcome(result: ApplyConfigurationResult): string {
 
-  // A scheduled restart subsumes the live counts - the legacy message already conveys what the operator needs to know about the restart flow.
+  // A scheduled restart subsumes the live counts - the restart message already conveys what the operator needs to know, and its wording stays stable so
+  // operators can recognize a pending restart at a glance.
   if(result.restart) {
 
     return result.restart.message;
@@ -167,7 +169,7 @@ export function describeConfigurationOutcome(result: ApplyConfigurationResult): 
 
 /**
  * Groups profiles by their declared category for UI display. Each profile declares its own category (api, custom, keyboard, multiChannel, special) and this helper
- * simply filters by that field. The display order (api, keyboard, special, multiChannel) is determined by the caller.
+ * simply filters by that field. Display order is left entirely to the caller, and different callers order the categories differently.
  * @param profiles - List of available profiles with category, descriptions, and summaries.
  * @returns Object with profiles grouped by category.
  */

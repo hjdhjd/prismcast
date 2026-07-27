@@ -2,7 +2,7 @@
  *
  * config.test.ts: Unit tests for the configuration subtab client-side script generator. The module exports a single function that returns an HTML <script>
  * block exposing a large surface of window.* handlers for settings forms, channel CRUD, bulk operations, login flows, tag management, and import/export. We
- * test the generated string for structural invariants - presence of expected window handlers, preset interpolation, and form lifecycle hooks.
+ * test the generated string for structural properties - presence of expected window handlers, preset interpolation, and form lifecycle hooks.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -106,7 +106,8 @@ describe("generateConfigSubtabScript", () => {
 
   test("exposes the export and import handlers for settings, channels, and M3U", () => {
 
-    // The Backup subtab uses three pairs: exportConfig/importConfig, exportChannels/importChannels, and importM3U.
+    // The Backup subtab uses two export/import pairs (exportConfig/importConfig, exportChannels/importChannels) plus a standalone importM3U handler with no
+    // matching export counterpart.
     const script = generateConfigSubtabScript();
 
     assert.match(script, /window\.exportConfig\s*=/);

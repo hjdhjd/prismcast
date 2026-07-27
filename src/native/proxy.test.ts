@@ -176,7 +176,7 @@ describe("NativeProxy.stop", () => {
     });
   });
 
-  test("is idempotent - a second stop() call does not throw", () => {
+  test("a second stop() call does not throw", () => {
 
     // Boundary: tests for double-stop are common in lifecycle code because the parent (terminateStream) may invoke stop multiple times across cleanup paths. The
     // proxy must tolerate this gracefully.
@@ -405,7 +405,7 @@ describe("resolveSegmentIv", () => {
 
     assert.equal(result.status, "ok", "absent explicit IV resolves successfully");
 
-    // The assert.equal above narrows result to the "ok" variant, so result.iv is directly accessible without a redundant discriminant guard.
+    // The assert.equal above narrows result to the "ok" variant, so result.iv is directly accessible without a redundant status check.
     assert.deepEqual(result.iv, deriveIvFromSequence(42), "derived IV matches the sequence derivation");
   });
 
@@ -416,7 +416,7 @@ describe("resolveSegmentIv", () => {
 
     assert.equal(result.status, "ok", "well-formed explicit IV resolves successfully");
 
-    // The assert.equal above narrows result to the "ok" variant, so result.iv is directly accessible without a redundant discriminant guard.
+    // The assert.equal above narrows result to the "ok" variant, so result.iv is directly accessible without a redundant status check.
     assert.deepEqual(result.iv, Buffer.from("000102030405060708090a0b0c0d0e0f", "hex"), "explicit IV bytes are used verbatim");
   });
 
@@ -435,8 +435,8 @@ describe("resolveSegmentIv", () => {
 
   test("a malformed explicit IV does not resolve to the sequence IV for the same sequence (no silent substitution)", () => {
 
-    // Regression guard: the pre-fix code computed parseExplicitIv(ivHex) ?? deriveIvFromSequence(sequence), so a malformed IV resolved to the sequence IV. This
-    // test pins that the malformed case is now structurally distinct from the no-IV case - it rejects, it does not return the sequence IV.
+    // A malformed explicit IV must reject rather than silently fall back to the sequence-derived IV, because the fallback would decrypt with the wrong IV and
+    // produce garbage video. The malformed case is structurally distinct from the no-IV case - it rejects, it does not return the sequence IV.
     const malformed = resolveSegmentIv("0xnothex", 13);
     const noIv = resolveSegmentIv(null, 13);
 

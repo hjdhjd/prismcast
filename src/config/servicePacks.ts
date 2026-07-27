@@ -32,7 +32,8 @@ export interface ParseResult {
  */
 export interface ImportSummary {
 
-  // Number of net-new channels added (0 if channel import failed, no channels in pack, or every channel key already existed and was overwritten).
+  // Number of net-new channels added, computed before the channel write; zero when there are no channels in the pack or every channel key already existed
+  // and was overwritten. If the write itself fails after this count is computed, it reflects the pre-failure count rather than zero (see errors).
   channelsAdded: number;
 
   // Number of net-new domain mappings added (overwrites of existing domain keys are not counted).

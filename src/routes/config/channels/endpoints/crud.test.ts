@@ -209,9 +209,9 @@ describe("handlePredefinedEdit (PUT /config/channels/:key)", () => {
     assert.equal(abcEntry["url"], undefined, "URL must not be stored as it matches the canonical default");
   });
 
-  /* The two variant-routing tests below are the keystones of this file. They lock the keystone invariant: when a variant is active and a user submits mixed
-   * identity+binding edits, identity values land on the canonical entry and binding values land on the variant entry. A regression that misroutes either
-   * direction would silently lose customization or apply the wrong value at resolution time.
+  /* The variant-routing tests below lock the rule that when a variant is active and a user submits mixed identity+binding edits, identity values land on
+   * the canonical entry and binding values land on the variant entry. A regression that misroutes either direction would silently lose customization or
+   * apply the wrong value at resolution time.
    */
 
   test("identity-vs-binding routing (variant active): identity goes to canonical, binding goes to the variant entry", async () => {

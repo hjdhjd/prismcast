@@ -41,7 +41,7 @@ interface LogsResponse {
 }
 
 /* A fixture with one line per parse outcome: an info line (no level bracket), a [WARN] line, an [ERROR] line, a [DEBUG:tuning:hulu] line whose category must be
- * extracted, and a trailing junk line that does not match LOG_LINE_PATTERN and must be dropped. The four leading lines are the four entries GET /logs must parse.
+ * extracted, and a trailing junk line that does not match LOG_LINE_PATTERN and must be dropped. The leading lines are the entries GET /logs must parse.
  * Timestamps use the file logger's YYYY/MM/DD HH:MM:SS.mmm shape so LOG_LINE_PATTERN accepts them.
  */
 const INFO_LINE = "[2026/07/04 10:15:30.100] An informational startup line.";
@@ -83,7 +83,7 @@ describe("GET /logs - file-mode parse contract", () => {
 
     assert.equal(body.mode, "file", "the handler read the file rather than reporting console mode");
 
-    // The junk line does not match LOG_LINE_PATTERN, so exactly four of the five seeded lines parse. total counts the parsed entries.
+    // The junk line does not match LOG_LINE_PATTERN, so it is excluded from the parsed set. total counts the parsed entries.
     assert.equal(body.total, 4, "total counts the four parsable lines and excludes the junk line");
     assert.equal(body.entries.length, 4, "all four parsed entries are returned under the default 100-line cap");
 
@@ -167,8 +167,8 @@ describe("GET /logs?lines=1 - last-N slice", () => {
 
     const body = await response.json() as LogsResponse;
 
-    // slice(-1) keeps only the final parsed entry. The junk line never becomes an entry, so the last entry is the DEBUG line (the fourth parsed line), not the
-    // trailing junk. total is unaffected by the slice.
+    // slice(-1) keeps only the final parsed entry. The junk line never becomes an entry, so the last entry is the DEBUG line, the last fixture line that
+    // parses, not the trailing junk. total is unaffected by the slice.
     assert.equal(body.total, 4, "total counts every parsed entry, independent of the line cap");
     assert.equal(body.entries.length, 1, "the line cap returns exactly one entry");
 

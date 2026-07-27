@@ -210,7 +210,7 @@ const MAX_CLICK_ATTEMPTS = 3;
  * Clicks the on-now program cell and waits for Sling to navigate to the player page. The click triggers a full page navigation to a /1/asset/{assetId}/watch URL,
  * so we use Promise.all with page.waitForNavigation() to ensure the player page's DOM is ready before returning. Without this wait, initializePlayback() could run
  * against a page that is mid-transition - either finding nothing or grabbing a stale element from the guide page. Uses domcontentloaded rather than load because
- * the player page only needs to render a <video> element - waiting for all subresources (images, fonts) would add unnecessary latency since startVideoPlayback()
+ * the player page only needs to render a <video> element - waiting for all subresources (images, fonts) would add unnecessary latency since waitForVideoReady()
  * independently waits for the video element. No settle delay before the click because readSlingChannelsAndLocate() already called scrollIntoView and read
  * getBoundingClientRect, confirming the element is positioned, and any mispositioned click is caught by the navigation timeout.
  * @param page - The Puppeteer page object.
@@ -586,9 +586,9 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
   }
 
   // API fast path with frontier-based polling. The channel cache populates progressively as paginated grid API responses arrive in alphabetical order during page
-  // load. Rather than checking the cache once (missing late-alphabet channels whose API page hasn't arrived yet), poll until one of three conditions is met:
-  // (1) the target channel's GUID appears in the cache, (2) the cache frontier (alphabetically latest entry) passes the target's position (confirming the
-  // channel is not in the lineup), or (3) the maximum wait time is exceeded. This ensures the cache is fully populated for all subsequent tunes - a one-time
+  // load. Rather than checking the cache once (missing late-alphabet channels whose API page hasn't arrived yet), poll until any of the following conditions
+  // is met: the target channel's GUID appears in the cache, the cache frontier (alphabetically latest entry) passes the target's position (confirming the
+  // channel is not in the lineup), or the maximum wait time is exceeded. This ensures the cache is fully populated for all subsequent tunes - a one-time
   // cost that eliminates binary search for the rest of the session.
   const pollStart = Date.now();
 

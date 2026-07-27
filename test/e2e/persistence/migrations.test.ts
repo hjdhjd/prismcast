@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * migrations.test.ts: Integration coverage for the channel-store schema migration runner against real on-disk fixtures. Unit tests in persistence.test.ts
- * exercise the migration FRAMEWORK (run-in-order, gap detection, forward-compat, idempotence) against synthetic stores; this suite exercises the actual
+ * exercise the migration FRAMEWORK (run-in-order, gap detection, forward-compat, re-running safely) against synthetic stores; this suite exercises the actual
  * production migrations declared in userChannels.ts against canonical historical fixtures, catching regressions where a future migration breaks an older
  * shape's upgrade path. The two production migrations are:
  *
@@ -148,14 +148,14 @@ describe("persistence migrations - chain ordering and idempotency across stores"
    *      stores that carry migrations (config.json's enabledProviders/foxcom/dvrHost migrations and channels.json's canonicalKey/foxcom-rename migrations) so the
    *      runner's contract holds independent of which store registers it.
    *
-   *   2. Skip-already-applied idempotency: a v2 fixture must skip v2 and apply only v3; a v3 fixture must skip both. The skip-fully-current case is covered by
-   *      the existing test at "a file already at the current schema version is a no-op (idempotent)"; this block adds the partial-skip case so the runner's
+   *   2. Skip-already-applied no-op: a v2 fixture must skip v2 and apply only v3; a v3 fixture must skip both. The skip-fully-current case is covered by
+   *      the existing test verifying that a file already at the current schema version is a no-op; this block adds the partial-skip case so the runner's
    *      version-walking loop is pinned end-to-end.
    *
    * Migration descriptions are hard-coded constants in production (configMigrations and channelsMigrations registries). Tests reference them via inline string
    * literals because the registries are module-internal - the constants live in exactly one place in production, so a future rename forces a deliberate test
    * update rather than a silent drift. This is the same SSOT shape the existing tests use (regex match on the description); these tests tighten it to exact
-   * equality so the chain-ordering invariant is structural.
+   * equality so the guarantee that migrations run in chain order is enforced structurally.
    */
 
   // Production-canonical migration descriptions. Sourced from configMigrations / channelsMigrations in src/config/userConfig.ts and src/config/userChannels.ts. See
@@ -291,7 +291,7 @@ describe("persistence migrations - chain ordering and idempotency across stores"
 
   test("v3 channels.json skips both migrations (full-chain idempotency)", async () => {
 
-    /* A file already at the current schema version must not have any migration re-applied. The existing idempotency test in the prior describe block covers an
+    /* A file already at the current schema version must not have any migration re-applied. The existing no-op-on-repeat test in the prior describe block covers an
      * empty fixture; here we use a richer fixture whose contents would be visibly mutated if either migration ran erroneously. We seed a -foxcom-suffixed key
      * (which v3 would rename if executed) and assert it survives byte-for-byte. The negative observation (no rename) is the structural pin.
      */

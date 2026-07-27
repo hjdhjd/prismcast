@@ -1,8 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * ffmpeg.context.ts: The default adapter that produces an FFmpegContext from real runtime I/O. resolveFFmpegPath in ffmpeg.ts is a pure orchestrator over an
- * FFmpegContext; this file is the only place in the FFmpeg module that reads the filesystem, spawns probe subprocesses, or queries process.platform. Tests
- * bypass this file entirely by constructing FFmpegContext literals inline.
+ * ffmpeg.context.ts: The default adapter that produces an FFmpegContext from real runtime I/O. probeFFmpegPath in ffmpeg.ts is a pure orchestrator over an
+ * FFmpegContext; this file is the only place in the FFmpeg module that reads the filesystem, spawns probe subprocesses, or queries process.platform for
+ * FFmpegContext construction (buildSpawnFFmpegArgs separately reads process.platform directly for AAC encoder selection, outside ctx). Tests bypass this
+ * file entirely by constructing FFmpegContext literals inline.
  */
 import type { FFmpegContext } from "./ffmpeg.ts";
 import bundledFFmpegPath from "ffmpeg-for-homebridge";

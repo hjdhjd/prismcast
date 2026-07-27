@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * hls.test.ts: Unit tests for the HLS route registrar in hls.ts. The module exports a single function setupHLSRoutes which registers four routes and delegates
- * to handlers in streaming/hls.ts. Those handlers require a real Chrome browser, FFmpeg subprocess, and channel registry to exercise the success path - that
- * coverage lives in streaming/hls.test.ts and the e2e suite. Here we lock the route registration shape: the four documented paths must be reachable, and an
- * unknown channel name must produce a non-2xx response without crashing. The deeper handler logic is tested in streaming/hls.test.ts via validateChannel.
+ * hls.test.ts: Unit tests for the HLS route registrar in hls.ts. The module exports a single function setupHLSRoutes which registers the documented HLS routes
+ * and delegates to handlers in streaming/hls.ts. Those handlers require a real Chrome browser, FFmpeg subprocess, and channel registry to exercise the success
+ * path - that coverage lives in streaming/hls.test.ts and the e2e suite. Here we lock the route registration shape: every documented path must be reachable, and
+ * an unknown channel name must produce a non-2xx response without crashing. The deeper handler logic is tested in streaming/hls.test.ts via validateChannel.
  */
 import type { AddressInfo, Server } from "node:net";
 import { after, before, describe, test } from "node:test";

@@ -2,8 +2,8 @@
  *
  * video.diagnosis.test.ts: Unit tests for the failed-tune blocked-page diagnosis in video.ts (diagnoseBlockedTune, reached through initializePlayback's failure
  * sites). initializePlayback accepts its tune collaborators (selectChannel and the overlay poll on the main path; the provider lookup and blocked-page classifier
- * on the failure path) as an injected VideoTuneDeps parameter, so we pass a deps object of stubs at that seam and never drive a browser. The health module is real,
- * so marking assertions go through getDomainAuthState, and each test uses its own domain to keep the shared in-memory auth state isolated.
+ * on the failure path) as an injected VideoTuneDeps parameter, so we pass a deps object of stubs through that interface and never drive a browser. The health
+ * module is real, so marking assertions go through getDomainAuthState, and each test uses its own domain to keep the shared in-memory auth state isolated.
  */
 import type { BlockedPageClassification, ClassifyBlockedPageOptions } from "./blockedPage.ts";
 import type { ChannelSelectorResult, ProviderModule } from "../types/index.ts";
@@ -19,7 +19,7 @@ import { initializePlayback } from "./video.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 
 // A record of one startOverlayHandling invocation, captured by the deps.startOverlayHandling double. abortedAtCall and priorTuneSetupAborted snapshot abort state AT
-// THE MOMENT of the call - the discriminators that pin the phase-poll lifecycle ordering (a post-hoc read of the signal is useless because every poll's finally
+// THE MOMENT of the call - the fields that pin the phase-poll lifecycle ordering (a post-hoc read of the signal is useless because every poll's finally
 // aborts its signal by the time the tune settles).
 interface OverlayCallRecord {
 
@@ -52,7 +52,7 @@ let overlayCalls: OverlayCallRecord[] = [];
 let classifyTuneSetupAborted: (boolean | null)[] = [];
 
 /* The injected tune collaborators: channel selection and the overlay poll on the main path, plus the provider lookup and blocked-page classifier on the failure
- * path, substituted at video.ts's VideoTuneDeps seam so the diagnosis paths run without a real browser. Each field reads the mutable module state above at call
+ * path, substituted at video.ts's VideoTuneDeps interface so the diagnosis paths run without a real browser. Each field reads the mutable module state above at call
  * time. classifyBlockedPage records every options object into classifyCalls and snapshots the tuneSetup poll's aborted state into classifyTuneSetupAborted, and
  * startOverlayHandling records every poll's phase, its own aborted-at-call state, and (for videoWait) the embed-gate resolver - the channels the phase-poll
  * lifecycle tests assert over. Typed as the production port so the doubles cannot drift, and contextually typed so options resolves to StartOverlayHandlingOptions
@@ -65,7 +65,7 @@ const deps: VideoTuneDeps = {
     classifyCalls.push(options);
 
     // Snapshot the tuneSetup poll's aborted state at the moment of classification. The pre-diagnosis abort() must have already fired, so an in-span failure
-    // classifies a poll-quiet page; this is what discriminates the explicit abort from a too-late shared-finally abort.
+    // classifies a poll-quiet page; this is what tells apart the explicit abort from a too-late shared-finally abort.
     const tuneSetupSignal = overlayCalls.find((call) => call.phase === "tuneSetup")?.signal;
 
     classifyTuneSetupAborted.push(tuneSetupSignal ? tuneSetupSignal.aborted : null);
@@ -184,8 +184,8 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
 
   test("surfaces the standing consent guidance text, character-identical, when a consent overlay blocks the page", async () => {
 
-    /* Traced path: the consentOverlay arm in diagnoseBlockedTune. The guidance text is the detect-and-guide sentence that previously lived inline in
-     * initializePlayback's video-wait catch; equality (not substring) pins it character-identical.
+    /* Traced path: the consentOverlay arm in diagnoseBlockedTune. The guidance text is the detect-and-guide sentence diagnoseBlockedTune throws for a
+     * consentOverlay classification; equality (not substring) pins it character-identical.
      */
     mockSelectResult = { reason: "Station code FBN not found.", success: false };
     classifyResult = async (): Promise<BlockedPageClassification> => ({ kind: "consentOverlay" });
@@ -344,7 +344,7 @@ describe("initializePlayback - phase-scoped overlay poll lifecycle", () => {
 
   test("aborts the tuneSetup poll before diagnosing a video-context resolution failure", async (t) => {
 
-    /* Traced path: the findVideoContext catch inside the tuneSetup span calls abortGuard() before diagnoseBlockedTune. Same pre-diagnosis-abort discriminator as the
+    /* Traced path: the findVideoContext catch inside the tuneSetup span calls abortGuard() before diagnoseBlockedTune. Same pre-diagnosis-abort signal as the
      * selection-failure path, on the other in-span failure site.
      */
     t.mock.method(LOG, "debug", () => { /* Silenced. */ });

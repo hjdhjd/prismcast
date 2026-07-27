@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * hlsPlaylistObserver.test.ts: Unit tests for the HLS-aware observer layered on the tab-wide network observer. The observer's contract has four pillars:
+ * hlsPlaylistObserver.test.ts: Unit tests for the HLS-aware observer layered on the tab-wide network observer. The observer's contract:
  * (1) it filters network responses to `.m3u8` URLs and ignores everything else; (2) it fetches each manifest body via chromeFetch (Node-side, not CDP) and
  * classifies it via classifyHlsPlaylist(); (3) it dedups by URL so a repeatedly-polled chunklist fires the callback exactly once and is fetched exactly once;
- * (4) disposal is idempotent and matches the project's dispose() + Symbol.dispose convention. The fixture (FakeCdpSession, FakeConnection, makeFakeCdpPage) is
- * shared via src/testing/cdp.helpers.ts with the other observers in the stack; globalThis.fetch is mocked locally to feed synthetic manifest bodies into
- * classifyHlsPlaylist.
+ * (4) disposal is safe to call more than once and matches the project's dispose() + Symbol.dispose convention. The fixture (FakeCdpSession, FakeConnection,
+ * makeFakeCdpPage) is shared via src/testing/cdp.helpers.ts with the other observers in the stack; globalThis.fetch is mocked locally to feed synthetic
+ * manifest bodies into classifyHlsPlaylist.
  */
 import { FakeCdpSession, FakeConnection, closePuppeteerStreamWssOnIdle, makeFakeCdpPage, noop } from "../testing.helpers.ts";
 import { afterEach, describe, mock, test } from "node:test";

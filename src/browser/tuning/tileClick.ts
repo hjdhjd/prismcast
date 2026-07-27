@@ -157,8 +157,9 @@ async function tileClickStrategyFn(page: Page, profile: ChannelSelectionProfile)
 
       if(!playTarget) {
 
-        // Play button disappeared between attempts - the previous click likely worked and the SPA transitioned. This can happen when the verification timeout races
-        // against a slow modal dismissal animation.
+        // Play button no longer resolves to a clickable target between attempts - either it was removed (the previous click likely worked and the SPA
+        // transitioned), or it is still present but reports no rendered size, which can happen when the verification timeout races against a slow modal
+        // dismissal animation.
         if(attempt > 0) {
 
           LOG.debug("tuning:tileClick", "Play button disappeared before attempt %s. Previous click likely succeeded.", attempt + 1);

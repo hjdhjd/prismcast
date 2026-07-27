@@ -292,7 +292,7 @@ async function handlePredefinedEdit(key: string, predefinedBase: ResolvedChannel
   }
 
   // Real edit. Resolve the target service variant for binding-field routing: an explicitly-selected variant takes precedence; otherwise infer from the
-  // submitted URL's domain via inferTargetVariant (the SSoT helper used by both the producer here and the storage normalizer). When a target resolves, route
+  // submitted URL's domain via inferTargetVariant (the SSOT helper used by both the producer here and the storage normalizer). When a target resolves, route
   // per-field - identity to canonical, binding to target variant - so the canonical never carries wholesale duplication of a sibling's binding. When no
   // sibling matches, the URL is genuinely custom and the full delta lands on the canonical (the existing Custom-URL path).
   await mutateChannels((data) => {
@@ -635,11 +635,13 @@ export function registerCrudRoutes(app: Express): void {
 
     await mutateChannels((data) => {
 
-      // The inline-edit endpoint writes override fields (three scalar, plus the tags array) that all align with ChannelDelta's nullable shape. Reuse the stored entry
+      // The inline-edit endpoint writes override fields drawn from INLINE_EDIT_FIELDS that all align with ChannelDelta's nullable shape. Reuse the stored entry
       // when present so existing fields survive, otherwise start from an empty delta. mutateChannels() persists the resulting record either way.
       const stored: ChannelDelta = data.channels[key] ?? {};
       const delta = stored;
 
+      // Each case below casts value to the ChannelDelta type of the field it assigns. The cast is safe because the switch discriminates on the same field
+      // that determined body[field]'s actual runtime type, mirroring the presentFields narrowing that established field itself above.
       switch(field) {
 
         case "channelNumber": {
@@ -668,7 +670,7 @@ export function registerCrudRoutes(app: Express): void {
 
           const nextTags = (value === null) ? [] : (value as string[]);
 
-          // Sort before storing so the normalizer's JSON.stringify equality check (used to collapse redundant deltas) sees a canonical order regardless of the
+          // Sort before storing so the normalizer's isDeepStrictEqual comparison (used to collapse redundant deltas) sees a canonical order regardless of the
           // order the client submitted the array in.
           delta.tags = (nextTags.length > 0) ? sortTags(nextTags) : null;
 
@@ -681,7 +683,8 @@ export function registerCrudRoutes(app: Express): void {
 
     const fieldLabel = INLINE_EDIT_LABELS[field];
 
-    // Display value for the log line. hdhrEnabled is rendered as included/excluded. Other fields show the value or "(cleared)".
+    // hdhrEnabled gets its own branch below because its cleared value (null) displays the same as its explicit true ("included"); it never falls into the
+    // generic null/empty-string/empty-array "(cleared)" case that the other fields share.
     let displayValue: string;
 
     if(field === "hdhrEnabled") {
@@ -697,7 +700,8 @@ export function registerCrudRoutes(app: Express): void {
 
     LOG.info("Inline edit: %s for '%s' set to '%s'.", fieldLabel, key, displayValue);
 
-    // hdhrEnabled changes don't affect the M3U playlist (HDHomeRun is a separate discovery path); every other inline edit may affect it.
+    // hdhrEnabled changes don't affect the M3U playlist (HDHomeRun is a separate discovery path), so it's the only field excluded here. channelNumber and
+    // stationId are genuine M3U_FIELDS entries; tags is not, but this check treats it as playlist-affecting too rather than importing M3U_FIELDS for one field.
     const applyPlaylistHint = (field !== "hdhrEnabled");
 
     sendSuccess(res, {

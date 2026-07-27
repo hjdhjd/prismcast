@@ -16,12 +16,12 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin invariants, not historical incidents. "saveProfile sends the canonical body shape" is the contract; "the d2ee7be variant-dropdown bug doesn't recur" is
+ *   - Pin the guarantee, not historical incidents. "saveProfile sends the canonical body shape" is the contract; "the d2ee7be variant-dropdown bug doesn't recur" is
  *     a symptom to derive coverage from but not the test name.
  *   - Use evaluate(...) for one-shot expressions and DOM seeding; for complex setup, set ctx.document.body.innerHTML or insertAdjacentHTML in a single block.
  *   - For fetch-shape verification (POST bodies, URL paths, methods), override window.fetch with a spy before triggering the operation. Asserting on persisted
  *     state via the bootApp listener is also acceptable but couples the test to the server response shape - the spy is preferred when only the call shape matters.
- *   - When a runtime invariant reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
+ *   - When a test reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
  *     Do NOT fix the production script in this suite - fixes are a separate authorized arc.
  *
  * Auto-open guard: the channels.ts IIFE auto-opens the Setup Wizard when the setup-modal carries data-setup-completed='false', which is the default for a fresh
@@ -540,8 +540,8 @@ describe("channels.ts: window.saveProfile", () => {
   test("scopes the save to the edited profile's own domains, ignoring the top-level domains record", async () => {
 
     /* The per-profile domain projection is the wizard's single source of truth; the GET response's top-level domains record (which carries every profile's domains)
-     * is no longer consulted. Seeding a second profile's domain into that record and asserting it never appears in the save body pins the cross-profile scoping - a
-     * regression that read the top-level record would leak another profile's domains into this save and the server's whole-replace would clobber them.
+     * plays no part in the save body. Seeding a second profile's domain into that record and asserting it never appears in the save body pins the cross-profile
+     * scoping - a regression that read the top-level record would leak another profile's domains into this save and the server's whole-replace would clobber them.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -773,8 +773,8 @@ describe("channels.ts: profile test flow handlers", () => {
 
   test("Save & Test carries the dismiss selector into the test-selectors payload", async () => {
 
-    /* dismissSelector is a rendered text field now, so a Save & Test must offer it for checking alongside the hide selector. Seed a profile carrying dismissSelector,
-     * run the test flow, and assert the selector map shipped to /config/profiles/test/check includes it - the pin for the new field's Save & Test wiring.
+    /* dismissSelector is a rendered text field, so Save & Test must offer it for checking alongside the hide selector. Seed a profile carrying dismissSelector, run
+     * the test flow, and assert the selector map shipped to /config/profiles/test/check includes it.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -838,7 +838,7 @@ describe("channels.ts: import/export modal handlers", () => {
      * (so cancelling the modal doesn't leave a stale payload that a subsequent confirm could re-submit).
      *
      * We can only observe the clearing indirectly: after closeImportModal, calling executeImport must early-return without firing a fetch. That's the
-     * observable invariant.
+     * property this test pins.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -1558,7 +1558,7 @@ describe("channels.ts: setup wizard handlers", () => {
     await using ctx = await setupChannelsRuntime();
 
     /* Open the wizard via the public entry point so the closure-scoped controller is in the open state when we call skipSetup. Without the open call, the
-     * close from skipSetup would still execute (it's idempotent) but we want to assert the open->closed transition.
+     * close from skipSetup would still execute (closing twice is a no-op) but we want to assert the open->closed transition.
      */
     ctx.evaluate("window.openSetupWizard()");
 

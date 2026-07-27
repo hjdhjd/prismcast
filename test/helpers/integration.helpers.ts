@@ -65,9 +65,9 @@ export interface IntegrationContext {
    * Registers a cleanup function that runs at disposal regardless of whether the test body resolved or threw. Cleanups drain in LIFO order so resources
    * acquired later (e.g., a server built on top of a temp dir) tear down before their dependencies.
    *
-   * Cleanup functions need not be idempotent because the disposal protocol guarantees [Symbol.asyncDispose] is called exactly once - the language structurally
-   * prevents re-entry. A cleanup that throws does not stop subsequent cleanups from running; all errors are accumulated and surfaced via AggregateError when
-   * more than one fires, or directly when only one does.
+   * Cleanup functions need not be safe to call more than once, because the disposal protocol guarantees [Symbol.asyncDispose] is called exactly once - the
+   * language structurally prevents re-entry. A cleanup that throws does not stop subsequent cleanups from running; all errors are accumulated and surfaced
+   * via AggregateError when more than one fires, or directly when only one does.
    *
    * @param fn - Cleanup callback. May be sync or async; both are awaited.
    */
@@ -219,13 +219,13 @@ export async function writePersistedJson(ctx: IntegrationContext, filename: stri
  * Production loaders also register their own intervals or background work in some cases; this helper does not call those code paths because the integration
  * harness has no use for them. If a future suite needs interval-driven behavior, add a focused boot helper for that scenario rather than expanding this one.
  *
- * @param ctx - The integration context. The data directory is already pointed at ctx.dataDir by createIntegrationContext - this helper trusts that invariant
+ * @param ctx - The integration context. The data directory is already pointed at ctx.dataDir by createIntegrationContext - this helper trusts that guarantee
  *   and does not re-call initializeDataDir.
  */
 export async function initializePersistence(ctx: IntegrationContext): Promise<void> {
 
-  // Load-bearing assertion: the production resolver must already point at ctx.dataDir. This is the invariant createIntegrationContext establishes; any code
-  // path that re-pointed initializeDataDir between context creation and this call would otherwise cause initializePersistence to load against the wrong tree
+  // Guard assertion: the production resolver must already point at ctx.dataDir. This is the guarantee createIntegrationContext establishes; any code path
+  // that re-pointed initializeDataDir between context creation and this call would otherwise cause initializePersistence to load against the wrong tree
   // (silent corruption). The check turns that failure mode from silent into loud.
   if(getDataDir() !== ctx.dataDir) {
 
@@ -292,6 +292,8 @@ export async function bootApp(ctx: IntegrationContext): Promise<BootedApp> {
     s.on("error", reject);
   });
 
+  // The listener is bound to a TCP host:port (never a Unix socket), and this line runs only after the listen callback above already resolved, so
+  // server.address() is guaranteed to return an AddressInfo here rather than the string or null shapes the type also allows.
   const address = server.address() as AddressInfo;
   const port = address.port;
 
@@ -316,9 +318,9 @@ export async function bootApp(ctx: IntegrationContext): Promise<BootedApp> {
  * in `src/config/health.ts`). Tests that need to verify on-disk health state - or, contrapositively, that need to confirm an unrelated mutation did NOT
  * accidentally write to health.json - must wait past that debounce plus a small headroom for the framework's atomic write to land.
  *
- * Hoisted from the health-state suite so the cross-store-isolation suite (and any future suite that asserts on health-vs-other-store interactions) can wait on
- * the same primitive without re-deriving the timing constant. The wait is bounded so a regression that stalls the flush surfaces as a test timeout, not as a
- * silent hang. Health-side timing changes (e.g., bumping `FLUSH_DELAY`) tighten or loosen this single constant rather than rippling through every caller.
+ * Shared by the health-state suite and the cross-store-isolation suite (and any future suite that asserts on health-vs-other-store interactions) so they wait
+ * on the same primitive without re-deriving the timing constant. The wait is bounded so a regression that stalls the flush surfaces as a test timeout, not as
+ * a silent hang. Health-side timing changes (e.g., bumping `FLUSH_DELAY`) tighten or loosen this single constant rather than rippling through every caller.
  */
 export async function waitForHealthFlush(): Promise<void> {
 
@@ -354,6 +356,8 @@ export async function bootStubServer(ctx: IntegrationContext, configure: (app: E
     s.on("error", reject);
   });
 
+  // The listener is bound to a TCP host:port (never a Unix socket), and this line runs only after the listen callback above already resolved, so
+  // server.address() is guaranteed to return an AddressInfo here rather than the string or null shapes the type also allows.
   const address = server.address() as AddressInfo;
   const port = address.port;
 

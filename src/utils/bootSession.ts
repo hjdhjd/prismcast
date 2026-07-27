@@ -4,10 +4,11 @@
  * not survive a reboot or container restart - can detect when their contents are from a previous session. Callers compare for equality only; the identifier's
  * internal format is intentionally opaque. The composition is "<host-boot-minute>" outside containers and "<host-boot-minute>::<container-init-start>" inside,
  * where the host portion is derived from os.uptime() arithmetic rounded to the nearest minute (to absorb sub-minute NTP drift) and the container portion is the
- * container init process's starttime in clock ticks since boot (from /proc/1/stat field 22). Both signals are sleep-inclusive on every supported platform.
+ * container init process's starttime in clock ticks since boot (from /proc/1/stat field 22). Both signals are boot-relative kernel counters, so both remain
+ * sleep-inclusive on every supported platform.
  *
- * Why a port. The boot identifier is the load-bearing invariant for runtime-identity tracking - if two callers in the same process observe different values, the
- * invariant collapses. So the default adapter (in bootSession.context.ts) snapshots its readings ONCE at adapter creation and returns the frozen values on every
+ * Why a port. The boot identifier is the guarantee runtime-identity tracking depends on - if two callers in the same process observe different values, the
+ * guarantee breaks. So the default adapter (in bootSession.context.ts) snapshots its readings ONCE at adapter creation and returns the frozen values on every
  * subsequent call. This is intentionally different from realClock, where each call delegates live: clock readings should not be stable across calls, but boot
  * identifiers must be. Tests bypass the snapshot by constructing context literals.
  */

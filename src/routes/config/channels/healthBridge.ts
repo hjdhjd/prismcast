@@ -4,8 +4,8 @@
  * table patch covering the rows whose rendered state the change can affect: the channel whose health was recorded, plus every other channel whose currently-selected
  * service variant resolves to the event's domain (the domain-verification indicator on those rows reflects shared state).
  *
- * Enforces the invariant that channel row presentation has a single source of truth - generateChannelRowHtml on the server. Client code never composes channel
- * row HTML, classes, or titles imperatively; every change flows through buildChannelTablePatch...emitChannelUpdate...channelTable.applyPatch.
+ * Enforces that channel row presentation has a single source of truth - generateChannelRowHtml on the server. Client code never composes channel row HTML,
+ * classes, or titles imperatively; every change flows through buildChannelTablePatch...emitChannelUpdate...channelTable.applyPatch.
  */
 import { getAuthDomainForChannel, resolveServiceKey } from "../../../config/services.ts";
 import { getHealthSnapshot, subscribeToHealth } from "../../../config/health.ts";

@@ -37,13 +37,13 @@ let precacheInProgress = false;
 // Handle for the scheduled precache cycle, tracked so a graceful shutdown can cancel it before it fires. Null when no cycle is pending.
 let precacheTimer: Nullable<ReturnType<typeof setTimeout>> = null;
 
-/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate,
- * the provider lookups, and the discovery-phase overlay-poll launcher. It is injected as a default parameter threaded through the module's functions so a test can
- * substitute stubs at the same seam - no loader mock - while production uses the real defaultPrecachingDeps built from the functions this module already imports.
- * startOverlayHandling belongs here for the same reason the browser accessors do: run for real it drives a poll against the page, so a test injects a recording stub
- * to observe the discovery poll's phase and abort timing without a live poll. It is kept as an in-module const, NOT a separate *.context.ts adapter: browser/index.ts
- * imports startPrecaching and precaching.ts imports these accessors, so a separate adapter file would sit inside that value-import cycle, whereas the in-module const
- * adds no new import edge. This is the collaborator-injection form of the Clock port (utils/clock.ts).
+/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate, the
+ * provider lookups, and the discovery-phase overlay-poll launcher. It is injected as a default parameter threaded through the module's functions so a test can
+ * substitute stubs at the same PrecachingDeps boundary - no loader mock - while production uses the real defaultPrecachingDeps built from the functions this module
+ * already imports. startOverlayHandling belongs here for the same reason the browser accessors do: run for real it drives a poll against the page, so a test injects a
+ * recording stub to observe the discovery poll's phase and abort timing without a live poll. It is kept as an in-module const, NOT a separate *.context.ts adapter:
+ * browser/index.ts imports startPrecaching and precaching.ts imports these accessors, so a separate adapter file would sit inside that value-import cycle, whereas the
+ * in-module const adds no new import edge. This is the collaborator-injection form of the Clock port (utils/clock.ts).
  */
 export interface PrecachingDeps {
 

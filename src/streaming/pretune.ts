@@ -81,11 +81,11 @@ export interface ScheduledJob {
   start_time: number;
 }
 
-/* PretuneDeps is the external-I/O surface the pretune decision logic composes on: the DVR data-acquisition calls (getDvrHost, fetchFromDvr, getDeviceMappings) and
- * the expensive go-action (initializeStream). It is injected as a default parameter threaded from startPretunePolling so a test can substitute in-memory stubs at
- * the same seam - no loader mock - while production uses the real defaultPretuneDeps. validateChannel, the registry, lifecycle, and the safety-timer registry stay
- * direct imports because they are not the substituted boundary. fetchFromDvr is narrowed to the ScheduledJob rows pretune actually reads. This mirrors the Clock
- * port (utils/clock.ts): a typed interface plus a module-const default, consumed through a defaulted parameter.
+/* PretuneDeps is the external-I/O surface the pretune decision logic composes on: the DVR data-acquisition calls (getDvrHost, fetchFromDvr, getDeviceMappings) and the
+ * expensive go-action (initializeStream). It is injected as a default parameter threaded from startPretunePolling so a test can substitute in-memory stubs at the same
+ * injection boundary - no loader mock - while production uses the real defaultPretuneDeps. validateChannel, the registry, lifecycle, and the safety-timer registry stay
+ * direct imports because they are not the substituted boundary. fetchFromDvr is narrowed to the ScheduledJob rows pretune actually reads. This mirrors the Clock port
+ * (utils/clock.ts): a typed interface plus a module-const default, consumed through a defaulted parameter.
  */
 export interface PretuneDeps {
 
@@ -280,7 +280,7 @@ function resolveGuideNumber(mappings: Map<string, Map<string, string>>, guideNum
 }
 
 /**
- * Pretunes a channel ahead of a scheduled recording. Validates the channel, checks for conflicts, initializes the stream with the preTuned flag, and sets up a
+ * Pretunes a channel ahead of a scheduled recording. Checks for conflicts, validates the channel, initializes the stream with the preTuned flag, and sets up a
  * safety timeout for unclaimed streams. Retries on failure up to MAX_RETRIES times within the pretune window.
  * @param channelId - The PrismCast channel key (e.g., "cnn").
  * @param jobName - The program title for logging (e.g., "Anderson Cooper 360").

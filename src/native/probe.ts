@@ -474,6 +474,10 @@ async function classifyEncryption(resolved: ResolvedMedia, channelName: string):
     // Parse METHOD attribute.
     const method = /METHOD=([A-Za-z0-9-]+)/.exec(trimmed)?.[1]?.toUpperCase() ?? "NONE";
 
+    // A NONE tag does not settle the classification on its own. Some manifests interleave a NONE tag with a later, more
+    // restrictive key tag (for example, a clear lead-in segment followed by an AES-128 or DRM-protected segment), so we keep
+    // scanning rather than stopping here. Every method below this point breaks out of the loop once found, favoring the
+    // strongest encryption signal present in the playlist over the order in which the tags happen to appear.
     if(method === "NONE") {
 
       continue;

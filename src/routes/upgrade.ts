@@ -79,13 +79,16 @@ export function setupUpgradeEndpoint(app: Express): void {
 
       sendSuccess(res, { data: { willRestart }, message: "Upgrade complete." });
 
-      // If running as a service, exit after a short delay so the service manager restarts us with the new version.
+      // If running as a service, delay briefly before exiting so the HTTP response from sendSuccess above has time to flush to the client. An immediate exit
+      // could truncate the response and leave the caller without confirmation that the upgrade succeeded; the service manager then restarts us with the new version.
       if(willRestart) {
 
         setTimeout(() => {
 
           LOG.info("Exiting for service manager restart after upgrade.");
 
+          // We exit either way, regardless of whether closeBrowser() succeeds, so the service manager restarts us on the new version in both cases. The exit
+          // code distinguishes a clean shutdown (0) from an unclean one (1) for anyone reading service logs.
           void closeBrowser().then(() => { process.exit(0); }).catch(() => { process.exit(1); });
         }, 500);
       }

@@ -2,18 +2,18 @@
  *
  * memo.ts: Async memoization primitives. The single primitive here is memoizeAsync - a one-shot async cache that runs its probe at most once across the
  * lifetime of the returned function and shares the in-flight promise across concurrent first-callers. Used to lazily compute values that are expensive on
- * first call and cheap-to-cached on subsequent calls (e.g., resolveFFmpegPath probing the filesystem).
+ * first call and cheap on subsequent calls (e.g., resolveFFmpegPath probing the filesystem).
  */
 
-/* The internal state of a memoizeAsync closure as a discriminated union. Three kinds:
+/* The internal state of a memoizeAsync closure as a discriminated union:
  *
  * - "unset": probe has never run. The next call kicks it off.
  * - "pending": probe is in flight (or has settled to a rejection). All concurrent callers await the same promise. The state stays "pending" until probe
  *   succeeds; on rejection the closure stays "pending" forever (sticky rejection).
  * - "resolved": probe completed successfully and the value is cached. All future calls take the fast path returning the cached value directly.
  *
- * Modeling state as a discriminated union (rather than parallel boolean + value variables) compiles the invariant "value is only readable when resolved" into
- * the type system: every read site must switch on the kind first, and TypeScript narrows .value/.promise to the appropriate branch. A future refactor that
+ * Modeling state as a discriminated union (rather than parallel boolean + value variables) compiles the rule that the value is only readable when resolved
+ * into the type system: every read site must switch on the kind first, and TypeScript narrows .value/.promise to the appropriate branch. A future refactor that
  * tries to read the cached value outside the resolved fast path is a type error.
  */
 type MemoState<T> = { kind: "unset" } | { kind: "pending"; promise: Promise<T> } | { kind: "resolved"; value: T };
@@ -30,8 +30,8 @@ type MemoState<T> = { kind: "unset" } | { kind: "pending"; promise: Promise<T> }
  *   rather than have memoizeAsync silently retry. (Production-cached resolveFFmpegPath has no rejection path - probeFFmpegPath returns undefined for "not
  *   found" rather than throwing - so this branch never fires in the ffmpeg use case.)
  *
- * The cache and pending state are closure-scoped: there is no test seam, no reset method, and no way for callers to invalidate the cache. Callers that need
- * invalidation are doing a different thing (TTL cache, refresh-on-event cache) and should not use this primitive.
+ * The cache and pending state are closure-scoped: there is no way to reach into the closure from a test, no reset method, and no way for callers to
+ * invalidate the cache. Callers that need invalidation are doing a different thing (TTL cache, refresh-on-event cache) and should not use this primitive.
  *
  * @param probe - The async function to memoize. Invoked at most once on success, or once per process on rejection.
  * @returns A function that returns the same Promise<T> on every call.

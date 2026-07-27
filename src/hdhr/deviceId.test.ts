@@ -2,7 +2,8 @@
  *
  * deviceId.test.ts: Unit tests for the HDHomeRun DeviceID generator and validator. Both functions implement the libhdhomerun XOR-with-lookup checksum, which
  * Plex enforces during tuner discovery; producing an invalid ID (or accepting one mistakenly as valid) silently breaks discovery without surfacing any
- * diagnostic, so the algorithm earns dedicated boundary coverage on every nibble position and on every form of input garbage.
+ * diagnostic, so the suite covers a checksum-mismatch case, the position-0 lookup boundary via the all-zero ID, and the length, charset, and whitespace
+ * checks that gate the checksum comparison.
  */
 import { describe, test } from "node:test";
 import { generateDeviceId, validateDeviceId } from "./deviceId.ts";

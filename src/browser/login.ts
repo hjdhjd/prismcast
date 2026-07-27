@@ -198,8 +198,8 @@ export async function startLoginMode(url: string): Promise<{ error?: string; suc
 }
 
 /**
- * Ends login mode by closing the login tab (if still open) and re-minimizing the browser window. This function is idempotent - it's safe to call multiple times
- * or when login mode is not active.
+ * Ends login mode by closing the login tab (if still open) and re-minimizing the browser window. This function is safe to call multiple times or when login
+ * mode is not active.
  *
  * Called by:
  * - User clicking "Done" in the web UI (POST /auth/done)

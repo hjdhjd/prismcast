@@ -4,9 +4,9 @@
  * inline context that captures stdout/stderr, returns whatever InstallInfo the test wants, fakes the registry response, and stubs the platform-aware upgrade
  * executor. No real fetch, no real execSync, no real detectInstallMethod, no real process.exit.
  *
- * The test seam is `performUpgrade`, which mirrors the production UpgradeContext field. Tests stub it to return either a "ran" UpgradeStep (with the in-process
- * outcome) or a "handed-off" UpgradeStep (Windows-style detached helper); the handler is exercised against both branches without the lifecycle module ever
- * being reached.
+ * The field under test is `performUpgrade`, which mirrors the production UpgradeContext field. Tests stub it to return either a "ran" UpgradeStep (with the
+ * in-process outcome) or a "handed-off" UpgradeStep (Windows-style detached helper); the handler is exercised against both branches without the lifecycle
+ * module ever being reached.
  */
 import { describe, test } from "node:test";
 import { INSTALL_STRATEGIES } from "./detection.ts";
@@ -17,7 +17,8 @@ import assert from "node:assert/strict";
 import { handleUpgradeCommand } from "./commands.ts";
 
 /* makeUpgradeContext builds an UpgradeContext literal with sensible defaults. Stdout/stderr are routed into captured arrays so tests can inspect output;
- * detect/performUpgrade/exit/fetchLatestVersion are stubs that record their inputs. Tests override only the fields they care about.
+ * performUpgrade/exit/fetchLatestVersion are stubs that record their inputs, while detect is passed through unmodified. Tests override only the fields
+ * they care about.
  */
 interface CapturedContext {
 
@@ -92,8 +93,9 @@ function makeUpgradeContext(overrides: ContextOverrides = {}): CapturedContext {
   return { context, exits, fetchCalls, performUpgradeCalls, stderr, stdout };
 }
 
-/* The factory accepts a flat overrides shape rather than `Partial<InstallInfo>` because Partial distributes over the InstallInfo union and would forbid
- * reading manualUpgradeMessage off the upgradeable branch. The flat shape lets tests describe whichever variant they want with a single, ergonomic literal.
+/* The factory accepts a flat overrides shape rather than `Partial<InstallInfo>` because Partial<InstallInfo> only keeps the fields common to both union
+ * members, which drops manualUpgradeMessage from the type entirely. The flat shape lets tests describe whichever variant they want with a single,
+ * ergonomic literal.
  */
 interface InstallInfoOverrides {
 

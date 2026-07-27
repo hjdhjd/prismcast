@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * pid.ts: Cross-platform PID liveness check and silent file removal. This module holds the two low-level OS primitives that the PID-file layer builds on:
- * (1) "is this PID currently a live process?" via the signal-0 technique, and (2) "remove this file, treating ENOENT as success." Structured PID-file
- * lifecycle (write the record, parse it on read, detect a stale boot session) lives in utils/runtimeIdentity.ts; this module is its low-level dependency.
+ * pid.ts: Cross-platform PID liveness check and silent file removal. This module holds the low-level OS primitives that the PID-file layer builds on: a
+ * liveness check via the signal-0 technique, and file removal that treats ENOENT as success. Structured PID-file lifecycle (write the record, parse it
+ * on read, detect a stale boot session) lives in utils/runtimeIdentity.ts; this module is its low-level dependency.
  *
  * This module is intentionally synchronous. PID-file operations run in contexts where the event loop may not be available (process.on("exit") handlers), so
  * all I/O uses the synchronous fs API and process.kill() for signaling.

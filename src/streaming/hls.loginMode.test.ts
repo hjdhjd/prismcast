@@ -2,7 +2,7 @@
  *
  * hls.loginMode.test.ts: Unit tests for the login-mode 503 branch of validateChannel. Login mode is owned by browser/login.ts, and validateChannel reads it
  * through isLoginModeActive() (re-exported via browser/index.ts). Rather than substitute the accessor, we drive the REAL flag by calling the production
- * startLoginMode() through the injected setBrowserAccessors() seam with a stub browser and page - the same seam browser/index.ts wires at startup and
+ * startLoginMode() through the injected setBrowserAccessors() override with a stub browser and page - the same override browser/index.ts wires at startup and
  * precaching.revalidation.test.ts uses - so the test exercises the real login-mode mechanism end to end. clearLoginState() resets the flag and cancels the
  * 15-minute login timeout between tests. The companion happy-path and 404 tests live in hls.test.ts.
  */
@@ -58,7 +58,7 @@ describe("validateChannel - login mode 503 branch", () => {
      * both fields explicitly so any drop in either would surface here.
      */
 
-    // Drive the real login-mode flag true through the production setBrowserAccessors seam: startLoginMode opens the stub login page and flips isLoginModeActive().
+    // Drive the real login-mode flag true through the production setBrowserAccessors override: startLoginMode opens the stub login page and flips isLoginModeActive().
     setBrowserAccessors({
 
       getBrowserInstance: (): Browser => makeStubBrowser(),

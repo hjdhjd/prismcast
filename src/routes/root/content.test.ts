@@ -1,10 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * content.test.ts: Unit tests for the tab content HTML generators on the landing page. The module exports six tab generators (Overview, Help, API Reference,
- * Channels, Logs, Configuration) plus several internal helpers. Each tab is a pure HTML-string generator with no DOM, so we lock in structural invariants
- * (presence of the major sections, absence of template-literal artifacts) rather than running any real DOM logic. Several tabs read configuration state during
- * generation (Configuration's footer needs the data directory initialized, the Logs tab inlines client-side script blocks), so we initialize a per-suite
- * temp data directory in before().
+ * content.test.ts: Unit tests for the tab content HTML generators on the landing page. The module exports one generator per tab (Overview, Help, API
+ * Reference, Channels, Logs, Configuration) plus several internal helpers. Each tab is a pure HTML-string generator with no DOM, so we lock in structural
+ * properties (presence of the major sections, absence of template-literal artifacts) rather than running any real DOM logic. Configuration's footer reads
+ * configuration state during generation (it needs the data directory initialized via getConfigFilePath), so we initialize a per-suite temp data directory
+ * in before(); the Logs tab separately inlines client-side script blocks but does not read configuration state.
  */
 import { after, before, describe, test } from "node:test";
 import { generateApiReferenceContent, generateChannelsTabContent, generateConfigContent, generateHelpContent, generateLogsContent,
@@ -39,7 +39,7 @@ describe("generateOverviewContent", () => {
 
   test("returns a non-empty HTML string with multiple section blocks", () => {
 
-    // Overview is the largest tab by content - around a dozen <h3>-led sections covering the user guide. A length floor of 2000 catches an empty/truncated
+    // Overview is the largest tab by content - around eight <h3>-led sections covering the user guide. A length floor of 2000 catches an empty/truncated
     // generator without locking in a brittle exact byte count.
     const html = generateOverviewContent("http://localhost:5589");
 

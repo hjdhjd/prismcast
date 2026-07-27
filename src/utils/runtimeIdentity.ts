@@ -5,9 +5,9 @@
  * this stale state I can overwrite?" goes through inspect() or claim() here - no other module makes ad-hoc PID-only judgments.
  *
  * On-disk file format. The format is line-oriented and backwards-compatible. The first line is the bare PID as an integer so external tools that grep the
- * integer (the universal pidfile convention) still work. Subsequent lines are key=value pairs holding the boot session identifier (the load-bearing invariant)
- * and informational fields (startedAt, version). The parser is defensive: any line that does not match the format is ignored; missing required fields
- * downgrade the state to "stale-malformed", which is safely overwritten on claim().
+ * integer (the universal pidfile convention) still work. Subsequent lines are key=value pairs holding the boot session identifier (the field a mismatch or
+ * downgrade depends on) and informational fields (startedAt, version). The parser is defensive: any line that does not match the format is ignored; missing
+ * required fields downgrade the state to "stale-malformed", which is safely overwritten on claim().
  *
  * State machine.
  *   - free                  : No file on disk. claim writes a fresh record.
@@ -21,7 +21,7 @@
  * Same-boot PID reuse. The bootId check alone catches the cross-reboot case (a reboot mints a new boot session, so a recycled PID classifies as
  * stale-different-boot regardless of liveness). It cannot catch the same-boot residual: a SIGKILL of PrismCast followed by the kernel reassigning the freed PID
  * to an unrelated process within the same boot session leaves bootId matching and the PID alive, which would falsely read as held-live. We close this with a
- * process-identity probe (isPidOurProcess) that consults the OS process table - via the processInspector seam - and asks whether the live process at that PID is
+ * process-identity probe (isPidOurProcess) that consults the OS process table - via the processInspector port - and asks whether the live process at that PID is
  * genuinely a PrismCast instance or some unrelated program that inherited the recycled PID. When the table confirms a non-PrismCast command line at that PID, we
  * classify the slot as stale rather than held-live. When identity cannot be determined (the process table is unavailable on the platform, or the PID is absent
  * from it), we conservatively retain the held-live verdict: failing to confirm identity must never downgrade a possibly-live holder to "free", since that is the
@@ -86,7 +86,7 @@ export interface RuntimeIdentityContext {
   // a PrismCast instance, or an unrelated process that inherited a recycled PID within the same boot session? Returns true when the process table confirms a
   // PrismCast command line at that PID, false when it confirms a different (non-PrismCast) command line, and null when identity cannot be determined - the
   // process table is unavailable on the platform, the PID is absent from it, or the marker is empty. The null case is deliberately conservative: callers retain
-  // the held-live verdict rather than risk downgrading a possibly-live holder to "free". Conventionally backed by the processInspector seam plus a PrismCast
+  // the held-live verdict rather than risk downgrading a possibly-live holder to "free". Conventionally backed by the processInspector port plus a PrismCast
   // command-line marker.
   readonly isPidOurProcess: (pid: number) => Nullable<boolean>;
 
@@ -139,10 +139,10 @@ export function inspect(filePath: string, ctx: RuntimeIdentityContext = createDe
   }
 
   // The PID is alive and the boot session matches, but within a single boot the kernel can reassign a freed PID to an unrelated process after PrismCast was
-  // SIGKILLed. We confirm process identity through the seam: a verdict of false means the process table positively identified a non-PrismCast command line at
-  // this PID, so the original writer is gone and the slot is stale. A verdict of true (confirmed PrismCast) or null (cannot determine) both keep the held-live
-  // verdict - we only downgrade on positive proof of a different process. We classify the recycled case as stale-dead-pid rather than a new branch because the
-  // operational meaning is identical - the writing process is gone - and callers already overwrite that state.
+  // SIGKILLed. We confirm process identity through the processInspector port: a verdict of false means the process table positively identified a non-PrismCast
+  // command line at this PID, so the original writer is gone and the slot is stale. A verdict of true (confirmed PrismCast) or null (cannot determine) both
+  // keep the held-live verdict - we only downgrade on positive proof of a different process. We classify the recycled case as stale-dead-pid rather than a
+  // new branch because the operational meaning is identical - the writing process is gone - and callers already overwrite that state.
   if(ctx.isPidOurProcess(record.pid) === false) {
 
     return { kind: "stale-dead-pid", record };
@@ -185,8 +185,8 @@ export function claim(filePath: string, metadata: { version: string }, ctx: Runt
 /**
  * Releases the identity slot by removing the file at the given path - but only if the file's record identifies the current process. The PID-match check
  * inside makes ownership structural: a rejected duplicate startup's exit handler sees a held-live record belonging to a different PID and leaves the file
- * alone, while the legitimate holder sees its own PID and cleans up. Idempotent: a missing file is not an error. Release is purely hygiene - a process that
- * fails to release on death has its file recovered transparently on the next startup via the stale-different-boot or stale-dead-pid branches.
+ * alone, while the legitimate holder sees its own PID and cleans up. Safe to call more than once: a missing file is not an error. Release is purely hygiene -
+ * a process that fails to release on death has its file recovered transparently on the next startup via the stale-different-boot or stale-dead-pid branches.
  * @param filePath - The absolute path to the identity file.
  * @param ctx - The runtime identity context. Defaults to real I/O wiring.
  */
@@ -331,7 +331,7 @@ export function parseRecord(raw: string): Nullable<IdentityRecord> {
 /**
  * Persists a record to disk via atomic write (write-temp + rename). On POSIX rename is atomic within a filesystem; on Windows the rename is best-effort but
  * the partial-write window remains negligible. A torn write would parse as malformed, which the state machine recovers from on the next inspect - so atomicity
- * here is hygiene rather than load-bearing.
+ * here is hygiene, not something callers depend on for correctness.
  * @param filePath - The absolute path to the identity file.
  * @param record - The record to persist.
  */

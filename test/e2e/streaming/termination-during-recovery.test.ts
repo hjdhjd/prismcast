@@ -84,7 +84,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
 
   test("terminating a stream mid-recovery disposes the monitor exactly once and removes every cleanup-tracked resource", async () => {
 
-    /* The core invariant. A stream that is in the middle of an L2 recovery attempt must clean up cleanly when terminated:
+    /* The guarantee under test: a stream that is in the middle of an L2 recovery attempt must clean up cleanly when terminated:
      *   - the monitor handle is disposed exactly once (getMetrics has already drained the closure-scoped recovery state)
      *   - the registry entry is gone
      *   - the channel index entry is gone
@@ -124,8 +124,8 @@ describe("terminateStream during active recovery - cleanup contract", () => {
 
     // prerollTimer cleanup: the timer reference still exists, but lifecycle.ts cleared it. The clearest test is to wait past the firing window and assert the
     // timer's callback never ran. Since we set 60_000ms above and unref'd it, the test does not need to wait for that - we can directly observe by polling
-    // synchronously: terminateStream is synchronous, so by the time it returns the timer must have been cleared. clearTimeout is idempotent and silent, so the
-    // observable is "the timer never fires" - we can satisfy that by running through the event loop one tick and checking.
+    // synchronously: terminateStream is synchronous, so by the time it returns the timer must have been cleared. clearTimeout is safe to call more than once
+    // and silent, so the observable is "the timer never fires" - we can satisfy that by running through the event loop one tick and checking.
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(prerollTimerFired, false, "the prerollTimer must have been cleared by terminateStream - the callback must never run");

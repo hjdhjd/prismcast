@@ -37,9 +37,9 @@ import { setupRoutes } from "./routes/index.ts";
 import { terminateStream } from "./streaming/lifecycle.ts";
 import { validateProfiles } from "./config/profiles.ts";
 
-/* The logging mode is set at startup based on the --console CLI flag. When console logging is enabled, the four standard console methods are wrapped to prepend a
- * formatTimestamp() prefix so console output matches the file logger's timestamp format. When file logging is used (the default), output goes to the configured
- * log file (default: prismcast.log in the data directory).
+/* The logging mode is set at startup based on the --console CLI flag. When console logging is enabled, the standard console output methods are wrapped to
+ * prepend a formatTimestamp() prefix so console output matches the file logger's timestamp format. When file logging is used (the default), output goes to the
+ * configured log file (default: prismcast.log in the data directory).
  */
 
 // Track whether console logging is enabled, set during startServer().
@@ -53,7 +53,8 @@ let server: Nullable<Server> = null;
 /* The background-service teardown stack. Each long-lived background service (stale-page sweep, browser-restart watchdog, idle cleanup, show-info/pretune polling,
  * update check) registers its stop here at the moment it starts in startServer(); graceful shutdown disposes the stack wholesale, so a future service cannot be
  * started without also being torn down. An AsyncDisposableStack is used (rather than the synchronous DisposableStack) so the teardown awaits each registered stop -
- * the current six are synchronous, but a future service whose stop must complete (e.g. flushing to disk) would be silently fire-and-forgotten by a sync stack.
+ * today's registered stops are all synchronous, but a future service whose stop must complete (e.g. flushing to disk) would be silently fire-and-forgotten by a
+ * sync stack.
  */
 
 let backgroundServices: Nullable<AsyncDisposableStack> = null;
@@ -477,7 +478,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   usingConsoleLogging = parsedArgs.consoleLogging;
   setConsoleLogging(parsedArgs.consoleLogging);
 
-  // Apply timestamps to console output only when using console logging. Wraps the four standard console methods so each call prepends a timestamp matching the
+  // Apply timestamps to console output only when using console logging. Wraps the standard console output methods so each call prepends a timestamp matching the
   // file logger's format, ensuring console output and prismcast.log share identical timestamps. The wrappers are installed once at startup and affect every log
   // call from anywhere in the process - ours, Node's internal warnings, third-party library output - without distributing the responsibility across hundreds of
   // call sites. The no-console suppressions are intentional: the entire purpose of this block is to replace console's standard methods with timestamped wrappers.
@@ -516,9 +517,9 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   }
 
   // Release boot coordinator: snapshot every persistence-managed file before any reads or migrations run, then apply any pending schema migrations across all
-  // stores. Both operations are idempotent within a release (snapshots skip when the labeled copy already exists; ensureMigrated skips when the file is at the
-  // current schema version). Running them up front guarantees a restore point exists for every file at the start of every release boot, even if a subsequent
-  // initialize* function or migration discovers a problem and aborts startup.
+  // stores. Both operations are safe to run more than once within a release (snapshots skip when the labeled copy already exists; ensureMigrated skips when the
+  // file is at the current schema version). Running them up front guarantees a restore point exists for every file at the start of every release boot, even if a
+  // subsequent initialize* function or migration discovers a problem and aborts startup.
   try {
 
     await snapshotAllForRelease("pre-v" + getPackageVersion());
@@ -619,8 +620,8 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // never rejects, so voiding the promise is safe.
   setLoginModeEndObserver((url) => void revalidateDomainAuth(url));
 
-  // Run the cross-store consistency probe now that every store is loaded. Validates foreign-key-style invariants spanning multiple stores (service selections,
-  // variant canonicalKey targets, domain profile mappings, service tag filter) and auto-fixes warnings where safe. Errors do not block startup.
+  // Run the cross-store consistency probe now that every store is loaded. Validates foreign-key-style rules spanning multiple stores (service selections, variant
+  // canonicalKey targets, domain profile mappings, service tag filter) and auto-fixes warnings where safe. Errors do not block startup.
   await runConsistencyProbeAtStartup();
 
   // Load HLS resume state from the previous shutdown. This seeds sequence numbers so streams resume forward instead of resetting to 0.

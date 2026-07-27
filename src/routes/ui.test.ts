@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * ui.test.ts: Unit tests for the shared UI building blocks in ui.ts. The exports come in two groups: pure CSS/HTML/JS string generators (generateBaseStyles,
+ * ui.test.ts: Unit tests for the shared UI building blocks in ui.ts. The exports include pure CSS/HTML/JS string generators (generateBaseStyles,
  * generateTabStyles, generateTabScript, generateTabButton, generateTabPanel, generatePageWrapper) and a barrel re-export of components.ts. The tests verify
- * structural invariants (key class names, balanced braces, hash navigation hooks) and the conditional fork inside generateTabScript that wires the optional
+ * structural guarantees (key class names, balanced braces, hash navigation hooks) and the conditional fork inside generateTabScript that wires the optional
  * hideElementOnTab feature.
  */
 import { describe, test } from "node:test";

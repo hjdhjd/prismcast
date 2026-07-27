@@ -10,8 +10,9 @@ import { getEnabledServices, getServiceDisplayName, isServiceTagEnabled } from "
 import { getDomainConfig } from "../../../../config/sites.ts";
 
 /**
- * Builds a service filter warning payload when a URL's service tag is not in the active filter. Returns undefined when no filter is active, the URL resolves to no
- * known service tag, the URL resolves to the "direct" (non-service) tag, or the tag is already enabled.
+ * Builds a service filter warning payload when a URL's service tag is not in the active filter. Returns undefined when no filter is active, when the resolved
+ * domain has no configured service tag, or when the tag is already enabled. The literal "direct" comparison only matters for a user-supplied domain mapping
+ * that explicitly sets serviceTag: "direct" - built-in mappings never do, since network-owned sites are left untagged rather than tagged "direct".
  * @param url - The channel URL to derive the service tag from.
  * @returns The warning with display label and tag, or undefined when no warning is needed.
  */

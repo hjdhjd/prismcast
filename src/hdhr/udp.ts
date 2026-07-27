@@ -56,15 +56,15 @@ export interface UdpSurfaceOptions {
  */
 export interface UdpSurface extends AsyncDisposable {
 
-  // The port the responder socket is bound to, or null when the surface is down. Primarily a test seam - production uses the fixed HDHR_DISCOVERY_PORT and never
-  // needs to introspect the socket.
+  // The port the responder socket is bound to, or null when the surface is down. An accessor read primarily by tests - production uses the fixed
+  // HDHR_DISCOVERY_PORT and never needs to introspect the socket.
   readonly boundPort: Nullable<number>;
 
   // Closes the responder socket if one is bound, resolving only after the socket is fully released. A no-op when already down. Aliased as [Symbol.asyncDispose].
   ensureDown(): Promise<void>;
 
-  // Binds the responder socket, returning true on success and false on graceful bind failure (typically EADDRINUSE). Idempotent: a second call without an
-  // intervening ensureDown is a no-op success.
+  // Binds the responder socket, returning true on success and false on graceful bind failure (typically EADDRINUSE). Safe to call more than once: a
+  // second call without an intervening ensureDown is a no-op success.
   ensureUp(options?: UdpSurfaceOptions): Promise<boolean>;
 }
 
@@ -85,7 +85,7 @@ export function createUdpSurface(): UdpSurface {
 
   async function ensureUp(options?: UdpSurfaceOptions): Promise<boolean> {
 
-    // Idempotent: an already-bound surface is a no-op success. Safe to invoke from both initial startup and live config-change application.
+    // Safe to call more than once: an already-bound surface is a no-op success. Safe to invoke from both initial startup and live config-change application.
     if(socket !== null) {
 
       return true;

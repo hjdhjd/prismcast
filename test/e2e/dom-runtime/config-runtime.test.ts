@@ -22,12 +22,13 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin invariants, not historical incidents. "submitSettingsForm builds the dot-path config object" is the contract; "the d2ee7be Save flow regression
- *     doesn't recur" is a symptom to derive coverage from but not the test name.
+ *   - Pin the guarantee the test enforces, not the historical incident that motivated it. "submitSettingsForm builds the dot-path config object" is the
+ *     contract; "the d2ee7be Save flow regression doesn't recur" is a symptom to derive coverage from but not the test name.
  *   - Use evaluate(...) for one-shot expressions and DOM seeding; for complex setup, set ctx.document.body.innerHTML or insertAdjacentHTML in a single block.
  *   - For fetch-shape verification (POST bodies, URL paths, methods), override window.fetch with a spy before triggering the operation. Asserting on persisted
  *     state via the bootApp listener is also acceptable but couples the test to the server response shape - the spy is preferred when only the call shape matters.
- *   - When a runtime invariant reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
+ *   - When a runtime guarantee this suite pins reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion
+ *     to flip post-fix.
  *     Do NOT fix the production script in this suite - fixes are a separate authorized arc.
  */
 import type { DisposableDomTestContext, DomTestContextOptions } from "../../helpers/dom.helpers.ts";
@@ -52,7 +53,7 @@ async function setupConfigRuntime(options?: DomTestContextOptions): Promise<Disp
 
   /* Three scripts are loaded together:
    *   1. shared.ts (marker: "window.channelTable = {") - the namespace and utilities config.ts depends on (channelTable, showToast, dropdowns, etc.).
-   *   2. The provider data block (marker: "var channelSelectorsByDomain") - planted by generateChannelSelectorScript so updateSelectorSuggestions resolves real
+   *   2. The provider data block (marker: "var channelSelectorsByDomain") - planted by generateChannelSelectorData so updateSelectorSuggestions resolves real
    *      provider entries instead of degrading to its no-suggestions fallback. The lookup is typeof-guarded, so the script does not throw without it - unlike the
    *      unguarded streamData seed, this block is loaded for behavioral fidelity rather than to avert an exception.
    *   3. config.ts (marker: "window.submitSettingsForm") - the script under test.

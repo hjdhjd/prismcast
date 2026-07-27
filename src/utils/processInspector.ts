@@ -13,9 +13,9 @@ import type { Nullable } from "../types/index.ts";
 import { createDefaultProcessInspectorContext } from "./processInspector.context.ts";
 
 /**
- * One row of the OS process table. The triple (pid, ppid, commandLine) lets domain code identify a process by intent and verify its ownership via the
- * parent-child relationship. The ppid in particular is what lets killStaleChrome safely run from any context: a process whose Chrome is matched by profile
- * but whose ppid points at a live unrelated parent is owned by that parent, not by us, and we must leave it alone.
+ * One row of the OS process table. The fields let domain code identify a process by intent and verify its ownership via the parent-child relationship. The
+ * ppid in particular is what lets killStaleChrome safely run from any context: a process whose Chrome is matched by profile but whose ppid points at a live
+ * unrelated parent is owned by that parent, not by us, and we must leave it alone.
  */
 export interface ProcessInfo {
 
@@ -151,6 +151,8 @@ export function parseWindowsFormatListOutput(raw: string): ProcessInfo[] {
   let currentPpid: Nullable<number> = null;
   let currentCommandLine: Nullable<string> = null;
 
+  // A record is only committed once both pid and ppid have been seen, since ownership decisions depend on both being present and trustworthy. A missing
+  // command line is tolerated and recorded as an empty string.
   const flush = (): void => {
 
     if((currentPid !== null) && (currentPpid !== null)) {

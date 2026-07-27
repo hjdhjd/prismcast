@@ -36,8 +36,8 @@ describe("RECOGNIZED_CODECS", () => {
 
   test("declares the expected number of codecs", () => {
 
-    // Code paths in codec.ts and CONFIG validation iterate this array assuming at least one entry. We assert the exact count so adding or removing a codec
-    // surfaces here as well as in the deepEqual membership test above.
+    // CONFIG validation (config/index.ts) iterates this array assuming at least one entry; codec.ts consumes only the derived CaptureCodec type, not the
+    // array itself. We assert the exact count so adding or removing a codec surfaces here as well as in the deepEqual membership test above.
     assert.equal(RECOGNIZED_CODECS.length, 2);
   });
 });

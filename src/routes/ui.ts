@@ -4,8 +4,9 @@
  */
 import { generateThemeStyles } from "./theme.ts";
 
-/* This module provides reusable UI components used across PrismCast web pages. It ensures consistent styling and behavior between the landing page and
- * configuration page by extracting common CSS and JavaScript patterns. All styles use CSS custom properties from theme.ts for automatic dark mode support.
+/* This module provides reusable UI components used across PrismCast's server-rendered pages, including the landing page and the debug page. It ensures
+ * consistent styling and behavior by extracting common CSS and JavaScript patterns. All styles use CSS custom properties from theme.ts for automatic
+ * dark mode support.
  */
 
 // Re-export components for convenience.
@@ -228,7 +229,8 @@ export function generateTabStyles(): string {
 
 /**
  * Generates the JavaScript for tab switching functionality. This script handles click events on tab buttons, keyboard navigation, hash-based URL navigation,
- * and localStorage persistence of the selected tab.
+ * and localStorage persistence of the selected tab. It dispatches a "tabactivated" CustomEvent (detail: { category }) on every tab switch, including the
+ * initial load; subtab controllers (config, channels) listen for this event to initialize their content when their parent tab becomes active.
  * @param options - Configuration options for the tab script.
  * @returns JavaScript code as a string wrapped in script tags.
  */
@@ -289,12 +291,21 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
     "      }",
     "    }",
     hideLogic,
+
+    // Persist the selected tab to localStorage for restoration on the next visit. A failure here (private browsing, disabled storage, quota errors)
+    // is non-fatal because tab selection still resolves via the hash or the default active tab on the next load.
     "    try { localStorage.setItem('" + localStorageKey + "', category); } catch(e) {}",
     "    if(updateUrl !== false) {",
     "      var parsed = parseHash();",
+
+    // Config and Channels are the only tabs with subtabs today. Adding a new subtabbed tab requires updating this branch, the equivalent
+    // hashchange-handler checks below, and the matching window.switch*Subtab wiring for the new tab.
     "      var subtab = ((category === 'config') || (category === 'channels')) ? parsed.subtab : null;",
     "      updateHash(category, subtab);",
     "    }",
+
+    // Signal that a tab has been activated. Subtab controllers (config, channels) listen for this event to initialize their content when their
+    // parent tab becomes active.
     "    document.dispatchEvent(new CustomEvent('tabactivated', { detail: { category: category } }));",
     "  }",
 
@@ -344,6 +355,9 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
     "  var parsed = parseHash();",
     "  var initialTab = parsed.tab;",
     "  if(!initialTab) {",
+
+    // A failure reading localStorage (private browsing, disabled storage, quota errors) is non-fatal here: initialTab simply stays undefined and
+    // falls through to the default-active-tab branch below.
     "    try { initialTab = localStorage.getItem('" + localStorageKey + "'); } catch(e) {}",
     "  }",
     "  if(initialTab && document.querySelector('.tab-btn[data-category=\"' + initialTab + '\"]')) {",
@@ -353,6 +367,8 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
     "    if(activeTab) {",
     "      var category = activeTab.getAttribute('data-category');",
     "      if(!parsed.tab) updateHash(category, null);",
+
+    // Dispatch the same tabactivated signal as switchTab above, so subtab controllers initialize consistently on this default-tab, first-load path.
     "      document.dispatchEvent(new CustomEvent('tabactivated', { detail: { category: category } }));",
     "    }",
     "  }",

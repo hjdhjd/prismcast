@@ -7,7 +7,7 @@ import { canAttemptLaunch, createLaunchGovernorState, noteLaunchFailure, noteLau
 import type { Browser } from "puppeteer-core";
 import type { Nullable } from "../types/index.ts";
 
-/* The supervisor models the browser as a fallible external dependency whose single invariant is: a published browser is capture-ready. It is deliberately pure of
+/* The supervisor models the browser as a fallible external dependency whose single guarantee is: a published browser is capture-ready. It is deliberately pure of
  * Chrome I/O - the actual launch (spawn Chrome, verify the capture extension, capture display/version) is injected as the `launch` port, and the impure adapter in
  * browser/index.ts provides it. That inversion makes the riskiest logic - the gate, the loop-safe governor, and the lifecycle transitions - fully unit-testable
  * with a fake launch and a fake clock, which is exactly the logic the original outage proved must be tested. The supervisor never reads the wall clock, never logs,
@@ -189,7 +189,7 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
 
   /* Begins a launch in the given phase (launching for a normal acquire, trialing for a post-cooldown trial) and publishes the in-flight promise into the state so
    * concurrent acquire() callers join it rather than starting a second Chrome. The body deliberately has no await: it starts runLaunch (which suspends at the
-   * launch port) and publishes the launching/trialing state synchronously, before returning, so the single-flight invariant holds. It is async only to satisfy the
+   * launch port) and publishes the launching/trialing state synchronously, before returning, so single-flight holds. It is async only to satisfy the
    * promise-returning-function convention; the synchronous publish is what matters for correctness.
    */
   async function beginLaunch(kind: "launching" | "trialing"): Promise<Browser> {

@@ -5,7 +5,7 @@
  * the filesystem, or queries platform helpers; tests construct BootSessionContext literals inline and bypass this file entirely.
  *
  * The snapshot semantics matter. NTP correction or system-clock adjustment mid-process would otherwise let two reads of "host boot minute" disagree by a
- * minute, breaking the invariant that two calls to getBootSessionId within the same process return equal values. Capturing the math at adapter creation pins
+ * minute, breaking the guarantee that two calls to getBootSessionId within the same process return equal values. Capturing the math at adapter creation pins
  * the value for the process lifetime.
  */
 import type { BootSessionContext } from "./bootSession.ts";
@@ -20,11 +20,12 @@ import os from "node:os";
  */
 export function createDefaultBootSessionContext(): BootSessionContext {
 
-  // Snapshot the host boot minute by computing it from system uptime. os.uptime() is sleep-inclusive on Linux, macOS, and Windows (Node delegates to platform
-  // primitives that all include suspended time), so this value remains stable across sleep/wake cycles. Rounding to the nearest minute absorbs sub-minute NTP
-  // drift between writes and reads. Future upgrade: on Linux, /proc/sys/kernel/random/boot_id is a kernel-generated UUID that is regenerated each boot and
-  // immune to clock drift; switching this branch to read that file would eliminate the minute-boundary jitter entirely. macOS (sysctl kern.boottime) and
-  // Windows (Win32_OS.LastBootUpTime) have equivalent kernel facts but require a subprocess; deferred until a real boundary-jitter incident motivates the work.
+  // Snapshot the host boot minute by computing it from system uptime. os.uptime() is sleep-inclusive on Linux (clock_gettime(CLOCK_BOOTTIME), with a /proc/uptime read
+  // tried first), macOS (sysctl KERN_BOOTTIME), and Windows (GetTickCount64); each of those primitives keeps counting while the system is suspended, so this value
+  // remains stable across sleep/wake cycles. Rounding to the nearest minute absorbs sub-minute NTP drift between writes and reads. Future upgrade: on Linux,
+  // /proc/sys/kernel/random/boot_id is a kernel-generated UUID that is regenerated each boot and immune to clock drift; switching this branch to read that file would
+  // eliminate the minute-boundary jitter entirely. macOS (sysctl kern.boottime) and Windows (Win32_OS.LastBootUpTime) have equivalent kernel facts but require a
+  // subprocess; deferred until a real boundary-jitter incident motivates the work.
   const hostBootMinuteSnapshot = Math.round((Date.now() - (os.uptime() * 1000)) / 60000);
 
   // Snapshot the container detection result. The project-wide helper reads PRISMCAST_CONTAINER and /.dockerenv; both are stable for the process lifetime.

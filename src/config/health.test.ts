@@ -576,7 +576,7 @@ describe("expired-entry pruning (memory hygiene)", () => {
 
   test("an expired single-key read returns null, and the expired entry is never persisted", async () => {
 
-    /* Pins the observable [27] contract for the single-key read path: an entry aged past the TTL reads back as null and does not survive to disk. We mark, expire,
+    /* Pins the observable contract for the single-key read path: an entry aged past the TTL reads back as null and does not survive to disk. We mark, expire,
      * read, then mark a separate fresh key and flush. Whether the touched-expired key is dropped by the read-path delete (getChannelHealth) or by the write-path
      * prune at flush is not independently observable here - with a monotonic clock, anything expired at read time is still expired at flush time, so an on-disk read
      * cannot isolate the two - but both enforce the same no-persist-expired guarantee. The write-path prune is pinned on its own by the flush test below.
@@ -643,7 +643,7 @@ describe("expired-entry pruning (memory hygiene)", () => {
 
     /* TTL-exemption pin for the write-chokepoint prune path. writeHealthState calls pruneExpiredEntries before serializing; the domains loop's isDomainAuthExpired
      * call is the mutation under test - an age-only predicate there would shed the aged needsLogin entry and the on-disk readback below would miss it. A verified
-     * entry aged identically is asserted absent in the same write, proving the exemption discriminates on status rather than skipping the prune entirely.
+     * entry aged identically is asserted absent in the same write, proving the exemption branches on status rather than skipping the prune entirely.
      */
     await withTempDir(async (dir) => {
 

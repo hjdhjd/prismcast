@@ -8,14 +8,14 @@ import { resolveUrl } from "./probe.ts";
 
 /* Media-only HLS playlists do not declare codec information - that lives in the master playlist's #EXT-X-STREAM-INF CODECS attribute, which the master-playlist
  * resolver consumes today. For media-only feeds (no master playlist exists), the codec must be inferred from the segments themselves so the MediaFeed surfaces
- * the same codec/resolution metadata regardless of which playlist kind arrived. This module provides the inference seam.
+ * the same codec/resolution metadata regardless of which playlist kind arrived. This module provides the inference path for media-only playlists.
  *
  * The inference path supported in this module is the MPEG-TS Program Map Table (PMT). HLS streams using TS segments expose the elementary stream's stream_type
  * directly in the PMT, which is small enough to reach within the first ~2 KB of every segment. PMT-based inference is bounded, deterministic, and avoids the
  * complexity of full codec-config parsing (SPS NALU walking) because the stream_type byte alone is sufficient to label the codec for status display.
  *
  * fMP4 segments declare codec information in the moov box of an init segment referenced by #EXT-X-MAP. That path is intentionally out of scope for this module
- * and lives behind a clean extension seam: future work can dispatch on the segment's file extension or content type and call parseMoovCodecConfig() from
+ * and lives behind a clean extension point: future work can dispatch on the segment's file extension or content type and call parseMoovCodecConfig() from
  * src/streaming/mp4Parser.ts. Resolution is not inferred from TS segments because TS PMT does not carry resolution; recovering it would require parsing the SPS
  * NALU inside a video access unit, which is significantly heavier than the PMT-only walk this module performs.
  *

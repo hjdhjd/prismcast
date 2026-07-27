@@ -133,8 +133,8 @@ describe("installSseStream - close()", () => {
   test("close() is idempotent - a double-call does not throw", () => {
 
     // Defensive: req.on("close") may fire multiple times in pathological proxy scenarios, and a future consumer might call sse.close() defensively in addition
-    // to the route's own teardown. clearInterval on an already-cleared id is a no-op in Node, so the helper inherits idempotence for free; this test pins that
-    // contract so a future "track whether we already closed" guard isn't accidentally introduced, breaking callers.
+    // to the route's own teardown. clearInterval on an already-cleared id is a no-op in Node, so the helper is safe to call more than once for free; this test
+    // pins that contract so a future "track whether we already closed" guard isn't accidentally introduced, breaking callers.
     const { res } = makeReqRes();
     const sse = installSseStream(res);
 

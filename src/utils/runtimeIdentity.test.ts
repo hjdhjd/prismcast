@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * runtimeIdentity.test.ts: Unit tests for the runtime-identity state machine. Each state-machine branch (free, held-live, stale-different-boot, stale-dead-pid,
- * stale-malformed) gets a dedicated test that pins the exact discriminator and (where applicable) the record payload. The file format is covered via round-trip
+ * stale-malformed) gets a dedicated test that pins the exact kind tag and (where applicable) the record payload. The file format is covered via round-trip
  * tests over serializeRecord/parseRecord. Tests use withTempDir for filesystem isolation and a hand-rolled RuntimeIdentityContext literal for deterministic
  * control over boot session ID, PID liveness, and process identity - no real /proc or process.kill is exercised here.
  */
@@ -53,7 +53,7 @@ describe("inspect state machine", () => {
       const ctx = makeCtx({ bootId: "session-1", livePids: new Set([12345]) });
       const state = inspect(filePath, ctx);
 
-      // assert.equal narrows state.kind to "held-live" via the asserts-clause type, which discriminates the union and exposes state.record without an extra wrapper.
+      // assert.equal narrows state.kind to "held-live" via the asserts-clause type, which narrows the union and exposes state.record without an extra wrapper.
       assert.equal(state.kind, "held-live");
       assert.equal(state.record.pid, 12345);
       assert.equal(state.record.bootId, "session-1");
@@ -398,7 +398,7 @@ describe("serializeRecord / parseRecord round trip", () => {
 
   test("first line is the bare PID integer (backwards compatibility)", () => {
 
-    // External tooling that grepped the old format expects the PID on its own as the first line. The masterclass invariant is that this never breaks.
+    // External tooling that greps the bare PID convention expects it on its own as the first line. This never breaks, even as future writers add fields.
     const serialized = serializeRecord({ bootId: "boot-1", pid: 4242, startedAt: "2026-05-17T12:34:56Z", version: "1.10.3" });
 
     assert.match(serialized, /^4242\n/);

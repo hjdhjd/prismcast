@@ -33,8 +33,9 @@ export function generateStatusScript(): string {
   const constantDecls = HANDLER_CONSTANTS.map((c) => "const " + c.name + " = " + JSON.stringify(c.value) + ";").join("\n");
 
   // Section 2: emit each handler/helper as its source via Function.prototype.toString(). Function declarations are hoisted in script-tag scope, so cross-handler
-  // references resolve regardless of declaration order; the order chosen in HANDLER_FUNCTIONS reflects the logical groups (formatters, renderers, mutators,
-  // schedulers, handlers, trampolines).
+  // references resolve regardless of declaration order; the order chosen in HANDLER_FUNCTIONS groups by logical role - formatters, renderers, the render
+  // schedulers, then the DOM mutators (renderStreamsTable, updateStreamRow, toggleStreamDetails, updateDurations), SSE handlers, and trampolines - rather than a
+  // strict linear pass through those categories.
   const handlerSources = HANDLER_FUNCTIONS.map((fn) => fn.toString()).join("\n\n");
 
   // Section 3: the IIFE. Wires the runtime side - constructs the state and externals, opens the EventSource, dispatches events, attaches window.* trampolines,
@@ -42,8 +43,9 @@ export function generateStatusScript(): string {
   // channelTable, copyToClipboard, dropdowns) are wired into ctx.externals via bare identifiers, matching the existing client-side idiom - shared.ts assigns them via
   // window.X = ... before this script loads, and bare identifiers in non-strict script-tag scope resolve through the global object. The shared escapeHtml SSOT is NOT
   // wired through externals: the handler bodies reference it directly as a bare global (like Date or requestAnimationFrame), resolving to the window.escapeHtml that
-  // shared.ts installs, so it needs no entry here. updateRestartDialogStatus is wrapped in a typeof guard inside a getter because config.ts loads after status.ts; a
-  // streamRemoved event arriving before config.ts has registered the callback must not throw.
+  // shared.ts installs, so it needs no entry here. config.ts's script is emitted before status.ts's script on the page, so updateRestartDialogStatus is already
+  // registered on window by the time this IIFE runs; the typeof guard inside the getter is defensive in case that emission order ever changes, so a
+  // streamRemoved event still cannot throw if the callback is not yet registered.
   //
   // Trampoline capture: the handlers toggleStreamPopover, toggleStreamDetails, and copyOverviewPlaylistUrl share names with the window.* properties we bind
   // them to. In classic-script scope, function declarations live as properties of the global object, so assigning window.toggleStreamPopover = ... would

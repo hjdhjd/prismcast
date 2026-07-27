@@ -51,8 +51,8 @@ export interface RecoveryMetrics {
  */
 export interface MonitorHandle extends Disposable {
 
-  // Stops the health-monitor interval. Idempotent: a second call is a harmless clearInterval on an already-cleared handle, and the monitor's internal guard
-  // short-circuits any in-flight async tick. Aliased to [Symbol.dispose].
+  // Stops the health-monitor interval. Safe to call more than once: a second call is a harmless clearInterval on an already-cleared handle, and the monitor's
+  // internal guard short-circuits any in-flight async tick. Aliased to [Symbol.dispose].
   readonly dispose: () => void;
 
   // Returns the live recovery metrics accumulated over the monitor's lifetime. Safe to read at any time, including after disposal. Read in the termination prologue
@@ -360,9 +360,10 @@ export interface FailureWindowResult {
 }
 
 /**
- * Records a failure against a sliding window and reports whether the window has tripped. Pure over (state, now, options): it mutates the supplied state in place and
- * returns the decision plus diagnostics. When a failure arrives after the window has lapsed, the window restarts from it (count resets to 1) so accrual reflects
- * only the recent window. This is the single source of truth for failure accrual; consumers differ only in the bounds they pass and what a trip means to them.
+ * Records a failure against a sliding window and reports whether the window has tripped. Deterministic over (state, now, options): given the same inputs it always
+ * mutates the supplied state the same way and returns the same decision plus diagnostics, with no reliance on the wall clock or any module-level state. When a
+ * failure arrives after the window has lapsed, the window restarts from it (count resets to 1) so accrual reflects only the recent window. This is the single
+ * source of truth for failure accrual; consumers differ only in the bounds they pass and what a trip means to them.
  * @param state - The failure-window state to update.
  * @param now - The current timestamp in milliseconds.
  * @param options - The window duration and trip threshold.
@@ -545,6 +546,12 @@ export function getIssueCategory(state: VideoState, isStalled: boolean, isBuffer
 /* Capture-infrastructure error signatures. These indicate a fault in Chrome's capture pipeline itself - the puppeteer-stream tabCapture extension, the serialized
  * capture queue, or stream initialization - rather than a site- or stream-specific problem. They are the faults that warrant backing a client off (HTTP 503) and,
  * for the browser supervisor, treating a setup failure as evidence the browser itself may no longer be capture-ready.
+ *
+ * The "timed out" entry is deliberately a broad substring rather than one literal string per message: it covers every timeout raised within
+ * createPageWithCapture's own pipeline - the capture-queue wait, stream initialization, the playback-initialization safety net, and the capability probe - without
+ * hard-coding each message here. isCaptureInfrastructureError has a single caller, the createPageWithCapture catch block in streaming/setup.ts, so the substring
+ * only ever sees errors surfaced from that pipeline. It stays safe there because navigateToPage and reloadPage swallow Puppeteer's own navigation timeouts as
+ * warnings instead of throwing, and the evaluate-call timeout path (EvaluateTimeoutError) belongs to the health monitor's own call chain, never this one.
  */
 const CAPTURE_INFRASTRUCTURE_PATTERNS = [ "Cannot capture", "Capture queue", "timed out" ] as const;
 
@@ -570,7 +577,7 @@ export function isCaptureInfrastructureError(error: unknown): boolean {
  * Derives the reported health status for a capture stream from its recovery and playback state. This is the single source of truth for the health precedence
  * ladder the monitor emits over SSE: an error state - or a page-reload-level escalation (>= 3), which is equally severe - reports "error"; an active escalation
  * (levels 1-2) reports "recovering"; buffering within the grace window reports "buffering"; consecutive stalls that have not yet crossed the recovery trigger
- * report "stalled"; otherwise "healthy". Pure and total, so the precedence lives in exactly one place and is directly testable.
+ * report "stalled"; otherwise "healthy". Deterministic and side-effect free over its inputs, so the precedence lives in exactly one place and is directly testable.
  * @param inputs - The recovery escalation level, error flag, buffering flag, and consecutive stall count read from the monitor's state.
  * @returns The stream health status to report.
  */
@@ -607,7 +614,7 @@ export function deriveStreamHealth(inputs: { escalationLevel: number; hasError: 
  * Decides whether the monitor should trigger a recovery action this tick. This is the single source of truth for the recovery-trigger condition: recovery never
  * fires inside the post-recovery grace window; otherwise it fires on an error, an ended stream, a persistent pause (paused past the stall-count hysteresis while
  * outside the buffering grace window), a persistent stall (not progressing past the same hysteresis while outside the buffering grace window), or a stalled
- * capture pipeline. The buffering grace window filters transient rebuffer pauses so they do not escalate. Pure and total.
+ * capture pipeline. The buffering grace window filters transient rebuffer pauses so they do not escalate. Deterministic and side-effect free over its inputs.
  * @param inputs - The grace-window flags, playback state flags, pause/stall counts, the stall-count threshold, and the production-stalled flag from the monitor.
  * @returns True when a recovery action is warranted.
  */

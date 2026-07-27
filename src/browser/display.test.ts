@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * display.test.ts: Unit tests for the display dimension and GPU capability cache in display.ts. The module exposes six exports - three setters and three getters
- * over independent module-level slots for the maximum supported viewport, the browser chrome dimensions, and the GPU capability bundle. The cache is intentionally
- * minimal (no validation, no normalization, last-write-wins) so the tests focus on the round-trip contract and inter-slot independence rather than complex behavior.
+ * display.test.ts: Unit tests for the display dimension and GPU capability cache in display.ts. The module exposes setters and getters over independent
+ * module-level slots for the maximum supported viewport, the browser chrome dimensions, and the GPU capability bundle. The cache is intentionally minimal (no
+ * validation, no normalization, last-write-wins) so the tests focus on the round-trip contract and inter-slot independence rather than complex behavior.
  * Each describe block saves and restores the slot it touches so state from one test cannot leak into another or into other test files that rely on the cache.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -187,7 +187,7 @@ describe("setGpuCapabilities / getGpuCapabilities", () => {
 
 describe("cache slot independence", () => {
 
-  // The three slots back independent module-level state. Mutating one must not affect the others. This guards against accidental refactors that pull the slots
+  // These slots back independent module-level state. Mutating one must not affect the others. This guards against accidental refactors that pull the slots
   // into a shared object or share storage between the setters.
 
   let originalMax: Nullable<{ height: number; width: number }>;

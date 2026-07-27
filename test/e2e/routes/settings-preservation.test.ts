@@ -4,18 +4,18 @@
  * (CONFIG_METADATA fields), merges it into the existing config via mergeConfigValues, and persists. The historical bug 4afa8a0 wiped non-form fields
  * (disabledPredefined, enabledServices, hdhr.deviceId) when the save was wholesale-overwriting the existing config; the merge-based fix preserves them.
  *
- * persistence/upgrade-preservation.test.ts already covers the same invariants by driving mutateConfig directly. This suite adds end-to-end HTTP coverage so a
+ * persistence/upgrade-preservation.test.ts already covers the same rules by driving mutateConfig directly. This suite adds end-to-end HTTP coverage so a
  * regression in the route-handler path (e.g., the body-parser change, the validation step, the merge call site) surfaces here even when the underlying
- * mutateConfig invariant still holds.
+ * mutateConfig rule still holds.
  *
  * The file is split into two cohesive blocks:
  *
- *   1. Hand-picked named-fingerprint tests for the four highest-leverage 4afa8a0-class fields (disabledPredefined, enabledServices, hdhr.deviceId,
+ *   1. Hand-picked named-fingerprint tests for the highest-leverage 4afa8a0-class fields (disabledPredefined, enabledServices, hdhr.deviceId,
  *      channelsDvr.host) plus the empty-form-body no-op boundary. These remain on purpose, even though the parameterized sweep below also covers each of those
  *      fields - the named tests carry historical-incident context in their messages and serve as low-cost belt-and-suspenders against the most user-visible
- *      regression class. If the parameterized sweep ever skips or mis-seeds one of those four, the named test still catches the underlying bug.
+ *      regression class. If the parameterized sweep ever skips or mis-seeds one of those fields, the named test still catches the underlying bug.
  *
- *   2. Suite 17 - parameterized preservation sweep driven directly off PRESERVED_FIELDS, the production registry. Adding a thirteenth preserved field is one
+ *   2. Suite 17 - parameterized preservation sweep driven directly off PRESERVED_FIELDS, the production registry. Adding a new preserved field is one
  *      line in src/config/userConfig.ts (the registry) plus one line in this file's seed table; the sweep then automatically asserts preservation for the new
  *      field. The drift-check test at the top of the sweep block fails loudly if the seed table and the registry get out of sync. This is the structural
  *      counter to the next 4afa8a0: a regression on a field nobody hand-picked for a test surfaces here automatically the moment it's added to the registry.

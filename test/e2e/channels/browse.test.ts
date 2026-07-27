@@ -5,9 +5,9 @@
  * that each action produces. It is the sibling of crud.test.ts (single-channel form CRUD) and tags.test.ts (tag vocabulary): all three drive the same channels.json
  * store, but this suite pins the browse-modal-specific contract that the others do not touch.
  *
- * Three invariants are pinned. (1) buildUserChannel's variant branch: when an add resolves to a service variant of an existing predefined canonical (canonicalKey
- * set), the stored record carries binding-only fields (canonicalKey, url, channelSelector) and intentionally DROPS identity fields (name, stationId) because
- * identity is canonical-only. (2) A standalone add (no canonicalKey) preserves the submitted stationId on the identity-owning canonical record, and a batch entry
+ * The guarantees pinned are as follows. (1) buildUserChannel's variant branch: when an add resolves to a service variant of an existing predefined canonical
+ * (canonicalKey set), the stored record carries binding-only fields (canonicalKey, url, channelSelector) and intentionally DROPS identity fields (name, stationId)
+ * because identity is canonical-only. (2) A standalone add (no canonicalKey) preserves the submitted stationId on the identity-owning canonical record, and a batch entry
  * whose name yields no generatable key is skipped with a per-entry error while the rest of the batch still applies - the batch is not aborted. (3) The remove
  * action clears the service selection and, via resolveServiceKey, either survives (a multi-service channel with an alternative service is not disabled) or, when the
  * resolved service is still the removed service (a single-service predefined channel), disables the predefined channel by adding it to disabledPredefined.
@@ -164,10 +164,10 @@ describe("POST /config/channels/modify - remove reverts a multi-service channel 
 
     const { urlFor } = await bootApp(ctx);
 
-    /* Seed an explicit selection to the DirecTV variant of "abc", then remove the Hulu service. During the mutation resolveServiceKey still sees the DirecTV
-     * selection (its tag "directv" differs from the removed "hulu"), so the resolved service is an alternative and the channel is NOT disabled. The endpoint always
-     * clears the selection, so on disk "abc" reverts to its canonical default. The persisted outcome we pin: the selection is gone and "abc" is not in
-     * disabledPredefined.
+    /* Seed an explicit selection to the DirecTV variant of "abc", then remove the Hulu service. The remove handler clears data.serviceSelections["abc"] before
+     * resolving, so resolveServiceKey falls back to the canonical key itself, whose own service tag ("direct") differs from the removed service ("hulu"), so the
+     * channel is NOT disabled. The endpoint always clears the selection, so on disk "abc" reverts to its canonical default. The persisted outcome we pin: the
+     * selection is gone and "abc" is not in disabledPredefined.
      */
     await mutateChannels((data) => {
 

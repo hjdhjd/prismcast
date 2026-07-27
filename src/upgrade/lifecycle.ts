@@ -62,7 +62,7 @@ export interface UpgradeRunResult {
 /**
  * Runtime context the lifecycle strategies consume. Each field is one narrow capability some strategy needs. POSIX strategies use only `runCommand`; the
  * Windows handoff strategy uses `parentPid`, `serviceTaskName`, `spawnDetached`, `upgradeLogPath`. Splitting them onto one struct keeps the adapter (and the
- * test seam) a single object, even though no strategy uses every field.
+ * UpgradeLifecycleContext interface it satisfies for tests) a single object, even though no strategy uses every field.
  */
 export interface UpgradeLifecycleContext {
 
@@ -271,8 +271,8 @@ const WINDOWS_HANDOFF_LIFECYCLE: UpgradeLifecycleStrategy = {
 
 /* The strategy registry as a narrow tuple. Declared `as const` so each entry retains its literal shape...the dispatcher walks this in order and picks the
  * first match. POSIX comes first because it serves more platforms; Windows comes second because it serves only one. The default-fallback semantics live in
- * performUpgrade so an unknown platform (e.g., freebsd) falls through to the POSIX strategy, which is the most permissive choice and matches PrismCast's
- * historical pre-Windows behavior.
+ * selectLifecycle so an unknown platform (e.g., freebsd) falls back to the POSIX strategy because it serves the broadest platform set and keeps the
+ * dispatcher total.
  */
 const STRATEGY_TUPLE = [
 
@@ -288,9 +288,8 @@ const STRATEGY_TUPLE = [
 export const UPGRADE_LIFECYCLES: readonly UpgradeLifecycleStrategy[] = STRATEGY_TUPLE;
 
 /**
- * Selects the lifecycle strategy for a given platform. Falls back to the POSIX in-process strategy when no strategy lists the platform...this matches
- * PrismCast's historical behavior for any Unix-like host that is not specifically called out and keeps the function total (no thrown error from a one-off
- * platform name).
+ * Selects the lifecycle strategy for a given platform. Falls back to the POSIX in-process strategy when no strategy lists the platform...this covers any
+ * Unix-like host that is not specifically called out and keeps the function total (no thrown error from a one-off platform name).
  *
  * @param platform - The OS platform identifier.
  * @returns The matching strategy, or the POSIX default when no strategy serves the platform.

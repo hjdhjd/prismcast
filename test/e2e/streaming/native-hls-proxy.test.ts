@@ -352,8 +352,8 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
      * Architecture under test. The proxy's polling cadence routes through the Clock port (utils/clock.ts) so the test injects a fake clock whose sleep returns
      * a controllable promise. The first poll fires immediately on start(); the awaiter created by schedulePoll then awaits clock.sleep(MANIFEST_BACKOFF_BASE)
      * - in this test, that promise stays pending until the test releases it. The test calls stop(), then releases the held sleep, then drains microtasks. The
-     * awaiter wakes, sees lifecycle.stopped === true, and exits without issuing a second fetch. The invariant pinned: zero upstream requests after stop()
-     * regardless of whether the in-flight sleep ever resolves. The fake-clock injection seam proves this negative deterministically, without any wall-clock wait.
+     * awaiter wakes, sees lifecycle.stopped === true, and exits without issuing a second fetch. The guarantee under test: zero upstream requests after stop()
+     * regardless of whether the in-flight sleep ever resolves. The fake-clock injection point proves this negative deterministically, without any wall-clock wait.
      */
     await using ctx = await createIntegrationContext();
 

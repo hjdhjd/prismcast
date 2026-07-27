@@ -4,12 +4,13 @@
  *
  * HDHR-aware clients can issue UDP Get requests for a small fixed catalog of named state keys ("/sys/version", "/tuner0/channel", ...) once they have located a
  * device via Discover. The transport layer parses each request and routes it through this module's resolveGet function; the resolver consults a table of
- * static-system keys (those whose value is a constant or a CONFIG-derived string) and a regex for per-tuner keys (those whose value depends on which slot is
- * being addressed). Unknown keys fall through to an error reply, matching real HDHR firmware behavior.
+ * static-system keys (those whose value is a constant sourced from hdhr/identity.ts, a fixed literal, or the runtime-version carried on GetContext) and a
+ * regex for per-tuner keys (those whose value depends on which slot is being addressed). Unknown keys fall through to an error reply, matching real HDHR
+ * firmware behavior.
  *
- * Two layering choices keep this module masterclass-shaped rather than ad-hoc:
+ * Two layering choices keep this module easy to extend and test:
  *
- *   1. Pure functions over a GetContext seam. Tests construct a synthetic context with any tuner state and assert reply values without touching CONFIG, the
+ *   1. Pure functions over a GetContext boundary. Tests construct a synthetic context with any tuner state and assert reply values without touching CONFIG, the
  *      stream registry, or any other global. The transport layer composes the production context once per request and passes it through.
  *
  *   2. A Record-keyed dispatch table for /sys/* keys, plus a single regex for /tuner&lt;N&gt;/*. Adding a new system key is a single row; adding a new per-tuner key
@@ -101,8 +102,8 @@ export function resolveGet(name: string, ctx: GetContext): GetResult {
 }
 
 /**
- * Resolves a per-tuner Get key for a specific slot. Sub-keys fall into two families: static state (filter, lockkey, channelmap, target) returning constants, and
- * dynamic state (channel, status, streaminfo) reading from the addressed TunerState. Unknown sub-keys produce an error matching real HDHR behavior.
+ * Resolves a per-tuner Get key for a specific slot. Sub-keys fall into two families: static state returning constants that do not depend on the tuner's
+ * current activity, and dynamic state read from the addressed TunerState. Unknown sub-keys produce an error matching real HDHR behavior.
  * @param slot - Zero-based tuner slot index.
  * @param subKey - The sub-key portion after the slot prefix.
  * @param ctx - The resolution context.
@@ -114,7 +115,7 @@ function resolveTunerKey(slot: number, subKey: string, ctx: GetContext): GetResu
 
   if(state === null) {
 
-    // Slot index out of range. Real HDHRs return the same error for an unknown tuner index as for an unknown sub-key.
+    // Slot index out of range produces its own distinct error string, separate from the ERROR_UNKNOWN_GETSET fallback used for unrecognized sub-keys.
     return { error: "ERROR: unknown tuner", kind: "error" };
   }
 
@@ -134,6 +135,7 @@ function resolveTunerKey(slot: number, subKey: string, ctx: GetContext): GetResu
 
     case "debug": {
 
+      // Per-tuner debug placeholder, mirroring /sys/debug: PrismCast returns an empty value rather than the verbose per-tuner debug string real HDHRs emit.
       return { kind: "value", value: "" };
     }
 

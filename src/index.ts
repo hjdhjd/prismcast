@@ -83,7 +83,8 @@ function printUsage(): void {
 }
 
 /**
- * Prints a complete listing of all environment variables organized by category. Generates output dynamically from CONFIG_METADATA so it is always accurate.
+ * Prints a complete listing of all environment variables organized by category. Generates the per-category listing dynamically from CONFIG_METADATA; the
+ * Special section below is hand-maintained since PRISMCAST_DATA_DIR and PRISMCAST_DEBUG are resolved outside config.json.
  */
 function printEnvironmentVariables(): void {
 
@@ -216,8 +217,8 @@ export interface ParsedArgs {
  */
 function requireAbsolutePath(flag: string, value: string): void {
 
-  // Guard against missing values when the flag is the last argument. TypeScript types array index access as `string`, but at runtime `args[++i]` returns `undefined`
-  // when out of bounds. Checking for falsy catches both `undefined` and empty string.
+  // Guard against a missing value when the flag is the last argument. The caller defaults a missing `args[++i]` to an empty string via `?? ""` before calling
+  // this function, so checking for falsy here catches that empty-string case.
   if(!value) {
 
     // eslint-disable-next-line no-console

@@ -114,8 +114,8 @@ export const ACTIONS = {
 } as const;
 
 /**
- * Compile-time union of every valid action name. Derived from ACTIONS so it cannot drift. Parameters of action-accepting helpers (e.g., WizardModalButton.action,
- * future renderer helpers) are typed against this union, so callers can pass either ACTIONS.<name> directly or a string literal that the TypeScript compiler can
- * narrow to this union - either way, an invalid name is a type error.
+ * Compile-time union of every valid action name, derived from ACTIONS so it cannot drift. Action-accepting fields such as WizardModalButton.action and
+ * ButtonOptions.action currently accept a plain string rather than this union; adopting ActionName on those fields is a future tightening this type makes
+ * available, not a guarantee those fields already enforce.
  */
 export type ActionName = (typeof ACTIONS)[keyof typeof ACTIONS];

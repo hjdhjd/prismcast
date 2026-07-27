@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * commands.context.ts: The default adapter that produces a ServiceContext from real runtime I/O. The handlers in commands.ts are pure orchestrators over a
- * ServiceContext; this file is the composition seam that wires those handlers to live runtime I/O - it performs the HTTP probe of the running server directly and
+ * ServiceContext; this file is where those handlers are wired to live runtime I/O - it performs the HTTP probe of the running server directly and
  * delegates the platform-specific generator factory and the path and platform queries to their respective helpers. Tests bypass this file entirely by constructing
  * ServiceContext literals inline.
  */

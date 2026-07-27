@@ -13,8 +13,9 @@
  * Each test seeds a non-default value on each axis it cares about (via mutateEnabledServices / mutateChannelDisplayPrefs), renders the panel, and asserts
  * structural reflection of the dimension. The "preservation" tests mutate one axis after another and assert the previously-set axis is unchanged at render time.
  *
- * Channels DVR fixture: abcnews has variants {cox, directv, hulu, sling, xfinity, yttv} and no `site`/`direct` tag, so the service filter is load-bearing for it -
- * the canonical fixture for these filter-scoping tests. amcthrillers has only {sling, yttv} so it falls out of getVisibleChannels under enabledServices=["hulu"].
+ * Channels DVR fixture: abcnews has variants {cox, directv, hulu, sling, xfinity, yttv} and no `site`/`direct` tag, so the service filter is the only thing
+ * that determines whether it appears in getVisibleChannels - the canonical fixture for these filter-scoping tests. amcthrillers has only {sling, yttv} so it
+ * falls out of getVisibleChannels under enabledServices=["hulu"].
  * abc has a `direct` tag (always enabled) so it survives any narrow service filter. The fixture is a real predefined channel set; no user channels are seeded.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
@@ -155,7 +156,7 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
 
     /* Edge case: visibleColumns = empty array means EVERY optional column is hidden. The renderer must produce a structurally valid table -
      * the hide classes are applied uniformly, the table element is still emitted, and the panel render returns successfully. A regression that assumed
-     * visibleColumns had at least one entry (NPE on a forEach over a derived collection, or an invariant about column counts) would surface here.
+     * visibleColumns had at least one entry (NPE on a forEach over a derived collection, or an assumption about column counts) would surface here.
      *
      * We use bootApp + a real GET / instead of a bare panel call to verify the FULL landing-page render path also survives. A panel that renders cleanly in
      * isolation but breaks when wrapped by the landing-page handler would slip past a panel-only assertion.
@@ -173,8 +174,8 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
 
     const html = await response.text();
 
-    // Every optional column must carry its hide class. We assert the four primary columns explicitly; the loop in the renderer applies the class uniformly so
-    // covering a subset is sufficient.
+    // Every optional column must carry its hide class. The loop below asserts all six optional-column hide classes explicitly against the rendered table
+    // classes, so the check is exhaustive rather than a sample.
     const tableClassMatch = /<table class="([^"]+)"/.exec(html);
 
     assert.ok(tableClassMatch, "table element must be present even when visibleColumns is empty");

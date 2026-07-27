@@ -27,8 +27,9 @@ import path from "node:path";
 
 const ORIGINAL_PLATFORM = process.platform;
 
-// We snapshot the pre-test state of every env var that the module reads so that afterEach can restore them. The exact list is derived from CONFIG_METADATA at module
-// load time, but the key ones we manipulate in tests are PATH and the bootstrap variables; we capture and restore those by name.
+// We snapshot the pre-test state of every env var the tests manipulate so that afterEach can restore them: PATH, the two bootstrap variables
+// (PRISMCAST_DATA_DIR and PRISMCAST_DEBUG), the PRISMCAST_SERVICE marker, and representative CONFIG_METADATA-derived variables (HDHR_PORT and
+// HLS_SEGMENT_DURATION) used to exercise the metadata-derived path.
 const TRACKED_ENV_KEYS = [ "PATH", "PRISMCAST_DATA_DIR", "PRISMCAST_DEBUG", "PRISMCAST_SERVICE", "HDHR_PORT", "HLS_SEGMENT_DURATION" ];
 
 function snapshotEnv(): Record<string, string | undefined> {
@@ -273,6 +274,8 @@ describe("getServiceGenerator - platform dispatch", () => {
 
   test("returns null for unsupported platforms", () => {
 
+    // The cast intentionally supplies a value outside the Platform union so the fake IO reports a platform none of the generator
+    // factories recognize, exercising the dispatch switch's default branch.
     const { io } = makeFakeIO({ platform: "openbsd" as Platform });
 
     assert.equal(getServiceGenerator(io), null);

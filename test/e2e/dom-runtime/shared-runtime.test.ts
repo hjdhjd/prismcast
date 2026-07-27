@@ -15,13 +15,13 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin invariants, not historical incidents. "applyPatch handles every patch field" is the contract; "the channel-number rendering bug doesn't recur" is a
+ *   - Pin the guarantee, not historical incidents. "applyPatch handles every patch field" is the contract; "the channel-number rendering bug doesn't recur" is a
  *     symptom to derive coverage from but not the test name.
  *   - Use evaluate(...) for one-shot expressions and DOM seeding; for complex setup, set ctx.document.body.innerHTML or insertAdjacentHTML in a single block.
  *   - For fetch-shape verification (persistDisplayPrefs, etc.), override window.fetch with a spy before triggering the operation. Asserting on persisted state
  *     is also acceptable but flushes timing concerns into the test - the spy is preferred.
- *   - When a runtime invariant reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
- *     Do NOT fix the production script in this suite - fixes are a separate authorized arc.
+ *   - When a test reveals a real bug in the production script's runtime behavior, pin current (buggy) behavior with a FIX-PENDING comment showing exactly
+ *     which assertion to flip post-fix. Do NOT fix the production script in this suite - fixes are a separate authorized arc.
  */
 import { describe, test } from "node:test";
 import type { DisposableDomTestContext } from "../../helpers/dom.helpers.ts";
@@ -576,7 +576,8 @@ describe("shared.ts: channelDisplayHtml and serviceIconHtml", () => {
 
     /* Logo mode (default): the image is the primary element with the text span hidden via inline style:display:none. The img carries onerror="imgFallback(this)",
      * and since channelDisplayHtml emits no data-fallbacks attribute, a broken logo URL exhausts the (empty) fallback chain immediately and reveals the hidden
-     * text span. The data-fallbacks chain itself is a property of serviceIconHtml (exercised at lines 602-613), not channelDisplayHtml.
+     * text span. The data-fallbacks chain itself is a property of serviceIconHtml, exercised below in the "serviceIconHtml builds the apple-touch-icon and
+     * favicon fallback chain from the domain" test, not channelDisplayHtml.
      */
     await using ctx = await setupSharedRuntime();
 
@@ -695,9 +696,9 @@ describe("shared.ts: processServiceDisplays", () => {
 
   test("skips elements that already carry data-processed='1' (idempotent)", async () => {
 
-    /* Idempotency is required because processServiceDisplays is called on every relevant DOM mutation. If it weren't idempotent, repeated calls would
-     * re-render the entire list every time, bloating the DOM and clobbering any in-flight image loads. We pre-mark one element processed and confirm it is
-     * left untouched.
+    /* Repeated calls must be safe (a no-op on already-processed elements) because processServiceDisplays is called on every relevant DOM mutation. If it did
+     * not skip elements already marked processed, repeated calls would re-render the entire list every time, bloating the DOM and clobbering any in-flight
+     * image loads. We pre-mark one element processed and confirm it is left untouched.
      */
     await using ctx = await setupSharedRuntime();
 
@@ -1265,7 +1266,7 @@ describe("shared.ts: action dispatcher modifier scoping", () => {
 
   test("data-submit-prevent-default on a form prevents the submit default but NOT keydown defaults on input fields inside the form", async () => {
 
-    /* This test pins the invariant that an event modifier is scoped to its own event type via the data-<event>-* attribute: a submit-scoped preventDefault on a
+    /* This test pins the rule that an event modifier is scoped to its own event type via the data-<event>-* attribute: a submit-scoped preventDefault on a
      * form must not suppress keydown on input fields inside that form, so typed characters still insert. We assert both halves directly: submit gets
      * defaultPrevented; keydown does not.
      */
@@ -1388,7 +1389,7 @@ describe("shared.ts: action dispatcher modifier scoping", () => {
 
   test("registerAction throws on a duplicate action name", async () => {
 
-    // Collision detection is the load-bearing primitive for the action namespace. Silent overwrites would break dispatch in ways hard to localize.
+    // Collision detection catches duplicate action names before they silently overwrite each other and break dispatch in ways hard to localize.
     await using ctx = await setupSharedRuntime();
 
     ctx.evaluate("window.registerAction('test-collision-action', () => {});");
@@ -1455,7 +1456,7 @@ describe("shared.ts: window.escapeHtml (client-escape SSOT) and the renderers th
   test("serviceIconHtml escapes the name in both the title attribute and the text span", async () => {
 
     /* serviceIconHtml mirrors channelDisplayHtml: callers pass raw service names and it is the single escape boundary. We pin the same attribute-breakout and
-     * text-context invariants - the double quote survives as an entity in the title, and an injected <i> tag does not parse out.
+     * text-context guarantees - the double quote survives as an entity in the title, and an injected <i> tag does not parse out.
      */
     await using ctx = await setupSharedRuntime();
 

@@ -207,7 +207,7 @@ export interface ChannelsConfig {
  * and pretune scheduling.
  *
  * Host is auto-discovered at runtime from client request IPs by `showInfo.ts`. It is intentionally NOT in `CONFIG_METADATA` and is not exposed as a settings
- * UI field - users do not configure it directly. The host invariant: host-only, never `host:port`. Port lives at `channelsDvr.port` exclusively.
+ * UI field - users do not configure it directly. The host rule: host-only, never `host:port`. Port lives at `channelsDvr.port` exclusively.
  *
  * Port is user-configurable via `CONFIG_METADATA` because Channels DVR's port is user-configurable per their docs and a non-default port would otherwise be
  * unreachable from PrismCast.
@@ -298,6 +298,9 @@ export interface ServerConfig {
  * Capture mode for media recording. Determines how video/audio is captured from the browser and processed for HLS output.
  * - "ffmpeg": Captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC. More stable for long recordings.
  * - "native": Captures fMP4 (H264+AAC) directly from Chrome. No dependencies but may be unstable with long recordings.
+ *
+ * Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of recording, so `config/index.ts` currently forces this value to "ffmpeg"
+ * at startup and rejects a live configuration save that requests "native" rather than silently coercing it.
  */
 export type CaptureMode = "ffmpeg" | "native";
 
@@ -316,7 +319,8 @@ export interface StreamingConfig {
 
   // Capture mode determining how video/audio is captured and processed. "ffmpeg" captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC - more stable
   // for long recordings but requires FFmpeg. "native" captures fMP4 (H264+AAC) directly from Chrome - no dependencies but may be unstable with long recordings.
-  // Environment variable: CAPTURE_MODE. Default: "ffmpeg".
+  // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Currently force-coerced to "ffmpeg" at startup and rejected on live reload when set to "native",
+  // per the ConfigCoercions handling in `config/index.ts`, because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
   captureMode: CaptureMode;
 
   // Target frame rate for video capture. Higher frame rates produce smoother video but require more CPU and bandwidth. 60fps is ideal for sports content; 30fps

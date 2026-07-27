@@ -3,11 +3,12 @@
 #
 # dev-prismcast.sh: Launch PrismCast in a fully-isolated dev profile, structurally guaranteed not to interfere with the production instance.
 #
-# The script refuses to invoke node unless every isolation invariant holds:
+# The script refuses to invoke node unless every isolation check below passes:
 #   - PRISMCAST_DATA_DIR is set, absolute, not equal to or nested under the prod default ($HOME/.prismcast), and contains a dev/test/tmp marker.
 #   - PRISMCAST_DEV_PORT is not the prod default (5589).
 #   - The caller's extra arguments do not include --port or --data-dir (those would bypass the env-controlled values above).
-#   - HDHR emulation is forced off (HDHR_ENABLED=false). Caller may opt in with ALLOW_HDHR=1, but only when HDHR_PORT is also set to a non-prod value (default prod is 5004).
+#   - HDHR emulation is forced off (HDHR_ENABLED=false). Caller may opt in with ALLOW_HDHR=1,
+#     but only when HDHR_PORT is also set to a non-prod value (default prod is 5004).
 #
 # Defaults when unset: PRISMCAST_DATA_DIR=/tmp/prismcast-dev, PRISMCAST_DEV_PORT=5590.
 #
@@ -94,7 +95,7 @@ else
   HDHR_PORT_FOR_LOG="(disabled)"
 fi
 
-# Ensure the dev data directory exists before node tries to write into it. Idempotent - existing dirs are left alone.
+# Ensure the dev data directory exists before node tries to write into it. Safe to call more than once - existing dirs are left alone.
 mkdir -p "$DEV_DATA_DIR"
 
 # Default the debug filter to the cdp category so the Chrome DevTools Protocol proxy is enabled for dev runs out of the box. The ${VAR:=default} form assigns only

@@ -4,7 +4,7 @@
  * and back" - a regression in command routing, event forwarding, lifecycle cleanup, or the Target-domain synthesis would silently break every external CDP
  * client, so we exercise each branch through the public WS-facing surface.
  *
- * Test seam. The CdpProxySession class is constructed directly with a synthetic WebSocket, Browser, CDPSession, and Connection - none of those interact with the
+ * Test doubles. The CdpProxySession class is constructed directly with a synthetic WebSocket, Browser, CDPSession, and Connection - none of those interact with the
  * real ws library, Puppeteer, or any I/O. Each fake records what was asked of it so assertions can verify both the wire frames sent to the client and the CDP
  * commands forwarded into Puppeteer.
  */

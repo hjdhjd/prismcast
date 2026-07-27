@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * clock.helpers.test.ts: Unit tests for the makeFakeClock test factory. Locks the documented contract of the test-side counterpart to realClock so consumers
- * (retry.test.ts today, future modules tomorrow) can rely on the factory's behavior without having to re-derive it from the source.
+ * clock.helpers.test.ts: Unit tests for the makeFakeClock test factory. Locks the documented contract of the test-side counterpart to realClock so every
+ * Clock-consuming test (retry.test.ts, timing.test.ts, and others) can rely on the factory's behavior without re-deriving it from the source.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";

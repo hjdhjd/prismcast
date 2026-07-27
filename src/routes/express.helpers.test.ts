@@ -1,9 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * express.helpers.test.ts: Tests for the shared Express stub helper. The helper is consumed by route tests across the routes/ tree, so a bug here cascades into
- * misleading results in every dependent suite. The tests below pin every claim the helper makes: route registrations are captured in order, the handler is taken
- * as the last argument so middleware chains work, the stub returns itself for chaining, invoke() resolves a route by exact method+path, status() is chainable
- * with json(), and the default status code is 200 when the handler doesn't call res.status.
+ * express.helpers.test.ts: Tests for the shared Express stub helpers. The helpers are consumed by route tests across the routes/ tree, so a bug here cascades
+ * into misleading results in every dependent suite. The tests below cover every claim makeExpressStub makes: route registrations are captured in order, the
+ * handler is taken as the last argument so middleware chains work, the stub returns itself for chaining, invoke() resolves a route by exact method+path,
+ * status() is chainable with json(), and the default status code is 200 when the handler doesn't call res.status. Coverage of makeReqRes focuses on the req
+ * side (defaults, get() case handling, on()/triggerReqEvent) plus the status/json/send/setHeader response spies; the end, flushHeaders, sendStatus, and write
+ * spies are exercised only through construction, not through dedicated assertions.
  */
 import { describe, test } from "node:test";
 import { makeExpressStub, makeReqRes } from "./express.helpers.ts";
@@ -238,7 +240,7 @@ describe("makeReqRes", () => {
   test("req.get(name) is case-insensitive (matches Express semantics)", () => {
 
     // Express's req.get() lookup is case-insensitive: req.get("X-Forwarded-Host") and req.get("x-forwarded-host") return the same value. Our fake mirrors that
-    // contract so handlers tested against it behave identically when they do canonical-case lookups.
+    // contract by lowercasing the lookup name, as long as the supplied headers map itself uses lowercase keys, which is the convention every test here follows.
     const { req } = makeReqRes({ headers: { "x-forwarded-host": "proxy.example.com" } });
 
     assert.equal(req.get("X-Forwarded-Host"), "proxy.example.com");

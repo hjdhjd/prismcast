@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * clock.test.ts: Unit tests for the realClock default. The Clock interface itself is a structural type so it has no runtime behavior to test; what we test is
- * realClock - that it exposes the three methods at the right shapes and delegates to the underlying delay()/raceWithTimeout()/performance.now() in ways the
- * Clock consumers across the codebase can rely on.
+ * realClock - that it exposes the documented Clock methods at the right shapes and delegates to the underlying delay()/raceWithTimeout()/performance.now()
+ * in ways the Clock consumers across the codebase can rely on.
  */
 import { delay, raceWithTimeout } from "./delay.ts";
 import { describe, test } from "node:test";

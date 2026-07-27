@@ -16,15 +16,15 @@ import type { Nullable } from "../types/index.ts";
  * attaches, the parent session fires Target.attachedToTarget; the observer responds by (a) enabling Network on the child session, (b) installing the same
  * response listener, and (c) recursively calling setAutoAttach on the child so its own descendants are caught. Symmetrically, Target.detachedFromTarget removes
  * the child from tracking. Target.attachedToTarget retroactively fires for currently-attached children when setAutoAttach is enabled on an existing tree, so
- * the observer does not miss frames that attached before installation - provided the listener is registered before setAutoAttach is sent, which is the load-
- * bearing ordering invariant inside attachToSession().
+ * the observer does not miss frames that attached before installation - provided the listener is registered before setAutoAttach is sent. Reversing that order
+ * means the retroactive attach events are missed, and attachToSession() depends on this ordering.
  *
  * Target type filtering. By default the observer attaches to every target except the browser-level target, because any of them (pages, iframes including OOPIFs,
  * workers, service workers, shared workers) can emit a network response a consumer might care about. The default policy is exposed as a parameterized predicate
  * so a consumer that needs a stricter filter (e.g., only iframes, or exclude service workers) can override without re-implementing the rest of the observer.
  *
  * Disposal. The handle implements both dispose() (project convention) and Symbol.dispose (TC39 explicit resource management) so callers can write either
- * "observer.dispose()" or "using observer = await observeTabResponses(...)" and get identical, idempotent teardown. Disposal removes listeners on every tracked
+ * "observer.dispose()" or "using observer = await observeTabResponses(...)" and get identical, repeat-safe teardown. Disposal removes listeners on every tracked
  * session, sends Network.disable best-effort, and detaches best-effort. Errors during teardown are swallowed because sessions may already be gone (page closed,
  * target detached) and that is not actionable.
  *
@@ -78,7 +78,7 @@ export interface TabNetworkObserverOptions {
 
 /**
  * Handle returned by observeTabResponses(). Implements both the project's dispose() convention and TC39 Symbol.dispose so callers may use either an explicit
- * dispose() call or the "using" keyword for scope-bound cleanup. Disposal is idempotent.
+ * dispose() call or the "using" keyword for scope-bound cleanup. Disposal is safe to call more than once.
  */
 export interface TabNetworkObserver extends Disposable {
 
@@ -216,8 +216,9 @@ export async function observeTabResponses(page: Page, options: TabNetworkObserve
     }
   };
 
-  // Handler for Target.attachedToTarget. Resolves the freshly-attached sessionId to a CDPSession via the parent connection, applies the target-type predicate,
-  // and forwards to attachToSession. The filter is the consumer's policy lever; the default skips only the browser-level target.
+  // Handler for Target.attachedToTarget. Applies the target-type predicate first, then resolves the freshly-attached sessionId to a CDPSession via the parent
+  // connection, and forwards to attachToSession. Filtering before the session lookup means a rejected target type never pays for the connection.session() call.
+  // The filter is the consumer's policy lever; the default skips only the browser-level target.
   const onChildAttached = async (params: TargetAttachedParams): Promise<void> => {
 
     if(disposed) {

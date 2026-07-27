@@ -2,7 +2,7 @@
  *
  * tags.test.ts: HTTP-level integration coverage for the tag vocabulary endpoints. Tags drive playlist filtering and channel-table grouping; the vocabulary
  * lives in tagRegistry inside channels.json. Tag identity is case-insensitive ("news" and "News" are the same tag) while the displayed casing is whatever the
- * user typed first; that casing-identity invariant lives in the handler and is not exercised here. This suite exercises the full CRUD: create, list, delete (with
+ * user typed first; that casing-identity rule lives in the handler and is not exercised here. This suite exercises the full CRUD: create, list, delete (with
  * cascade), rename (cascading across channels).
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
@@ -186,7 +186,7 @@ describe("POST /config/tags/rename - rename tag", () => {
 
 describe("POST /config/tags/rename - cascade across vocabulary and channel bindings", () => {
 
-  /* The rename cascade invariant: when a tag is renamed in the vocabulary, every channel that referenced the old name must be updated to the new name in lockstep,
+  /* The rename cascade rule: when a tag is renamed in the vocabulary, every channel that referenced the old name must be updated to the new name in lockstep,
    * AND every other tag on those channels must survive untouched. The cascade implementation is shared with DELETE - both call transformChannelTags - so the
    * shape of the cascade contract here mirrors the "DELETE /config/tags/:tag - cascade across vocabulary and channel bindings" describe block below exactly. The
    * conflict path (renaming to an existing name) is the additional pin specific to rename:
@@ -252,7 +252,7 @@ describe("POST /config/tags/rename - cascade across vocabulary and channel bindi
 
     /* Two user tags, A and B, both attached to a channel. Attempt to rename A -> B; the vocabulary already contains B, so the handler must reject with 409 before
      * touching the registry or the cascade. We snapshot per-key bytes pre-rename and assert byte-equality post-rename to prove the short-circuit. We assert only
-     * the 409 status, not the envelope body; the real invariant being pinned is the unchanged on-disk state.
+     * the 409 status, not the envelope body; what this test actually pins is the unchanged on-disk state.
      */
     await using ctx = await createIntegrationContext();
 
@@ -393,7 +393,7 @@ describe("POST /config/tags/rename - cascade across vocabulary and channel bindi
 
 describe("DELETE /config/tags/:tag - cascade across vocabulary and channel bindings", () => {
 
-  /* The cascade-on-delete invariant: when a tag is removed from the vocabulary, every channel that referenced it must have the tag stripped from its bindings,
+  /* The cascade-on-delete rule: when a tag is removed from the vocabulary, every channel that referenced it must have the tag stripped from its bindings,
    * AND every other tag on those channels must survive untouched. Two failure modes this protects against:
    *
    *   1. Vocabulary-only delete: the tag disappears from the registry but stays on channel.tags arrays - users see "phantom" tags that no longer filter or
@@ -523,7 +523,7 @@ describe("DELETE /config/tags/:tag - cascade across vocabulary and channel bindi
 
 describe("POST /config/tags/restore - restore a deleted predefined tag", () => {
 
-  /* The restore invariant is the inverse of the predefined delete: removing a predefined tag tombstones it in deletedTags (dropping it from the active
+  /* The restore behavior is the inverse of the predefined delete: removing a predefined tag tombstones it in deletedTags (dropping it from the active
    * vocabulary) and cascades a tag-stripping override onto every predefined channel whose definition carries it; restoring the tag reverses both halves. It must
    * (1) remove the tag from deletedTags so it re-enters the active vocabulary, and (2) cascade the canonical-cased tag back onto exactly those predefined channels
    * whose DEFINITION includes it but whose current resolved tags dropped it. The normalizer then strips the now-redundant override, reverting each such channel to

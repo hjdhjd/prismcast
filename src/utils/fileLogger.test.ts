@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * fileLogger.test.ts: Unit tests for the file-based logger's basic write and buffer paths - initializeFileLogger + writeLogEntry happy paths, flushLogBuffer,
- * flushLogBufferSync, the existing-file initialization branch, and the periodic flushTimer interval. The trim path lives in fileLogger.trim.test.ts; lifecycle
+ * flushLogBufferSync, the existing-file initialization branch, the periodic flushTimer interval, and the trim/flush write-ordering race between a real trim
+ * and a concurrent append. Additional trim-path unit tests (computeTrimmedLogContent, checkAndTrimFile branches) live in fileLogger.trim.test.ts; lifecycle
  * and error-recovery paths live in fileLogger.lifecycle.test.ts.
  *
  * The module holds module-scope state (initialization status, write buffer, file path) that persists across tests. Each test scopes its filesystem state to a
@@ -420,7 +421,7 @@ describe("trim/flush write-ordering (interleave race)", () => {
   test("serialized trim and flush both land regardless of enqueue order", async () => {
 
     // Complementary pin: explicitly enqueue a flush and let a trim fire from the size check, then assert both the trimmed shape and the appended content coexist.
-    // This guards the write-ordering invariant rather than a single timing arrangement.
+    // This guards the write-ordering guarantee rather than a single timing arrangement.
     initDebugFilter("");
 
     await withTempDir(async (dir) => {

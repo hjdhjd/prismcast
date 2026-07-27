@@ -3,8 +3,8 @@
  * browse.ts: Browse-channels modal endpoint.
  *
  * The browse modal on the Channels tab shows available channels from each service and lets the user add new channels, enable disabled predefineds, switch a
- * channel's active service, or revert a channel away from a service. All four operations are dispatched from a single request body so a bulk selection can be
- * applied atomically.
+ * channel's active service, or revert a channel away from a service. Every supported operation is dispatched from a single request body so a bulk selection
+ * can be applied atomically.
  */
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.ts";
@@ -82,10 +82,10 @@ function buildUserChannel(entry: ModifyEntry, name: string, url: string, selecto
  */
 export function registerBrowseRoutes(app: Express): void {
 
-  // POST /config/channels/modify - Apply channel modifications from the browse modal. Handles four action types: 'add' creates new user channels, 'enable'
-  // re-enables a disabled predefined channel and sets its service, 'switch' changes the service selection for an existing channel, and 'remove' reverts a channel
-  // to its canonical service (disabling it if no alternative service is available). Channel writes and service selection changes are batched into single saves to
-  // avoid redundant file I/O.
+  // POST /config/channels/modify - Apply channel modifications from the browse modal. Every supported action type is handled here: 'add' creates new user
+  // channels, 'enable' re-enables a disabled predefined channel and sets its service, 'switch' changes the service selection for an existing channel, and
+  // 'remove' reverts a channel to its canonical service (disabling it if no alternative service is available). Channel writes and service selection changes
+  // are batched into single saves to avoid redundant file I/O.
   app.post("/config/channels/modify", route("apply changes", async (req: Request, res: Response) => {
 
     const body = req.body as { channels?: ModifyEntry[] };
@@ -193,8 +193,10 @@ export function registerBrowseRoutes(app: Express): void {
           continue;
         }
 
-        // Add. Creates a new user channel for channels not yet in the lineup. The browse modal sends 'add' only for genuinely new channels (no existing
-        // canonical). Channels that match existing canonicals appear as 'switch' state in the modal.
+        // Add. Creates a new user channel for channels not yet in the lineup. Under the browse modal's normal-path contract, 'add' entries carry only
+        // genuinely new channels (no existing canonical) - channels that match existing canonicals appear as 'switch' state in the modal instead. The
+        // canonicalExists check below still defends the server side against a submission that collides with an existing canonical (for example, two entries
+        // in the same batch resolving to the same generated key), rather than trusting the client's classification.
         const url = sanitizeString(entry.url?.trim() ?? "");
         const channelSelector = sanitizeString(entry.channelSelector?.trim() ?? "");
 
@@ -233,6 +235,8 @@ export function registerBrowseRoutes(app: Express): void {
         const canonicalExists = allKeys.has(baseKey);
         const key = (canonicalExists && serviceSlug) ? baseKey + "-" + serviceSlug : baseKey;
 
+        // The key already exists - unlike the validation failures above, this is not an error to report. The requested channel (or variant) is already
+        // present, so there is simply nothing new to add, and the entry is skipped without an error message.
         if(allKeys.has(key)) {
 
           continue;
@@ -245,6 +249,9 @@ export function registerBrowseRoutes(app: Express): void {
         data.channels[key] = newChannel;
         allKeys.add(key);
         added++;
+
+        // Variants are not rendered as separate rows in the channel table (getChannelListing() skips them), so when this add created a variant, the key the
+        // UI needs to refresh is the canonical baseKey, not the variant key that was actually written to data.channels.
         affectedKeys.add(canonicalExists ? baseKey : key);
       }
     });

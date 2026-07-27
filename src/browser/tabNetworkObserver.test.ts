@@ -3,10 +3,10 @@
  * tabNetworkObserver.test.ts: Unit tests for the tab-wide CDP network observer. The observer's value rests on four contracts: (1) it installs Network.enable
  * and Target.setAutoAttach on the root session at construction; (2) when a child target attaches, it installs the same triple (Network.enable, setAutoAttach,
  * response listener) on the child session so OOPIF traffic flows through the same callback; (3) the consumer-supplied targetFilter predicate decides which
- * target types to observe; (4) disposal removes every listener on every tracked session and is idempotent, with both explicit dispose() and TC39 using-syntax
- * paths producing identical teardown. The fixture (FakeCdpSession, FakeConnection, makeFakeCdpPage) lives in src/testing/cdp.helpers.ts so it can be shared
- * across every test that exercises this observer or any module layered on top of it; the actual CDP wire is deferred to e2e coverage and this file isolates
- * the observer's behavior from Chrome.
+ * target types to observe; (4) disposal removes every listener on every tracked session and is safe to call more than once, with both explicit dispose()
+ * and TC39 using-syntax paths producing identical teardown. The fixture (FakeCdpSession, FakeConnection, makeFakeCdpPage) lives in src/testing/cdp.helpers.ts
+ * so it can be shared across every test that exercises this observer or any module layered on top of it; the actual CDP wire is deferred to e2e coverage
+ * and this file isolates the observer's behavior from Chrome.
  */
 import type { CDPSession, Page } from "puppeteer-core";
 import { FakeCdpSession, FakeConnection, closePuppeteerStreamWssOnIdle, makeFakeCdpPage, noop } from "../testing.helpers.ts";
@@ -355,9 +355,8 @@ describe("observeTabResponses", () => {
 
   test("the using keyword triggers disposal even when the scope exits via thrown exception", async () => {
 
-    // Exception-safety contract: TC39 ERM guarantees disposal even when the scope exits via throw. This is the load-bearing reason to use Symbol.dispose at all
-    // (otherwise an explicit dispose() call inside a finally block suffices). The observer must tear down on the exception path the same way it tears down on
-    // the normal path.
+    // Exception-safety contract: TC39 ERM guarantees disposal even when the scope exits via throw, which is the only reason to prefer Symbol.dispose over an
+    // explicit dispose() call inside a finally block. The observer must tear down on the exception path the same way it tears down on the normal path.
     const { root: rootSession } = buildFixture();
 
     await assert.rejects(async () => {
@@ -391,12 +390,12 @@ describe("observeTabResponses", () => {
 
   test("ignores responses delivered after disposal (callback not invoked post-dispose)", async () => {
 
-    // Disposal contract: a synchronous emit() after dispose() must not reach the consumer callback. Under EventEmitter's synchronous emit semantics, the load-
-    // bearing protection here is removeAllListeners (called from inside dispose) - by the time we re-emit, the listener has already been detached and the emit
-    // is a no-op. The disposed-flag check inside the response handler is belt-and-suspenders for hypothetical out-of-order delivery from a non-EventEmitter
-    // transport that might queue events past detachment; it is unreachable under the current fixture, but its presence costs nothing and guards against a future
-    // change in the underlying emitter implementation. The HLS observer carries an equivalent disposed flag at a load-bearing location (across the chromeFetch
-    // await), tested directly in hlsPlaylistObserver.test.ts.
+    // Disposal contract: a synchronous emit() after dispose() must not reach the consumer callback. Under EventEmitter's synchronous emit semantics, what makes
+    // this true is the removeAllListeners call inside dispose() - by the time we re-emit, the listener has already been detached and the emit is a no-op. The
+    // disposed-flag check inside the response handler is belt-and-suspenders for hypothetical out-of-order delivery from a non-EventEmitter transport that
+    // might queue events past detachment; it is unreachable under the current fixture, but its presence costs nothing and guards against a future change in
+    // the underlying emitter implementation. The HLS observer carries an equivalent disposed flag guarding the same race (across the chromeFetch await),
+    // tested directly in hlsPlaylistObserver.test.ts.
     const { root: rootSession } = buildFixture();
 
     const observed: ObservedResponse[] = [];

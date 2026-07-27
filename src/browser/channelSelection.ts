@@ -42,7 +42,7 @@ import { yttvProvider } from "./tuning/youtubeTv.ts";
  *    - strategy: A ChannelStrategyEntry with at minimum an execute hook. Also set clearCache, resolveDirectUrl, and invalidateDirectUrl as needed.
  *    - discoverChannels: Reads the provider's guide for all available channels, returning DiscoveredChannel[].
  * 3. Import the provider here and add it to the providerModules array.
- * 4. Add the strategy name to the ChannelSelectionStrategy union type in types/index.ts.
+ * 4. Add the strategy name to the ChannelSelectionStrategy union type in types/profiles.ts (re-exported via types/index.ts).
  * 5. Add a DOMAIN_CONFIG entry in config/sites.ts mapping the provider's domain to the profileName.
  *
  * The coordinator handles all cross-cutting concerns (dispatch, cache clearing, direct URL resolution, matchSelector polling) through the ChannelStrategyEntry
@@ -112,8 +112,8 @@ export function invalidateDirectUrl(profile: ResolvedSiteProfile): void {
 }
 
 /**
- * Clears all channel selection caches. Called by handleBrowserDisconnect() in browser/index.ts when the browser restarts, since cached state (guide row positions,
- * discovered page URLs, watch URLs) may be stale in a new browser session.
+ * Clears all channel selection caches. Called by relinquishBrowserReadiness() in browser/index.ts (shared by the disconnect handler and invalidateBrowser)
+ * whenever the browser is torn down, since cached state (guide row positions, discovered page URLs, watch URLs) may be stale in a new browser session.
  */
 export function clearChannelSelectionCaches(): void {
 

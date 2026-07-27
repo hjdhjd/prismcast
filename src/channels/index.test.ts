@@ -2,7 +2,7 @@
  *
  * index.test.ts: Unit tests for the predefined channel catalog in src/channels/index.ts. The module's surface is two exports - PREDEFINED_TAGS (a vocabulary
  * constant) and CHANNELS / PREDEFINED_CHANNELS (the flat ChannelMap produced by Pacific auto-generation + flattening at module load). Tests are grouped by
- * concern: the tag vocabulary, the two exports sharing one map, the catalog-wide structural invariants (every entry well-formed, canonical/variant key shapes,
+ * concern: the tag vocabulary, the two exports sharing one map, the catalog-wide structural guarantees (every entry well-formed, canonical/variant key shapes,
  * identity vs binding partition), the canonical resolution rules (site-wins, alphabetically-first, single-service, identity inheritance, tags copy,
  * pacificStationId presence, variant binding-only), the Pacific generation rules (auto-generation step 1, service merging step 2, manual-override precedence,
  * East/West skip), and a sampling of known catalog entries.
@@ -13,9 +13,9 @@ import { describe, test } from "node:test";
 import { CHANNEL_BINDING_KEYS } from "../types/index.ts";
 import assert from "node:assert/strict";
 
-/* isVariant narrows a Channel to VariantChannel via the documented discriminator. The type system enforces that canonicalKey is structurally absent on
- * CanonicalChannel (typed as never), so a string canonicalKey unambiguously identifies a variant. Tests that need to assert per-shape invariants reach for this
- * helper.
+/* isVariant narrows a Channel to VariantChannel via the field that marks variant vs. canonical (canonicalKey). The type system enforces that canonicalKey is
+ * structurally absent on CanonicalChannel (typed as never), so a string canonicalKey unambiguously identifies a variant. Tests that need to assert per-shape
+ * guarantees reach for this helper.
  */
 function isVariant(entry: Channel): entry is VariantChannel {
 
@@ -152,8 +152,8 @@ describe("flattened channel structural invariants", () => {
 
   test("variants only carry binding fields (CHANNEL_BINDING_KEYS) plus canonicalKey", () => {
 
-    // The flattener's buildVariantEntry feeds variants exclusively through applyServiceBinding, which iterates CHANNEL_BINDING_KEYS. Identity fields must not
-    // leak onto variants - this is the structural invariant that the discriminated-union type system enforces statically and we lock at runtime here.
+    // The flattener's buildVariantEntry sets url directly and routes the remaining CHANNEL_BINDING_KEYS fields through applyServiceBinding. Identity fields
+    // must not leak onto variants - the discriminated-union type system enforces this partition statically, and we lock it at runtime here.
     const allowedKeys = new Set<string>([ ...CHANNEL_BINDING_KEYS, "canonicalKey" ]);
 
     for(const [ key, channel ] of Object.entries(CHANNELS)) {
@@ -172,8 +172,8 @@ describe("flattened channel structural invariants", () => {
 
   test("canonicals only carry identity, binding, or canonicalKey fields", () => {
 
-    // Mirror invariant for canonicals: every key on a canonical entry must be in identity ∪ binding (canonicalKey is the variant-only carve-out and never appears
-    // on canonicals at runtime). Locks the partition that the compile-time _ChannelKeyExhaustiveness check guards.
+    // The same guarantee mirrored for canonicals: every key on a canonical entry must be in identity ∪ binding (canonicalKey is the variant-only carve-out and
+    // never appears on canonicals at runtime). Locks the partition that the compile-time _ChannelKeyExhaustiveness check guards.
     const allowedKeys = new Set<string>([ ...IDENTITY_FIELDS_ON_CANONICAL as readonly string[], ...CHANNEL_BINDING_KEYS ]);
 
     for(const [ key, channel ] of Object.entries(CHANNELS)) {
@@ -461,9 +461,9 @@ describe("known catalog entries (sampling)", () => {
 
   test("every predefined tag mentioned by a channel exists in PREDEFINED_TAGS", () => {
 
-    // Cross-export consistency: the catalog cannot reference tag names that do not exist in PREDEFINED_TAGS. This is a documented invariant - channels assign
-    // from the predefined vocabulary, and the runtime tag registry merges PREDEFINED_TAGS - deletedTags + userTags. A typo in a tag name here would orphan the
-    // channel until the user manually creates the misspelled tag.
+    // Cross-export consistency: the catalog cannot reference tag names that do not exist in PREDEFINED_TAGS. Channels assign from the predefined vocabulary,
+    // and the runtime tag registry merges PREDEFINED_TAGS - deletedTags + userTags. A typo in a tag name here would orphan the channel until the user manually
+    // creates the misspelled tag.
     const tagSet = new Set<string>(PREDEFINED_TAGS);
 
     for(const [ key, channel ] of Object.entries(CHANNELS)) {

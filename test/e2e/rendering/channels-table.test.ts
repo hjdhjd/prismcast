@@ -98,7 +98,7 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
     const { displayRow } = generateChannelRowHtml("abc", getProfiles());
 
     /* Look for the channelNumber 7 in the row. The cell wraps it in HTML so the literal "7" appears between tags - we just need the digit somewhere in the
-     * output. We avoid pinning the exact cell wrapper because that's a UI detail; the data invariant is what matters.
+     * output. We avoid pinning the exact cell wrapper because that's a UI detail; what matters is that the data is present.
      */
     assert.match(displayRow, />7</, "channelNumber 7 should appear in the rendered display row");
   });

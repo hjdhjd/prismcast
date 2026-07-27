@@ -4,7 +4,7 @@
  *
  * A capture-mode stream is fed by an ordered pipeline of three resources: the raw capture stream from puppeteer-stream (a Matroska feed in FFmpeg mode, a raw
  * fMP4 feed in native-fMP4 mode), an optional FFmpeg child that remuxes Matroska to fMP4, and the fMP4 segmenter that consumes the pipeline output. These three
- * resources have a load-bearing teardown order that is NOT reverse-construction, which is why a flat LIFO stack cannot express it. CaptureSession encapsulates
+ * resources require a specific teardown order that is not simply construction reversed, which is why a flat LIFO stack cannot express it. CaptureSession encapsulates
  * that order behind a single Disposable so every owner that tears a capture pipeline down does so identically, and no owner ever has to know the internal order.
  *
  * Data flow (FFmpeg mode):
@@ -30,10 +30,10 @@
  *   3. Stop the segmenter. Its input is the pipeline output (FFmpeg stdout, or the raw capture stream in native-fMP4 mode), which has now ended; stop() detaches
  *      its listeners and flushes the parser.
  *
- * Every underlying operation is individually idempotent (FFmpeg.kill() guards its SIGTERM send on ffmpeg.killed, Readable.destroy() guards on destroyed,
+ * Every underlying operation is safe to call more than once (FFmpeg.kill() guards its SIGTERM send on ffmpeg.killed, Readable.destroy() guards on destroyed,
  * segmenter.stop() guards on stopped), and the session adds its own disposed flag so a double dispose is a cheap no-op. All three operations are synchronous, so
  * the composite is a synchronous Disposable: the asynchronous aftermath (SIGTERM delivery, the STOP_RECORDING chain, the capture pipeline settling) is
- * fire-and-forget by design, exactly as the pre-composite teardown left it. Keeping disposal synchronous keeps terminateStream() synchronous and the recovery hot
+ * fire-and-forget by design; no caller needs to await it. Keeping disposal synchronous keeps terminateStream() synchronous and the recovery hot
  * path allocation-free.
  *
  * Scope: the composite owns ONLY the three pipeline resources. It deliberately does NOT own the browser page, the managed-page registration, or window
@@ -57,8 +57,8 @@ import type { Readable } from "node:stream";
 export interface CaptureSession extends Disposable {
 
   // Attaches the fMP4 segmenter and pipes the pipeline output into it. Called once, after the segmenter is created. If the session was already disposed (the stream
-  // was terminated mid-setup), the incoming segmenter is stopped immediately instead of being wired to a torn-down pipeline - folding the former orphaned-segmenter
-  // cleanup into the session's own contract.
+  // was terminated mid-setup), the incoming segmenter is stopped immediately instead of being wired to a torn-down pipeline, so callers never have to detect and
+  // stop an orphaned segmenter themselves.
   readonly attachSegmenter: (segmenter: FMP4SegmenterResult) => void;
 
   // Whether the session has been disposed. Once true, dispose() is a no-op and attachSegmenter() stops its argument rather than wiring it.
@@ -69,7 +69,7 @@ export interface CaptureSession extends Disposable {
 
   // The attached fMP4 segmenter, or null before attachSegmenter() has run. Exposed read-only so the registry, monitor, and shutdown resume-state collector can
   // read segment indices, init segments, and session statistics without reaching past the session. The reference is retained after disposal because the segmenter's
-  // accumulated statistics remain valid (and are read) after stop().
+  // accumulated statistics remain valid and readable after stop(), even though every current caller reads them before disposing.
   readonly segmenter: Nullable<FMP4SegmenterResult>;
 
   // TC39 explicit resource management hook. Aliases dispose() so "using session = createCaptureSession(...)" produces deterministic teardown at scope exit,

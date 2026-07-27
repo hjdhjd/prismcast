@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * format.test.ts: Unit tests for the formatting primitives in format.ts. The module's six exports are pure functions plus two clock-readers (formatTimestamp,
+ * format.test.ts: Unit tests for the formatting primitives in format.ts. The module's exports are pure functions plus two clock-readers (formatTimestamp,
  * formatTimeAgo). stringifySorted is the SSOT for sorted-key JSON serialization across all persisted and exported files; an unverified change here would alter
  * on-disk file shape without warning, so it earns the heaviest boundary coverage.
  */

@@ -6,21 +6,25 @@
  *
  *   1. Wire-level drift between buildPlaylist's output and what the route actually serves. Anything that would mangle the body in transit (encoding, header
  *      mismatch, premature truncation, accidental rewrite) shows up here as a body assertion miss.
- *   2. Resume-index regressions at the playlist layer. The 1589811 fix lives in hlsResume.ts; this suite complements hls-resume.test.ts by asserting that the
- *      saved index materializes as the served playlist's MEDIA-SEQUENCE - the operational symptom Channels DVR sees when the resume contract breaks.
+ *   2. Resume-index regressions at the playlist layer. The segment-index decrement that keeps the last completed segment in the resumed playlist lives in
+ *      src/app.ts's shutdown handler; hlsResume.ts only persists whatever segmentIndex value it is given. This suite complements hls-resume.test.ts by
+ *      asserting that the saved index materializes as the served playlist's MEDIA-SEQUENCE - the operational symptom Channels DVR sees when the resume
+ *      contract breaks.
  *
- * Why HTTP (option c) instead of driving buildPlaylist directly: the suite is named "playlist live registry" and the architectural integration point is the
- * route handler reading registry state and emitting bytes. Calling buildPlaylist directly would prove only the formatter's pure-function behavior - which is
- * unit-tier coverage. Driving fmp4Segmenter directly would test the segmenter, not the registry-to-route path. The seam used here (register a stream entry
- * with seeded HLSState, set the channel-to-stream index, GET) is the same seam every production caller traverses; it bypasses only the browser/ffmpeg setup
- * the integration tier deliberately does not host.
+ * Why HTTP (option c) instead of driving buildPlaylist directly: the suite is hls-playlist-registry.test.ts (describe block "HLS playlist served from
+ * registry-backed state") and the architectural integration point is the route handler reading registry state and emitting bytes. Calling buildPlaylist
+ * directly would prove only the formatter's pure-function behavior - which is unit-tier coverage. Driving fmp4Segmenter directly would test the segmenter,
+ * not the registry-to-route path. The registry-to-route entry point used here (register a stream entry with seeded HLSState, set the channel-to-stream
+ * index, GET) is the same entry point every production caller traverses; it bypasses only the browser/ffmpeg setup the integration tier deliberately does
+ * not host.
  *
- * Note on Test 4 (resume): the production code that snapshots the resume index into a stream entry lives inside registerPendingStream() and runs only when
- * preroll is generated. Tests cannot drive that path without also generating preroll fixtures, which is browser/FFmpeg territory. Instead, the test mirrors
- * the production read - it calls the public getResumeSegmentIndex() accessor (the same function registerPendingStream uses internally) and seeds
- * hls.resumeSegmentIndex on the synthetic entry from that read. This pins the wire-level invariant ("a saved resume index for channel X causes channel X's
- * next playlist to start at MEDIA-SEQUENCE = saved index") without re-implementing any production logic - the resume index flows through the production
- * accessor; the test only asserts what the route emits.
+ * Note on Test 4 (resume): the production code that snapshots the resume index into a stream entry lives inside registerPendingStream() and runs
+ * unconditionally on every pending registration; only its consumption inside the deferred preroll-timer callback is gated on isPrerollReady(codec). Driving
+ * registerPendingStream() directly would require a full Express Request and the deferred-timer machinery, which is browser/FFmpeg territory. Instead, the
+ * test mirrors the production read - it calls the public getResumeSegmentIndex() accessor (the same function registerPendingStream uses internally) and
+ * seeds hls.resumeSegmentIndex on the synthetic entry from that read. This pins the wire-level guarantee ("a saved resume index for channel X causes
+ * channel X's next playlist to start at MEDIA-SEQUENCE = saved index") without re-implementing any production logic - the resume index flows through the
+ * production accessor; the test only asserts what the route emits.
  */
 import type { Request, Response } from "express";
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
@@ -444,7 +448,7 @@ describe("cleanupIdleStreams idle reclamation", () => {
       registerStream(entry);
       setChannelStreamId(entry.info.storeKey, entry.id);
 
-      // terminateStream is idempotent, so cleaning up the already-terminated idle stream here is a safe no-op.
+      // terminateStream is safe to call more than once, so cleaning up the already-terminated idle stream here is a safe no-op.
       ctx.registerCleanup(() => { terminateStream(entry.id, entry.info.storeKey, "test cleanup"); });
     }
 
@@ -484,8 +488,8 @@ describe("handlePlayStream request guards", () => {
   test("answers 503 with the login-mode body while login mode is active", async () => {
 
     /* When login mode is active, new ad-hoc streams must be blocked so the authentication tab is not disrupted. We drive login mode active through the production
-     * seam: startLoginMode requires a connected browser and un-minimizes a real tab via CDP, neither of which the integration tier hosts, so we inject a minimal
-     * browser double through the same setBrowserAccessors port browser/index.ts wires at startup. The fake page reports itself already closed so unminimizeWindow
+     * accessor: startLoginMode requires a connected browser and un-minimizes a real tab via CDP, neither of which the integration tier hosts, so we inject a
+     * minimal browser double through the same setBrowserAccessors port browser/index.ts wires at startup. The fake page reports itself already closed so unminimizeWindow
      * short-circuits before touching CDP. Cleanup calls endLoginMode (clearing the 15-minute safety timer and resetting the module singleton) and restores the real
      * accessors so no later test observes the double.
      */

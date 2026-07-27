@@ -49,9 +49,10 @@ import { triggerShowNameUpdate } from "./showInfo.ts";
  *   the proxy takes over. Otherwise, createCaptureSegmenter() creates the fMP4 segmenter and pipes the capture stream. When the first real playlist arrives
  *   (from either the segmenter or native proxy), the preroll timer is cancelled and the client receives live content on the next poll.
  *
- * Shared streams: If multiple clients request the same channel (or the same ad-hoc URL with the same profile), they share one stream. The first client triggers
- * stream creation, and subsequent clients get the existing playlist and segments. Ad-hoc streams are identified by a synthetic key ("play-<hash>") derived from the
- * URL and profile, allowing them to use the same channelToStreamId deduplication mechanism as predefined channels.
+ * Shared streams: If multiple clients request the same channel (or the same ad-hoc URL with the same profile, selector, clickToPlay, and clickSelector), they share
+ * one stream. The first client triggers stream creation, and subsequent clients get the existing playlist and segments. Ad-hoc streams are identified by a
+ * synthetic key ("play-<hash>") derived from the URL, profile, selector, clickToPlay, and clickSelector, allowing them to use the same channelToStreamId
+ * deduplication mechanism as predefined channels.
  */
 
 // Delay before seeding the preroll playlist in milliseconds. If stream setup completes before this timer fires, the preroll is skipped and the client receives real
@@ -117,8 +118,8 @@ export type ValidateChannelResult =
 const LOGIN_MODE_BODY: Record<string, string> = { error: "Login in progress", message: "Please complete authentication before starting new streams." };
 
 /**
- * Validates a channel name for streaming. Performs all fast, synchronous checks: disabled status, service resolution, channel lookup, and login mode. Returns a
- * discriminated union so callers can handle success and failure without coupling to Express response objects.
+ * Validates a channel name for streaming. Performs all fast, synchronous checks: disabled status, service resolution, channel lookup, service-filter availability,
+ * and login mode. Returns a discriminated union so callers can handle success and failure without coupling to Express response objects.
  *
  * This is extracted from ensureChannelStream() so it can be called by both HLS and MPEG-TS code paths without duplicating the validation logic.
  *
@@ -212,10 +213,9 @@ export function hasStreamCapacity(activeCount: number, maxConcurrent: number): b
 /**
  * Reserves a concurrent-stream slot at the registration site - the single source of truth for the capacity decision across both the preroll path
  * (ensureChannelStream) and the blocking path (initializeStream). It evaluates capacity against the current registry count BEFORE the new stream's pending entry is
- * registered, so the new stream is excluded from its own check. This eliminates the double-count that occurred when setupStream re-checked capacity after the
- * pending entry was already registered: at the boundary (one slot free) the registration-site gate admits the stream, and no subsequent self-counting check may
- * reject it. When the limit is reached, a single idle stream is reclaimed to free a slot; reservation succeeds when either a slot was already free or one was
- * reclaimed.
+ * registered, so the new stream is excluded from its own check. setupStream never re-checks capacity; this registration-site reservation is the sole authority for
+ * the decision, so at the boundary (one slot free) the registration-site gate admits the stream and no downstream check can double-count it against its own slot.
+ * When the limit is reached, a single idle stream is reclaimed to free a slot; reservation succeeds when either a slot was already free or one was reclaimed.
  * @returns True if a slot was reserved (room existed or an idle stream was reclaimed), false if the limit is reached and no idle stream could be reclaimed.
  */
 function reserveStreamSlot(): boolean {
@@ -466,13 +466,13 @@ export function handleHLSVariantPlaylist(req: Request, res: Response): void {
 // Ad-Hoc Streaming.
 
 /**
- * Handles ad-hoc stream requests for arbitrary URLs. Generates a deterministic synthetic key from the URL and profile, starts a stream if none exists, and redirects
- * to the standard HLS playlist path. This enables streaming URLs that are not predefined as channels.
+ * Handles ad-hoc stream requests for arbitrary URLs. Generates a deterministic synthetic key from the URL, profile, selector, clickToPlay, and clickSelector, starts
+ * a stream if none exists, and redirects to the standard HLS playlist path. This enables streaming URLs that are not predefined as channels.
  *
- * The synthetic key includes the profile so that the same URL with different profiles produces separate streams. The "play-" prefix prevents collisions with
- * predefined channel names.
+ * The synthetic key includes the profile, selector, clickToPlay, and clickSelector so that the same URL with different options produces separate streams. The
+ * "play-" prefix prevents collisions with predefined channel names.
  *
- * Route: GET /play?url=<url>&profile=<name>
+ * Route: GET /play?url=<url>&profile=<name>&selector=<selector>&clickToPlay=<bool>&clickSelector=<selector>
  *
  * @param req - Express request object.
  * @param res - Express response object.
@@ -1123,8 +1123,9 @@ interface NativeStreamingResult {
 }
 
 /**
- * Attempts to upgrade the stream from capture to native HLS. Finalizes the manifest interception, probes the manifest, creates a native proxy, stops the capture
- * pipeline, suppresses page audio, and updates the registry entry. Returns the codec and formatted quality string on success, or null if native is not viable.
+ * Attempts to upgrade the stream from capture to native HLS. Consumes the manifest interception already finalized by setupStream(), probes the manifest, creates a
+ * native proxy, stops the capture pipeline, suppresses page audio, and updates the registry entry. Returns the codec and formatted quality string on success, or
+ * null if native is not viable.
  * @param setup - The stream setup result from setupStream().
  * @param numericStreamId - The stream's numeric ID.
  * @param channelName - The channel key for logging and cache operations.
@@ -1319,7 +1320,9 @@ interface CompleteStreamSetupOptions extends InitializeStreamOptions {
 
 /**
  * Completes the async portion of stream initialization. Creates the browser page, navigates to the URL, sets up capture, creates the segmenter, and fills in the
- * pending registry entry. On failure, cleans up the pending entry via terminateStream().
+ * pending registry entry. If the pending entry was terminated during setup (e.g., idle timeout) before this function reaches it, it releases the now-orphaned
+ * setup resources via setup.cleanup() and returns null. On a thrown error, it does not clean up the pending entry itself - callers reach handleSetupFailure(), which
+ * terminates the pending entry via terminateStream().
  *
  * This is the Phase 2 of the two-phase stream initialization. For the non-blocking HLS path, it runs as fire-and-forget via `void`. For the blocking path
  * (initializeStream), it is awaited directly.

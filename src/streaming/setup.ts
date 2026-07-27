@@ -83,7 +83,8 @@ interface CaptureQueueSlot {
   // "Capture queue wait timed out." on that timeout, having already released this slot so a timed-out waiter never wedges the queue for the next caller.
   readonly ready: Promise<void>;
 
-  // Releases the slot for the next waiter. Idempotent (release-once), so the success path, the catch, and the timeout self-release can all call it safely.
+  // Releases the slot for the next waiter. Safe to call more than once (release-once), so the success path, the catch, and the timeout self-release can all
+  // call it safely.
   readonly release: () => void;
 }
 
@@ -144,7 +145,7 @@ const CAPTURE_PROBE_TIMEOUT_MS = 5000;
 
 // Wire the capture-readiness probe into the browser launch gate. setup.ts owns getStream and the unrecoverable stale-mutex process.exit decision; browser/index.ts
 // owns the launch lifecycle. Injecting verifyCaptureSystem here (setup.ts already depends on browser/index.ts) keeps the dependency one-directional and breaks the
-// cycle, mirroring the browserAccessors seam between login.ts and index.ts. It runs once at module load, before any browser launch.
+// cycle, mirroring the browserAccessors boundary between login.ts and index.ts. It runs once at module load, before any browser launch.
 setCaptureProbe(verifyCaptureSystem);
 
 // Types.
@@ -215,7 +216,8 @@ export interface StreamSetupResult {
   // The channel display name if streaming a named channel.
   channelName: Nullable<string>;
 
-  // Whether the channel was tuned via a direct mechanism (cached URL or API interception) rather than DOM interaction.
+  // Whether the channel was tuned via a direct mechanism (a cached URL, API interception, or a profile with no DOM-based channel-selection step at all)
+  // rather than DOM interaction; the last case has nothing for the manifest interceptor to wait through.
   directTune: boolean;
 
   // Cleanup function to release all resources. Safe to call multiple times.
@@ -349,7 +351,8 @@ export interface CreatePageWithCaptureResult {
   // The video context (page or frame containing the video element).
   context: Frame | Page;
 
-  // Whether the channel was tuned via a direct mechanism (cached URL or API interception) rather than DOM interaction.
+  // Whether the channel was tuned via a direct mechanism (a cached URL, API interception, or a profile with no DOM-based channel-selection step at all)
+  // rather than DOM interaction; the last case has nothing for the manifest interceptor to wait through.
   directTune: boolean;
 
   // Manifest interceptor handle for native streaming, or null if interception was not installed.
@@ -470,7 +473,8 @@ function disposePage(page: Page): void {
 
 /* CreatePageWithCaptureDeps is the cross-module collaborator set createPageWithCapture composes on at the browser boundary: the shared-browser accessor, the
  * puppeteer-stream capture launcher, and the overlay-handling poll the static-capture branch fires. It is injected as a default parameter, mirroring VideoTuneDeps in
- * browser/video.ts and PrecachingDeps in browser/precaching.ts, so a test can substitute stubs at the same seam - no loader mock - while production uses the real
+ * browser/video.ts and PrecachingDeps in browser/precaching.ts, so a test can substitute stubs at the same collaborator-injection boundary - no loader mock -
+ * while production uses the real
  * defaultCreatePageWithCaptureDeps built from the functions this module already imports. The remaining browser calls (registerManagedPage, unregisterManagedPage,
  * minimizeBrowserWindow) stay direct imports: they mutate an in-process page set or early-return without a live browser, so they need no substitution. This is the
  * collaborator-injection form of the Clock port (utils/clock.ts).
@@ -805,7 +809,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     captureSession,
     context,
+
+    // True for a cached direct URL or an API-interception tune, and also whenever the profile has no DOM-based channel-selection step to run at all.
     directTune: usedDirectUrl || strategyDirectTune || !isChannelSelectionProfile(profile),
+
     manifestInterception,
     page
   };
@@ -844,8 +851,8 @@ async function resolveRedirectUrl(url: string): Promise<Nullable<string>> {
  * Promise that resolves once the write is committed; resolution-layer errors thrown from the underlying file store are surfaced for caller-side logging but do not
  * abort the tune (selectChannel attaches a .catch on the returned promise).
  *
- * Idempotent at the storage layer: writing the same selector twice is a no-op (the file store deduplicates identical deltas via normalization). The closure does
- * not pre-check whether the value differs - the underlying store handles that.
+ * Safe to call more than once at the storage layer: writing the same selector twice is a no-op (the file store deduplicates identical deltas via normalization).
+ * The closure does not pre-check whether the value differs - the underlying store handles that.
  * @param canonicalKey - The canonical channel key (e.g., "fox").
  * @param serviceTag - The active service tag (e.g., "foxone").
  * @returns Async callback that persists the resolved selector to the channel store.
@@ -1064,7 +1071,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     const { captureSession, context, directTune, manifestInterception, page } = captureResult;
 
     // Hold the page, interceptor, and capture session on a scope guard so a tune-verification failure below disposes them structurally rather than repeating the
-    // teardown inline. Push order is load-bearing: the capture session is registered last so it disposes first, destroying the capture stream and firing
+    // teardown inline. Push order matters: the capture session must be registered last so it disposes first, destroying the capture stream and firing
     // STOP_RECORDING while the browser is still connected, ahead of the page close. On success we move() the guard and hand ownership to the cleanup closure (and,
     // once the session is installed on the registry entry, to terminateStream).
     using owned = new DisposableStack();
@@ -1082,9 +1089,10 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     // makes setupStream "verified by construction" - every consumer of StreamSetupResult (HLS preroll, HLS blocking, MPEG-TS, native proxy, capture mode) receives
     // a stream guaranteed to be on the requested channel without having to opt in or coordinate.
     //
-    // The verifier is a per-provider hook on ProviderModule.verifyManifestForChannel. Today only foxProvider implements it (Fox's CDN URL encodes the channel call
-    // sign in the path). Verification is opportunistic: providers without a verifier and streams without a manifest interception (e.g., DRM-cached channels, tab
-    // replacements) skip the check. When a verifier returns a failure reason, we throw StreamSetupError so the existing failure path marks channel health, terminates
+    // The verifier is a per-provider hook on ProviderModule.verifyManifestForChannel; not every provider implements one (Fox's CDN URL, for example, encodes the
+    // channel call sign in the path, which supports this kind of check). Verification is opportunistic: providers without a verifier and streams without a
+    // manifest interception (e.g., DRM-cached channels, tab replacements) skip the check. When a verifier returns a failure reason, we throw StreamSetupError so
+    // the existing failure path marks channel health, terminates
     // the pending registry entry, and surfaces a clear error - never silently delivers the wrong channel. The scope guard disposes the capture session, interceptor,
     // and page as the throw unwinds.
     if(manifestInterception) {
@@ -1127,9 +1135,10 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     // Start the health monitor for this stream.
     const monitor = monitorPlaybackHealth(page, context, profile, url, streamId, monitorStreamInfo, onCircuitBreak, onTabReplacement);
 
-    // Cleanup function. Releases all resources associated with the stream. Idempotent - safe to call multiple times. completeStreamSetup uses it as the fallback
-    // teardown when the pending entry is terminated before the capture session is installed on it; once installed, terminateStream disposes the same session
-    // (disposal is idempotent). Disposes the capture session (kill -> destroy -> stop) before closing the page so STOP_RECORDING fires while the browser is connected.
+    // Cleanup function. Releases all resources associated with the stream. Safe to call more than once. completeStreamSetup uses it as the fallback teardown
+    // when the pending entry is terminated before the capture session is installed on it; once installed, terminateStream disposes the same session (safe to
+    // call disposal more than once). Disposes the capture session (kill -> destroy -> stop) before closing the page so STOP_RECORDING fires while the browser is
+    // connected.
     let cleanupCompleted = false;
 
     const cleanup = async (): Promise<void> => {
@@ -1180,7 +1189,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
  * Verifies that a freshly-launched Chrome instance can actually capture, by running a real getStream against a throwaway page on it. This is the capability tier of
  * the browser launch gate: browser/index.ts injects it via setCaptureProbe and runs it inside launchReadyBrowser, so a browser is published as ready only after its
  * capture capability is verified - at boot AND at every relaunch, not just startup. It exercises the exact getStream path that hangs when the puppeteer-stream
- * extension is unregistered, so it would have detected the original outage's dead extension immediately.
+ * extension is unregistered, so a dead extension is detected immediately rather than causing every subsequent stream request to hang.
  *
  * Each attempt creates a temporary page, attempts a short capture, and tears down both cleanly. A 500ms delay after destroying the capture stream allows
  * puppeteer-stream's fire-and-forget STOP_RECORDING chain to complete before closing the page, preventing a stale capture cascade on the first real request.

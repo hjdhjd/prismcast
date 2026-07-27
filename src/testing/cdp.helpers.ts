@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * cdp.helpers.ts: Shared structural stubs for puppeteer's CDP surface used by every test that exercises browser/tabNetworkObserver.ts or any module layered on
- * top of it (browser/hlsPlaylistObserver.ts, browser/manifestInterceptor.ts).
+ * top of it (browser/hlsPlaylistObserver.ts; manifestInterceptor.ts's own tests inject a fake observe factory instead of driving raw CDP events through
+ * these stubs).
  */
 import type { CDPSession, Page } from "puppeteer-core";
 import { EventEmitter } from "node:events";
@@ -15,14 +16,14 @@ import { EventEmitter } from "node:events";
  *
  *   - FakeCdpSession extends EventEmitter and adds: a record of every send(method, params) call (sent), a detach() call counter, a per-event listener-op
  *     spy (listenerOps) that records every on/off/removeAllListeners invocation the observer makes, a connection() method returning the constructor arg
- *     (mirroring puppeteer's nullable Connection | undefined contract), and named emit helpers for the three CDP events the observers consume
+ *     (mirroring puppeteer's nullable Connection | undefined contract), and named emit helpers for each CDP event the observers consume
  *     (Network.responseReceived, Target.attachedToTarget, Target.detachedFromTarget).
  *   - FakeConnection holds a register/session map so tests can wire up child CDPSessions and have them resolved by sessionId in the way puppeteer's flatten
  *     mode does.
  *   - makeFakeCdpPage returns a Page-shaped object whose createCDPSession resolves with the supplied root session and whose isClosed() reflects the closed
  *     constructor flag - the minimum surface our observers touch on a Page.
  *
- * The classes carry the full feature set (listener-op spying, null-connection support, all three emit helpers); consumers that don't need a given field simply
+ * The classes carry the full feature set (listener-op spying, null-connection support, every emit helper); consumers that don't need a given field simply
  * never read it. This keeps the stub as one shape, avoiding a second near-identical fixture that would drift from it.
  */
 

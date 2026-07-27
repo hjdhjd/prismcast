@@ -19,7 +19,7 @@ describe("noop", () => {
 
     // Locking the zero-arg signature is what allows noop to satisfy any callback type erased to () => void at the call site. If someone later widens the
     // signature, every existing consumer that aliased noop to a typed callback would still compile, but the new parameter makes noop.length non-zero and this
-    // assertion fails outright, flagging the signature widening as an enforced invariant rather than passing it through silently.
+    // assertion fails outright, a rule this test enforces rather than letting the signature widening pass through silently.
     assert.equal(noop.length, 0, "noop declares zero parameters");
   });
 });

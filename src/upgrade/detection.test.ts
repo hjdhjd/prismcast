@@ -6,7 +6,7 @@
  *
  * Cross-platform testing is first-class here. The PathHandle wrapper that currentFile uses accepts an explicit platform override, so a single Linux-hosted test
  * suite can construct Windows-flavored handles (backslash separators, case-insensitive matching) and verify the strategies behave correctly on Windows install
- * layouts. This is how the v1.10.2 detection-on-Windows regression becomes a unit test rather than a user-reported bug.
+ * layouts, catching path-separator regressions on Windows before they reach users as bug reports.
  */
 import type { DetectionContext, InstallStrategy } from "./detection.ts";
 import { INSTALL_STRATEGIES, UNKNOWN_INSTALL, detectInstallMethod } from "./detection.ts";
@@ -272,9 +272,9 @@ describe("NPM_GLOBAL strategy", () => {
 
   test("matches a Windows path under the reported npm global prefix (the v1.10.2 detection-on-Windows regression)", () => {
 
-    // The exact shape of the install layout that produced the v1.10.2 bug report: Node global prefix is "%AppData%\\npm" and PrismCast lives under that directory.
-    // Before the PathHandle refactor, the strategy's substring prefilter checked for "/node_modules/" against a backslash path and bailed out, leaving the user
-    // with "Install method: Unknown" and a manual upgrade instruction. The PathHandle-based predicate matches structurally and the strategy now fires correctly.
+    // This Windows install layout has Node's global prefix at "%AppData%\\npm" with PrismCast living under that directory. hasSegmentChain matches this
+    // layout because isUnder dispatches through path.win32's separator, so the npm-global strategy fires correctly on the backslash-delimited path and
+    // returns the matching InstallInfo instead of falling through to the unknown sentinel.
     const matched = strategy.matches(makeContext({
 
       currentFile: "C:\\Users\\jp\\AppData\\Roaming\\npm\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
@@ -375,8 +375,8 @@ describe("NPM_LOCAL strategy", () => {
 
   test("matches a Windows path containing node_modules\\prismcast", () => {
 
-    // The matches predicate on Windows: the "node_modules" + "prismcast" segment chain is found against a backslash-separated path. Before PathHandle this was a
-    // string substring check against "/node_modules/prismcast/" and silently never matched on Windows. Locking the behavior with an explicit win32 fixture.
+    // hasSegmentChain matches the "node_modules" + "prismcast" segment chain against a backslash-separated path because it dispatches through path.win32's
+    // separator, so the strategy fires correctly on this Windows layout. Locking the behavior with an explicit win32 fixture.
     const matched = strategy.matches(makeContext({
 
       currentFile: "C:\\Users\\jp\\my-app\\node_modules\\prismcast\\dist\\upgrade\\detection.js",
@@ -423,7 +423,7 @@ describe("detectInstallMethod (dispatcher)", () => {
     assert.equal(info.upgradeCommand, "docker pull ghcr.io/hjdhjd/prismcast:latest && docker compose up -d");
 
     // Locks the dispatcher's contract that manualUpgradeMessage is copied off the matching strategy onto the resulting InstallInfo. assert.fail on the
-    // unexpected branch narrows the InstallInfo union past the upgradeable discriminator so the message field is in scope below.
+    // unexpected branch narrows the InstallInfo union past the upgradeable tag so the message field is in scope below.
     if(info.upgradeable) {
 
       assert.fail("docker InstallInfo must be non-upgradeable");
@@ -536,7 +536,7 @@ describe("detectInstallMethod (dispatcher)", () => {
 
   test("upgradeable InstallInfos carry no manualUpgradeMessage (union-shape invariant)", () => {
 
-    // Locks the structural invariant the discriminated union buys us: the dispatcher cannot accidentally attach manualUpgradeMessage to an upgradeable variant.
+    // Locks the guarantee the discriminated union buys us: the dispatcher cannot accidentally attach manualUpgradeMessage to an upgradeable variant.
     // Verified at runtime by reading the (typed-undefined) field; the property name is permitted in the cast because the union explicitly forbids it on the
     // upgradeable branch, so this test is the runtime mirror of that compile-time guarantee.
     const upgradeableContexts: Record<string, DetectionContext> = {
@@ -556,9 +556,9 @@ describe("detectInstallMethod (dispatcher)", () => {
     }
   });
 
-  test("dispatcher's method field always equals the strategy's id (id/method invariant)", () => {
+  test("dispatcher's method field always equals the strategy's id", () => {
 
-    // This locks the structural invariant the new strategy shape buys us: the dispatcher writes method:strategy.id once, so a strategy cannot accidentally
+    // This locks the guarantee the strategy-registry design buys us: the dispatcher writes method:strategy.id once, so a strategy cannot accidentally
     // produce an InstallInfo with a method that disagrees with its own id.
     const ctxByStrategy: Record<string, DetectionContext> = {
 
@@ -599,10 +599,10 @@ describe("detectInstallMethod (dispatcher)", () => {
 
   test("routes a Windows npm-global layout to the npm-global InstallInfo end-to-end (v1.10.2 regression lock)", () => {
 
-    // End-to-end regression test for the bug a Windows user hit on the v1.10.2 release: `prismcast upgrade` reported "Install method: Unknown" because the
-    // refactored npm-global predicate had a forward-slash substring prefilter against a backslash path. The PathHandle-based predicate now routes this layout
-    // correctly. Locking the dispatcher's output (not just the predicate's boolean) catches any future regression that might break the wiring at a different
-    // layer (e.g., if a future refactor stopped composing the resolved fields through the dispatcher).
+    // End-to-end coverage for a Windows npm-global layout: hasSegmentChain and isUnder dispatch through path.win32's separator, so the predicate matches
+    // this backslash-delimited path correctly and the dispatcher routes it to the npm-global InstallInfo. Locking the dispatcher's output (not just the
+    // predicate's boolean) catches any future regression that breaks the wiring at a different layer (e.g., if the dispatcher stopped composing the
+    // resolved fields correctly).
     const info = detectInstallMethod(makeContext({
 
       currentFile: "C:\\Users\\jp\\AppData\\Roaming\\npm\\node_modules\\prismcast\\dist\\upgrade\\detection.js",

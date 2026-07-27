@@ -163,9 +163,9 @@ function processChannelLineup(json: string): void {
 }
 
 /**
- * Sets up console listeners on the page to bridge in-page console signals from the evaluateOnNewDocument interceptor to the Node.js process. Handles four signal
- * types: [DIRECTV-CHANNELS] for channel lineup data, [DIRECTV-TUNE-OK] and [DIRECTV-TUNE-FAIL] for tune result signaling, and [DIRECTV-DIAG] for diagnostic
- * logging. Uses a WeakSet to prevent duplicate listener registration on the same page.
+ * Sets up console listeners on the page to bridge in-page console signals from the evaluateOnNewDocument interceptor to the Node.js process. Handles the console
+ * signal types the interceptor emits: [DIRECTV-CHANNELS] for channel lineup data, [DIRECTV-TUNE-OK] and [DIRECTV-TUNE-FAIL] for tune result signaling, and
+ * [DIRECTV-DIAG] for diagnostic logging. Uses a WeakSet to prevent duplicate listener registration on the same page.
  * @param page - The Puppeteer page object.
  */
 function setupConsoleListeners(page: Page): void {
@@ -219,7 +219,7 @@ function setupConsoleListeners(page: Page): void {
  * tree, emits the channel lineup, and optionally dispatches playConsumable to tune to a specific channel. The script runs before any SPA JavaScript and is
  * entirely self-contained (no Node.js references).
  *
- * The interceptor has four phases:
+ * The interceptor proceeds through these phases:
  * 1. Main-frame guard (skip ad iframes)
  * 2. Wrap webpackChunk push to capture __webpack_require__ from natural chunk callbacks (defense-in-depth for future webpack builds)
  * 3. Poll for React fiber root, BFS for Redux store, extract channel lineup, emit [DIRECTV-CHANNELS]

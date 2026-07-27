@@ -2,7 +2,7 @@
  *
  * shared.test.ts: Unit tests for the shared client-side utilities script generator. The module exports a single function that returns an HTML <script> block
  * containing toast notifications, dropdown management, channel display rendering, wizard controller factory, and the channelTable namespace. We test the
- * generated string output for structural invariants - presence of expected exposed window.* names and core function definitions - without executing the script
+ * generated string output for structural properties - presence of expected exposed window.* names and core function definitions - without executing the script
  * since DOM behavior would require a browser-equivalent runtime that the project conventions exclude.
  */
 import { describe, test } from "node:test";
@@ -195,8 +195,8 @@ describe("generateSharedUtilitiesScript", () => {
 
   test("balances parentheses across the entire generated script", () => {
 
-    // A mismatched paren in a string template is a load-bearing bug - the script wouldn't parse in the browser, breaking every page. Crude balance check works
-    // because the script does not contain unbalanced parens inside string literals (it joins many short strings).
+    // A mismatched paren in a string template would break every page's script parsing in the browser. Crude balance check works because the script does not
+    // contain unbalanced parens inside string literals (it joins many short strings).
     const script = generateSharedUtilitiesScript();
     const opens = (script.match(/\(/g) ?? []).length;
     const closes = (script.match(/\)/g) ?? []).length;
@@ -206,8 +206,8 @@ describe("generateSharedUtilitiesScript", () => {
 
   test("installs the project-wide action dispatcher with collision detection and a typo warning", () => {
 
-    // The dispatcher is the load-bearing primitive every page depends on. We lock its shape so a regression that loses the collision throw, the typo warning,
-    // or the modifier walk would fail this test before it could ship.
+    // The dispatcher is the primitive every page depends on. We lock its shape so a regression that loses the collision throw, the typo warning, or the
+    // modifier walk would fail this test before it could ship.
     const script = generateSharedUtilitiesScript();
 
     // Registration API exposed on window with uniqueness enforcement.
@@ -231,7 +231,7 @@ describe("generateSharedUtilitiesScript", () => {
 
     // Four event types delegated through document-level listeners: a capture-phase listener for the modifier walk (so stopPropagation fires before any
     // intermediate bubble-phase listener can run), and a bubble-phase listener for action dispatch (so element-level listeners get a chance to fire first).
-    assert.match(script, /for\(const type of \[ 'click', 'change', 'keydown', 'submit' \]\)/, "all four event types delegated in one loop");
+    assert.match(script, /for\(const type of \[ 'click', 'change', 'keydown', 'submit' \]\)/, "every delegated event type in one loop");
     assert.match(script, /document\.addEventListener\(type, dispatchModifiers, \{ capture: true \}\)/, "modifier walk uses the modern { capture: true } object form");
     assert.match(script, /document\.addEventListener\(type, dispatchAction\)/, "action dispatch is bubble-phase");
   });

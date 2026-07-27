@@ -3,7 +3,7 @@
  * channels.test.ts: Unit tests for the runtime constants and partition completeness machinery in channels.ts. The module's runtime exports are four readonly
  * arrays (CHANNEL_IDENTITY_KEYS, CHANNEL_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS) that act as the single source of truth for
  * the identity/binding partition and the delta-eligible subset. The tests lock the membership, ordering, and disjointness contracts so a silent change to any
- * array surfaces as a failed assertion. Type-level tests pin the CanonicalChannel/VariantChannel discriminator: a value with a string canonicalKey is a
+ * array surfaces as a failed assertion. Type-level tests pin the CanonicalChannel/VariantChannel tag: a value with a string canonicalKey is a
  * VariantChannel, anything else is a CanonicalChannel.
  */
 import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "./channels.ts";
@@ -189,7 +189,7 @@ describe("delta-eligible partition disjointness", () => {
 });
 
 /* makeChannel returns a Channel value whose static type is the open union (CanonicalChannel | VariantChannel). The function signature widens what would
- * otherwise be a literal-narrowed type so the discriminator branches in the tests below exercise real narrowing instead of being constant-folded by the
+ * otherwise be a literal-narrowed type so the branches on the tag in the tests below exercise real narrowing instead of being constant-folded by the
  * compiler. The runtime value is whatever the caller passed.
  */
 function makeChannel(value: Channel): Channel {
@@ -201,7 +201,7 @@ describe("Channel discriminated union (type-level)", () => {
 
   test("a value with a string canonicalKey narrows to VariantChannel", () => {
 
-    // The discriminator: VariantChannel.canonicalKey is `string`; CanonicalChannel.canonicalKey is `never` (structurally absent). When a Channel value has a
+    // The field that marks the kind: VariantChannel.canonicalKey is `string`; CanonicalChannel.canonicalKey is `never` (structurally absent). When a Channel value has a
     // non-undefined canonicalKey, TypeScript narrows it to VariantChannel - assignment to a binding-only type works.
     const variant: Channel = makeChannel({ canonicalKey: "parent-key", url: "https://example.com/live" });
 

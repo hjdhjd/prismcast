@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * non-targeted-isolation.test.ts: Per-entry byte-preservation invariant for channels.json under any mutation. The cross-store-isolation suite pins file-level
+ * non-targeted-isolation.test.ts: Per-entry byte-preservation guarantee for channels.json under any mutation. The cross-store-isolation suite pins file-level
  * isolation across stores; this suite pins the within-channels.json analog: a mutation that targets a specific subset of channel keys must leave every other
  * key's on-disk entry byte-identical pre/post. The invariant catches a class of bug invisible to the existing crud/bulk suites - serializer drift that silently
  * re-keys entries, re-orders tag arrays, or rewrites whitespace - because those suites only assert the targeted side of the change.
@@ -81,7 +81,7 @@ describe("channels.json non-targeted byte-preservation", () => {
 
   test("POST creating a new user channel leaves existing user channels byte-identical", async () => {
 
-    /* The structurally simplest preservation invariant: adding a new entry to channels.json must not reach into existing entries. A serializer regression that
+    /* The structurally simplest preservation guarantee: adding a new entry to channels.json must not reach into existing entries. A serializer regression that
      * rewrites every entry on every write (e.g., a beforeWrite that re-applies normalization to all entries instead of the new one) would surface here.
      */
     await using ctx = await createIntegrationContext();

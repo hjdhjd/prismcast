@@ -28,9 +28,9 @@
  * production foxcom-rename-migration crash gracefully if it threw" - a narrower assertion than "does the framework's runMigrations contract handle any
  * throwing migration correctly," which is what this suite pins.
  *
- * Why this is the architecturally correct seam (not a workaround): createFileStore IS a public, exported, framework-level constructor. A test that uses it
- * to instantiate a fresh store with synthetic migrations is using the framework's documented surface to test the framework's documented contract. No
- * production code is mocked, no internal modules are mocked, no module bindings are patched. The store created here is real, registers in the same
+ * Why this is the architecturally correct boundary to test at (not a workaround): createFileStore IS a public, exported, framework-level constructor. A
+ * test that uses it to instantiate a fresh store with synthetic migrations is using the framework's documented surface to test the framework's documented
+ * contract. No production code is mocked, no internal modules are mocked, no module bindings are patched. The store created here is real, registers in the same
  * registeredStores list every production store registers in, runs the same runMigrations the production stores run, and writes via the same atomic-rename
  * path. The fixture is synthetic; the framework code is production.
  */

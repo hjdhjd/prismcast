@@ -9,7 +9,8 @@
  *   - ClientState (this file) - the mutable record of streamData / systemData / expandedStreams / staleness counters / rAF gates
  *   - ClientExternals (this file) - the readonly handle to sibling-script window.* APIs (channelTable, dropdowns, copyToClipboard, etc.)
  *   - HANDLER_CONSTANTS (this file) - the registry of script-side constants (health color CSS vars, label maps, row tints) emitted into the script body
- *   - HANDLER_FUNCTIONS (this file) - the registry of pure functions whose .toString() output is concatenated into the emitted script body
+ *   - HANDLER_FUNCTIONS (this file) - the registry of free-standing handler functions (formatters, renderers, DOM mutators, and SSE handlers) whose .toString()
+ *     output is concatenated into the emitted script body
  *   - generateStatusScript (status.ts) - the boundary; the only place that builds strings, that wires window.*, and that constructs the EventSource
  *
  * Why this file exists. Free-standing handler functions are directly importable and callable from Node tests with synthetic context literals, which avoids the
@@ -101,7 +102,8 @@ export interface ClientState {
 
 /**
  * Readonly handle to sibling-script window.* APIs. Resolved at IIFE construction time; tests pass stub literals. updateRestartDialogStatus is read via a getter
- * in the IIFE so the streamRemoved handler picks up later registration from config.ts (the script that defines it loads after status.ts in the page).
+ * in the IIFE because config.ts's script loads before status.ts's, so the function is already registered by the time this script runs; the typeof guard
+ * behind the getter is defensive in case that load order ever changes.
  *
  * What belongs here versus a bare global: ClientExternals holds the collaborators tests need to stub or observe - the channelTable patch sink, the channelDisplayHtml
  * renderer (asserted for delegation), dropdowns.close, copyToClipboard, the optional config.ts trampoline. The shared client-escape SSOT (window.escapeHtml,
@@ -151,7 +153,7 @@ export function createInitialState(): ClientState {
   };
 }
 
-// CSS-variable-backed color tokens for the health-state badge dot. The recovering/stalled/etc. literals are the discriminants the server emits. Typed as a wide
+// CSS-variable-backed color tokens for the health-state badge dot. The recovering/stalled/etc. literals are the health-state values the server emits. Typed as a wide
 // string-record so script-side handlers can index by any health value with a `?? fallback` pattern (consistent with how the other lookup tables below are
 // structured).
 const healthColorVars: Record<string, string> = {
@@ -574,7 +576,7 @@ function updateStreamPopover(ctx: HandlerContext): void {
 // Render scheduling. The DOM-writing render functions funnel through requestAnimationFrame gates so multiple SSE events arriving within the same frame produce a
 // single DOM write instead of redundant back-to-back rebuilds that destroy and recreate image elements.
 
-// Schedule a full-table render on the next animation frame. Idempotent within a frame - repeated calls collapse into one render.
+// Schedule a full-table render on the next animation frame. Safe to call repeatedly within the same frame - repeated calls collapse into one render.
 function scheduleTableRender(ctx: HandlerContext): void {
 
   if(!ctx.state.tableRenderPending) {
@@ -588,7 +590,7 @@ function scheduleTableRender(ctx: HandlerContext): void {
   }
 }
 
-// Schedule a popover refresh on the next animation frame. Idempotent within a frame.
+// Schedule a popover refresh on the next animation frame. Safe to call repeatedly within the same frame.
 function schedulePopoverRender(ctx: HandlerContext): void {
 
   if(!ctx.state.popoverRenderPending) {
@@ -681,8 +683,8 @@ function renderStreamsTable(ctx: HandlerContext): void {
 }
 
 // Targeted update for a single stream row. Updates only the cells that change between health ticks (health badge, show name, client count, row tint, and detail
-// panel metrics if expanded). Leaves the logo, channel name, badge, and structural elements untouched so image elements are never destroyed and recreated. Falls
-// back to a full table render if the row does not exist yet (e.g., race between streamAdded and streamHealthChanged).
+// panel metrics if expanded). Leaves the logo, channel name, and native/hardware badge in the stream-info cell untouched so image elements are never destroyed
+// and recreated. Falls back to a full table render if the row does not exist yet (e.g., race between streamAdded and streamHealthChanged).
 function updateStreamRow(s: StreamSummary, ctx: HandlerContext): void {
 
   const row = ctx.document.querySelector<HTMLElement>(".stream-row[data-id=\"" + String(s.id) + "\"]");
@@ -754,7 +756,7 @@ function updateStreamRow(s: StreamSummary, ctx: HandlerContext): void {
   }
 }
 
-// Toggle the expanded/collapsed state of a stream's detail panel. Triggered by inline onclick from the table row; the IIFE exposes a window-bound trampoline.
+// Toggle the expanded/collapsed state of a stream's detail panel. Triggered by the project-wide action dispatcher via data-click-action on the table row.
 function toggleStreamDetails(id: number | string, ctx: HandlerContext): void {
 
   ctx.state.expandedStreams[id] = !ctx.state.expandedStreams[id];
@@ -842,6 +844,8 @@ function handleStreamHealthChanged(data: StreamSummary, ctx: HandlerContext): vo
     return;
   }
 
+  // These four fields are exactly the ones updateStreamRow's targeted-update path does not touch - they live in the stream-info cell (the logo, the
+  // native/hardware badge, and the codec label) - so a change to any of them requires the full table rebuild rather than the cheap per-cell update.
   const structuralChange = (prev.logoUrl !== data.logoUrl) || (prev.streamingMode !== data.streamingMode) ||
     (prev.hardwareAccelerated !== data.hardwareAccelerated) || (prev.captureCodec !== data.captureCodec);
 
@@ -885,7 +889,7 @@ function handleSseError(ctx: HandlerContext): void {
 
 // Window-bound trampolines and lifecycle helpers. These are invoked from the IIFE either via window.* assignment or directly.
 
-// Toggle the stream popover open/closed. Wired to window.toggleStreamPopover by the IIFE so the header button's onclick can reach it.
+// Toggle the stream popover open/closed. Triggered by the project-wide action dispatcher via data-click-action on the header stream-count button.
 function toggleStreamPopover(ctx: HandlerContext): void {
 
   const ids = Object.keys(ctx.state.streamData);
@@ -913,7 +917,7 @@ function toggleStreamPopover(ctx: HandlerContext): void {
   }
 }
 
-// Copy the Quick Start playlist URL to the clipboard. Wired to window.copyOverviewPlaylistUrl by the IIFE so the Copy button's onclick can reach it.
+// Copy the Quick Start playlist URL to the clipboard. Triggered by the project-wide action dispatcher via data-click-action on the Copy button.
 function copyOverviewPlaylistUrl(ctx: HandlerContext): void {
 
   const urlEl = ctx.document.getElementById("overview-playlist-url");
@@ -1018,8 +1022,9 @@ type EmittableFn = (...args: never[]) => unknown;
 
 /**
  * The script-side function registry. generateStatusScript() emits each entry's .toString() output in order. Order is hoisting-irrelevant for function
- * declarations but reflects the logical groups: pure formatters, state-derived renderers, DOM mutators, render schedulers, SSE handlers, then trampolines and
- * lifecycle helpers. Adding a new function means appending here and using its identifier in the IIFE; nothing else changes.
+ * declarations but reflects the logical groups: pure formatters, state-derived renderers, DOM mutators (updateSystemStatus / buildStreamPopoverContent /
+ * updateStreamPopover), the render-scheduler pair, more DOM mutators (renderStreamsTable / updateStreamRow / toggleStreamDetails / updateDurations), SSE
+ * handlers, then trampolines and lifecycle helpers. Adding a new function means appending here and using its identifier in the IIFE; nothing else changes.
  *
  * The exported individual functions remain importable for tests; this registry is just the emission order for the script body.
  */
@@ -1060,8 +1065,7 @@ export const HANDLER_FUNCTIONS: readonly EmittableFn[] = [
   initIPadTooltips
 ];
 
-// Test surface. Each function is exported so status.handlers.test.ts and the DOM-runtime suite at test/e2e/dom-runtime/status-handlers-runtime.test.ts can
-// import and call them directly.
+// Test surface. Each function is exported so the DOM-runtime suite at test/e2e/dom-runtime/status-handlers-runtime.test.ts can import and call them directly.
 export {
 
   buildStreamPopoverContent,

@@ -15,10 +15,11 @@ import { getClientSummary } from "../streaming/clients.ts";
  * for monitoring and alerting systems. Returns HTTP 503 when unhealthy to allow load balancers and monitoring systems to detect problems via status code.
  */
 
-/* HealthDeps is the state-reader boundary the /health handler folds into its payload: browser connection/pages/version, the stream registry counts and memory, and
- * the per-stream client summary. It is injected as a default parameter so a test can substitute in-memory readers at the same seam - no loader mock - while
- * production uses the real defaultHealthDeps. isFFmpegAvailable, CONFIG, and the process memory/version are read directly because they are not the substituted
- * boundary. This mirrors the Clock port (utils/clock.ts): a typed interface plus a module-const default, consumed through a defaulted parameter.
+/**
+ * HealthDeps is the state-reader boundary the /health handler folds into its payload: browser connection/pages/version, the stream registry counts and memory, and
+ * the per-stream client summary. It is injected as a default parameter so a test can substitute in-memory readers through the same HealthDeps parameter - no
+ * loader mock - while production uses the real defaultHealthDeps. isFFmpegAvailable, CONFIG, and the process memory/version are read directly because they are
+ * not the substituted boundary. This mirrors the Clock port (utils/clock.ts): a typed interface plus a module-const default, consumed through a defaulted parameter.
  */
 export interface HealthDeps {
 

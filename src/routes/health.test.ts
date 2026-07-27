@@ -40,9 +40,9 @@ import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../testing.helpers.ts";
 import express from "express";
 
-// Module-level mock-state seam. Each handler invocation reads through this object via the closures installed by mock.module below; tests mutate fields per
-// scenario via beforeEach defaults plus per-test overrides. The shape mirrors the production surface health.ts reads from each dependency module - never more,
-// never less, so adding a field here forces a deliberate cross-walk against the handler.
+// Module-level mock-state injection point. Each handler invocation reads through this object via the closures captured by the deps object below; tests mutate
+// fields per scenario via beforeEach defaults plus per-test overrides. The shape mirrors the production surface health.ts reads from each dependency module -
+// never more, never less, so adding a field here forces a deliberate cross-walk against the handler.
 interface MockState {
 
   browserConnected: boolean;
@@ -158,7 +158,7 @@ before(async () => {
 
   mockState = defaultMockState();
 
-  // One server serves every test: setupHealthEndpoint registers a single synchronous GET /health route reading through the injected deps, so tests drive
+  // One server serves every test: setupHealthEndpoint registers a single async GET /health route reading through the injected deps, so tests drive
   // scenarios purely by mutating mockState.
   const created = await makeServer((app) => {
 
@@ -171,8 +171,8 @@ before(async () => {
 
 beforeEach(() => {
 
-  // Reset to defaults before every test so per-test mutations cannot leak. The mockState reference is preserved (closures captured it in the mock.module
-  // installer) - we mutate fields in place rather than reassigning the variable.
+  // Reset to defaults before every test so per-test mutations cannot leak. The mockState reference is preserved (the deps object above closes over the
+  // mockState variable itself, not its current value) - we mutate fields in place rather than reassigning the variable.
   Object.assign(mockState, defaultMockState());
 });
 
@@ -336,7 +336,7 @@ describe("setupHealthEndpoint - GET /health (browser connected, healthy branch)"
 
     /* The healthy branch: browser is up, stream count is low, no message field. The previous test infrastructure could not exercise this path at all - the
      * Express server it booted ran without launching Puppeteer, so isBrowserConnected was always false and only the unhealthy branch was reachable. The
-     * mock.module seam routes around that limitation by stubbing the dependency directly.
+     * injected HealthDeps parameter routes around that limitation by substituting the dependency directly.
      */
     mockState.browserConnected = true;
     mockState.chromeVersion = "Chrome/120.0.0.0";
@@ -428,7 +428,7 @@ describe("setupHealthEndpoint - GET /health (degraded branch + threshold boundar
 
   test("unhealthy outranks degraded - browser disconnected with high stream count still reports 'unhealthy'", async () => {
 
-    /* The branch ordering invariant: the handler checks browserConnected first, so a disconnected browser surfaces as unhealthy even when stream utilization
+    /* The branch ordering: the handler checks browserConnected first, so a disconnected browser surfaces as unhealthy even when stream utilization
      * would otherwise indicate degraded. Without this, an operator triaging a 503 might be misled into reading the response body's stream metrics as the cause
      * when the underlying issue is actually browser availability. This test pins that the unhealthy-takes-precedence ordering is structural.
      */

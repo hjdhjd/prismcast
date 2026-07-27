@@ -213,7 +213,7 @@ describe("getPredefinedChannel", () => {
 
   test("resolves a predefined variant against its canonical so identity fields surface", () => {
 
-    // abc-hulu is a predefined variant of abc. Under the new flattener, the variant entry carries only service-specific fields (URL, channelSelector) plus
+    // abc-hulu is a predefined variant of abc. Predefined variants under the catalog flattener carry only service-specific fields (URL, channelSelector) plus
     // canonicalKey - identity inherits at resolution time. getPredefinedChannel must surface the resolved view so findMatchingVariant and computePredefinedDelta
     // compare form values against the full identity the user sees.
     const result = getPredefinedChannel("abc-hulu");

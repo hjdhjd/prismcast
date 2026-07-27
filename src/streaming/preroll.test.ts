@@ -2,8 +2,8 @@
  *
  * preroll.test.ts: Unit tests for the preroll compositor and accessor functions in preroll.ts. The pure-function exports - getPrerollSegmentCount,
  * getPrerollSegmentDuration, getPrerollTotalDurationSec, getPrerollMaxDuration, getPrerollCodec, isPrerollReady, computePrerollWindow, buildPrerollEntries,
- * computeProgressiveReveal - earn full coverage here. The FFmpeg spawn path (generatePreroll) and the Express route registration (setupPrerollRoutes) require
- * real subprocess and HTTP fixtures and are deferred to e2e.
+ * computeProgressiveReveal - earn full coverage here. setupPrerollRoutes is also unit-tested here against an Express stub, covering route registration and
+ * each 404 branch. Only the FFmpeg spawn path (generatePreroll) requires real subprocess fixtures and is deferred to e2e.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { buildPrerollEntries, computePrerollWindow, computeProgressiveReveal, computeReveal, generatePrerollPlaylist, getPrerollCodec, getPrerollMaxDuration,

@@ -10,9 +10,9 @@
  *   2. The UDP control plane on port 65001 serves it to clients that issue Get requests for /tuner<N>/channel, /tuner<N>/status, /tuner<N>/target, etc.
  *
  * This module is the single source of truth for the slot-indexed projection. It returns format-neutral TunerState records; each consumer formats them into the
- * wire shape its protocol expects (JSON keys for HTTP, slash-delimited values for UDP). Keeping the projection here means the channel-map merge logic, the
- * fallback-to-stream-name handling, and the client-address normalization live in one place, so an HDHR feature gap or a refactor of the underlying registry
- * surfaces in exactly one location.
+ * wire shape its protocol expects (JSON keys for HTTP, plain strings and space-delimited key=value pairs for UDP). Keeping the projection here means the
+ * channel-map merge logic, the fallback-to-stream-name handling, and the client-address normalization live in one place, so an HDHR feature gap or a
+ * refactor of the underlying registry surfaces in exactly one location.
  */
 import { CONFIG } from "../config/index.ts";
 import type { Nullable } from "../types/index.ts";
@@ -22,7 +22,8 @@ import { normalizeClientAddress } from "../utils/index.ts";
 
 /**
  * Slot-indexed projection of stream state. Every configured tuner slot produces one entry; active slots carry channel and client info while idle slots carry
- * only the resource name. Wire-format conversion (to JSON for HTTP, to slash-delimited strings for UDP Get replies) happens in the consumer.
+ * only the resource name. Wire-format conversion (to JSON for HTTP, to plain strings or space-delimited key=value strings for UDP Get replies) happens in
+ * the consumer.
  */
 export interface TunerState {
 

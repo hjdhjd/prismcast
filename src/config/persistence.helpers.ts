@@ -131,8 +131,8 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
   }
 
   // Default in-memory implementations of every StorageBackend operation. Each is declared as an async arrow function so the body can use `throw` and `return`
-  // naturally even when no I/O is awaited; the eslint-disable directives suppress require-await on the bodies that don't need an actual await call (require-
-  // await would force ceremonial Promise.resolve() shapes that obscure the contract).
+  // naturally even when no I/O is awaited, keeping every operation's shape consistent with the real node:fs/promises adapter without resorting to ceremonial
+  // Promise.resolve() wrapping that would obscure the contract.
   const defaults: StorageBackend = {
 
     access: async (path: string): Promise<void> => {
@@ -144,7 +144,7 @@ export function makeMemoryStorageBackend(overrides: MemoryStorageBackendOverride
       }
 
       // Directory check: any file under this path means the directory exists. Mirrors the parent-of-children semantics of a real filesystem closely enough for
-      // the framework's idempotent-snapshot use case.
+      // the framework's repeat-safe snapshot use case.
       const prefix = path.endsWith("/") ? path : (path + "/");
 
       for(const filePath of files.keys()) {
@@ -280,8 +280,9 @@ export interface MakeStoreOptions<T> {
 }
 
 /**
- * Builds a FileStore against a real-filesystem temp directory. Tests pass a unique filename per case so concurrent stores do not collide on the framework's
- * global registry. The factory hides the boilerplate that every test would otherwise duplicate (label derivation, path resolver, schema-version wiring).
+ * Builds a FileStore against a real-filesystem temp directory. Tests pass a unique filename per case so concurrently running tests do not collide by writing
+ * to the same real file path. The factory hides the boilerplate that every test would otherwise duplicate (label derivation, path resolver, schema-version
+ * wiring).
  *
  * Use this when the test exercises the full real-fs I/O pipeline (atomic writes, real backup rotation, real snapshot-directory operations). For tests that
  * inject filesystem failures or want a faster path, use makeMemoryStore below.

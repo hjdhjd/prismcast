@@ -49,7 +49,7 @@ export interface PathHandle {
 }
 
 /**
- * Options accepted by createPathHandle. Today there is only the platform override, used by tests to produce Windows-flavored handles on a Linux host.
+ * Options accepted by createPathHandle. The platform override lets tests produce Windows-flavored handles on a Linux host.
  */
 export interface PathHandleOptions {
 
@@ -63,8 +63,9 @@ export interface PathHandleOptions {
  * `path.posix` accordingly, so behavior is independent of where the host process runs. The handle is logically immutable...returned fields are typed readonly
  * and the closed-over state is never mutated.
  *
- * @param raw - The OS-native absolute path string. Empty or relative inputs produce a degenerate handle whose query methods return false / null defensively.
- * @param options - Optional overrides. Today only the platform override is supported.
+ * @param raw - The OS-native absolute path string. Empty input produces a degenerate handle whose queries return false/null; a relative input is not rejected
+ * (hasSegmentChain still matches its segments), so callers must supply an absolute path.
+ * @param options - Optional overrides; the platform override lets tests exercise cross-platform behavior deterministically.
  * @returns A platform-aware PathHandle.
  */
 export function createPathHandle(raw: string, options: PathHandleOptions = {}): PathHandle {

@@ -16,8 +16,8 @@
  *      precedence on key collision; existing keys not in the pack survive untouched. A regression that wholesale-replaced state would lose the unrelated
  *      pre-existing entries. (Verified contract: the Object.assign merges in importServicePack - src/config/servicePacks.ts:225-226 for profiles/domains, :249 for
  *      channels.)
- *   3. Malformed pack rejection produces a 400 envelope and writes nothing. The route handler at services.ts:549-564 calls parseServicePack first; on validation
- *      failure it short-circuits with status 400 (the sendValidationError call at services.ts:561) before mutateProfiles or mutateChannels is ever called.
+ *   3. Malformed pack rejection produces a 400 envelope and writes nothing. The route handler at services.ts:604-622 calls parseServicePack first; on validation
+ *      failure it short-circuits with status 400 (the sendValidationError call at services.ts:616) before mutateProfiles or mutateChannels is ever called.
  *      profiles.json and channels.json must be byte-identical
  *      pre/post.
  *   4. Export determinism. Two consecutive GET requests for the same profile produce byte-identical bodies - a property the persistence layer's stringifySorted
@@ -248,12 +248,12 @@ describe("service pack import - validation rejection", () => {
   test("a malformed pack body returns a 400 envelope and writes nothing to disk", async () => {
 
     /* Validation rejections must be transactional in the disk sense: a 400 response means profiles.json and channels.json are byte-identical pre/post. The
-     * route handler at services.ts:549-564 short-circuits with status 400 (the sendValidationError call at services.ts:561) when parseServicePack returns errors,
+     * route handler at services.ts:604-622 short-circuits with status 400 (the sendValidationError call at services.ts:616) when parseServicePack returns errors,
      * before either mutateProfiles or mutateChannels
      * is invoked. A regression that called the mutators before validating - or that partial-saved profiles before failing on channels - would corrupt state on
      * every malformed POST.
      *
-     * Validation trip: pack with version 999 (parseServicePack at servicePacks.ts:79-81 rejects version > CURRENT_VERSION). Other invalid shapes (missing
+     * Validation trip: pack with version 999 (parseServicePack at servicePacks.ts:81-83 rejects version > CURRENT_VERSION). Other invalid shapes (missing
      * profiles, non-object profiles) trip the same code path; the assertion below documents the envelope shape, not the specific error string.
      */
     await using ctx = await createIntegrationContext();
@@ -264,8 +264,8 @@ describe("service pack import - validation rejection", () => {
 
     // Snapshot the two stores the import path touches. We do NOT also snapshot config.json or health.json: cross-store-isolation already pins that mutations
     // to one store leave the others untouched, and config.json need not exist on disk after a fresh initializePersistence (it is only created on first write).
-    // The invariant under test here is "the import handler does not partial-write profiles.json BEFORE rejecting on validation, and does not write channels.json
-    // AT ALL when the primary validation fails."
+    // This pins the rule that the import handler does not partial-write profiles.json before rejecting on validation, and does not write channels.json at all
+    // when the primary validation fails.
     const profilesBefore = await readFile(pathInDataDir(ctx, "profiles.json"), "utf-8");
     const channelsBefore = await readFile(pathInDataDir(ctx, "channels.json"), "utf-8");
 

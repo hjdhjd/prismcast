@@ -57,8 +57,8 @@ type CategoryNode =
   { readonly kind: "section"; readonly leaves: readonly DebugCategory[]; readonly prefix: string } |
   { readonly kind: "standalone"; readonly leaf: DebugCategory };
 
-/* The three visual row shapes. "leaf" is the default (grouped child); "header" is the section's parent toggle; "standalone" is a namespaceless category
- * rendered as its own bold row. Variant-specific styling is applied via a CSS modifier class derived from this discriminator.
+/* The visual row shapes: "leaf" is the default (grouped child); "header" is the section's parent toggle; "standalone" is a namespaceless category
+ * rendered as its own bold row. Variant-specific styling is applied via a CSS modifier class derived from this tag.
  */
 type RowVariant = "header" | "leaf" | "standalone";
 
@@ -147,7 +147,7 @@ function generateDebugStyles(): string {
 
   return [
 
-    // Column geometry. These five variables are the sole source of truth for the grid's column widths and gaps; the rules below reference them rather than
+    // Column geometry. These variables are the sole source of truth for the grid's column widths and gaps; the rules below reference them rather than
     // restating numeric values, so tuning the layout means editing this one line. Scoped to ".debug-container" - the only consumer subtree - so they don't
     // leak into the rest of the document's cascade.
     ".debug-container { max-width: 800px; margin: 0 auto; padding: 24px;",
@@ -459,7 +459,7 @@ function generateDebugBody(): string {
 
   // Action buttons. Each entry carries the semantic intent ("primary" vs. the default secondary visual treatment), the action identifier dispatched by the
   // delegated click listener on ".debug-actions", and the display label. The "primary"-to-class-name mapping lives in exactly one place below, so changing
-  // the CSS class scheme is a one-line edit rather than three. No inline onclick handlers, so the JS function names are not referenced from the HTML.
+  // the CSS class scheme is a one-line edit rather than one per button. No inline onclick handlers, so the JS function names are not referenced from the HTML.
   const actionButtons: readonly { readonly action: string; readonly label: string; readonly primary?: boolean }[] = [
 
     { action: ACTION_APPLY, label: "Apply", primary: true },

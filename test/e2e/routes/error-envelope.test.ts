@@ -6,7 +6,7 @@
  * envelope helpers carries `{ success: true, ... }`. The client-side toast and error-handling logic depends on this shape - any endpoint that ships a
  * non-conforming envelope silently breaks the UI.
  *
- * Why this suite exists: per-endpoint suites cover behavior, but none pins the cross-endpoint envelope-shape invariant. A new endpoint that forgets to
+ * Why this suite exists: per-endpoint suites cover behavior, but none pins the cross-endpoint envelope-shape rule. A new endpoint that forgets to
  * call sendValidationError / sendErrorResponse / sendFormErrors and instead writes a raw `res.status(400).json({ error: "..." })` would slip past every per-endpoint
  * suite - the per-endpoint test would still pass because the endpoint's behavior is correct, but the envelope shape would be off and the client wouldn't know.
  *
@@ -171,8 +171,8 @@ const ENDPOINT_SPECS: readonly EndpointSpec[] = [
    * parseServiceFilter), an unknown user tag (hits parseTagFilter), an invalid sort field (hits VALID_SORT_FIELDS), an invalid sort
    * direction (hits VALID_SORT_DIRECTIONS). Each carries a different diagnostic extension field on the rich-payload envelope (validTags, validFields,
    * validDirections), but the sweep does not pin those fields - the matching assertion below verifies only the envelope marker (success: false) and the
-   * simple-vs-form variant (an `error` string with `errors` absent). What these four entries pin is that every one of the four rejection paths still ships a
-   * conforming top-level error envelope.
+   * simple-vs-form variant (an `error` string with `errors` absent). What these entries pin is that every rejection path still ships a conforming top-level
+   * error envelope.
    */
   { expectedField: "error", expectedStatus: 400, method: "GET", registeredPath: "/playlist", requestPath: "/playlist?service=nonexistent-service-tag-foo" },
   { expectedField: "error", expectedStatus: 400, method: "GET", registeredPath: "/playlist", requestPath: "/playlist?tag=nonexistent-user-tag-foo" },

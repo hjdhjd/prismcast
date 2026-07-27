@@ -2,7 +2,7 @@
  *
  * service-filter.test.ts: HTTP-level integration coverage for the service-filter and bulk-assign endpoints. The service filter restricts which channels appear
  * in the table/playlist based on which streaming services the user subscribes to. Bulk-assign sets a specific service variant on every multi-service channel.
- * Together these endpoints drive the channel-availability invariants in production.
+ * Together these endpoints keep channel availability in production consistent with what the user actually configures.
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";

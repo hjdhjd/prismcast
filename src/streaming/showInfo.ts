@@ -206,7 +206,7 @@ export function getDvrHost(): Nullable<string> {
 /**
  * Sets the DVR host address and persists it to the config file if it changed. Called by the discovery loop when a matching M3U device is found on a host.
  *
- * Invariant: the host MUST be host-only - never `host:port`. The port lives at `CONFIG.channelsDvr.port` exclusively. Inputs containing a colon are rejected
+ * The host must be host-only - never `host:port`. The port lives at `CONFIG.channelsDvr.port` exclusively. Inputs containing a colon are rejected
  * with a debug log rather than silently stripped, because a colon-bearing host indicates a caller-side bug (auto-discovery should be feeding IPs, not
  * `IP:port` strings) and silent stripping would mask it. The schema migration to `channelsDvr.host` splits any legacy `host:port` value at read time, so this
  * function only sees host-only inputs in the steady state.
@@ -741,7 +741,7 @@ async function persistDvrHost(host: string): Promise<void> {
   }
 }
 
-// Logo population.
+// Logo Population.
 
 /**
  * Populates the channel logo cache in two tiers. Tier 1 fetches logo URLs from the DVR's /devices endpoint (covers all channels in the M3U playlist). Tier 2 runs

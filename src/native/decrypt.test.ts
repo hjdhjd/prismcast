@@ -1,10 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * decrypt.test.ts: Unit tests for the AES-128 key fetching and segment decryption primitives in decrypt.ts. Three of the exports are pure: decryptSegment
- * delegates to Node's crypto module for the heavy lifting, while deriveIvFromSequence and parseExplicitIv are pure Buffer math. The fourth, fetchDecryptionKey,
- * performs network I/O. Tests use real Node crypto for the round-trip verification (encrypt then decryptSegment must recover
- * the plaintext) and mock global fetch for fetchDecryptionKey to avoid real network I/O. Synthetic key/iv/ciphertext fixtures - never derived from production
- * data - lock the binary contracts that downstream HLS playback depends on.
+ * decrypt.test.ts: Unit tests for the AES-128 key fetching and segment decryption primitives in decrypt.ts. The pure exports (decryptSegment,
+ * deriveIvFromSequence, parseExplicitIv) delegate to Node's crypto module or pure Buffer math; fetchDecryptionKey is the only export that performs network I/O.
+ * Tests use real Node crypto for the round-trip verification (encrypt then decryptSegment must recover the plaintext) and mock global fetch for
+ * fetchDecryptionKey to avoid real network I/O. Synthetic key/iv/ciphertext fixtures - never derived from production data - lock the binary contracts that
+ * downstream HLS playback depends on.
  */
 import { afterEach, describe, mock, test } from "node:test";
 import { createCipheriv, randomBytes } from "node:crypto";

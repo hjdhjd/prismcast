@@ -5,8 +5,8 @@
  * default realClock delegates to delay() and raceWithTimeout() in delay.ts and to performance.now() in the runtime; tests pass a fake-clock literal that resolves
  * sleeps instantly and chooses raceWithTimeout outcomes explicitly.
  *
- * Why this exists. Node's builtin node:test mock.timers exposes only synchronous tick() and runAll() - it has never shipped a tickAsync/runAllAsync variant on
- * any version. Synchronous tick advances the fake clock but does not drain microtask chains across nested Promise.race / .finally / await delay() patterns; the
+ * Why this exists. Node's builtin node:test mock.timers currently exposes only synchronous tick() and runAll(), with no async tick/runAll variant. Synchronous
+ * tick advances the fake clock but does not drain microtask chains across nested Promise.race / .finally / await delay() patterns; the
  * promises stay pending past the tick. retryOperation is the canonical case: its internal raceWithTimeout -> Promise.race -> .finally -> await delay() chain is
  * exactly the shape mock.timers cannot deterministically resolve. Injecting a Clock sidesteps the runtime gap entirely - tests provide a sleep() that resolves
  * immediately and a raceWithTimeout() that forwards or rejects on demand.
@@ -24,8 +24,8 @@ import { delay, raceWithTimeout } from "./delay.ts";
 export interface Clock {
 
   // Returns the current high-resolution timestamp in milliseconds. Wraps performance.now() in production; fakes return a deterministic value (often 0, or a
-  // controlled sequence). Consumed today by timing.ts's startTimer, which reads now() at creation and on each elapsed-time call; retry.ts consumes only sleep()
-  // and raceWithTimeout().
+  // controlled sequence). Feeds elapsed-time calculations for consumers such as timing.ts's startTimer, which reads now() at creation and on each elapsed-time
+  // call.
   readonly now: () => number;
 
   // Races a promise against a timeout. Identical contract to raceWithTimeout in delay.ts: resolves with the promise's value on success, throws timeoutError (or

@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * cross-store-consistency.test.ts: Integration coverage for the cross-store consistency probe (consistencyProbe.ts). The probe enforces foreign-key-style
- * invariants that span multiple stores - things per-store schema migrations cannot enforce because they only see one file at a time. The three checks are:
+ * rules that span multiple stores - things per-store schema migrations cannot enforce because they only see one file at a time. The checks are:
  *
  *   - unknown-service-tag: CONFIG.channels.enabledServices contains tags that are not in the rebuilt service-group taxonomy. AUTO-FIX: strip unknown tags.
  *   - dangling-variant-canonical: a variant entry's canonicalKey points at a channel that does not exist in PREDEFINED_CHANNELS or user channels. NO auto-fix

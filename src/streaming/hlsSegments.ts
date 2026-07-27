@@ -38,7 +38,7 @@ import { getStream } from "./registry.ts";
  */
 function storeSegmentToMap(stream: StreamRegistryEntry, segments: Map<string, Buffer>, eventName: "audioSegment" | "segment", filename: string, data: Buffer): void {
 
-  // Determine which running byte counter to update based on the target map.
+  // Determine which running byte counter to update based on the event name.
   const isAudio = eventName === "audioSegment";
 
   segments.set(filename, data);
@@ -321,7 +321,8 @@ export function updatePlaylist(streamId: number, content: string): void {
 }
 
 /**
- * Gets the current playlist for a stream.
+ * Gets the current playlist for a stream. Unlike getAudioPlaylist and getVideoPlaylist, this returns the raw stored string as-is, including an empty string, so
+ * callers can distinguish a stream that exists but has no playlist yet ("") from a stream that was not found (undefined).
  * @param streamId - The numeric stream ID.
  * @returns The playlist content, or undefined if not found.
  */

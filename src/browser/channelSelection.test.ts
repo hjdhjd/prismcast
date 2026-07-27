@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * channelSelection.test.ts: Unit tests for the channel-selection coordinator's pure surface in channelSelection.ts. The module bundles two layers:
+ * channelSelection.test.ts: Unit tests for the channel-selection coordinator's pure surface in channelSelection.ts. The module bundles distinct concerns:
  *
  *   1. The provider-module registry plus its lookup helpers (getProviderBySlug, getProviderByStrategy, getProviderSlugs, getProviderModuleInfo,
  *      getProviderDomainMap, getProviderGuideUrls, getCachedProviderChannels, clearChannelSelectionCaches). These are testable as pure data accessors against the
@@ -289,8 +289,8 @@ describe("clearChannelSelectionCaches", () => {
 
   test("is safely idempotent across multiple back-to-back invocations", () => {
 
-    // Boundary: callers (browser/index.ts handleBrowserDisconnect) may invoke this multiple times during a crash recovery sequence. Each call must succeed
-    // independently.
+    // Boundary: browser/index.ts calls this from relinquishBrowserReadiness, which handleBrowserDisconnect and other crash-recovery paths invoke, so it may be
+    // called multiple times back to back. Each call must succeed independently.
     for(let i = 0; i < 3; i++) {
 
       assert.doesNotThrow(() => {

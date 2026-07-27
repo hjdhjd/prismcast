@@ -14,7 +14,8 @@ import { getProfilesFilePath } from "./paths.ts";
  * are merged at runtime, with user domain mappings taking precedence over builtin mappings for domain conflicts. This module handles persistence, validation, and
  * cache management for user-defined profiles and domains.
  *
- * The profiles.json file contains two top-level keys:
+ * The persisted profiles.json file always carries the framework's schema metadata ("schemaVersion", plus "migrationsApplied" once a migration has run) and
+ * conditionally includes two top-level keys when they have entries:
  *   - "profiles": Custom site profile definitions (each must extend a builtin profile)
  *   - "domains": Domain-to-profile mappings (can reference builtin or user profiles)
  *
@@ -25,7 +26,8 @@ import { getProfilesFilePath } from "./paths.ts";
 // v2) and service pack import to silently normalize persisted and imported profiles at the boundary where external data enters the system.
 const LEGACY_PROFILE_FLAGS: Record<string, string> = { noVideo: "staticCapture" };
 
-// Valid SiteProfile behavior flag names that users can set. Metadata fields (category, description, extends, summary) are handled separately.
+// Valid SiteProfile behavior flag names that users can set. Metadata fields (category, description, extends, summary) and channelSelection are validated
+// separately and are not part of this flag set.
 const VALID_PROFILE_FLAGS = new Set([
   "channelSelector", "clickSelector", "clickToPlay", "dismissSelector", "fullscreenKey", "fullscreenSelector", "hideSelector", "lockVolumeProperties",
   "needsIframeHandling", "selectReadyVideo", "staticCapture", "useRequestFullscreen", "waitForNetworkIdle"
@@ -625,7 +627,8 @@ export function validateDomain(domain: string, config: DomainConfig, availablePr
 }
 
 /**
- * Validates an entire import batch of profiles and domains. Returns the validated entries and any errors found. Used by both file import and service pack import.
+ * Validates an entire import batch of profiles and domains. Returns the validated entries and any errors found. Used by service pack import (the sole caller
+ * is servicePacks.ts's parseServicePack).
  * @param data - The raw data to validate (profiles and/or domains).
  * @returns Validation result with validated entries and errors.
  */

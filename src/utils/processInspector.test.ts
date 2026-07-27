@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * processInspector.test.ts: Unit tests for the process-inspector port. The orchestrator is a one-liner so its coverage is a smoke test; the meaningful surface
- * is the three platform-specific parsers, each exercised against representative fixtures. Tests construct ProcessInspectorContext literals for the orchestrator
+ * is the platform-specific parsers (Linux needs two - cmdline and stat - plus one each for macOS and Windows), each exercised against representative fixtures.
+ * Tests construct ProcessInspectorContext literals for the orchestrator
  * and pass synthetic strings to the parsers - no real /proc, ps, or PowerShell is invoked here.
  */
 import { describe, test } from "node:test";

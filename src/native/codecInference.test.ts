@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * codecInference.test.ts: Unit tests for HLS media playlist codec inference. Three layers are tested in isolation:
+ * codecInference.test.ts: Unit tests for HLS media playlist codec inference. Each exported layer is tested in isolation:
  *
  *  1. findFirstSegmentUrl - playlist parsing and URL resolution, fully synchronous.
  *  2. inferCodecFromTsBuffer - TS PAT/PMT parsing against synthetic byte fixtures, fully synchronous.
@@ -373,8 +373,8 @@ describe("inferMediaCodec (async orchestrator)", () => {
     /* When a CDN ignores the Range header it responds 200 OK and streams the entire segment, which can be several megabytes. The orchestrator must
      * read only the documented 32 KB prefix regardless, draining just enough of the body to parse the PAT/PMT and then cancelling the rest. We prove the cap holds
      * by serving a ReadableStream whose first chunk carries the valid TS fixture and whose tail is a multi-megabyte flood emitted in small chunks. The stream counts
-     * how many bytes the consumer pulled and whether it was cancelled. A consumer that buffered the whole body (the old arrayBuffer() path) would pull every byte;
-     * the capped consumer must stop within one chunk of the 32 KB bound and cancel.
+     * how many bytes the consumer pulled and whether it was cancelled. A consumer that buffered the whole body unconditionally, rather than capping via the
+     * stream-reader loop, would pull every byte; the capped consumer must stop within one chunk of the 32 KB bound and cancel.
      */
     const ts = buildTsFixture([{ pid: 0x101, streamType: 0x1B }]);
     const segUrl = "https://cdn.test/path/seg.ts";

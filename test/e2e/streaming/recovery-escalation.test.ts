@@ -1,14 +1,15 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * recovery-escalation.test.ts: Integration coverage for the recovery state machine viewed as a sequence rather than a set of isolated functions. The unit
- * tier (src/streaming/recovery.test.ts) pins each function's behavior in isolation; this suite pins the orchestration the playback monitor performs at run
- * time - escalation through recovery levels, accumulation across multiple cycles, the trip-and-reset arc on the circuit breaker, and the architectural
- * separation between metrics state and circuit-breaker state. The regression class this catches: someone reorders or merges the recovery state objects in a
- * way that passes the unit suite (each function still works in isolation) but corrupts the multi-step flow that production actually runs.
+ * tier (src/streaming/recovery.metrics.test.ts and src/streaming/recovery.circuitBreaker.test.ts) pins each function's behavior in isolation; this suite
+ * pins the orchestration the playback monitor performs at run time - escalation through recovery levels, accumulation across multiple cycles, the
+ * trip-and-reset arc on the circuit breaker, and the architectural separation between metrics state and circuit-breaker state. The regression class this
+ * catches: someone reorders or merges the recovery state objects in a way that passes the unit suite (each function still works in isolation) but corrupts
+ * the multi-step flow that production actually runs.
  *
  * Architectural notes the implementation surfaced (worth recording so the next reader does not re-derive them):
  *
- *   1. recovery.ts is intentionally Clock-port-free. The Clock seam in src/utils/clock.ts is reserved for nested async chains where mock.timers.tick cannot
+ *   1. recovery.ts is intentionally Clock-port-free. The Clock port in src/utils/clock.ts is reserved for nested async chains where mock.timers.tick cannot
  *      drain the runtime - retryOperation is the canonical case. recovery.ts uses Date.now() in shallow synchronous contexts (recordRecoveryAttempt /
  *      recordRecoverySuccess for elapsed-time accumulation) and accepts a `now` argument in checkCircuitBreaker. Both shapes are tested via mock.timers.enable
  *      and synthetic timestamps respectively - exactly the pattern the Clock-port docstring recommends as the default.

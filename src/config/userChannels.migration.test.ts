@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userChannels.migration.test.ts: Tests for collectLegacyVariantStamps (the tightened classifier behind the schemaVersion 2 migration, channelsMigrations[2]) and
+ * userChannels.migration.test.ts: Tests for collectLegacyVariantStamps (the classifier behind the schemaVersion 2 migration, channelsMigrations[2]) and
  * end-to-end regression scenarios tying directly to user-reported bugs.
  *
- * The migration classifier is the defensive line that prevents the old stamp-and-strip data loss. Tests here lock in the contract: stamp shape-compatible legacy
- * variants (safe to normalize as variants), leave user standalones alone (would lose per-variant identity if misclassified). Regression tests lock in the
- * end-to-end invariants: a hyphenated user standalone survives the migration untouched, and a canonical identity edit propagates to every resolved variant.
+ * The migration classifier prevents data loss from over-eager stamping. Tests here lock in the contract: stamp shape-compatible legacy
+ * variants (safe to normalize as variants), leave user standalones alone (would lose per-variant identity if misclassified). Regression tests lock in
+ * end-to-end guarantees: a hyphenated user standalone survives the migration untouched, and a canonical identity edit propagates to every resolved variant.
  */
 import type { CanonicalChannel, StoredChannelMap } from "../types/index.ts";
 import { describe, test } from "node:test";
@@ -109,7 +109,7 @@ describe("regression: canonical override propagates to predefined variants", () 
 
   test("user override on abc canonical surfaces through resolving abc-hulu", () => {
 
-    // Regression guard for the canonical-override invariant: an identity edit on a canonical (name, tags, anything in CHANNEL_IDENTITY_KEYS) must surface in
+    // Regression guard for canonical-override propagation: an identity edit on a canonical (name, tags, anything in CHANNEL_IDENTITY_KEYS) must surface in
     // every resolved variant of that canonical. The read path leaves identity off predefined variant entries and resolveVariant layers canonical -> predefined
     // -> user, so an override on "abc" propagates to every "abc-*" variant view that resolves through it.
     const storedInput: StoredChannelMap = { "abc": { name: "American Broadcasting Custom" } };
@@ -175,7 +175,7 @@ describe("regression: predefined variant identity inherits correctly with no use
 
   test("abc-hulu (no overrides) resolves with ABC's identity and hulu's service fields", () => {
 
-    // Predefined variants under the new flattener carry only service-specific fields. The read path must layer canonical identity onto them. This is the base
+    // Predefined variants under the catalog flattener carry only service-specific fields. The read path must layer canonical identity onto them. This is the base
     // case that ensures routine predefined-variant resolution works.
     const abc = PREDEFINED_CHANNELS["abc"] as CanonicalChannel;
     const abcHulu = PREDEFINED_CHANNELS["abc-hulu"]!;
@@ -260,7 +260,7 @@ describe("collectLegacyVariantStamps: post-isDeepStrictEqual array semantics", (
     };
 
     /* Documented current behavior: case-different tags are NOT shape-compatible. sortTags normalizes only the order; the values themselves remain case-sensitive
-     * for the deep-equal check. This is the load-bearing distinction: stamping a variant whose tags differ in case would silently lose the user's casing on
+     * for the deep-equal check. This distinction matters: stamping a variant whose tags differ in case would silently lose the user's casing on
      * normalization.
      */
     assert.deepEqual(collectLegacyVariantStamps(channels), [], "case-differing tags are not shape-compatible (stored value preserved as standalone)");

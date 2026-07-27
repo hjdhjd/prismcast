@@ -2,10 +2,10 @@
  *
  * precaching.revalidation.test.ts: Unit tests for the post-login revalidation flow (revalidateDomainAuth), the login-mode minimize guard, and the guarded guide-page
  * session (withProviderGuidePage) in precaching.ts. Running a revalidation or a guide-page walk drives getCurrentBrowser/newPage, which would launch a real Chrome;
- * precaching.ts accepts its browser accessors, provider-registry lookups, and the discovery-phase overlay-poll launcher as an injected PrecachingDeps parameter, so
- * we pass a deps object of stubs at that seam and never drive a browser. The injected startOverlayHandling stub records each poll's options, so the guide-page tests
- * observe the discovery phase and its abort timing without a live poll. The health and login modules are real - state assertions go through getDomainAuthState, and
- * login mode is driven through the real startLoginMode/clearLoginState with stub accessors.
+ * precaching.ts accepts its browser accessors, provider-registry lookups, and the discovery-phase overlay-poll launcher as an injected PrecachingDeps parameter, so we
+ * substitute stubs at that PrecachingDeps injection point and never drive a browser. The injected startOverlayHandling stub records each poll's options, so the
+ * guide-page tests observe the discovery phase and its abort timing without a live poll. The health and login modules are real - state assertions go through
+ * getDomainAuthState, and login mode is driven through the real startLoginMode/clearLoginState with stub accessors.
  */
 import type { Browser, Page } from "puppeteer-core";
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
@@ -33,7 +33,7 @@ let overlayHandlingCalls: StartOverlayHandlingOptions[] = [];
 let pageEvents: string[] = [];
 
 /* The injected precaching dependencies: the browser accessors and page bookkeeping, the provider-registry lookups, and the discovery-phase overlay-poll launcher,
- * substituted at precaching's PrecachingDeps seam so revalidation and discovery run against stubs with no real Chrome. Each field reads the mutable module state
+ * substituted at precaching's PrecachingDeps boundary so revalidation and discovery run against stubs with no real Chrome. Each field reads the mutable module state
  * above at call time, so a test shapes the registry and browser behavior by reassigning those lets. startOverlayHandling stands in for the real poll, recording each
  * call's options (phase and abort signal) into overlayHandlingCalls and logging its launch into pageEvents so the guide-page tests can pin the discovery phase and
  * its abort timing. Typed as the production port so the doubles cannot drift. The health and login modules stay real.
@@ -406,7 +406,7 @@ describe("runPrecacheCycle - deps threading through the internal precacheService
 
     /* Traced path: runPrecacheCycle's per-service call site, `precacheService(provider, deps)`. precacheService's own signature defaults its second parameter to
      * defaultPrecachingDeps, so a call site that drops deps silently falls back to the module's real browser accessors instead of the cycle's injected stub - in
-     * production this is behavior-neutral (defaultPrecachingDeps IS the real accessors), but it would defeat the injection seam for exactly this test, since a
+     * production this is behavior-neutral (defaultPrecachingDeps IS the real accessors), but it would defeat the PrecachingDeps injection for exactly this test, since a
      * regression here would attempt a real Chrome launch through defaultPrecachingDeps.getCurrentBrowser rather than ever touching the stub deps below. We prove
      * the injected deps reach precacheService by instrumenting getCurrentBrowser - the first collaborator precacheService calls - on a deps copy distinct from the
      * module-level `deps` object the other describe blocks share, so a regression cannot hide behind a call the shared object's own getCurrentBrowser happens to

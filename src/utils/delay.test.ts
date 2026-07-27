@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * delay.test.ts: Unit tests for the timer primitives in delay.ts (cancellableTimeout, raceWithTimeout, delay). All three exports use real setTimeout. The tests
- * use small real-time delays (1-30ms) to stay well under the per-test budget while exercising the timer cleanup paths - node:test mock.timers exposes only
- * synchronous ticks, which cannot drain Promise.race over setTimeout reliably.
+ * delay.test.ts: Unit tests for the timer primitives in delay.ts (cancellableTimeout, raceWithTimeout, delay). Every export uses real setTimeout. The tests use small
+ * real-time delays (1-30ms) to stay well under the per-test budget while exercising the timer cleanup paths - node:test mock.timers exposes only synchronous ticks,
+ * which cannot drain Promise.race over setTimeout reliably.
  */
 import { cancellableTimeout, delay, raceWithTimeout } from "./delay.ts";
 import { describe, test } from "node:test";
@@ -119,8 +119,8 @@ describe("delay", () => {
 
   test("returns a Promise that resolves to undefined", async () => {
 
-    // We cannot bind the awaited result to a const because TypeScript narrows it to `void`. Instead we assert that the promise itself resolves without throwing
-    // and that the documented return type is honored at the type system level (Promise<void>).
+    // We don't bind the awaited result to a const because its type is void and carries no useful value. Instead we assert that the promise itself resolves without
+    // throwing and that the documented return type is honored at the type system level (Promise<void>).
     await assert.doesNotReject(() => delay(1), "delay resolves without rejection");
   });
 

@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * streamContext.test.ts: Unit tests for the AsyncLocalStorage-based stream context in streamContext.ts. The four exports work together: runWithStreamContext
- * establishes a context via ALS.run(), and the three accessors read from the current store. Tests verify happy-path propagation, scope clearing with no leakage
+ * streamContext.test.ts: Unit tests for the AsyncLocalStorage-based stream context in streamContext.ts. The exports work together: runWithStreamContext
+ * establishes a context via ALS.run(), and the accessors read from the current store. Tests verify happy-path propagation, scope clearing with no leakage
  * on either the resolve or reject path, nested-context shadowing, parallel-run isolation, and the lazy showNameResolver pattern.
  */
 import { describe, test } from "node:test";

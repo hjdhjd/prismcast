@@ -12,8 +12,8 @@ import { getEffectiveViewport } from "../config/presets.ts";
 /* The Chrome DevTools Protocol (CDP) provides low-level access to Chrome's internal state and capabilities. While Puppeteer abstracts most common operations, some
  * features require direct CDP access:
  *
- * - Window management: Setting window size, position, and state (minimized, maximized, fullscreen). Puppeteer's viewport API controls the content area, but we
- *   need CDP to control the entire window including browser chrome.
+ * - Window management: setting window size and normal/minimized state. Puppeteer's viewport API controls the content area, but we need CDP to control the
+ *   entire window including browser chrome.
  *
  * - Browser-level operations: Operations that affect the browser rather than a specific page, like getting the window ID for a page's target.
  *
@@ -142,9 +142,10 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
     const targetHeight = viewport.height + uiSize.height;
     const targetWidth = viewport.width + uiSize.width;
 
-    // Resize with verification. Each attempt restores the window to "normal" state (idempotent) and sets the target dimensions, then reads back the actual
-    // bounds to confirm. On macOS, NSWindow state transitions are asynchronous - Chrome may acknowledge the "normal" state CDP command before the OS window
-    // manager finishes the transition, causing a subsequent dimension-setting call to be silently ignored. The readback detects this and retries.
+    // Resize with verification. Each attempt restores the window to "normal" state - safe to repeat on every retry attempt - and sets the target dimensions,
+    // then reads back the actual bounds to confirm. On macOS, NSWindow state transitions are asynchronous - Chrome may acknowledge the "normal" state CDP
+    // command before the OS window manager finishes the transition, causing a subsequent dimension-setting call to be silently ignored. The readback detects
+    // this and retries.
     for(let attempt = 0; attempt < 3; attempt++) {
 
       // Ensure the window is in "normal" state. Setting bounds on a maximized window is ignored, so we must restore it first. On retries, this re-sends the

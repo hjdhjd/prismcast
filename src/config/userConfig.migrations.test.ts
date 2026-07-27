@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userConfig.migrations.test.ts: Focused coverage for the schema-migration apply functions exported from userConfig.ts - one-time correctness invariants
- * applied at read time. If a migration gets a transformation wrong, every subsequent session sees corrupted state, so each architectural choice gets a test
+ * userConfig.migrations.test.ts: Focused coverage for the schema-migration apply functions exported from userConfig.ts - one-time correctness rules applied
+ * at read time. If a migration gets a transformation wrong, every subsequent session sees corrupted state, so each architectural choice gets a test
  * that pins it explicitly: tests document the design via the assertions, not via comments alone.
  *
  * v2 (applyChannelsProviderRenameMigration): renames legacy provider-themed channel fields and the foxcom service tag.
@@ -33,9 +33,9 @@ function requireChannelsDvr(data: UserConfig): { host?: string; port?: number } 
   return data.channelsDvr;
 }
 
-// requireChannels narrows data.channels from optional to a permissive record for assertion sites in the v2 tests. The cast through Record<string, unknown> is
-// load-bearing: the legacy keys (enabledProviders, precacheProviders) are not declared on UserChannelsConfig, so reading them through the typed view would be
-// a compile error. Tests assert presence/absence at the bracket-access level; the record shape mirrors what the migration mutates.
+// requireChannels narrows data.channels from optional to a permissive record for assertion sites in the v2 tests. The cast through Record<string, unknown>
+// is required because the legacy keys (enabledProviders, precacheProviders) are not declared on UserChannelsConfig, so reading them through the typed view
+// would be a compile error. Tests assert presence/absence at the bracket-access level; the record shape mirrors what the migration mutates.
 function requireChannels(data: UserConfig): Record<string, unknown> {
 
   assert.ok(data.channels, "test fixture must include a channels block");

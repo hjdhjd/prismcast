@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * setup.staticCapture.test.ts: Unit test pinning that createPageWithCapture launches a bounded staticCapture overlay poll for static-capture profiles - and only for
- * those. createPageWithCapture composes on the browser boundary through its CreatePageWithCaptureDeps injection seam, so the test drives it with a stub browser (no
+ * those. createPageWithCapture composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no
  * Chrome launch), a PassThrough capture stream (no puppeteer-stream), and a recording overlay poll, while the real pipeline runs everything else. The stub page is
  * shaped so the static branch completes: injectVideoSelector uses only evaluateOnNewDocument (a no-op here); createCaptureSession merely wraps the injected
  * PassThrough; and resizeAndMinimizeWindow returns silently when its chrome-size probe (page.evaluate) rejects, which the stub arranges. Native capture mode skips the
@@ -48,7 +48,7 @@ function makeStubPage(): Page {
 
 /* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome), getStream yields
  * a real PassThrough so the real createCaptureSession has a stream to own (no puppeteer-stream), and startOverlayHandling records each poll's phase and abort signal in
- * place of a live poll. createPageWithCapture defaults all three to the real functions; substituting them here is what keeps the call off a live browser.
+ * place of a live poll. createPageWithCapture defaults every one of these to the real functions; substituting them here is what keeps the call off a live browser.
  */
 const deps: CreatePageWithCaptureDeps = {
 
@@ -76,7 +76,7 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
   test("launches exactly one staticCapture-phase poll with no abort signal for a static-capture profile", async () => {
 
     /* Traced path: the static branch (profile.staticCapture true) navigates once with page.goto and then fire-and-forgets startOverlayHandling with phase
-     * staticCapture. The discriminators that would fail against a static branch that issued a bare goto with no poll: exactly one recorded call, its phase, and a signal
+     * staticCapture. The checks that would fail against a static branch that issued a bare goto with no poll: exactly one recorded call, its phase, and a signal
      * of undefined - the static poll has no abort owner (its bounded window is the terminator), so passing a controller signal would be the wrong shape.
      */
     const profile = makeProfile({ staticCapture: true });
@@ -99,9 +99,9 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
   test("launches no staticCapture-phase poll for a non-static profile (the discriminator)", async () => {
 
     // The complementary control: a non-static profile takes the tune path, whose channel selection fails fast here (the stub's evaluate rejects), so no
-    // startOverlayHandling call is recorded through the injected seam - and specifically none under the staticCapture phase. The tune path's own overlay poll runs
-    // through video.ts's real collaborators, not this seam, so it never reaches overlayCalls. If the static poll were launched unconditionally rather than gated on
-    // profile.staticCapture, this run would record a staticCapture call regardless.
+    // startOverlayHandling call is recorded through the injected collaborators - and specifically none under the staticCapture phase. The tune path's own overlay poll
+    // runs through video.ts's real collaborators, not this test's injected collaborators, so it never reaches overlayCalls. If the static poll were launched
+    // unconditionally rather than gated on profile.staticCapture, this run would record a staticCapture call regardless.
     const profile = makeProfile({ staticCapture: false });
 
     await assert.rejects(createPageWithCapture({ profile, skipManifestInterception: true, streamId: "tune-test", url: "https://tune.example/live" }, deps),

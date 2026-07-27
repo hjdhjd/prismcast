@@ -2074,6 +2074,8 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     },
   },
 
+  // TCM's Pacific feed reuses the same Gracenote station ID as the East feed - no separate Pacific station ID exists for this network. tvgShift: 3
+  // corrects the guide times for the three-hour offset this reuse creates.
   tcmp: {
     name: "TCM (Pacific)",
     tags: ["Movies"],
@@ -2319,9 +2321,9 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
  *   with the Pacific station ID, " (Pacific)" appended to the name, and an empty services map (to be filled by Step 2).
  *
  *   Example - adding pacificStationId to the East definition:
- *     animal: { name: "Animal Planet", pacificStationId: "68785", stationId: "57394", services: { ... } }
+ *     animal: { name: "Animal Planet", tags: ["Documentary"], pacificStationId: "68785", stationId: "57394", services: { ... } }
  *   Auto-generates:
- *     animalp: { name: "Animal Planet (Pacific)", stationId: "68785", services: {} }
+ *     animalp: { name: "Animal Planet (Pacific)", tags: ["Documentary"], stationId: "68785", services: {} }
  *
  * Step 2 - Merge East services into Pacific definitions:
  *
@@ -2436,8 +2438,9 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
  * at the canonical - identity inherits at resolution time from the (possibly user-overridden) canonical.
  *
  * Variants are pure tuning data: how to reach the channel via this service. Identity (channelNumber, hdhrEnabled, tags, etc.) is a user preference for the
- * channel as a whole and is not parameterized per service. ServiceVariant carries only binding fields; identity-shaped fields on user-stored variants are
- * possible at the type level for legacy data tolerance but are not produced by the predefined catalog.
+ * channel as a whole and is not parameterized per service. ServiceVariant carries only binding fields; identity-shaped fields on variant-shaped JSON can only
+ * arise from untyped, pre-validation storage (raw parsed channels.json, hand-edited files) before normalization, not from any TypeScript type that admits
+ * them, and the resolver silently drops such fields rather than the type system tolerating them.
  *
  * This shape makes variants first-class deltas against their canonical - the same treatment user-defined variants get in storage - so canonical overrides
  * propagate automatically to every variant without a separate runtime inheritance pass.

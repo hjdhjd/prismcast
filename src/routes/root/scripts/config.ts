@@ -1021,7 +1021,7 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Bulk toggle predefined channels by scope (all, pacific, east).
+    // Bulk toggle predefined channels by the configured scope.
     "  window.bulkTogglePredefined = async (enable, scope) => {",
     "    try {",
     "      const res = await fetch('/config/channels/bulk-toggle-predefined', {",
@@ -1125,8 +1125,9 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Inline tag edit portal - uses toggleDropdown with lifecycle hooks for batch-save behavior. The before-close hook saves pending changes whenever the
-    // dropdown closes (click-outside, scroll, resize, or next toggle). The onOpen hook populates checkbox state from the cell's data-tags attribute.
+    // Inline tag edit portal - a single shared dropdown element repositioned per cell. Checkbox state is populated from the cell's data-tags attribute
+    // before toggleDropdown is invoked (see window.toggleInlineTagDropdown below), and the before-close hook saves pending changes whenever the
+    // dropdown closes (click-outside, scroll, resize, or next toggle).
     "  let activeTagDropdown = null;",
     "  let tagPortal = null;",
 
@@ -1147,6 +1148,7 @@ export function generateConfigSubtabScript(): string {
     "      if(checkbox.checked) tags.push(checkbox.getAttribute('data-tag'));",
     "    }",
     "    const newValue = tags.toSorted().join(',');",
+    // Clear the active-dropdown reference before the request so a second open of this or another cell's tag dropdown is not blocked by the in-flight save.
     "    activeTagDropdown = null;",
     "    if(newValue === original) return;",
     "    try {",

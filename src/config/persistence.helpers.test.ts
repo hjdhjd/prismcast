@@ -151,9 +151,9 @@ describe("makeMemoryStorageBackend - default behavior", () => {
 
   test("access on a directory prefix succeeds when at least one file lives under it", async () => {
 
-    // The snapshot path (e.g., "/data/snapshots") is a directory; access is used to test for the existence of an idempotent-snapshot file. We mirror that
-    // pattern: writing /data/snapshots/foo.json.v1 makes /data/snapshots/foo.json.v1 reachable via access and ALSO makes /data/snapshots reachable as a
-    // directory (because at least one file lives under it).
+    // The snapshot path (e.g., "/data/snapshots") is a directory; access is used to test for the existence of a snapshot file whose creation is safe to
+    // repeat. We mirror that pattern: writing /data/snapshots/foo.json.v1 makes /data/snapshots/foo.json.v1 reachable via access and ALSO makes
+    // /data/snapshots reachable as a directory (because at least one file lives under it).
     const backend = makeMemoryStorageBackend();
 
     await backend.writeFile("/data/snapshots/foo.json.v1", "x");

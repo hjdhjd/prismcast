@@ -15,7 +15,7 @@ import { observeHlsPlaylists } from "./hlsPlaylistObserver.ts";
  *   hlsPlaylistObserver -> HLS filter + body fetch + classify + per-URL dedup
  *   manifestInterceptor -> selection: first-vs-latest, master priority, finalize semantics, predicate match
  *
- * Two state machines live here:
+ * This module hosts the following consumer-facing state machines built on top of the HLS playlist observer:
  *
  * - installManifestInterceptor(): the long-lived capture used by native HLS setup. Accepts both master and media playlists, tracks first and latest URLs per
  *   kind, and resolves with the URL appropriate for the tune type when finalize() is called. Master playlists take precedence over media playlists when both
@@ -251,8 +251,8 @@ export async function installManifestInterceptor(page: Page, timeout: number = I
     }
   };
 
-  // Explicit dispose path for "using" syntax or caller-driven cancellation. Idempotent. Resolves the promise with null if it has not already settled, so
-  // callers awaiting the promise are never left hanging on a disposed observer.
+  // Explicit dispose path for "using" syntax or caller-driven cancellation. Safe to call more than once. Resolves the promise with null if it has not already
+  // settled, so callers awaiting the promise are never left hanging on a disposed observer.
   const dispose = (): void => {
 
     if(resolved) {

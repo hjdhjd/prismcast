@@ -269,7 +269,7 @@ describe("setupLogsEndpoint - GET /logs/stream (SSE handshake)", () => {
 
 // The direct-handler suite below registers the /logs/stream handler against a stub Express app so we can drive the captured handler against synthetic req/res
 // pairs. This pins the wire-byte forwarding contract (null-eventType produces only a `data:` line, no `event:` prefix), the level-filter short-circuit branch
-// (entries of the wrong level never reach res.write), and the close-cleanup invariant (post-close emits do not reach the wire AND the heartbeat stops). Each
+// (entries of the wrong level never reach res.write), and the close-cleanup guarantee (post-close emits do not reach the wire AND the heartbeat stops). Each
 // test extracts the route fresh because setupLogsEndpoint is the only public surface that wires the handler into our stub.
 function findLogsStreamHandler(): RouteCapture {
 
@@ -375,8 +375,8 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
   test("req.on('close') handler unsubscribes from the log emitter - post-close emits do not reach the wire", () => {
 
     // Pins the req.on("close") cleanup path: the close handler must run unsubscribe(). After invoking the close handler synthetically, an emitted log entry must
-    // NOT trigger a res.write. This is the observable invariant: a regression that dropped the unsubscribe() call would leak the listener and continue forwarding
-    // to a disconnected response, eventually causing memory growth and write errors.
+    // NOT trigger a res.write. This is the observable behavior the test protects: a regression that dropped the unsubscribe() call would leak the listener and
+    // continue forwarding to a disconnected response, eventually causing memory growth and write errors.
     const route = findLogsStreamHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();
 

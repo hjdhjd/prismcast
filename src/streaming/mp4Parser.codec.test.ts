@@ -204,10 +204,10 @@ describe("parseMoovCodecConfig", () => {
      * actual DecoderSpecificInfo, so the audio config reflects the real values from the inner payload.
      *
      * Tree layout:
-     *   ES_Descriptor (0x03, length 35) {
+     *   ES_Descriptor (0x03, length 22) {
      *     ES_ID (2 bytes) = 0x00, 0x01
      *     flags (1 byte) = 0x00 (no optional fields)
-     *     DecoderConfigDescriptor (0x04, length 23) {
+     *     DecoderConfigDescriptor (0x04, length 17) {
      *       objectTypeIndication (1 byte) = 0x40 (AAC)
      *       streamType/upStream/reserved (1 byte) = 0x05 (the bug-trigger byte: streamType=1 (audio), upStream=0, reserved=1; binary 00000101)
      *       bufferSizeDB (3 bytes) = 0x00, 0x00, 0x00
@@ -327,8 +327,8 @@ describe("readDescriptorSize", () => {
 
   test("reads a multi-byte size and accumulates 7 bits per byte", () => {
 
-    // 0x80 (continuation, 0 contributed), 0x80 (continuation, 0), 0x80 (continuation, 0), 0x42 (terminator, contributes 66). Total: ((((0 << 7) | 0) << 7) | 0)
-    // << 7) | 66 = 66. Payload starts after all 4 bytes.
+    // 0x80 (continuation, 0 contributed), 0x80 (continuation, 0), 0x80 (continuation, 0), 0x42 (terminator, contributes 66).
+    // Total: (((0 << 7 | 0) << 7 | 0) << 7 | 66) = 66. Payload starts after all 4 bytes.
     const buffer = Buffer.from([ 0x80, 0x80, 0x80, 0x42, 0xAA ]);
     const result = readDescriptorSize(buffer, 0);
 

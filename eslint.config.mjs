@@ -14,8 +14,9 @@ import hbPluginUtils from "homebridge-plugin-utils/eslint";
  *   the barrel (src/testing.helpers.ts), not from individual submodules. The submodules are implementation details; pinning callers to the barrel keeps a
  *   single canonical entry point and lets the implementation evolve without rippling through the suite.
  *
- * Both rules are exported (named) so unit tests under src/ can import them and exercise the rule logic via ESLint's RuleTester. The default export of this
- * file is the full flat config; the named `rules` export is just the rule definitions, decoupled from homebridge-plugin-utils for testability.
+ * Every project-local rule is exported (named) so unit tests under src/ can import it and exercise the rule logic via ESLint's RuleTester. The default
+ * export of this file is the full flat config; the named `rules` export is just the rule definitions, decoupled from homebridge-plugin-utils for
+ * testability.
  */
 export const rules = {
 
@@ -102,12 +103,13 @@ export default hbPluginUtils({
 
   allowDefaultProject: ["eslint.config.mjs"],
 
-  /* Project-level ESLint overrides applied after the homebridge-plugin-utils base. The first block defers dot-notation to the TS-aware rule so it stops fighting
-   * the tsconfig's noPropertyAccessFromIndexSignature - bracket access on index-signature properties is required by tsc and must be allowed by ESLint. The
-   * second block relaxes two rules for *.test.ts files: describe/test from node:test return Promise<void> by design (no-floating-promises would fire on every test
-   * invocation), and tests own their preconditions and use `value!` when reading out fixture-shaped data (no-non-null-assertion). The third block enforces the
-   * project-local helper-location rule against everything under src/types/. The fourth block enforces barrel-only imports for the testing helpers under
-   * src/<...> excluding src/testing/<...> itself, which is the barrel's implementation and must import from its own submodules.
+  /* Project-level ESLint overrides applied after the homebridge-plugin-utils base. The block scoped to the TypeScript sources under src and test defers
+   * dot-notation to the TS-aware rule so it stops fighting the tsconfig's noPropertyAccessFromIndexSignature - bracket access on index-signature
+   * properties is required by tsc and must be allowed by ESLint. The block scoped to the test files relaxes two rules: describe and test from node:test
+   * return Promise<void> by design (no-floating-promises would fire on every test invocation), and tests own their preconditions and use `value!` when
+   * reading out fixture-shaped data (no-non-null-assertion). The block scoped to the src types directory enforces the project-local helper-location rule
+   * against everything under it. The block scoped to the src and test TypeScript sources, excluding the testing helpers' own implementation directory,
+   * enforces barrel-only imports for the testing helpers, since that directory is itself the barrel's implementation and must import from its own submodules.
    */
   extraConfigs: [
     {

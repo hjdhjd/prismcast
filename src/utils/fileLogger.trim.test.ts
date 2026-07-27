@@ -124,10 +124,8 @@ describe("computeTrimmedLogContent", () => {
 describe("checkAndTrimFile + trimLogFile - I/O orchestration (integration)", () => {
 
   /* The I/O orchestration around computeTrimmedLogContent (file read, temp-file write, atomic rename) is small and follows a standard transactional pattern. The
-   * pure cut algorithm is unit-tested above; here we only sanity-check the negative path (no trim when below maxSize), which is the easy-to-test side. The
-   * trim-fires path is hard to unit-test deterministically because trim is invoked via void from writeLogEntry's counter modulo, races with the periodic flush
-   * timer, and depends on filesystem rename atomicity - it is exercised in production when the log file grows past the configured limit. The architectural
-   * extraction makes the algorithm fully testable; the I/O shell is thin enough to defer.
+   * pure cut algorithm is unit-tested above; this describe block only covers the negative path (no trim when below maxSize). The trim-fires path is covered
+   * deterministically in the "trimLogFile end-to-end" describe block below, which seeds an oversized file and polls on-disk size until the trim completes.
    */
 
   afterEach(() => {
@@ -163,7 +161,7 @@ describe("checkAndTrimFile + trimLogFile - I/O orchestration (integration)", () 
 
 describe("checkAndTrimFile - debug-active gate and missing-file recovery", () => {
 
-  /* checkAndTrimFile fires every SIZE_CHECK_FREQUENCY (100) writes. Two branches that the integration suite above does not exercise: the debug-active gate (when
+  /* checkAndTrimFile fires every SIZE_CHECK_FREQUENCY (100) writes. Branches that the integration suite above does not exercise: the debug-active gate (when
    * any debug category is enabled, trim is skipped to preserve diagnostic output across the session), and the ENOENT clear-of-approximateSize path that fires
    * when the log file is removed externally between writes.
    */

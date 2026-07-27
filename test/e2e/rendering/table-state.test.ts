@@ -2,9 +2,9 @@
  *
  * table-state.test.ts: Integration coverage for the channel-table state aggregator (buildChannelTableState), the patch builder (buildChannelTablePatch), and
  * the tag-vocabulary renderers (generateTagFilterContent, generateTagManagerBody) - composed against real channel state populated through the integration
- * harness rather than against synthetic listings. The unit tier (src/routes/config/channels/table.test.ts) covers each function's local invariants in
+ * harness rather than against synthetic listings. The unit tier (src/routes/config/channels/table.test.ts) covers each function's local guarantees in
  * isolation: counts.total = predefined+user, counts.enabled+counts.disabled = total, the patch shape carries counts/hdhrCounts/rows/scopeCounts, the tag
- * markers' wrapper classes appear, etc. Those are stable invariants that hold regardless of state. This suite tests the orthogonal surface: how the helpers
+ * markers' wrapper classes appear, etc. Those are stable invariants that hold regardless of state. This suite tests the independent surface: how the helpers
  * RESPOND to mutations through real production write paths - disabling a predefined channel, applying a service filter, customizing a field, requesting a
  * patch for multiple keys at once. The bug class this catches is patch-shape regressions (too few or too many rows in the response) and state-class drift
  * (a row missing the disabled/unavailable class even though the underlying state is correct).

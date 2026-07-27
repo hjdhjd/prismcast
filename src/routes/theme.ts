@@ -6,7 +6,7 @@
 /* This module provides a centralized color and styling system for all PrismCast web pages. It uses CSS custom properties (variables) to enable consistent theming
  * and automatic dark mode support via the prefers-color-scheme media query.
  *
- * Color tokens are organized semantically:
+ * Color tokens are organized semantically, including but not limited to:
  * - Surface: Background colors for pages, cards, sections
  * - Text: Typography colors at various emphasis levels
  * - Border: Dividers and boundaries
@@ -220,8 +220,8 @@ export function generateThemeStyles(): string {
     "    --status-info-border: #2a4a5a;",
     "    --status-info-text: #7dc4f5;",
 
-    // Stream health indicator colors. Recovering, stalled, and error match their light-mode values, while healthy and buffering are brightened to track the
-    // interactive palette for better dark-mode contrast.
+    // Stream health indicator colors. Recovering, stalled, and error match their light-mode values. Healthy is brightened to match --interactive-success
+    // exactly, while buffering is independently brightened for dark-mode contrast and does not correspond to any interactive-* token.
     "    --stream-healthy: #2ecc71;",
     "    --stream-buffering: #f1c40f;",
     "    --stream-recovering: #e67e22;",
@@ -296,7 +296,7 @@ export function generateThemeStyles(): string {
 }
 
 /**
- * Returns CSS variable references for stream health colors. Used by JavaScript to read theme-aware colors at runtime.
+ * Returns CSS variable references for stream health colors, mapping each health state to its corresponding CSS variable name.
  * @returns Object mapping health states to CSS variable names.
  */
 export function getStreamHealthColorVars(): Record<string, string> {
@@ -312,7 +312,7 @@ export function getStreamHealthColorVars(): Record<string, string> {
 }
 
 /**
- * Returns CSS variable references for log level colors. Used by JavaScript to read theme-aware colors at runtime.
+ * Returns CSS variable references for log level colors, mapping each log level to its corresponding CSS variable name.
  * @returns Object mapping log levels to CSS variable names.
  */
 export function getLogLevelColorVars(): Record<string, string> {

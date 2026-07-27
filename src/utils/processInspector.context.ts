@@ -141,6 +141,8 @@ function enumerateWindows(): ProcessInfo[] {
   try {
 
     // -NoProfile skips loading the user's PowerShell profile (saves hundreds of milliseconds); -Command is the parameter form most resilient to quoting.
+    // The same 16MB maxBuffer used for the macOS enumerator comfortably covers Format-List's output here too, since its multi-line, one-property-per-row
+    // rendering is more verbose per process than a single ps line but still stays well within that ceiling even on hosts with thousands of processes.
     const raw = execFileSync("powershell.exe",
       [ "-NoProfile", "-Command", "Get-CimInstance Win32_Process | Format-List ProcessId,ParentProcessId,CommandLine" ],
       { encoding: "utf-8", maxBuffer: 16 * 1024 * 1024 });

@@ -3,7 +3,7 @@
  * auth.test.ts: Unit tests for the channel-login routes in auth.ts. setupAuthEndpoint registers POST /auth/login, POST /auth/done, and GET /auth/status. The
  * login flow requires a real Chrome browser to actually authenticate; without one, startLoginMode() returns success=false with "Browser is not connected." We cover the
  * paths that can be exercised honestly in a unit test: the request validation (missing channel/url), the unknown-channel 404, the login-when-disconnected 409,
- * the noop endLoginMode (idempotent against an inactive state), and the always-on getLoginStatus.
+ * the noop endLoginMode (a no-op when login mode is already inactive), and the always-on getLoginStatus.
  */
 import type { AddressInfo, Server } from "node:net";
 import { after, before, describe, test } from "node:test";
@@ -26,7 +26,7 @@ function makeServer(): Promise<{ port: number; server: Server }> {
 
   const app = express();
 
-  // Express 5 ships with builtin JSON parser support via app.use; the auth handler reads req.body so we wire it here.
+  // Express ships builtin JSON parser support via app.use; the auth handler reads req.body so we wire it here.
   app.use(express.json());
   setupAuthEndpoint(app);
 

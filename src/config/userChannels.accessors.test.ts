@@ -245,7 +245,7 @@ describe("hasChannelsParseError / getChannelsParseErrorMessage / getUserChannels
   test("getChannelsParseErrorMessage returns string-or-undefined matching the parse-error flag", () => {
 
     /* Contract: when hasChannelsParseError() is false, getChannelsParseErrorMessage() returns undefined. When true, it returns a string. Pinning the relationship
-     * between the two getters captures the invariant without depending on a specific value.
+     * between the two getters captures the rule linking them without depending on a specific value.
      */
     const message = getChannelsParseErrorMessage();
     const hasError = hasChannelsParseError();
@@ -281,13 +281,16 @@ describe("hasChannelsParseError / getChannelsParseErrorMessage / getUserChannels
   });
 });
 
-/* Runtime-state-dependent accessors deliberately not unit-tested here. Coverage for these flows transitively from HTTP-endpoint integration tests (channels CRUD,
- * tag management, playlist generation) where module state is already populated by the boot sequence:
+/* Runtime-state-dependent accessors deliberately not unit-tested here. Coverage for these flows comes from HTTP-endpoint integration tests (channels CRUD,
+ * tag management, playlist generation) and from unit suites that call the accessor directly once module state is already populated by the boot sequence:
  *
- *   - isUserChannel: covered by routes/config/channels/endpoints/crud.test.ts via duplicate-key rejection paths.
+ *   - isUserChannel: exercised by test/e2e/channels/crud.test.ts through the sibling-variant match branch (editing a canonical override so it matches a
+ *     sibling predefined variant); the duplicate-key-on-create branch inside validateChannelKey has no dedicated test yet.
  *   - isPredefinedChannelDisabled: covered by routes/config/channels/endpoints/predefined.test.ts via toggle/bulk-toggle endpoints.
- *   - isInVocabulary, getChannelEffectiveTags, getActiveTagVocabulary: covered by routes/config/channels/endpoints/tags.test.ts via tag-vocabulary endpoints.
- *   - isChannelAvailable: covered by streaming/lifecycle and route-handler tests that resolve channel keys for stream startup.
+ *   - isInVocabulary, getActiveTagVocabulary: covered by routes/config/channels/endpoints/tags.test.ts via tag-vocabulary endpoints. getChannelEffectiveTags
+ *     is covered separately by config/channelForm.test.ts (through channelMatches) and routes/config/channels/table.test.ts (direct calls).
+ *   - isChannelAvailable: covered directly by test/e2e/channels/userchannels-public-api.test.ts (presence and absence in the merged channel map, including
+ *     after disabling a predefined channel).
  *
  * Adding a unit-level state-bring-up here would re-implement the boot pipeline (CONFIG load, persistence framework, service-group construction). The cost
  * exceeds the benefit since each function is a one-or-two-line predicate whose contract is enforced by the integration tests. If a tier-2 accessor grows in

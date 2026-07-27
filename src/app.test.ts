@@ -5,7 +5,7 @@
  * module exports only two symbols: releaseInstanceSlot and startServer. startServer cannot be invoked safely from a unit test (it spawns Chrome, binds the
  * port, registers signal handlers, and calls process.exit on failure), so it is deferred to e2e coverage. releaseInstanceSlot is exercised here against the
  * critical-correctness path: a process that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file
- * record and refuses to remove a file whose PID does not match this process), a self-evident invariant that survives across module loads.
+ * record and refuses to remove a file whose PID does not match this process), and that guarantee holds no matter how the module graph was loaded.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "./testing.helpers.ts";
@@ -48,8 +48,9 @@ describe("releaseInstanceSlot", () => {
 
   test("does not throw when there is no identity file on disk", () => {
 
-    // A never-claimed process running its exit handler must early-return cleanly. The state machine inside release() classifies a missing file as "free" and
-    // skips the unlink entirely.
+    // This is the first call to releaseInstanceSlot() in the process, before initializeDataDir() has ever run, so getServerPidFilePath() throws while
+    // resolving the data directory. releaseInstanceSlot()'s own try/catch in app.ts, not release()'s internal file-state handling, swallows that throw and
+    // lets the exit handler return cleanly.
     assert.doesNotThrow(() => {
 
       releaseInstanceSlot();
@@ -71,8 +72,9 @@ describe("releaseInstanceSlot", () => {
   test("does NOT delete a pre-existing identity file owned by another live process (rejected-duplicate safety)", async () => {
 
     // Sentinel test: the ownership check exists specifically so that a duplicate-instance rejection cannot delete the running instance's identity file via its
-    // exit handler. We write a well-formed record at the server identity path whose PID is NOT this process - simulating the legitimate holder's record - then
-    // call releaseInstanceSlot from this process. release() inspects the file, finds the PID mismatch, and leaves the file untouched.
+    // exit handler. We write a well-formed record at the server identity path that does not identify this process - simulating the legitimate holder's
+    // record - then call releaseInstanceSlot from this process. release() classifies the record as not ours (its boot session or PID does not match) and
+    // leaves the file untouched.
     await withTempDir(async (dir) => {
 
       initializeDataDir(dir);
@@ -80,9 +82,9 @@ describe("releaseInstanceSlot", () => {
       const pidPath = getServerPidFilePath();
       const otherPid = process.pid === 99999 ? 99998 : 99999;
 
-      // The bootId here does not matter for the test - whether the state classifies as held-live, stale-different-boot, or stale-dead-pid, the structural
-      // ownership check (pid match) is the gate that protects the file. Using a fixed sentinel PID (99999, or 99998 when this process happens to be 99999)
-      // guarantees a PID that is not this process, so we are definitely not the holder.
+      // The fixed bootId "any-boot" never equals this process's real boot session id, so release() classifies the record as not ours - a boot-session or PID
+      // mismatch - and leaves the file untouched regardless of which branch of the state machine the record lands in. The fixed sentinel PID (99999, or
+      // 99998 when this process happens to be 99999) keeps the record unambiguously not-this-process on the PID axis as well.
       writeFileSync(pidPath, serializeRecord({ bootId: "any-boot", pid: otherPid, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }), "utf-8");
 
       assert.equal(existsSync(pidPath), true, "sentinel record exists before the call");
@@ -97,8 +99,10 @@ describe("releaseInstanceSlot", () => {
 
   test("does NOT throw when invoked before initializeDataDir has been called for this test", () => {
 
-    // release() reads the file before checking ownership, so it must tolerate the absence of a configured data directory. ENOENT (or any path error) from the
-    // unconfigured state resolves to kind: "free" or kind: "stale-malformed", both of which short-circuit before the unlink path.
+    // By this point in the file, the prior test's initializeDataDir() call already set config/paths.ts's resolved data directory; withTempDir removed that
+    // temp directory afterward but left the module-level resolution in place, so the path this test resolves to no longer exists on disk. release() reads
+    // that missing file and inspect() treats the resulting ENOENT as kind: "free", short-circuiting before the unlink path the same way a genuinely
+    // unconfigured data directory would.
     assert.doesNotThrow(() => {
 
       releaseInstanceSlot();

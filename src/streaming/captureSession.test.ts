@@ -3,9 +3,10 @@
  * captureSession.test.ts: Unit tests for the capture-pipeline composite. createCaptureSession owns three resources (raw capture stream, optional FFmpeg child, fMP4
  * segmenter) and exposes a single Disposable whose teardown runs kill -> destroy -> stop. These tests pin that order against synthetic doubles - in particular the
  * correctness-critical first step (FFmpeg is killed, setting its shuttingDown flag, before the capture stream is destroyed and carries EOF to FFmpeg's stdin), the
- * idempotency of a repeated dispose, the native-fMP4 (no FFmpeg) and segmenter-less (setup-phase / native-upgrade) shapes, the "using" scope-bound path, and the
+ * repeated-dispose safety, the native-fMP4 (no FFmpeg) and segmenter-less (setup-phase / native-upgrade) shapes, the "using" scope-bound path, and the
  * orphaned-segmenter fold where attaching a segmenter to an already-disposed session stops it instead of wiring it. The composite is pure orchestration over the
- * three handles' own (already covered) idempotent operations, so synthetic doubles fully exercise it without a real browser capture, FFmpeg child, or fMP4 feed.
+ * three handles' own operations that are already safe to call twice, so synthetic doubles fully exercise it without a real browser capture, FFmpeg child, or
+ * fMP4 feed.
  */
 import { describe, test } from "node:test";
 import type { FFmpegProcess } from "../utils/index.ts";
@@ -112,8 +113,9 @@ describe("createCaptureSession - teardown order", () => {
 
   test("kills FFmpeg before destroying the capture stream so shuttingDown is set before EOF reaches stdin", () => {
 
-    // This is the correctness-critical invariant the composite exists to guarantee. Destroying the capture stream carries an EOF down the pipeline to FFmpeg's
-    // stdin; if FFmpeg flushed and exited non-zero before kill() set its shuttingDown flag, its exit handler would misfire onError. The flag must already be set.
+    // This is the rule the composite exists to guarantee: kill precedes destroy so shuttingDown is always set before EOF reaches FFmpeg's stdin. Destroying
+    // the capture stream carries that EOF down the pipeline; if FFmpeg flushed and exited non-zero before kill() set its shuttingDown flag, its exit handler
+    // would misfire onError. The flag must already be set.
     const rig = createRig();
     const session = createCaptureSession({ ffmpegProcess: rig.ffmpegProcess, rawCaptureStream: rig.rawCaptureStream });
 

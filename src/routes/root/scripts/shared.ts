@@ -22,7 +22,7 @@ export function generateSharedUtilitiesScript(): string {
      * client script runs: shared.ts's own channel/service renderers below, the status display, the channels wizards, the config changelog, and the inline log viewer
      * all route their escaping through them. escapeHtml encodes a value for an HTML text or attribute context (generated from clientEscapeHtml, which a byte-parity
      * guard pins identical to the server-side markup.escapeHtml); safeUrl vets a URL's scheme before it is placed in a URL-bearing attribute (generated from
-     * clientSafeUrl). They are orthogonal and composable - escapeHtml(safeUrl(url)) for a URL attribute. The local const bindings let the renderers in this IIFE
+     * clientSafeUrl). They are independent and composable - escapeHtml(safeUrl(url)) for a URL attribute. The local const bindings let the renderers in this IIFE
      * call them without a global property lookup.
      */
     generateClientEscapeAssignment(),
@@ -274,7 +274,8 @@ export function generateSharedUtilitiesScript(): string {
 
     // Layer 2: Dropdown toggle with lifecycle hooks. Manages portal append, toggle state, scroll/resize dismissal, and optional lifecycle callbacks. The
     // zero-argument form (toggleDropdown(btn)) works unchanged for standard dropdowns. The options form adds: menu (explicit menu element), onOpen (called
-    // after show but before positioning so content can be set and measured correctly for viewport clamping).
+    // after show but before positioning so content can be set and measured correctly for viewport clamping). btn._portalMenu caches the resolved menu on
+    // first open because once the menu is portaled to document.body, btn.nextElementSibling no longer points to it.
     "  window.toggleDropdown = (btn, opts) => {",
     "    const o = opts || {};",
     "    const menu = btn._portalMenu || o.menu || btn.nextElementSibling;",
@@ -381,7 +382,7 @@ export function generateSharedUtilitiesScript(): string {
     // a state object for the caller to store wizard-specific data (e.g., selected providers, form values). State is reset to {} on close.
     //
     // Config shape: { contentId, errorId?, modalId, onClose?, onRender, onValidate, stepCount, stepsId?, titleId? }
-    //   - contentId:  ID of the wizard-content div.
+    //   - contentId:  ID of the wizard-content div. Accepted for shape parity with the server-side wizard shell but not read by this controller.
     //   - errorId:    ID of the wizard-error div (optional, omit for modals without validation).
     //   - modalId:    ID of the wizard-modal root div.
     //   - onClose:    Optional callback invoked when close() is called, before hiding the modal.
@@ -469,7 +470,8 @@ export function generateSharedUtilitiesScript(): string {
     "      },",
 
     // Navigate to a specific step by clicking the step indicator. Going backward is always allowed for visited steps. Going forward validates the current step
-    // and only allows jumps to previously visited steps. Supports async validation - returns a Promise when onValidate is async.
+    // and only allows jumps to previously visited steps. Always returns a Promise, since validateAndAdvance is itself async; it resolves to false if validation
+    // failed, regardless of whether onValidate is sync or async.
     "      goToStep(n) {",
     "        if(n === currentStep) return;",
     "        if(n > highestStep) return;",
@@ -486,7 +488,8 @@ export function generateSharedUtilitiesScript(): string {
     "        if(el) el.style.display = 'none';",
     "      },",
 
-    // Navigate forward one step. Validates the current step first. Returns false (sync) or a Promise resolving to false (async) if validation failed.
+    // Navigate forward one step. Validates the current step first. Always returns a Promise, since validateAndAdvance is itself async; it resolves to false
+    // if validation failed, regardless of whether onValidate is sync or async.
     "      next() {",
     "        if(currentStep >= config.stepCount) return true;",
     "        return validateAndAdvance(currentStep + 1);",
@@ -553,9 +556,9 @@ export function generateSharedUtilitiesScript(): string {
     "  window.channelTable = {",
 
     /* Cached column index map for _getSortValue. Built lazily on first access by scanning the table header row's data-sort-field attributes, then held for
-     * the page lifetime with no invalidation path. This relies on a load-bearing invariant: the channel table header is rendered once by the server and
-     * never rebuilt client-side - only CSS visibility classes are toggled by toggleColumn, never DOM structure. Do not introduce dynamic thead mutation
-     * without also adding an explicit cache invalidation (e.g., set _colIndexCache = null after rewriting the header row).
+     * the page lifetime with no invalidation path. Do not introduce dynamic thead mutation without also adding cache invalidation - the column-index cache
+     * assumes the header is rendered once by the server and never rebuilt client-side - only CSS visibility classes are toggled by toggleColumn, never DOM
+     * structure. If that assumption changes, set _colIndexCache = null after rewriting the header row.
      */
     "    _colIndexCache: null,",
 
@@ -702,7 +705,7 @@ export function generateSharedUtilitiesScript(): string {
      *
      * Cache lifecycle: _allOptions is attached to the DOM select element itself, so its lifetime is tied to that element. Row replacement via insertRow() drops
      * the old row (and its select) and inserts fresh server-rendered HTML, which transparently resets the cache with whatever option set the server just sent.
-     * This invariant is load-bearing - do not refactor insertRow() into an in-place row update without also adding an explicit cache invalidation path here.
+     * Refactoring insertRow() into an in-place row update would silently keep the stale _allOptions cache - add explicit invalidation if you do.
      */
     "    filter(enabledTags) {",
     "      const rows = document.querySelectorAll('tr[data-provider-tags]');",

@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * platform.test.ts: Unit tests for the platform-detection helpers in platform.ts. The functions branch on process.platform and read from os/path/url - we
+ * platform.test.ts: Unit tests for the platform-detection helpers in platform.ts. The functions branch on process.platform and read from fs/path/url - we
  * verify the per-platform branches by stubbing process.platform via Object.defineProperty (it is a getter property under v8). Tests restore the original platform
  * value in afterEach so cross-test pollution is impossible.
  */
@@ -259,7 +259,7 @@ describe("getPrismCastWorkingDirectory", () => {
 
   test("returns the parent of the parent of the entry point", () => {
 
-    // The implementation goes up two levels: dist/utils/platform.js -> dist -> project root.
+    // The implementation goes up two levels from the entry point: dist/index.js -> dist -> project root.
     const expected = path.dirname(path.dirname(getPrismCastEntryPoint()));
 
     assert.equal(getPrismCastWorkingDirectory(), expected);

@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * status-iife-runtime.test.ts: DOM-runtime coverage for the IIFE wiring layer of status.ts - the seam between the pure handler module and the window.* trampolines
- * that the project-wide action dispatcher invokes via its registerAction handlers. The sibling suites cover the surface around this seam but not the seam itself:
+ * status-iife-runtime.test.ts: DOM-runtime coverage for the IIFE wiring layer of status.ts - the boundary between the pure handler module and the window.*
+ * trampolines that the project-wide action dispatcher invokes via its registerAction handlers. The sibling suites cover the surface around this boundary but not
+ * the boundary itself:
  *
  *   - status.test.ts (next to status.ts) pins the SHAPE of the emitted string: "the script contains window.toggleStreamPopover = ...". It never executes the
  *     script, so any runtime collision is invisible to it.
@@ -14,7 +15,7 @@
  * the stack with RangeError. Neither sibling suite reproduces this because neither evaluates the emitted script in a classic-script context with the function
  * declarations and the window assignments living in the same global scope.
  *
- * The harness loads the served landing-page HTML, stubs EventSource on the synthetic Window (happy-dom v20 does not implement it), runs the shared utilities
+ * The harness loads the served landing-page HTML, stubs EventSource on the synthetic Window (happy-dom does not implement it), runs the shared utilities
  * script to install the externals (channelTable, dropdowns, copyToClipboard) that the status IIFE captures at init time, then runs the status script. Tests
  * call window.toggleStreamPopover, window.toggleStreamDetails, and window.copyOverviewPlaylistUrl directly - the same trampolines the project-wide dispatcher
  * invokes when a click matches a data-click-action attribute in the rendered page.
@@ -36,7 +37,7 @@ async function setupStatusIifeRuntime(): Promise<DisposableDomTestContext> {
 
   const ctx = await createDomTestContext();
 
-  // Stub EventSource. The IIFE calls new EventSource('/streams/status') inside connectStatusSSE, and happy-dom v20 does not implement the class. The stub
+  // Stub EventSource. The IIFE calls new EventSource('/streams/status') inside connectStatusSSE, and happy-dom does not implement the class. The stub
   // satisfies the surface the IIFE exercises: addEventListener registration, close on reconnect, onerror assignment. No events are dispatched - the test
   // body asserts on the trampoline wiring, not on event delivery.
   ctx.evaluate([
@@ -71,7 +72,7 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.toggleStreamPopover invokes the underlying handler without infinite recursion", async () => {
 
-    /* This test pins the trampoline-wiring invariant for window.toggleStreamPopover. Because classic-script top-level function declarations create properties on the
+    /* This test pins the trampoline-wiring rule for window.toggleStreamPopover. Because classic-script top-level function declarations create properties on the
      * global object, a naive window.toggleStreamPopover = () => toggleStreamPopover(ctx) would shadow the global binding for toggleStreamPopover; the arrow's
      * bare-identifier lookup would then resolve back to the arrow itself, blowing the stack with RangeError on the first invocation. The IIFE avoids this by capturing
      * the original function reference in an IIFE-local const before reassigning the global. This test calls window.toggleStreamPopover and asserts that no
@@ -85,7 +86,7 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.toggleStreamDetails invokes the underlying handler without infinite recursion", async () => {
 
-    /* Same trampoline pattern as toggleStreamPopover, same shadow-the-global risk. The test pins the invariant for the sibling trampoline so a future refactor
+    /* Same trampoline pattern as toggleStreamPopover, same shadow-the-global risk. The test pins the rule for the sibling trampoline so a future refactor
      * cannot reintroduce the bug for toggleStreamDetails alone.
      */
     await using ctx = await setupStatusIifeRuntime();
@@ -98,8 +99,8 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.copyOverviewPlaylistUrl invokes the underlying handler without infinite recursion", async () => {
 
-    /* Same trampoline pattern again. This is the third and final window.* binding the IIFE installs. The triplet is covered as a set so adding a fourth
-     * trampoline in the future would prompt the author to extend this suite alongside the IIFE change.
+    /* Same trampoline pattern again. This is the last window.* binding the IIFE installs today. Every trampoline the IIFE installs is covered as a set, so
+     * adding another should extend this suite alongside the IIFE change.
      */
     await using ctx = await setupStatusIifeRuntime();
 

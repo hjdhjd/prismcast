@@ -173,7 +173,7 @@ export interface StreamRegistryEntry {
   // HLS segment storage including init segment, media segments, and playlist.
   hls: HLSState;
 
-  // Unique numeric identifier for this stream.
+  // Numeric identifier assigned by getNextStreamId(); unique for the lifetime of this process, not persisted across restarts.
   id: number;
 
   // Count of active MPEG-TS client connections consuming this stream. Incremented when a client connects, decremented on disconnect. Used by idle timeout logic to
@@ -203,7 +203,7 @@ export interface StreamRegistryEntry {
   // that have been registered but whose async setup has not yet completed.
   profile: Nullable<ResolvedSiteProfile>;
 
-  // Timestamp when the stream started.
+  // Set when the stream entry is created; the basis for uptime and duration calculations reported by status and logging.
   startTime: Date;
 
   // The playback health monitor handle, or null if monitoring hasn't started. Exposes the live recovery metrics (read in the termination prologue) and a
@@ -216,7 +216,7 @@ export interface StreamRegistryEntry {
   // Streaming mode: "capture" for screen capture via puppeteer-stream, "native" for direct HLS consumption.
   streamingMode: StreamingMode;
 
-  // URL being streamed.
+  // The source URL being captured or proxied; either a predefined channel's configured URL or an ad-hoc URL supplied by the caller.
   url: string;
 }
 

@@ -1,8 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * playlistBuilder.test.ts: Unit tests for the shared HLS playlist builder. buildPlaylist is the documented SSOT for HLS m3u8 generation across both the capture-mode
- * fMP4 segmenter and the native HLS proxy. Because every byte of its output ends up in playlists served to Channels DVR clients, every per-segment tag and the
- * computed TARGETDURATION rounding all earn explicit boundary coverage. The function is pure - no globals, no I/O - so the entire test surface is input/output equality.
+ * playlistBuilder.test.ts: Unit tests for the shared HLS playlist builder. buildPlaylist is the documented SSOT for HLS m3u8 generation across the capture-mode
+ * fMP4 segmenter, the native HLS proxy, and the standalone preroll playlist. Because every byte of its output ends up in playlists served to Channels DVR clients,
+ * every per-segment tag and the computed TARGETDURATION rounding all earn explicit boundary coverage. The function is pure - no globals, no I/O - so the entire
+ * test surface is input/output equality.
  */
 import { describe, test } from "node:test";
 import type { PlaylistSegmentEntry } from "./playlistBuilder.ts";

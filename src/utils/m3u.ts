@@ -22,8 +22,8 @@ const MAX_KEY_LENGTH = 50;
  * extended-M3U convention used by VLC, IPTV-Org tooling, and downstream consumers is backslash-escaping. We backslash-escape the structural characters and
  * replace literal CR/LF with a single space - there is no portable escape sequence for line breaks inside a quoted-string, and dropping the line break entirely
  * would silently glue adjacent words together while leaving the attribute syntactically valid. Apply this helper at every M3U attribute write site that flows
- * user-controlled content; structurally server-controlled values (validated channel keys, numeric fields, fixed literals) do not need it but pass through
- * unchanged when wrapped, so prefer wrapping for uniformity.
+ * user-controlled content. Structurally server-controlled values (validated channel keys, numeric fields, fixed literals) skip the helper entirely, since
+ * validation guarantees they cannot carry the characters it escapes.
  *
  * Order matters: the backslash replacement runs first so the backslashes we introduce when escaping double-quote do not get re-escaped by a second pass.
  *
@@ -80,7 +80,8 @@ export function generateChannelKey(name: string): string {
 /**
  * Extracts an attribute value from an #EXTINF line. Handles both quoted and unquoted attribute values.
  * @param line - The #EXTINF line to parse.
- * @param attribute - The attribute name to extract (e.g., "tvg-name").
+ * @param attribute - The attribute name to extract (e.g., "tvg-name"). Compiled directly into a RegExp source with no escaping, so callers must pass a
+ *   trusted literal rather than user- or file-derived data.
  * @returns The attribute value, or null if not found.
  */
 function extractAttribute(line: string, attribute: string): Nullable<string> {

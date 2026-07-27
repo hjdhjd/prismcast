@@ -56,7 +56,8 @@ describe("getEffectiveCaptureCodec", () => {
 
   test("returns h264 when no GPU capabilities have been detected (initial state)", () => {
 
-    // Default fall-through: without GPU detection results, only the H.264 baseline applies. The implementation guards via gpuCaps?.[...] short-circuit.
+    // Baseline fallback: makeGpuCapabilities() returns a fully-detected GpuCapabilities object with every hardware encoding flag false, so the H.264 baseline
+    // applies. setGpuCapabilities() requires a GpuCapabilities argument, so this exercises the no-hardware-support case rather than a pre-detection null state.
     setGpuCapabilities(makeGpuCapabilities());
     setAllowlist([ "h264", "hevc" ]);
 
@@ -214,7 +215,8 @@ describe("isCaptureHardwareAccelerated", () => {
 
   test("returns false when no GPU capabilities have been detected", () => {
 
-    // Boundary: the entire result chain depends on getGpuCapabilities() returning non-null. With no detection done, the function reports not accelerated.
+    // Boundary: GPU capabilities are detected, but every hardware encoding flag is false, so isCaptureHardwareAccelerated() reports false. setGpuCapabilities()
+    // requires a GpuCapabilities argument, so this exercises the no-hardware-support case rather than a pre-detection null state.
     setGpuCapabilities(makeGpuCapabilities());
     setAllowlist(["h264"]);
 

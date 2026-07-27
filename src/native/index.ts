@@ -28,8 +28,8 @@ import { parseTokenExpiry } from "./tokenExpiry.ts";
  *
  * Token refresh: When the intercepted URL contains expiration tokens, we schedule a SINGLE timer aimed at the next expiry boundary - the earlier of the master URL's
  * and the polled variant URL's expirations, minus a comfortable margin. The refresh first attempts a direct Node.js fetch of the master manifest URL (no browser
- * involvement), falling back to a browser page reload when the master URL itself has expired. Crucially, each refresh reschedules from the boundary it is aiming at,
- * not from a shrinking-but-unchanging master expiry, so the schedule never degenerates into a per-cycle re-probe loop in the final minutes before expiry. The proxy
+ * involvement), falling back to a browser page reload when the master URL itself has expired. Each refresh reschedules from the boundary it is aiming at, not from a
+ * shrinking-but-unchanging master expiry, so the schedule never degenerates into a per-cycle re-probe loop in the final minutes before expiry. The proxy
  * continues serving cached segments during the refresh.
  */
 
@@ -432,7 +432,7 @@ export async function refreshNativeManifest(options: {
 
     // Install a fresh interceptor on the page, scope-bound with "using" so its CDP observer is disposed on every exit from this block. The proxy.isStopped early
     // return after navigation, and any throw from page.goto, would otherwise leave the observer (and its 20s timeout) running with no consumer until the timeout
-    // fires. The handle self-disposes when its promise resolves, after which this scope-bound disposal is an idempotent no-op. For token refresh the page
+    // fires. The handle self-disposes when its promise resolves, after which this scope-bound disposal is a no-op on repeat. For token refresh the page
     // navigates directly to the channel URL (no guide grid), so the first manifest captured is the correct one; we call finalize() after navigation to resolve
     // immediately with whatever was captured.
     using handle = await installManifestInterceptor(page, 20000);

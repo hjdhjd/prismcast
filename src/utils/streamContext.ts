@@ -70,7 +70,7 @@ export function getStreamId(): string | undefined {
 
 /**
  * Resolves the current show name from the stream context's lazy resolver. Returns an empty string if no resolver is set or no show name is available. Named
- * distinctly from the stream-ID-based show name lookup in the streaming module to avoid ambiguity via the barrel export in utils/index.ts.
+ * distinctly from getShowName in streaming/showInfo.ts (a direct, numeric-streamId cache lookup) so callers are never confused about which one they have.
  * @returns The current show name, or an empty string.
  */
 export function resolveContextShowName(): string {

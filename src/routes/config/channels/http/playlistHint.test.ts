@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * playlistHint.test.ts: Unit tests for the playlist-reload hint helpers. The module is the SSOT for which fields surface in the M3U playlist and for the prose
- * appended to user-facing messages when those fields change. Tests pin the M3U_FIELDS membership, the PLAYLIST_HINT literal, and the three predicate helpers
+ * appended to user-facing messages when those fields change. Tests pin the M3U_FIELDS membership, the PLAYLIST_HINT literal, and the predicate helpers
  * (stored, delta, change). Locking these behaviors prevents an accidental field-list drift from silently suppressing the playlist-reload nudge after a real
  * mutation.
  */

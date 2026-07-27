@@ -17,7 +17,7 @@ import { clearProbeCache } from "./probe.ts";
 /* eslint-disable sort-keys -- fixture route maps are ordered by HLS resolution chain (master -> variant -> key), not alphabetical key strings, so the logical
  * dependency direction is visible to readers. */
 
-/* Two sources of post-test handle leakage need draining for this file:
+/* Sources of post-test handle leakage need draining for this file:
  *
  * 1. puppeteer-stream's PuppeteerStream module starts a WebSocketServer at import time. index.ts pulls in browser/manifestInterceptor.ts which in turn pulls in
  *    browser/index.ts and triggers that server creation, which keeps the event loop alive after every test resolves.
@@ -386,7 +386,8 @@ describe("attemptNativeStreaming", () => {
   test("returns null when interception stalls past INTERCEPTION_AWAIT_TIMEOUT (cancellableTimeout fires)", async () => {
 
     /* The orchestrator's race between interceptionPromise and cancellableTimeout(INTERCEPTION_AWAIT_TIMEOUT). The "interception resolves first" branch is
-     * exercised by every other test in this suite (each one passes a Promise.resolve(...) interception). The "timeout fires first" branch races
+     * exercised by every other test in this suite that resolves its interception promise (all but the rejection test above, which exercises the surrounding
+     * catch block instead). The "timeout fires first" branch races
      * cancellableTimeout against the interception promise, coerces a false race result to null, and cancels the underlying timer in finally so it does not
      * hold an event loop reference. Without this test, a regression in the race coercion (e.g., dropping the `(result === false) ? null : result` step) or
      * the finally-cancel cleanup would not surface here.

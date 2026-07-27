@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * logEmitter.test.ts: Unit tests for the SSE log emitter in logEmitter.ts. The module wraps a singleton EventEmitter; tests subscribe, emit, then immediately
- * unsubscribe so the singleton's listener list does not leak between cases.
+ * logEmitter.test.ts: Unit tests for the SSE log emitter in logEmitter.ts. The module wraps a singleton EventEmitter; each test that subscribes registers
+ * its unsubscribe function with a shared array so a single afterEach hook can guarantee the singleton's listener list is cleared between cases, even when
+ * a test throws before reaching its own cleanup.
  */
 import { afterEach, describe, test } from "node:test";
 import { emitLogEntry, subscribeToLogs } from "./logEmitter.ts";

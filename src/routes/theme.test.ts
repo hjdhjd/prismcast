@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * theme.test.ts: Unit tests for the theme system in theme.ts. Three exports: generateThemeStyles (CSS string with light + dark theme variables),
+ * theme.test.ts: Unit tests for the theme system in theme.ts. The exports are generateThemeStyles (CSS string with light + dark theme variables),
  * getStreamHealthColorVars (map of health states to CSS variable references), and getLogLevelColorVars (map of log levels to CSS variable references). The
- * tests verify the structural invariants - that every documented token is present, that the dark-mode block uses prefers-color-scheme, and that the helper
+ * tests verify the structural guarantees - that every documented token is present, that the dark-mode block uses prefers-color-scheme, and that the helper
  * maps return the documented set of keys mapping to var(--*) references that resolve at render time.
  */
 import { describe, test } from "node:test";
@@ -167,7 +167,7 @@ describe("getStreamHealthColorVars", () => {
 
   test("returns the documented set of health states as keys", () => {
 
-    // The exact set of keys is part of the public contract; the status SSE forwarder relies on it.
+    // The exact set of keys is pinned here as a documented API contract, so any addition or removal is a deliberate, visible change.
     const vars = getStreamHealthColorVars();
     const keys = Object.keys(vars).sort();
 

@@ -21,9 +21,9 @@ describe("ParsedArgs", () => {
 
   test("accepts a literal with only the two required boolean fields populated", () => {
 
-    // The two boolean toggles (consoleLogging and debugLogging) are required because the entry point sets defaults of false for both before parsing. The four
-    // path/port fields are optional - they remain undefined when the corresponding CLI flag is not passed. Locking this shape ensures parseArgs and startServer
-    // stay in sync about which fields are guaranteed to be present.
+    // The required boolean fields are the ones the entry point defaults to false before parsing; the remaining fields are optional path/port flags that
+    // remain undefined when the corresponding CLI flag is not passed. Locking this shape ensures parseArgs and startServer stay in sync about which fields
+    // are guaranteed to be present.
     const minimal: ParsedArgs = {
 
       consoleLogging: false,
@@ -40,7 +40,7 @@ describe("ParsedArgs", () => {
 
   test("accepts a literal with every optional path-and-port field populated", () => {
 
-    // The four optional fields cover every path/port flag the CLI accepts. Locking this shape means a future addition (e.g., --extension-dir) must extend the
+    // The optional fields cover every path/port flag the CLI accepts. Locking this shape means a future addition (e.g., --extension-dir) must extend the
     // interface rather than smuggle a new field through ad hoc.
     const full: ParsedArgs = {
 

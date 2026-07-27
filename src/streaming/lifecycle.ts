@@ -100,10 +100,10 @@ export function isTerminationInitiated(streamId: number): boolean {
  * tracking, show-name cache, SSE - stays in terminateStream for the same reason: those cross-module registries reference the stream, and the orchestrator removes
  * them rather than the entry disposing itself from its own containers.) The genuinely self-contained resources are the nodes this composes; the stream composes them.
  *
- * Order is load-bearing: abort first so pending page.evaluate() calls reject immediately instead of hanging up to Puppeteer's 180s protocolTimeout while teardown
+ * The order matters: abort first so pending page.evaluate() calls reject immediately instead of hanging on Puppeteer's 180s protocolTimeout while teardown
  * proceeds; stop the monitor so it no longer reacts to the stream; cancel the preroll timer; dispose the active pipeline (capture and native modes are mutually
- * exclusive - the capture session destroys its capture stream first, firing STOP_RECORDING while the browser is still connected); and close the page last, after
- * that destroy.
+ * exclusive - the capture session kills FFmpeg first, then destroys its capture stream, firing STOP_RECORDING while the browser is still connected, then stops
+ * the segmenter); and close the page last, after that destroy.
  * @param entry - The registry entry whose owned resources to dispose.
  */
 function disposeStreamResources(entry: StreamRegistryEntry): void {
@@ -122,8 +122,8 @@ function disposeStreamResources(entry: StreamRegistryEntry): void {
     entry.hls.prerollTimer = null;
   }
 
-  // Dispose the active pipeline. The CaptureSession disposes its capture stream, FFmpeg child, and segmenter in kill-then-destroy-then-stop order; the native proxy
-  // stops its polling loop and token-refresh timer. Only one is present for a given stream.
+  // Dispose the active pipeline. The CaptureSession kills its FFmpeg child, then destroys its capture stream, then stops its segmenter; the native proxy stops
+  // its polling loop and token-refresh timer. Only one is present for a given stream.
   entry.nativeProxy?.stop();
   entry.captureSession?.dispose();
 
@@ -201,6 +201,8 @@ export function terminateStream(streamId: number, channelName: string, reason: s
 
   // Epilogue: compose and emit the termination summary from the prologue snapshot. Logged with the stream-ID prefix since we are outside the stream context.
   const streamIdStr = streamInfo?.streamIdStr ?? ("s" + String(streamId).padStart(4, "0"));
+
+  // "No active clients" is the routine, expected way a stream ends and is omitted from the summary; every other reason is exceptional and worth calling out.
   const reasonSuffix = (reason === "no active clients") ? "" : " (" + reason + ")";
   const streamLog = LOG.withStreamId(streamIdStr);
 

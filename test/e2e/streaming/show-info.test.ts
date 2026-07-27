@@ -1,19 +1,19 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * show-info.test.ts: Integration coverage for src/streaming/showInfo.ts. The module has no dependency-injection seam for its Channels DVR HTTP calls - it
+ * show-info.test.ts: Integration coverage for src/streaming/showInfo.ts. The module has no dependency-injection point for its Channels DVR HTTP calls - it
  * builds URLs directly from CONFIG.channelsDvr.port and calls the global fetch - so this suite stubs globalThis.fetch (routed purely by URL path, exactly the
  * mechanism the co-located unit test showInfo.test.ts already uses) rather than standing up a bootStubServer. The persistence subsystem (config.json,
  * channels.json) and the stream registry are real, booted per test via createIntegrationContext + initializePersistence, so the config round-trip and the
  * registered-stream lookup are exercised end-to-end.
  *
  * Every internal function under test (updateShowNames, updateShowNamesForHost, getGuideShowNames, loadPersistedDvrHost, persistDvrHost, populateChannelLogos)
- * is module-private, so this suite drives them exclusively through the exported seams: setDvrHost, startShowInfoPolling, and triggerShowNameUpdate. Three
+ * is module-private, so this suite drives them exclusively through the exported functions: setDvrHost, startShowInfoPolling, and triggerShowNameUpdate. Three
  * behavior groups are pinned:
  *
  *   A. Show-name resolution - recording-job precedence over the program guide, guide fallback when no recording matches, and stale-name clearing when
  *      neither source matches anymore.
  *   B. Persisted DVR host round-trip - loadPersistedDvrHost reads channelsDvr.host from config.json on startup, and persistDvrHost (via setDvrHost) writes
- *      only the host field back, never touching channelsDvr.port. The colon-rejection invariant is pinned alongside the host-only mutate.
+ *      only the host field back, never touching channelsDvr.port. The rule rejecting a colon in the host value is pinned alongside the host-only mutate.
  *   C. Two-tier channel logo population - the /devices endpoint's tier-1 logos land in the shared logo cache and are broadcast via the channelUpdate SSE
  *      event, normalized through normalizeLogoUrl. A tier-2 TMS station-name fallback is attempted for a channel with a station ID but no tier-1 logo.
  *
@@ -428,7 +428,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       assert.equal(getShowName(entry.id), "Initial Recording Title", "sanity check: the initial show name reflects the seeded recording");
 
       // Flip both sources to empty for this channel and drive a fresh lookup pass via the debounced trigger (startShowInfoPolling is a no-op once a poll
-      // interval already exists, so triggerShowNameUpdate is the seam that forces a second updateShowNames pass within a single test).
+      // interval already exists, so triggerShowNameUpdate is the function that forces a second updateShowNames pass within a single test).
       state.jobs = [];
       state.guideByDevice.set(deviceId, []);
 

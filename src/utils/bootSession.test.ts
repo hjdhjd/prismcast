@@ -118,7 +118,7 @@ describe("default context snapshot semantics", () => {
   test("repeated calls without an injected ctx return the same identifier", () => {
 
     // The default ctx is frozen at module load (createDefaultBootSessionContext snapshots host boot time and container instance tag once). Successive calls
-    // must therefore observe the same identifier even if the system clock drifts mid-process. This invariant is what runtimeIdentity relies on.
+    // must therefore observe the same identifier even if the system clock drifts mid-process. This is the guarantee that runtimeIdentity depends on.
     const first = getBootSessionId();
     const second = getBootSessionId();
 

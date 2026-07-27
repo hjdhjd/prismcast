@@ -114,10 +114,10 @@ describe("parseMoovTrackInfo", () => {
 
   test("extracts track_ID, timescale, and handler_type for a complete tkhd-v0 / mdhd-v0 trak", () => {
 
-    /* The positive path the negative tests above were silent on. Box-offset arithmetic in tkhd/mdhd/hdlr is the load-bearing detail: track_ID at byte 20
-     * (tkhd v0), timescale at byte 20 (mdhd v0), handler_type at byte 16 (hdlr). A regression in any single offset would silently produce wrong results - the
-     * negative tests would still pass because they assert empty-map outcomes. We construct a complete trak (tkhd + mdia[mdhd + hdlr]) with distinguishable
-     * values for each field so a swapped offset surfaces as a wrong number rather than a missing entry.
+    /* The positive path the negative tests above were silent on. Box-offset arithmetic in tkhd/mdhd/hdlr is what this test actually pins down: track_ID at
+     * byte 20 (tkhd v0), timescale at byte 20 (mdhd v0), handler_type at byte 16 (hdlr). A regression in any single offset would silently produce wrong
+     * results - the negative tests would still pass because they assert empty-map outcomes. We construct a complete trak (tkhd + mdia[mdhd + hdlr]) with
+     * distinguishable values for each field so a swapped offset surfaces as a wrong number rather than a missing entry.
      */
     const trak = makeTrak(
       makeTkhd({ trackId: 7, version: 0 }),

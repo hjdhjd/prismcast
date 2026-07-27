@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * cliOutput.test.ts: Unit tests for the print and printError CLI helpers in cliOutput.ts. The two functions delegate to console.log and console.error so the
+ * cliOutput.test.ts: Unit tests for the print and printError CLI helpers in cliOutput.ts. Each helper delegates to its corresponding console method, so the
  * tests stub those methods via mock.method on globalThis.console. Used by service and upgrade subcommands that run before the file logger is initialized.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";

@@ -70,7 +70,7 @@ describe("getDvrHost / setDvrHost", () => {
     assert.equal(getDvrHost(), "test-host-1.example.invalid");
   });
 
-  test("setDvrHost is idempotent - setting the same value twice does not change behavior", () => {
+  test("setDvrHost is safe to call twice with the same value - it does not change behavior", () => {
 
     setDvrHost("test-host-2.example.invalid");
     setDvrHost("test-host-2.example.invalid");
@@ -229,7 +229,7 @@ describe("matchesM3uDevice", () => {
 
   test("does not match just below 80% overlap", () => {
 
-    // Negative path: the passing gate is exercised elsewhere (getDeviceMappings' own integration coverage), but the reject branch was previously untested.
+    // Negative path: the passing gate is exercised elsewhere (getDeviceMappings' own integration coverage); this test locks the reject branch.
     // 3 of 5 keys overlap (a, b, c), giving overlapRatio 0.6 - well under the 0.8 threshold.
     const deviceChannelIds = new Set([ "a", "b", "c" ]);
     const prismcastChannelKeys = new Set([ "a", "b", "c", "d", "e" ]);

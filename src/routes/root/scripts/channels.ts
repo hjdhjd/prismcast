@@ -4,6 +4,11 @@
  */
 import { ACTIONS } from "../../clientActions.ts";
 
+/**
+ * Generates the channels subtab script block containing the service profile wizard, the browse channels wizard, the tag manager, and the setup wizard, plus the
+ * data-click-action registrations that wire server-rendered buttons to these handlers.
+ * @returns HTML script block with channels subtab functions.
+ */
 export function generateChannelsSubtabScript(): string {
 
   return [
@@ -490,7 +495,7 @@ export function generateChannelsSubtabScript(): string {
     "      fieldInput.addEventListener('input', function() { s.fieldValues[this.getAttribute('data-field-id')] = this.value; });",
     "    }",
 
-    // Step 4: add-domain button and domain inputs with auto-fill for service tag. Per-iteration let bindings from for...of.entries() capture the correct index
+    // Step 4: add-domain button and domain inputs with auto-fill for service tag. Per-iteration const bindings from for...of.entries() capture the correct index
     // in each closure - no IIFE wrapper needed.
     "    const addDomainBtn = document.getElementById('wizard-add-domain-btn');",
     "    if(addDomainBtn) addDomainBtn.addEventListener('click', addWizardDomain);",
@@ -719,7 +724,7 @@ export function generateChannelsSubtabScript(): string {
     "    if(gEl) browseGuideUrls = JSON.parse(gEl.textContent || '{}');",
     "  } catch(e) { console.warn('Embedded browse services data failed to parse.', e); }",
 
-    // Browse Channels wizard. Two steps: Service (picker grid) and Channels (discovery + channel list). Uses the shared wizard controller for step navigation
+    // Browse Channels wizard. Steps: Service (picker grid) and Channels (discovery + channel list). Uses the shared wizard controller for step navigation
     // and indicator updates. The state object tracks the selected service slug and label, and the filtered service list for the current session.
     "  const browseWizard = createWizardController({",
     "    contentId: 'browse-content',",
@@ -829,8 +834,9 @@ export function generateChannelsSubtabScript(): string {
     "  }",
 
     // Render the channel list with three-state checkboxes. Each discovered channel carries an optional lineup field from the server's annotation layer.
-    // When lineup is present, the channel exists in the user's lineup. When lineup.currentTag matches the browsed service slug, the channel is "current"
-    // (checked). When lineup is present but the tag differs, the channel is "switch" (indeterminate). When lineup is absent, the channel is "new" (empty).
+    // When lineup is present but the entry is disabled, the channel is "disabled" regardless of currentTag. Otherwise, when lineup.currentTag matches the
+    // browsed service slug, the channel is "current" (checked); when it differs, the channel is "switch" (indeterminate). When lineup is absent, the
+    // channel is "new" (empty).
     "  function renderBrowseChannelList(channels, slug, label) {",
     "    if(!channels || channels.length === 0) {",
     "      document.getElementById('browse-content').innerHTML =",
@@ -859,8 +865,8 @@ export function generateChannelsSubtabScript(): string {
     "    for(const ch of channels) {",
     "      const lu = ch.lineup;",
 
-    // Determine the channel's state from the server-provided lineup annotation. Four states: new (no lineup data), disabled (predefined but disabled),
-    // switch (exists via a different service), current (already using this service).
+    // Determine the channel's state from the server-provided lineup annotation: new (no lineup data), disabled (predefined but disabled),
+    // switch (exists via a different service), or current (already using this service).
     "      let state = 'new';",
     "      let stateLabel = '';",
     "      if(lu) {",
@@ -1017,8 +1023,9 @@ export function generateChannelsSubtabScript(): string {
     "    if(selectAll) selectAll.checked = (visibleCount > 0) && allChecked;",
     "  }",
 
-    // Submit channel changes via the modify endpoint. Collects four action types: add (new channels checked), enable (disabled channels checked),
-    // switch (switched-to channels checked), and remove (current channels unchecked). Each entry includes an action field so the server can handle them appropriately.
+    // Submit channel changes via the modify endpoint. Collects the applicable action for each visible checkbox by comparing its checked/indeterminate state
+    // to data-original: add (new channels checked), enable (disabled channels checked), switch (switched-to channels checked), or remove (current channels
+    // unchecked). Each entry includes an action field so the server can handle them appropriately.
     "  window.submitBrowseChannels = () => {",
     "    const cbs = document.querySelectorAll('.browse-channel-cb');",
     "    const guideUrl = browseGuideUrls[browseWizard.state.slug] || '';",

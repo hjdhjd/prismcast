@@ -10,13 +10,13 @@
  *     locally.
  *
  *   - getAllowedFieldsForShape: the single source of truth for "what fields are allowed in this entry's stored shape" - canonical-shaped (full delta surface)
- *     vs variant-shaped (binding-only plus the canonicalKey discriminator). filterToDeltaSurface and getChannelCustomizations both consume this; pinning the
+ *     vs variant-shaped (binding-only plus the canonicalKey tag). filterToDeltaSurface and getChannelCustomizations both consume this; pinning the
  *     classifier-driven branches prevents drift between the two consumers.
  *
  *   - filterToDeltaSurface: the storage-write-time shape enforcer. Called from normalizeChannelDeltas on every save, so the strip-vs-keep decision is the gate
  *     that prevents legacy orphan fields (non-delta-eligible identity, identity-on-variants, DOM hooks) from persisting forward.
  *
- * applyOverlayKernel is the kernel shared by overlayDelta and overlayVariantBinding. The public callers' tests confirm consumer-level invariants;
+ * applyOverlayKernel is the kernel shared by overlayDelta and overlayVariantBinding. The public callers' tests confirm consumer-level guarantees;
  * these tests pin the kernel's contract directly so a future refactor that breaks the abstraction (e.g., reintroduces a divergent branch in one of the wrappers)
  * fails locally rather than only via downstream callers.
  */
@@ -151,7 +151,7 @@ describe("getAllowedFieldsForShape", () => {
 
   /* The classifier-driven branches:
    *
-   *   classification.kind === "variant"            -> DELTA_ELIGIBLE_BINDING_KEYS + canonicalKey discriminator
+   *   classification.kind === "variant"            -> DELTA_ELIGIBLE_BINDING_KEYS + the canonicalKey tag
    *   classification.kind === "canonical"          -> full delta surface (identity ∪ binding, both delta-eligible)
    *   classification.kind === "standalone"         -> full delta surface (treated as canonical-shaped, since standalones carry identity + binding)
    */

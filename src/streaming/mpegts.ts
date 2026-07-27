@@ -14,8 +14,8 @@ import { StreamSetupError } from "./setup.ts";
 import { getChannelStreamId } from "./lifecycle.ts";
 import { waitForInitSegment } from "./hlsSegments.ts";
 
-/* This module provides a continuous MPEG-TS byte stream for HDHomeRun-compatible clients (such as Plex) that expect raw MPEG-TS when tuning a channel. Two delivery
- * modes are supported:
+/* This module provides a continuous MPEG-TS byte stream for HDHomeRun-compatible clients (such as Plex) that expect raw MPEG-TS when tuning a channel. It supports
+ * multiple delivery modes:
  *
  * Capture mode (fMP4 -> MPEG-TS): The capture pipeline produces fMP4 segments. Each MPEG-TS client gets its own FFmpeg remuxer that converts fMP4 to MPEG-TS with
  * codec copy (no transcoding). FFmpeg reads the init segment + media segments from stdin and outputs a continuous MPEG-TS stream on stdout, piped to the HTTP response.
@@ -336,8 +336,8 @@ function connectMpegTsClient({ beforeCatchup, extraCleanup, logLabel, onStreamTe
     onStreamTerminated();
   };
 
-  // Idempotent cleanup function. The cleanedUp flag ensures it runs only once regardless of which event triggers it first (client disconnect, stream termination, or
-  // output error).
+  // Cleanup function that is safe to call more than once. The cleanedUp flag ensures the underlying work runs only once regardless of which event triggers it first
+  // (client disconnect, stream termination, or output error).
   const cleanup = (): void => {
 
     if(cleanedUp) {

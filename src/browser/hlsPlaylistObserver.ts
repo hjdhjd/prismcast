@@ -53,8 +53,8 @@ export interface ObservedHlsPlaylist {
  */
 export interface HlsPlaylistObserverOptions {
 
-  // Debug log category for the observer's lifecycle messages. Pass-through to LOG.debug so consumers can route messages through their own scope (e.g.,
-  // "native:intercept" for the long-lived interception, "tune:verify" for predicate verification).
+  // Debug log category for the observer's lifecycle messages. Pass-through to LOG.debug so consumers can route messages through their own scope; both
+  // manifestInterceptor.ts consumers (the long-lived interception and the predicate-verification path) currently pass "native:intercept".
   readonly logCategory: string;
 
   // Invoked once per unique recognized HLS playlist URL observed. The callback is synchronous; the observer awaits no return value.
@@ -63,7 +63,7 @@ export interface HlsPlaylistObserverOptions {
 
 /**
  * Handle returned by observeHlsPlaylists(). Implements both the project's dispose() convention and TC39 Symbol.dispose so callers may use either an explicit
- * dispose() call or the "using" keyword. Disposal is idempotent and tears down the underlying tab network observer.
+ * dispose() call or the "using" keyword. Disposal is safe to call more than once and tears down the underlying tab network observer.
  */
 export interface HlsPlaylistObserver extends Disposable {
 

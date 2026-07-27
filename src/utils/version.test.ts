@@ -234,7 +234,8 @@ describe("startUpdateChecking and stopUpdateChecking", () => {
 
   test("startUpdateChecking does not throw and stopUpdateChecking clears the interval", () => {
 
-    // We can't directly observe the setInterval handle, but we can verify the start/stop pair is symmetric and idempotent.
+    // We can't directly observe the setInterval handle, but we can verify the start/stop pair is symmetric and safe to
+    // call more than once.
     assert.doesNotThrow(() => { startUpdateChecking("1.0.0"); });
     assert.doesNotThrow(() => { stopUpdateChecking(); });
   });

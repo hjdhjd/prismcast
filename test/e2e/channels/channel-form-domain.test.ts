@@ -100,7 +100,7 @@ describe("findMatchingVariant - iteration body and positive match", () => {
      * upstream no-op-save check.
      *
      * To exercise this branch, we'd need a service group containing a :predefined entry, which requires user-overriding a predefined channel. That setup is
-     * orchestrated by the channels CRUD endpoints; here we pin a softer invariant: findMatchingVariant returns undefined for a form payload that matches
+     * orchestrated by the channels CRUD endpoints; here we pin a softer guarantee: findMatchingVariant returns undefined for a form payload that matches
      * canonical (which the upstream no-op check is supposed to have caught). The contract is that findMatchingVariant does not double-report the canonical
      * itself as a matching variant.
      */

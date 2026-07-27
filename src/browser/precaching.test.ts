@@ -2,17 +2,16 @@
  *
  * precaching.test.ts: Unit tests for the precaching coordinator's no-op gates and the discovery-outcome recorder in precaching.ts. The module exports
  * startPrecaching (the gated scheduler tested here), stopPrecaching (the shutdown-time canceller), precacheService (the per-service primitive), and
- * recordDiscoveryOutcome (the discovery-outcome policy, covered by the matrix below). startPrecaching inspects two pieces of state before scheduling the precache
- * cycle:
+ * recordDiscoveryOutcome (the discovery-outcome policy, covered by the matrix below). startPrecaching inspects the CONFIG.channels.precacheServices list and the
+ * module-level precacheInProgress flag before scheduling the precache cycle; the tests here cover those two gates. The remaining gate, the isGracefulShutdown()
+ * check, and the full runPrecacheCycle/precacheService flow (driven through the PrecachingDeps injection seam) are covered in the sibling
+ * precaching.revalidation.test.ts. The unit tests here lock the gate-behavior contract so that future refactors of the gates do not silently regress.
  *
  *   1. CONFIG.channels.precacheServices: when empty, the function returns immediately with no side effects (no timer scheduled, no log lines, no internal flag
  *      mutated).
  *
  *   2. The module-level precacheInProgress flag: when true, the function defers. The flag is set when startPrecaching schedules the cycle (before the timer fires) and
  *      cleared in runPrecacheCycle's finally block.
- *
- * The actual precache cycle (runPrecacheCycle) drives Puppeteer via getCurrentBrowser, browser.newPage, page.goto, and provider.discoverChannels - that path is
- * deferred to e2e. The unit tests here lock the gate-behavior contract so that future refactors of the gates do not silently regress.
  */
 import type { AuthWallIndicators, DiscoveredChannel, ProviderModule } from "../types/index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
@@ -262,16 +261,16 @@ describe("recordDiscoveryOutcome", () => {
 
 /* Deferred to e2e (require Puppeteer/Chrome integration):
  *
- * - runPrecacheCycle (the cycle body itself - drives getCurrentBrowser, browser.newPage, page.evaluateOnNewDocument, page.goto, provider.discoverChannels,
- *   recordDiscoveryOutcome, page.close, minimizeBrowserWindow) - including the succeeded/empty/skipped counters and the completion sentence they compose.
+ * precaching.revalidation.test.ts already covers runPrecacheCycle's deps threading through to precacheService, precacheService's navigation, mute injection,
+ * cleanup ordering, and login-mode minimize guard, and the precacheInProgress guard's positive case, all through the PrecachingDeps injection seam without a real
+ * browser. What remains genuinely deferred is:
  *
- * - precacheService (the extracted per-service primitive) - it opens a real page via getCurrentBrowser, so its navigation, mute injection, cleanup ordering, and
- *   the login-mode minimize guard are exercised with the cycle at that tier. Its discovery-outcome policy is covered here through recordDiscoveryOutcome directly.
- *
- * - The precacheInProgress guard's positive case (the cycle must be in flight to observe the flag set; verifying that requires running the cycle which requires a
- *   real browser).
+ * - runPrecacheCycle's succeeded/empty/skipped counters and the completion sentence they compose, which requires driving a full multi-service cycle rather than
+ *   the single-service deps-threading check above.
  *
  * - The service-filter skip path (skipping services not in CONFIG.channels.enabledServices) - exercised inside runPrecacheCycle.
  *
  * - Per-provider error isolation (one provider failing while others succeed) - requires a real browser to populate the discovery flow.
+ *
+ * - The real Puppeteer mechanics of page.evaluateOnNewDocument and page.goto against an actual page, which the injection seam stubs out.
  */

@@ -39,7 +39,8 @@ describe("parseChannelsFile", () => {
 
   test("falls back to v1 when schemaVersion is non-numeric or negative", () => {
 
-    /* Tolerance branch: the parser treats any plausibly-bad version as v1 since migrations are idempotent. Three sub-cases.
+    /* Tolerance branch: the parser treats any plausibly-bad version as v1 since migrations are safe to run more than once.
+     * Three sub-cases.
      */
     assert.equal(parseChannelsFile(JSON.stringify({ schemaVersion: "broken" })).schemaVersion, 1);
     assert.equal(parseChannelsFile(JSON.stringify({ schemaVersion: -5 })).schemaVersion, 1);

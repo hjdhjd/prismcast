@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * runtimeIdentity.context.ts: The default adapter for RuntimeIdentityContext. Wires getBootSessionId from the boot-session module, isProcessRunning from the
- * PID primitives, and isPidOurProcess from the process-inspector seam. This file is the only place in the runtime-identity module that consumes those defaults;
+ * PID primitives, and isPidOurProcess from the ProcessInspectorContext. This file is the only place in the runtime-identity module that consumes those defaults;
  * tests construct RuntimeIdentityContext literals inline and bypass this file entirely.
  *
  * Process-identity probe. isPidOurProcess answers the same-boot PID-reuse question: after a SIGKILL frees PrismCast's PID, the kernel can reassign it to an
  * unrelated process within the same boot session, which would otherwise read as a live holder. We resolve identity by enumerating the OS process table through
- * the processInspector seam and inspecting the command line of the row whose pid matches. A genuine PrismCast process is launched with the product token in its
+ * the ProcessInspectorContext and inspecting the command line of the row whose pid matches. A genuine PrismCast process is launched with the product token in its
  * command line on every supported install method (the `prismcast` binary, `node .../prismcast/dist/index.js`, the Homebrew wrapper, or the Docker entry point),
  * so a command line that contains the token is treated as PrismCast and one that lacks it as an unrelated process. The match deliberately biases toward the safe
  * direction: an unrelated process whose command line happens to mention the token (e.g. `tail -f prismcast.log`) reads as PrismCast and keeps the conservative

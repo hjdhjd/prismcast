@@ -11,8 +11,8 @@ import url from "node:url";
  * service definition, allowing the application to adapt its restart behavior based on whether it's managed by a service manager or running standalone.
  */
 
-// The union is intentionally three-valued. getPlatform() maps process.platform "darwin" and "win32" explicitly, and collapses everything else (Linux, the BSDs,
-// and any other Unix) into "linux", so there is no separate BSD or "other" branch to represent here.
+// getPlatform() maps every recognized process.platform value to one of this union's members: "darwin" and "win32" map explicitly, and everything else (Linux,
+// the BSDs, and any other Unix) collapses into "linux", so there is no separate BSD or "other" branch to represent here.
 export type Platform = "darwin" | "linux" | "windows";
 
 export type ServiceManager = "launchd" | "systemd" | "windows-scheduler";
@@ -50,8 +50,8 @@ export function getPlatform(): Platform {
 
 /**
  * Returns the appropriate service manager for the current platform.
- * @returns The service manager for the current platform. Every platform in the three-valued union maps to a concrete manager, so the trailing null is an unreachable
- * defensive default retained to satisfy the Nullable return type.
+ * @returns The service manager for the current platform. Every member of the Platform union maps to a concrete service manager, so the trailing null is
+ * unreachable unless the union gains a member without a corresponding case; it is retained to satisfy the Nullable return type.
  */
 export function getServiceManager(): Nullable<ServiceManager> {
 

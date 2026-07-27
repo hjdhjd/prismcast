@@ -7,8 +7,8 @@
  * Each validator returns undefined for "valid" and a sentence-cased error message for "invalid". The tests cover every branch: empty/whitespace input, format
  * rejections, length limits, valid happy paths, and trim/case quirks. The state-dependent duplicate-check branches in validateChannelKey and validateChannelNumber
  * read module state (loadedUserChannels, getChannelListing) populated by initializeUserChannels - that initialization is heavyweight (pulls in CONFIG, the
- * persistence framework, and service-group construction), so duplicate-check coverage is intentionally left to HTTP-endpoint integration tests in
- * routes/config/channels/endpoints/crud.test.ts where the full module is already wired up. The pure branches are exhaustively covered here.
+ * persistence framework, and service-group construction), so those duplicate-check branches are not exercised by any test today. The pure branches are
+ * exhaustively covered here.
  */
 import { describe, test } from "node:test";
 import { validateChannelKey, validateChannelName, validateChannelNumber, validateChannelProfile, validateChannelUrl,
@@ -181,12 +181,11 @@ describe("validateChannelProfile", () => {
 
 /* validateChannelKey and validateChannelNumber rely on module state populated by initializeUserChannels (loadedUserChannels for key duplicates,
  * getChannelListing() for number duplicates). Bringing up the full state in a unit test would require initializing CONFIG, the persistence framework, and the
- * service-group machinery - the existing pattern in this directory keeps unit tests on pure helpers via __internalForTests and routes integration coverage
- * through the HTTP-endpoint tests where that bring-up has already happened. The pure branches of those validators (empty/format/length checks) are tested
- * here against representative inputs. For validateChannelKey we pass isNew=false, which structurally skips the duplicate check. For validateChannelNumber we pass
- * excludeKey="any-key"; the listing is still iterated, but the tested format-rejection inputs return before that loop, so only the format-rejection paths are
- * exercised. This is a deliberate split: the cheap pure paths are unit-tested for fast localized failure messages;
- * the duplicate paths are integration-tested via crud.test.ts where the full system is already wired up.
+ * service-group machinery, so this file keeps unit tests on the pure helpers via __internalForTests. The pure branches of those validators (empty/format/length
+ * checks) are tested here against representative inputs. For validateChannelKey we pass isNew=false, which structurally skips the duplicate check. For
+ * validateChannelNumber we pass excludeKey="any-key"; the listing is still iterated, but the tested format-rejection inputs return before that loop, so only
+ * the format-rejection paths are exercised. This is a deliberate split: the cheap pure paths are unit-tested here for fast localized failure messages, while
+ * the duplicate-check branches are not exercised by any test today.
  */
 
 describe("validateChannelKey - pure branches (isNew=false short-circuits the duplicate check)", () => {

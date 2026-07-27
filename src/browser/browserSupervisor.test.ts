@@ -165,7 +165,7 @@ describe("browserSupervisor: HALF-OPEN trial and escalation", () => {
 
     assert.equal(degraded.kind, "degraded");
 
-    // Advance past the cooldown; the next acquire is the HALF-OPEN trial. assert.equal above narrows the discriminant, so .until is directly accessible.
+    // Advance past the cooldown; the next acquire is the HALF-OPEN trial. assert.equal above narrows the union by its kind tag, so .until is directly accessible.
     h.env.clock = degraded.until;
     h.env.launchImpl = (): Promise<Browser> => Promise.resolve(stubBrowser);
 

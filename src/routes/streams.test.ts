@@ -228,7 +228,7 @@ describe("setupStreamsEndpoint - GET /streams/status (SSE handshake)", () => {
 
 // The direct-handler suite below registers /streams/status against a stub Express app so we can drive the captured handler against synthetic req/res pairs.
 // This pins the named-event forwarding contract (subsequent live events from subscribeToStatus reach the wire as `event: <name>\ndata: <json>\n\n`) and the
-// close-cleanup invariant (post-close emits do not reach the wire AND the heartbeat stops). The named-event forwarding is what no tier currently observes
+// close-cleanup guarantee (post-close emits do not reach the wire AND the heartbeat stops). The named-event forwarding is what no tier currently observes
 // beyond the initial snapshot frame - a regression that swapped subscribeToStatus for a no-op would still pass the existing fetch-based suite.
 function findStreamsStatusHandler(): RouteCapture {
 
@@ -258,7 +258,7 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
     // Pins streams.ts - subscribeToStatus forwards each named event (channelUpdate, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged) to
     // sse.sendEvent(eventType, data). The existing fetch-based suite asserts only the initial snapshot frame; nothing observes that subsequent live events reach
     // the wire with their named eventType. We use emitChannelUpdate as the driver because it is exported and accepts a free-form payload (the other emit*()
-    // functions require constructing full StreamStatus / SystemStatus shapes that are orthogonal to the routing contract under test here).
+    // functions require constructing full StreamStatus / SystemStatus shapes that are unrelated to the routing contract under test here).
     const route = findStreamsStatusHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();
 
@@ -303,7 +303,7 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
   test("req.on('close') handler unsubscribes from the status emitter - post-close emits do not reach the wire", () => {
 
     // Pins streams.ts - the req.on("close") teardown handler must run unsubscribe(). After invoking the close handler synthetically, an emitted status event
-    // must NOT trigger a res.write. This is the observable invariant: a regression that dropped unsubscribe() would leak the listener and continue forwarding to
+    // must NOT trigger a res.write. This is the behavior under test: a regression that dropped unsubscribe() would leak the listener and continue forwarding to
     // a disconnected response.
     const route = findStreamsStatusHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();

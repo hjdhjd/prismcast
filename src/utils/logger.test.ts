@@ -329,7 +329,8 @@ describe("LOG.withStreamId bound logger", () => {
   test("does NOT include the show name (only stream id)", async () => {
 
     // The bound logger uses an explicit streamId path that bypasses the show-name resolver. This is the documented contract: bound loggers are for outside-of-context
-    // logging where no show is in scope.
+    // logging where no show is in scope. The bypass holds even when the call runs inside an active stream context (as below), so a bound logger never surfaces
+    // another stream's show name.
     const bound = LOG.withStreamId("bound-abc");
 
     await runWithStreamContext({ showNameResolver: () => "Some Show", streamId: "ignored" }, async () => {
@@ -454,7 +455,7 @@ describe("LOG sentence normalization (info / warn / error)", () => {
 
   test("works with %s interpolation: no format-string period + value carries period yields one period", () => {
 
-    // The historical "userMessage carries period, format string omits" pattern: still emits a single terminating period after normalization.
+    // Callers vary in whether the interpolated value already carries a period; the normalizer collapses either case to a single terminating period.
     LOG.info("startup failed: %s", "Invalid URL.");
 
     assert.equal(captured[0]?.message, "startup failed: Invalid URL.");

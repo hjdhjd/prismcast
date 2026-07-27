@@ -1,17 +1,17 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * services.delegation.test.ts: Unit test pinning that the /services/:slug/channels route delegates its discovery walk to the shared guarded guide-page session
- * (withProviderGuidePage in browser/precaching.ts) rather than owning the page lifecycle itself. The route exposes a ServiceDiscoveryDeps injection seam; the test
+ * (withProviderGuidePage in browser/precaching.ts) rather than owning the page lifecycle itself. The route exposes a ServiceDiscoveryDeps injection point; the test
  * drives the route through the REAL withProviderGuidePage, bound to a stub PrecachingDeps so the helper reaches for a stub browser and a recording overlay poll
  * rather than a live Chrome. The helper's observable effects are asserted - the audio-mute override installs before the guide navigation, the navigation targets the
  * provider's guideUrl, exactly one discovery-phase overlay poll launches, the page is closed by the end, and the response carries the walk's channels sorted by name.
- * Those effects exist only inside withProviderGuidePage, so a route that inlined the page lifecycle instead of delegating would produce none of them - a stronger
- * discriminator than a spy on the helper's call.
+ * Those effects exist only inside withProviderGuidePage, so a route that inlined the page lifecycle instead of delegating would produce none of them - a more
+ * reliable way to tell delegation from a mocked call than a spy on the helper's call.
  *
- * A second run pins that the discriminators actually discriminate: the same route wired to a non-delegating guide-page session - one that returns the walk's channels
- * without the real helper's page lifecycle - produces none of the mute/goto/poll/close effects, so the page-lifecycle assertions above genuinely detect delegation
- * rather than passing vacuously. recordDiscoveryOutcome is left real: for the driven provider its non-empty result takes the no-op clear branch, so it records nothing
- * to disk while its own coverage is exercised.
+ * A second run pins that the assertions above actually tell delegation from non-delegation apart: the same route wired to a non-delegating guide-page session - one that
+ * returns the walk's channels without the real helper's page lifecycle - produces none of the mute/goto/poll/close effects, so the page-lifecycle assertions above
+ * genuinely detect delegation rather than passing vacuously. recordDiscoveryOutcome is left real: for the driven provider its non-empty result takes the no-op clear
+ * branch, so it records nothing to disk while its own coverage is exercised.
  */
 import type { AddressInfo, Server } from "node:net";
 import type { Browser, Page } from "puppeteer-core";
@@ -189,7 +189,7 @@ describe("setupServicesEndpoint - discovery delegates to the real guarded guide-
   test("drives withProviderGuidePage end-to-end: mute before navigation, the discovery poll, the guide goto, the page close, and the sorted response", async () => {
 
     /* Traced path: the injected getProviderBySlug resolves the stub, the empty cache skips the warm-cache short-circuit, and runDiscovery hands the walk to the real
-     * withProviderGuidePage. The discriminators that would fail against a route that inlined the page lifecycle rather than delegating: the mute override is installed
+     * withProviderGuidePage. The checks that would fail against a route that inlined the page lifecycle rather than delegating: the mute override is installed
      * before the guide navigation, exactly one poll launches under the discovery phase, the navigation targets the provider's guideUrl, the page is closed on cleanup,
      * and the response carries the walk's channels sorted by name. None of these effects exist outside withProviderGuidePage.
      */
@@ -218,7 +218,7 @@ describe("setupServicesEndpoint - the delegation discriminators actually discrim
     // Control: bareDeps.withProviderGuidePage returns the walk's channels without the real helper's page lifecycle. This stands in for a route that inlined a bare
     // page lifecycle instead of delegating. The response still carries the channels sorted (runDiscovery sorts regardless of who walked), so the sorted body alone
     // cannot tell delegation from non-delegation - only the page-lifecycle effects can, which is exactly why the positive test asserts them. Their absence here proves
-    // those discriminators genuinely detect delegation rather than passing vacuously.
+    // those checks genuinely detect delegation rather than passing vacuously.
     const res = await fetch(urlFor(barePort, "/services/" + DRIVEN_SLUG + "/channels"));
     const body = await res.json() as DiscoveredChannel[];
 

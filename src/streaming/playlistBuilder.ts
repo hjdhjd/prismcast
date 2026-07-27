@@ -3,10 +3,10 @@
  * playlistBuilder.ts: Shared HLS playlist builder for PrismCast.
  */
 
-/* This module provides a format-neutral HLS playlist builder used by both the capture-mode fMP4 segmenter and the native HLS proxy. It accepts playlist-level options
- * and an ordered array of segment entries, then produces the m3u8 string. All tag formatting lives here - PROGRAM-DATE-TIME, DISCONTINUITY-SEQUENCE, DISCONTINUITY,
- * SCTE-35, EXT-X-MAP, EXTINF. The builder is stateless and pure: it receives data and returns a string. It knows nothing about preroll, capture mode, native mode,
- * windowing, or where segments come from.
+/* This module provides a format-neutral HLS playlist builder used by every playlist generator in PrismCast - the capture-mode fMP4 segmenter, the native HLS proxy,
+ * and the standalone preroll playlist. It accepts playlist-level options and an ordered array of segment entries, then produces the m3u8 string. All tag formatting
+ * lives here - PROGRAM-DATE-TIME, DISCONTINUITY-SEQUENCE, DISCONTINUITY, SCTE-35, EXT-X-MAP, EXTINF. The builder is stateless and pure: it receives data and returns a
+ * string. It knows nothing about preroll, capture mode, native mode, windowing, or where segments come from.
  */
 
 // Types.

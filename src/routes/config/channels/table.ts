@@ -55,7 +55,7 @@ export const OPTIONAL_COLUMNS: readonly {
   { align: "left", cssClass: "col-tags", field: "tags", label: "Tags", width: "150px" }
 ];
 
-// Total number of columns in the channels table (4 required + 6 optional).
+// Total number of columns in the channels table: the required columns plus every entry in OPTIONAL_COLUMNS.
 const TOTAL_COLUMN_COUNT = 10;
 
 // Valid optional column field names.
@@ -71,7 +71,8 @@ export const VALID_OPTIONAL_COLUMNS = new Set(OPTIONAL_COLUMNS.map((c) => c.fiel
 interface TextFieldOptions {
 
   // The value the per-field reset button substitutes when the field is customized. Rendered as the data-default HTML attribute that the client-side reset
-  // reads. Should be supplied alongside isCustomized=true; when isCustomized is false/undefined, this value is ignored (no reset button is rendered).
+  // reads. The attribute is emitted whenever defaultValue is set, independent of isCustomized; only the reset button's presence depends on isCustomized
+  // being true.
   defaultValue?: string;
 
   // Hint text displayed below the input (optional).
@@ -464,7 +465,7 @@ interface AdvancedFieldOptions {
 }
 
 /**
- * Generates HTML for the advanced fields section (station ID, channel selector, channel number, guide title, logo URL, HDHomeRun toggle, tags).
+ * Generates HTML for the advanced fields section (station ID, guide title, logo URL, channel selector, channel number, tags, HDHomeRun toggle).
  * @param idPrefix - Prefix for element IDs ("add" or "edit").
  * @param options - Field values, defaults, and customization metadata. See AdvancedFieldOptions.
  * @returns Array of HTML strings for the advanced fields section.
@@ -853,9 +854,8 @@ export interface ChannelRowHtml {
 
 /**
  * Generates the HTML for a single channel's table rows (display row and edit form row). All channels - predefined, override, and user-defined - get both rows.
- * The edit form is pre-populated with the effective (resolved) values so users see what they're changing. When called from generateChannelsPanel() which already
- * has the listing entry, pass it via the entry parameter to avoid redundant getChannelListing() calls. POST handlers that generate a single row omit the
- * parameter to trigger an internal lookup.
+ * The edit form is pre-populated with the effective (resolved) values so users see what they're changing. Callers pass a pre-resolved listing entry via the
+ * entry parameter to avoid redundant getChannelListing() calls; the parameter is optional so an internal lookup remains available as a fallback.
  * @param key - The channel key.
  * @param profiles - List of available profiles with descriptions for the dropdown.
  * @param entry - Optional pre-resolved listing entry. When omitted, looked up from getChannelListing().
@@ -965,8 +965,8 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
   displayLines.push("</td>");
 
-  // Optional columns: Number, HDHR, Station ID, Profile, Selector - the first five of the six optional columns (Tags is rendered separately below). All five
-  // are always rendered here; visibility is controlled by CSS classes on the table element.
+  // Optional columns: Number, HDHR, Station ID, Profile, Selector - every optional column except Tags is rendered here individually; Tags is rendered
+  // separately below because it needs dropdown/portal markup. All are always rendered here; visibility is controlled by CSS classes on the table element.
   const cellKey = escapeHtml(key);
 
   displayLines.push("<td class=\"col-chnum editable-cell\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "channelNumber")) +
@@ -1021,7 +1021,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
     "\" data-key=\"" + cellKey + "\" data-tags=\"" + escapeHtml(effectiveTags.join(",")) +
     "\" data-click-action=\"" + ACTIONS.toggleInlineTagDropdown + "\">" + tagsHtml + "</td>");
 
-  // Actions column with icon buttons. Five positions per row: Edit (always), Login/placeholder, Health/placeholder, context-sensitive, and Copy URL.
+  // Actions column with icon buttons, one entry per position below: Edit (always), Login/placeholder, Health/placeholder, context-sensitive, and Copy URL.
   displayLines.push("<td>");
   displayLines.push("<div class=\"btn-group\">");
 
@@ -1285,7 +1285,7 @@ export interface ChannelTablePatch {
   scopeCounts: { all: { enabled: number; total: number }; east: { enabled: number; total: number }; pacific: { enabled: number; total: number } };
 
   // Tag bulk toggle counts for Quick Actions. Maps each active tag to how many enabled channels have it vs total enabled channels. Omitted when the tags column
-  // is not visible (no tag toggles to update).
+  // is hidden or the active tag vocabulary is empty (no tag toggles to update).
   tagCounts?: Record<string, { count: number; total: number }>;
 }
 
@@ -1362,7 +1362,8 @@ function getHdhrCounts(listing: ChannelListingEntry[]): { enabled: number; total
 
 /**
  * Computes per-tag channel counts for the Quick Actions tag bulk toggles. For each tag in the active vocabulary, counts how many enabled, service-available
- * channels have that tag in their effective tags. Returns undefined when the tags column is not visible (no tag toggles to update).
+ * channels have that tag in their effective tags. Returns undefined when the tags column is hidden or the active tag vocabulary is empty (no tag toggles to
+ * update).
  * @param listing - The channel listing entries.
  * @returns A record mapping tag names to { count, total }, or undefined when hidden.
  */
@@ -1559,7 +1560,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     "Gracenote station ID, URL, or other properties.</p>");
   lines.push("</div>");
 
-  // Toolbar with three dropdown menus: Manage Channels (primary actions), Import/Export (data I/O), and Quick Actions (bulk operations). Each dropdown has an
+  // Toolbar dropdown menus: Manage Channels (primary actions), Import/Export (data I/O), and Quick Actions (bulk operations). Each dropdown has an
   // inline SVG icon + label + chevron for visual discoverability. Grouped menus reduce visual clutter and separate channel management from data I/O and bulk
   // operations.
 
@@ -1634,8 +1635,8 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Compute initial toggle counts for predefined channel scopes. The server is the single source of truth - the client renders what we return here.
   const scopeCounts = getPredefinedScopeCounts();
 
-  // Three toggle rows: checkbox + label + count. Clicking toggles the group via bulkTogglePredefined(). The data-click-prevent-default attribute stops the
-  // native checkbox toggle - the server response drives the update.
+  // One toggle row per predefined scope: checkbox + label + count. Clicking toggles the group via bulkTogglePredefined(). The data-click-prevent-default
+  // attribute stops the native checkbox toggle - the server response drives the update.
   const scopes: { count: number; label: string; scope: string; total: number }[] = [
     { count: scopeCounts.all.enabled, label: "All Predefined", scope: "all", total: scopeCounts.all.total },
     { count: scopeCounts.east.enabled, label: "East Variants", scope: "east", total: scopeCounts.east.total },
@@ -1952,8 +1953,8 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
     ...OPTIONAL_COLUMNS
   ];
 
-  // All sortable headers use the same DOM structure: <th onclick> wraps a <span class="sort-label"> for the label text. The sort update logic targets
-  // .sort-label to modify only the label - never touching other children like the Tags filter dropdown. Clicking anywhere on the <th> triggers sort;
+  // All sortable headers use the same DOM structure: <th data-click-action> wraps a <span class="sort-label"> for the label text. The sort update logic
+  // targets .sort-label to modify only the label - never touching other children like the Tags filter dropdown. Clicking anywhere on the <th> triggers sort;
   // additional children (like the filter button) use event.stopPropagation() to prevent sort when interacting with them.
   for(const hdr of sortableHeaders) {
 

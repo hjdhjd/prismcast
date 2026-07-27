@@ -1,13 +1,16 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * reactivity.test.ts: Unit tests for the config-change reactivity primitive. The module owns three observable contracts:
+ * reactivity.test.ts: Unit tests for the config-change reactivity primitive. The module's observable contracts include:
  *
  *   1. computeConfigDiff produces one ConfigChange per leaf-value difference between two snapshots, in deterministic order.
  *
- *   2. registerConfigChangeHandler is single-shot per prefix (duplicate registration throws) and matches by longest-prefix.
+ *   2. registerConfigChangeHandler is single-shot per prefix (duplicate registration throws).
  *
- *   3. applyConfigChanges dispatches the diff to handlers, partitions the result into applied/deferred/rejected, falls back to the NO_HANDLER_REASON deferral
- *      for unhandled paths, and falls back to MISSING_OUTCOME_REASON when a handler omits a path from its outcome list.
+ *   3. applyConfigChanges matches each changed path to its handler by longest-prefix, dispatches the diff to handlers, partitions the result into
+ *      applied/deferred/rejected, falls back to the NO_HANDLER_REASON deferral for unhandled paths, and falls back to MISSING_OUTCOME_REASON when a handler
+ *      omits a path from its outcome list.
+ *
+ * Extend this enumeration alongside any new exported behavior the module gains.
  *
  * The tests below cover each contract directly without leaning on integration plumbing - the primitive's correctness is mechanical, so the tests are also.
  */

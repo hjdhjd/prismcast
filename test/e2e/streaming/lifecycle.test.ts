@@ -1,9 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * lifecycle.test.ts: Integration coverage for the stream registry lifecycle invariants. The unit tier (registry.test.ts, lifecycle.test.ts) covers each
- * function in isolation against synthetic entries; this suite verifies the integration: register a stream, retrieve it via the channel index, terminate, and
- * confirm every storage layer (registry map, channelToStreamId index) is cleaned up. Lifecycle bugs in production manifest as "ghost" streams that show up in
- * the dashboard after termination - exactly the regression class catch in 75a63cc.
+ * lifecycle.test.ts: Integration coverage confirming the stream registry stays consistent across its full lifecycle. The unit tier (registry.test.ts,
+ * lifecycle.test.ts) covers each function in isolation against synthetic entries; this suite verifies the integration: register a stream, retrieve it via
+ * the channel index, terminate, and confirm every storage layer (registry map, channelToStreamId index) is cleaned up. Lifecycle bugs in production
+ * manifest as "ghost" streams that show up in the dashboard after termination - streams that still resolve through getStream() or getChannelStreamId()
+ * after terminateStream() has returned.
  */
 import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { deleteChannelStreamId, getChannelStreamId, setChannelStreamId, terminateStream } from "../../../src/streaming/lifecycle.ts";
@@ -59,10 +60,10 @@ describe("stream registry lifecycle", () => {
     assert.equal(getChannelStreamId("abc"), undefined, "channel index should not point at a terminated stream");
   });
 
-  test("terminateStream is safe to call on an already-terminated stream (idempotent)", async () => {
+  test("terminateStream is a no-op on repeat calls against an already-terminated stream", async () => {
 
-    /* The termination path can be triggered from multiple sources (client disconnect, monitor recovery, graceful shutdown). It must be idempotent so a second
-     * termination attempt does not throw or corrupt other registry state.
+    /* The termination path can be triggered from multiple sources (client disconnect, monitor recovery, graceful shutdown). It must be safe to call more
+     * than once, so a second termination attempt does not throw or corrupt other registry state.
      */
     await using ctx = await createIntegrationContext();
 

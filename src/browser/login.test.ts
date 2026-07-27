@@ -91,8 +91,8 @@ function makeBrowserStub(options: { connected?: boolean; newPageError?: Error; p
   } as unknown as Browser;
 }
 
-/* installAccessors installs a minimal browser-accessor pair. Tests that need to track minimize calls supply their own counter. The browser reference is captured
- * in a closure so tests can flip its connected flag mid-test by mutating the returned object.
+/* installAccessors installs a minimal browser-accessor pair and returns a fresh minimize-call counter the caller can read to verify minimize calls. The
+ * browser reference is captured in a closure so tests can flip its connected flag mid-test by mutating the returned object.
  */
 function installAccessors(browser: Nullable<Browser>): { minimizeCalls: number } {
 

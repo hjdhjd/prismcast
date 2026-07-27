@@ -300,7 +300,7 @@ describe("filterDefaults", () => {
 
   test("preserves channelsDvr.host auto-discovery field", () => {
 
-    /* The host invariant after the v3 schema migration: channelsDvr.host is host-only, never host:port. The fixture reflects that contract. The migration
+    /* The rule enforced after the v3 schema migration: channelsDvr.host is host-only, never host:port. The fixture reflects that rule. The migration
      * itself (which splits any legacy host:port into host + port) is covered in userConfig.migrations.test.ts; this test is about preservation through
      * filterDefaults's allow-list - the auto-discovered host is not in CONFIG_METADATA so the standard metadata loop would drop it without explicit handling.
      */
@@ -405,7 +405,7 @@ describe("filterDefaults", () => {
 
 describe("hydration registry parity", () => {
 
-  /* The architectural invariant: every PRESERVED_FIELDS entry has a declared destination. Either it hydrates into the runtime CONFIG on boot (HYDRATED_FIELDS)
+  /* The architectural rule: every PRESERVED_FIELDS entry has a declared destination. Either it hydrates into the runtime CONFIG on boot (HYDRATED_FIELDS)
    * or it lives only on the persisted UserConfig shape with no runtime counterpart (PERSISTENCE_ONLY_FIELDS - currently schemaVersion / migrationsApplied,
    * owned by the file-store framework). The two registries partition PRESERVED_FIELDS exactly: every preserved path appears in one set or the other, and the
    * sets are disjoint. A new preservation entry added without an explicit hydration classification fails this single assertion before any per-field test runs.
@@ -431,10 +431,8 @@ describe("hydration registry parity", () => {
 
   test("hydrates channelsDvr.host from persisted UserConfig into runtime CONFIG", () => {
 
-    /* Regression test for the channelsDvr.host hydration gap. Before HYDRATED_FIELDS, mergeConfiguration only carried CONFIG_METADATA-listed fields and the
-     * inline-block fields into runtime CONFIG; channelsDvr.host (auto-discovered by showInfo.persistDvrHost) was preserved on disk via PRESERVED_FIELDS but
-     * invisible to runtime CONFIG between boot and the first DVR discovery cycle. The registry-driven hydration closes that gap: a host on disk now reaches
-     * runtime CONFIG immediately on boot, eliminating the "blank between boot and first discovery" window the persistence layer was meant to bridge.
+    /* channelsDvr.host is auto-discovered by showInfo.persistDvrHost and persisted via PRESERVED_FIELDS. This test pins that HYDRATED_FIELDS brings it back
+     * into runtime CONFIG immediately on boot, so the host is available before the next DVR discovery cycle runs.
      */
     const userConfig: UserConfig = { channelsDvr: { host: "192.168.1.50" } };
     const result = mergeConfiguration(userConfig);

@@ -1,13 +1,14 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * loggers.helpers.ts: Logger doubles used to substitute for the production LOG via mock.module(). silentLog drops every call (used when production code logs
- * but the test isn't asserting on output); capturingLog records every call (used when the test does want to assert on log output). Both satisfy the TestLogger
- * interface, which mirrors the public surface of LOG from src/utils/logger.ts.
+ * loggers.helpers.ts: Logger doubles passed in place of the production LOG wherever a consumer accepts a logger parameter. silentLog drops every call (used
+ * when production code logs but the test isn't asserting on output); capturingLog records every call (used when the test does want to assert on log output).
+ * Each satisfies the TestLogger interface, which mirrors the public surface of LOG from src/utils/logger.ts.
  */
 
 /**
  * The minimal logger surface that every test consumer needs. Mirrors the public methods on LOG from src/utils/logger.ts (debug/error/info/warn) plus the bound
- * logger returned by withStreamId. Helpers in this file return an object that satisfies this shape so it can be substituted for LOG via mock.module().
+ * logger returned by withStreamId. Helpers in this file return an object that satisfies this shape so it can be passed in place of LOG wherever a consumer
+ * accepts a logger parameter.
  */
 export interface TestLogger {
 
@@ -53,7 +54,7 @@ const silentBound: Omit<TestLogger, "withStreamId"> = {
 /**
  * Returns a logger that drops every call. Use this when a test exercises code that logs but the test isn't asserting on log output - the production code wants
  * to call LOG.info(...) and the test just needs the call to be a no-op so it doesn't pollute test runner stdout. Returned object satisfies TestLogger so it can
- * be substituted for the production LOG via mock.module().
+ * be passed in place of the production LOG wherever a consumer accepts a logger parameter.
  * @returns A logger whose methods all return undefined and record nothing.
  */
 export function silentLog(): TestLogger {

@@ -4,7 +4,8 @@
  * stripNulls, buildResolvedCanonicals.
  *
  * These tests verify that the normalizer strips redundant fields against the correct base, preserves genuine overrides, drops empty deltas that carry no
- * information, and handles edge cases (dangling canonicals, null-for-clear semantics). Idempotency and roundtrip invariants guard against subtle regressions.
+ * information, and handles edge cases (dangling canonicals, null-for-clear semantics). Running the normalizer twice produces the same result as running it
+ * once, and the roundtrip guarantees prevent subtle regressions.
  */
 import type { CanonicalChannel, Channel, ChannelDelta, StoredChannel, StoredChannelMap } from "../types/index.ts";
 import { __internalForTests, intersectBindingDeltas, mergeVariantBinding, replaceVariantBinding } from "./userChannels.ts";
@@ -154,7 +155,8 @@ describe("replaceVariantBinding", () => {
 
   test("preserves canonicalKey from existing when delta is empty (canonicalKey is non-binding)", () => {
 
-    // canonicalKey is the variant discriminator - not a binding field. The strip leaves it; an empty delta adds nothing; the result has only canonicalKey.
+    // canonicalKey is the field that marks the variant relationship - not a binding field. The strip leaves it; an empty delta adds nothing; the result has
+    // only canonicalKey.
     const existing: StoredChannel = { canonicalKey: "abc", channelSelector: "ABC", url: "https://www.hulu.com/live" };
 
     assert.deepEqual(replaceVariantBinding(existing, {}), { canonicalKey: "abc" });
@@ -331,8 +333,9 @@ describe("normalizeChannelDeltas", () => {
    */
 });
 
-/* Sibling-variant non-overlap rule (storage invariant). A canonical override's binding fields exist to customize the canonical service's binding - never to
- * express "default this channel to a sibling service." When a canonical override's URL extracts to a sibling variant's domain, the normalizer redirects:
+/* Sibling-variant non-overlap rule (a storage rule the normalizer enforces). A canonical override's binding fields exist to customize the canonical
+ * service's binding - never to express "default this channel to a sibling service." When a canonical override's URL extracts to a sibling variant's
+ * domain, the normalizer redirects:
  * binding stripped from canonical, propagated as binding-only override on the matching variant when divergent, serviceSelections updated. The producer
  * (handlePredefinedEdit) and the normalizer share the inferTargetVariant helper as the single source of truth for the rule.
  *

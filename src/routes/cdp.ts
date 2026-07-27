@@ -109,8 +109,10 @@ function makeWsUrl(req: Request, suffix: string): string {
 const discoverySessions = new WeakMap<Browser, Promise<CDPSession>>();
 
 /**
- * Returns a working browser-level CDPSession for discovery, lazily creating one per Browser identity and re-creating it after a cached session detaches (e.g.,
- * a transient CDP error). Concurrent callers against the same browser share the same in-flight Promise; callers against a different browser get their own.
+ * Returns a working browser-level CDPSession for discovery, lazily creating one per Browser identity and re-creating it once a previously created session later
+ * reports itself detached (e.g., after a transient CDP error surfaces post-creation). A creation attempt that itself rejects is not retried - the rejected
+ * Promise stays cached for that Browser and every subsequent call rejects the same way. Concurrent callers against the same browser share the same in-flight
+ * Promise; callers against a different browser get their own.
  * @param browser - The active Puppeteer Browser.
  * @returns A CDPSession attached to the browser target.
  */
@@ -137,8 +139,8 @@ async function getDiscoverySession(browser: Browser): Promise<CDPSession> {
 
 /* Puppeteer's CDPSession.send is strongly typed via ProtocolMapping so the compiler enforces correctness when callers know the method name at authoring time. The
  * proxy forwards arbitrary method strings from external clients, so we cast to a method-erased signature at this single boundary; runtime behavior is identical
- * and the wire protocol enforces the shape on both sides. Confining the assertion to this one helper keeps the rest of the proxy free of `any` and `unknown`
- * gymnastics.
+ * and the wire protocol enforces the shape on both sides. Confining this send-forwarding cast to one helper avoids scattering it across every passthrough call
+ * site.
  */
 type ErasedCdpSend = (method: string, params?: unknown) => Promise<unknown>;
 
@@ -199,8 +201,8 @@ export class CdpProxySession {
    */
   private readonly originalEmits = new Map<CDPSession, (event: string | symbol, ...args: unknown[]) => boolean>();
 
-  /* Counter for synthetic sessionIds. Incremented per attach. The string form looks like an opaque token; we prepend a deterministic prefix so cross-referencing
-   * proxy logs against external client logs is easy when debugging.
+  /* Counter for synthetic sessionIds. Incremented per attach. The string form looks like an opaque token; we prepend a deterministic prefix so the synthetic id
+   * is recognizable as ours when reading raw wire traffic during debugging.
    */
   private nextSessionSerial = 1;
 
@@ -237,16 +239,15 @@ export class CdpProxySession {
   /**
    * Initializes the per-connection CDP plumbing: registers the WebSocket lifecycle handlers, subscribes to the browser's disconnect event, opens a browser-level
    * CDPSession, captures the underlying Connection, and subscribes to CDP target events. Any failure during async setup is caught by the WS close handler
-   * (registered first), which fires when `closeWith()` closes the socket and routes cleanup through the same path the happy-path teardown takes. This invariant
-   * - lifecycle handlers wired before any async operation that can fail - is what guarantees the session is torn down (including its disconnect listener)
-   * regardless of where setup aborts. Handler bodies are null-safe so an early message arriving before browserSession is set produces a clean error frame rather
-   * than a crash.
+   * (registered first), which fires when `closeWith()` closes the socket and routes cleanup through the same path the happy-path teardown takes. Wiring the
+   * lifecycle handlers before any async operation that can fail guarantees the session is torn down (including its disconnect listener) regardless of where
+   * setup aborts. Handler bodies are null-safe so an early message arriving before browserSession is set produces a clean error frame rather than a crash.
    */
   async start(): Promise<void> {
 
     /* Wire the WebSocket lifecycle handlers BEFORE any async setup. closeWith() (used by the failure paths below) closes the socket, which fires the close event,
-     * which runs cleanup() - the handler-first ordering is the invariant that guarantees cleanup runs from any failure path, including the browser-disconnect
-     * subscription registered immediately after this.
+     * which runs cleanup() - the handler-first ordering guarantees cleanup runs from any failure path, including the browser-disconnect subscription registered
+     * immediately after this.
      */
     this.ws.on("message", (data) => { void this.handleClientMessage(data); });
     this.ws.on("close", () => { void this.cleanup(); });
@@ -328,7 +329,7 @@ export class CdpProxySession {
       } catch {
 
         // The ws library may throw if the socket is in an intermediate state. The 'close' event still fires from the underlying socket and runs cleanup() via the
-        // handler registered synchronously at the top of start() - that handler-first ordering is the invariant that guarantees cleanup runs from any failure path.
+        // handler registered synchronously at the top of start() - that handler-first ordering guarantees cleanup runs from any failure path.
       }
     }
   }
@@ -744,9 +745,9 @@ export class CdpProxySession {
 
     this.originalEmits.set(session, original);
 
-    // We alias `this` to a closure-captured reference because the patched function below is invoked as a method on the CDPSession (so its own `this` would point
-    // at the session, not this CdpProxySession). Arrow functions cannot be used here either, because the underlying EventEmitter contract expects a function whose
-    // `this` binding can be anything - matching the original emit shape we're replacing.
+    // We alias `this` to a closure-captured reference and use a function expression, matching the shape of the original CDPSession.emit method we are replacing -
+    // a plain method whose own `this` is rebound to whatever it is invoked on (here, the session). Referencing `proxy` instead of `this` inside the body keeps
+    // that distinction explicit at every call site below.
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const proxy = this;
     const patched = function(event: string | symbol, ...args: unknown[]): boolean {
@@ -835,7 +836,7 @@ export class CdpProxySession {
   async cleanup(): Promise<void> {
 
     // Unsubscribe from browser disconnect first so a disconnect arriving mid-cleanup cannot drive a second closeWith() against an already-closing WS. The
-    // sequencing is conservative - the close handler is idempotent - but unsubscribing here keeps the lifecycle ledger clean.
+    // sequencing is conservative - closeWith is safe to call again on an already-closing socket - but unsubscribing here keeps the lifecycle ledger clean.
     if(this.onBrowserDisconnect) {
 
       this.browser.off("disconnected", this.onBrowserDisconnect);
@@ -946,6 +947,9 @@ export function setupCdpEndpoint(app: Express): void {
       const session = await getDiscoverySession(browser);
       const targets = await sendCdp(session, "Target.getTargets", {}) as Protocol.Target.GetTargetsResponse;
 
+      // The page/<id> suffix below matches Chrome's own /json convention, but it is decorative here: the upgrade handler only checks the /cdp/devtools/ prefix,
+      // so connecting to any of these URLs (or to browser/prismcast) yields the same browser-level CdpProxySession with the full Target domain multiplexed over
+      // one WebSocket, not a session scoped to that individual page the way native Chrome's per-target debugging URLs are.
       const list = targets.targetInfos.map((info) => ({
 
         description: "",
@@ -985,6 +989,9 @@ export function attachCdpUpgradeHandler(server: HttpServer): void {
 
   server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer): void => {
 
+    // Only the /cdp/devtools/ prefix is checked below; the suffix (browser/<id> or page/<id>, taken from the URLs handed out by the discovery endpoints above)
+    // is never parsed further. Every accepted connection gets the same Target-domain-multiplexed CdpProxySession bound to the browser target, so a page/<id>
+    // URL is not scoped to that individual page the way native Chrome's per-target debugging port URLs are.
     const url = req.url ?? "";
 
     if(!url.startsWith("/cdp/devtools/")) {
@@ -1020,6 +1027,8 @@ export function attachCdpUpgradeHandler(server: HttpServer): void {
 
     wss.handleUpgrade(req, socket, head, (ws) => {
 
+      // Every WS connection accepted above - regardless of whether it arrived via a browser/<id> or page/<id> suffix - gets its own CdpProxySession bound to
+      // the browser target; the Target domain synthesized inside that session handles per-target routing, so no per-page scoping happens at this boundary.
       const proxySession = new CdpProxySession(ws, browser);
 
       void proxySession.start();

@@ -139,12 +139,12 @@ function verifyFoxManifest(url: string, channelSelector: string): Nullable<strin
 }
 
 /**
- * Resolves a Fox category selector to a concrete per-user call sign. Today the only category is "FOXD2C" - the title shared by every Fox-owned local affiliate
- * Fox.com surfaces in the user's market. Resolution consults discovery: if discovery has cached results, we read the first FOXD2C-tagged entry (the entry whose
- * affiliate field is populated, set only for FOXD2C entries during discovery). If the cache is empty, we run discovery in-line on the already-loaded page; the
- * resolver is invoked from selectChannel() after navigation, so the guide grid is rendered or about to render. Returns null when no FOXD2C affiliate is present,
- * which happens before the grid hydrates or when the user is not authenticated; the resolution layer treats null as "could not resolve" and falls through to a
- * best-effort match with the original category selector.
+ * Resolves one of the provider's declared category selectors (see FOX_CATEGORY_SELECTORS) to a concrete per-user call sign; FOXD2C is the title shared by
+ * every Fox-owned local affiliate Fox.com surfaces in the user's market. Resolution consults discovery: if discovery has cached results, we read the first
+ * FOXD2C-tagged entry (the entry whose affiliate field is populated, set only for FOXD2C entries during discovery). If the cache is empty, we run discovery
+ * in-line on the already-loaded page; the resolver is invoked from selectChannel() after navigation, so the guide grid is rendered or about to render.
+ * Returns a CategoryResolutionFailure with a user-facing reason when no FOXD2C affiliate is present, which happens before the grid hydrates or when the user
+ * is not authenticated; the resolution layer relays the reason and falls through to a best-effort match with the original category selector.
  *
  * For users in markets with multiple FOXD2C affiliates (e.g., Chicago has both WFLD and WPWRDT - Fox-owned Fox and CW O&O), discovery returns them in DOM order
  * because the in-line walk preserves it and the post-walk alphabetical sort is stable for name ties (every FOXD2C entry has name="FOXD2C"). The first entry is
@@ -152,7 +152,7 @@ function verifyFoxManifest(url: string, channelSelector: string): Nullable<strin
  * persists the resolved selector - the override is the same delta a user-set selector produces.
  * @param selector - The category selector value being resolved (one of the entries in foxProvider.categoryResolution.selectors).
  * @param page - The active Fox.com page. Used to run discovery in-line when the cache is empty.
- * @returns The resolution containing the user's call sign, or null when resolution cannot be performed.
+ * @returns CategoryResolutionSuccess with the resolved call sign, or CategoryResolutionFailure with a user-facing reason when resolution cannot be performed.
  */
 async function resolveFoxCategorySelector(selector: string, page: Page): Promise<CategoryResolution> {
 

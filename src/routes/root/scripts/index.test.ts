@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.test.ts: Smoke tests for the scripts barrel re-export. The module re-exports four script generators (channels, config, shared, status). The tests
+ * index.test.ts: Smoke tests for the scripts barrel re-export. The module re-exports every script generator defined in this directory. The tests
  * confirm that every documented export resolves to a callable function and that calling each function returns a non-empty <script>...</script> string. This
  * catches a barrel regression where a re-export name drifts or the underlying export is removed without updating index.ts.
  */

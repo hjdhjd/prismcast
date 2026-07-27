@@ -693,7 +693,7 @@ export interface OffsetTrackResult {
  * @param trackOffsets - Map from track_ID to the constant offset (in timescale units) to add to Chrome's original tfdt. Entries may be absent for tracks whose
  * offsets have not been initialized yet - the caller initializes them lazily from the returned originalTfdt values.
  * @returns Map from track_ID to { originalTfdt, duration }. The caller uses originalTfdt for lazy offset initialization and duration for EXTINF and "next expected"
- * tracking. Each entry corresponds to one traf box in the moof.
+ * tracking. Each entry corresponds to a traf box whose tfhd was successfully parsed; a traf with a malformed or missing tfhd produces no entry.
  */
 export function offsetMoofTimestamps(moofData: Buffer, trackOffsets: Map<number, bigint>): Map<number, OffsetTrackResult> {
 
@@ -826,7 +826,7 @@ export interface MoovTrackInfo {
  * - hdlr (FullBox): [0-3] size, [4-7] "hdlr", [8] version, [9-11] flags, [12-15] pre_defined, [16-19] handler_type (4 ASCII chars).
  *
  * @param moovData - The complete moov box buffer including its 8-byte header.
- * @returns Map from track_ID to track info. Only includes tracks where both timescale and handler type were successfully extracted.
+ * @returns Map from track_ID to track info. Only includes tracks where the track ID, timescale, and handler type were all successfully extracted.
  */
 export function parseMoovTrackInfo(moovData: Buffer): Map<number, MoovTrackInfo> {
 
@@ -847,7 +847,7 @@ export function parseMoovTrackInfo(moovData: Buffer): Map<number, MoovTrackInfo>
     let handlerType: Nullable<string> = null;
 
     // Walk the trak's child boxes to find tkhd (track header) and mdia (media container). The spec mandates tkhd before mdia, so trackId is available before we
-    // need it, but we don't depend on ordering - all three fields are extracted independently and combined after iteration.
+    // need it, but we don't depend on ordering - each field is extracted independently and combined after iteration.
     iterateChildBoxes(trakData, (childType, childData, childOffset, childSize) => {
 
       if(childType === "tkhd") {
@@ -903,7 +903,7 @@ export function parseMoovTrackInfo(moovData: Buffer): Map<number, MoovTrackInfo>
       }
     });
 
-    // Store the track if all three fields were successfully extracted. TypeScript's control flow analysis cannot track mutations made inside the iterateChildBoxes
+    // Store the track only if every extracted field was successfully found. TypeScript's control flow analysis cannot track mutations made inside the iterateChildBoxes
     // callbacks, so these variables appear "always null" to the linter despite being set at runtime.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if((trackId !== null) && (timescale !== null) && (timescale > 0) && (handlerType !== null)) {

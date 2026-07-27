@@ -14,15 +14,17 @@ import { LOG } from "../../../../utils/index.ts";
 import { PREDEFINED_TAGS } from "../../../../channels/index.ts";
 import { route } from "../http/handler.ts";
 
-// Pattern for valid tag names: must start and end with alphanumeric, may contain letters, numbers, spaces, and hyphens in between. Enforced on create and rename.
+// Pattern for valid tag names: must start and end with alphanumeric, may contain letters, numbers, spaces, and hyphens in between. Enforced by validateTagName,
+// the single source of truth for tag-name rules.
 const TAG_NAME_PATTERN = /^[a-zA-Z0-9]([a-zA-Z0-9 -]*[a-zA-Z0-9])?$/;
 
-// Maximum tag name length, enforced on create and rename.
+// Maximum tag name length, enforced by validateTagName, the single source of truth for tag-name rules. Keep this in sync with the maxlength attribute on the
+// tag-manager input in table.ts, which duplicates this value as a literal.
 const TAG_NAME_MAX_LENGTH = 30;
 
 /**
  * Validates a submitted tag name against the project's tag-name rules (required, length cap, character pattern). Returns an error message on failure or
- * undefined when the name passes. Used by both the create and rename endpoints so the rules live in exactly one place.
+ * undefined when the name passes. Used by every endpoint that accepts a user-supplied tag name, so the rules live in exactly one place.
  * @param tag - The tag name to validate. Caller is expected to have already trimmed whitespace.
  * @returns The user-facing validation error, or undefined when valid.
  */

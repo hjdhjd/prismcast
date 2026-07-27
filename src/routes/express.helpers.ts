@@ -46,8 +46,9 @@ export interface InvokeResult {
 
 /**
  * The stub Express app surface. `app` satisfies the methods used by route registrations (delete/get/patch/post/put). `calls` is a flat list of every
- * registration recorded in order, useful for shape-of-wiring assertions. `routes` is the same list with the handler reference included. `invoke(method, path,
- * req)` runs the captured handler for the matching route against a synthetic res that records statusCode and JSON body.
+ * registration recorded in order, useful for shape-of-wiring assertions. `routes` mirrors `calls` but only includes registrations whose last argument
+ * resolved to a function, with the handler reference attached. `invoke(method, path, req)` runs the captured handler for the matching route against a
+ * synthetic res that records statusCode and JSON body.
  */
 export interface ExpressStub {
 
@@ -170,7 +171,8 @@ export interface MakeReqResResult {
 /**
  * Builds a synthetic Express req/res pair for direct-handler tests. The req carries body/params/query/headers/ip/protocol/get/socket wired from the input; the
  * res exposes mock.fn-based spies for the Response surface enumerated in MakeReqResResult. status() returns the same res so res.status(400).json({...}) chains
- * correctly. The req's get(name) lookup is case-insensitive (matching Express semantics for header retrieval).
+ * correctly. The req's get(name) lookup lowercases the queried name before matching, but the headers object's keys are compared as given, so callers must
+ * supply header keys already in lowercase for the lookup to fully match Express semantics.
  *
  * This is the single source of truth for "fake an Express req/res in a unit test." Tests that only need the request part (e.g., tests of route-detection logic
  * that read req.protocol or req.headers) destructure { req }; tests that need handler-response inspection destructure { req, res, json, status, send,
@@ -192,8 +194,9 @@ export function makeReqRes(input: MakeReqResInput = {}): MakeReqResResult {
   const write = mock.fn((): boolean => true);
 
   // status() returns res so handlers can chain res.status(N).json({...}); the remaining spies return undefined, including sendStatus, which callers invoke as a
-  // terminal res.sendStatus(N) that needs no return value. We declare status after res so its body can close over res by name, and the direct "as Response" cast on
-  // res is safe because the spy call shapes match Response's method signatures.
+  // terminal res.sendStatus(N) that needs no return value. We declare status after res so its body can close over res by name. The direct "as Response" cast
+  // on res is a deliberate escape hatch: most spies return undefined instead of chaining, and only status() reconstructs the res.status(N).json(...) chain
+  // tests actually rely on.
   const res = { headersSent: false } as Response;
   const status = mock.fn((): Response => res);
 

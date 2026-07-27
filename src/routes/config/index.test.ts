@@ -175,16 +175,16 @@ describe("scheduleServerRestart", () => {
     /* Note: we cannot deterministically inject an active stream count without coupling to streaming/registry internals or mocking modules. The active-
      * streams branch is exercised functionally elsewhere; here we lock the no-streams branch shape and document that the deferred branch follows the
      * same return-value contract: deferred=true, willRestart=true, activeStreams=N>0, message includes the stream count. The synchronous return shape
-     * for the no-streams case is the load-bearing assertion - active-streams formatting is straightforward String concatenation.
+     * for the no-streams case is the assertion this test actually verifies - active-streams formatting is straightforward String concatenation.
      */
     mock.timers.enable({ apis: ["setTimeout"] });
     process.env["PRISMCAST_SERVICE"] = "1";
 
     const result = scheduleServerRestart("for unit test");
 
-    // Lock that the result is one of the three documented shapes (manual / immediate / deferred). We have already verified manual and immediate; this
-    // exact shape verifies the immediate branch's return contract a second time, which is itself the load-bearing invariant for callers branching on
-    // result.deferred.
+    // Lock that the result matches RestartResult's shape regardless of which branch produced it. We have already verified the manual and immediate
+    // branches directly; this exact shape verifies the immediate branch's return contract a second time, which is the guarantee callers rely on when
+    // branching on result.deferred.
     assert.equal(typeof result.activeStreams, "number");
     assert.equal(typeof result.deferred, "boolean");
     assert.equal(typeof result.message, "string");
@@ -194,8 +194,8 @@ describe("scheduleServerRestart", () => {
   test("schedules a setTimeout with delay >= 500ms when running as a service with no active streams", () => {
 
     /* Direct assertion on the contract: setTimeout was invoked exactly once, and its delay argument was at least 500ms. We spy on globalThis.setTimeout
-     * with a no-op stub so the callback never fires (which would otherwise call process.exit). The previous assert.ok(true) shape would have passed even if
-     * a regression caused scheduleServerRestart to skip the setTimeout entirely; the introspection below catches that mode.
+     * with a no-op stub so the callback never fires (which would otherwise call process.exit). A bare assert.ok(true) here would pass even if a
+     * regression caused scheduleServerRestart to skip the setTimeout entirely; the introspection below catches that mode.
      */
     process.env["PRISMCAST_SERVICE"] = "1";
 
@@ -402,7 +402,7 @@ describe("barrel re-exports", () => {
 
   test("re-exports the channels, settings, and services helpers as functions", async () => {
 
-    /* The barrel re-exports are load-bearing for external consumers. We import them through the index module to verify they resolve to function
+    /* External consumers depend on these barrel re-exports. We import them through the index module to verify they resolve to function
      * references rather than undefined. A removal or rename in any of the source modules would surface as undefined here.
      */
     const mod = await import("./index.ts");

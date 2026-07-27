@@ -271,8 +271,8 @@ function buildYttvDiscoveredChannels(): DiscoveredChannel[] {
 
 /**
  * Populates the unified channel cache from raw guide channel data. For each channel, builds a DiscoveredChannel with affiliate detection and pairs it with the
- * full watch URL. Detects affiliates via two mechanisms: (1) prefix+digit pattern constrained to known broadcast networks (e.g., "NBC 5" -> affiliate of "NBC"),
- * and (2) CHANNEL_ALTERNATES entries for affiliates that use different names entirely (e.g., "WGN" -> affiliate of "CW"). Shared by youtubeGridStrategy
+ * full watch URL. Detects affiliates via the following mechanisms: a prefix+digit pattern constrained to known broadcast networks (e.g., "NBC 5" -> affiliate
+ * of "NBC"), and CHANNEL_ALTERNATES entries for affiliates that use different names entirely (e.g., "WGN" -> affiliate of "CW"). Shared by youtubeGridStrategy
  * (tuning-time population) and discoverYttvChannels (discovery endpoint).
  * @param rawChannels - Array of channel names and watch paths from discoverGuideChannels().
  */

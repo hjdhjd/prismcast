@@ -132,6 +132,8 @@ async function readHboChannelRail(page: Page): Promise<HboRailResult> {
 
   try {
 
+    // This second wait only needs to catch the lazy-loaded tile content populating after the scroll above; the rail section itself already exists, so a
+    // short, fixed five-second budget is sufficient here, unlike CONFIG.streaming.videoTimeout used above for the section's initial appearance.
     await page.waitForSelector(HBO_RAIL_SELECTOR + " a", { timeout: 5000 });
   } catch {
 

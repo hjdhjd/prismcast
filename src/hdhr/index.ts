@@ -81,6 +81,8 @@ function createHttpSurface(): HttpSurface {
   // source. Uses the resolved socket address rather than the requested port so an OS-assigned port (port 0 in tests) reports its real value.
   function currentPort(): Nullable<number> {
 
+    // This surface always binds a TCP host:port pair, never a Unix domain socket or named pipe, so server.address()
+    // cannot return its string form here, and the AddressInfo cast is safe by construction.
     return server ? ((server.address() as AddressInfo | null)?.port ?? null) : null;
   }
 
@@ -329,8 +331,9 @@ export async function startHdhrServer(): Promise<void> {
 
 /**
  * Stops the HDHomeRun emulation surfaces and waits for the underlying sockets to fully release. Awaiting close completion matters when the caller intends to
- * immediately rebind on the same port - skipping the await leaves a TIME_WAIT window during which a fresh bind would race against EADDRINUSE. Idempotent and
- * reusable: safe to call when nothing is running, and a later startHdhrServer rebinds cleanly.
+ * immediately rebind on the same port - skipping the await races the still in-flight async close, since the old listening socket may not yet have released
+ * the port, risking EADDRINUSE on the fresh bind. Safe to call more than once: a second call when nothing is running succeeds as a no-op, and a later
+ * startHdhrServer rebinds cleanly.
  */
 export async function stopHdhrServer(): Promise<void> {
 

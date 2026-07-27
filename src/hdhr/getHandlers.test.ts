@@ -7,7 +7,7 @@
  *
  *   2. /tuner&lt;N&gt;/* keys resolve to per-slot formatted strings. Active slots produce channel-bound output; idle slots produce the documented "none" forms.
  *
- *   3. Unknown keys (including out-of-range tuner indices) produce the canonical HDHR error string.
+ *   3. Unknown system or sub-keys produce "ERROR: unknown getset variable"; an out-of-range tuner index produces the distinct "ERROR: unknown tuner".
  */
 import { HDHR_COPYRIGHT, HDHR_HW_MODEL, HDHR_MODEL } from "./identity.ts";
 import { describe, test } from "node:test";
@@ -96,7 +96,8 @@ describe("resolveGet - per-tuner keys for an active slot", () => {
     const result = resolveGet("/tuner0/status", ctx);
 
     // Match the structural shape first so the narrowed branch below is type-safe; then assert the value contents via regex so the ordering or padding of the
-    // key=value pairs can evolve without breaking the test. The load-bearing claim is "all fields present with their expected values for an active stream".
+    // key=value pairs can evolve without breaking the test. The claim this test protects is that all fields are present with their expected values for an
+    // active stream.
     assert.equal(result.kind, "value");
     assert.match((result as { value: string }).value, /ch=auto:1000/);
     assert.match((result as { value: string }).value, /lock=8vsb/);

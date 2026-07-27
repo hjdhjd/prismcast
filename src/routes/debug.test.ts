@@ -199,7 +199,7 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
 
   test("every row in the pane contains exactly one input, one label, and one description span", async () => {
 
-    // Structural invariant: the row template emits a 1:1:1:1 shape - one wrapper div, one checkbox, one label, one description span - for every variant. This
+    // Structural rule: the row template emits a 1:1:1:1 shape - one wrapper div, one checkbox, one label, one description span - for every variant. This
     // is what lets the four-track grid place every cell into the same column on every row. If the renderer ever drifts (e.g., header rows stop emitting an
     // empty desc span), the counts diverge and this test fails before the visual misalignment can ship.
     const res = await fetch(urlFor("/debug"));
@@ -247,9 +247,9 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
 
   test("CSS owns the four-track grid on .debug-section and rows inherit via subgrid", async () => {
 
-    // The load-bearing CSS: the section is the grid container that declares the column tracks (named for self-documentation), and every .debug-row inherits
-    // those tracks via "grid-template-columns: subgrid". This is the single source of truth for column geometry; if either side is missing the layout falls
-    // back to per-row "auto" sizing and descriptions drift across variants.
+    // The CSS the layout depends on: the section is the grid container that declares the column tracks (named for self-documentation), and every .debug-row
+    // inherits those tracks via "grid-template-columns: subgrid". This is the single source of truth for column geometry; if either side is missing the
+    // layout falls back to per-row "auto" sizing and descriptions drift across variants.
     const res = await fetch(urlFor("/debug"));
     const body = await res.text();
 

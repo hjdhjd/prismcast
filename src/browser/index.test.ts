@@ -367,7 +367,7 @@ describe("buildLaunchOptions", () => {
 
   test("excludes Puppeteer default args that would interfere with streaming (extensions, automation flag, mute)", () => {
 
-    // The ignoreDefaultArgs list must include the four critical entries. Locks the documented choices.
+    // The ignoreDefaultArgs list must include the three critical entries. Locks the documented choices.
     const ignored = buildLaunchOptions().ignoreDefaultArgs ?? [];
 
     assert.ok(Array.isArray(ignored), "ignoreDefaultArgs is an array");
@@ -440,7 +440,7 @@ describe("emitCurrentSystemStatus", () => {
 
 describe("ensureDataDirectory legacy-artifact purge", () => {
 
-  test("removes a pre-existing chrome.pid file (legacy artifact from PrismCast <= 1.10.3)", async () => {
+  test("removes a pre-existing chrome.pid file (legacy artifact from PrismCast < 1.10.3)", async () => {
 
     // Simulate an upgraded install: the user has a stale chrome.pid file from a previous version. We create one in the tempDataDir, run ensureDataDirectory,
     // and assert the file is gone. This is the masterclass test for "don't litter on upgrade" - the purge happens transparently as part of normal startup.

@@ -119,9 +119,9 @@ function onSupervisorStateChange(next: BrowserLifecycle, previous: BrowserLifecy
 /* The capture-readiness probe is the capability tier of the launch gate: a real getStream against a throwaway page on the instance being launched - the authoritative
  * "can this browser actually capture?" predicate that must run at every (re)launch, not only boot. It lives in streaming/setup.ts (which
  * owns getStream and the unrecoverable stale-mutex process.exit precedent) and is injected here via setCaptureProbe, because setup.ts already depends on this module:
- * injecting the function rather than importing it keeps the dependency one-directional and breaks the cycle, mirroring the browserAccessors seam between login.ts and
- * index.ts. The probe must also take the local instance as a parameter rather than re-entering getCurrentBrowser, since launchReadyBrowser IS the in-flight launch -
- * re-entering acquire() would join its own pending promise and deadlock.
+ * injecting the function rather than importing it keeps the dependency one-directional and breaks the cycle, mirroring the browserAccessors setter/getter
+ * injection pattern between login.ts and index.ts. The probe must also take the local instance as a parameter rather than re-entering getCurrentBrowser, since
+ * launchReadyBrowser IS the in-flight launch - re-entering acquire() would join its own pending promise and deadlock.
  */
 type CaptureProbe = (browser: Browser) => Promise<void>;
 
@@ -436,9 +436,8 @@ function syncSleep(ms: number): void {
  * rely on an in-memory flag; the parent-child relationship in the OS process table IS the ownership proof, which means this function is safe to call from any
  * code path, including from a rejected-duplicate startup's exit handler.
  *
- * Why ownership matters. A duplicate PrismCast that the instance guard rejects must NOT signal Chrome that belongs to the legitimate holder. With PID-based
- * cleanup the only defense was an in-memory ownsChromeCleanup flag set at startup. With process-table discovery, the OS itself tells us who owns what: a Chrome
- * whose ppid is a live unrelated PID belongs to that parent, not to us.
+ * Why ownership matters. A duplicate PrismCast that the instance guard rejects must NOT signal Chrome that belongs to the legitimate holder. Process-table
+ * discovery lets the OS itself tell us who owns what: a Chrome whose ppid is a live unrelated PID belongs to that parent, not to us.
  * @param processes - The current process table snapshot.
  * @param profileDir - The Chrome user-data-dir to match against.
  * @param ownPid - The current process's PID (anything whose parent is us is ours to kill).
@@ -648,8 +647,9 @@ export function getExecutablePath(): string {
 }
 
 /* Chrome extension ID for puppeteer-stream's bundled capture extension. This is the deterministic ID Chrome assigns based on the extension's public key, mirrored
- * from their dist at node_modules/puppeteer-stream/dist/PuppeteerStream.js (the extensionId constant). We use it below in --allowlisted-extension-id to work around
- * the broken activeTab grant path introduced in puppeteer-stream 3.0.22...see the "--allowlisted-extension-id" entry in buildLaunchOptions for the full rationale.
+ * from their dist at node_modules/puppeteer-stream/dist/PuppeteerStream.js (the extensionId constant). We pass it below via --allowlisted-extension-id as a
+ * defensive duplicate of the flag puppeteer-stream's own launch() call already re-adds; see the "--allowlisted-extension-id" entry in buildLaunchOptions for
+ * the full rationale.
  */
 const PUPPETEER_STREAM_EXTENSION_ID = "jjndjgheafjngoipoacpjgeicjeomjli";
 
@@ -671,11 +671,12 @@ export function buildLaunchOptions(): LaunchOptions {
      * --allow-running-insecure-content: Some streaming sites serve mixed HTTP/HTTPS content. Without this flag, the browser blocks HTTP resources on HTTPS
      *   pages, which can break video players that load some assets over HTTP.
      *
-     * --allowlisted-extension-id=<extension-id>: Restores Chrome's global allowlist for puppeteer-stream's capture extension. puppeteer-stream 3.0.22 stopped
-     *   injecting this flag in favor of granting activeTab via a synthetic Cmd/Ctrl+Shift+Y keystroke, but CDP-synthesized keystrokes do not satisfy
-     *   chrome.commands under automation (the renderer sees the event but the browser-process accelerator dispatcher does not), so the new flow fails to grant
-     *   activeTab and capture is denied at the API level (see github.com/Flam3rboy/puppeteer-stream/issues/206). Re-emitting the flag ourselves bypasses the
-     *   broken activeTab path. Remove this entry and the PUPPETEER_STREAM_EXTENSION_ID constant when issue #206 closes with a real fix.
+     * --allowlisted-extension-id=<extension-id>: Restores Chrome's global allowlist for puppeteer-stream's capture extension. puppeteer-stream's own launch()
+     *   call already re-adds this exact flag (see the addToArgs call for extensionId in node_modules/puppeteer-stream/dist/PuppeteerStream.js), so this entry
+     *   is a defensive duplicate: if a future puppeteer-stream release drops the flag again in favor of granting activeTab via a synthetic keystroke,
+     *   CDP-synthesized keystrokes do not satisfy chrome.commands under automation (the renderer sees the event but the browser-process accelerator dispatcher
+     *   does not), so capture would be denied at the API level (see github.com/Flam3rboy/puppeteer-stream/issues/206) without this fallback in place. Confirm
+     *   whether this duplicate is still warranted whenever the pinned puppeteer-stream version changes.
      *
      * --autoplay-policy=no-user-gesture-required: Allows video and audio to play without requiring a user click first. Essential for automated streaming
      *   since we cannot simulate genuine user interaction for autoplay policy purposes.
@@ -780,9 +781,11 @@ export function buildLaunchOptions(): LaunchOptions {
  */
 async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
 
-  // When running as a packaged executable (process.pkg is set by the pkg bundler), we need to replace the extension paths. The puppeteer-stream library adds
-  // --load-extension and --disable-extensions-except arguments pointing to node_modules, but these paths don't exist in the packaged executable. We replace
-  // them with paths to our extracted extension files.
+  // When running as a packaged executable (process.pkg is set by the pkg bundler), we need to replace the extension paths. puppeteer-stream points
+  // opts.enableExtensions at its own node_modules-relative extension directory, which puppeteer-core installs via a CDP browser.installExtension() call after
+  // Chrome starts, rather than via --load-extension/--disable-extensions-except CLI flags - so that path still resolves inside node_modules, which does not
+  // exist at that location in the packaged executable. We route around it with Chrome's own native unpacked-extension flags, pointing them at our extracted
+  // extension files instead.
   if(process.pkg) {
 
     const extensionPath = getExtensionDir(CONFIG);
@@ -827,11 +830,13 @@ function formatGpuSuffix(gpu: GpuCapabilities): string {
 }
 
 /**
- * Detects the maximum supported viewport dimensions based on the user's display. This function measures the available screen space and subtracts browser chrome to
- * determine the largest viewport we can use for video capture.
+ * Detects the maximum supported viewport dimensions based on the user's display, and probes GPU hardware-encoding capabilities. The viewport half measures the
+ * available screen space and subtracts browser chrome to determine the largest viewport we can use for video capture; the GPU half queries CDP
+ * SystemInfo.getInfo for renderer identity and H.264/HEVC/AV1 hardware encoding support, falling back to a MediaRecorder capability probe where the CDP data
+ * is incomplete.
  *
- * The detection uses a temporary page (or existing page if available) to evaluate screen dimensions via JavaScript. The result is cached in the display module for
- * use by the preset system when determining effective viewport.
+ * The detection uses a temporary page (or existing page if available) to evaluate screen dimensions and GPU capabilities via JavaScript and CDP. Both results
+ * are cached in the display module for use by the preset system when determining effective viewport and capture codec.
  * @param browser - The browser instance to use for detection.
  */
 async function detectDisplayDimensions(browser: Browser): Promise<void> {
@@ -1097,7 +1102,7 @@ function relinquishBrowserReadiness(streamTerminationReason: string): void {
   }
 
   // Terminate every active stream using the authoritative terminateStream for consistent cleanup. Kept even during graceful shutdown as a defensive measure -
-  // terminateStream() is idempotent, so if streams were already terminated by the caller, this harmlessly iterates an empty array.
+  // terminateStream() is safe to call more than once, so if streams were already terminated by the caller, this harmlessly iterates an empty array.
   for(const streamInfo of getAllStreams()) {
 
     terminateStream(streamInfo.id, streamInfo.info.storeKey, streamTerminationReason);
@@ -1215,9 +1220,9 @@ async function launchReadyBrowser(): Promise<Browser> {
     // it exercises the exact getStream path that hangs when the extension is unregistered. A probe failure throws, so the supervisor counts the launch failure and the
     // browser is never published; the unrecoverable stale-mutex case exits the process from inside the probe, since a Chrome restart cannot fix a leaked module mutex.
     //
-    // If the probe is not wired (the seam left unset by a refactor - impossible in the normal import order, which always wires it before any launch), we reject the
-    // launch rather than publish a handshake-only browser: serving an unverified browser would be the "proceed and hope" path this design eliminates. The supervisor
-    // counts the rejected launch and, on repetition, degrades loudly.
+    // If the probe is not wired (the injection point left unset by a refactor - impossible in the normal import order, which always wires it before any launch),
+    // we reject the launch rather than publish a handshake-only browser: serving an unverified browser would be the "proceed and hope" path this design
+    // eliminates. The supervisor counts the rejected launch and, on repetition, degrades loudly.
     if(!captureProbe) {
 
       throw new Error("The capture-readiness probe is not wired; refusing to publish a browser whose capture capability was not verified.");

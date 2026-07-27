@@ -241,7 +241,7 @@ describe("login icon tri-state rendering", () => {
 
   test("renders the needs-sign-in state (health-failed, actionable title) when the domain is flagged", () => {
 
-    /* Discrimination pin for the needsLogin branch in generateChannelRowHtml's login icon block: the scenario seeds a needsLogin entry for abc.com, so the
+    /* Regression pin for the needsLogin branch in generateChannelRowHtml's login icon block: the scenario seeds a needsLogin entry for abc.com, so the
      * rendering enters the needsLogin arm - the appended health-failed class and the sign-in title are the mutations under test. The title must lead with the
      * click action (the icon IS the remedy) and carry the detection timestamp.
      */
@@ -352,7 +352,7 @@ describe("generateTagManagerBody", () => {
 describe("getTagCounts (via buildChannelTablePatch tagCounts)", () => {
 
   /* getTagCounts is not exported, so we exercise it through its sole consumer - buildChannelTablePatch, which surfaces the result as patch.tagCounts. These
-   * counts drive the Quick Actions tag bulk-toggle tri-states, so the invariants under test are: the tags-column visibility gate, the per-tag enabled +
+   * counts drive the Quick Actions tag bulk-toggle tri-states, so the properties under test are: the tags-column visibility gate, the per-tag enabled +
    * service-available numerator, and the shared enabled + service-available denominator. The predefined channel definitions ship with tags, so the seeded
    * vocabulary and listing produce non-trivial counts.
    */

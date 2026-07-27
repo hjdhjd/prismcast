@@ -61,7 +61,7 @@ export interface ServiceContext {
   // Absolute path to the Node.js executable.
   readonly getNodePath: () => string;
 
-  // The detected platform name (used for unsupported-platform error messages).
+  // The detected platform name; used in unsupported-platform error messages and in the status report's Platform: line.
   readonly getPlatform: () => Platform;
 
   // Reads the configured server port from user config or defaults.
@@ -80,8 +80,8 @@ export interface ServiceContext {
   readonly stdout: (line: string) => void;
 }
 
-/* These handlers implement the `prismcast service` subcommands for installing, uninstalling, and checking the status of PrismCast as a system service. Each handler
- * prints its output through the context's stdout/stderr writers and returns an exit code; the dispatcher returns to the CLI bootstrap which calls process.exit.
+/* These handlers implement the `prismcast service` subcommands for managing PrismCast as a system service. Each handler prints its output through the context's
+ * stdout/stderr writers and returns an exit code; the dispatcher returns to the CLI bootstrap which calls process.exit.
  */
 
 /**
@@ -153,7 +153,6 @@ export async function handleInstall(force: boolean, ctx: ServiceContext = create
     return 1;
   }
 
-  // Check if already installed.
   const isInstalled = await generator.isInstalled();
 
   if(isInstalled && !force) {
@@ -254,7 +253,6 @@ export async function handleUninstall(ctx: ServiceContext = createDefaultService
     return 1;
   }
 
-  // Check if installed.
   const isInstalled = await generator.isInstalled();
 
   if(!isInstalled) {
@@ -306,6 +304,9 @@ async function restartService(ctx: ServiceContext, generator: ServiceGenerator, 
   const existingPaths = ctx.getServicePaths();
   const currentNodePath = ctx.getNodePath();
   const currentEntryPoint = ctx.getEntryPoint();
+
+  // The second comparison accesses existingPaths.entryPoint without optional chaining; this is safe because the first comparison's optional chaining already
+  // evaluates to false whenever existingPaths is null, short-circuiting the && before the non-optional access is reached.
   const pathsMatch = (existingPaths?.nodePath === currentNodePath) && (existingPaths.entryPoint === currentEntryPoint);
 
   // Regenerate the service file if paths have changed or couldn't be extracted.
@@ -389,7 +390,6 @@ export async function handleStart(ctx: ServiceContext = createDefaultServiceCont
     return 1;
   }
 
-  // Check if installed.
   const isInstalled = await generator.isInstalled();
 
   if(!isInstalled) {
@@ -400,7 +400,6 @@ export async function handleStart(ctx: ServiceContext = createDefaultServiceCont
     return 1;
   }
 
-  // Check if already running.
   const isRunning = await generator.isRunning();
 
   if(isRunning) {
@@ -430,7 +429,6 @@ export async function handleStop(ctx: ServiceContext = createDefaultServiceConte
     return 1;
   }
 
-  // Check if installed.
   const isInstalled = await generator.isInstalled();
 
   if(!isInstalled) {
@@ -441,8 +439,7 @@ export async function handleStop(ctx: ServiceContext = createDefaultServiceConte
   }
 
   // Always attempt to stop the service regardless of whether isRunning() reports it as running. On launchd, a service can be in a "loaded but not running" state
-  // (e.g., after a crash) where isRunning() returns false but the stale definition remains loaded. Skipping the stop in that case prevents launchctl unload from
-  // clearing the loaded state, which causes subsequent start attempts to reuse the cached (potentially stale) definition.
+  // (e.g., after a crash) where isRunning() returns false but the stale definition remains loaded, and only an explicit stop() clears it via launchctl unload.
   ctx.stdout("Stopping " + SERVICE_NAME + " service...");
 
   try {
@@ -479,7 +476,6 @@ export async function handleRestart(ctx: ServiceContext = createDefaultServiceCo
     return 1;
   }
 
-  // Check if installed.
   const isInstalled = await generator.isInstalled();
 
   if(!isInstalled) {
@@ -546,7 +542,6 @@ export async function handleStatus(ctx: ServiceContext = createDefaultServiceCon
     printStalePathWarning(ctx);
   }
 
-  // If the service is running, fetch and display active streams.
   if(isRunning) {
 
     const port = await ctx.getServerPort();

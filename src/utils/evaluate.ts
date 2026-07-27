@@ -7,7 +7,7 @@ import { addAbortListener } from "node:events";
 import { getStreamId } from "./streamContext.ts";
 import { raceWithTimeout } from "./delay.ts";
 
-/* This module provides a wrapper around Puppeteer's page.evaluate() and frame.evaluate() that adds two critical safety mechanisms:
+/* This module provides a wrapper around Puppeteer's page.evaluate() and frame.evaluate() that adds critical safety mechanisms:
  *
  * 1. Abort signal: When a stream is terminated, its AbortController is triggered, immediately rejecting all pending evaluate calls for that stream. This prevents zombie
  *    CDP calls from hanging for 180 seconds (Puppeteer's default protocolTimeout) when the browser becomes unresponsive.

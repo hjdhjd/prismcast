@@ -82,8 +82,8 @@ export interface ChannelSelectionConfig {
  * in the page; some auto-mute videos and fight attempts to unmute them. The profile system captures these behavioral differences as configuration rather than
  * code, making it easy to add support for new sites by defining their characteristics.
  *
- * Profiles support inheritance via the "extends" field, allowing common patterns to be defined once and reused. For example, many NBC Universal properties share
- * the same player implementation, so they extend a common "nbcUniversal" base profile.
+ * Profiles support inheritance via the "extends" field, allowing common patterns to be defined once and reused. For example, the "brightcove" profile in
+ * config/sites.ts extends the "fullscreenApi" base profile and only overrides the flags Brightcove players need on top of it.
  */
 
 /**
@@ -122,8 +122,10 @@ export interface SiteProfile {
   clickToPlay?: boolean;
 
   // CSS selector for an intermittent modal or overlay to dismiss after page load. Some sites (e.g., Paramount+) occasionally display a "Watch Live" or "Continue
-  // Watching" prompt that blocks video playback. When set, a background poll checks for this element during the first few seconds of the video wait - an immediate
-  // check followed by periodic rechecks. If found, the element is clicked to dismiss it. The poll is fire-and-forget and never blocks the video wait.
+  // Watching" prompt that blocks video playback. When set, a background poll checks for this element - an immediate check followed by periodic rechecks - and
+  // clicks it if found. The poll runs once per navigated phase (channel discovery, precaching, static capture, tune setup, and the video wait), since
+  // browser/consent.ts's PHASE_POLICY enables dismissSelector handling uniformly across every phase rather than only the video wait. The poll is fire-and-forget
+  // and never blocks navigation.
   dismissSelector?: Nullable<string>;
 
   // Human-readable description of the profile for documentation purposes. This field is stripped during profile resolution and not included in the resolved
@@ -260,8 +262,9 @@ export interface ProfileResolutionResult {
 export interface DomainConfig {
 
   // CSS selector for an intermittent modal or overlay to dismiss after page load. Some sites (e.g., Paramount+) occasionally display a "Watch Live" or "Continue
-  // Watching" prompt that blocks video playback. When set, the system checks for this element immediately after navigation and clicks it if present, with a parallel
-  // poll during early video wait as a safety net. Omit for sites without intermittent modals.
+  // Watching" prompt that blocks video playback. When set, a background poll checks for this element - an immediate check followed by periodic rechecks - and
+  // clicks it if found. The poll runs once per navigated phase (channel discovery, precaching, static capture, tune setup, and the video wait) via
+  // browser/consent.ts's startOverlayHandling. Omit for sites without intermittent modals.
   dismissSelector?: string;
 
   // Optional URL to a service logo or icon. When specified, tried first before the domain-derived Apple touch icon and favicon fallbacks in the service filter

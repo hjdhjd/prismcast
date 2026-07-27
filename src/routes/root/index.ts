@@ -13,14 +13,16 @@ import { generateLandingPageStyles } from "./styles.ts";
 import { resolveBaseUrl } from "../playlist.ts";
 import { sendSuccess } from "../config/http/envelope.ts";
 
-/* The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface with six sections:
+/* The landing page provides operators with all the information they need to integrate with Channels DVR. It features a tabbed interface covering:
  *
- * 1. Overview - Introduction to PrismCast and Quick Start instructions
+ * 1. Overview - what PrismCast is, video quality expectations, quick start instructions, Plex integration, tuning speed, channel authentication,
+ *    working with channels, and system requirements
  * 2. Channels - Channel management (enable/disable, edit, service selection) plus a Custom Profiles subtab
  * 3. Logs - Real-time log viewer for troubleshooting
- * 4. Configuration - Server settings and advanced tuning options, with a Backup subtab (subtabs)
+ * 4. Configuration - Server settings and advanced tuning options, with a Backup subtab
  * 5. API Reference - Documentation for all HTTP endpoints
- * 6. Help - Updating, platform notes, troubleshooting, and known limitations
+ * 6. Help - updating instructions, backup and migration guidance, display and resolution requirements, platform notes, troubleshooting, and known
+ *    limitations
  */
 
 /**

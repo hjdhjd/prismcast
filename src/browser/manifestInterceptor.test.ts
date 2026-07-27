@@ -402,8 +402,8 @@ describe("installManifestInterceptor", () => {
 
   test("the using keyword triggers disposal even when the scope exits via thrown exception", async () => {
 
-    // Exception-safety contract: TC39 ERM guarantees disposal on the throw path. This is the load-bearing reason to use Symbol.dispose at all - otherwise an
-    // explicit dispose() call inside a finally block would suffice.
+    // Exception-safety contract: TC39 ERM guarantees disposal on the throw path, which is why Symbol.dispose is used here instead of an explicit dispose()
+    // call inside a finally block - without that guarantee, the finally-block approach would be required instead.
     let capturedPromise!: Promise<Nullable<ManifestInterceptionResult>>;
     let capturedObserver!: ControlledObserver;
 

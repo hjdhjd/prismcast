@@ -2,7 +2,7 @@
  *
  * index.test.ts: Unit tests for the landing page route handler. The module exports a single setup function (setupRootEndpoint) that registers three Express
  * routes plus internal HTML generators for the page header, version display, and changelog modal. We attach the setup to a real Express app on an OS-assigned
- * port and exercise the routes via HTTP, then assert structural invariants on the rendered HTML body and the JSON envelopes returned by the version endpoints.
+ * port and exercise the routes via HTTP, then assert the rendered HTML body and the JSON envelopes returned by the version endpoints have the expected shape.
  */
 import type { AddressInfo, Server } from "node:net";
 import { after, before, describe, test } from "node:test";
@@ -80,8 +80,9 @@ describe("setupRootEndpoint", () => {
       rmSync(sharedTempDir, { force: true, recursive: true });
     }
 
-    // Drain background-server handles (puppeteer-stream's WebSocketServer, pulled in transitively via routes/playlist.ts -> ... -> browser/index.ts) now that
-    // our own Express server has been closed above. Without this drain the test runner would hang on subprocess exit.
+    // Drain background-server handles (puppeteer-stream's WebSocketServer, pulled in transitively via routes/root/content.ts -> routes/config/index.ts ->
+    // browser/index.ts's closeBrowser import) now that our own Express server has been closed above. Without this drain the test runner would hang on
+    // subprocess exit.
     await closePuppeteerStreamWss();
   });
 
@@ -120,7 +121,7 @@ describe("setupRootEndpoint", () => {
 
   test("includes all six tab buttons for the landing page", async () => {
 
-    // The six tabs are: overview, channels, logs, config, api, help. generateTabButton wraps these with role=tab. We confirm each tab name appears as either a
+    // Every tab in the landing page's tabbed interface is wrapped by generateTabButton with role=tab. We confirm each tab name below appears as either a
     // data attribute or an id reference in the tab bar markup.
     const body = await (await fetch(urlFor("/"))).text();
 

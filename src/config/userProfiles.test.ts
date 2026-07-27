@@ -474,7 +474,7 @@ describe("validateImportedProfiles", () => {
 
   test("a domain referencing a profile from the same import batch resolves to that profile", () => {
 
-    /* The cross-reference invariant: the import builds an availableProfiles set that includes builtin profiles + profiles validated earlier in this batch +
+    /* The cross-reference rule: the import builds an availableProfiles set that includes builtin profiles + profiles validated earlier in this batch +
      * existing user profiles. A domain mapping that references a profile validated within the SAME batch must resolve cleanly without "non-existent profile"
      * errors. Pins that the in-batch resolution actually fires (a regression that built availableProfiles only from builtins would fail here).
      */
@@ -544,7 +544,7 @@ describe("validateImportedProfiles field-type guards", () => {
   test("skips a single profile that fails validateProfile while collecting every valid sibling", () => {
 
     /* One profile failing validateProfile must not discard the whole import: the validator continues past the bad entry and still collects the valid siblings.
-     * The existing single-sibling test pins that one good entry survives one bad entry; this strengthens the invariant to two good siblings so a regression that
+     * The existing single-sibling test pins that one good entry survives one bad entry; this strengthens the guarantee to two good siblings so a regression that
      * kept only the first valid entry (or aborted the loop on the first error) surfaces here.
      */
     const result = validateImportedProfiles({

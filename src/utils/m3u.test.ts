@@ -1,8 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * m3u.test.ts: Unit tests for the M3U parsing primitives in m3u.ts. parseM3U is the bulk of the surface area; the tests cover happy-path multi-channel parsing,
- * the documented attribute-extraction priorities (tvc-guide-stationid > tvg-id; tvg-name > comma suffix), and the error-reporting edges (missing URL, missing
- * name). generateChannelKey is pure and exercised across the documented examples plus boundary inputs.
+ * m3u.test.ts: Unit tests for the M3U parsing and attribute-escaping primitives in m3u.ts. parseM3U is the bulk of the surface area; the tests cover happy-path
+ * multi-channel parsing, the documented attribute-extraction priorities (tvc-guide-stationid > tvg-id; tvg-name > comma suffix), and the error-reporting edges (missing
+ * URL, missing name). generateChannelKey is pure and exercised across the documented examples plus boundary inputs. escapeM3uAttribute is exercised against the empty
+ * string and plain-text passthrough, backslash and double-quote escaping individually and combined (including escape-then-unescape round-trip), CR/LF-to-space
+ * replacement (single and repeated), and non-ASCII passthrough.
  */
 import { describe, test } from "node:test";
 import { escapeM3uAttribute, generateChannelKey, parseM3U } from "./m3u.ts";

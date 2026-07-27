@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * icons.test.ts: Unit tests for the SVG icon constants in icons.ts. Each export is a string literal carrying a complete <svg> element. The tests lock the
- * structural invariants documented in the module header (14x14 dimensions, viewBox 16x16, currentColor stroke), enforce that every exported name resolves to
+ * structural properties documented in the module header (14x14 dimensions, viewBox 16x16, currentColor stroke), enforce that every exported name resolves to
  * an actual SVG, and pin the well-formed structure of each icon's outer wrapper so an accidental string truncation or mutation surfaces as a test failure.
  */
 import * as icons from "./icons.ts";
@@ -34,8 +34,8 @@ describe("icons module exports", () => {
 
   test("exports every expected icon constant", () => {
 
-    // Boundary: locks the canonical list of icons. New additions must be reflected here so contributors notice if they need to update consumers (CSS, sprite
-    // sheets, documentation) that depend on the exhaustive list.
+    // Boundary: locks the canonical list of icons. New additions must be reflected here so contributors notice if they need to update consumers (the channel
+    // table and service-profile HTML generators that embed these constants directly) that depend on the exhaustive list.
     for(const name of EXPECTED_ICON_NAMES) {
 
       const value = (icons as unknown as Record<string, string>)[name];
