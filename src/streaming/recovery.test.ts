@@ -4,9 +4,11 @@
  * formatIssueType, getIssueCategory, and isCaptureInfrastructureError. Metrics tracking lives in recovery.metrics.test.ts; circuit-breaker primitives live in
  * recovery.circuitBreaker.test.ts.
  */
+import { CAPTURE_PROBE_TIMEOUT_MESSAGE, STREAM_INIT_TIMEOUT_MESSAGE } from "./setup.ts";
 import { RECOVERY_METHODS, classifyNativeSegmentHealth, computeNextRecoveryLevel, deriveStreamHealth, formatIssueType, getIssueCategory, getIssueDescription,
   getRecoveryMethod, isCaptureInfrastructureError, shouldTriggerRecovery } from "./recovery.ts";
 import { describe, test } from "node:test";
+import { CaptureTurnTimeoutError } from "./captureLock.ts";
 import type { VideoState } from "../types/index.ts";
 import assert from "node:assert/strict";
 
@@ -211,6 +213,18 @@ describe("isCaptureInfrastructureError", () => {
     // The narrower "Cannot capture a tab with an active stream" stale-mutex case triggers a process exit at its own call sites; it is still a
     // capture-infrastructure error here, so the two predicates are layered rather than mutually exclusive.
     assert.equal(isCaptureInfrastructureError(new Error("Cannot capture a tab with an active stream")), true);
+  });
+
+  test("the three production capture-timeout messages are exact and classify as capture-infrastructure errors", () => {
+
+    // Pin the actual production constants (not restated literals) so a message change that would silently break the "timed out" classification is caught here. The
+    // turn-timeout message lives on its error class in captureLock.ts; the stream-init and probe messages live on their setup.ts constants.
+    assert.equal(new CaptureTurnTimeoutError().message, "Capture queue wait timed out.");
+    assert.equal(STREAM_INIT_TIMEOUT_MESSAGE, "Stream initialization timed out.");
+    assert.equal(CAPTURE_PROBE_TIMEOUT_MESSAGE, "Capture probe timed out.");
+    assert.equal(isCaptureInfrastructureError(new CaptureTurnTimeoutError().message), true);
+    assert.equal(isCaptureInfrastructureError(STREAM_INIT_TIMEOUT_MESSAGE), true);
+    assert.equal(isCaptureInfrastructureError(CAPTURE_PROBE_TIMEOUT_MESSAGE), true);
   });
 });
 

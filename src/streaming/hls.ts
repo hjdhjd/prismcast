@@ -781,6 +781,7 @@ function createTabReplacementHandler(
       captureResult = await createPageWithCapture({
 
         comment: metadataComment,
+        numericStreamId,
         onFFmpegError: (error) => {
 
           LOG.error("FFmpeg error during tab replacement recovery: %s.", formatError(error));
