@@ -1458,6 +1458,12 @@ export function monitorPlaybackHealth(
 
       markStreamDiscontinuity();
 
+      // Arm the shared recovery grace window unconditionally, mirroring the proactive-reload sibling. This is the one navigation path that would otherwise leave it
+      // unarmed, letting the post-reload settle-in feed the general stall ladder and fire a colliding second recovery a couple of ticks later. Unconditional because
+      // even a failed reload has a settle window that must not read as a fresh stall. This is the shared recoveryState.graceUntil, distinct from the
+      // resolutionState.graceEnd cooldown set just below.
+      setRecoveryGracePeriod(3);
+
       resolutionState.consecutiveDegradedReadings = 0;
       resolutionState.recoveryAttempt = 1;
       resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
@@ -1466,6 +1472,14 @@ export function monitorPlaybackHealth(
 
         currentContext = recoveryResult.newContext;
         lastPageNavigationTime = Date.now();
+
+        // Reset the general-recovery state a successful reload made stale, composed for this site. Deliberately NOT resetResolutionState() (which the proactive-reload
+        // sibling calls): that zeroes the recoveryAttempt ratchet set to 1 just above, collapsing the two-step resolution ladder into an endless step-1 loop. And
+        // deliberately WITH resetEscalationState() (which the sibling omits): the sibling's caller guarantees a zero escalation level, but this path can run mid-cooldown
+        // with a stale general-ladder level, and every ungated navigation sibling clears it.
+        resetRecoveryCounters();
+        resetSegmentMonitoringState();
+        resetEscalationState();
       } else {
 
         LOG.warn("Resolution recovery via page reload unsuccessful.");

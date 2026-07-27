@@ -1030,12 +1030,13 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
         const trackResults = offsetMoofTimestamps(box.data, state.trackOffsets);
 
-        // Lazy offset initialization: compute offsets for all newly seen tracks before any corrective re-write. This two-pass approach is necessary because
-        // offsetMoofTimestamps processes ALL trafs in the moof - if we re-called after each individual track's initialization, already-offset tracks would get
-        // their offset applied a second time. By computing all offsets first, a single re-call applies them all atomically. This is safe because on the first
-        // moof of a segmenter all tracks are uninitialized, so the first call writes all tracks with offset 0 (no-op) and the re-call applies all offsets to
-        // Chrome's original values. Chrome's MediaRecorder declares all tracks in the moov at stream start and tab replacement creates a fresh segmenter, so a
-        // new track appearing mid-stream in a multi-track moof alongside already-initialized tracks cannot occur.
+        // Two-pass offset handling. The first call above applied every already-known track's stored offset in place, leaving any track first seen in this moof at
+        // Chrome's original tfdt (an absent trackId is a 0n no-op write). This loop computes and stores each newly seen track's offset and records it in newOffsets -
+        // the offsets finalized this moof, and only those. The corrective call below applies exactly newOffsets, so a track the first call already offset stays
+        // untouched (absent from newOffsets, a 0n no-op) while a track initialized here is offset exactly once. No track's offset can be applied twice regardless of
+        // how tracks stagger their first trafs across moofs.
+        const newOffsets = new Map<number, bigint>();
+
         let needsRewrite = false;
 
         for(const [ trackId, result ] of trackResults) {
@@ -1058,6 +1059,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
             state.trackOffsets.set(trackId, offset);
             state.trackOffsetsInitialized.add(trackId);
+            newOffsets.set(trackId, offset);
 
             if(offset !== 0n) {
 
@@ -1069,11 +1071,12 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           }
         }
 
-        // The first call wrote uninitialized tracks with offset 0 (pure pass-through), so the buffer still contains Chrome's original tfdt values for those
-        // tracks. Now that all offsets are stored, a single re-call applies them correctly without double-offsetting any track.
+        // Corrective rewrite, scoped to the tracks initialized this moof. Those tracks still hold Chrome's original tfdt (the first call left them at 0n), so this
+        // single re-call with newOffsets applies each of their offsets exactly once. Already-known tracks are absent from newOffsets and pass through as 0n no-op
+        // writes, so they cannot be offset a second time. Skipped entirely when no newly initialized track carries a nonzero offset.
         if(needsRewrite) {
 
-          offsetMoofTimestamps(box.data, state.trackOffsets);
+          offsetMoofTimestamps(box.data, newOffsets);
         }
 
         // Check whether this moof contains a traf for the video track. The trackResults map contains an entry for every traf in the moof, keyed by trackId.

@@ -234,6 +234,29 @@ describe("offsetMoofTimestamps", () => {
     assert.equal(reread.get(1)?.originalTfdt, 1_500n, "tfdt was rewritten in place");
   });
 
+  test("re-applies the offset on a second call with the same map (stateless per-call addition)", () => {
+
+    // The primitive reads the buffer's CURRENT tfdt on every call and adds the mapped offset unconditionally, so two calls with the same nonzero map double the
+    // applied offset. This is the property the fMP4 segmenter's corrective rewrite must respect: it scopes the second call to only the tracks the first call left
+    // unoffset, so no track is ever handed a nonzero offset twice.
+    const tfhd = makeTfhd({ trackId: 1 });
+    const tfdt = makeTfdt(1000);
+    const trun = makeTrun({ sampleCount: 0 });
+    const moof = makeMoof(makeTraf(tfhd, tfdt, trun));
+
+    const offsets = new Map<number, bigint>();
+
+    offsets.set(1, 500n);
+
+    offsetMoofTimestamps(moof, offsets);
+    offsetMoofTimestamps(moof, offsets);
+
+    // Re-read with an empty map: 1000 + 500 + 500 = 2000, confirming each call added the offset independently.
+    const reread = offsetMoofTimestamps(moof, new Map());
+
+    assert.equal(reread.get(1)?.originalTfdt, 2000n, "two applications of +500 to 1000 yield 2000");
+  });
+
   test("handles a moof with no traf gracefully (returns empty result)", () => {
 
     // Boundary: empty moof - the function walks zero trafs and returns an empty map.
