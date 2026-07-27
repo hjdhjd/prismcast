@@ -68,6 +68,29 @@ async function setupStatusIifeRuntime(): Promise<DisposableDomTestContext> {
   return ctx;
 }
 
+/**
+ * Builds a StreamSummary payload as a JSON literal for embedding in an evaluate() expression. Only the fields the render path reads are populated; the count
+ * assertions care about how many entries reach the state map, not what those entries hold.
+ * @param id - The stream id, which is the key the handlers file the entry under.
+ * @returns The payload serialized as a JSON literal.
+ */
+function streamPayload(id: string): string {
+
+  return JSON.stringify({
+
+    clientCount: 0,
+    clients: [],
+    duration: 0,
+    health: "healthy",
+    id,
+    memoryBytes: 0,
+    pageReloadsInWindow: 0,
+    recoveryAttempts: 0,
+    startTime: new Date().toISOString(),
+    url: "https://example.test/watch"
+  });
+}
+
 describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.toggleStreamPopover invokes the underlying handler without infinite recursion", async () => {
@@ -174,5 +197,67 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
     assert.ok(firstCall, "first recorded call must exist after the length assertion above");
     assert.equal(firstCall.text, "http://example.test/playlist.m3u", "copyToClipboard should receive the textContent of #overview-playlist-url");
     assert.match(firstCall.message, /Playlist URL copied/, "copyToClipboard should receive the operator-facing success message");
+  });
+});
+
+describe("status.ts: the active stream count channel (script-tag runtime)", () => {
+
+  test("window.activeStreamCount reports the live stream count and tracks it as streams come and go", async () => {
+
+    /* config.ts's restart dialog and upgrade flow read the stream count from this channel, and neither can be trusted further than the channel itself. The
+     * sibling assertion in status.test.ts pins that the assignment is emitted; it cannot say what number the getter yields, because it never runs the script.
+     * This test does, and it reaches the count the only honest way: the state object the getter closes over is IIFE-local by design, so the test drives it
+     * through the SSE handlers the IIFE registers rather than reaching around them.
+     *
+     * Tracking matters as much as the initial reading. The channel is a getter over live state rather than a value captured at definition time, so a snapshot
+     * taken once would satisfy the first assertion and still be wrong for every later one. Adding and then removing streams is what separates the two.
+     */
+    await using ctx = await createDomTestContext();
+
+    // The shared setup's EventSource stub discards its listeners. This one records them so the test can deliver events, which is the only route into the IIFE's
+    // private state.
+    ctx.evaluate([
+
+      "window.harnessSseListeners = {};",
+      "window.EventSource = function() {",
+      "  this.addEventListener = function(type, handler) {",
+      "    (window.harnessSseListeners[type] = window.harnessSseListeners[type] || []).push(handler);",
+      "  };",
+      "  this.close = function() {};",
+      "  this.onerror = null;",
+      "};",
+      "window.harnessDispatch = function(type, payload) {",
+      "  var handlers = window.harnessSseListeners[type] || [];",
+      "  for(var i = 0; i < handlers.length; i++) { handlers[i]({ data: JSON.stringify(payload) }); }",
+      "};"
+    ].join("\n"));
+
+    const sharedRan = ctx.runScripts((s) => s.content.includes("window.channelTable"));
+
+    assert.equal(sharedRan.length, 1, "exactly one shared utilities script should run");
+
+    const statusRan = ctx.runScripts((s) => s.content.includes("window.toggleStreamPopover"));
+
+    assert.equal(statusRan.length, 1, "exactly one status script should run");
+
+    assert.equal(ctx.evaluate("typeof window.activeStreamCount"), "number", "the channel must read as a number, which is what config.ts's typeof guard tests");
+    assert.equal(ctx.evaluate("window.activeStreamCount"), 0, "a page with no streams reports zero");
+
+    ctx.evaluate("window.harnessDispatch('streamAdded', " + streamPayload("s1") + ")");
+
+    assert.equal(ctx.evaluate("window.activeStreamCount"), 1, "the count follows the first stream added");
+
+    ctx.evaluate("window.harnessDispatch('streamAdded', " + streamPayload("s2") + ")");
+
+    assert.equal(ctx.evaluate("window.activeStreamCount"), 2, "the count follows a second stream added");
+
+    ctx.evaluate("window.harnessDispatch('streamRemoved', { id: 's1' })");
+
+    assert.equal(ctx.evaluate("window.activeStreamCount"), 1, "the count follows a stream removed");
+
+    ctx.evaluate("window.harnessDispatch('streamRemoved', { id: 's2' })");
+
+    // Reaching zero is the reading that authorizes a deferred restart in config.ts, so it is worth asserting outright rather than inferring from the decrements.
+    assert.equal(ctx.evaluate("window.activeStreamCount"), 0, "the count returns to zero once the last stream is gone");
   });
 });

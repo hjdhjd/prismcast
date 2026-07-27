@@ -118,6 +118,19 @@ describe("generateStatusScript", () => {
     assert.match(script, /externals\.updateRestartDialogStatus\?\.\(\)/);
   });
 
+  test("publishes the active stream count on window as a getter over the live state", () => {
+
+    /* config.ts's restart dialog and upgrade flow both read the active stream count from this channel, and config.ts's script is emitted first on the page, so
+     * the channel has to exist by the time either of them runs. A substring assertion proves the channel is emitted and that it is defined as a getter over
+     * state.streamData rather than a value captured once; it cannot prove the number it yields is right, which is what the dom-runtime consumption pins cover
+     * from the other side.
+     */
+    const script = generateStatusScript();
+
+    assert.match(script, /Object\.defineProperty\(window, ['"]activeStreamCount['"]/);
+    assert.match(script, /get: \(\) => Object\.keys\(state\.streamData\)\.length/);
+  });
+
   test("registers the staleness watchdog at 45-second intervals for SSE reconnect", () => {
 
     // The status SSE has a 45-second staleness check that reconnects if no event arrives within the window. The interval must be present.

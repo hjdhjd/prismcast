@@ -16,9 +16,10 @@
  * window.* utilities like channelTable, showToast, dropdowns, createSubtabSwitcher, copyToClipboard, persistDisplayPrefs), the channelSelectorsByDomain data
  * script (so updateSelectorSuggestions resolves real provider entries instead of degrading to its no-suggestions fallback; the lookup is typeof-guarded, so this
  * block aids fidelity rather than averting a throw), and config.ts itself. status.ts is NOT executed because happy-dom
- * does not implement EventSource; channels.ts is also skipped to keep the namespace under test focused on config.ts. The IIFE-init code in config.ts references
- * `streamData` as a free identifier (status.ts puts it into script-realm scope in production); we seed window.streamData = {} BEFORE running scripts so the
- * lookup resolves cleanly via the global object instead of throwing on the first updateRestartDialogStatus or startUpgrade access.
+ * does not implement EventSource; channels.ts is also skipped to keep the namespace under test focused on config.ts. config.ts's restart dialog and upgrade flow
+ * read the active stream count from `activeStreamCount`, the channel status.ts publishes onto window over its own live stream state, so we seed
+ * window.activeStreamCount BEFORE running scripts to stand in for the absent producer. Both reads are guarded, so the seed establishes a known count rather
+ * than averting a throw, and a test that wants the unavailable case deletes the property instead.
  *
  * Pattern guidance for adding tests:
  *
@@ -37,8 +38,8 @@ import assert from "node:assert/strict";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
 
 /**
- * Shared bootstrap for the suite. Boots a DOM context, seeds streamData (config.ts references it as a free identifier expecting status.ts's script-realm
- * binding), runs shared.ts (config.ts depends on its window.* utilities), the channelSelectorsByDomain data script (so updateSelectorSuggestions resolves real
+ * Shared bootstrap for the suite. Boots a DOM context, seeds the active stream count (config.ts reads it as a free identifier expecting status.ts to have
+ * published it), runs shared.ts (config.ts depends on its window.* utilities), the channelSelectorsByDomain data script (so updateSelectorSuggestions resolves real
  * provider entries instead of degrading to its no-suggestions fallback; the lookup is typeof-guarded, so this block aids fidelity rather than averting a throw),
  * and config.ts. Tests differ only in what they seed and assert post-init.
  */
@@ -46,16 +47,16 @@ async function setupConfigRuntime(options?: DomTestContextOptions): Promise<Disp
 
   const ctx = await createDomTestContext(options);
 
-  // status.ts owns the streamData binding in production; without it, config.ts's restart and upgrade flows throw on Object.keys(streamData). Seeding window-level
-  // before scripts run means the unqualified read inside config.ts's IIFE resolves up the scope chain to the global object. The test exercises restart counts via
-  // its own updates to window.streamData rather than the SSE stream-add handler.
-  ctx.evaluate("window.streamData = {};");
+  // status.ts publishes activeStreamCount in production and is not executed here, so the suite plays that part. Seeding at window level before scripts run means
+  // the unqualified read inside config.ts resolves up the scope chain to the global object exactly as it does on a real page. Tests drive restart and upgrade
+  // counts by re-seeding this value rather than through the SSE stream-add handler.
+  ctx.evaluate("window.activeStreamCount = 0;");
 
   /* Three scripts are loaded together:
    *   1. shared.ts (marker: "window.channelTable = {") - the namespace and utilities config.ts depends on (channelTable, showToast, dropdowns, etc.).
    *   2. The provider data block (marker: "var channelSelectorsByDomain") - planted by generateChannelSelectorData so updateSelectorSuggestions resolves real
-   *      provider entries instead of degrading to its no-suggestions fallback. The lookup is typeof-guarded, so the script does not throw without it - unlike the
-   *      unguarded streamData seed, this block is loaded for behavioral fidelity rather than to avert an exception.
+   *      provider entries instead of degrading to its no-suggestions fallback. The lookup is typeof-guarded, so the script does not throw without it; like the
+   *      stream-count seed above, this block is loaded for behavioral fidelity rather than to avert an exception.
    *   3. config.ts (marker: "window.submitSettingsForm") - the script under test.
    *
    * The runScripts harness executes selected scripts in their source order regardless of predicate iteration, so shared.ts -> provider-data -> config.ts is the
@@ -175,7 +176,7 @@ describe("config.ts: pending toast on page load", () => {
      */
     await using ctx = await createDomTestContext();
 
-    ctx.evaluate("window.streamData = {};");
+    ctx.evaluate("window.activeStreamCount = 0;");
     ctx.evaluate("sessionStorage.setItem('pendingToast', JSON.stringify({ message: 'Server restarted.', type: 'success' }));");
 
     const ran = ctx.runScripts((s) => s.content.includes("window.channelTable = {") ||
@@ -534,17 +535,17 @@ describe("config.ts: window.submitSettingsForm", () => {
     assert.match(toast.textContent, /Configuration saved\./);
   });
 
-  test("success + willRestart + deferred shows the restart dialog with the live stream count from streamData", async () => {
+  test("success + willRestart + deferred shows the restart dialog with the live stream count from the status channel", async () => {
 
     /* The deferred-restart path: streams are active, so the server defers the restart and sends willRestart=true, deferred=true, activeStreams=N. The handler
-     * shows the restart-dialog modal and writes the LIVE stream count (Object.keys(streamData).length) into #restart-stream-count - showPendingRestartDialog
-     * sets the count from activeStreams initially, then immediately calls updateRestartDialogStatus which overwrites it from streamData. So the displayed count
-     * is the script's own view of streams, not the server's snapshot. We seed streamData with two entries so updateRestartDialogStatus does NOT collapse the
+     * shows the restart-dialog modal and writes the LIVE stream count into #restart-stream-count - showPendingRestartDialog sets the count from activeStreams
+     * initially, then immediately calls updateRestartDialogStatus which overwrites it from activeStreamCount. So the displayed count is the client's own view
+     * of streams, not the server's snapshot, and the two deliberately differ here. We seed a count of two so updateRestartDialogStatus does NOT collapse the
      * dialog (count > 0 keeps pendingRestart pending), then assert both visibility and the live count.
      */
     await using ctx = await setupConfigRuntime();
 
-    ctx.evaluate("window.streamData = { s1: { id: 's1' }, s2: { id: 's2' } };");
+    ctx.evaluate("window.activeStreamCount = 2;");
     ctx.evaluate("document.getElementById('settings-form').innerHTML = '';");
     appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
 
@@ -558,7 +559,7 @@ describe("config.ts: window.submitSettingsForm", () => {
 
     assert.equal(getDisplay(ctx, "restart-dialog"), "flex", "restart-dialog must be visible after deferred willRestart");
     assert.equal(ctx.document.getElementById("restart-stream-count")?.textContent, "2",
-      "stream count must mirror Object.keys(streamData).length (the live client-side count)");
+      "stream count must mirror activeStreamCount (the live client-side count), not the server's activeStreams snapshot");
   });
 });
 
@@ -1656,7 +1657,7 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
      */
     await using ctx = await setupConfigRuntime();
 
-    ctx.evaluate("window.streamData = { s1: { id: 's1' }, s2: { id: 's2' } };");
+    ctx.evaluate("window.activeStreamCount = 2;");
     ctx.evaluate("document.getElementById('settings-form').innerHTML = '';");
     appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
 
@@ -1683,7 +1684,7 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
 
     await using ctx = await setupConfigRuntime();
 
-    ctx.evaluate("window.streamData = { s1: { id: 's1' } };");
+    ctx.evaluate("window.activeStreamCount = 1;");
     ctx.evaluate("document.getElementById('settings-form').innerHTML = '';");
     appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
 
@@ -1715,7 +1716,7 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
   test("updateRestartDialogStatus auto-triggers restart when the stream count drops to zero with a pending restart", async () => {
 
     /* The contract: while restart is pending and streams reach 0, updateRestartDialogStatus calls triggerRestart (which POSTs /config/restart-now). We open the
-     * dialog via deferred submit (with one stream so the dialog stays open), zero out window.streamData, then call updateRestartDialogStatus and confirm the
+     * dialog via deferred submit (with one stream so the dialog stays open), drop the published count to zero, then call updateRestartDialogStatus and confirm the
      * POST fires. waitForServerRestart's polling interval may produce additional /health calls; we locate the restart POST among the calls rather than asserting
      * its position.
      */
@@ -1724,7 +1725,7 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
     ctx.evaluate("document.getElementById('settings-form').innerHTML = '';");
     appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
 
-    ctx.evaluate("window.streamData = { s1: { id: 's1' } };");
+    ctx.evaluate("window.activeStreamCount = 1;");
     ctx.evaluate(
       "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({" +
       "  success: true, willRestart: true, deferred: true, activeStreams: 1" +
@@ -1733,9 +1734,9 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
 
-    /* Drop streams to zero and trigger the status update. updateRestartDialogStatus reads streamData via direct identifier resolution to the global object.
+    /* Drop streams to zero and trigger the status update. updateRestartDialogStatus reads activeStreamCount by direct identifier resolution to the global object.
      */
-    ctx.evaluate("window.streamData = {};");
+    ctx.evaluate("window.activeStreamCount = 0;");
     installFetchSpy(ctx, { success: true });
     ctx.evaluate("window.updateRestartDialogStatus()");
     await ctx.flushAsync();
@@ -1746,6 +1747,41 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
     assert.ok(restartCall, "a POST /config/restart-now must fire when transitioning to 0 streams with pending restart");
     assert.equal(restartCall.method, "POST");
     assert.equal(getDisplay(ctx, "restart-dialog"), "none", "the auto-restart path must hide the dialog");
+  });
+
+  test("updateRestartDialogStatus triggers no restart when the stream-count channel is unavailable", async () => {
+
+    /* An absent channel means the count is unknown, and unknown must not read as zero: zero is the condition that fires the restart, so mistaking one for the
+     * other would interrupt live streams. We open the dialog with one stream, remove the channel entirely, and confirm the call is inert - no restart POST, and
+     * the dialog left open with its last displayed count so the operator can answer it manually.
+     */
+    await using ctx = await setupConfigRuntime();
+
+    ctx.evaluate("document.getElementById('settings-form').innerHTML = '';");
+    appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
+
+    ctx.evaluate("window.activeStreamCount = 1;");
+    ctx.evaluate(
+      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({" +
+      "  success: true, willRestart: true, deferred: true, activeStreams: 1" +
+      "}) });"
+    );
+    ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
+    await ctx.flushAsync();
+
+    assert.equal(getDisplay(ctx, "restart-dialog"), "flex", "the dialog must be open before the channel is removed");
+
+    ctx.evaluate("delete window.activeStreamCount;");
+    installFetchSpy(ctx, { success: true });
+    ctx.evaluate("window.updateRestartDialogStatus()");
+    await ctx.flushAsync();
+
+    const calls = ctx.evaluateJson("window.harnessFetchCalls") as CapturedFetchCall[];
+
+    assert.equal(calls.some((c) => c.url === "/config/restart-now"), false, "an unknown count must not fire the restart");
+    assert.equal(getDisplay(ctx, "restart-dialog"), "flex", "the dialog stays open pending a manual decision");
+    assert.equal(ctx.document.getElementById("restart-stream-count")?.textContent, "1",
+      "the last known count stays on screen rather than being overwritten with a guess");
   });
 });
 
@@ -1777,12 +1813,12 @@ describe("config.ts: window.startUpgrade", () => {
 
   test("active streams + cancel confirm aborts the upgrade (no /upgrade POST)", async () => {
 
-    /* When there are active streams, the handler asks confirm() and returns early on cancel. We seed streamData with a fake stream, return upgradeable info, and
-     * confirm() returning false. Only the /upgrade/info GET should appear; no /upgrade POST.
+    /* When there are active streams, the handler asks confirm() and returns early on cancel. We seed a count of one, return upgradeable info, and have confirm()
+     * return false. Only the /upgrade/info GET should appear; no /upgrade POST.
      */
     await using ctx = await setupConfigRuntime();
 
-    ctx.evaluate("window.streamData = { s1: { id: 's1' } };");
+    ctx.evaluate("window.activeStreamCount = 1;");
     ctx.evaluate("window.confirm = () => false;");
     ctx.evaluate(
       "window.harnessFetchCalls = [];" +
@@ -1808,7 +1844,7 @@ describe("config.ts: window.startUpgrade", () => {
      */
     await using ctx = await setupConfigRuntime();
 
-    ctx.evaluate("window.streamData = {};");
+    ctx.evaluate("window.activeStreamCount = 0;");
     ctx.evaluate(
       "window.harnessFetchCalls = [];" +
       "window.fetch = (url, opts) => {" +
@@ -1825,6 +1861,38 @@ describe("config.ts: window.startUpgrade", () => {
 
     assert.equal(calls.length >= 2, true, "must fire at least /upgrade/info and /upgrade");
     assert.equal(calls.some((c) => (c.url === "/upgrade") && (c.method === "POST")), true, "POST /upgrade must fire");
+  });
+
+  test("an unavailable stream-count channel still prompts before upgrading, with a count-free warning", async () => {
+
+    /* The upgrade flow fails toward caution in the opposite direction from the restart dialog: an unknown count must not silently skip the prompt, because that
+     * prompt is the only thing between the click and an interrupted recording. With the channel removed the handler must still ask, and the question it asks
+     * must not claim a number it does not have. Cancelling proves the prompt was reached and honored - only the info GET fires, never the upgrade POST.
+     */
+    await using ctx = await setupConfigRuntime();
+
+    ctx.evaluate("delete window.activeStreamCount;");
+    ctx.evaluate("window.harnessConfirmMessages = []; window.confirm = (m) => { window.harnessConfirmMessages.push(m); return false; };");
+    ctx.evaluate(
+      "window.harnessFetchCalls = [];" +
+      "window.fetch = (url, opts) => {" +
+      "  window.harnessFetchCalls.push({ url, method: (opts && opts.method) || 'GET' });" +
+      "  return Promise.resolve({ ok: true, json: () => Promise.resolve({" +
+      "    upgradeable: true, method: 'npm'" +
+      "  }) });" +
+      "};"
+    );
+    ctx.evaluate("window.startUpgrade()");
+    await ctx.flushAsync();
+
+    const messages = ctx.evaluateJson("window.harnessConfirmMessages") as string[];
+    const calls = ctx.evaluateJson("window.harnessFetchCalls") as { method: string; url: string }[];
+
+    assert.equal(messages.length, 1, "the confirmation must still be asked when the count is unknown");
+    assert.match(messages[0] ?? "", /unavailable/, "the warning must say the count is unavailable rather than name a number");
+    assert.doesNotMatch(messages[0] ?? "", /There are/, "the count-bearing wording belongs only to the known-count case");
+    assert.equal(calls.length, 1, "only the /upgrade/info GET must fire when the prompt is cancelled");
+    assert.equal(calls[0]!.url, "/upgrade/info");
   });
 });
 

@@ -63,6 +63,11 @@ export function generateStatusScript(): string {
     "    systemData: null,",
     "    tableRenderPending: false",
     "  };",
+    // The live count of the streams this script tracks, published for config.ts's restart dialog and upgrade flow. A getter rather than a stored value because
+    // state.streamData changes on every SSE stream event, so anything captured at definition time would be stale by the time either consumer read it. config.ts's
+    // script is emitted ahead of this one on the page, which means the channel does not exist yet while that script is being evaluated; both consumers run from
+    // event handlers long after this IIFE has executed, and each guards its read so an absent channel is handled rather than assumed to mean zero.
+    "  Object.defineProperty(window, 'activeStreamCount', { configurable: true, get: () => Object.keys(state.streamData).length });",
     "  const externals = {",
     "    channelDisplayHtml: channelDisplayHtml,",
     "    channelTable: channelTable,",

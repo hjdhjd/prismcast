@@ -99,9 +99,16 @@ export function generateConfigSubtabScript(): string {
     "    updateRestartDialogStatus();",
     "  }",
 
-    // Update the restart dialog when stream count changes. Exposed on window so the status script's streamRemoved handler can trigger it across script blocks.
+    /* Update the restart dialog when stream count changes. Exposed on window so the status script's streamRemoved handler can trigger it across script blocks.
+     *
+     * The count comes from window.activeStreamCount, the channel the status script publishes over its own live stream state. When that channel is absent -
+     * on a page where the status script never ran, or before it has - we return without acting, leaving #restart-stream-count showing whatever the server-
+     * supplied value last wrote and leaving the dialog open for the operator to answer. Treating an unknown count as zero would fire the restart, and an
+     * unknown count must never authorize a disruptive action; waiting for a manual decision is the safe direction.
+     */
     "  function updateRestartDialogStatus() {",
-    "    const count = Object.keys(streamData).length;",
+    "    if(typeof activeStreamCount === 'undefined') { return; }",
+    "    const count = activeStreamCount;",
     "    document.getElementById('restart-stream-count').textContent = count;",
     "    if((count === 0) && pendingRestart) {",
     "      pendingRestart = false;",
@@ -229,8 +236,13 @@ export function generateConfigSubtabScript(): string {
     "        showToast(msg, 'info', 8000);",
     "        return;",
     "      }",
-    "      const streamCount = Object.keys(streamData).length;",
-    "      if(streamCount > 0) {",
+    // The stream count arrives over window.activeStreamCount, the channel the status script publishes. When it is absent we still ask, with a warning that
+    // names no number, rather than skipping the prompt: an unknown count must never authorize a disruptive action, and this confirmation is the only thing
+    // standing between the click and an interrupted recording.
+    "      const streamCount = (typeof activeStreamCount !== 'undefined') ? activeStreamCount : null;",
+    "      if(streamCount === null) {",
+    "        if(!confirm('The active stream count is unavailable. Upgrading will interrupt any streams that are running. Continue?')) return;",
+    "      } else if(streamCount > 0) {",
     "        if(!confirm('There are ' + streamCount + ' active stream(s). Upgrading will interrupt them. Continue?')) return;",
     "      }",
     "      closeChangelogModal();",
