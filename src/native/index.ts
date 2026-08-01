@@ -47,6 +47,11 @@ const MIN_REFRESH_DELAY = 30000;
 // channels to reject perfectly usable variant URLs - Fox.com tokens have ~57s total lifetime, leaving ~27s at the 30s refresh point.
 const MIN_USABLE_TOKEN_LIFETIME = 5000;
 
+// How many ranked variants a token-refresh probe may consider. A refresh applies its result to a running proxy as URL swaps behind truthiness guards, against an
+// audio topology the proxy fixed when it was constructed, so a refresh that reselected a different variant could leave the stream playing one variant's video
+// against another's audio. Refresh therefore keeps to the single top-ranked variant: walking down to a healthy sibling is a tune-time capability.
+const REFRESH_VARIANT_ATTEMPTS = 1;
+
 // Timeout for awaiting the manifest interception promise after playback init.
 const INTERCEPTION_AWAIT_TIMEOUT = 5000;
 
@@ -477,7 +482,7 @@ export async function refreshNativeManifest(options: {
 
     // Probe the new manifest to get the updated variant URL. The interceptor has already released its observer by the time the promise resolves, so a probe
     // failure here only requires giving up on this refresh attempt - no session bookkeeping to unwind.
-    const refreshedFeed = await probeManifest(newInterception.manifestUrl, channelName);
+    const refreshedFeed = await probeManifest(newInterception.manifestUrl, channelName, { maxVariantAttempts: REFRESH_VARIANT_ATTEMPTS });
 
     if(!refreshedFeed) {
 
@@ -539,7 +544,7 @@ export async function refreshNativeManifest(options: {
 async function tryDirectManifestRefresh(masterUrl: string, channelName: string,
   streamLog: ReturnType<typeof LOG.withStreamId>): Promise<Nullable<MediaFeed>> {
 
-  const mediaFeed = await probeManifest(masterUrl, channelName);
+  const mediaFeed = await probeManifest(masterUrl, channelName, { maxVariantAttempts: REFRESH_VARIANT_ATTEMPTS });
 
   if(!mediaFeed || (mediaFeed.encryption === "drm")) {
 

@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * probe.manifest.test.ts: Unit tests for probeManifest, the master-manifest probe orchestrator in probe.ts. The orchestrator fetches a master manifest, picks the
- * highest-bandwidth variant, fetches the variant manifest, and classifies the encryption type by parsing #EXT-X-KEY tags. This file isolates the orchestrator
+ * probe.manifest.test.ts: Unit tests for probeManifest, the master-manifest probe orchestrator in probe.ts. The orchestrator fetches a master manifest, ranks the
+ * variants by descending bandwidth and takes the first whose manifest fetches, binds the audio rendition to that variant's audio group, and classifies the
+ * encryption type by parsing #EXT-X-KEY tags. This file isolates the orchestrator
  * tests from the cache and resolveUrl tests in probe.test.ts so each file stays under the per-file line guideline. The tests substitute globalThis.fetch with
  * mock.method to feed synthetic master/variant/key responses without ever touching the network.
  */
@@ -392,7 +393,9 @@ describe("probeManifest", () => {
 
   test("returns null audio rendition when #EXT-X-MEDIA:TYPE=AUDIO has no URI (muxed audio)", async () => {
 
-    // Boundary: descriptive-only #EXT-X-MEDIA tags (no URI) indicate muxed audio. The probe must report null, not the URL of a non-existent rendition.
+    // Boundary: descriptive-only #EXT-X-MEDIA tags (no URI) indicate muxed audio. The probe must report null, not the URL of a non-existent rendition. The
+    // fixture's variant declares AUDIO="audio", so this exercises resolveAudioRendition's declared-group-with-no-URI-bearing-rendition tail path; the
+    // no-AUDIO-attribute early return has its own pin in the fallback describe block below.
     const masterUrl = "https://cdn.test/muxed-master.m3u8";
     const videoVariantUrl = "https://cdn.test/muxed-video.m3u8";
 
@@ -684,8 +687,9 @@ describe("probeManifest: uncovered branches", () => {
   test("returns null when a master playlist has a #EXT-X-STREAM-INF but no following variant URL line", async () => {
 
     // Boundary distinct from the "unknown" branch: this body DOES classify as "master" because #EXT-X-STREAM-INF is present, but the line after it is a comment
-    // (#EXT-X-ENDLIST) rather than a variant URL. selectBestVariant finds no bestUrl and returns null, so resolveMasterPlaylist returns null and the probe
-    // surfaces null. The existing "no variant streams" test hits the "unknown" classification branch instead, so this pins the master-with-no-bestUrl path.
+    // (#EXT-X-ENDLIST) rather than a variant URL. selectVariants collects no candidate from that entry and returns an empty list, so resolveMasterPlaylist returns
+    // null and the probe surfaces null. The existing "no variant streams" test hits the "unknown" classification branch instead, so this pins the
+    // master-classified-but-no-candidates path.
     const masterUrl = "https://cdn.test/dangling-stream-inf.m3u8";
 
     makeFetchRouter({
@@ -703,8 +707,9 @@ describe("probeManifest: uncovered branches", () => {
 
   test("ignores an #EXT-X-MEDIA rendition that is not TYPE=AUDIO even when it carries a URI", async () => {
 
-    // parseAudioRendition must only follow TYPE=AUDIO renditions. A TYPE=SUBTITLES rendition with a URI must never become audioVariantUrl - otherwise the proxy
-    // would poll a subtitle playlist as if it were an audio track. We assert audioVariantUrl stays null despite the URI on the subtitle rendition.
+    // resolveAudioRendition must only follow TYPE=AUDIO renditions. A TYPE=SUBTITLES rendition with a URI must never become audioVariantUrl - otherwise the proxy
+    // would poll a subtitle playlist as if it were an audio track. We assert audioVariantUrl stays null despite the URI on the subtitle rendition. This fixture's
+    // variant declares no AUDIO attribute, so the null-group early return is the path it exercises; the TYPE filter inside a matched group has its own test.
     const masterUrl = "https://cdn.test/subs-master.m3u8";
     const videoVariantUrl = "https://cdn.test/subs-video.m3u8";
 
@@ -798,5 +803,458 @@ describe("probeManifest: uncovered branches", () => {
     nowValue = seededAt;
 
     assert.equal(getCachedEncryption("probe-channel"), null, "the stale entry was deleted, not merely compared against the clock");
+  });
+});
+
+describe("probeManifest: variant fallback and audio group binding", () => {
+
+  // Mirrors MAX_VARIANT_FALLBACK_ATTEMPTS in probe.ts (3 attempts). The constant is module-private, so the cap test hardcodes the same bound and declares one more
+  // variant than it allows.
+  const MAX_VARIANT_FALLBACK_ATTEMPTS = 3;
+
+  /* recordFetch wraps a router handler so the test can observe which URLs the walk touched and in what order. Order and count are the only way to tell a ranked,
+   * short-circuiting crawl apart from an unordered or exhaustive one, since several of these fixtures would produce the same feed either way.
+   */
+  function recordFetch(fetched: string[], respond: () => Response): FetchHandler {
+
+    return (url: string): Response => {
+
+      fetched.push(url);
+
+      return respond();
+    };
+  }
+
+  // A minimal, valid, unencrypted media playlist body. Fixtures that only need a variant to answer successfully use this.
+  function mediaBody(): Response {
+
+    return new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 });
+  }
+
+  beforeEach(() => {
+
+    clearProbeCache("probe-channel");
+  });
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("falls back to the next variant when the highest-bandwidth variant fails to fetch", async () => {
+
+    // A master's top variant can be broken while the siblings beneath it are healthy. The 4Mbps variant answers 500 and the 2Mbps one serves a valid media
+    // playlist, so the probe must resolve through the sibling rather than abandoning native streaming on the first failure.
+    const masterUrl = "https://cdn.test/fallback-master.m3u8";
+    const highUrl = "https://cdn.test/fallback-high.m3u8";
+    const lowUrl = "https://cdn.test/fallback-low.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080",
+        "fallback-high.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720",
+        "fallback-low.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [highUrl]: () => new Response("server error", { status: 500 }),
+      [lowUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "the probe resolves through the fallback variant");
+    assert.equal(result.bandwidth, 2000000, "metadata comes from the variant that actually answered");
+    assert.equal(result.resolution, "1280x720", "resolution comes from the fallback variant");
+    assert.equal(result.bestVariantUrl, lowUrl, "the fallback variant's URL becomes the feed URL");
+  });
+
+  test("caps the crawl at the attempt limit and spends it on the top-ranked distinct variants", async () => {
+
+    // The cap bounds the tune-time worst case. Four variants are declared and every fetch fails, so the walk runs to exhaustion: it must stop after the cap, spend
+    // each attempt on a different URL, and spend them on the highest-ranked ones.
+    const masterUrl = "https://cdn.test/cap-master.m3u8";
+    const topUrl = "https://cdn.test/cap-4m.m3u8";
+    const secondUrl = "https://cdn.test/cap-3m.m3u8";
+    const thirdUrl = "https://cdn.test/cap-2m.m3u8";
+    const fourthUrl = "https://cdn.test/cap-1m.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: recordFetch(fetched, () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=1000000",
+        "cap-1m.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+        "cap-4m.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "cap-2m.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=3000000",
+        "cap-3m.m3u8",
+        ""
+      ].join("\n"), { status: 200 })),
+      [topUrl]: recordFetch(fetched, () => new Response("server error", { status: 500 })),
+      [secondUrl]: recordFetch(fetched, () => new Response("server error", { status: 500 })),
+      [thirdUrl]: recordFetch(fetched, () => new Response("server error", { status: 500 })),
+      [fourthUrl]: recordFetch(fetched, () => new Response("server error", { status: 500 }))
+    });
+
+    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "every attempted candidate failed, so the probe surfaces null");
+    assert.equal(fetched.length, 1 + MAX_VARIANT_FALLBACK_ATTEMPTS, "one master fetch plus one fetch for each candidate the cap allows");
+    assert.deepEqual(fetched, [ masterUrl, topUrl, secondUrl, thirdUrl ], "the three highest-bandwidth variants, each tried once, in descending order");
+    assert.ok(!fetched.includes(fourthUrl), "the fourth-ranked variant is never reached");
+  });
+
+  test("selects the first document-order variant when the master advertises no bandwidths", async () => {
+
+    // A master whose variants carry no BANDWIDTH attribute parses entirely as zeroes. The stable descending sort keeps document order, so the first declared
+    // variant leads the walk and answers on its own.
+    const masterUrl = "https://cdn.test/zero-master.m3u8";
+    const firstUrl = "https://cdn.test/zero-first.m3u8";
+    const secondUrl = "https://cdn.test/zero-second.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:RESOLUTION=640x360",
+        "zero-first.m3u8",
+        "#EXT-X-STREAM-INF:RESOLUTION=1280x720",
+        "zero-second.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [firstUrl]: recordFetch(fetched, () => mediaBody()),
+      [secondUrl]: recordFetch(fetched, () => mediaBody())
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "a master with no advertised bandwidth still resolves");
+    assert.equal(result.bestVariantUrl, firstUrl, "the first declared variant wins the all-equal ranking");
+    assert.deepEqual(fetched, [firstUrl], "exactly one variant fetch; the second is never reached");
+  });
+
+  test("binds the audio rendition to the selected variant's group, matched by exact group id", async () => {
+
+    // Renditions belong to the group their variant names. The master declares an unrelated group first, then a near-miss group whose id contains the selected one
+    // as a substring: first-declared-wins lands on "aac-lo", and a substring or startsWith comparison lands on "aac-hi-extra".
+    const masterUrl = "https://cdn.test/group-master.m3u8";
+    const videoUrl = "https://cdn.test/group-video.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac-lo\",NAME=\"English\",URI=\"https://cdn.test/group-lo.m3u8\"",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac-hi-extra\",NAME=\"English\",URI=\"https://cdn.test/group-extra.m3u8\"",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac-hi\",NAME=\"English\",URI=\"https://cdn.test/group-hi.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO=\"aac-hi\"",
+        "group-video.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [videoUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.equal(result?.audioVariantUrl, "https://cdn.test/group-hi.m3u8", "the rendition belonging to the variant's own group is chosen");
+  });
+
+  test("yields null audio for a variant that declares no AUDIO attribute, even when the master declares a rendition", async () => {
+
+    // A variant naming no audio group carries its audio inside its own segments, so a rendition declared for some other variant does not apply to it. The rendition
+    // here carries a real URI, which is precisely what a master-wide audio parse would hand back.
+    const masterUrl = "https://cdn.test/muxed-variant-master.m3u8";
+    const videoUrl = "https://cdn.test/muxed-variant-video.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",URI=\"https://cdn.test/muxed-variant-audio.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "muxed-variant-video.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [videoUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "the probe resolves");
+    assert.equal(result.audioVariantUrl, null, "a variant with no audio group reports muxed audio");
+  });
+
+  test("rebinds audio to the group of the variant the fallback actually selected", async () => {
+
+    // The audio must follow the video that answered, not the master's first declaration and not the last candidate in the list. The top variant fails, so the feed
+    // is built from the middle one and must carry the middle one's group.
+    const masterUrl = "https://cdn.test/rebind-master.m3u8";
+    const topUrl = "https://cdn.test/rebind-top.m3u8";
+    const middleUrl = "https://cdn.test/rebind-middle.m3u8";
+    const bottomUrl = "https://cdn.test/rebind-bottom.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",URI=\"https://cdn.test/rebind-audio-a.m3u8\"",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"b\",NAME=\"English\",URI=\"https://cdn.test/rebind-audio-b.m3u8\"",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"c\",NAME=\"English\",URI=\"https://cdn.test/rebind-audio-c.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=3000000,AUDIO=\"a\"",
+        "rebind-top.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO=\"b\"",
+        "rebind-middle.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=1000000,AUDIO=\"c\"",
+        "rebind-bottom.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [topUrl]: recordFetch(fetched, () => new Response("server error", { status: 500 })),
+      [middleUrl]: recordFetch(fetched, () => mediaBody()),
+      [bottomUrl]: recordFetch(fetched, () => mediaBody())
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "the probe resolves through the middle variant");
+    assert.equal(result.audioVariantUrl, "https://cdn.test/rebind-audio-b.m3u8", "audio comes from the selected variant's group");
+    assert.deepEqual(fetched, [ topUrl, middleUrl ], "the walk stops at the variant that answered");
+  });
+
+  test("prefers the group's DEFAULT=YES rendition over an earlier one", async () => {
+
+    // Within a group the default rendition is the one a player would pick, so declaration order alone must not settle it.
+    const masterUrl = "https://cdn.test/default-master.m3u8";
+    const videoUrl = "https://cdn.test/default-video.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"Commentary\",URI=\"https://cdn.test/default-commentary.m3u8\"",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES,URI=\"https://cdn.test/default-english.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO=\"aac\"",
+        "default-video.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [videoUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.equal(result?.audioVariantUrl, "https://cdn.test/default-english.m3u8", "the default rendition wins over the earlier one");
+  });
+
+  test("stops at the highest-bandwidth variant when it answers, without touching the ones below it", async () => {
+
+    // Both variants are fetchable, so the feed alone cannot show which one the ranking preferred. The fetch record can: a descending walk touches the 4Mbps URL
+    // once and stops, while an ascending or unordered walk reaches for the 2Mbps one and an exhaustive crawl fetches both.
+    const masterUrl = "https://cdn.test/order-master.m3u8";
+    const highUrl = "https://cdn.test/order-high.m3u8";
+    const lowUrl = "https://cdn.test/order-low.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "order-low.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+        "order-high.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [highUrl]: recordFetch(fetched, () => mediaBody()),
+      [lowUrl]: recordFetch(fetched, () => mediaBody())
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "the probe resolves");
+    assert.equal(result.bestVariantUrl, highUrl, "the highest-bandwidth variant is selected");
+    assert.deepEqual(fetched, [highUrl], "exactly one variant fetch, aimed at the highest-bandwidth candidate");
+  });
+
+  test("reads a variant URI only from the line immediately after its STREAM-INF, never further down", async () => {
+
+    // The selection walk mirrors the membership walk: a STREAM-INF followed by a tag has no variant URI at all. A forward-scanner would skip the tag, claim the
+    // bare URI below it as this variant's, and resolve a feed from a URI that belongs to no variant.
+    const masterUrl = "https://cdn.test/orphan-master.m3u8";
+    const orphanUrl = "https://cdn.test/orphan-child.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "#EXT-X-ENDLIST",
+        "orphan-child.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [orphanUrl]: recordFetch(fetched, () => mediaBody())
+    });
+
+    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "a STREAM-INF with no URI line yields no candidate");
+    assert.deepEqual(fetched, [], "the orphan URI a forward-scanner would claim is never fetched");
+  });
+
+  test("keeps the TYPE=AUDIO filter inside a matched group", async () => {
+
+    // Group membership does not make a rendition audio. A subtitle track sharing the variant's group id is declared first, and following it would have the proxy
+    // poll a subtitle playlist as though it were an audio track.
+    const masterUrl = "https://cdn.test/type-master.m3u8";
+    const videoUrl = "https://cdn.test/type-video.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"grp\",NAME=\"English\",URI=\"https://cdn.test/type-subs.m3u8\"",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"grp\",NAME=\"English\",URI=\"https://cdn.test/type-audio.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO=\"grp\"",
+        "type-video.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [videoUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.equal(result?.audioVariantUrl, "https://cdn.test/type-audio.m3u8", "the audio rendition is chosen over the subtitle track in the same group");
+  });
+
+  test("does not let a DEFAULT=YES rendition without a URI end the group walk", async () => {
+
+    // A descriptive default declares which rendition a player should prefer without offering a playlist to poll. Treating the default marker as the end of the
+    // walk would report muxed audio for a group that does carry a playable rendition further down.
+    const masterUrl = "https://cdn.test/descriptive-master.m3u8";
+    const videoUrl = "https://cdn.test/descriptive-video.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"Spanish\",URI=\"https://cdn.test/descriptive-spanish.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO=\"aac\"",
+        "descriptive-video.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [videoUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.equal(result?.audioVariantUrl, "https://cdn.test/descriptive-spanish.m3u8", "the walk continues past a URI-less default to a playable rendition");
+  });
+
+  test("takes the first URI-bearing rendition of the group when none is marked default", async () => {
+
+    // With no default to prefer, the group's declaration order decides, so the remembered candidate must be the first one seen rather than the last.
+    const masterUrl = "https://cdn.test/nodefault-master.m3u8";
+    const videoUrl = "https://cdn.test/nodefault-video.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",URI=\"https://cdn.test/nodefault-english.m3u8\"",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"Spanish\",URI=\"https://cdn.test/nodefault-spanish.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO=\"aac\"",
+        "nodefault-video.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [videoUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.equal(result?.audioVariantUrl, "https://cdn.test/nodefault-english.m3u8", "the first declared rendition of the group is taken");
+  });
+
+  test("reports null audio when the variant names a group the master never declares", async () => {
+
+    // A variant pointing at a group with no renditions is a malformed master. The probe still delivers the video feed, and the audio must be null rather than some
+    // other group's rendition - the proxy would otherwise pair the video with audio belonging to a different variant.
+    const masterUrl = "https://cdn.test/ghost-master.m3u8";
+    const videoUrl = "https://cdn.test/ghost-video.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"real\",NAME=\"English\",URI=\"https://cdn.test/ghost-real.m3u8\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO=\"ghost\"",
+        "ghost-video.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [videoUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "the video feed still resolves");
+    assert.equal(result.audioVariantUrl, null, "an undeclared group yields no audio rather than another group's rendition");
+  });
+
+  test("attempts only the top-ranked variant when the caller pins a single attempt", async () => {
+
+    // The token-refresh path pins one attempt so a refresh cannot reselect a different variant underneath a running proxy. A healthy sibling sits below the broken
+    // top variant, so an ignored or mis-threaded option shows up as a successful probe instead of a null.
+    const masterUrl = "https://cdn.test/pinned-master.m3u8";
+    const topUrl = "https://cdn.test/pinned-top.m3u8";
+    const siblingUrl = "https://cdn.test/pinned-sibling.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+        "pinned-top.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "pinned-sibling.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [topUrl]: recordFetch(fetched, () => new Response("server error", { status: 500 })),
+      [siblingUrl]: recordFetch(fetched, () => mediaBody())
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel", { maxVariantAttempts: 1 });
+
+    assert.equal(result, null, "the pinned probe gives up with the top variant rather than falling back");
+    assert.deepEqual(fetched, [topUrl], "exactly one variant fetch, aimed at the top-ranked candidate");
+  });
+
+  test("drops only the variant whose URI cannot be resolved", async () => {
+
+    // A master can carry a malformed variant reference. Every declared variant is resolved during the walk, not just the one that wins it, so an unguarded resolve
+    // would throw out of the walk and take the whole probe with it. The malformed entry outranks the healthy one, so it is reached first.
+    const masterUrl = "https://cdn.test/malformed-master.m3u8";
+    const healthyUrl = "https://cdn.test/malformed-healthy.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+        "//[",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "malformed-healthy.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [healthyUrl]: () => mediaBody()
+    });
+
+    const result = await probeManifest(masterUrl, "probe-channel");
+
+    assert.ok(result, "the healthy variant still resolves");
+    assert.equal(result.bestVariantUrl, healthyUrl, "the unresolvable variant drops out and the healthy one is selected");
   });
 });

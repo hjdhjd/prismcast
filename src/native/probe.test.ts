@@ -291,7 +291,7 @@ describe("extractChildPlaylistUrls", () => {
 
   test("skips a STREAM-INF whose next line is a tag rather than a URI (single-line walk, not a forward scan)", () => {
 
-    // The walk reads only the line immediately after each STREAM-INF, matching selectBestVariant. A forward-scanner would instead skip past the tag and claim the
+    // The walk reads only the line immediately after each STREAM-INF, matching selectVariants. A forward-scanner would instead skip past the tag and claim the
     // orphan URI two lines down; that orphan belongs to no variant, so it must not appear. The valid variant of the first STREAM-INF proves the walk still works.
     const body = [
       "#EXTM3U",

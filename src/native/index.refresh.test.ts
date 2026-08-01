@@ -542,4 +542,48 @@ describe("refreshNativeManifest", () => {
     assert.equal(hooks.variantUrl, "", "updateVariantUrl was NOT called after the mid-probe stop");
     assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh rescheduled after the mid-probe stop");
   });
+
+  test("does not fall back to a lower variant when the refreshed master's top variant is broken", async () => {
+
+    /* The refresh path pins a single variant attempt. Falling back here would swap the proxy's variant URL to a different rendition of the master while the proxy's
+     * audio topology stays as it was constructed, so the refresh must fail rather than reselect. The master offers a healthy sibling below the broken top variant -
+     * exactly what a leak would land on - and that sibling serves a CLEAR media playlist, so a leak cannot be mistaken for the DRM abort that tryDirectManifestRefresh
+     * performs on its own. The page is closed, so the page-reload strategy short-circuits and the direct-fetch outcome is what the return value reports.
+     */
+    const masterUrl = "https://cdn.test/pin-master.m3u8";
+    const topUrl = "https://cdn.test/pin-top.m3u8";
+    const siblingUrl = "https://cdn.test/pin-sibling.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+        "pin-top.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "pin-sibling.m3u8",
+        ""
+      ].join("\n"), { status: 200 }),
+      [siblingUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 }),
+      [topUrl]: () => new Response("server error", { status: 500 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("pin-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "pin-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "pin-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, false, "the refresh fails rather than reselecting a lower variant");
+    assert.equal(hooks.variantUrl, "", "updateVariantUrl was never called");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh rescheduled");
+  });
 });

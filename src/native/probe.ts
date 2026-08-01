@@ -9,8 +9,9 @@ import { inferMediaCodec } from "./codecInference.ts";
 /* This module probes an intercepted HLS playlist URL and produces a fully described MediaFeed - the canonical input to the native proxy. The HLS spec defines
  * exactly two playlist kinds, and this module normalizes both to the same shape so downstream code does not branch on which kind arrived:
  *
- * - Master (multivariant) playlists declare variant streams via #EXT-X-STREAM-INF and reference media playlist URLs. We select the highest-bandwidth variant,
- *   resolve any separate audio rendition declared via #EXT-X-MEDIA:TYPE=AUDIO, fetch the chosen variant body, and classify its encryption.
+ * - Master (multivariant) playlists declare variant streams via #EXT-X-STREAM-INF and reference media playlist URLs. We rank the variants by descending bandwidth
+ *   and take the first whose body fetches, resolve any separate audio rendition declared via #EXT-X-MEDIA:TYPE=AUDIO for that variant's own audio group, and
+ *   classify the chosen body's encryption.
  * - Media playlists declare segments directly via #EXTINF and #EXT-X-TARGETDURATION. The input URL is itself the media feed; we fetch the body once and
  *   classify its encryption.
  *
@@ -28,6 +29,12 @@ import { inferMediaCodec } from "./codecInference.ts";
 
 // Timeout for individual manifest/key fetches.
 const FETCH_TIMEOUT = 10000;
+
+// How many variants a master-playlist probe tries before giving up. Fallback covers the observed failure shape - a broken top variant with healthy siblings below
+// it - while capping the tune-time worst case at three sequential fetch timeouts. The bound matters because the probe runs inside the preroll bridge window:
+// capture segments are produced only once the native attempt resolves, so an unbounded crawl could outlast the preroll a client is playing while it waits. The
+// refresh path does not consume this cap; it pins its own attempt count through probeManifest's options.
+const MAX_VARIANT_FALLBACK_ATTEMPTS = 3;
 
 /**
  * Encryption classification result from probing an HLS manifest.
@@ -117,7 +124,7 @@ function resolveChildUri(uri: string, masterUrl: string): Nullable<string> {
 
 /**
  * Enumerates every child playlist URI a master manifest declares, resolved to absolute URLs. Two child sources are walked: each #EXT-X-STREAM-INF variant, whose
- * URI is the immediately following non-tag line (the same single-line walk selectBestVariant uses, so membership sees exactly the children variant selection would),
+ * URI is the immediately following non-tag line (the same single-line walk selectVariants uses, so membership sees exactly the children variant selection would),
  * and each #EXT-X-MEDIA rendition of any type that carries a URI attribute (descriptive-only renditions without a URI are skipped). probe is the single home of
  * manifest-format knowledge, so this extraction lives here and feeds the HLS playlist observer's master observations; membership judgment against these children
  * lives in the interceptor's selection policy, not here. Each URI resolves inside a per-entry guard so a single malformed reference skips only that entry and the
@@ -136,7 +143,7 @@ export function extractChildPlaylistUrls(masterBody: string, masterUrl: string):
 
     const line = lines[i]?.trim() ?? "";
 
-    // A variant stream's URI is the next non-tag line, matching selectBestVariant's walk exactly so membership and variant selection agree on the child set.
+    // A variant stream's URI is the next non-tag line, matching the walk in selectVariants exactly so membership and variant selection agree on the child set.
     if(line.startsWith("#EXT-X-STREAM-INF:")) {
 
       const variantLine = lines[i + 1]?.trim() ?? "";
@@ -210,14 +217,14 @@ export function isLiveMediaPlaylist(mediaBody: string): boolean {
  */
 export interface MediaFeed {
 
-  // URL of the audio rendition playlist if the master manifest declares a separate audio track via #EXT-X-MEDIA:TYPE=AUDIO with a URI. Null when audio is muxed into
-  // the video variant (no separate audio rendition).
+  // URL of the audio rendition playlist when the selected variant's audio group declares one via #EXT-X-MEDIA:TYPE=AUDIO with a URI. Null when the variant names
+  // no audio group, meaning its audio is muxed into its own segments, and null when the group it names declares no rendition carrying a URI.
   audioVariantUrl: Nullable<string>;
 
   // Declared bandwidth of the selected variant in bits per second from the #EXT-X-STREAM-INF BANDWIDTH attribute. Zero when the attribute is absent or unparseable.
   bandwidth: number;
 
-  // URL of the highest-bandwidth variant playlist.
+  // URL of the selected variant playlist - the highest-bandwidth variant whose manifest fetch succeeded.
   bestVariantUrl: string;
 
   // Video codec label (e.g., "H264", "HEVC", "AV1"), or null when the CODECS attribute is absent or the codec is unrecognized.
@@ -286,9 +293,19 @@ export function clearProbeCache(channelName: string): void {
  *
  * @param playlistUrl - The HLS playlist URL (master or media; contains auth tokens from the browser's original request).
  * @param channelName - The channel name for cache lookup.
+ * @param options - Probe options.
+ * @param options.maxVariantAttempts - How many ranked variants a master playlist may try. Tune-time callers omit it and take capped descending-bandwidth
+ *                                     fallback. The token-refresh path pins a single attempt: a refresh applies its result to a running proxy as URL swaps
+ *                                     against an audio topology the proxy fixed at construction, so refresh must not reselect.
  * @returns The MediaFeed, or null if probing fails.
  */
-export async function probeManifest(playlistUrl: string, channelName: string): Promise<Nullable<MediaFeed>> {
+export async function probeManifest(playlistUrl: string, channelName: string, options: { maxVariantAttempts?: number } = {}): Promise<Nullable<MediaFeed>> {
+
+  const { maxVariantAttempts = MAX_VARIANT_FALLBACK_ATTEMPTS } = options;
+
+  // Normalize to a floor of one whole attempt. Array.prototype.slice reads a negative count from the end of the list, so an out-of-range value from a caller
+  // would otherwise become a surprising selection rather than a single top-ranked try.
+  const variantAttempts = Math.max(1, Math.trunc(maxVariantAttempts));
 
   // Short-circuit for DRM channels only. The cached DRM classification is stable within the TTL window (services rarely change DRM type), and the caller returns
   // null immediately on DRM without using any URLs. For clear/aes128 channels, we must re-probe to get fresh variant and key URLs with current auth tokens.
@@ -318,7 +335,7 @@ export async function probeManifest(playlistUrl: string, channelName: string): P
     }
 
     const kind = classifyHlsPlaylist(body);
-    const resolved = (kind === "master") ? await resolveMasterPlaylist(body, playlistUrl) :
+    const resolved = (kind === "master") ? await resolveMasterPlaylist(body, playlistUrl, variantAttempts) :
       (kind === "media") ? await resolveMediaPlaylist(body, playlistUrl) :
         null;
 
@@ -382,8 +399,8 @@ async function fetchManifestText(url: string): Promise<Nullable<string>> {
  */
 interface ResolvedMedia {
 
-  // URL of the separate audio rendition playlist when the master declares one via #EXT-X-MEDIA:TYPE=AUDIO. Always null for media-only feeds because audio
-  // renditions are a master-playlist-level concept.
+  // URL of the separate audio rendition playlist when the selected variant's audio group declares one via #EXT-X-MEDIA:TYPE=AUDIO. Always null for media-only
+  // feeds because audio renditions are a master-playlist-level concept.
   audioVariantUrl: Nullable<string>;
 
   // Declared bandwidth in bits per second from the master's BANDWIDTH attribute. Zero for media-only feeds because the playlist itself carries no bandwidth
@@ -406,54 +423,72 @@ interface ResolvedMedia {
 }
 
 /**
- * Resolves a master playlist into a ResolvedMedia by selecting the highest-bandwidth variant, finding the optional separate-audio rendition, and fetching the
- * chosen variant body.
+ * Resolves a master playlist into a ResolvedMedia. The declared variants are walked in descending-bandwidth order, up to maxVariantAttempts candidates, and the
+ * first one whose manifest fetches becomes the feed - so a master whose top variant is broken still yields a native stream through a healthy sibling beneath it.
+ * The audio rendition resolves from the chosen variant's own audio group, which keeps the feed's audio bound to the video it accompanies.
  *
  * @param masterBody - The master manifest text.
  * @param masterUrl - The master manifest URL for resolving relative variant URLs.
+ * @param maxVariantAttempts - How many of the ranked variants to try before giving up.
  * @returns The resolved media feed metadata, or null when the master cannot be resolved.
  */
-async function resolveMasterPlaylist(masterBody: string, masterUrl: string): Promise<Nullable<ResolvedMedia>> {
+async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxVariantAttempts: number): Promise<Nullable<ResolvedMedia>> {
 
-  // Parse variant streams and select the highest bandwidth.
-  const bestVariant = selectBestVariant(masterBody, masterUrl);
+  const variants = selectVariants(masterBody, masterUrl);
 
-  if(!bestVariant) {
+  if(!variants.length) {
 
     LOG.debug("native:probe", "No variant streams found in master manifest.");
 
     return null;
   }
 
-  LOG.debug("native:probe", "Best variant selected: %s.", bestVariant.url.slice(0, 120));
+  const candidates = variants.slice(0, maxVariantAttempts);
 
-  // Check for a separate audio rendition in the master manifest.
-  const audioVariantUrl = parseAudioRendition(masterBody, masterUrl);
+  if(candidates.length < variants.length) {
 
-  if(audioVariantUrl) {
-
-    LOG.debug("native:probe", "Separate audio rendition found: %s.", audioVariantUrl.slice(0, 120));
+    LOG.debug("native:probe", "Attempting the top %s of %s advertised variant(s).", candidates.length, variants.length);
   }
 
-  // Fetch the chosen variant manifest. The variant is what classifyEncryption() will inspect for #EXT-X-KEY tags and what the proxy will poll for segments.
-  const variantBody = await fetchManifestText(bestVariant.url);
+  for(const variant of candidates) {
 
-  if(!variantBody) {
+    LOG.debug("native:probe", "Attempting variant at %s bps: %s.", variant.bandwidth, variant.url.slice(0, 120));
 
-    LOG.debug("native:probe", "Failed to fetch variant manifest for %s.", bestVariant.url);
+    /* Fetch this candidate's manifest. The candidate that answers is what classifyEncryption() inspects for #EXT-X-KEY tags and what the proxy polls for segments.
+     * The fetches run one after another because the ranking IS the selection policy: a lower variant is tried only once the one above it has actually failed, and
+     * a healthy top variant therefore costs exactly one fetch.
+     */
+    // eslint-disable-next-line no-await-in-loop
+    const variantBody = await fetchManifestText(variant.url);
 
-    return null;
+    if(!variantBody) {
+
+      LOG.debug("native:probe", "Failed to fetch variant manifest for %s.", variant.url);
+
+      continue;
+    }
+
+    const audioVariantUrl = resolveAudioRendition(masterBody, masterUrl, variant.audioGroupId);
+
+    if(audioVariantUrl) {
+
+      LOG.debug("native:probe", "Separate audio rendition found: %s.", audioVariantUrl.slice(0, 120));
+    }
+
+    return {
+
+      audioVariantUrl,
+      bandwidth: variant.bandwidth,
+      codec: variant.codec,
+      mediaBody: variantBody,
+      mediaUrl: variant.url,
+      resolution: variant.resolution
+    };
   }
 
-  return {
+  LOG.debug("native:probe", "Every one of the %s attempted variant(s) failed to fetch.", candidates.length);
 
-    audioVariantUrl,
-    bandwidth: bestVariant.bandwidth,
-    codec: bestVariant.codec,
-    mediaBody: variantBody,
-    mediaUrl: bestVariant.url,
-    resolution: bestVariant.resolution
-  };
+  return null;
 }
 
 /**
@@ -482,9 +517,14 @@ async function resolveMediaPlaylist(mediaBody: string, mediaUrl: string): Promis
 }
 
 /**
- * Metadata for the selected variant from the master manifest. Internal to resolveMasterPlaylist().
+ * Metadata for one variant stream declared by a master manifest. Produced by selectVariants() for resolveMasterPlaylist(), which walks the ranked candidates until
+ * one of them fetches.
  */
 interface VariantSelection {
+
+  // The variant's AUDIO attribute value, naming the audio rendition group that carries this variant's audio. Null when the variant declares no AUDIO attribute,
+  // which per RFC 8216 means its audio is muxed into its own segments.
+  audioGroupId: Nullable<string>;
 
   // Declared bandwidth in bits per second from the BANDWIDTH attribute.
   bandwidth: number;
@@ -495,28 +535,25 @@ interface VariantSelection {
   // Video resolution from the RESOLUTION attribute (e.g., "1920x1080"), or null when absent.
   resolution: Nullable<string>;
 
-  // Absolute URL of the selected variant playlist.
+  // Absolute URL of this candidate's variant playlist.
   url: string;
 }
 
 /**
- * Parses #EXT-X-STREAM-INF lines from a master manifest and returns the highest-bandwidth variant with its metadata.
+ * Parses every #EXT-X-STREAM-INF entry in a master manifest and returns the declared variants ranked by descending bandwidth. An entry whose URI line is missing,
+ * or whose URI cannot be resolved against the master URL, drops out of the list so that one malformed declaration costs only itself.
  *
  * @param masterBody - The master manifest content.
  * @param masterUrl - The master manifest URL for resolving relative variant URLs.
- * @returns The selected variant metadata, or null if no variants are found.
+ * @returns The resolvable variants ordered by descending bandwidth, empty when the master declares none.
  */
-function selectBestVariant(masterBody: string, masterUrl: string): Nullable<VariantSelection> {
+function selectVariants(masterBody: string, masterUrl: string): VariantSelection[] {
 
   // Map video codec prefixes from CODECS attribute to human-readable labels. Defined outside the variant iteration loop to avoid per-line allocation.
   const codecPrefixes: Record<string, string> = { "av01": "AV1", "avc1": "H264", "avc3": "H264", "hev1": "HEVC", "hvc1": "HEVC", "vp09": "VP9" };
 
   const lines = masterBody.split("\n");
-  let bestBandwidth = 0;
-  let bestCodec: Nullable<string> = null;
-  let bestResolution: Nullable<string> = null;
-  let bestUrl: Nullable<string> = null;
-  const bandwidths: number[] = [];
+  const variants: VariantSelection[] = [];
 
   for(let i = 0; i < lines.length; i++) {
 
@@ -532,6 +569,9 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
 
     // Parse RESOLUTION attribute (e.g., RESOLUTION=1920x1080).
     const resolution: Nullable<string> = /RESOLUTION=(\d+x\d+)/.exec(line)?.[1] ?? null;
+
+    // Parse the AUDIO attribute, which names the rendition group holding this variant's audio. Its absence means the audio is muxed into the variant's segments.
+    const audioGroupId: Nullable<string> = /AUDIO="([^"]+)"/.exec(line)?.[1] ?? null;
 
     // Parse CODECS attribute and map the video codec prefix to a human-readable label. The CODECS value contains comma-separated codec strings (e.g.,
     // "avc1.640028,mp4a.40.2"). The video codec is identified by its prefix: avc1/avc3 -> H264, hvc1/hev1 -> HEVC, av01 -> AV1, vp09 -> VP9.
@@ -553,26 +593,25 @@ function selectBestVariant(masterBody: string, masterUrl: string): Nullable<Vari
       continue;
     }
 
-    bandwidths.push(bandwidth);
+    // Resolve each candidate inside the per-entry guard, the same way the membership walk does. Because every declared variant is resolved here rather than only
+    // the one that wins, a naked resolveUrl would let a single malformed URI throw the entire probe away through probeManifest's outer catch.
+    const url = resolveChildUri(variantLine, masterUrl);
 
-    if(bandwidth > bestBandwidth) {
+    if(url === null) {
 
-      bestBandwidth = bandwidth;
-      bestCodec = codec;
-      bestResolution = resolution;
-      bestUrl = variantLine;
+      continue;
     }
+
+    variants.push({ audioGroupId, bandwidth, codec, resolution, url });
   }
 
-  LOG.debug("native:probe", "Found %s variant(s) with bandwidths: %s.", bandwidths.length, bandwidths.join(", "));
+  LOG.debug("native:probe", "Found %s variant(s) with bandwidths: %s.", variants.length, variants.map((variant) => variant.bandwidth).join(", "));
 
-  if(!bestUrl) {
+  // Rank by descending bandwidth. Array.prototype.sort is stable, so variants sharing a bandwidth keep their document order - which is what lets a master that
+  // advertises no BANDWIDTH at all, and therefore parses entirely as zeroes, resolve through its first declared variant with no special-case handling.
+  variants.sort((first, second) => second.bandwidth - first.bandwidth);
 
-    return null;
-  }
-
-  // Resolve relative URLs against the master manifest URL.
-  return { bandwidth: bestBandwidth, codec: bestCodec, resolution: bestResolution, url: resolveUrl(bestUrl, masterUrl) };
+  return variants;
 }
 
 /**
@@ -692,14 +731,25 @@ async function testKeyAccessibility(keyUrl: string): Promise<boolean> {
 }
 
 /**
- * Parses the first #EXT-X-MEDIA:TYPE=AUDIO rendition with a URI from a master manifest. Returns the absolute audio variant URL, or null if no separate audio
- * rendition is declared (audio is muxed into the video variant).
+ * Resolves the audio rendition playlist belonging to the selected variant's audio group. RFC 8216 section 4.3.4.2.1 binds a variant to its renditions through the
+ * AUDIO attribute, so the renditions a master declares for other groups say nothing about this variant. Within the named group the first DEFAULT=YES rendition
+ * carrying a URI wins, and the first URI-bearing rendition of the group is the fallback when the group names no default. Null covers two outcomes - a variant
+ * whose audio is muxed by design, and a declared group in which no rendition carries a URI - and the debug log on the second tells them apart in the field.
  *
  * @param masterBody - The master manifest content.
  * @param masterUrl - The master manifest URL for resolving relative URIs.
+ * @param audioGroupId - The selected variant's AUDIO group, or null when the variant declares none.
  * @returns The absolute audio variant URL, or null.
  */
-function parseAudioRendition(masterBody: string, masterUrl: string): Nullable<string> {
+function resolveAudioRendition(masterBody: string, masterUrl: string, audioGroupId: Nullable<string>): Nullable<string> {
+
+  // A variant that names no audio group carries its audio inside its own segments, so no rendition in the master applies to it.
+  if(audioGroupId === null) {
+
+    return null;
+  }
+
+  let candidateUri: Nullable<string> = null;
 
   for(const line of masterBody.split("\n")) {
 
@@ -716,16 +766,38 @@ function parseAudioRendition(masterBody: string, masterUrl: string): Nullable<st
       continue;
     }
 
-    // Extract the URI attribute. Not all #EXT-X-MEDIA:TYPE=AUDIO tags have a URI - some are descriptive-only when audio is muxed into the video variant.
+    // Match the group by its exact value. A substring test would accept a neighboring group whose id merely contains the selected one.
+    if(/GROUP-ID="([^"]+)"/.exec(trimmed)?.[1] !== audioGroupId) {
+
+      continue;
+    }
+
+    // Extract the URI attribute. Not all #EXT-X-MEDIA:TYPE=AUDIO tags have a URI - some are descriptive-only when audio is muxed into the video variant. Such a
+    // tag is skipped even when it is the group's default, so a descriptive default never ends the walk ahead of a sibling that can actually be played.
     const uri = uriAttribute(trimmed);
 
-    if(uri) {
+    if(!uri) {
+
+      continue;
+    }
+
+    // The group's default rendition wins outright; any other is held only until a default turns up.
+    if(trimmed.includes("DEFAULT=YES")) {
 
       return resolveUrl(uri, masterUrl);
     }
+
+    candidateUri ??= uri;
   }
 
-  return null;
+  if(candidateUri === null) {
+
+    LOG.debug("native:probe", "No audio rendition carrying a URI was found in group '%s'.", audioGroupId);
+
+    return null;
+  }
+
+  return resolveUrl(candidateUri, masterUrl);
 }
 
 /**
