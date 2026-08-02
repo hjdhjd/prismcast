@@ -15,6 +15,7 @@ import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVi
 import { getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
+import { clearNativeInitState } from "./hlsSegments.ts";
 import { clearProbeCache } from "../native/probe.ts";
 import { emitStreamHealthChanged } from "./statusEmitter.ts";
 import { getChannelLogo } from "../config/userChannels.ts";
@@ -628,6 +629,11 @@ export function monitorPlaybackHealth(
       entry.hls.audioSegments.clear();
       entry.hls.audioSegmentBytes = 0;
       entry.hls.videoPlaylist = "";
+
+      // Release the relay's initialization segments. They belong to a source this stream no longer consumes, and the memory report reads their byte counter with
+      // no mode gate, so state left here would be counted for the rest of the stream's life. The nativeContainer label needs no matching reset: every consumer
+      // reads it behind the streaming-mode check the line above just flipped, exactly as the sibling native quality fields work.
+      clearNativeInitState(entry.id);
 
       // Clear the probe cache so subsequent tunes to this channel don't re-attempt native streaming.
       clearProbeCache(entry.info.storeKey);

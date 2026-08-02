@@ -89,6 +89,7 @@ describe("makeRegistryEntry", () => {
     assert.equal(entry.monitor, null);
     assert.equal(entry.mpegTsClientCount, 0);
     assert.equal(entry.nativeBandwidth, 0);
+    assert.equal(entry.nativeContainer, null);
     assert.equal(entry.nativeProxy, null);
     assert.equal(entry.nativeResolution, null);
     assert.equal(entry.page, null);

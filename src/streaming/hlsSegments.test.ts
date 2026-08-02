@@ -6,8 +6,9 @@
  * silently no-ops when the stream is unknown - those negative paths are explicitly covered.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getSegmentCount, getVideoPlaylist, storeAudioSegment, storeInitSegment,
-  storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "./hlsSegments.ts";
+import { clearNativeInitState, findNamedInitSegment, getAudioPlaylist, getAudioSegment, getInitSegment, getNamedInitSegment, getPlaylist, getSegment,
+  getSegmentCount, getVideoPlaylist, pruneNamedInitSegments, storeAudioSegment, storeInitSegment, storeNamedInitSegment, storeSegment, updateAudioPlaylist,
+  updatePlaylist, updateVideoPlaylist } from "./hlsSegments.ts";
 import { getStream, registerStream, unregisterStream } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
@@ -543,3 +544,191 @@ async function raceWithImmediate(promise: Promise<true>, sideEffect: () => void)
 
   return promise;
 }
+
+describe("named init segment storage", () => {
+
+  let streamId: number;
+
+  beforeEach(() => {
+
+    ({ streamId } = makeAndRegisterStream());
+  });
+
+  afterEach(() => {
+
+    unregisterStream(streamId);
+  });
+
+  test("stores per track, serves by name through one getter, and tracks the current name", () => {
+
+    const videoInit = Buffer.from("video-init-bytes");
+    const audioInit = Buffer.from("audio-init-bytes");
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", videoInit);
+    storeNamedInitSegment(streamId, "audio", "init-a0.mp4", audioInit);
+
+    assert.deepEqual(getNamedInitSegment(streamId, "init-v0.mp4"), videoInit);
+    assert.deepEqual(getNamedInitSegment(streamId, "init-a0.mp4"), audioInit);
+
+    const state = registryEntry(streamId).hls;
+
+    assert.equal(state.currentInitNames.video, "init-v0.mp4");
+    assert.equal(state.currentInitNames.audio, "init-a0.mp4");
+    assert.equal(state.initSegmentBytes, videoInit.length + audioInit.length, "the counter sums both tracks");
+  });
+
+  test("returns undefined for an unknown name and for an unknown stream", () => {
+
+    assert.equal(getNamedInitSegment(streamId, "init-v9.mp4"), undefined);
+    assert.equal(getNamedInitSegment(999999, "init-v0.mp4"), undefined);
+  });
+
+  test("re-storing the same name with the same bytes leaves the byte counter unchanged (T16)", () => {
+
+    /* A service that rotates a token through its MAP URI re-serves identical bytes under a new URL. The relay recognizes the content and re-stores under the name
+     * already in use, so the counter must move by the delta - zero here - rather than adding the length a second time. An always-add counter would drift upward
+     * on every rotation for the whole life of the stream.
+     */
+    const init = Buffer.from("stable-init-bytes");
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", init);
+
+    const afterFirst = registryEntry(streamId).hls.initSegmentBytes;
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", init);
+
+    assert.equal(registryEntry(streamId).hls.initSegmentBytes, afterFirst, "re-storing a reused name is byte-neutral");
+    assert.equal(registryEntry(streamId).hls.initSegments.video.size, 1, "no duplicate entry is created");
+  });
+});
+
+describe("findNamedInitSegment", () => {
+
+  let streamId: number;
+
+  beforeEach(() => {
+
+    ({ streamId } = makeAndRegisterStream());
+  });
+
+  afterEach(() => {
+
+    unregisterStream(streamId);
+  });
+
+  test("matches on content against every init the track still holds, not just the current one (T20)", () => {
+
+    /* The ad-pod case: content alternates between two initializations, and the third transition returns to the first. Searching the track's whole stored set is
+     * what lets that return reuse the existing name; a current-init-only comparison would mint a duplicate name for bytes already being served.
+     */
+    const first = Buffer.from("init-alpha");
+    const second = Buffer.from("init-beta");
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", first);
+    storeNamedInitSegment(streamId, "video", "init-v1.mp4", second);
+
+    assert.equal(findNamedInitSegment(streamId, "video", first), "init-v0.mp4", "the earlier init is still matchable");
+    assert.equal(findNamedInitSegment(streamId, "video", second), "init-v1.mp4", "the current init matches too");
+  });
+
+  test("returns undefined for unseen bytes, for the other track, and for an unknown stream", () => {
+
+    const videoInit = Buffer.from("video-only-init");
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", videoInit);
+
+    assert.equal(findNamedInitSegment(streamId, "video", Buffer.from("never-stored")), undefined);
+    assert.equal(findNamedInitSegment(streamId, "audio", videoInit), undefined, "the search is scoped to one track");
+    assert.equal(findNamedInitSegment(999999, "video", videoInit), undefined);
+  });
+});
+
+describe("pruneNamedInitSegments", () => {
+
+  let streamId: number;
+
+  beforeEach(() => {
+
+    ({ streamId } = makeAndRegisterStream());
+  });
+
+  afterEach(() => {
+
+    unregisterStream(streamId);
+  });
+
+  test("evicts only unretained entries and decrements the counter by what it evicted (T11/T12)", () => {
+
+    const retained = Buffer.from("retained-init");
+    const evicted = Buffer.from("evicted-init-longer");
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", evicted);
+    storeNamedInitSegment(streamId, "video", "init-v1.mp4", retained);
+
+    pruneNamedInitSegments(streamId, "video", new Set(["init-v1.mp4"]));
+
+    assert.equal(getNamedInitSegment(streamId, "init-v0.mp4"), undefined, "the unreferenced init is released");
+    assert.deepEqual(getNamedInitSegment(streamId, "init-v1.mp4"), retained, "the referenced init survives");
+    assert.equal(registryEntry(streamId).hls.initSegmentBytes, retained.length, "the counter tracks exactly the live set");
+  });
+
+  test("a prune on one track cannot evict the other track's inits (T17)", () => {
+
+    // Isolation is structural here - the two tracks are separate Maps, so a video prune has no reach into audio storage regardless of the names involved.
+    const videoInit = Buffer.from("video-init");
+    const audioInit = Buffer.from("audio-init");
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", videoInit);
+    storeNamedInitSegment(streamId, "audio", "init-a0.mp4", audioInit);
+
+    pruneNamedInitSegments(streamId, "video", new Set());
+
+    assert.equal(getNamedInitSegment(streamId, "init-v0.mp4"), undefined, "the video init is pruned");
+    assert.deepEqual(getNamedInitSegment(streamId, "init-a0.mp4"), audioInit, "the audio init is untouched");
+
+    pruneNamedInitSegments(streamId, "audio", new Set());
+
+    assert.equal(getNamedInitSegment(streamId, "init-a0.mp4"), undefined, "the audio prune reaches its own track");
+    assert.equal(registryEntry(streamId).hls.initSegmentBytes, 0, "the counter returns to zero once both tracks are empty");
+  });
+});
+
+describe("clearNativeInitState", () => {
+
+  test("releases every piece of seeded native init state (T18)", () => {
+
+    /* The state is seeded first on purpose. A fresh entry's defaults are already empty Maps, a zero counter, and null names, so an unseeded version of this test
+     * would pass against a clear that does nothing at all.
+     */
+    const { streamId } = makeAndRegisterStream();
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", Buffer.from("video-init"));
+    storeNamedInitSegment(streamId, "audio", "init-a0.mp4", Buffer.from("audio-init"));
+
+    const seeded = registryEntry(streamId).hls;
+
+    assert.ok(seeded.initSegmentBytes > 0, "the fixture actually populated state before the clear");
+    assert.equal(seeded.currentInitNames.video, "init-v0.mp4");
+    assert.equal(seeded.currentInitNames.audio, "init-a0.mp4");
+
+    clearNativeInitState(streamId);
+
+    const cleared = registryEntry(streamId).hls;
+
+    assert.equal(cleared.initSegments.video.size, 0, "the video Map is emptied");
+    assert.equal(cleared.initSegments.audio.size, 0, "the audio Map is emptied");
+    assert.equal(cleared.initSegmentBytes, 0, "the counter is zeroed");
+    assert.equal(cleared.currentInitNames.video, null, "the video current name is cleared");
+    assert.equal(cleared.currentInitNames.audio, null, "the audio current name is cleared");
+
+    unregisterStream(streamId);
+  });
+
+  test("no-ops for an unknown stream", () => {
+
+    assert.doesNotThrow(() => {
+
+      clearNativeInitState(999999);
+    });
+  });
+});

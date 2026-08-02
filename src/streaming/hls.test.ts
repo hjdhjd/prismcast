@@ -10,12 +10,16 @@
  * dependency injection point - the same one browser/index.ts wires at startup - with a stub browser and page, rather than substituting the accessor.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { hasStreamCapacity, sendValidationError, validateChannel } from "./hls.ts";
+import { handleHLSSegment, hasStreamCapacity, sendValidationError, validateChannel } from "./hls.ts";
+import { registerStream, unregisterStream } from "./registry.ts";
+import { setChannelStreamId, terminateStream } from "./lifecycle.ts";
+import { storeInitSegment, storeNamedInitSegment, storeSegment } from "./hlsSegments.ts";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { Response } from "express";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
+import { makeRegistryEntry } from "./registry.helpers.ts";
 import { makeReqRes } from "../routes/express.helpers.ts";
 import { setServiceSelections } from "../config/services.ts";
 
@@ -222,5 +226,119 @@ describe("hasStreamCapacity", () => {
     // Well below the limit, every new stream is admitted.
     assert.equal(hasStreamCapacity(0, 10), true);
     assert.equal(hasStreamCapacity(5, 10), true);
+  });
+});
+
+describe("handleHLSSegment: named init segments (T5)", () => {
+
+  test("serves a relay-minted init segment through the generic segment route", () => {
+
+    /* The names a native fMP4 relay mints for upstream initialization segments are requested on the same route as media segments. Without the init store in the
+     * generic lookup chain, every one of those references would 404 and the playlist would point at nothing.
+     */
+    const entry = makeRegistryEntry({ channelName: "named-init-channel" });
+
+    registerStream(entry);
+    setChannelStreamId("named-init-channel", entry.id);
+
+    const videoInit = Buffer.from("relay-video-init");
+
+    storeNamedInitSegment(entry.id, "video", "init-v0.mp4", videoInit);
+
+    try {
+
+      const { req, res, send, setHeader } = makeReqRes({ params: { name: "named-init-channel", segment: "init-v0.mp4" } });
+
+      handleHLSSegment(req, res);
+
+      assert.deepEqual(send.mock.calls[0]?.arguments[0], videoInit, "the relay's init is served");
+      assert.ok(setHeader.mock.calls.some((call) => (call.arguments[0] === "Content-Type") && (call.arguments[1] === "video/mp4")),
+        "an init segment is served as video/mp4");
+    } finally {
+
+      terminateStream(entry.id, "named-init-channel", "test cleanup");
+      unregisterStream(entry.id);
+    }
+  });
+
+  test("the capture path's literal init.mp4 branch still resolves the single slot", () => {
+
+    // The literal branch belongs to capture's own init slot and must keep answering independently of the relay store.
+    const entry = makeRegistryEntry({ channelName: "capture-init-channel" });
+
+    registerStream(entry);
+    setChannelStreamId("capture-init-channel", entry.id);
+
+    const captureInit = Buffer.from("capture-moov");
+
+    storeInitSegment(entry.id, captureInit);
+
+    try {
+
+      const { req, res, send } = makeReqRes({ params: { name: "capture-init-channel", segment: "init.mp4" } });
+
+      handleHLSSegment(req, res);
+
+      assert.deepEqual(send.mock.calls[0]?.arguments[0], captureInit, "the capture slot answers the literal name");
+    } finally {
+
+      terminateStream(entry.id, "capture-init-channel", "test cleanup");
+      unregisterStream(entry.id);
+    }
+  });
+
+  test("serves .m4s media segments as video/mp4 and .ts media segments as video/MP2T", () => {
+
+    // Container-true naming only helps if the Content-Type follows it, so both extensions are pinned on the same route.
+    const entry = makeRegistryEntry({ channelName: "content-type-channel" });
+
+    registerStream(entry);
+    setChannelStreamId("content-type-channel", entry.id);
+
+    storeSegment(entry.id, "segment0.m4s", Buffer.from("fmp4-fragment"));
+    storeSegment(entry.id, "segment1.ts", Buffer.from("ts-fragment"));
+
+    try {
+
+      const fmp4 = makeReqRes({ params: { name: "content-type-channel", segment: "segment0.m4s" } });
+
+      handleHLSSegment(fmp4.req, fmp4.res);
+
+      assert.ok(fmp4.setHeader.mock.calls.some((call) => (call.arguments[0] === "Content-Type") && (call.arguments[1] === "video/mp4")),
+        "an .m4s fragment is served as video/mp4");
+
+      const ts = makeReqRes({ params: { name: "content-type-channel", segment: "segment1.ts" } });
+
+      handleHLSSegment(ts.req, ts.res);
+
+      assert.ok(ts.setHeader.mock.calls.some((call) => (call.arguments[0] === "Content-Type") && (call.arguments[1] === "video/MP2T")),
+        "a .ts fragment keeps video/MP2T");
+    } finally {
+
+      terminateStream(entry.id, "content-type-channel", "test cleanup");
+      unregisterStream(entry.id);
+    }
+  });
+
+  test("returns 404 for a name that matches no segment and no init", () => {
+
+    const entry = makeRegistryEntry({ channelName: "missing-name-channel" });
+
+    registerStream(entry);
+    setChannelStreamId("missing-name-channel", entry.id);
+
+    try {
+
+      const { req, res, send, status } = makeReqRes({ params: { name: "missing-name-channel", segment: "init-v9.mp4" } });
+
+      handleHLSSegment(req, res);
+
+      assert.equal(status.mock.calls[0]?.arguments[0], 404);
+      assert.equal(send.mock.calls[0]?.arguments[0], "Segment not found.");
+    } finally {
+
+      terminateStream(entry.id, "missing-name-channel", "test cleanup");
+      unregisterStream(entry.id);
+    }
   });
 });

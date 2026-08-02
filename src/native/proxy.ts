@@ -5,10 +5,12 @@
 import { LOG, chromeFetch, realClock, startTimer } from "../utils/index.ts";
 import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.ts";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.ts";
-import { storeAudioSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../streaming/hlsSegments.ts";
+import { findNamedInitSegment, pruneNamedInitSegments, storeAudioSegment, storeNamedInitSegment, storeSegment, updateAudioPlaylist, updatePlaylist,
+  updateVideoPlaylist } from "../streaming/hlsSegments.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { Clock } from "../utils/index.ts";
+import type { InitSegmentTrack } from "../streaming/registry.ts";
 import type { Nullable } from "../types/index.ts";
 import type { PlaylistSegmentEntry } from "../streaming/playlistBuilder.ts";
 import { buildPlaylist } from "../streaming/playlistBuilder.ts";
@@ -24,8 +26,9 @@ import { resolveUrl } from "./probe.ts";
  * it preserves all playback-critical tags from the upstream manifest so that downstream consumers (Channels DVR) can correctly handle PTS resets at ad boundaries,
  * synchronize wall-clock time, and detect commercial breaks.
  *
- * Video segments are stored as "segment0.ts", "segment1.ts", etc. For streams with separate audio renditions, audio segments are stored as "audio0.ts",
- * "audio1.ts", etc.
+ * Segment names carry the container. An MPEG-TS source stores "segment0.ts", "segment1.ts", and so on, with "audio0.ts" upward for a separate audio rendition.
+ * An fMP4/CMAF source stores ".m4s" fragments under the same numbering, and the proxy additionally fetches the initialization segments its #EXT-X-MAP tags
+ * reference, serves them under names it mints per track, and emits the matching MAP references in every playlist it generates.
  */
 
 // Timeout for segment fetches.
@@ -35,9 +38,10 @@ const SEGMENT_FETCH_TIMEOUT = 10000;
 // use double the threshold to tolerate transient CDN issues that typically self-resolve within a few retry cycles.
 const MAX_MANIFEST_FAILURES = 3;
 
-// Maximum consecutive segment fetch failures before reporting an error. Segment fetches are smaller and far more numerous than manifest polls, so isolated
-// transient failures (a dropped connection on one segment) are more common here; this higher tolerance than MAX_MANIFEST_FAILURES avoids escalating on
-// blips that would otherwise self-resolve on the next fetch.
+// Maximum consecutive tracked fetch failures before reporting an error. This governs media segments and the initialization segments an fMP4 source's #EXT-X-MAP
+// tags reference, since both ride the same tracker. Those fetches are smaller and far more numerous than manifest polls, so isolated transient failures (a
+// dropped connection on one segment) are more common here; this higher tolerance than MAX_MANIFEST_FAILURES avoids escalating on blips that would otherwise
+// self-resolve on the next fetch.
 const MAX_SEGMENT_FAILURES = 5;
 
 // Manifest poll backoff base delay and cap. On success, the poll interval returns to the base delay (a fixed 3000ms, ~half a typical 6s segment). On failure, the delay
@@ -235,6 +239,10 @@ interface ParsedSegment {
   // AES-128 key URL from #EXT-X-KEY, or null for clear segments.
   keyUrl: Nullable<string>;
 
+  // Absolute URL of the #EXT-X-MAP initialization segment this segment requires, or null when no MAP tag precedes it. Sticky within the document per RFC 8216
+  // Section 4.3.2.4 - a MAP applies to every subsequent segment until another MAP replaces it.
+  mapUri: Nullable<string>;
+
   // Upstream #EXT-X-PROGRAM-DATE-TIME ISO string preceding this segment, or null when the manifest omits it.
   programDateTime: Nullable<string>;
 
@@ -281,6 +289,10 @@ interface SegmentMetadata {
   // Segment durations from #EXTINF tags.
   durations: Map<string, number>;
 
+  // The served initialization segment name each stored segment requires. Populated only for fMP4 sources; an MPEG-TS relay leaves this empty. The playlist
+  // builder reads it to place #EXT-X-MAP references, and the prune path reads it to decide which initializations are still needed.
+  mapUris: Map<string, string>;
+
   // Wall-clock timestamps as ISO strings from #EXT-X-PROGRAM-DATE-TIME. Only present for segments where the upstream manifest provides this tag.
   timestamps: Map<string, string>;
 
@@ -324,7 +336,9 @@ interface VideoTrackingState {
   consecutiveManifestFailures: number;
   fetchedSequences: Set<number>;
   highWaterSequence: number;
+  initCounter: number;
   lastMediaSequence: number;
+  lastUpstreamMapUri: Nullable<string>;
   lastSegmentSize: Nullable<number>;
   lastSegmentTime: number;
   lastTargetDuration: number;
@@ -345,12 +359,25 @@ interface AudioTrackingState {
   consecutiveManifestFailures: number;
   fetchedSequences: Set<number>;
   highWaterSequence: number;
+  initCounter: number;
   lastTargetDuration: number;
+  lastUpstreamMapUri: Nullable<string>;
   metadata: SegmentMetadata;
   segmentIndex: number;
   segmentTracker: SegmentFetchTracker;
   tokenRefreshPending: boolean;
   variantUrl: Nullable<string>;
+}
+
+/**
+ * The per-track state the initialization fetch reads and advances - the structural subset the video and audio tracking states share. Naming it separately lets
+ * one helper serve both loops without either track's full shape leaking into a function that only does initialization bookkeeping.
+ */
+interface InitTrackingState {
+
+  initCounter: number;
+  lastUpstreamMapUri: Nullable<string>;
+  segmentTracker: SegmentFetchTracker;
 }
 
 /**
@@ -451,6 +478,11 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
   let currentManifestKeyUrl: Nullable<string> = null;
   let currentIvHex: Nullable<string> = null;
 
+  // The initialization segment currently in force, tracked exactly like the key above: an #EXT-X-MAP applies to every following segment until another replaces
+  // it. This is per-document by design - the caller carries the cross-poll state, because a document that omits MAP entirely must leave the track's existing
+  // initialization untouched rather than reset it.
+  let currentMapUri: Nullable<string> = null;
+
   // Pending metadata flags - accumulated from tags between segments and attached to the next #EXTINF.
   let pendingCueIn = false;
   let pendingCueOut: Nullable<string> = null;
@@ -487,6 +519,20 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
 
         currentManifestKeyUrl = null;
         currentIvHex = null;
+      }
+
+      continue;
+    }
+
+    if(trimmed.startsWith("#EXT-X-MAP:")) {
+
+      // The URI attribute is extracted with the same quoted-attribute pattern the key handler uses. A MAP tag without a parseable URI leaves the current
+      // initialization in force rather than clearing it, matching how the key handler treats a URI-less AES-128 tag.
+      const uri = /URI="([^"]+)"/.exec(trimmed)?.[1];
+
+      if(uri) {
+
+        currentMapUri = resolveUrl(uri, baseUrl);
       }
 
       continue;
@@ -558,6 +604,7 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
       duration,
       ivHex: currentIvHex,
       keyUrl: currentManifestKeyUrl,
+      mapUri: currentMapUri,
       programDateTime: pendingProgramDateTime,
       sequence: currentSequence,
       url: resolveUrl(segUrl, baseUrl)
@@ -587,14 +634,16 @@ function parseVariantManifest(body: string, baseUrl: string): ManifestParseResul
  */
 function buildVariantPlaylist(segmentEntries: string[], metadata: SegmentMetadata, prefix: string, targetDuration: number): string {
 
-  // Compute MEDIA-SEQUENCE from the first filename in the window. The filename encodes the local segment index (e.g., "segment5.ts" -> 5).
+  // Compute MEDIA-SEQUENCE from the first filename in the window. The filename encodes the local segment index between the prefix and the extension (e.g.,
+  // "segment5.ts" or "segment5.m4s" -> 5). The index is read by slicing to the final dot rather than stripping a specific extension, so the derivation holds for
+  // every container the relay names - stripping a hardcoded ".ts" would leave "5.m4s" and yield NaN for an fMP4 source.
   let mediaSequence = 0;
 
   const firstEntry = segmentEntries[0];
 
   if(firstEntry) {
 
-    mediaSequence = Number(firstEntry.replace(prefix, "").replace(".ts", ""));
+    mediaSequence = Number(firstEntry.slice(prefix.length, firstEntry.lastIndexOf(".")));
   }
 
   // Compute DISCONTINUITY-SEQUENCE: total discontinuities ever observed minus those still visible in the current window. Only provided when > 0 to keep playlists
@@ -614,7 +663,13 @@ function buildVariantPlaylist(segmentEntries: string[], metadata: SegmentMetadat
 
   const entries = segmentEntries.map((filename) => buildEntryFromMetadata(filename, metadata, targetDuration));
 
-  return buildPlaylist({ discontinuitySequence, mediaSequence, targetDuration, version: 3 }, entries);
+  // Place the MAP references through the shared chokepoint. Version 7 is required whenever a MAP appears anywhere in the window - as the opening reference or as
+  // a mid-window transition - because EXT-X-MAP is a version 6+ tag; an MPEG-TS window has neither and stays at version 3.
+  const initialMapUri = annotateMapTransitions(entries, metadata);
+  const hasTransition = entries.some((entry) => entry.mapUri !== undefined);
+  const version = ((initialMapUri !== null) || hasTransition) ? 7 : 3;
+
+  return buildPlaylist({ discontinuitySequence, initialMapUri: initialMapUri ?? undefined, mediaSequence, targetDuration, version }, entries);
 }
 
 /**
@@ -630,6 +685,7 @@ function createSegmentMetadata(): SegmentMetadata {
     cueOuts: new Map<string, string>(),
     discontinuities: new Map<string, boolean>(),
     durations: new Map<string, number>(),
+    mapUris: new Map<string, string>(),
     timestamps: new Map<string, string>(),
     totalDiscontinuities: 0
   };
@@ -642,10 +698,16 @@ function createSegmentMetadata(): SegmentMetadata {
  * @param meta - The metadata instance to update.
  * @param filename - The local segment filename (e.g., "segment0.ts").
  * @param seg - The parsed segment with upstream metadata.
+ * @param servedInitName - The served initialization segment name this segment requires, or null for a self-describing MPEG-TS segment.
  */
-function storeSegmentMetadata(meta: SegmentMetadata, filename: string, seg: ParsedSegment): void {
+function storeSegmentMetadata(meta: SegmentMetadata, filename: string, seg: ParsedSegment, servedInitName: Nullable<string> = null): void {
 
   meta.durations.set(filename, seg.duration);
+
+  if(servedInitName !== null) {
+
+    meta.mapUris.set(filename, servedInitName);
+  }
 
   if(seg.programDateTime) {
 
@@ -726,6 +788,42 @@ function buildEntryFromMetadata(filename: string, metadata: SegmentMetadata, def
 }
 
 /**
+ * Places #EXT-X-MAP transition markers across a window of playlist entries and reports the initialization segment the window opens with. Every playlist the
+ * relay emits routes its MAP placement through here, so the variant and composite builders cannot drift on where a MAP belongs.
+ *
+ * An entry carries its own filename as its url, so the metadata lookup needs no parallel array. Only transitions are marked: the first entry's initialization
+ * becomes the window-level reference the caller emits as initialMapUri, and thereafter an entry gets a per-entry mapUri only when its initialization differs
+ * from its predecessor's. Stamping every entry would be legal but would defeat a client's ability to see where the codec configuration actually changes, and an
+ * MPEG-TS window - where no entry has an initialization at all - correctly produces neither.
+ *
+ * @param entries - The window's playlist entries, mutated in place to carry transition markers.
+ * @param metadata - The metadata instance holding each stored segment's served initialization name.
+ * @returns The initialization segment the window opens with, or null when the window's first entry needs none.
+ */
+function annotateMapTransitions(entries: PlaylistSegmentEntry[], metadata: SegmentMetadata): Nullable<string> {
+
+  let previousInit: Nullable<string> = null;
+  let initialMapUri: Nullable<string> = null;
+
+  for(const [ index, entry ] of entries.entries()) {
+
+    const servedInit = metadata.mapUris.get(entry.url) ?? null;
+
+    if(index === 0) {
+
+      initialMapUri = servedInit;
+    } else if((servedInit !== null) && (servedInit !== previousInit)) {
+
+      entry.mapUri = servedInit;
+    }
+
+    previousInit = servedInit;
+  }
+
+  return initialMapUri;
+}
+
+/**
  * Replaces the contents of a key-URL Set with the distinct AES-128 key URLs referenced by the segments of a freshly-parsed manifest. The Set is rebuilt from
  * scratch on each poll so it always reflects exactly the keys the current manifest window references - never a stale accumulation. The video and audio paths each
  * own one such Set; their union is the live working set the per-URL key cache prunes against at token-refresh boundaries, which bounds the cache to the keys the
@@ -775,6 +873,60 @@ export function pruneKeyCache(keysByUrl: Map<string, Buffer>, activeKeyUrls: Rea
 }
 
 /**
+ * Fetches, identifies, and stores the initialization segment a track has just transitioned to. Both the video and audio loops call this, so init handling has one
+ * implementation regardless of track.
+ *
+ * The fetch goes through the caller's tracked-fetch function with a null key URL, which makes it a plain fetch (the decrypt path gates on the key, and the
+ * sequence argument only feeds keyed-IV derivation). Riding that machinery is deliberate: the initialization fetch inherits the timeout, the consecutive-failure
+ * accounting, the reset on any success, and the existing escalation threshold, rather than introducing a second failure counter whose bound-and-reset semantics
+ * would have to be re-derived.
+ *
+ * Identity is content-based against everything the track still holds. A service that rotates a token through its MAP URI serves identical bytes under a new URL,
+ * and an ad break can alternate between two initializations; comparing bytes lets both reuse the name already being served instead of minting one whose data a
+ * client has. Only genuinely new bytes take the next name.
+ *
+ * On failure the upstream URI is deliberately not recorded, so the next poll cycle retries it and the caller's gate keeps dependent segments out of the window
+ * meanwhile. After the fetch resolves the lifecycle is re-checked: the capture fallback stops the proxy and then clears the init store, and a write landing after
+ * that clear would orphan itself permanently, because init pruning only ever runs from this poll loop.
+ *
+ * @param options - The context, the track and its bookkeeping state, the tracked-fetch function, and the upstream MAP URI to resolve.
+ */
+async function resolveTrackInit(options: { ctx: ProxyContext; fetchSegment: SegmentFetchFn; mapUri: string; track: InitSegmentTrack;
+  tracking: InitTrackingState; }): Promise<void> {
+
+  const { ctx, fetchSegment, mapUri, track, tracking } = options;
+
+  const data = await fetchSegment(tracking.segmentTracker, mapUri, 0, null, null);
+
+  if(!data) {
+
+    LOG.debug("native:proxy", "Initialization segment fetch failed for %s (%s track, %s).", ctx.channelName, track, mapUri.slice(0, 80));
+
+    return;
+  }
+
+  if(ctx.lifecycle.stopped) {
+
+    return;
+  }
+
+  const existingName = findNamedInitSegment(ctx.streamId, track, data);
+  let servedName = existingName;
+
+  if(servedName === undefined) {
+
+    servedName = ((track === "video") ? "init-v" : "init-a") + String(tracking.initCounter) + ".mp4";
+    tracking.initCounter++;
+  }
+
+  storeNamedInitSegment(ctx.streamId, track, servedName, data);
+  tracking.lastUpstreamMapUri = mapUri;
+
+  LOG.debug("native:proxy", "Initialization segment %s for %s (%s track, %s bytes, %s).", (existingName === undefined) ? "stored as " + servedName :
+    "reused as " + servedName, ctx.channelName, track, data.length, mapUri.slice(0, 80));
+}
+
+/**
  * Prunes stale entries from a SegmentMetadata instance. Removes entries for segments that are no longer in the active segment set (evicted from the sliding window).
  * This prevents unbounded growth over hours of streaming.
  *
@@ -792,9 +944,44 @@ function pruneMetadata(meta: SegmentMetadata, activeSegments: Set<string>): void
       meta.cueOuts.delete(key);
       meta.discontinuities.delete(key);
       meta.durations.delete(key);
+      meta.mapUris.delete(key);
       meta.timestamps.delete(key);
     }
   }
+}
+
+/**
+ * Releases a track's initialization segments that nothing in its playlist window still references. The retain set is every initialization named by a stored
+ * segment plus the track's current one, so an initialization outlives its own transition exactly as long as a segment that needs it remains fetchable, and no
+ * longer. Pruning per track keeps the two tracks' lifetimes independent.
+ *
+ * @param streamId - The numeric stream ID.
+ * @param track - The track to prune.
+ * @param metadata - The track's segment metadata, holding each stored segment's served initialization name.
+ * @param windowFilenames - The segment filenames currently in the track's store.
+ */
+function pruneTrackInits(streamId: number, track: InitSegmentTrack, metadata: SegmentMetadata, windowFilenames: string[]): void {
+
+  const retain = new Set<string>();
+
+  for(const filename of windowFilenames) {
+
+    const servedInit = metadata.mapUris.get(filename);
+
+    if(servedInit !== undefined) {
+
+      retain.add(servedInit);
+    }
+  }
+
+  const currentName = getStream(streamId)?.hls.currentInitNames[track];
+
+  if(currentName) {
+
+    retain.add(currentName);
+  }
+
+  pruneNamedInitSegments(streamId, track, retain);
 }
 
 // Audio Stream Handler.
@@ -939,11 +1126,36 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
 
   let storedAny = false;
 
+  // At most one initialization fetch per track per poll cycle. A function-scoped local is the whole mechanism: it cannot outlive the cycle, cannot be forgotten,
+  // and cannot be shared with the video track, whose own loop declares its own. One failing upstream initialization therefore costs one fetch timeout per cycle
+  // rather than one per dependent segment.
+  let initAttempted = false;
+
   for(const seg of newSegments) {
 
     if(ctx.lifecycle.stopped) {
 
       break;
+    }
+
+    // Resolve this segment's initialization before its name is chosen, so the first segment of a fresh tune is named from the initialization its own document
+    // established rather than transiently mislabeled.
+    if((seg.mapUri !== null) && (seg.mapUri !== audio.lastUpstreamMapUri) && !initAttempted) {
+
+      initAttempted = true;
+
+      // eslint-disable-next-line no-await-in-loop
+      await resolveTrackInit({ ctx, fetchSegment, mapUri: seg.mapUri, track: "audio", tracking: audio });
+    }
+
+    /* Store only segments whose initialization is resolved. A segment declaring a MAP the track has not adopted is skipped whether this cycle's attempt at that
+     * URI failed or the cycle's one attempt went to a different transition earlier in the window. Naming never falls back to the track's current initialization
+     * for a segment whose own transition is unresolved, so a second distinct transition in one batch cannot be mislabeled with the first one's initialization.
+     * The cost is bounded: each additional distinct transition in a batch resolves one cycle later.
+     */
+    if((seg.mapUri !== null) && (seg.mapUri !== audio.lastUpstreamMapUri)) {
+
+      continue;
     }
 
     // eslint-disable-next-line no-await-in-loop
@@ -954,12 +1166,14 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
       continue;
     }
 
-    const filename = "audio" + String(audio.segmentIndex) + ".ts";
+    // Name by container. A track holding an initialization is fMP4 and its fragments are .m4s; a track with none is MPEG-TS and keeps .ts.
+    const servedInit = getStream(ctx.streamId)?.hls.currentInitNames.audio ?? null;
+    const filename = "audio" + String(audio.segmentIndex) + ((servedInit !== null) ? ".m4s" : ".ts");
 
     storeAudioSegment(ctx.streamId, filename, segmentData);
     audio.fetchedSequences.add(seg.sequence);
     audio.highWaterSequence = Math.max(audio.highWaterSequence, seg.sequence);
-    storeSegmentMetadata(audio.metadata, filename, seg);
+    storeSegmentMetadata(audio.metadata, filename, seg, servedInit);
     storedAny = true;
 
     audio.segmentIndex++;
@@ -974,10 +1188,11 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
 // Composite Playlist Builder.
 
 /**
- * Builds a composite playlist with fMP4 preroll entries and MPEG-TS real entries. Uses the same compositor and builder as the capture path's generatePlaylist(),
- * ensuring identical windowing behavior (maxPrerollInWindow cap, progressive falloff). The DISCONTINUITY tag at the preroll-to-real boundary signals the container
- * format change (fMP4 -> MPEG-TS), which is spec-compliant per RFC 8216 Section 4.3.3.3. VERSION:7 is used to support EXT-X-MAP for the preroll init segment;
- * after preroll entries fall off the window, VERSION:7 remains but is backward-compatible with the MPEG-TS entries.
+ * Builds a composite playlist with fMP4 preroll entries and the relayed source's real entries. Uses the same compositor and builder as the capture path's
+ * generatePlaylist(), ensuring identical windowing behavior (maxPrerollInWindow cap, progressive falloff). The DISCONTINUITY tag at the preroll-to-real boundary
+ * signals the transition between two independently-initialized runs of content, which is spec-compliant per RFC 8216 Section 4.3.3.3 - and when the relayed
+ * source is itself fMP4, that boundary is also where its own initialization reference is re-emitted. VERSION:7 is used throughout to support EXT-X-MAP, and stays
+ * backward-compatible with MPEG-TS entries once preroll falls off the window.
  *
  * @param options - Composite playlist configuration with segment data, preroll settings, and composite tracking state.
  * @returns The formatted composite m3u8 playlist string.
@@ -1053,10 +1268,27 @@ function buildCompositePlaylist(options: CompositePlaylistOptions): string {
   const discSeq = (composite.baseOffset + composite.discontinuities.size) - windowDiscontinuities;
   const discontinuitySequence = (discSeq > 0) ? discSeq : undefined;
 
-  // Determine the initial MAP URI. When the window starts with preroll entries, the preroll init segment (fMP4) is referenced. When the window has moved past all
-  // preroll, no MAP is needed (MPEG-TS segments are self-describing). The DISCONTINUITY tag at the preroll-to-real boundary invalidates the MAP per RFC 8216
-  // Section 4.3.3.3, so MPEG-TS entries after the boundary carry their codec config inline.
-  const initialMapUri = (prerollEntries.length > 0) ? (prerollBaseUrl + "/preroll/" + prerollCodec + "/init.mp4") : undefined;
+  /* Determine the MAP references. Two initialization regimes can meet in this one window: the fMP4 preroll's own init, and whatever the relayed source needs.
+   *
+   * The real entries are annotated through the same chokepoint the variant playlist uses, which reports the initialization the real content opens with - null
+   * for an MPEG-TS tail, whose segments are self-describing. When preroll occupies the head of the window, the window-level reference must stay the preroll
+   * init, so a non-null real-content initialization is redirected onto the first real entry: the DISCONTINUITY already marked at that boundary invalidates the
+   * preroll MAP per RFC 8216 Section 4.3.3.3, and the redirected reference is what re-establishes codec configuration for the content that follows. Once preroll
+   * has fallen out of the window, the real content's own initialization becomes the window-level reference directly.
+   */
+  const realInitialMapUri = annotateMapTransitions(realEntries, videoMetadata);
+  let initialMapUri = (prerollEntries.length > 0) ? (prerollBaseUrl + "/preroll/" + prerollCodec + "/init.mp4") : undefined;
+
+  if(realInitialMapUri !== null) {
+
+    if((prerollEntries.length > 0) && firstRealEntry) {
+
+      firstRealEntry.mapUri = realInitialMapUri;
+    } else {
+
+      initialMapUri = realInitialMapUri;
+    }
+  }
 
   return buildPlaylist({
 
@@ -1108,10 +1340,12 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     consecutiveManifestFailures: 0,
     fetchedSequences: new Set<number>(),
     highWaterSequence: -1,
+    initCounter: 0,
     lastMediaSequence: -1,
     lastSegmentSize: null,
     lastSegmentTime: 0,
     lastTargetDuration: 6,
+    lastUpstreamMapUri: null,
     metadata: createSegmentMetadata(),
     segmentIndex: prerollSegmentCount,
     segmentTracker: { consecutiveFailures: 0, debugLabel: "Segment", label: "segment" },
@@ -1126,7 +1360,9 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     consecutiveManifestFailures: 0,
     fetchedSequences: new Set<number>(),
     highWaterSequence: -1,
+    initCounter: 0,
     lastTargetDuration: 6,
+    lastUpstreamMapUri: null,
     metadata: createSegmentMetadata(),
     segmentIndex: 0,
     segmentTracker: { consecutiveFailures: 0, debugLabel: "Audio segment", label: "audio segment" },
@@ -1277,8 +1513,9 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
         lifecycle.firstPollComplete = true;
       }
 
-      // Signal playlist readiness after the first poll completes. Note: initSegmentReady is signaled immediately when the proxy starts (in hls.ts) since native
-      // MPEG-TS has no separate init segment.
+      // Signal playlist readiness after the first poll completes. Init readiness is a separate signal owned elsewhere: an MPEG-TS source has no separate
+      // initialization segment, so hls.ts signals it the moment the proxy starts, while an fMP4 source's signal comes from the store when this loop's first
+      // video initialization lands.
       if(lifecycle.firstPollComplete && !lifecycle.readinessSignaled) {
 
         lifecycle.readinessSignaled = true;
@@ -1410,11 +1647,31 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     // Fetch and store each new segment sequentially. Track whether at least one segment was stored so the caller only generates playlists when data actually changed.
     let storedAny = false;
 
+    // At most one initialization fetch per track per poll cycle. See the audio loop's counterpart for the full rationale; each track declares its own local so
+    // the budgets cannot be shared.
+    let initAttempted = false;
+
     for(const seg of newSegments) {
 
       if(lifecycle.stopped) {
 
         break;
+      }
+
+      // Resolve this segment's initialization before its name is chosen, so the first segment of a fresh tune is named from the initialization its own document
+      // established rather than transiently mislabeled.
+      if((seg.mapUri !== null) && (seg.mapUri !== video.lastUpstreamMapUri) && !initAttempted) {
+
+        initAttempted = true;
+
+        // eslint-disable-next-line no-await-in-loop
+        await resolveTrackInit({ ctx, fetchSegment: fetchTrackedSegment, mapUri: seg.mapUri, track: "video", tracking: video });
+      }
+
+      // Store only segments whose initialization is resolved. See the audio loop's counterpart for the full rationale.
+      if((seg.mapUri !== null) && (seg.mapUri !== video.lastUpstreamMapUri)) {
+
+        continue;
       }
 
       // eslint-disable-next-line no-await-in-loop
@@ -1425,16 +1682,18 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
         continue;
       }
 
-      const filename = "segment" + String(video.segmentIndex) + ".ts";
-
       // Check segment count before store to detect rotation (oldest segment evicted to enforce maxSegments limit).
       const stream = getStream(streamId);
+
+      // Name by container. A track holding an initialization is fMP4 and its fragments are .m4s; a track with none is MPEG-TS and keeps .ts.
+      const servedInit = stream?.hls.currentInitNames.video ?? null;
+      const filename = "segment" + String(video.segmentIndex) + ((servedInit !== null) ? ".m4s" : ".ts");
       const countBefore = stream?.hls.segments.size ?? 0;
 
       storeSegment(streamId, filename, segmentData);
       video.fetchedSequences.add(seg.sequence);
       video.highWaterSequence = Math.max(video.highWaterSequence, seg.sequence);
-      storeSegmentMetadata(video.metadata, filename, seg);
+      storeSegmentMetadata(video.metadata, filename, seg, servedInit);
       storedAny = true;
 
       video.lastSegmentSize = segmentData.length;
@@ -1463,8 +1722,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   }
 
   /**
-   * Fetches and optionally decrypts a segment. This is the shared core used by both video and audio fetch paths. It handles the HTTP fetch, AES-128 decryption with
-   * key caching, and IV derivation. Error tracking is the caller's responsibility since video and audio have independent failure thresholds.
+   * Fetches and optionally decrypts a segment. This is the shared core used by both video and audio fetch paths, for media segments and for the initialization
+   * segments an fMP4 source references. It handles the HTTP fetch, AES-128 decryption with key caching, and IV derivation. A caller with no key URL gets a plain
+   * fetch, since the decryption block below gates on the key and the sequence argument only feeds keyed-IV derivation. Error tracking is the caller's
+   * responsibility since video and audio have independent failure thresholds.
    *
    * @param url - The segment URL.
    * @param sequence - The media sequence number (for IV derivation).
@@ -1531,7 +1792,8 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
   /**
    * Fetches a segment with error tracking. Wraps fetchAndDecryptSegment with per-tracker failure counting. Consecutive failures trigger the error threshold which
-   * stops the proxy and signals the monitor for recovery. Used for both video and audio segments with independent trackers.
+   * stops the proxy and signals the monitor for recovery. Used for video and audio media segments with independent trackers, and for the initialization segments
+   * an fMP4 source references - which ride the track's own tracker so their failures escalate through this one threshold rather than a parallel counter.
    *
    * @param tracker - Mutable error tracking state with labels for log and error messages.
    * @param url - The segment URL.
@@ -1664,6 +1926,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       updatePlaylist(streamId, masterPlaylist);
     }
 
+    // Release initialization segments the freshly-generated window no longer references. This runs after generation so the retain set reflects exactly the
+    // segments the playlist just published.
+    pruneTrackInits(streamId, "video", video.metadata, segmentEntries);
+
     LOG.debug("native:proxy", "Playlist generated for %s with %s segment(s), target duration %ss.", channelName, segmentEntries.length, targetDuration);
   }
 
@@ -1684,6 +1950,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     const audioEntries = Array.from(stream.hls.audioSegments.keys());
 
     updateAudioPlaylist(streamId, buildVariantPlaylist(audioEntries, audio.metadata, "audio", targetDuration));
+
+    // Release initialization segments the freshly-generated audio window no longer references. The audio track's Map is pruned on its own, so this can never
+    // evict a video initialization.
+    pruneTrackInits(streamId, "audio", audio.metadata, audioEntries);
   }
 
   /**

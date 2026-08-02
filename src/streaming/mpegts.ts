@@ -4,6 +4,7 @@
  */
 import { LOG, formatError, resolveFFmpegPath, spawnMpegTsRemuxer } from "../utils/index.ts";
 import type { Request, Response } from "express";
+import { getNamedInitSegment, waitForInitSegment } from "./hlsSegments.ts";
 import { getStream, updateLastAccess } from "./registry.ts";
 import { initializeStream, sendValidationError, validateChannel } from "./hls.ts";
 import { registerClient, unregisterClient } from "./clients.ts";
@@ -12,7 +13,6 @@ import type { Nullable } from "../types/index.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
 import { StreamSetupError } from "./setup.ts";
 import { getChannelStreamId } from "./lifecycle.ts";
-import { waitForInitSegment } from "./hlsSegments.ts";
 
 /* This module provides a continuous MPEG-TS byte stream for HDHomeRun-compatible clients (such as Plex) that expect raw MPEG-TS when tuning a channel. It supports
  * multiple delivery modes:
@@ -20,7 +20,10 @@ import { waitForInitSegment } from "./hlsSegments.ts";
  * Capture mode (fMP4 -> MPEG-TS): The capture pipeline produces fMP4 segments. Each MPEG-TS client gets its own FFmpeg remuxer that converts fMP4 to MPEG-TS with
  * codec copy (no transcoding). FFmpeg reads the init segment + media segments from stdin and outputs a continuous MPEG-TS stream on stdout, piped to the HTTP response.
  *
- * Native mode (MPEG-TS pass-through): The native HLS proxy already produces MPEG-TS segments. These are written directly to the HTTP response without any remuxing.
+ * Native mode (MPEG-TS pass-through): when the relayed source is itself MPEG-TS, its segments are written directly to the HTTP response without any remuxing.
+ *
+ * Native mode (fMP4 -> MPEG-TS): when the relayed source is fMP4/CMAF, its fragments are not MPEG-TS, so the stream takes the same codec-copy remuxer the capture
+ * path uses. The initialization segment FFmpeg is primed with comes from the relay's per-track store rather than a local encoder.
  *
  * Both modes share the same client lifecycle via connectMpegTsClient(): register the client, subscribe to segment events for real-time delivery, write existing
  * segments for catchup, and clean up on disconnect. The header flush for new streams prevents client timeouts during the 4-10+ second startup sequence.
@@ -122,11 +125,46 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
   await serveMpegTsStream(streamId, channelName, req, res);
 }
 
+/**
+ * Resolves the initialization segment an MPEG-TS client's remuxer must be primed with, or null when the stream needs none. This is the one place the two
+ * initialization storage shapes are reconciled: a capture stream's single slot, and a native fMP4 relay's per-track store, whose video initialization is the one
+ * the remuxer reads. The store's undefined is normalized to null here so this module speaks one vocabulary for absence.
+ *
+ * Native streams that are not fMP4 return null because they need no initialization at all - an MPEG-TS source carries its codec configuration in every segment,
+ * and a null container reaches this only on a feed the DRM path abandoned. Callers must therefore select the delivery branch from the container rather than from
+ * this result, which cannot tell a stream that wants pass-through apart from an fMP4 stream whose initialization is genuinely missing.
+ *
+ * @param stream - The stream registry entry to resolve against.
+ * @returns The initialization segment to prime the remuxer with, or null when there is none.
+ */
+export function resolveMpegTsInitSource(stream: StreamRegistryEntry): Nullable<Buffer> {
+
+  if(stream.streamingMode !== "native") {
+
+    return stream.hls.initSegment;
+  }
+
+  if(stream.nativeContainer !== "fmp4") {
+
+    return null;
+  }
+
+  const videoInitName = stream.hls.currentInitNames.video;
+
+  if(videoInitName === null) {
+
+    return null;
+  }
+
+  return getNamedInitSegment(stream.id, videoInitName) ?? null;
+}
+
 // Internal Helpers.
 
 /**
- * Serves the MPEG-TS stream once a stream ID is available. Waits for init segment readiness, then delegates to mode-specific serving: capture mode spawns an FFmpeg
- * remuxer to convert fMP4 to MPEG-TS, while native mode passes .ts segments directly to the response. Both paths share client lifecycle via connectMpegTsClient().
+ * Serves the MPEG-TS stream once a stream ID is available. Waits for init segment readiness, then delegates by container: a native relay of an MPEG-TS source
+ * passes its segments straight to the response, while capture output and a native relay of an fMP4 source both take the FFmpeg codec-copy remuxer. Both paths
+ * share client lifecycle via connectMpegTsClient().
  *
  * @param streamId - The numeric stream ID.
  * @param channelName - The channel name for logging.
@@ -135,8 +173,9 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
  */
 async function serveMpegTsStream(streamId: number, channelName: string, req: Request, res: Response): Promise<void> {
 
-  // Wait for the init segment to be available. For capture-mode streams, this waits for the fMP4 init segment (ftyp+moov). For native-mode streams,
-  // signalInitSegmentReady() was called immediately during setup, so this returns instantly.
+  // Wait for the init segment to be available. For capture-mode streams, this waits for the fMP4 init segment (ftyp+moov). A native fMP4 relay waits for its
+  // video track's first upstream initialization - the same track this connection's remuxer resolves, so the guard below and this wait watch one thing. Every
+  // other native stream had signalInitSegmentReady() called during setup, so this returns instantly.
   const initReady = await waitForInitSegment(streamId, CONFIG.streaming.navigationTimeout);
 
   if(!initReady) {
@@ -170,8 +209,11 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
     return;
   }
 
-  // For native-mode streams, segments are already MPEG-TS - write them directly to the response without FFmpeg.
-  if(stream.streamingMode === "native") {
+  // Native-mode streams whose source is already MPEG-TS need no remuxing - their segments are written directly to the response. A native fMP4 relay falls
+  // through to the remux path below instead, because its fragments are not MPEG-TS and piping them raw would put fMP4 bytes on a video/mpeg socket. The branch
+  // reads the container rather than the resolved initialization, since a null initialization cannot tell a pass-through source apart from an fMP4 source whose
+  // initialization is missing - those two need opposite handling.
+  if((stream.streamingMode === "native") && (stream.nativeContainer !== "fmp4")) {
 
     connectMpegTsClient({
 
@@ -199,8 +241,18 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
     return;
   }
 
-  // For capture-mode streams, verify the init segment is available (required by FFmpeg).
-  if(!stream.hls.initSegment) {
+  /* Resolve the initialization segment once for this connection, before the guard. The guard tests this captured value and the write below sends the same one,
+   * so no store change across the FFmpeg-path resolution between them can split what the guard validated from what the remuxer actually receives.
+   *
+   * This does mean a new client connecting while a same-mode initialization re-store lands in that gap remuxes against the initialization the guard saw rather
+   * than the freshest one - one connection, one store behind. Reading the store twice trades that for the mirror problem, a guard-validated buffer swapped
+   * before the write, so neither shape avoids the race; capturing is chosen because the guard and the write can never disagree with each other.
+   */
+  const initSource = resolveMpegTsInitSource(stream);
+
+  // Both remux sources need an initialization segment before FFmpeg can process any fragment: capture's own encoder output, and a relayed fMP4 source's
+  // upstream initialization.
+  if(!initSource) {
 
     if(!res.headersSent) {
 
@@ -248,7 +300,7 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
       remuxer.stdout.pipe(res);
 
       // Write the init segment first - FFmpeg needs the ftyp and moov boxes before it can process any media segments.
-      remuxer.stdin.write(stream.hls.initSegment);
+      remuxer.stdin.write(initSource);
     },
     extraCleanup: () => {
 

@@ -8,14 +8,15 @@
  * likewise not unit-tested in this file (see the explanatory block comment below).
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
+import { handleMpegTsStream, resolveMpegTsInitSource } from "./mpegts.ts";
 import { registerStream, unregisterStream } from "./registry.ts";
 import { setChannelStreamId, terminateStream } from "./lifecycle.ts";
 import { CONFIG } from "../config/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
-import { handleMpegTsStream } from "./mpegts.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
 import { makeReqRes } from "../routes/express.helpers.ts";
+import { storeNamedInitSegment } from "./hlsSegments.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -113,6 +114,148 @@ describe("handleMpegTsStream", () => {
 
       // Tear down the synthetic stream so subsequent tests start clean. terminateStream handles the channelToStreamId index plus registry state in one call.
       terminateStream(entry.id, "abc", "test cleanup");
+      unregisterStream(entry.id);
+    }
+  });
+});
+
+describe("resolveMpegTsInitSource (T14)", () => {
+
+  test("returns the capture path's single init slot for a capture stream", () => {
+
+    const entry = makeRegistryEntry();
+    const captureInit = Buffer.from("capture-moov");
+
+    entry.hls.initSegment = captureInit;
+
+    assert.deepEqual(resolveMpegTsInitSource(entry), captureInit);
+  });
+
+  test("returns null for a capture stream with no init stored", () => {
+
+    assert.equal(resolveMpegTsInitSource(makeRegistryEntry()), null);
+  });
+
+  test("resolves the VIDEO track's init for a native fmp4 stream with both tracks populated", () => {
+
+    /* Both tracks carry distinct bytes on purpose. With only one track populated, a resolver that returned "whichever track has something" would be
+     * indistinguishable from one that correctly resolves video - the two-track fixture is what tells them apart.
+     */
+    const entry = makeRegistryEntry({ nativeContainer: "fmp4", streamingMode: "native" });
+
+    registerStream(entry);
+
+    const videoInit = Buffer.from("video-moov");
+
+    storeNamedInitSegment(entry.id, "audio", "init-a0.mp4", Buffer.from("audio-moov"));
+    storeNamedInitSegment(entry.id, "video", "init-v0.mp4", videoInit);
+
+    try {
+
+      assert.deepEqual(resolveMpegTsInitSource(entry), videoInit, "the video track's init is what the remuxer receives");
+    } finally {
+
+      unregisterStream(entry.id);
+    }
+  });
+
+  test("returns null for a native fmp4 stream whose video init has not arrived (the guard rejects)", () => {
+
+    // An audio-only arrival must not satisfy the remux path; the caller's guard turns this null into a 500 rather than priming FFmpeg with the wrong track.
+    const entry = makeRegistryEntry({ nativeContainer: "fmp4", streamingMode: "native" });
+
+    registerStream(entry);
+    storeNamedInitSegment(entry.id, "audio", "init-a0.mp4", Buffer.from("audio-moov"));
+
+    try {
+
+      assert.equal(resolveMpegTsInitSource(entry), null);
+    } finally {
+
+      unregisterStream(entry.id);
+    }
+  });
+
+  test("returns null for a native ts stream, which rides the pass-through instead", () => {
+
+    const entry = makeRegistryEntry({ nativeContainer: "ts", streamingMode: "native" });
+
+    assert.equal(resolveMpegTsInitSource(entry), null, "an MPEG-TS source needs no init");
+  });
+
+  test("returns null for a native stream with a null container (the degradation rule)", () => {
+
+    // A null container reaches the delivery path only on a feed the DRM path abandoned; it degrades to today's pass-through rather than demanding an init.
+    const entry = makeRegistryEntry({ nativeContainer: null, streamingMode: "native" });
+
+    assert.equal(resolveMpegTsInitSource(entry), null);
+  });
+
+  test("ignores a stale capture init slot on a native ts stream", () => {
+
+    /* The mode is what selects the source, not the presence of bytes. A native stream that somehow carries a capture-slot buffer must still resolve null, or a
+     * pass-through stream would be routed into a remux it does not need.
+     */
+    const entry = makeRegistryEntry({ nativeContainer: "ts", streamingMode: "native" });
+
+    entry.hls.initSegment = Buffer.from("stale-capture-moov");
+
+    assert.equal(resolveMpegTsInitSource(entry), null);
+  });
+});
+
+describe("serveMpegTsStream: container-aware branch selection", () => {
+
+  test("a native fMP4 stream with no video init reaches the remux guard rather than the pass-through", async () => {
+
+    /* Branch selection reads the container, so an fMP4 relay must NOT take the pass-through that pipes segments raw - its fragments are not MPEG-TS. With no
+     * video initialization stored, falling through lands on the remux guard, whose 500 is the observable proof the pass-through was not taken. A container-blind
+     * brancher would serve this connection as pass-through and never reach a 500.
+     *
+     * No FFmpeg is involved: the guard returns before the binary is ever resolved.
+     */
+    const entry = makeRegistryEntry({ channelName: "fmp4-native-channel", nativeContainer: "fmp4", streamingMode: "native" });
+
+    entry.hls.signalInitSegmentReady();
+    registerStream(entry);
+    setChannelStreamId("fmp4-native-channel", entry.id);
+
+    try {
+
+      const { req, res, send, status } = makeReqRes({ ip: "192.168.1.50", params: { name: "fmp4-native-channel" } });
+
+      await handleMpegTsStream(req, res);
+
+      assert.equal(status.mock.calls[0]?.arguments[0], 500, "the fMP4 stream fell through to the remux guard");
+      assert.equal(send.mock.calls[0]?.arguments[0], "Stream no longer available.");
+    } finally {
+
+      terminateStream(entry.id, "fmp4-native-channel", "test cleanup");
+      unregisterStream(entry.id);
+    }
+  });
+
+  test("a native MPEG-TS stream takes the pass-through and is never rejected by the remux guard", async () => {
+
+    /* The contrasting case that gives the pair its distinguishing power: an MPEG-TS relay has no initialization and must still be served. If branch selection
+     * ignored the container, this stream would hit the remux guard and be rejected with a 500 despite being perfectly serveable.
+     */
+    const entry = makeRegistryEntry({ channelName: "ts-native-channel", nativeContainer: "ts", streamingMode: "native" });
+
+    entry.hls.signalInitSegmentReady();
+    registerStream(entry);
+    setChannelStreamId("ts-native-channel", entry.id);
+
+    try {
+
+      const { req, res, status } = makeReqRes({ ip: "192.168.1.50", params: { name: "ts-native-channel" } });
+
+      await handleMpegTsStream(req, res);
+
+      assert.equal(status.mock.calls.length, 0, "the pass-through serves the stream rather than rejecting it");
+    } finally {
+
+      terminateStream(entry.id, "ts-native-channel", "test cleanup");
       unregisterStream(entry.id);
     }
   });

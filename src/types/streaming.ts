@@ -89,6 +89,14 @@ export interface UrlValidationResult {
  */
 export type StreamingMode = "capture" | "native";
 
+/**
+ * Media container format of an upstream HLS source. "fmp4" sources (CMAF) carry their codec configuration in a separate initialization segment referenced by
+ * #EXT-X-MAP, so the relay must fetch, store, and re-reference that init for the fragments to be playable. "ts" sources are self-describing - every MPEG-TS
+ * segment carries its own PAT/PMT - so they need no init at all. Consumers select the fMP4 behavior on an exact "fmp4" match; every other value takes the
+ * self-describing path.
+ */
+export type MediaContainer = "fmp4" | "ts";
+
 /* The /health endpoint returns detailed status information for monitoring and debugging. This includes browser connection state, memory usage, stream counts, and
  * configuration summary. External monitoring systems can poll this endpoint to detect problems.
  */

@@ -13,7 +13,8 @@ import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsRe
 import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.ts";
 import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.ts";
 import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../config/userChannels.ts";
-import { getAudioPlaylist, getAudioSegment, getInitSegment, getPlaylist, getSegment, getVideoPlaylist, waitForPlaylist } from "./hlsSegments.ts";
+import { getAudioPlaylist, getAudioSegment, getInitSegment, getNamedInitSegment, getPlaylist, getSegment, getVideoPlaylist,
+  waitForPlaylist } from "./hlsSegments.ts";
 import { getAuthDomainForChannel, getResolvedChannel, getServiceTagForChannel, isChannelAvailableByService, resolveServiceKey } from "../config/services.ts";
 import { getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.ts";
 import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
@@ -394,8 +395,10 @@ export function handleHLSSegment(req: Request, res: Response): void {
     return;
   }
 
-  // Handle media segments (.m4s and .ts). Check both video and audio segment stores.
-  const segment = getSegment(streamId, segmentName) ?? getAudioSegment(streamId, segmentName);
+  // Handle media segments (.m4s and .ts) and the named initialization segments a native fMP4 relay serves. Check the video and audio segment stores, then the
+  // relay's per-track init store - a name the relay minted for an upstream #EXT-X-MAP reference resolves here rather than through the literal branch above,
+  // which belongs to the capture path's single init slot.
+  const segment = getSegment(streamId, segmentName) ?? getAudioSegment(streamId, segmentName) ?? getNamedInitSegment(streamId, segmentName);
 
   if(!segment) {
 
@@ -1100,6 +1103,7 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
     monitor: null,
     mpegTsClientCount: 0,
     nativeBandwidth: 0,
+    nativeContainer: null,
     nativeProxy: null,
     nativeResolution: null,
     page: null,
@@ -1261,15 +1265,22 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
   currentStream.captureCodec = nativeResult.codec;
   currentStream.hardwareAccelerated = false;
   currentStream.nativeBandwidth = nativeResult.bandwidth;
+  currentStream.nativeContainer = nativeResult.container;
   currentStream.nativeProxy = nativeResult.proxy;
   currentStream.nativeResolution = nativeResult.resolution;
   currentStream.streamingMode = "native";
 
-  // Start the native proxy. Signal init segment readiness immediately - native MPEG-TS segments carry their own PAT/PMT codec configuration in every
-  // segment, so there is no separate init segment to wait for. Without this, MPEG-TS clients block on waitForInitSegment() and time out before the proxy's
-  // first poll cycle completes.
+  // Start the native proxy. Init readiness is conditional on the container. An MPEG-TS source carries its own PAT/PMT codec configuration in every segment and
+  // has no separate init to wait for, so readiness is signaled here and MPEG-TS clients are released immediately rather than blocking on waitForInitSegment()
+  // until it times out. An fMP4 source does have an init, and the store signals readiness when the video track's first one lands - video because the consumer
+  // waiting on this signal is the remux path, which resolves the video init. A null container reaches this only on a feed the DRM path abandoned, so it takes
+  // the immediate signal rather than deadlocking readiness on an init that will never arrive.
   nativeResult.proxy.start();
-  currentStream.hls.signalInitSegmentReady();
+
+  if(nativeResult.container !== "fmp4") {
+
+    currentStream.hls.signalInitSegmentReady();
+  }
 
   // Suppress audio on the browser page. The page stays alive for token refresh but the video element's audio is not part of the native stream - without
   // suppression, it plays audibly on the local machine.

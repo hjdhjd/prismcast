@@ -1,12 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * proxy.test.ts: Unit tests for the native HLS proxy in proxy.ts. createNativeProxy is the factory export and returns a NativeProxy instance with the documented
- * surface. The polling loop, manifest parsing, segment fetching, decryption integration, and playlist generation are all encapsulated inside the factory closure and
- * are exercised end-to-end by start()ing the proxy against a live HLS source - not viable as a unit test. The tests here focus on the factory's deterministic
- * surface: initial-state contracts on every getter, stop() lifecycle, the token refresh state mutations exposed via update* methods, and stat counter behavior. The
- * full polling loop is deferred to e2e coverage with real Chrome. The pure module-level helpers extracted from the polling loop - manifestFailureThreshold (poll
- * failure escalation), resolveSegmentIv (explicit-versus-derived IV selection), and pruneKeyCache (per-URL key cache bounding) - are exported and tested directly,
- * pinning the manifest-hardening invariants the closure delegates to them.
+ * surface. The polling loop, manifest parsing, segment fetching, decryption integration, and playlist generation are all encapsulated inside the factory closure.
+ * The tests here focus on the factory's deterministic surface: initial-state contracts on every getter, stop() lifecycle, the token refresh state mutations exposed
+ * via update* methods, and stat counter behavior. The loop's own behavior is driven in proxy.map.test.ts, whose harness virtualizes the polling cadence through the
+ * clock port and routes fetches through a stub; what stays beyond unit reach is the live-Chrome and live-source behavior around it, which e2e covers. The pure
+ * module-level helpers extracted from the polling loop - manifestFailureThreshold (poll failure escalation), resolveSegmentIv (explicit-versus-derived IV
+ * selection), and pruneKeyCache (per-URL key cache bounding) - are exported and tested directly, pinning the manifest-hardening rules the closure delegates to
+ * them.
  */
 import { createNativeProxy, manifestFailureThreshold, pruneKeyCache, resolveSegmentIv } from "./proxy.ts";
 import { describe, test } from "node:test";

@@ -3,12 +3,12 @@
  * index.ts: Coordinator for native HLS streaming - manifest interception, DRM probe, and proxy lifecycle.
  */
 import { LOG, cancellableTimeout, formatError, startTimer } from "../utils/index.ts";
+import type { MediaContainer, Nullable } from "../types/index.ts";
 import { clearProbeCache, probeManifest } from "./probe.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { MediaFeed } from "./probe.ts";
 import type { NativeProxy } from "./proxy.ts";
-import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import { createNativeProxy } from "./proxy.ts";
 import { fetchDecryptionKey } from "./decrypt.ts";
@@ -104,6 +104,10 @@ export interface NativeStreamResult {
 
   // Video codec label (e.g., "H264", "HEVC", "AV1"), or null when the CODECS attribute is absent or unrecognized.
   codec: Nullable<string>;
+
+  // Container format of the upstream segments, mirroring MediaFeed.container. "fmp4" streams carry a separate initialization segment the relay must fetch and
+  // re-reference; "ts" streams are self-describing. Null only on the DRM path, which never reaches a successful result.
+  container: Nullable<MediaContainer>;
 
   // Whether the stream has separate audio renditions. Set once at stream creation on HLSState.hasAudio so the HLS handler knows to serve variant playlists.
   hasAudio: boolean;
@@ -246,7 +250,8 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   LOG.debug("timing:native", "Native streaming setup completed for %s in %sms.", channelName, elapsed());
 
-  return { bandwidth: mediaFeed.bandwidth, codec: mediaFeed.codec, hasAudio: mediaFeed.audioVariantUrl !== null, proxy, resolution: mediaFeed.resolution };
+  return { bandwidth: mediaFeed.bandwidth, codec: mediaFeed.codec, container: mediaFeed.container, hasAudio: mediaFeed.audioVariantUrl !== null, proxy,
+    resolution: mediaFeed.resolution };
 }
 
 // Token Refresh.

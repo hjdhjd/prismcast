@@ -508,3 +508,65 @@ describe("attemptNativeStreaming", () => {
   });
 });
 
+
+describe("attemptNativeStreaming: container hop (T21)", () => {
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("carries the probe's fmp4 classification onto the result", async () => {
+
+    // The coordinator must pass the probe's container through untouched, since the registry write and every downstream container decision read it from here.
+    const masterUrl = "https://cdn.test/hop-fmp4-master.m3u8";
+    const variantUrl = "https://cdn.test/hop-fmp4-variant.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nhop-fmp4-variant.m3u8\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MAP:URI=\"init.cmfv\"\n#EXTINF:6,\nseg0.cmfv\n", { status: 200 })
+    });
+
+    clearProbeCache("hop-fmp4-channel");
+
+    const result = await attemptNativeStreaming(makeAttemptOptions({
+
+      channelName: "hop-fmp4-channel",
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
+    }));
+
+    assert.ok(result, "native attempt succeeded");
+    assert.equal(result.container, "fmp4", "the fMP4 classification reaches the result");
+
+    result.proxy.stop();
+  });
+
+  test("carries the probe's ts classification onto the result", async () => {
+
+    /* The contrasting fixture is what gives the pair its distinguishing power: a coordinator that hardcoded a container, or coerced it, would satisfy a
+     * single-value check but cannot satisfy both of these.
+     */
+    const masterUrl = "https://cdn.test/hop-ts-master.m3u8";
+    const variantUrl = "https://cdn.test/hop-ts-variant.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nhop-ts-variant.m3u8\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n", { status: 200 })
+    });
+
+    clearProbeCache("hop-ts-channel");
+
+    const result = await attemptNativeStreaming(makeAttemptOptions({
+
+      channelName: "hop-ts-channel",
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
+    }));
+
+    assert.ok(result, "native attempt succeeded");
+    assert.equal(result.container, "ts", "the MPEG-TS classification reaches the result");
+
+    result.proxy.stop();
+  });
+});

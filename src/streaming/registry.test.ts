@@ -271,9 +271,14 @@ describe("createHLSState", () => {
     assert.equal(state.audioPlaylist, "");
     assert.equal(state.audioSegmentBytes, 0);
     assert.equal(state.audioSegments.size, 0);
+    assert.equal(state.currentInitNames.audio, null);
+    assert.equal(state.currentInitNames.video, null);
     assert.equal(state.hasAudio, false);
     assert.equal(state.hasRealPlaylist, false);
     assert.equal(state.initSegment, null);
+    assert.equal(state.initSegmentBytes, 0);
+    assert.equal(state.initSegments.audio.size, 0);
+    assert.equal(state.initSegments.video.size, 0);
     assert.equal(state.playlist, "");
     assert.equal(state.prerollBaseUrl, null);
     assert.equal(state.prerollCodec, null);
@@ -400,6 +405,28 @@ describe("getStreamMemoryUsage", () => {
     assert.equal(usage.initSegment, 1234);
     assert.equal(usage.segments, 0);
     assert.equal(usage.total, 1234);
+  });
+
+  test("folds the native relay's named init bytes into the init breakdown and the total (T19)", () => {
+
+    /* A native fMP4 relay holds its initialization segments in the per-track store with its own running counter, not in the single capture slot. Both must reach
+     * the report or a relay's initialization memory is invisible forever.
+     *
+     * The expected figures are absolute rather than the total = initSegment + segments identity: the implementation computes that total inline from the very
+     * fields being asserted, so the identity holds on an implementation that omits the named bytes entirely and distinguishes nothing on its own.
+     */
+    const entry = makeRegistryEntry();
+
+    entry.hls.initSegment = Buffer.alloc(100);
+    entry.hls.initSegmentBytes = 300 + 40;
+    entry.hls.segmentBytes = 7000;
+    entry.hls.audioSegmentBytes = 500;
+
+    const usage = getStreamMemoryUsage(entry);
+
+    assert.equal(usage.initSegment, 440, "the capture slot plus both stored initializations");
+    assert.equal(usage.segments, 7500, "video plus audio segment bytes");
+    assert.equal(usage.total, 7940, "the arithmetic sum of the two breakdown figures");
   });
 
   test("reads segment bytes from the running counters (O(1) read)", () => {

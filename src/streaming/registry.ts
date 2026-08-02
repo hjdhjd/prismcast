@@ -2,7 +2,7 @@
  *
  * registry.ts: Stream tracking for PrismCast.
  */
-import type { Nullable, ResolvedSiteProfile, StreamingMode } from "../types/index.ts";
+import type { MediaContainer, Nullable, ResolvedSiteProfile, StreamingMode } from "../types/index.ts";
 import type { CaptureCodec } from "./codec.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import { EventEmitter } from "node:events";
@@ -39,6 +39,12 @@ export interface SegmentEmitter extends EventEmitter {
   off<K extends keyof SegmentEmitterEventMap>(event: K, listener: (...args: SegmentEmitterEventMap[K]) => void): this;
   on<K extends keyof SegmentEmitterEventMap>(event: K, listener: (...args: SegmentEmitterEventMap[K]) => void): this;
 }
+
+/**
+ * The two tracks a native fMP4 relay stores initialization segments for. Declared once here, beside the state that holds those segments, so every consuming
+ * signature names the type rather than restating the literal pair.
+ */
+export type InitSegmentTrack = "audio" | "video";
 
 /**
  * HLS segment and playlist storage for a stream. This includes the fMP4 initialization segment (codec configuration), media segments (.m4s files), and the current
@@ -87,6 +93,24 @@ export interface HLSState {
   // Running total of all audio segment buffer sizes in bytes. Updated by storeSegmentToMap on add and rotate. Must be reset to zero when audioSegments is cleared
   // directly (e.g., native-to-capture fallback in monitor.ts).
   audioSegmentBytes: number;
+
+  /* Initialization segments a native fMP4 relay has fetched from upstream #EXT-X-MAP references, indexed by track and keyed by the name they are served under.
+   * The per-track Record is what lets the store operate generically on initSegments[track] where the flat segments/audioSegments pair forces a branch, and it
+   * makes cross-track isolation structural rather than a naming convention: pruning one track cannot reach the other's entries.
+   *
+   * A track holds more than one entry whenever an upstream MAP change is still referenced by segments in the playlist window - the outgoing init must remain
+   * fetchable until the last segment that needs it rotates out. This differs from the capture path's single initSegment slot above, which is overwritten in
+   * place because capture owns its own encoder and never changes codec configuration mid-stream.
+   */
+  initSegments: Record<InitSegmentTrack, Map<string, Buffer>>;
+
+  // Running total of the bytes held across both init Maps. Maintained by the named-init store on store and prune so memory reporting stays O(1), the same shape
+  // as the segment counters above.
+  initSegmentBytes: number;
+
+  // The init each track's freshly-stored segments currently reference, by served name, or null before the track's first init arrives. The store maintains this
+  // and the playlist and remux paths read it; it is never derived by parsing filenames.
+  currentInitNames: Record<InitSegmentTrack, Nullable<string>>;
 
   // Typed emitter for segment notifications. MPEG-TS consumers subscribe to these events to receive segment data in real time.
   segmentEmitter: SegmentEmitter;
@@ -181,6 +205,10 @@ export interface StreamRegistryEntry {
 
   // Declared bandwidth from the service's HLS manifest in bits per second. Zero for capture-mode streams and when the BANDWIDTH attribute is absent.
   nativeBandwidth: number;
+
+  // Container format of the upstream segments the native proxy is relaying. Meaningful only while streamingMode is "native": the mode flip at the capture
+  // fallback is what invalidates it, exactly as it invalidates nativeBandwidth and nativeResolution, so no code path resets this field on its own.
+  nativeContainer: Nullable<MediaContainer>;
 
   // The native HLS proxy for streams that bypass screen capture. Null for capture-mode streams.
   nativeProxy: Nullable<NativeProxy>;
@@ -320,10 +348,13 @@ export function createHLSState(): HLSState {
     audioPlaylist: "",
     audioSegmentBytes: 0,
     audioSegments: new Map(),
+    currentInitNames: { audio: null, video: null },
     hasAudio: false,
     hasRealPlaylist: false,
     initSegment: null,
+    initSegmentBytes: 0,
     initSegmentReady,
+    initSegments: { audio: new Map(), video: new Map() },
     playlist: "",
     playlistReady,
     prerollBaseUrl: null,
@@ -364,7 +395,7 @@ export function cancelPrerollTimer(hls: HLSState): void {
  */
 export interface StreamMemoryUsage {
 
-  // Size of the fMP4 initialization segment in bytes.
+  // Size of the initialization segments in bytes - the capture path's single slot plus every initialization segment a native fMP4 relay is holding.
   initSegment: number;
 
   // Total size of all media segments in bytes.
@@ -382,7 +413,9 @@ export interface StreamMemoryUsage {
  */
 export function getStreamMemoryUsage(entry: StreamRegistryEntry): StreamMemoryUsage {
 
-  const initSegmentSize = entry.hls.initSegment?.length ?? 0;
+  // Both init sources fold into one figure: the capture path's single slot and the running total the native relay's per-track init Maps maintain. A stream only
+  // ever populates one of the two, but summing keeps the breakdown truthful without a mode branch here.
+  const initSegmentSize = (entry.hls.initSegment?.length ?? 0) + entry.hls.initSegmentBytes;
   const segmentsSize = entry.hls.segmentBytes + entry.hls.audioSegmentBytes;
 
   return {

@@ -12,7 +12,7 @@ export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, Pr
 export type { AuthWallIndicators, CategoryResolution, CategoryResolutionConfig, CategoryResolutionFailure, CategoryResolutionSuccess, ChannelSelectionProfile,
   ChannelSelectorResult, ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule, TuneResult, UiSize } from "./selection.ts";
 export type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";
-export type { CaptureCodec, HealthStatus, StreamListItem, StreamListResponse, StreamingMode, UrlValidationResult, VideoSelectorType,
+export type { CaptureCodec, HealthStatus, MediaContainer, StreamListItem, StreamListResponse, StreamingMode, UrlValidationResult, VideoSelectorType,
   VideoState } from "./streaming.ts";
 export { RECOGNIZED_CODECS } from "./streaming.ts";
 export { isChannelSelectionProfile } from "./selection.ts";

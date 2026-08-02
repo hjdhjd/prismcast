@@ -3,7 +3,7 @@
  * probe.ts: HLS manifest probe and media-feed normalizer.
  */
 import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
-import type { Nullable } from "../types/index.ts";
+import type { MediaContainer, Nullable } from "../types/index.ts";
 import { inferMediaCodec } from "./codecInference.ts";
 
 /* This module probes an intercepted HLS playlist URL and produces a fully described MediaFeed - the canonical input to the native proxy. The HLS spec defines
@@ -230,6 +230,10 @@ export interface MediaFeed {
   // Video codec label (e.g., "H264", "HEVC", "AV1"), or null when the CODECS attribute is absent or the codec is unrecognized.
   codec: Nullable<string>;
 
+  // Container format of the media playlist's segments, determined by whether the body declares an #EXT-X-MAP initialization segment. Null when encryption is
+  // "drm", where the caller abandons native streaming before reading any of the media metadata.
+  container: Nullable<MediaContainer>;
+
   // Classified encryption type.
   encryption: EncryptionType;
 
@@ -315,7 +319,7 @@ export async function probeManifest(playlistUrl: string, channelName: string, op
 
     LOG.debug("native:probe", "Probe cache hit for %s: drm.", channelName);
 
-    return { audioVariantUrl: null, bandwidth: 0, bestVariantUrl: "", codec: null, encryption: "drm", keyUrl: null, resolution: null };
+    return { audioVariantUrl: null, bandwidth: 0, bestVariantUrl: "", codec: null, container: null, encryption: "drm", keyUrl: null, resolution: null };
   }
 
   const elapsed = startTimer();
@@ -622,6 +626,28 @@ function selectVariants(masterBody: string, masterUrl: string): VariantSelection
  * @param channelName - The channel name for logging.
  * @returns The MediaFeed with the classified encryption type and (when applicable) the AES-128 key URL.
  */
+/**
+ * Classifies a media playlist's container format by looking for an #EXT-X-MAP declaration. A playlist that references an initialization segment is fMP4/CMAF;
+ * one that does not is MPEG-TS, whose segments carry their own PAT/PMT and need no init. The scan is line-anchored - each line is trimmed and tested with
+ * startsWith - so a segment or key URI that happens to contain the literal "#EXT-X-MAP:" inside a query string cannot be mistaken for the tag. This mirrors the
+ * discipline classifyHlsPlaylist uses for the master/media decision.
+ *
+ * @param mediaBody - The media playlist body text.
+ * @returns "fmp4" when the body declares an initialization segment, "ts" otherwise.
+ */
+function classifyContainer(mediaBody: string): MediaContainer {
+
+  for(const rawLine of mediaBody.split("\n")) {
+
+    if(rawLine.trim().startsWith("#EXT-X-MAP:")) {
+
+      return "fmp4";
+    }
+  }
+
+  return "ts";
+}
+
 async function classifyEncryption(resolved: ResolvedMedia, channelName: string): Promise<MediaFeed> {
 
   const lines = resolved.mediaBody.split("\n");
@@ -694,6 +720,10 @@ async function classifyEncryption(resolved: ResolvedMedia, channelName: string):
     bandwidth: resolved.bandwidth,
     bestVariantUrl: resolved.mediaUrl,
     codec: resolved.codec,
+
+    // Both playlist-kind branches converge here, so this is the one place the container is decided. A DRM feed carries null because the caller abandons native
+    // streaming without reading it, and classifying a body we will never relay would be a fabricated value.
+    container: (encryption === "drm") ? null : classifyContainer(resolved.mediaBody),
     encryption,
     keyUrl,
     resolution: resolved.resolution

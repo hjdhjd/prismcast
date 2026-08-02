@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { registerStream, unregisterStream } from "./registry.ts";
-import { storeInitSegment, updatePlaylist, waitForInitSegment, waitForPlaylist } from "./hlsSegments.ts";
+import { storeInitSegment, storeNamedInitSegment, updatePlaylist, waitForInitSegment, waitForPlaylist } from "./hlsSegments.ts";
 import assert from "node:assert/strict";
 import { makeFakeClock } from "../utils/clock.helpers.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
@@ -219,5 +219,59 @@ describe("readiness waits resolve on stream termination", () => {
     assert.equal(readyEntry.hls.segmentEmitter.listenerCount("terminated"), 0, "the terminated listener is removed after the readiness arm wins");
 
     unregisterStream(readyEntry.id);
+  });
+});
+
+describe("named init readiness is keyed on the video track (T13)", () => {
+
+  test("an audio-first init does not resolve readiness, and the video init then does", async () => {
+
+    /* A split-track fMP4 relay can land its audio initialization before its video one. Readiness must not fire on the audio arrival: the consumer waiting on this
+     * signal is the MPEG-TS remux path, which resolves the VIDEO initialization, so releasing a client on audio would hand it a guard with nothing to validate.
+     *
+     * The pending-versus-resolved distinction is only real after a microtask flush - without it, an already-resolved promise and a pending one are
+     * indistinguishable because neither has run its continuation yet. So the flag is registered before the store call and the flush happens before the assertion.
+     */
+    const entry = makeRegistryEntry();
+
+    registerStream(entry);
+
+    let readinessSettled = false;
+
+    void entry.hls.initSegmentReady.then(() => {
+
+      readinessSettled = true;
+    });
+
+    storeNamedInitSegment(entry.id, "audio", "init-a0.mp4", Buffer.from("audio-init"));
+
+    await Promise.resolve();
+
+    assert.equal(readinessSettled, false, "the audio track's first init does not signal readiness");
+
+    storeNamedInitSegment(entry.id, "video", "init-v0.mp4", Buffer.from("video-init"));
+
+    await entry.hls.initSegmentReady;
+
+    assert.equal(readinessSettled, true, "the video track's first init signals readiness");
+
+    unregisterStream(entry.id);
+  });
+
+  test("waitForInitSegment resolves true once the video track's first named init is stored", async () => {
+
+    // The route the MPEG-TS path actually takes: a relay whose video initialization arrives while a client is already waiting.
+    const entry = makeRegistryEntry();
+
+    registerStream(entry);
+
+    const { clock } = makeFakeClock();
+    const pending = waitForInitSegment(entry.id, 30000, clock);
+
+    storeNamedInitSegment(entry.id, "video", "init-v0.mp4", Buffer.from("video-init"));
+
+    assert.equal(await pending, true, "the video init releases the wait");
+
+    unregisterStream(entry.id);
   });
 });

@@ -4,11 +4,11 @@
  * through the Clock port (see utils/clock.ts) so tests can deterministically simulate "promise resolves before timeout" vs "timeout fires before promise"
  * without depending on real timers - the race is exactly the pattern Node's synchronous mock.timers.tick cannot drive reliably.
  */
+import type { InitSegmentTrack, StreamRegistryEntry } from "./registry.ts";
 import { LOG, realClock } from "../utils/index.ts";
 import { cancelPrerollTimer, getStream } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "../utils/index.ts";
-import type { StreamRegistryEntry } from "./registry.ts";
 
 /* This module provides functions for storing and retrieving HLS segments, playlists, and init segments. All data is stored in the stream registry's HLSState, which is
  * the single source of truth for stream data. Key responsibilities:
@@ -252,12 +252,23 @@ export function storeInitSegment(streamId: number, data: Buffer): void {
 
   if(isFirstInit) {
 
-    stream.hls.signalInitSegmentReady();
-
-    const elapsed = ((Date.now() - stream.startTime.getTime()) / 1000).toFixed(3);
-
-    LOG.debug("timing:startup", "Init segment ready in %ss.", elapsed);
+    signalFirstInit(stream);
   }
+}
+
+/**
+ * Resolves a stream's init-segment readiness promise and records the startup timing. Both init stores share this so the readiness contract - and the timing log
+ * that measures it - has one implementation regardless of which storage shape produced the first init.
+ *
+ * @param stream - The stream registry entry whose readiness to signal.
+ */
+function signalFirstInit(stream: StreamRegistryEntry): void {
+
+  stream.hls.signalInitSegmentReady();
+
+  const elapsed = ((Date.now() - stream.startTime.getTime()) / 1000).toFixed(3);
+
+  LOG.debug("timing:startup", "Init segment ready in %ss.", elapsed);
 }
 
 /**
@@ -275,6 +286,159 @@ export function getInitSegment(streamId: number): Buffer | undefined {
   }
 
   return stream.hls.initSegment ?? undefined;
+}
+
+// Named Init Segment Management.
+
+/* The functions below own the native relay's per-track initialization segments - the ones fetched from upstream #EXT-X-MAP references and served under names the
+ * relay mints. They are deliberately separate from the single-slot storeInitSegment above: capture owns its encoder and overwrites one init in place, while a
+ * relayed fMP4 source can change its init mid-stream and must keep the outgoing one fetchable until the last segment referencing it leaves the window.
+ *
+ * The "initSegment" emitter event is deliberately not emitted here. Its only subscribers are the capture path's MPEG-TS consumers, which read the single slot;
+ * a native fMP4 client resolves its init through resolveMpegTsInitSource instead, so emitting would notify no one.
+ */
+
+/**
+ * Stores a named initialization segment for one track and updates that track's current served name. Readiness is signaled from the VIDEO track's first init
+ * only: the consumer that waits on it is the MPEG-TS remux path, which resolves the video init, so signaling on an audio-first arrival would release a client
+ * before the buffer it needs exists.
+ *
+ * The byte counter moves by the delta against whatever was already stored under this filename, so re-storing a name whose bytes the relay is reusing is
+ * byte-neutral and safe to call more than once. That differs from storeSegmentToMap's always-add shape, which is correct there because its callers only ever
+ * mint fresh names.
+ *
+ * @param streamId - The numeric stream ID.
+ * @param track - The track this init belongs to.
+ * @param filename - The name the init is served under.
+ * @param data - The init segment binary data.
+ */
+export function storeNamedInitSegment(streamId: number, track: InitSegmentTrack, filename: string, data: Buffer): void {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    LOG.debug("streaming:hls", "Attempted to store a named init segment for unknown stream %s.", streamId);
+
+    return;
+  }
+
+  const initSegments = stream.hls.initSegments[track];
+  const existing = initSegments.get(filename);
+  const isFirstVideoInit = (track === "video") && (stream.hls.initSegments.video.size === 0);
+
+  initSegments.set(filename, data);
+  stream.hls.initSegmentBytes += data.length - (existing?.length ?? 0);
+  stream.hls.currentInitNames[track] = filename;
+
+  if(isFirstVideoInit) {
+
+    signalFirstInit(stream);
+  }
+}
+
+/**
+ * Gets a named initialization segment by the name it is served under, searching both tracks. The names the relay mints are distinct per track, so a single
+ * lookup key is unambiguous and the HTTP route needs no track parameter.
+ *
+ * @param streamId - The numeric stream ID.
+ * @param filename - The served init segment name.
+ * @returns The init segment data, or undefined when the stream or the name is unknown.
+ */
+export function getNamedInitSegment(streamId: number, filename: string): Buffer | undefined {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    return undefined;
+  }
+
+  return stream.hls.initSegments.video.get(filename) ?? stream.hls.initSegments.audio.get(filename);
+}
+
+/**
+ * Finds a track's already-stored init segment whose bytes match the supplied data. This is what makes init identity content-based rather than URL-based: a
+ * service that rotates a token through its #EXT-X-MAP URI re-serves the same bytes, and an ad break that alternates between two initializations returns to one
+ * already stored. Comparing against the track's whole stored set - not just its current init - is what lets that alternation reuse names instead of minting a
+ * duplicate for bytes already being served. The search lives with the storage it scans so callers never reach into the Maps.
+ *
+ * @param streamId - The numeric stream ID.
+ * @param track - The track whose stored inits to search.
+ * @param data - The candidate init segment bytes.
+ * @returns The served name of the matching init, or undefined when no stored init has these bytes.
+ */
+export function findNamedInitSegment(streamId: number, track: InitSegmentTrack, data: Buffer): string | undefined {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    return undefined;
+  }
+
+  for(const [ filename, stored ] of stream.hls.initSegments[track]) {
+
+    if(stored.equals(data)) {
+
+      return filename;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Evicts a track's init segments that the retain set no longer names, decrementing the byte counter by each eviction so the counter tracks the live set. The
+ * caller derives the retain set from the segments actually in that track's playlist window plus the track's current init, so an init survives exactly as long as
+ * something can still reference it. Operating on one track's Map makes the isolation structural - a video prune cannot evict an audio init.
+ *
+ * @param streamId - The numeric stream ID.
+ * @param track - The track to prune.
+ * @param retain - The served init names that must survive.
+ */
+export function pruneNamedInitSegments(streamId: number, track: InitSegmentTrack, retain: Set<string>): void {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    return;
+  }
+
+  const initSegments = stream.hls.initSegments[track];
+
+  for(const [ filename, stored ] of initSegments) {
+
+    if(!retain.has(filename)) {
+
+      stream.hls.initSegmentBytes -= stored.length;
+      initSegments.delete(filename);
+    }
+  }
+}
+
+/**
+ * Releases every piece of native init state for a stream. This is the single cleanup owner the recovery path calls when a stream leaves native mode: the init
+ * Maps outlive the proxy that filled them, and getStreamMemoryUsage reads the byte counter with no mode gate, so state left behind here would misreport memory
+ * for the rest of the stream's life.
+ *
+ * @param streamId - The numeric stream ID.
+ */
+export function clearNativeInitState(streamId: number): void {
+
+  const stream = getStream(streamId);
+
+  if(!stream) {
+
+    return;
+  }
+
+  stream.hls.initSegments.audio.clear();
+  stream.hls.initSegments.video.clear();
+  stream.hls.initSegmentBytes = 0;
+  stream.hls.currentInitNames.audio = null;
+  stream.hls.currentInitNames.video = null;
 }
 
 // Playlist Management.

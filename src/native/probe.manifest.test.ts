@@ -1258,3 +1258,124 @@ describe("probeManifest: variant fallback and audio group binding", () => {
     assert.equal(result.bestVariantUrl, healthyUrl, "the unresolvable variant drops out and the healthy one is selected");
   });
 });
+
+describe("probeManifest: container classification (T1)", () => {
+
+  beforeEach(() => {
+
+    clearProbeCache("container-channel");
+  });
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("classifies a playlist declaring #EXT-X-MAP as fmp4", async () => {
+
+    // The issue #44 shape: a CMAF media playlist whose fragments are preceded by an initialization segment reference.
+    const playlistUrl = "https://cdn.test/container-fmp4.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:7",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXT-X-MAP:URI=\"video_1init.cmfv\"",
+      "#EXTINF:6,",
+      "video_1.cmfv"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      "https://cdn.test/video_1.cmfv": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "container-channel");
+
+    assert.ok(result, "probe resolved");
+    assert.equal(result.container, "fmp4", "an EXT-X-MAP declaration means fMP4");
+  });
+
+  test("classifies a playlist with no #EXT-X-MAP as ts", async () => {
+
+    const playlistUrl = "https://cdn.test/container-ts.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXTINF:6,",
+      "seg0.ts"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "container-channel");
+
+    assert.ok(result, "probe resolved");
+    assert.equal(result.container, "ts", "no EXT-X-MAP means self-describing MPEG-TS");
+  });
+
+  test("does not false-positive when the tag text appears inside another tag's quoted value", async () => {
+
+    /* The scan is line-anchored, so the literal "#EXT-X-MAP:" carried inside another tag's quoted attribute is not a MAP declaration. A substring scan over the
+     * whole body would misclassify this playlist as fMP4 and send the relay hunting for an initialization segment that does not exist.
+     */
+    const playlistUrl = "https://cdn.test/container-decoy.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXT-X-SESSION-DATA:DATA-ID=\"test.note\",VALUE=\"#EXT-X-MAP:URI=\\\"decoy.mp4\\\"\"",
+      "#EXTINF:6,",
+      "seg0.ts"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "container-channel");
+
+    assert.ok(result, "probe resolved");
+    assert.equal(result.container, "ts", "the decoy URI does not classify the playlist as fMP4");
+  });
+
+  test("carries a null container on the DRM cache synthetic", async () => {
+
+    /* A DRM classification aborts native streaming before any media metadata is read, so the container is deliberately absent rather than fabricated. This
+     * asserts the synthetic the cache short-circuit returns, which is the one MediaFeed built without a body to classify.
+     */
+    const playlistUrl = "https://cdn.test/container-drm.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://drm\"",
+      "#EXTINF:6,",
+      "seg0.ts"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 })
+    });
+
+    const first = await probeManifest(playlistUrl, "container-channel");
+
+    assert.ok(first, "probe resolved");
+    assert.equal(first.encryption, "drm", "the body classifies as DRM");
+    assert.equal(first.container, null, "a DRM feed carries no container");
+
+    // The second probe takes the cache short-circuit, which builds its own synthetic MediaFeed.
+    const cached = await probeManifest(playlistUrl, "container-channel");
+
+    assert.ok(cached, "the cached probe resolved");
+    assert.equal(cached.encryption, "drm", "the cache short-circuit still reports DRM");
+    assert.equal(cached.container, null, "the synthetic carries a null container too");
+  });
+});
