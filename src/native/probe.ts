@@ -36,6 +36,10 @@ const FETCH_TIMEOUT = 10000;
 // refresh path does not consume this cap; it pins its own attempt count through probeManifest's options.
 const MAX_VARIANT_FALLBACK_ATTEMPTS = 3;
 
+// The smallest segment count a tune-time probe will admit as a channel. A window holding a single segment has nothing to advance to, so it describes a fixed
+// asset - a session bumper, a slate, a trailer - rather than a stream the relay can follow. Two is the floor at which a window can be observed to move at all.
+const MIN_ADMISSIBLE_SEGMENT_COUNT = 2;
+
 /**
  * Encryption classification result from probing an HLS manifest.
  */
@@ -211,6 +215,29 @@ export function isLiveMediaPlaylist(mediaBody: string): boolean {
 }
 
 /**
+ * Counts the segments a media playlist declares. Each segment is introduced by exactly one #EXTINF duration line, so counting those lines counts the window. The
+ * scan is line-anchored - trim then startsWith - and tests the colon-suffixed form that a duration line always carries, so an #EXTINF token riding inside a segment
+ * URI, a comment, or another tag's quoted attribute value cannot inflate the count.
+ *
+ * @param mediaBody - The media playlist text.
+ * @returns The number of segments the playlist declares.
+ */
+function countMediaSegments(mediaBody: string): number {
+
+  let segments = 0;
+
+  for(const rawLine of mediaBody.split("\n")) {
+
+    if(rawLine.trim().startsWith("#EXTINF:")) {
+
+      segments++;
+    }
+  }
+
+  return segments;
+}
+
+/**
  * Fully described HLS media feed ready for consumption by the native proxy. Every code path that produces this type (master-playlist resolution and media-only
  * passthrough) emerges with the same shape, so downstream code (proxy creation, token refresh, status display) does not branch on which playlist kind originally
  * arrived.
@@ -301,11 +328,15 @@ export function clearProbeCache(channelName: string): void {
  * @param options.maxVariantAttempts - How many ranked variants a master playlist may try. Tune-time callers omit it and take capped descending-bandwidth
  *                                     fallback. The token-refresh path pins a single attempt: a refresh applies its result to a running proxy as URL swaps
  *                                     against an audio topology the proxy fixed at construction, so refresh must not reselect.
+ * @param options.rejectStaticPlaylists - Whether a resolved window of at most one segment is refused. The tune path sets it so a session bumper falls back to
+ *                                        capture instead of becoming the stream. The refresh path leaves it off: its probe re-describes a feed the proxy is
+ *                                        already relaying, so admitting the channel is not its decision to make.
  * @returns The MediaFeed, or null if probing fails.
  */
-export async function probeManifest(playlistUrl: string, channelName: string, options: { maxVariantAttempts?: number } = {}): Promise<Nullable<MediaFeed>> {
+export async function probeManifest(playlistUrl: string, channelName: string,
+  options: { maxVariantAttempts?: number; rejectStaticPlaylists?: boolean } = {}): Promise<Nullable<MediaFeed>> {
 
-  const { maxVariantAttempts = MAX_VARIANT_FALLBACK_ATTEMPTS } = options;
+  const { maxVariantAttempts = MAX_VARIANT_FALLBACK_ATTEMPTS, rejectStaticPlaylists = false } = options;
 
   // Normalize to a floor of one whole attempt. Array.prototype.slice reads a negative count from the end of the list, so an out-of-range value from a caller
   // would otherwise become a surprising selection rather than a single top-ranked try.
@@ -348,6 +379,26 @@ export async function probeManifest(playlistUrl: string, channelName: string, op
       LOG.debug("native:probe", "Could not resolve %s playlist for %s.", kind, channelName);
 
       return null;
+    }
+
+    /* Tune admission, opted into by the caller. A window holding at most one segment is not a channel: services front their live player with a per-session
+     * bumper - a single-segment playlist, often tagged live, whose sequence never moves - and the interceptor latches whichever master reaches the wire first.
+     * Relaying that playlist delivers one slate segment and then stalls forever, so the tune declines here and the coordinator falls back to capture, which
+     * shows whatever the page itself is playing. Liveness tagging is deliberately not consulted, because a one-segment VOD window is no more consumable than a
+     * one-segment live one. This runs ahead of both the encryption classification and the cache write, so a playlist we refuse never contributes a
+     * channel-level fact describing itself.
+     */
+    if(rejectStaticPlaylists) {
+
+      const segments = countMediaSegments(resolved.mediaBody);
+
+      if(segments < MIN_ADMISSIBLE_SEGMENT_COUNT) {
+
+        LOG.debug("native:probe", "Declining native streaming for %s: the playlist window holds %s segment(s), which is a fixed asset rather than a channel.",
+          channelName, segments);
+
+        return null;
+      }
     }
 
     // Classify encryption from the media body. This branch is identical for master-derived and media-only feeds because #EXT-X-KEY tags live on the media

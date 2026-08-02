@@ -586,4 +586,41 @@ describe("refreshNativeManifest", () => {
     assert.equal(hooks.variantUrl, "", "updateVariantUrl was never called");
     assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh rescheduled");
   });
+
+  test("refreshes against a one-segment window, since static-playlist rejection is a tune-admission decision only", async () => {
+
+    /* Tune admission asks whether a playlist is the channel at all; a refresh asks only for fresh URLs describing a feed the proxy is already relaying. So the
+     * refresh probe never opts into static-playlist rejection, and a momentarily thin window - one segment at the instant the re-probe lands, which a live edge
+     * can present after a discontinuity or a short producer stall - must not tear down a running stream. Here the refreshed variant carries a single segment and
+     * the refresh succeeds exactly as it would with a full window.
+     */
+    const expirySeconds = Math.floor(Date.now() / 1000) + 600;
+    const masterUrl = "https://cdn.test/thin-window-master.m3u8?exp=" + String(expirySeconds);
+    const variantUrl = "https://cdn.test/thin-window-variant.m3u8?exp=" + String(expirySeconds);
+
+    makeFetchRouter({
+
+      "https://cdn.test/thin-window-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nthin-window-variant.m3u8?exp=" + String(expirySeconds) + "\n", { status: 200 }),
+      "https://cdn.test/thin-window-variant.m3u8": () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n", { status: 200 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("thin-window-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "thin-window-channel",
+      masterUrl,
+      page: makeFakePage(),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "thin-window-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "the refresh succeeds against a one-segment window");
+    assert.equal(hooks.variantUrl, variantUrl, "the proxy still receives the refreshed variant URL");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "and the next refresh is still scheduled");
+  });
 });

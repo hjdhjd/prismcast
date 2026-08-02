@@ -142,7 +142,7 @@ describe("attemptNativeStreaming", () => {
     makeFetchRouter({
 
       [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\ndrm-variant.m3u8\n", { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n", { status: 200 })
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n#EXTINF:6,\nseg0.ts\n#EXTINF:6,\nseg1.ts\n", { status: 200 })
     });
 
     const options = makeAttemptOptions({
@@ -173,7 +173,7 @@ describe("attemptNativeStreaming", () => {
         "clear-variant.m3u8",
         ""
       ].join("\n"), { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:6,\nseg.ts\n", { status: 200 })
+      [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:6,\nseg.ts\n#EXTINF:6,\nseg1.ts\n", { status: 200 })
     });
 
     const options = makeAttemptOptions({
@@ -210,7 +210,7 @@ describe("attemptNativeStreaming", () => {
     makeFetchRouter({
 
       [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\naes-prefetch-variant.m3u8\n", { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"\n#EXTINF:2,\nseg0.ts\n#EXTINF:2,\nseg1.ts\n", { status: 200 }),
       [keyUrl]: () => {
 
         keyCallCount++;
@@ -255,7 +255,7 @@ describe("attemptNativeStreaming", () => {
         "dai-video.m3u8",
         ""
       ].join("\n"), { status: 200 }),
-      [videoUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+      [videoUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n#EXTINF:2,\nseg1.ts\n", { status: 200 })
     });
 
     const options = makeAttemptOptions({
@@ -289,7 +289,7 @@ describe("attemptNativeStreaming", () => {
         "dai-hls-video.m3u8",
         ""
       ].join("\n"), { status: 200 }),
-      [videoUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+      [videoUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n#EXTINF:2,\nseg1.ts\n", { status: 200 })
     });
 
     const options = makeAttemptOptions({
@@ -342,7 +342,7 @@ describe("attemptNativeStreaming", () => {
     makeFetchRouter({
 
       [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nonerror-variant.m3u8\n", { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+      [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n#EXTINF:2,\nseg1.ts\n", { status: 200 })
     });
 
     let onErrorCalls = 0;
@@ -441,7 +441,7 @@ describe("attemptNativeStreaming", () => {
     makeFetchRouter({
 
       [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nexp-variant.m3u8\n", { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+      [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n#EXTINF:2,\nseg1.ts\n", { status: 200 })
     });
 
     const options = makeAttemptOptions({
@@ -479,7 +479,8 @@ describe("attemptNativeStreaming", () => {
     makeFetchRouter({
 
       [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,CODECS=\"avc1.640028\"\naes-ok-variant.m3u8\n", { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"\n#EXTINF:2,\nseg.ts\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"\n#EXTINF:2,\nseg.ts\n#EXTINF:2,\nseg1.ts\n",
+        { status: 200 }),
       [keyUrl]: () => {
 
         keyCallCount++;
@@ -525,7 +526,8 @@ describe("attemptNativeStreaming: container hop (T21)", () => {
     makeFetchRouter({
 
       [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nhop-fmp4-variant.m3u8\n", { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MAP:URI=\"init.cmfv\"\n#EXTINF:6,\nseg0.cmfv\n", { status: 200 })
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MAP:URI=\"init.cmfv\"\n#EXTINF:6,\nseg0.cmfv\n#EXTINF:6,\nseg1.cmfv\n",
+        { status: 200 })
     });
 
     clearProbeCache("hop-fmp4-channel");
@@ -553,7 +555,7 @@ describe("attemptNativeStreaming: container hop (T21)", () => {
     makeFetchRouter({
 
       [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nhop-ts-variant.m3u8\n", { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n", { status: 200 })
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n#EXTINF:6,\nseg1.ts\n", { status: 200 })
     });
 
     clearProbeCache("hop-ts-channel");
@@ -568,5 +570,40 @@ describe("attemptNativeStreaming: container hop (T21)", () => {
     assert.equal(result.container, "ts", "the MPEG-TS classification reaches the result");
 
     result.proxy.stop();
+  });
+});
+
+describe("attemptNativeStreaming: static-playlist tune admission", () => {
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("returns null when the intercepted master's variant is a one-segment session bumper", async () => {
+
+    /* The end-to-end pin on tune admission. The coordinator is the only caller that opts into static-playlist rejection, so a bumper-shaped variant probes to null
+     * and the attempt declines down the same path a DRM classification takes - the one the caller reads as "fall back to capture". The fixture mirrors the observed
+     * shape: live-tagged CMAF, an initialization segment, and a window of exactly one segment that never advances.
+     */
+    const masterUrl = "https://cdn.test/bumper-master.m3u8";
+    const variantUrl = "https://cdn.test/bumper-variant.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1800000\nbumper-variant.m3u8\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MAP:URI=\"bumper_init.cmfv\"\n#EXTINF:6.006,\nbumper_1.cmfv\n",
+        { status: 200 })
+    });
+
+    clearProbeCache("bumper-channel");
+
+    const result = await attemptNativeStreaming(makeAttemptOptions({
+
+      channelName: "bumper-channel",
+      interceptionPromise: Promise.resolve({ manifestUrl: masterUrl, selectedKind: "master" })
+    }));
+
+    assert.equal(result, null, "a bumper-shaped variant declines the native attempt so capture serves the channel");
   });
 });

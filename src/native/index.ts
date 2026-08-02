@@ -165,9 +165,12 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   LOG.debug("native:coordinator", "Manifest intercepted for %s in %sms.", channelName, elapsed());
 
-  // Probe the intercepted URL and normalize the result to a MediaFeed. The probe handles both master and media playlists transparently; this code path does not
-  // need to know which kind arrived.
-  const mediaFeed = await probeManifest(interception.manifestUrl, channelName);
+  /* Probe the intercepted URL and normalize the result to a MediaFeed. The probe handles both master and media playlists transparently; this code path does not
+   * need to know which kind arrived. Tune admission refuses a window of at most one segment: the interceptor latches the first master on the wire, and for a
+   * service that fronts its player with a per-session bumper that master describes the bumper rather than the channel. Declining lands on the null path below,
+   * where capture serves the channel the relay could not.
+   */
+  const mediaFeed = await probeManifest(interception.manifestUrl, channelName, { rejectStaticPlaylists: true });
 
   if(!mediaFeed) {
 

@@ -10,6 +10,7 @@
  * dependency direction is visible to readers. */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearProbeCache, getCachedEncryption, probeManifest } from "./probe.ts";
+import { LOG } from "../utils/index.ts";
 import assert from "node:assert/strict";
 
 /* makeFetchRouter installs a mock for globalThis.fetch that dispatches to URL-keyed responses. Tests register their fixtures keyed by URL prefix; any request to
@@ -1377,5 +1378,208 @@ describe("probeManifest: container classification (T1)", () => {
     assert.ok(cached, "the cached probe resolved");
     assert.equal(cached.encryption, "drm", "the cache short-circuit still reports DRM");
     assert.equal(cached.container, null, "the synthetic carries a null container too");
+  });
+});
+
+/* The observed session-bumper shape: a master whose selected variant is a live-tagged CMAF playlist carrying one segment, an initialization segment, and no
+ * ENDLIST. A service serves this in front of the real channel for the duration of a session, and its window never advances. The with-flag and without-flag cases
+ * below share these bytes, so the opt-in pin provably exercises the same playlist the guard refuses rather than a lookalike.
+ */
+const BUMPER_MASTER_URL = "https://cdn.test/bumper-master.m3u8";
+const BUMPER_VARIANT_URL = "https://cdn.test/bumper-variant.m3u8";
+
+const BUMPER_MASTER_BODY = [
+  "#EXTM3U",
+  "#EXT-X-VERSION:7",
+  "#EXT-X-STREAM-INF:BANDWIDTH=1800000,RESOLUTION=1280x720,CODECS=\"avc1.640028,mp4a.40.2\"",
+  "bumper-variant.m3u8",
+  ""
+].join("\n");
+
+const BUMPER_VARIANT_BODY = [
+  "#EXTM3U",
+  "#EXT-X-VERSION:7",
+  "#EXT-X-TARGETDURATION:6",
+  "#EXT-X-MEDIA-SEQUENCE:1",
+  "#EXT-X-MAP:URI=\"bumper_init.cmfv\"",
+  "#EXTINF:6.006,",
+  "bumper_1.cmfv",
+  ""
+].join("\n");
+
+// Routes the bumper master and its variant. Both admission cases call this rather than spelling the fixture twice, which is what makes them a matched pair.
+function routeBumper(): void {
+
+  makeFetchRouter({
+
+    [BUMPER_MASTER_URL]: () => new Response(BUMPER_MASTER_BODY, { status: 200 }),
+    [BUMPER_VARIANT_URL]: () => new Response(BUMPER_VARIANT_BODY, { status: 200 })
+  });
+}
+
+/* Returns the arguments of the one recorded LOG.debug call whose message matches the pattern. A probe run emits several debug lines, so the guard's line is
+ * selected by its message rather than by call index, and requiring exactly one match keeps the pin from passing on a coincidental second line.
+ */
+function soleDebugCall(calls: readonly { arguments: readonly unknown[] }[], pattern: RegExp): readonly unknown[] {
+
+  const [ matched, ...extra ] = calls.filter((call) => pattern.test(String(call.arguments[1])));
+
+  assert.ok(matched, "expected a debug line matching " + String(pattern));
+  assert.equal(extra.length, 0, "expected exactly one debug line matching " + String(pattern));
+
+  return matched.arguments;
+}
+
+describe("probeManifest: static-playlist tune admission", () => {
+
+  beforeEach(() => {
+
+    clearProbeCache("static-channel");
+  });
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("declines a master whose selected variant is a one-segment session bumper", async (t) => {
+
+    /* The primary case, shaped like the observed capture. The count pin is what distinguishes a guard reading the resolved variant body - one segment - from one
+     * reading the master body, which carries no #EXTINF at all and would report zero.
+     */
+    const debug = t.mock.method(LOG, "debug", () => { /* Captured via the mock. */ });
+
+    routeBumper();
+
+    const result = await probeManifest(BUMPER_MASTER_URL, "static-channel", { rejectStaticPlaylists: true });
+
+    assert.equal(result, null, "a one-segment window is not admitted as a channel");
+
+    const logged = soleDebugCall(debug.mock.calls, /Declining native streaming/);
+
+    assert.equal(logged[0], "native:probe", "the rejection logs under the existing probe category");
+    assert.equal(logged[2], "static-channel", "the channel name is interpolated");
+    assert.equal(logged[3], 1, "the count comes from the resolved variant body, not the master");
+    assert.equal(getCachedEncryption("static-channel"), null, "a refused playlist contributes no channel-level encryption fact");
+  });
+
+  test("probes the same bumper bytes exactly as the flag-less path does", async () => {
+
+    // The opt-in pin. Without the flag the identical bytes resolve to the full MediaFeed - clear fMP4 carrying the master's metadata - and the probe writes its
+    // encryption fact as usual. Every refresh call site takes this path, so this case is also what pins refresh immunity at the probe level.
+    routeBumper();
+
+    const result = await probeManifest(BUMPER_MASTER_URL, "static-channel");
+
+    assert.ok(result, "the flag-less probe resolves the bumper");
+    assert.equal(result.encryption, "clear", "encryption classified from the variant body");
+    assert.equal(result.container, "fmp4", "the EXT-X-MAP declaration classifies the container");
+    assert.equal(result.bestVariantUrl, BUMPER_VARIANT_URL, "the selected variant surfaces");
+    assert.equal(result.bandwidth, 1800000, "bandwidth from the master's BANDWIDTH attribute");
+    assert.equal(result.codec, "H264", "codec from the master's CODECS attribute");
+    assert.equal(result.resolution, "1280x720", "resolution from the master's RESOLUTION attribute");
+    assert.equal(getCachedEncryption("static-channel"), "clear", "the flag-less path writes the probe cache");
+  });
+
+  test("declines a one-segment VOD window, since liveness tagging does not make a window consumable", async () => {
+
+    // Liveness independence: the same single segment behind an ENDLIST and a VOD type is refused identically, because the count is what decides.
+    const playlistUrl = "https://cdn.test/static-vod.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXT-X-PLAYLIST-TYPE:VOD",
+      "#EXTINF:6,",
+      "seg0.ts",
+      "#EXT-X-ENDLIST"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "static-channel", { rejectStaticPlaylists: true });
+
+    assert.equal(result, null, "the segment count decides, not the ENDLIST or VOD tagging");
+  });
+
+  test("admits a two-segment live window, the boundary at which a window can be seen to advance", async () => {
+
+    // The passing side of the boundary. Without this case the guard could reject everything and still satisfy the rejection cases.
+    const playlistUrl = "https://cdn.test/static-boundary.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXTINF:6,",
+      "seg0.ts",
+      "#EXTINF:6,",
+      "seg1.ts"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "static-channel", { rejectStaticPlaylists: true });
+
+    assert.ok(result, "two segments clear the admission floor");
+    assert.equal(result.encryption, "clear", "the admitted feed classifies exactly as it would without the flag");
+    assert.equal(result.container, "ts", "and carries its container through");
+  });
+
+  test("declines a one-segment window carrying a decoy #EXTINF inside another tag's quoted value", async () => {
+
+    /* The counter is line-anchored, so an #EXTINF token riding inside another tag's quoted attribute value is not a segment. A substring counter would read two
+     * here and admit the playlist, which is what makes this fixture distinguish the anchored discipline from a naive scan. Same shape as the container decoy above.
+     */
+    const playlistUrl = "https://cdn.test/static-decoy.m3u8";
+    const playlistBody = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXT-X-SESSION-DATA:DATA-ID=\"test.note\",VALUE=\"#EXTINF:6,\"",
+      "#EXTINF:6,",
+      "seg0.ts"
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 }),
+      "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
+    });
+
+    const result = await probeManifest(playlistUrl, "static-channel", { rejectStaticPlaylists: true });
+
+    assert.equal(result, null, "the decoy does not count toward the window");
+  });
+
+  test("declines a media-classified body that declares no segments at all", async (t) => {
+
+    /* #EXT-X-TARGETDURATION on its own is enough for the playlist-kind classifier to call this a media playlist, so the resolver wraps it verbatim and it reaches
+     * the guard, where the zero-count branch refuses it. A body carrying no media signal would die earlier on the unresolved-kind path with the guard never
+     * running, so asserting the rejection log is what proves which of the two decided here.
+     */
+    const debug = t.mock.method(LOG, "debug", () => { /* Captured via the mock. */ });
+    const playlistUrl = "https://cdn.test/static-empty.m3u8";
+    const playlistBody = [ "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:6", "#EXT-X-MEDIA-SEQUENCE:0" ].join("\n");
+
+    makeFetchRouter({
+
+      [playlistUrl]: () => new Response(playlistBody, { status: 200 })
+    });
+
+    const result = await probeManifest(playlistUrl, "static-channel", { rejectStaticPlaylists: true });
+
+    assert.equal(result, null, "an empty window is not a channel either");
+
+    const logged = soleDebugCall(debug.mock.calls, /Declining native streaming/);
+
+    assert.equal(logged[3], 0, "the guard refused it on a zero count, rather than the resolver refusing the body");
   });
 });
