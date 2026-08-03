@@ -3,11 +3,12 @@
  * preroll.test.ts: Unit tests for the preroll compositor and accessor functions in preroll.ts. The pure-function exports - getPrerollSegmentCount,
  * getPrerollSegmentDuration, getPrerollTotalDurationSec, getPrerollMaxDuration, getPrerollCodec, isPrerollReady, computePrerollWindow, buildPrerollEntries,
  * computeProgressiveReveal - earn full coverage here. setupPrerollRoutes is also unit-tested here against an Express stub, covering route registration and
- * each 404 branch. Only the FFmpeg spawn path (generatePreroll) requires real subprocess fixtures and is deferred to e2e.
+ * each 404 branch. spawnAndCollect's deadline and collection semantics are exercised directly with Node child processes; only real-FFmpeg encoding
+ * (generatePreroll) remains deferred to e2e.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { buildPrerollEntries, computePrerollWindow, computeProgressiveReveal, computeReveal, generatePrerollPlaylist, getPrerollCodec, getPrerollMaxDuration,
-  getPrerollSegmentCount, getPrerollSegmentDuration, getPrerollTotalDurationSec, isPrerollReady, setupPrerollRoutes } from "./preroll.ts";
+  getPrerollSegmentCount, getPrerollSegmentDuration, getPrerollTotalDurationSec, isPrerollReady, setupPrerollRoutes, spawnAndCollect } from "./preroll.ts";
 import { makeExpressStub, makeReqRes } from "../routes/express.helpers.ts";
 import type { Express } from "express";
 import assert from "node:assert/strict";
@@ -458,5 +459,37 @@ describe("setupPrerollRoutes", () => {
 
     assert.equal(status.mock.calls[0]?.arguments[0], 404);
     assert.equal(send.mock.calls[0]?.arguments[0], "Preroll not available.");
+  });
+});
+
+describe("spawnAndCollect", () => {
+
+  test("kills the child at the deadline and rejects with the timeout message", async () => {
+
+    /* A child that writes a little and then never exits is the hung-encoder shape the deadline exists for. The platform kills it when the deadline passes, and
+     * the rejection has to name the timeout rather than surfacing the raw abort error, since that message is what the caller's warning line puts in front of the
+     * operator. Real time is used deliberately: the deadline is the subject here, and mocking timers would only measure the mock. The deadline runs from the
+     * spawn, so a child killed before its script even executes still rejects through the same path - nothing here depends on the child getting anywhere.
+     *
+     * The child installs a SIGTERM handler that does nothing, which is the wedged encoder the production comment describes: a process that ignores the polite
+     * signal. Passing therefore proves the kill carries SIGKILL strength rather than merely that some signal was sent, since SIGKILL is the one a process cannot
+     * trap. The handler costs the success path nothing - an untrappable kill lands just as fast.
+     */
+    await assert.rejects(spawnAndCollect(process.execPath,
+      [ "-e", "process.on(\"SIGTERM\", () => {}); process.stdout.write(\"partial\"); setInterval(() => {}, 1000);" ], 50), /timed out/);
+  });
+
+  test("collects stdout into a Buffer when the child exits cleanly inside the deadline", async () => {
+
+    // A fast child under a generous deadline collects its stdout exactly as it would with no deadline at all - the success path must be undisturbed.
+    const output = await spawnAndCollect(process.execPath, [ "-e", "process.stdout.write(\"ok\");" ], 5000);
+
+    assert.equal(output.toString(), "ok");
+  });
+
+  test("rejects with the exit-code message when the child exits nonzero inside the deadline", async () => {
+
+    // A failing child still reports its own exit code. This is what tells a correct implementation apart from one that reports every failure as a timeout.
+    await assert.rejects(spawnAndCollect(process.execPath, [ "-e", "process.exit(3)" ], 5000), /exited with code 3/);
   });
 });

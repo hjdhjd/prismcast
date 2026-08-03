@@ -40,6 +40,12 @@ const PREROLL_TOTAL_DURATION = 30;
 // durations from the end of a live playlist, so 4 segments gives the client 3 playable segments plus one buffer.
 const PREROLL_INITIAL_WINDOW = 4;
 
+// Deadline for a single preroll variant's encode, bounding this one-shot startup work so a wedged FFmpeg cannot hold the boot before the HTTP listener comes up.
+// The slowest legitimate encode (libx265's slow preset on weak hardware) plausibly takes tens of seconds, so the deadline sits well above that: firing early costs
+// only the preroll on a machine that was going to struggle anyway, and firing late still bounds a hung boot at a minute per variant. Two sequential variants under
+// an HEVC-effective configuration therefore cap the worst pathological boot delay at two minutes before the server continues preroll-free.
+const PREROLL_GENERATION_TIMEOUT_MS = 60000;
+
 /**
  * Per-codec preroll variant. Each variant contains a complete set of preroll buffers (init segment + media segments) and their durations. Both H.264 and HEVC variants
  * are generated at startup when the GPU supports HEVC hardware encoding, so the preroll codec matches the capture codec at the preroll-to-live boundary.
@@ -179,6 +185,7 @@ export function getPrerollCodec(): CaptureCodec {
  * Each variant spawns FFmpeg to create PREROLL_TOTAL_DURATION seconds of black frame + silence as fragmented MP4, then splits the output into an init segment
  * (ftyp + moov) and individual media segments (moof + mdat pairs) using the MP4 box parser. Each segment has naturally monotonic PTS because it comes from a
  * continuous FFmpeg encode. If the bundled FFmpeg is unavailable or a variant fails, the system degrades gracefully - the blocking stream setup path is used instead.
+ * Each variant's encode is bounded by the generation deadline, so a hung FFmpeg degrades startup to a preroll-free boot instead of blocking it.
  */
 export async function generatePreroll(): Promise<void> {
 
@@ -266,14 +273,24 @@ async function generateVariant(ffmpegBin: string, codec: CaptureCodec, videoArgs
 
 /**
  * Spawns FFmpeg with the given arguments and collects all stdout output into a single Buffer. Used for one-shot operations like preroll generation where the entire
- * output fits in memory.
+ * output fits in memory. Exported so the deadline and collection semantics can be exercised directly against a Node child process; the production caller omits the
+ * timeout and takes the default.
  * @param ffmpegBin - Path to the FFmpeg executable.
  * @param args - FFmpeg command-line arguments.
- * @returns Promise resolving to the complete stdout output as a Buffer.
+ * @param timeoutMs - Milliseconds the child is allowed before it is killed. Defaults to PREROLL_GENERATION_TIMEOUT_MS.
+ * @returns Promise resolving to the complete stdout output as a Buffer. Rejects when the deadline passes, when the spawn itself fails, when the child exits with a
+ *   nonzero code, or when an external signal terminates it.
  */
-async function spawnAndCollect(ffmpegBin: string, args: string[]): Promise<Buffer> {
+export async function spawnAndCollect(ffmpegBin: string, args: string[], timeoutMs = PREROLL_GENERATION_TIMEOUT_MS): Promise<Buffer> {
 
-  const ffmpeg = spawn(ffmpegBin, args, { stdio: [ "ignore", "pipe", "pipe" ] });
+  /* The deadline belongs to the platform: spawn's own signal option kills the child once the timeout fires, so there is no separate timer to keep correct and no
+   * path where the promise settles while the process lives on. SIGKILL rather than SIGTERM because a wedged encoder can ignore SIGTERM, the output is discarded on
+   * a timeout anyway, and the encode holds no temp files or child processes needing a graceful teardown.
+   */
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const timeoutMessage = "FFmpeg timed out after " + String(timeoutMs) + "ms and was killed.";
+
+  const ffmpeg = spawn(ffmpegBin, args, { killSignal: "SIGKILL", signal: timeoutSignal, stdio: [ "ignore", "pipe", "pipe" ] });
 
   ffmpeg.stderr.on("data", (data: Buffer) => {
 
@@ -285,11 +302,18 @@ async function spawnAndCollect(ffmpegBin: string, args: string[]): Promise<Buffe
     }
   });
 
-  // Race stdout-collection against the process exit. streamToBuffer resolves when stdout closes; the exit listener pins the success/failure of the spawn itself.
+  // Race stdout-collection against the process exit. streamToBuffer resolves when stdout closes; the exit listener pins the success/failure of the spawn itself,
+  // and the abort deadline settles the pair when FFmpeg hangs.
   // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
   const { promise: exitPromise, resolve: signalExit, reject: signalExitFailure } = Promise.withResolvers<void>();
 
-  ffmpeg.on("error", signalExitFailure);
+  // A deadline kill reaches us as an AbortError on the "error" event, and the ordering of that event against "exit" is not contractual, so both listeners consult
+  // the signal and translate an aborted spawn into the same timeout failure rather than the platform's abort text or a bare signal name.
+  ffmpeg.on("error", (error: Error) => {
+
+    signalExitFailure(timeoutSignal.aborted ? new Error(timeoutMessage) : error);
+  });
+
   ffmpeg.on("exit", (code, signal) => {
 
     if(code === 0) {
@@ -299,9 +323,16 @@ async function spawnAndCollect(ffmpegBin: string, args: string[]): Promise<Buffe
       return;
     }
 
-    // A signal-killed process reports a null code, so name the signal rather than logging the uninformative "exited with code null". Unlike the capture path,
-    // preroll never terminates its own FFmpeg - this is a one-shot startup encode - so any signal here is an abnormal interruption that stays a failure rather
-    // than a graceful stop.
+    if(timeoutSignal.aborted) {
+
+      signalExitFailure(new Error(timeoutMessage));
+
+      return;
+    }
+
+    // A signal-killed process reports a null code, so name the signal rather than logging the uninformative "exited with code null". Preroll kills its own FFmpeg
+    // in exactly one case, the generation deadline handled above, so any signal reaching this line is an external interruption to a one-shot startup encode and
+    // stays a failure named by its signal rather than a graceful stop.
     signalExitFailure(new Error(signal ? ("FFmpeg killed by signal " + signal + ".") : ("FFmpeg exited with code " + String(code) + ".")));
   });
 
