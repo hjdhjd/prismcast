@@ -21,6 +21,7 @@ import type { SystemStatus } from "../streaming/statusEmitter.ts";
 import { clearChannelSelectionCaches } from "./channelSelection.ts";
 import { createBrowserSupervisor } from "./browserSupervisor.ts";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.ts";
+import { evaluateStalePages } from "./pageStaleness.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
@@ -209,6 +210,13 @@ const managedPageIds = new Set<string>();
 // the configured grace period before being closed. This prevents race conditions where pages are briefly untracked during initialization or cleanup transitions.
 const potentiallyStalePages = new Map<string, number>();
 
+/* Set of IDs for pages that stream setup created and whose ownership the stream registry does not yet record. Setup writes the registry's page reference only once
+ * it completes, which on a slow tune is long enough for the cleanup walk to see the page as unowned and close it out from under the setup driving it; membership
+ * here exempts the page from staleness for exactly that window. An entry leaves the set when unregisterManagedPage releases the page as setup tears it down, when
+ * the cleanup walk sees the registry record the ownership the mark stood in for, and when clearPageTracking wipes the collections at the end of a browser session.
+ */
+const inFlightSetupPageIds = new Set<string>();
+
 // Login mode management. State and functions live in login.ts; re-exported here so existing consumers don't need import path changes. clearLoginState,
 // isLoginModeActive, and setBrowserAccessors are imported above; the first two for internal use, setBrowserAccessors for one-time initialization below.
 export { clearLoginState, isLoginModeActive };
@@ -280,8 +288,10 @@ export async function emitCurrentSystemStatus(): Promise<void> {
  * Each registered page receives a unique ID that persists for the page's lifetime. This ID is used for comparison and staleness tracking, avoiding potential
  * issues with Page object reference identity.
  * @param page - The Puppeteer Page to register.
+ * @param options - Registration options. Set inFlightSetup when stream setup owns the page but has not yet recorded that ownership in the stream registry, so the
+ *   stale page cleanup never closes a page whose stream is still being established.
  */
-export function registerManagedPage(page: Page): void {
+export function registerManagedPage(page: Page, options: { inFlightSetup?: boolean } = {}): void {
 
   // Generate a unique ID for this page.
   const pageId = "page-" + String(++managedPageIdCounter);
@@ -291,6 +301,12 @@ export function registerManagedPage(page: Page): void {
 
   // Track the ID as managed.
   managedPageIds.add(pageId);
+
+  // Exempt the page from staleness for as long as its stream setup is in flight.
+  if(options.inFlightSetup) {
+
+    inFlightSetupPageIds.add(pageId);
+  }
 }
 
 /**
@@ -309,6 +325,9 @@ export function unregisterManagedPage(page: Page): void {
     // Also remove from potentially stale tracking since we're intentionally closing it.
     potentiallyStalePages.delete(pageId);
 
+    // Release any in-flight setup mark. The page is leaving our management, so the exemption it carried has nothing left to protect.
+    inFlightSetupPageIds.delete(pageId);
+
     // Note: We don't delete from pageToId because WeakMap handles cleanup automatically when the Page is garbage collected.
   }
 }
@@ -321,6 +340,20 @@ export function unregisterManagedPage(page: Page): void {
 function getManagedPageId(page: Page): string | undefined {
 
   return pageToId.get(page);
+}
+
+/**
+ * Discards every page-tracking collection. The ids they hold are scoped to one browser session's pages, so they mean nothing once that session ends and would
+ * otherwise carry into the next one - which matters most for the scheduled restart, where the process lives on across the swap. Every path that ends a PUBLISHED
+ * browser session routes through here, which is why the collections are cleared in one place rather than at each of those paths. A launch that is superseded
+ * before it is ever published does not, and needs no clear: it never held stream pages, and its readiness-gate probe pages are released at their own registration
+ * sites. The WeakMap needs no clear - it releases its entries when the Page objects are collected.
+ */
+function clearPageTracking(): void {
+
+  managedPageIds.clear();
+  potentiallyStalePages.clear();
+  inFlightSetupPageIds.clear();
 }
 
 /**
@@ -1108,6 +1141,9 @@ function relinquishBrowserReadiness(streamTerminationReason: string): void {
     terminateStream(streamInfo.id, streamInfo.info.storeKey, streamTerminationReason);
   }
 
+  // The session those streams captured on is over, so whatever page tracking survived their termination belongs to a browser that is gone.
+  clearPageTracking();
+
   // Emit system status after stream cleanup. Skip during graceful shutdown since no clients are listening and the process is exiting.
   if(!gracefulShutdownInProgress) {
 
@@ -1505,6 +1541,10 @@ export async function closeBrowser(): Promise<void> {
 
   supervisor.noteReadinessLost();
 
+  // The session is ending, so its page ids are spent. The call sits ahead of the early return below so the clear happens whether or not there was a browser to
+  // close.
+  clearPageTracking();
+
   currentChromeVersion = null;
   setChromeUserAgent(null);
 
@@ -1531,6 +1571,12 @@ export async function closeBrowser(): Promise<void> {
  *    briefly untracked during stream initialization or cleanup.
  *
  * 4. Minimum page preservation: We always keep at least one page open to prevent Chrome from exiting.
+ *
+ * 5. In-flight setup exemption: Pages whose stream setup is still running (tracked in inFlightSetupPageIds) are never considered stale. The registry records a
+ *    stream's page only once setup completes, so without this a slow tune would have its own page closed out from under it.
+ *
+ * The safeguards are expressed as rules in browser/pageStaleness.ts, which decides from a snapshot what to close, track, forget, and unmark. This function is the
+ * I/O shell around that decision: it reads Chrome's page list, applies the decision to the tracking collections, and performs the closes.
  */
 
 /**
@@ -1539,7 +1585,7 @@ export async function closeBrowser(): Promise<void> {
  *
  * The cleanup uses a multi-stage filtering process:
  * 1. Only consider pages we created (in managedPageIds)
- * 2. Exclude pages associated with active streams
+ * 2. Exclude pages associated with active streams, and pages whose stream setup is still in flight
  * 3. Apply a grace period before closing (to handle race conditions)
  * 4. Preserve at least one page to keep the browser alive
  */
@@ -1581,77 +1627,54 @@ export async function cleanupStalePages(): Promise<void> {
 
     const now = Date.now();
 
-    const gracePeriod = CONFIG.recovery.stalePageGracePeriod;
-
-    // Build a list of pages that are candidates for cleanup. A page is a candidate if:
-    // - It has a managed page ID (was created by PrismCast)
-    // - It is not associated with any active stream
-    // - It has been stale for longer than the grace period
-    const candidatePages: { page: Page; pageId: string }[] = [];
-
-    // Track which managed page IDs we've seen in the current browser pages. Used for cleanup of stale tracking data.
-    const currentManagedIds = new Set<string>();
+    // Project the browser's pages into the shape the decision core reads: the managed ids in the browser's own order, with undefined standing in for pages we
+    // did not create, plus a lookup back to the Page objects so the ids it returns can be resolved to something closable.
+    const idToPage = new Map<string, Page>();
+    const pageIds: (string | undefined)[] = [];
 
     for(const page of pages) {
 
       const pageId = getManagedPageId(page);
 
-      // Skip pages we didn't create. This preserves manually opened pages and site popups.
-      if(!pageId) {
+      pageIds.push(pageId);
 
-        continue;
-      }
+      if(pageId !== undefined) {
 
-      currentManagedIds.add(pageId);
-
-      // Skip pages associated with active streams.
-      if(activePageIds.has(pageId)) {
-
-        // If this page was previously marked as potentially stale, remove it from tracking since it's now active.
-        potentiallyStalePages.delete(pageId);
-
-        continue;
-      }
-
-      // This page is potentially stale. Track when we first observed it as such.
-      if(!potentiallyStalePages.has(pageId)) {
-
-        potentiallyStalePages.set(pageId, now);
-
-        // Don't close it yet - wait for the grace period.
-        continue;
-      }
-
-      // Check if the grace period has elapsed.
-      const firstSeenStale = potentiallyStalePages.get(pageId) ?? now;
-
-      if((now - firstSeenStale) < gracePeriod) {
-
-        // Grace period hasn't elapsed yet. Leave this page alone for now.
-        continue;
-      }
-
-      // This page has been stale for longer than the grace period. It's a candidate for cleanup.
-      candidatePages.push({ page, pageId });
-    }
-
-    // Clean up the potentiallyStalePages map by removing entries for pages that no longer exist. This handles cases where pages were closed by other means.
-    for(const trackedId of potentiallyStalePages.keys()) {
-
-      if(!currentManagedIds.has(trackedId)) {
-
-        potentiallyStalePages.delete(trackedId);
+        idToPage.set(pageId, page);
       }
     }
 
-    // Calculate how many pages we can close while still keeping at least one page open.
-    const maxToClose = Math.max(0, pages.length - 1 - activePageIds.size);
+    // The staleness judgment - clocks, exemptions, the dead-entry sweep, and the preserve-one budget - belongs to the pure core; this function only carries it out.
+    const actions = evaluateStalePages({ activePageIds, gracePeriodMs: CONFIG.recovery.stalePageGracePeriod, inFlightSetupPageIds, now, pageIds,
+      staleFirstSeen: potentiallyStalePages });
 
-    const pagesToClose = candidatePages.slice(0, maxToClose);
+    // Bring the tracking collections in line with the decision before any close runs, so a close that fails cannot leave the bookkeeping half-applied.
+    for(const pageId of actions.forgetTrackedIds) {
+
+      potentiallyStalePages.delete(pageId);
+    }
+
+    for(const pageId of actions.startTrackingIds) {
+
+      potentiallyStalePages.set(pageId, now);
+    }
+
+    for(const pageId of actions.clearInFlightIds) {
+
+      inFlightSetupPageIds.delete(pageId);
+    }
 
     let closedCount = 0;
 
-    for(const { page, pageId } of pagesToClose) {
+    for(const pageId of actions.closeIds) {
+
+      // Every id the core returns for closing came from the page list built above, so this resolves; the check is what narrows it to a Page.
+      const page = idToPage.get(pageId);
+
+      if(!page) {
+
+        continue;
+      }
 
       try {
 
@@ -1809,6 +1832,9 @@ async function executeBrowserRestart(): Promise<void> {
     // server is not shutting down): closeBrowserInstance removes the disconnect listener, which is what makes this intentional teardown quiet. acquire() publishes
     // "ready" only after the readiness gate passes, so the completion log below is truthful: it verifies capture capability before claiming readiness, not mere liveness.
     supervisor.noteReadinessLost();
+
+    // The restart swaps the whole Chrome session inside a living process, so the retiring session's page ids must not carry into the fresh one.
+    clearPageTracking();
 
     await closeBrowserInstance(browser);
 

@@ -7,6 +7,7 @@ import { LOG, formatDuration, formatError, getAbortController, unregisterAbortCo
 import { cancelPrerollTimer, getStream, unregisterStream } from "./registry.ts";
 import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.ts";
 import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recovery.ts";
+import { isGracefulShutdown, unregisterManagedPage } from "../browser/index.ts";
 import type { Nullable } from "../types/index.ts";
 import type { RecoveryMetrics } from "./recovery.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
@@ -14,7 +15,6 @@ import { clearClients } from "./clients.ts";
 import { clearPretuneSafetyTimer } from "./pretuneTimers.ts";
 import { clearShowName } from "./showInfo.ts";
 import { emitStreamRemoved } from "./statusEmitter.ts";
-import { isGracefulShutdown } from "../browser/index.ts";
 
 /* This module provides the authoritative stream termination logic. All code paths that need to terminate a stream should call terminateStream() from this module. This
  * ensures consistent cleanup behavior including:
@@ -122,6 +122,14 @@ function disposeStreamResources(entry: StreamRegistryEntry): void {
   // its polling loop and token-refresh timer. Only one is present for a given stream.
   entry.nativeProxy?.stop();
   entry.captureSession?.dispose();
+
+  // Release the page from managed tracking ahead of the close, the unregister-then-close order every other teardown site follows. This is bookkeeping against an
+  // in-process set with no Puppeteer call behind it, so it runs whenever there is a page at all - including the cases below where the close itself is skipped,
+  // which would otherwise leave the id tracked for a page nobody owns.
+  if(entry.page) {
+
+    unregisterManagedPage(entry.page);
+  }
 
   // Close the browser page last - after the capture stream's destroy fired STOP_RECORDING while the browser was still connected. Skip during graceful shutdown
   // (closeBrowser() closes every page; double-closing yields "Target closed" errors). The page is null for a pending entry whose async setup never created one.

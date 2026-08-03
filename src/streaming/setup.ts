@@ -543,7 +543,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   const browser = await deps.getCurrentBrowser();
   const page = await browser.newPage();
 
-  registerManagedPage(page);
+  // Register in-flight: the registry does not record this page against the stream until setup finishes, so the mark is what keeps stale page cleanup from closing
+  // it mid-tune.
+  registerManagedPage(page, { inFlightSetup: true });
   resources.adopt(page, disposePage);
 
   await page.setBypassCSP(true);
