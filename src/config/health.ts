@@ -143,6 +143,11 @@ const domainAuth = new Map<string, DomainAuthEntry>();
 // Debounce timer for flushHealthState().
 let flushTimer: Nullable<ReturnType<typeof setTimeout>> = null;
 
+/* Whether the initial load has hydrated the maps above. Both maps start empty, so they describe real state only once loadHealthState has read health.json into
+ * them...writeHealthState consults this so a shutdown signal arriving before the load completes cannot overwrite a populated health.json with the empty maps.
+ */
+let healthStateLoaded = false;
+
 /* Drops every expired entry from the in-memory maps so the maps stay bounded for the life of the process. Without this the maps would only ever grow - read paths
  * only delete the single stale key they touch, never the untouched remainder, so a channel tuned once and never revisited would linger forever. We run this at the
  * single write chokepoint (writeHealthState) so the on-disk record never carries stale entries, and again from getHealthSnapshot so a long-lived process that stops
@@ -266,7 +271,8 @@ const healthStore = createFileStore<HealthState>({
 });
 
 /**
- * Loads the health state from health.json into memory. Expired entries are pruned during loading. Called once at startup from app.ts.
+ * Loads the health state from health.json into memory. Expired entries are pruned during loading. Called once at startup from app.ts. Loading is also what arms
+ * persistence - writeHealthState serializes the in-memory maps only once this function has hydrated them from disk.
  */
 export async function loadHealthState(): Promise<void> {
 
@@ -295,6 +301,9 @@ export async function loadHealthState(): Promise<void> {
     }
   }
 
+  // The maps hold what health.json describes from here on, so the write chokepoint may persist them.
+  healthStateLoaded = true;
+
   if(result.recoveredFromBackup) {
 
     LOG.info("Health state was recovered from backup after a corrupt main file.");
@@ -312,9 +321,20 @@ export async function loadHealthState(): Promise<void> {
 /**
  * Writes the current in-memory health maps to health.json via the transactional file store. Health writes always emit the full state - there is no per-key delta
  * semantic. Shared by the debounced flushHealthState (on the timer) and the immediate flushHealthStateNow (on shutdown), so both go through one write definition.
+ * The write is gated on the initial load, so neither path can persist the empty startup state over a populated file.
  * @returns A promise that resolves when the store has committed the write.
  */
 async function writeHealthState(): Promise<void> {
+
+  /* Until the initial load has run, the in-memory maps are empty rather than authoritative, and serializing them would replace a populated health.json with
+   * nothing. A shutdown signal arriving between the signal handlers being installed and the load completing takes exactly that path. The skip is silent because
+   * there is genuinely nothing to persist yet. The gate governs this function's serialization of the in-memory maps and nothing else - the file store framework's
+   * schema-migration persist is a separate, disk-derived write that must proceed regardless of whether this module has loaded.
+   */
+  if(!healthStateLoaded) {
+
+    return;
+  }
 
   // Shed expired entries before serializing so the on-disk record never carries stale state and the in-memory maps stay bounded across the process lifetime. This is
   // the periodic chokepoint - every mark* mutation schedules a flush through here, so pruning at this point keeps both memory and disk free of expired entries.

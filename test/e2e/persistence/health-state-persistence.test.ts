@@ -223,6 +223,9 @@ describe("flushHealthState - debounced write contract", () => {
 
     void ctx;
 
+    // Hydrate the health store first - persistence is gated on the initial load.
+    await loadHealthState();
+
     /* Fire several mark calls in rapid succession. Each schedules / re-schedules the debounce timer; only the last firing produces a write.
      */
     markChannelSuccess("debounce-test-1", "debounce.test");
@@ -258,6 +261,9 @@ describe("flushHealthState - debounced write contract", () => {
 
     void ctx;
 
+    // Hydrate the health store first - persistence is gated on the initial load.
+    await loadHealthState();
+
     markChannelSuccess("emit-test-channel", "emit.test");
 
     await waitForHealthFlush();
@@ -277,6 +283,9 @@ describe("flushHealthState - debounced write contract", () => {
     await using ctx = await createIntegrationContext();
 
     void ctx;
+
+    // Hydrate the health store first - persistence is gated on the initial load.
+    await loadHealthState();
 
     markChannelSuccess("shutdown-flush-channel", "shutdown.test");
 
@@ -435,6 +444,9 @@ describe("loadHealthState - recoveredFromBackup banner", () => {
     await using ctx = await createIntegrationContext();
 
     void ctx;
+
+    // Hydrate the health store first - persistence is gated on the initial load.
+    await loadHealthState();
 
     /* Seed a valid main by issuing a real mark + flush (markChannelSuccess + waitForHealthFlush). A second mark + flush then rotates that valid main into .bak
      * via the framework's pre-write rotation. Finally corrupt main and re-load so the framework recovers from .bak.
