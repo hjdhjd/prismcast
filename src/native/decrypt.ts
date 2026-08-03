@@ -18,16 +18,20 @@ import { createDecipheriv } from "node:crypto";
 const KEY_FETCH_TIMEOUT = 10000;
 
 /**
- * Fetches an AES-128 decryption key from the given URL.
+ * Fetches an AES-128 decryption key from the given URL. The caller may supply a cancellation signal, which is composed with this fetch's own timeout so the key
+ * ends on whichever arrives first - the caller's teardown or the timeout. Cancellation is the caller's policy and the timeout is this fetcher's, so neither has
+ * to know about the other: a caller with nothing to cancel simply omits the signal and gets the timeout alone.
  *
  * @param keyUrl - The key URL from the #EXT-X-KEY URI attribute.
+ * @param abortSignal - Optional cancellation signal from the caller, composed with the key fetch timeout.
  * @returns The 16-byte decryption key, or null if the fetch fails.
  */
-export async function fetchDecryptionKey(keyUrl: string): Promise<Nullable<Buffer>> {
+export async function fetchDecryptionKey(keyUrl: string, abortSignal?: AbortSignal): Promise<Nullable<Buffer>> {
 
   try {
 
-    const response = await chromeFetch(keyUrl, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT) });
+    const timeout = AbortSignal.timeout(KEY_FETCH_TIMEOUT);
+    const response = await chromeFetch(keyUrl, { signal: abortSignal ? AbortSignal.any([ abortSignal, timeout ]) : timeout });
 
     if(!response.ok) {
 

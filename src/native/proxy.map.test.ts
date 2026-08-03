@@ -13,13 +13,13 @@
  * getters, and request counts read from the router. No internal proxy state is inspected.
  */
 import { afterEach, describe, test } from "node:test";
+import { getNamedInitSegment, getSegment } from "./../streaming/hlsSegments.ts";
 import { getStream, registerStream, unregisterStream } from "./../streaming/registry.ts";
 import type { Clock } from "../utils/index.ts";
 import type { NativeProxyOptions } from "./proxy.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createNativeProxy } from "./proxy.ts";
-import { getNamedInitSegment } from "./../streaming/hlsSegments.ts";
 import { makeRegistryEntry } from "./../streaming/registry.helpers.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
@@ -32,24 +32,54 @@ const AUDIO_VARIANT_URL = "https://cdn.test/audio.m3u8";
 /* A recording fetch stub. Routes are matched by longest URL prefix so a test can register both a manifest and the segments beneath it; anything unmatched
  * answers 404 so an unintended request surfaces as a missing segment rather than a silent pass. Every request URL is appended to calls, which is what the
  * fetch-count assertions read.
+ *
+ * Three observations beyond the call list make concurrency and cancellation testable at the network layer rather than by inference. The stub honors the
+ * caller's abort signal the way a real fetch does, rejecting an open request and recording which URL was cancelled. It records the PEAK number of requests
+ * open at once - a maximum across the whole run, not a gauge, so a window that fills and drains between two reads is still observable afterwards. And
+ * requested() hands out a promise that resolves when a matching URL reaches the router, which is what lets a held route release on a later request's arrival
+ * instead of on a timer.
  */
 interface FetchRouter {
 
+  aborted: string[];
   calls: string[];
   countMatching: (fragment: string) => number;
+  peakInFlight: () => number;
+  requested: (fragment: string) => Promise<void>;
 }
 
-type RouteHandler = (url: string) => Response | Promise<Response>;
+/* A route, optionally marked as one that ignores the caller's cancellation. Rejecting on abort is the default and the contract every other case consumes; a
+ * marked route answers whatever it was told to answer even after the caller aborted, which is how a request that completes on the wire in the moment between
+ * the abort and the socket closing is reproduced.
+ */
+type RouteHandler = ((url: string) => Response | Promise<Response>) & { ignoresAbort?: boolean };
 
 function installFetchRouter(routes: Record<string, RouteHandler>): FetchRouter {
 
+  const aborted: string[] = [];
   const calls: string[] = [];
+  const waiting: { fragment: string; resolve: () => void }[] = [];
 
-  globalThis.fetch = (async (url: string | URL): Promise<Response> => {
+  let openRequests = 0;
+  let peak = 0;
+
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit): Promise<Response> => {
 
     const urlStr = url.toString();
 
     calls.push(urlStr);
+
+    // Release anything waiting on this URL's arrival. The scan runs backwards because a resolved waiter is spliced out as it fires.
+    for(let i = waiting.length - 1; i >= 0; i--) {
+
+      const waiter = waiting[i];
+
+      if(waiter && urlStr.includes(waiter.fragment)) {
+
+        waiting.splice(i, 1);
+        waiter.resolve();
+      }
+    }
 
     let matched: RouteHandler | null = null;
     let matchedLength = -1;
@@ -68,13 +98,59 @@ function installFetchRouter(routes: Record<string, RouteHandler>): FetchRouter {
       return new Response("not found", { status: 404 });
     }
 
-    return matched(urlStr);
+    const respond = matched;
+
+    openRequests++;
+    peak = Math.max(peak, openRequests);
+
+    const { promise: cancelled, reject: cancel } = Promise.withResolvers<never>();
+    const signal = respond.ignoresAbort ? null : (init?.signal ?? null);
+
+    const onAbort = (): void => {
+
+      aborted.push(urlStr);
+      cancel(new DOMException("The operation was aborted.", "AbortError"));
+    };
+
+    // A signal that is already aborted never dispatches its event, so the two cases are handled separately - exactly as a real fetch treats them.
+    if(signal?.aborted) {
+
+      onAbort();
+    } else {
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+    }
+
+    try {
+
+      return await Promise.race([ respond(urlStr), cancelled ]);
+    } finally {
+
+      openRequests--;
+      signal?.removeEventListener("abort", onAbort);
+    }
   }) as typeof globalThis.fetch;
 
   return {
 
+    aborted,
     calls,
-    countMatching: (fragment: string): number => calls.filter((url) => url.includes(fragment)).length
+    countMatching: (fragment: string): number => calls.filter((url) => url.includes(fragment)).length,
+    peakInFlight: (): number => peak,
+    requested: async (fragment: string): Promise<void> => {
+
+      if(calls.some((url) => url.includes(fragment))) {
+
+        return;
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+      const { promise, resolve } = Promise.withResolvers<void>();
+
+      waiting.push({ fragment, resolve });
+
+      return promise;
+    }
   };
 }
 
@@ -250,6 +326,55 @@ function initRoute(body: string): RouteHandler {
 
 // Serves any fragment request with a body derived from its URL, so stored bytes are distinguishable per segment.
 const fragmentRoute: RouteHandler = (url: string): Response => new Response(Buffer.from("fragment:" + url), { status: 200 });
+
+/* Builds a route that holds every response it serves open until it is released, so a case can observe what the relay does while a fetch is still in flight.
+ * The route also publishes the moment it was requested, which is what a case waits on before making its mid-flight assertions - and what another held route
+ * can release on, so every hold ends on a routed event rather than on a timer.
+ */
+interface HeldRoute {
+
+  handler: RouteHandler;
+  release: () => void;
+  requested: Promise<void>;
+}
+
+function makeHeldRoute(respond: RouteHandler = fragmentRoute, options: { ignoresAbort?: boolean } = {}): HeldRoute {
+
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+  const { promise: requested, resolve: markRequested } = Promise.withResolvers<void>();
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+  const { promise: released, resolve: open } = Promise.withResolvers<void>();
+
+  const handler: RouteHandler = async (url: string): Promise<Response> => {
+
+    markRequested();
+
+    await released;
+
+    return respond(url);
+  };
+
+  // A hold that ignores cancellation delivers its response even when the release lands after the caller aborted, which is the only way to reproduce a fetch
+  // that succeeds at or after the stop rather than one that fails because of it.
+  handler.ignoresAbort = options.ignoresAbort;
+
+  return { handler, release: (): void => open(), requested };
+}
+
+/* A plain MPEG-TS window with no MAP tag, so every entry in it is fetchable the moment the batch opens - which is what the pipeline cases want when the
+ * observation is about the fetch window rather than about initialization handling.
+ */
+function tsManifest(sequence: number, names: string[]): string {
+
+  const lines = [ "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:6", "#EXT-X-MEDIA-SEQUENCE:" + String(sequence) ];
+
+  for(const name of names) {
+
+    lines.push("#EXTINF:6.000,", name);
+  }
+
+  return manifest(lines);
+}
 
 describe("fMP4 relay: MAP parsing, naming, and playlist emission", () => {
 
@@ -1025,5 +1150,458 @@ describe("fMP4 relay: separate audio renditions", () => {
     assert.ok(Array.from(state?.hls.audioSegments.keys() ?? []).every((name) => name.endsWith(".m4s")), "audio fragments take the .m4s extension");
     assert.match(harness.audioPlaylist(), /#EXT-X-MAP:URI="init-a0\.mp4"/, "the audio playlist references the audio init");
     assert.match(harness.audioPlaylist(), /#EXT-X-VERSION:7/, "the audio playlist declares version 7");
+  });
+});
+
+describe("segment pipeline: bounded-parallel fetching, in-order commit, and cancellation", () => {
+
+  afterEach(() => {
+
+    unregisterStream(0);
+  });
+
+  test("starts later segments' fetches before the first one has answered (P1)", async () => {
+
+    /* The concurrency proof, made at the network layer rather than inferred from timing. The first segment's response is held open until the router has
+     * received the THIRD segment's request, so the run can only complete if fetches were started ahead of the commit walk: a relay that downloads one segment
+     * at a time never issues the second request while the first is unanswered, and the hold it is waiting on never lifts.
+     */
+    const firstSegment = makeHeldRoute();
+    const thirdSegment = makeHeldRoute();
+
+    // The third segment answers normally - what it contributes is its arrival, which is what releases the first.
+    thirdSegment.release();
+    void thirdSegment.requested.then((): void => firstSegment.release());
+
+    const { harness, router } = await runRelay({
+
+      bodyForCycle: () => tsManifest(100, [ "s100.ts", "s101.ts", "s102.ts" ]),
+      routes: {
+
+        "https://cdn.test/s100.ts": firstSegment.handler,
+        "https://cdn.test/s101.ts": fragmentRoute,
+        "https://cdn.test/s102.ts": thirdSegment.handler
+      },
+      targetCycles: 2
+    });
+
+    assert.deepEqual(harness.segmentNames(), [ "segment0.ts", "segment1.ts", "segment2.ts" ], "every segment in the window was stored");
+
+    // Three mirrors the production window width, which is module-private.
+    assert.equal(router.peakInFlight(), 3, "all three segment requests were open at the same time");
+  });
+
+  test("commits in upstream order when the fetches settle out of order (P2)", async () => {
+
+    /* Ordering under out-of-order completion. The sequence-FIRST segment answers LAST, so a relay that stored bytes as they arrived would publish the third
+     * segment's bytes as segment0. Identity is checked per segment rather than by count: the fragment route derives every body from its own URL, so the
+     * stored bytes name the upstream segment they came from.
+     */
+    const firstSegment = makeHeldRoute();
+    const thirdSegment = makeHeldRoute();
+
+    thirdSegment.release();
+
+    // The first segment is released only once the two behind it have fully settled, which is what makes completion order the reverse of commit order.
+    void thirdSegment.requested.then(async (): Promise<void> => {
+
+      await drain();
+
+      firstSegment.release();
+    });
+
+    const { harness } = await runRelay({
+
+      bodyForCycle: () => tsManifest(100, [ "s100.ts", "s101.ts", "s102.ts" ]),
+      routes: {
+
+        "https://cdn.test/s100.ts": firstSegment.handler,
+        "https://cdn.test/s101.ts": fragmentRoute,
+        "https://cdn.test/s102.ts": thirdSegment.handler
+      },
+      targetCycles: 2
+    });
+
+    assert.deepEqual(getSegment(harness.streamId, "segment0.ts"), Buffer.from("fragment:https://cdn.test/s100.ts"), "the first name holds the first sequence");
+    assert.deepEqual(getSegment(harness.streamId, "segment1.ts"), Buffer.from("fragment:https://cdn.test/s101.ts"), "the second name holds the second");
+    assert.deepEqual(getSegment(harness.streamId, "segment2.ts"), Buffer.from("fragment:https://cdn.test/s102.ts"), "the third name holds the third");
+
+    const entries = harness.playlist().split("\n").filter((line) => line.startsWith("segment"));
+
+    assert.deepEqual(entries, [ "segment0.ts", "segment1.ts", "segment2.ts" ], "the published window lists them in broadcast order");
+  });
+
+  test("keeps the window at its width and frees a slot only when an item commits (P3)", async () => {
+
+    /* The window discipline from three sides: the fill it reaches, the ceiling it never crosses, and the moment a slot comes back. Ten fetchable segments are
+     * offered with the first three held open, so the fourth request can appear only after one of the held items has been released AND has committed. A relay
+     * that freed its slot when the bytes arrived rather than when the segment was published would dispatch the fourth request too early.
+     */
+    const held = [ makeHeldRoute(), makeHeldRoute(), makeHeldRoute() ];
+    const names: string[] = [];
+
+    // The names are built by index because each one encodes its own media sequence.
+    for(let i = 0; i < 10; i++) {
+
+      names.push("s" + String(100 + i) + ".ts");
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: settled, resolve: markSettled } = Promise.withResolvers<void>();
+
+    let stopProxy: () => void = (): void => { /* Assigned once the proxy exists. */ };
+
+    const paced = makePacedManifestRoute(() => tsManifest(100, names), 2, () => stopProxy(), markSettled);
+
+    const router = installFetchRouter({
+
+      [VARIANT_URL]: paced.handler,
+      "https://cdn.test/s1": fragmentRoute,
+      "https://cdn.test/s100.ts": held[0]!.handler,
+      "https://cdn.test/s101.ts": held[1]!.handler,
+      "https://cdn.test/s102.ts": held[2]!.handler
+    });
+
+    const harness = makeHarness();
+
+    stopProxy = harness.proxy.stop;
+
+    harness.proxy.start();
+
+    await Promise.all(held.map((route) => route.requested));
+    await drain();
+
+    // Three mirrors the production window width, which is module-private.
+    assert.equal(router.peakInFlight(), 3, "the window fills to exactly three concurrent segment fetches");
+    assert.equal(router.countMatching("s103.ts"), 0, "the fourth segment waits for a slot rather than joining the window");
+
+    held[0]!.release();
+
+    await drain();
+
+    assert.deepEqual(harness.segmentNames(), ["segment0.ts"], "the released item committed");
+    assert.equal(router.countMatching("s103.ts"), 1, "the commit is what freed the slot the fourth segment then took");
+    assert.equal(router.peakInFlight(), 3, "and the ceiling held while the window refilled");
+
+    held[1]!.release();
+    held[2]!.release();
+
+    await settled;
+    await drain();
+
+    assert.equal(harness.segmentNames().length, 10, "the whole window committed once the holds lifted");
+
+    harness.proxy.stop();
+    unregisterStream(harness.streamId);
+  });
+
+  test("counts a failure when the item commits and clears it on a later success (P4)", async () => {
+
+    /* Accounting rides the commit rather than the fetch. The first cycle ends on a failing segment, so the consecutive-error reading the monitor takes is 1;
+     * the second cycle succeeds and clears it. Both readings are taken at a moment when the count is unambiguous - the first while the second cycle's manifest
+     * is held open, which is after the first cycle's walk finished and before the second's began.
+     */
+    const secondManifest = makeHeldRoute(() => new Response(tsManifest(102, [ "s102.ts", "s103.ts" ]), { status: 200 }));
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: settled, resolve: markSettled } = Promise.withResolvers<void>();
+
+    let cycle = 0;
+    let stopProxy: () => void = (): void => { /* Assigned once the proxy exists. */ };
+
+    const manifestHandler = (url: string): Response | Promise<Response> => {
+
+      cycle++;
+
+      switch(cycle) {
+
+        case 1: {
+
+          return new Response(tsManifest(100, [ "s100.ts", "s101.ts" ]), { status: 200 });
+        }
+
+        case 2: {
+
+          return secondManifest.handler(url);
+        }
+
+        default: {
+
+          stopProxy();
+          markSettled();
+
+          return new Response(tsManifest(102, [ "s102.ts", "s103.ts" ]), { status: 200 });
+        }
+      }
+    };
+
+    // s101.ts is deliberately unrouted, so it answers 404 - the mid-batch failure this case turns on.
+    const router = installFetchRouter({
+
+      [VARIANT_URL]: manifestHandler,
+      "https://cdn.test/s100.ts": fragmentRoute,
+      "https://cdn.test/s102.ts": fragmentRoute,
+      "https://cdn.test/s103.ts": fragmentRoute
+    });
+
+    const harness = makeHarness();
+
+    stopProxy = harness.proxy.stop;
+
+    harness.proxy.start();
+
+    await secondManifest.requested;
+    await drain();
+
+    assert.deepEqual(harness.segmentNames(), ["segment0.ts"], "the succeeding segment committed and the failing one did not");
+    assert.equal(harness.proxy.getConsecutiveErrors(), 1, "the failing commit counted exactly one consecutive error");
+
+    secondManifest.release();
+
+    await settled;
+    await drain();
+
+    assert.equal(harness.proxy.getConsecutiveErrors(), 0, "a later success clears the count");
+    assert.equal(harness.proxy.hasErrored(), false, "one failure stays well below the escalation threshold");
+    assert.equal(router.countMatching("s101.ts"), 1, "the failing segment was attempted exactly once");
+
+    harness.proxy.stop();
+    unregisterStream(harness.streamId);
+  });
+
+  test("escalates once mid-window and cancels the fetches already open (P5)", async () => {
+
+    /* Escalation is a single transition, and it takes the window with it. Five consecutive failures cross the threshold while a sixth segment's fetch is
+     * already open: the error callback fires exactly once, nothing commits after the escalating item, and the open fetch observes the cancellation - the proxy
+     * does not leave connections running past its own stop.
+     */
+    const heldSixth = makeHeldRoute();
+    const names = [ "s100.ts", "s101.ts", "s102.ts", "s103.ts", "s104.ts", "s105.ts", "s106.ts" ];
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: settled, resolve: markSettled } = Promise.withResolvers<void>();
+
+    let escalations = 0;
+
+    // Only the first and the last segment are routed; the five between them answer 404, which is the consecutive run that crosses the threshold.
+    const router = installFetchRouter({
+
+      [VARIANT_URL]: (): Response => new Response(tsManifest(100, names), { status: 200 }),
+      "https://cdn.test/s100.ts": fragmentRoute,
+      "https://cdn.test/s106.ts": heldSixth.handler
+    });
+
+    const harness = makeHarness({
+
+      onError: (): void => {
+
+        escalations++;
+        markSettled();
+      }
+    });
+
+    harness.proxy.start();
+
+    await settled;
+    await drain();
+
+    assert.equal(escalations, 1, "the error callback fired exactly once");
+    assert.equal(harness.proxy.hasErrored(), true, "the proxy latched the error state the monitor reads");
+    assert.equal(harness.proxy.isStopped(), true, "and stopped itself");
+    assert.deepEqual(harness.segmentNames(), ["segment0.ts"], "nothing committed after the escalating item");
+    assert.ok(router.aborted.includes("https://cdn.test/s106.ts"), "the fetch still open when the threshold was crossed was cancelled");
+
+    heldSixth.release();
+    harness.proxy.stop();
+    unregisterStream(harness.streamId);
+  });
+
+  test("cancels the whole fetch family at stop without counting the cancellations (P6)", async () => {
+
+    /* Teardown reaches every kind of fetch the relay opens. A segment fetch and a decryption key fetch are both open when the proxy stops: both are cancelled,
+     * nothing stores afterwards, and neither cancellation reaches the accounting - the consecutive-error reading is zero rather than merely under the
+     * threshold, so the termination summary reports fetches that failed rather than fetches the stop itself ended.
+     */
+    const heldKey = makeHeldRoute(() => new Response(Buffer.alloc(16), { status: 200 }));
+    const heldSegment = makeHeldRoute();
+
+    const aesBody = manifest([
+
+      "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:6", "#EXT-X-MEDIA-SEQUENCE:100",
+      "#EXT-X-KEY:METHOD=AES-128,URI=\"https://cdn.test/key.bin\"",
+      "#EXTINF:6.000,", "s100.ts", "#EXTINF:6.000,", "s101.ts"
+    ]);
+
+    const router = installFetchRouter({
+
+      [VARIANT_URL]: (): Response => new Response(aesBody, { status: 200 }),
+      "https://cdn.test/key.bin": heldKey.handler,
+      "https://cdn.test/s100.ts": heldSegment.handler,
+      "https://cdn.test/s101.ts": fragmentRoute
+    });
+
+    const harness = makeHarness({ encryption: "aes128" });
+
+    harness.proxy.start();
+
+    // The first segment is held at its own fetch; the second gets its bytes and holds at the key fetch, so one of each kind is open when the stop lands.
+    await Promise.all([ heldSegment.requested, heldKey.requested ]);
+    await drain();
+
+    const pollsBeforeStop = router.countMatching("variant.m3u8");
+
+    harness.proxy.stop();
+
+    await drain();
+
+    assert.ok(router.aborted.includes("https://cdn.test/s100.ts"), "the open segment fetch was cancelled");
+    assert.ok(router.aborted.includes("https://cdn.test/key.bin"), "the open key fetch was cancelled");
+    assert.deepEqual(harness.segmentNames(), [], "nothing stored after the stop");
+    assert.equal(harness.proxy.hasErrored(), false, "a stop is not an error");
+    assert.equal(harness.proxy.getConsecutiveErrors(), 0, "cancelled fetches are excluded from the accounting rather than merely under the threshold");
+    assert.equal(router.countMatching("variant.m3u8"), pollsBeforeStop, "the poll loop issued no further manifest request");
+
+    heldKey.release();
+    heldSegment.release();
+    unregisterStream(harness.streamId);
+  });
+
+  test("attempts the initialization inline while what precedes it commits and what follows waits (P7)", async () => {
+
+    /* The transition, under a window that runs ahead of the walk. The relay reaches an A-to-B initialization change mid-batch and attempts the new
+     * initialization at exactly that position: everything before the transition commits under the initialization already in force while the attempt is open, and
+     * nothing after it has even been requested. A design that dispatched the segments beyond the transition early, or adopted the new initialization before
+     * the entries preceding it were published, fails one of those two observations. Once the attempt lands, the entries after it are governed by the new
+     * initialization in the playlist the client actually reads.
+     */
+    const heldInitB = makeHeldRoute(initRoute("VIDEO-INIT-B-DIFFERENT"));
+
+    const transitionBody = manifest([
+
+      "#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-TARGETDURATION:6", "#EXT-X-MEDIA-SEQUENCE:101",
+      "#EXT-X-MAP:URI=\"https://cdn.test/initA.cmfv\"",
+      "#EXTINF:6.000,", "sA101.cmfv",
+      "#EXTINF:6.000,", "sA102.cmfv",
+      "#EXT-X-MAP:URI=\"https://cdn.test/initB.cmfv\"",
+      "#EXTINF:6.000,", "sB103.cmfv",
+      "#EXTINF:6.000,", "sB104.cmfv"
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: settled, resolve: markSettled } = Promise.withResolvers<void>();
+
+    let cycle = 0;
+    let stopProxy: () => void = (): void => { /* Assigned once the proxy exists. */ };
+
+    const manifestHandler = (): Response => {
+
+      cycle++;
+
+      if(cycle >= 3) {
+
+        stopProxy();
+        markSettled();
+      }
+
+      return new Response((cycle === 1) ? fmp4Manifest("https://cdn.test/initA.cmfv", 100, ["sA100.cmfv"]) : transitionBody, { status: 200 });
+    };
+
+    const router = installFetchRouter({
+
+      [VARIANT_URL]: manifestHandler,
+      "https://cdn.test/initA.cmfv": initRoute("VIDEO-INIT-A"),
+      "https://cdn.test/initB.cmfv": heldInitB.handler,
+      "https://cdn.test/sA": fragmentRoute,
+      "https://cdn.test/sB": fragmentRoute
+    });
+
+    const harness = makeHarness();
+
+    stopProxy = harness.proxy.stop;
+
+    harness.proxy.start();
+
+    await heldInitB.requested;
+    await drain();
+
+    assert.deepEqual(harness.segmentNames(), [ "segment0.m4s", "segment1.m4s", "segment2.m4s" ],
+      "the fragments before the transition committed while the initialization attempt was still open");
+    assert.equal(router.countMatching("sB10"), 0, "no fragment beyond the unresolved transition has been requested");
+
+    heldInitB.release();
+
+    await settled;
+    await drain();
+
+    assert.equal(router.countMatching("initB.cmfv"), 1, "the transition was attempted exactly once for the cycle");
+    assert.deepEqual(harness.segmentNames(), [ "segment0.m4s", "segment1.m4s", "segment2.m4s", "segment3.m4s", "segment4.m4s" ],
+      "the fragments after the transition committed once it adopted");
+
+    const lines = harness.playlist().split("\n");
+
+    // The tag governing a fragment is the closest MAP reference above it, so each fragment's tag is read by walking back from its own line.
+    const initGoverning = (segment: string): string | null => {
+
+      const segmentIndex = lines.indexOf(segment);
+
+      for(let i = segmentIndex - 1; i >= 0; i--) {
+
+        const match = /^#EXT-X-MAP:URI="([^"]+)"$/.exec(lines[i] ?? "");
+
+        if(match?.[1] !== undefined) {
+
+          return match[1];
+        }
+      }
+
+      return null;
+    };
+
+    assert.equal(initGoverning("segment1.m4s"), "init-v0.mp4", "the fragments before the transition are governed by the original initialization");
+    assert.equal(initGoverning("segment2.m4s"), "init-v0.mp4", "including the last one before it");
+    assert.equal(initGoverning("segment3.m4s"), "init-v1.mp4", "the first fragment after the transition moves the client onto the new initialization");
+    assert.equal(initGoverning("segment4.m4s"), "init-v1.mp4", "and the fragment following it inherits that reference");
+
+    harness.proxy.stop();
+    unregisterStream(harness.streamId);
+  });
+
+  test("discards a segment whose fetch succeeds at or after the stop (P8)", async () => {
+
+    /* The straggler that succeeds rather than fails. Cancellation normally surfaces as a rejected fetch, but a request already on the wire can complete
+     * normally in the moment between the abort and the socket closing, and the decrypt path turns a cancelled key fetch into a resolved null on the same
+     * frame. Reading only the shape of the settlement would therefore let bytes into a stream whose state is being torn down; what stands between them and
+     * the store is the relay's reading of the cancellation state itself at settlement. The route here ignores the cancellation and answers with real segment
+     * data after the stop, which is the settlement no rejection-based reading can catch.
+     */
+    const lateSegment = makeHeldRoute(fragmentRoute, { ignoresAbort: true });
+
+    const router = installFetchRouter({
+
+      [VARIANT_URL]: (): Response => new Response(tsManifest(100, ["s100.ts"]), { status: 200 }),
+      "https://cdn.test/s100.ts": lateSegment.handler
+    });
+
+    const harness = makeHarness();
+
+    harness.proxy.start();
+
+    await lateSegment.requested;
+    await drain();
+
+    assert.deepEqual(harness.segmentNames(), [], "nothing has been stored while the fetch is still open");
+
+    harness.proxy.stop();
+
+    lateSegment.release();
+
+    await drain();
+
+    assert.deepEqual(harness.segmentNames(), [], "the segment that resolved after the stop was discarded rather than stored");
+    assert.equal(harness.proxy.getConsecutiveErrors(), 0, "and it counted as neither a success nor a failure");
+    assert.equal(harness.proxy.hasErrored(), false, "a stop is not an error");
+    assert.equal(router.countMatching("s100.ts"), 1, "the fetch under test did reach the network, so the discard is of real bytes");
+
+    unregisterStream(harness.streamId);
   });
 });

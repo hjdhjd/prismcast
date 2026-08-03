@@ -44,6 +44,12 @@ const MAX_MANIFEST_FAILURES = 3;
 // self-resolve on the next fetch.
 const MAX_SEGMENT_FAILURES = 5;
 
+// Number of segment byte-fetches one track keeps in flight while its commit walk consumes the results in broadcast order. Three concurrent connections lift a
+// track's download throughput to roughly three times the per-connection pacing a CDN edge grants, which is what keeps a high-bitrate channel ahead of its own
+// production rate rather than accumulating a backlog that delays the next manifest poll. The bound is what keeps the gain cheap: at most three segments per
+// track are resident at once - six for a stream whose audio is a separate rendition, since each track runs its own window.
+const PARALLEL_SEGMENT_FETCHES = 3;
+
 // Manifest poll backoff base delay and cap. On success, the poll interval returns to the base delay (a fixed 3000ms, ~half a typical 6s segment). On failure, the delay
 // doubles on each consecutive failure up to the cap. Jitter of +/-20% prevents multiple streams from retrying in lockstep after a shared CDN outage.
 const MANIFEST_BACKOFF_BASE = 3000;
@@ -318,6 +324,11 @@ interface SegmentFetchTracker {
  */
 interface ProxyLifecycleState {
 
+  /* Cancels every fetch the proxy still has open - segments, initialization segments, and decryption keys - the moment the proxy stops or escalates. The scope
+   * is the proxy and deliberately not the stream: a fallback to screen capture tears the proxy down while the stream continues, so a stream-scoped controller
+   * would either outlive the fetches that must end here or cancel work the stream still needs. Both paths that abort it are terminal, so it is never re-armed.
+   */
+  abortController: AbortController;
   errorThresholdReached: boolean;
   firstPollComplete: boolean;
   manifestBackoffMs: number;
@@ -420,6 +431,64 @@ interface ProxyContext {
  */
 type SegmentFetchFn = (tracker: SegmentFetchTracker, url: string, sequence: number, ivHex: Nullable<string>,
   segKeyUrl: Nullable<string>) => Promise<Nullable<Buffer>>;
+
+/**
+ * Callback the prefetch scheduler uses to start one segment's byte fetch. It is distinct from SegmentFetchFn in both job and shape: this one carries the
+ * accounting-free core, because the pipeline applies failure accounting when a segment commits rather than when its bytes arrive, and it takes the parsed
+ * segment whole rather than the positional values the tracked wrapper spreads.
+ */
+type SegmentPrefetchFn = (segment: ParsedSegment) => Promise<Nullable<Buffer>>;
+
+/**
+ * The settled result of one segment byte-fetch, as a discriminated union of what the fetch core can actually produce: the data, the core's untyped null failure
+ * (an HTTP error or an unusable key, neither of which carries a status back to its caller), a thrown failure (a network error or the per-fetch timeout), and a
+ * cancellation. Cancellation is its own case rather than a kind of failure, because the proxy cancels its own fetches at teardown and at escalation, and
+ * counting those against the failure thresholds would report fetches the stop itself ended as fetches the CDN failed.
+ */
+type SegmentFetchOutcome = { data: Buffer; status: "success" } | { error: unknown; status: "failed-thrown" } | { status: "abort" } |
+  { status: "failed-null" };
+
+/**
+ * The per-track state the segment pipeline reads and advances - the structural subset the video and audio tracking states share, extending the initialization
+ * bookkeeping the init fetch already names. Naming it separately lets one pipeline serve both loops without either track's full shape leaking into a function
+ * that only fetches, names, and stores.
+ */
+interface PipelineTrackingState extends InitTrackingState {
+
+  fetchedSequences: Set<number>;
+  highWaterSequence: number;
+  metadata: SegmentMetadata;
+  segmentIndex: number;
+}
+
+/**
+ * A segment that has just been stored, handed to the track's afterCommit hook. The stored-segment count is sampled before the store, so a hook can tell a
+ * window that grew from one that rotated its oldest entry out.
+ */
+interface SegmentCommit {
+
+  byteLength: number;
+  filename: string;
+  storedBefore: number;
+}
+
+/**
+ * One track's binding of the segment pipeline: how it fetches, how it stores, how it names, and where its bookkeeping lives. Built once per track at the
+ * proxy's composition root, which is what keeps the pipeline itself free of any branch on track identity - everything that differs between the two tracks is
+ * data here. The video track supplies the afterCommit hook carrying the extras only it keeps (the monitor's last-segment readings, the rotation-detect log, and
+ * the first-segment timing log); the audio track omits it.
+ */
+interface SegmentPipelineTrack {
+
+  afterCommit?: (commit: SegmentCommit) => void;
+  countStored: (streamId: number) => number;
+  fetchInit: SegmentFetchFn;
+  fetchSegment: SegmentPrefetchFn;
+  filenamePrefix: string;
+  initTrack: InitSegmentTrack;
+  store: (streamId: number, filename: string, data: Buffer) => void;
+  tracking: PipelineTrackingState;
+}
 
 /**
  * Options for building a composite playlist with fMP4 preroll entries and MPEG-TS real entries.
@@ -984,6 +1053,235 @@ function pruneTrackInits(streamId: number, track: InitSegmentTrack, metadata: Se
   pruneNamedInitSegments(streamId, track, retain);
 }
 
+// Segment Fetch Pipeline.
+
+/**
+ * Performs the terminal transition every escalation site shares: latch the error state the monitor reads, stop the poll loop, cancel every fetch the proxy
+ * still has open, and report the reason to the coordinator. Single-homed so no site can flip the flags while leaving fetches running on past the stop, and so
+ * the state the monitor reads has exactly one writer.
+ *
+ * @param options - The proxy context and the message the coordinator receives.
+ */
+function escalateProxyFailure(options: { ctx: ProxyContext; message: string }): void {
+
+  const { ctx, message } = options;
+
+  ctx.lifecycle.errorThresholdReached = true;
+  ctx.lifecycle.stopped = true;
+  ctx.lifecycle.abortController.abort();
+
+  ctx.onError(message);
+}
+
+/**
+ * Applies a settled fetch outcome to a track's failure accounting: a success clears the consecutive count, a failure raises it along with the cumulative error
+ * total, and crossing MAX_SEGMENT_FAILURES escalates. A cancellation touches neither counter - the proxy cancels its own fetches at teardown and at escalation,
+ * and counting those would make the termination summary report the stop's own casualties as fetches that failed. Single-homed here so the tracked fetch wrapper
+ * and the commit walk apply identical accounting to identical outcomes.
+ *
+ * @param options - The proxy context, the settled outcome, and the track's failure tracker.
+ */
+function recordFetchOutcome(options: { ctx: ProxyContext; outcome: SegmentFetchOutcome; tracker: SegmentFetchTracker }): void {
+
+  const { ctx, outcome, tracker } = options;
+
+  if(outcome.status === "abort") {
+
+    return;
+  }
+
+  if(outcome.status === "success") {
+
+    tracker.consecutiveFailures = 0;
+
+    return;
+  }
+
+  // A thrown failure carries a cause worth narrating; the core's null failure has already logged whatever it knew at the point it gave up.
+  if(outcome.status === "failed-thrown") {
+
+    LOG.debug("native:proxy", "%s fetch failed for %s: %s.", tracker.debugLabel, ctx.channelName, String(outcome.error));
+  }
+
+  tracker.consecutiveFailures++;
+  ctx.stats.totalFetchErrors++;
+
+  if(tracker.consecutiveFailures >= MAX_SEGMENT_FAILURES) {
+
+    const detail = (outcome.status === "failed-thrown") ? " fetch error: " + String(outcome.error) :
+      " fetch failed " + String(tracker.consecutiveFailures) + " times";
+
+    escalateProxyFailure({ ctx, message: tracker.label + detail });
+  }
+}
+
+/**
+ * Starts one fetch and settles with its outcome, never rejecting. The cancellation signal's own state is the first thing read at settlement: when the proxy has
+ * aborted, the outcome is a cancellation whatever shape the settlement took, because a cancelled key fetch surfaces as a resolved null rather than as a
+ * rejection and the signal is the one place cancellation is unambiguous. With the signal unaborted, shape decides: a rejection is a failure, which is how a
+ * per-fetch timeout keeps counting as one, and a null return is the core's untyped failure. Every fetch the proxy starts settles through here, so no bare core
+ * promise is left for the process-level rejection handler to catch.
+ *
+ * @param options - The fetch to start and the proxy's cancellation signal.
+ * @returns The settled outcome.
+ */
+async function captureFetchOutcome(options: { fetchSegment: () => Promise<Nullable<Buffer>>; signal: AbortSignal }): Promise<SegmentFetchOutcome> {
+
+  const { fetchSegment, signal } = options;
+
+  try {
+
+    const data = await fetchSegment();
+
+    if(signal.aborted) {
+
+      return { status: "abort" };
+    }
+
+    return data ? { data, status: "success" } : { status: "failed-null" };
+  } catch(error) {
+
+    return signal.aborted ? { status: "abort" } : { error, status: "failed-thrown" };
+  }
+}
+
+/**
+ * Fetches a poll cycle's new segments and commits them in broadcast order. The walk over the batch is the ordered one the relay performs for every track: the
+ * initialization attempt at its transition, the unadopted skip, the container-true naming, the metadata, and the accounting all happen at the same points
+ * against the same state. What the scheduler adds is where the bytes come from - it runs ahead of the walk and keeps up to PARALLEL_SEGMENT_FETCHES byte-fetches
+ * open for the track, so the walk consumes results that are already settled or already downloading instead of opening each connection when it arrives. Download
+ * throughput therefore scales with the window while the served window still advances one segment at a time, in upstream order.
+ *
+ * A slot is occupied from the moment a fetch starts until the item that owns it has committed: the window is topped up only at the head of an iteration, which
+ * is after the previous item's store. Segments at or beyond an initialization transition the track has not adopted are never prefetched - the walk's own inline
+ * attempt is what decides whether they are fetchable at all, and starting them early would spend connections on bytes the adoption outcome can make unusable.
+ *
+ * @param options - The proxy context, the cycle's new segments in upstream order, and the track's pipeline binding.
+ * @returns True if at least one segment was stored.
+ */
+async function runSegmentPipeline(options: { ctx: ProxyContext; segments: ParsedSegment[]; track: SegmentPipelineTrack }): Promise<boolean> {
+
+  const { ctx, segments, track } = options;
+  const { lifecycle } = ctx;
+  const tracking = track.tracking;
+  const inFlight = new Map<number, Promise<SegmentFetchOutcome>>();
+
+  // The next batch item the scheduler may start. It advances as fetches begin, and the walk carries it past any item it skips, so a batch that returns to the
+  // adopted initialization after an unresolved transition still prefetches its remainder.
+  let dispatchIndex = 0;
+
+  // At most one initialization fetch per track per poll cycle. A function-scoped local is the whole mechanism: it cannot outlive the cycle, cannot be
+  // forgotten, and cannot be shared with the other track, whose own pipeline call declares its own. One failing upstream initialization therefore costs one
+  // fetch timeout per cycle rather than one per dependent segment.
+  let initAttempted = false;
+  let storedAny = false;
+
+  /* Tops the window up to PARALLEL_SEGMENT_FETCHES open fetches, each started against the proxy's cancellation signal and wrapped so it settles rather than
+   * rejects. Eligibility is read against the walk's adoption state as it stands at this moment, so the scheduler stops at the first segment declaring an
+   * initialization the track has not adopted and resumes from there once the walk's inline attempt has settled that transition.
+   */
+  const fillWindow = (): void => {
+
+    while((inFlight.size < PARALLEL_SEGMENT_FETCHES) && (dispatchIndex < segments.length) && !lifecycle.stopped) {
+
+      const segment = segments[dispatchIndex];
+
+      if(!segment || ((segment.mapUri !== null) && (segment.mapUri !== tracking.lastUpstreamMapUri))) {
+
+        return;
+      }
+
+      inFlight.set(dispatchIndex, captureFetchOutcome({ fetchSegment: () => track.fetchSegment(segment), signal: lifecycle.abortController.signal }));
+      dispatchIndex++;
+    }
+  };
+
+  for(const [ index, segment ] of segments.entries()) {
+
+    if(lifecycle.stopped) {
+
+      break;
+    }
+
+    // Resolve this segment's initialization before its name is chosen, so the first segment of a fresh tune is named from the initialization its own document
+    // established rather than transiently mislabeled.
+    if((segment.mapUri !== null) && (segment.mapUri !== tracking.lastUpstreamMapUri) && !initAttempted) {
+
+      initAttempted = true;
+
+      // The attempt is sequential by contract: its outcome decides whether the rest of the batch is fetchable at all, so the walk holds here rather than
+      // running ahead of an adoption that has not happened.
+      // eslint-disable-next-line no-await-in-loop
+      await resolveTrackInit({ ctx, fetchSegment: track.fetchInit, mapUri: segment.mapUri, track: track.initTrack, tracking });
+    }
+
+    /* Store only segments whose initialization is resolved. A segment declaring a MAP the track has not adopted is skipped whether this cycle's attempt at that
+     * URI failed or the cycle's one attempt went to a different transition earlier in the window. Naming never falls back to the track's current initialization
+     * for a segment whose own transition is unresolved, so a second distinct transition in one batch cannot be mislabeled with the first one's initialization.
+     * The cost is bounded: each additional distinct transition in a batch resolves one cycle later.
+     */
+    if((segment.mapUri !== null) && (segment.mapUri !== tracking.lastUpstreamMapUri)) {
+
+      // Carry the scheduler past an item that will not be fetched at all, so a later segment back under the adopted initialization is still prefetched.
+      dispatchIndex = index + 1;
+
+      continue;
+    }
+
+    fillWindow();
+
+    const pending = inFlight.get(index);
+
+    if(!pending) {
+
+      // The window declines to start a fetch once the proxy is stopping, which is the only way the walk reaches an item with nothing open for it.
+      break;
+    }
+
+    // Commits are sequential by contract - the served window advances one segment at a time, in upstream order - while the fetches the scheduler started ahead
+    // of this point keep running concurrently. Waiting here is what the commit ordering costs, and it costs nothing in download time.
+    // eslint-disable-next-line no-await-in-loop
+    const outcome = await pending;
+
+    inFlight.delete(index);
+
+    // Every outcome the walk consumes goes through the one accounting helper, cancellations included - it is the helper that decides a cancellation counts as
+    // neither a success nor a failure, and that decision is made in exactly one place.
+    recordFetchOutcome({ ctx, outcome, tracker: tracking.segmentTracker });
+
+    if(outcome.status === "abort") {
+
+      // Only teardown and escalation cancel, and both have already stopped the loop, so the rest of the batch goes with this item.
+      break;
+    }
+
+    if(outcome.status !== "success") {
+
+      continue;
+    }
+
+    // Name by container. A track holding an initialization is fMP4 and its fragments are .m4s; a track with none is MPEG-TS and keeps .ts.
+    const servedInit = getStream(ctx.streamId)?.hls.currentInitNames[track.initTrack] ?? null;
+    const filename = track.filenamePrefix + String(tracking.segmentIndex) + ((servedInit !== null) ? ".m4s" : ".ts");
+    const storedBefore = track.countStored(ctx.streamId);
+
+    track.store(ctx.streamId, filename, outcome.data);
+    tracking.fetchedSequences.add(segment.sequence);
+    tracking.highWaterSequence = Math.max(tracking.highWaterSequence, segment.sequence);
+    storeSegmentMetadata(tracking.metadata, filename, segment, servedInit);
+    storedAny = true;
+
+    tracking.segmentIndex++;
+    ctx.stats.totalSegmentsFetched++;
+
+    track.afterCommit?.({ byteLength: outcome.data.length, filename, storedBefore });
+
+    LOG.debug("native:proxy", "Stored %s (%s bytes, seq %s) for %s.", filename, outcome.data.length, segment.sequence, ctx.channelName);
+  }
+
+  return storedAny;
+}
+
 // Audio Stream Handler.
 
 /**
@@ -992,10 +1290,10 @@ function pruneTrackInits(streamId: number, track: InitSegmentTrack, metadata: Se
  *
  * @param ctx - Shared proxy context with lifecycle state, stats, channel name, and error callback.
  * @param audio - Audio-specific tracking state (sequence tracking, metadata, failure counters).
- * @param fetchSegment - Closure-bound segment fetch function that handles HTTP fetch, decryption, and error tracking.
+ * @param pipeline - The audio track's pipeline binding: its fetch callbacks, store, naming, and bookkeeping.
  * @returns True if new audio segments were stored, false otherwise.
  */
-async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, fetchSegment: SegmentFetchFn): Promise<boolean> {
+async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, pipeline: SegmentPipelineTrack): Promise<boolean> {
 
   if(ctx.lifecycle.stopped || !audio.variantUrl) {
 
@@ -1020,9 +1318,7 @@ async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, fet
 
       if(audio.consecutiveManifestFailures >= effectiveThreshold) {
 
-        ctx.lifecycle.errorThresholdReached = true;
-        ctx.lifecycle.stopped = true;
-        ctx.onError("audio manifest poll failed " + String(audio.consecutiveManifestFailures) + " times");
+        escalateProxyFailure({ ctx, message: "audio manifest poll failed " + String(audio.consecutiveManifestFailures) + " times" });
       }
 
       return false;
@@ -1032,7 +1328,7 @@ async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, fet
 
     const body = await response.text();
 
-    return await processAudioStream(ctx, audio, body, audio.variantUrl, fetchSegment);
+    return await processAudioStream(ctx, audio, body, audio.variantUrl, pipeline);
   } catch(error) {
 
     // Network errors (timeouts, DNS failures, connection resets) are transient - the threshold helper returns the doubled value for a missing status, matching the
@@ -1046,9 +1342,7 @@ async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, fet
 
     if(audio.consecutiveManifestFailures >= networkThreshold) {
 
-      ctx.lifecycle.errorThresholdReached = true;
-      ctx.lifecycle.stopped = true;
-      ctx.onError("audio manifest poll error: " + String(error));
+      escalateProxyFailure({ ctx, message: "audio manifest poll error: " + String(error) });
     }
 
     return false;
@@ -1063,11 +1357,11 @@ async function pollAudioStream(ctx: ProxyContext, audio: AudioTrackingState, fet
  * @param audio - Audio-specific tracking state.
  * @param body - The audio variant manifest text content.
  * @param baseUrl - The audio variant URL for resolving relative segment URLs.
- * @param fetchSegment - Closure-bound segment fetch function.
+ * @param pipeline - The audio track's pipeline binding: its fetch callbacks, store, naming, and bookkeeping.
  * @returns True if new segments were stored, false if the media sequence hadn't advanced.
  */
 async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, body: string, baseUrl: string,
-  fetchSegment: SegmentFetchFn): Promise<boolean> {
+  pipeline: SegmentPipelineTrack): Promise<boolean> {
 
   const { mediaSequence, segments, targetDuration } = parseVariantManifest(body, baseUrl);
 
@@ -1124,65 +1418,7 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
 
   LOG.debug("native:proxy", "Fetching %s new audio segment(s) for %s (sequence %s).", newSegments.length, ctx.channelName, mediaSequence);
 
-  let storedAny = false;
-
-  // At most one initialization fetch per track per poll cycle. A function-scoped local is the whole mechanism: it cannot outlive the cycle, cannot be forgotten,
-  // and cannot be shared with the video track, whose own loop declares its own. One failing upstream initialization therefore costs one fetch timeout per cycle
-  // rather than one per dependent segment.
-  let initAttempted = false;
-
-  for(const seg of newSegments) {
-
-    if(ctx.lifecycle.stopped) {
-
-      break;
-    }
-
-    // Resolve this segment's initialization before its name is chosen, so the first segment of a fresh tune is named from the initialization its own document
-    // established rather than transiently mislabeled.
-    if((seg.mapUri !== null) && (seg.mapUri !== audio.lastUpstreamMapUri) && !initAttempted) {
-
-      initAttempted = true;
-
-      // eslint-disable-next-line no-await-in-loop
-      await resolveTrackInit({ ctx, fetchSegment, mapUri: seg.mapUri, track: "audio", tracking: audio });
-    }
-
-    /* Store only segments whose initialization is resolved. A segment declaring a MAP the track has not adopted is skipped whether this cycle's attempt at that
-     * URI failed or the cycle's one attempt went to a different transition earlier in the window. Naming never falls back to the track's current initialization
-     * for a segment whose own transition is unresolved, so a second distinct transition in one batch cannot be mislabeled with the first one's initialization.
-     * The cost is bounded: each additional distinct transition in a batch resolves one cycle later.
-     */
-    if((seg.mapUri !== null) && (seg.mapUri !== audio.lastUpstreamMapUri)) {
-
-      continue;
-    }
-
-    // eslint-disable-next-line no-await-in-loop
-    const segmentData = await fetchSegment(audio.segmentTracker, seg.url, seg.sequence, seg.ivHex, seg.keyUrl);
-
-    if(!segmentData) {
-
-      continue;
-    }
-
-    // Name by container. A track holding an initialization is fMP4 and its fragments are .m4s; a track with none is MPEG-TS and keeps .ts.
-    const servedInit = getStream(ctx.streamId)?.hls.currentInitNames.audio ?? null;
-    const filename = "audio" + String(audio.segmentIndex) + ((servedInit !== null) ? ".m4s" : ".ts");
-
-    storeAudioSegment(ctx.streamId, filename, segmentData);
-    audio.fetchedSequences.add(seg.sequence);
-    audio.highWaterSequence = Math.max(audio.highWaterSequence, seg.sequence);
-    storeSegmentMetadata(audio.metadata, filename, seg, servedInit);
-    storedAny = true;
-
-    audio.segmentIndex++;
-    ctx.stats.totalSegmentsFetched++;
-
-    LOG.debug("native:proxy", "Stored %s (%s bytes, seq %s) for %s.", filename, segmentData.length, seg.sequence, ctx.channelName);
-  }
-
-  return storedAny;
+  return await runSegmentPipeline({ ctx, segments: newSegments, track: pipeline });
 }
 
 // Composite Playlist Builder.
@@ -1325,6 +1561,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   // Proxy lifecycle state. Controls whether the proxy is running, tracks readiness signaling, and manages poll timing.
   const lifecycle: ProxyLifecycleState = {
 
+    abortController: new AbortController(),
     errorThresholdReached: false,
     firstPollComplete: false,
     manifestBackoffMs: MANIFEST_BACKOFF_BASE,
@@ -1392,6 +1629,51 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
   // Shared context for extracted module-level functions. Bundles immutable references with shared mutable state objects.
   const ctx: ProxyContext = { channelName, lifecycle, onError, stats, streamId };
+
+  /* The two tracks' pipeline bindings. Construction happens here, at the proxy's composition root, so the pipeline that serves both loops carries no branch on
+   * which track it is running: everything that differs between them - where segments are stored, how many are stored, how they are named, which initialization
+   * slot they read, and the extra bookkeeping video alone keeps - is data on these two objects.
+   */
+  const videoPipeline: SegmentPipelineTrack = {
+
+    afterCommit: ({ byteLength, storedBefore }): void => {
+
+      video.lastSegmentSize = byteLength;
+      video.lastSegmentTime = Date.now();
+
+      // Log the first segment fetch latency for timing diagnostics.
+      if(stats.totalSegmentsFetched === 1) {
+
+        LOG.debug("timing:native", "First segment fetched for %s (%s bytes).", channelName, byteLength);
+      }
+
+      // Detect segment rotation - if the count didn't increase, the oldest segment was evicted.
+      const storedAfter = getStream(streamId)?.hls.segments.size ?? 0;
+
+      if((storedAfter <= storedBefore) && (storedBefore > 0)) {
+
+        LOG.debug("native:proxy", "Segment rotated for %s (oldest removed, %s segments retained).", channelName, storedAfter);
+      }
+    },
+    countStored: (id: number): number => getStream(id)?.hls.segments.size ?? 0,
+    fetchInit: fetchTrackedSegment,
+    fetchSegment: prefetchSegment,
+    filenamePrefix: "segment",
+    initTrack: "video",
+    store: storeSegment,
+    tracking: video
+  };
+
+  const audioPipeline: SegmentPipelineTrack = {
+
+    countStored: (id: number): number => getStream(id)?.hls.audioSegments.size ?? 0,
+    fetchInit: fetchTrackedSegment,
+    fetchSegment: prefetchSegment,
+    filenamePrefix: "audio",
+    initTrack: "audio",
+    store: storeAudioSegment,
+    tracking: audio
+  };
 
   // AES-128 decryption key cache. Maps key URLs to their fetched 16-byte keys. Each segment in a manifest can reference a different key URL (key rotation), so we
   // cache by URL rather than maintaining a single "current key". The coordinator pre-fetches the initial key, which is seeded into the cache here.
@@ -1463,9 +1745,8 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
         if(video.consecutiveManifestFailures >= effectiveThreshold) {
 
-          lifecycle.errorThresholdReached = true;
-          lifecycle.stopped = true;
-          onError("manifest poll failed " + String(video.consecutiveManifestFailures) + " times (HTTP " + String(response.status) + ")");
+          escalateProxyFailure({ ctx, message: "manifest poll failed " + String(video.consecutiveManifestFailures) + " times (HTTP " +
+            String(response.status) + ")" });
 
           return;
         }
@@ -1490,7 +1771,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       if(hasAudio) {
 
-        [ hasNewVideoSegments, hasNewAudioSegments ] = await Promise.all([ processManifest(body), pollAudioStream(ctx, audio, fetchTrackedSegment) ]);
+        [ hasNewVideoSegments, hasNewAudioSegments ] = await Promise.all([ processManifest(body), pollAudioStream(ctx, audio, audioPipeline) ]);
       } else {
 
         hasNewVideoSegments = await processManifest(body);
@@ -1543,9 +1824,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       if(video.consecutiveManifestFailures >= networkThreshold) {
 
-        lifecycle.errorThresholdReached = true;
-        lifecycle.stopped = true;
-        onError("manifest poll error: " + String(error));
+        escalateProxyFailure({ ctx, message: "manifest poll error: " + String(error) });
 
         return;
       }
@@ -1644,81 +1923,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     video.lastMediaSequence = mediaSequence;
 
-    // Fetch and store each new segment sequentially. Track whether at least one segment was stored so the caller only generates playlists when data actually changed.
-    let storedAny = false;
-
-    // At most one initialization fetch per track per poll cycle. See the audio loop's counterpart for the full rationale; each track declares its own local so
-    // the budgets cannot be shared.
-    let initAttempted = false;
-
-    for(const seg of newSegments) {
-
-      if(lifecycle.stopped) {
-
-        break;
-      }
-
-      // Resolve this segment's initialization before its name is chosen, so the first segment of a fresh tune is named from the initialization its own document
-      // established rather than transiently mislabeled.
-      if((seg.mapUri !== null) && (seg.mapUri !== video.lastUpstreamMapUri) && !initAttempted) {
-
-        initAttempted = true;
-
-        // eslint-disable-next-line no-await-in-loop
-        await resolveTrackInit({ ctx, fetchSegment: fetchTrackedSegment, mapUri: seg.mapUri, track: "video", tracking: video });
-      }
-
-      // Store only segments whose initialization is resolved. See the audio loop's counterpart for the full rationale.
-      if((seg.mapUri !== null) && (seg.mapUri !== video.lastUpstreamMapUri)) {
-
-        continue;
-      }
-
-      // eslint-disable-next-line no-await-in-loop
-      const segmentData = await fetchTrackedSegment(video.segmentTracker, seg.url, seg.sequence, seg.ivHex, seg.keyUrl);
-
-      if(!segmentData) {
-
-        continue;
-      }
-
-      // Check segment count before store to detect rotation (oldest segment evicted to enforce maxSegments limit).
-      const stream = getStream(streamId);
-
-      // Name by container. A track holding an initialization is fMP4 and its fragments are .m4s; a track with none is MPEG-TS and keeps .ts.
-      const servedInit = stream?.hls.currentInitNames.video ?? null;
-      const filename = "segment" + String(video.segmentIndex) + ((servedInit !== null) ? ".m4s" : ".ts");
-      const countBefore = stream?.hls.segments.size ?? 0;
-
-      storeSegment(streamId, filename, segmentData);
-      video.fetchedSequences.add(seg.sequence);
-      video.highWaterSequence = Math.max(video.highWaterSequence, seg.sequence);
-      storeSegmentMetadata(video.metadata, filename, seg, servedInit);
-      storedAny = true;
-
-      video.lastSegmentSize = segmentData.length;
-      video.lastSegmentTime = Date.now();
-      video.segmentIndex++;
-      stats.totalSegmentsFetched++;
-
-      // Log the first segment fetch latency for timing diagnostics.
-      if(stats.totalSegmentsFetched === 1) {
-
-        LOG.debug("timing:native", "First segment fetched for %s (%s bytes).", channelName, segmentData.length);
-      }
-
-      // Detect segment rotation - if the count didn't increase, the oldest segment was evicted.
-      const countAfter = stream?.hls.segments.size ?? 0;
-
-      if((countAfter <= countBefore) && (countBefore > 0)) {
-
-        LOG.debug("native:proxy", "Segment rotated for %s (oldest removed, %s segments retained).", channelName, countAfter);
-      }
-
-      LOG.debug("native:proxy", "Stored %s (%s bytes, seq %s) for %s.", filename, segmentData.length, seg.sequence, channelName);
-    }
-
-    return storedAny;
+    return await runSegmentPipeline({ ctx, segments: newSegments, track: videoPipeline });
   }
 
   /**
@@ -1731,11 +1936,16 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
    * @param sequence - The media sequence number (for IV derivation).
    * @param ivHex - Explicit IV hex string from the manifest, or null.
    * @param segKeyUrl - The key URL for this specific segment from the manifest's #EXT-X-KEY tag, or null for clear segments.
+   * @param abortSignal - Optional cancellation signal, composed with this fetch's own timeout.
    * @returns The segment data (decrypted if necessary), or null on failure.
    */
-  async function fetchAndDecryptSegment(url: string, sequence: number, ivHex: Nullable<string>, segKeyUrl: Nullable<string>): Promise<Nullable<Buffer>> {
+  async function fetchAndDecryptSegment(url: string, sequence: number, ivHex: Nullable<string>, segKeyUrl: Nullable<string>,
+    abortSignal?: AbortSignal): Promise<Nullable<Buffer>> {
 
-    const response = await chromeFetch(url, { signal: AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT) });
+    // The caller's cancellation and this fetch's own timeout are composed, so the segment ends on whichever arrives first and a caller with nothing to cancel
+    // gets the timeout alone.
+    const timeout = AbortSignal.timeout(SEGMENT_FETCH_TIMEOUT);
+    const response = await chromeFetch(url, { signal: abortSignal ? AbortSignal.any([ abortSignal, timeout ]) : timeout });
 
     if(!response.ok) {
 
@@ -1756,7 +1966,9 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       if(!key) {
 
-        key = await fetchDecryptionKey(segKeyUrl) ?? undefined;
+        // The key fetch receives the raw cancellation signal rather than the composed one above, so it gets its own full timeout budget instead of inheriting
+        // whatever this segment's fetch has already spent.
+        key = await fetchDecryptionKey(segKeyUrl, abortSignal) ?? undefined;
 
         if(!key) {
 
@@ -1791,9 +2003,21 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   }
 
   /**
-   * Fetches a segment with error tracking. Wraps fetchAndDecryptSegment with per-tracker failure counting. Consecutive failures trigger the error threshold which
-   * stops the proxy and signals the monitor for recovery. Used for video and audio media segments with independent trackers, and for the initialization segments
-   * an fMP4 source references - which ride the track's own tracker so their failures escalate through this one threshold rather than a parallel counter.
+   * Starts one segment's byte fetch for the prefetch scheduler, which applies accounting when the segment commits rather than when its bytes arrive. The
+   * proxy's cancellation signal is supplied here, so a fetch the scheduler started ahead of the commit walk ends the moment the proxy stops.
+   *
+   * @param segment - The parsed segment to fetch.
+   * @returns The segment data (decrypted if necessary), or null on failure.
+   */
+  async function prefetchSegment(segment: ParsedSegment): Promise<Nullable<Buffer>> {
+
+    return fetchAndDecryptSegment(segment.url, segment.sequence, segment.ivHex, segment.keyUrl, lifecycle.abortController.signal);
+  }
+
+  /**
+   * Fetches a segment with error tracking, for the callers that fetch outside the pipeline's window: the initialization segments an fMP4 source's #EXT-X-MAP
+   * tags reference, which ride the track's own tracker so their failures escalate through the one segment threshold rather than a parallel counter. The fetch
+   * carries the proxy's cancellation signal and settles through the shared outcome classifier, so a cancelled initialization is discarded rather than counted.
    *
    * @param tracker - Mutable error tracking state with labels for log and error messages.
    * @param url - The segment URL.
@@ -1805,44 +2029,12 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   async function fetchTrackedSegment(tracker: SegmentFetchTracker, url: string, sequence: number,
     ivHex: Nullable<string>, segKeyUrl: Nullable<string>): Promise<Nullable<Buffer>> {
 
-    try {
+    const signal = lifecycle.abortController.signal;
+    const outcome = await captureFetchOutcome({ fetchSegment: () => fetchAndDecryptSegment(url, sequence, ivHex, segKeyUrl, signal), signal });
 
-      const data = await fetchAndDecryptSegment(url, sequence, ivHex, segKeyUrl);
+    recordFetchOutcome({ ctx, outcome, tracker });
 
-      if(!data) {
-
-        tracker.consecutiveFailures++;
-        stats.totalFetchErrors++;
-
-        if(tracker.consecutiveFailures >= MAX_SEGMENT_FAILURES) {
-
-          lifecycle.errorThresholdReached = true;
-          lifecycle.stopped = true;
-          onError(tracker.label + " fetch failed " + String(tracker.consecutiveFailures) + " times");
-        }
-
-        return null;
-      }
-
-      tracker.consecutiveFailures = 0;
-
-      return data;
-    } catch(error) {
-
-      tracker.consecutiveFailures++;
-      stats.totalFetchErrors++;
-
-      LOG.debug("native:proxy", "%s fetch failed for %s: %s.", tracker.debugLabel, channelName, String(error));
-
-      if(tracker.consecutiveFailures >= MAX_SEGMENT_FAILURES) {
-
-        lifecycle.errorThresholdReached = true;
-        lifecycle.stopped = true;
-        onError(tracker.label + " fetch error: " + String(error));
-      }
-
-      return null;
-    }
+    return (outcome.status === "success") ? outcome.data : null;
   }
 
   /**
@@ -1990,6 +2182,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   const stop = (): void => {
 
     lifecycle.stopped = true;
+
+    // Cancel every fetch the proxy still has open - segments, initialization segments, and decryption keys - so teardown does not wait on a CDN and no
+    // straggler write can land after the stream's state has been cleared.
+    lifecycle.abortController.abort();
 
     // The polling cadence sleep is owned by schedulePoll's awaiter and is not cancelled here - the awaiter checks lifecycle.stopped after clock.sleep resolves
     // and exits before issuing the next poll. See schedulePoll's docblock for the cancellation contract.
