@@ -4,13 +4,13 @@
  */
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
 import type { Express, Request, Response } from "express";
+import { LOG, raceWithTimeout } from "../utils/index.ts";
 import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.ts";
 import { getChannelServiceLabel, getResolvedChannel, getServiceGroup, getServiceTagForChannel, isServiceTagEnabled,
   resolveServiceKey } from "../config/services.ts";
 import { getProviderBySlug, normalizeChannelName } from "../browser/channelSelection.ts";
 import { recordDiscoveryOutcome, withProviderGuidePage } from "../browser/precaching.ts";
 import { sendError, sendNotFoundError } from "./config/http/envelope.ts";
-import { LOG } from "../utils/index.ts";
 
 /* The services endpoint exposes channel discovery for each registered service. A GET request to /services/:slug/channels creates a temporary browser page,
  * navigates to the service's guide, runs the service's discoverChannels implementation, and returns a sorted JSON array of discovered channels. The temporary
@@ -39,6 +39,11 @@ interface InflightEntry {
 }
 
 const inflight = new Map<string, InflightEntry>();
+
+// The bound on how long a replacement discovery waits for its doomed predecessor's teardown to settle before proceeding. That teardown awaits CDP calls which
+// Puppeteer bounds only at its 180-second default protocol timeout, so a wedged browser degrades the refresh to clearing while the doomed teardown is still
+// running - the narrow race the sequencing below exists to close, confined to the pathological case - rather than chain-stalling every later refresh behind it.
+const DISCOVERY_SETTLEMENT_TIMEOUT_MS = 10000;
 
 /**
  * Logs a discovery failure and sends a 500 error response.
@@ -321,28 +326,28 @@ export function setupServicesEndpoint(app: Express, deps: ServiceDiscoveryDeps =
       return;
     }
 
-    // When refresh=true is requested, clear the service's caches (unified channel cache, row caches, fully-enumerated flags, etc.) so the discovery walk runs
-    // against fresh data. This also resets warm tuning state (watch URLs, GUIDs), but the discovery walk repopulates the unified cache before returning - any
-    // subsequent tune resolves from the freshly populated cache as normal. If a discovery is already in flight, abort it first - clearing the cache while a
-    // discovery is progressively populating it would corrupt its state.
+    // A refresh=true request rebuilds the service's caches (unified channel cache, row caches, fully-enumerated flags, etc.) so the discovery walk runs against
+    // fresh data. Clearing them also resets warm tuning state (watch URLs, GUIDs), but the discovery walk repopulates the unified cache before returning - any
+    // subsequent tune resolves from the freshly populated cache as normal.
     const lineup = req.query["lineup"] === "true";
     const refresh = req.query["refresh"] === "true";
 
+    // The in-flight entry is read once and serves both the abort below and the replacement's reference to its predecessor. Nothing mutates the map between
+    // those two uses in this synchronous turn, so one read is the whole truth.
+    let entry = inflight.get(slug);
+
+    // A refresh only SIGNALS the in-flight walk here. The doomed walk's page teardown settles asynchronously, and its interceptor callbacks keep writing into
+    // the provider's caches until that page is actually closed, so clearing on this statement would let the dying walk's stragglers seed the very lineup the
+    // refresh asked to rebuild. The clear is sequenced inside the replacement entry below, after the predecessor has settled; entry removal belongs to the
+    // walk's own finally, which is the single removal path.
     if(refresh) {
 
-      const existing = inflight.get(slug);
-
-      if(existing) {
-
-        existing.controller.abort();
-        inflight.delete(slug);
-      }
-
-      provider.strategy.clearCache?.();
+      entry?.controller.abort();
     }
 
     // Check for cached discovery results before creating a browser page. When a prior tune or discovery call has already enumerated the service's lineup, the
-    // cache is warm and we can return immediately without any browser interaction. Skipped when refresh=true since we just cleared the caches above.
+    // cache is warm and we can return immediately without any browser interaction. Skipped when refresh=true, since the sequenced replacement below owns the
+    // clear and a refresh must be answered from the rebuilt lineup.
     if(!refresh) {
 
       const cached = provider.getCachedChannels();
@@ -355,15 +360,55 @@ export function setupServicesEndpoint(app: Express, deps: ServiceDiscoveryDeps =
       }
     }
 
-    // Coalesce concurrent requests. If a discovery is already in flight for this service, piggyback on the existing promise instead of spawning a redundant
-    // browser page. If the in-flight discovery was aborted (by a refresh=true request that arrived after we checked above), the promise rejects with a
-    // DiscoveryAbortError and we retry against whatever new entry replaced it in the map.
-    let entry = inflight.get(slug);
-
-    if(!entry) {
+    /* Coalesce concurrent requests. If a discovery is already in flight for this service, piggyback on the existing promise instead of spawning a redundant
+     * browser page. If the in-flight discovery was aborted (by a refresh=true request that arrived after we checked above), the promise rejects with a
+     * DiscoveryAbortError and we retry against whatever new entry replaced it in the map.
+     *
+     * A refresh always creates its own entry - it must never piggyback on the walk it just aborted - and creating that replacement in the same synchronous turn
+     * as the abort is what guarantees a piggybacking requester always finds a successor. The inflight.set below overwrites the doomed entry, whose own finally
+     * then sees a different controller in the map and correctly leaves it alone.
+     */
+    if(refresh || !entry) {
 
       const controller = new AbortController();
-      const promise = runDiscovery(provider, controller.signal, deps).finally(() => {
+      const doomed = entry;
+
+      const promise = (async (): Promise<DiscoveredChannel[]> => {
+
+        /* The predecessor's settlement gates everything that follows: the guarded guide-page session awaits its page close before the walk promise settles, so
+         * once this await returns no interceptor callback of that walk can write into the caches we are about to clear. How it settled is its own business -
+         * the refresh cares only THAT it settled. The race bounds the wait: a teardown wedged inside a CDP call would otherwise hold every later refresh
+         * hostage to Puppeteer's 180-second default protocol timeout, so past the bound we proceed and accept the clear-while-settling race for that
+         * pathological case alone.
+         */
+        if(doomed) {
+
+          const settlementTimeout = new Error("The previous discovery walk's teardown did not settle in time.");
+
+          try {
+
+            await raceWithTimeout(doomed.promise, DISCOVERY_SETTLEMENT_TIMEOUT_MS, settlementTimeout);
+          } catch(error) {
+
+            // An aborted walk rejects by design and stays quiet, and a genuine walk failure was already reported to that walk's own requesters. The timeout
+            // sentinel is ours alone - reference identity tells it apart - and a wedged teardown is exactly the in-trouble signal an operator wants while it is
+            // still happening.
+            if(error === settlementTimeout) {
+
+              LOG.warn("Clearing %s discovery caches while the previous walk's teardown is still settling.", provider.label);
+            }
+          }
+        }
+
+        // With no predecessor to await, this body runs synchronously to here inside the request's own turn, so a refresh with nothing in flight still clears
+        // before anything else can observe the caches - and before the walk below starts reading them.
+        if(refresh) {
+
+          provider.strategy.clearCache?.();
+        }
+
+        return runDiscovery(provider, controller.signal, deps);
+      })().finally(() => {
 
         // Only remove our own entry. A refresh=true request may have already replaced it with a new one.
         if(inflight.get(slug)?.controller === controller) {
