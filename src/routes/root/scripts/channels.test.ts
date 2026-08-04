@@ -121,6 +121,9 @@ describe("generateChannelsSubtabScript", () => {
     const script = generateChannelsSubtabScript();
 
     assert.match(script, /window\.applyTagResponse\s*=/);
+
+    // The server's message wins over the caller's fallback so a mutation response can carry the playlist-reload hint through to the toast.
+    assert.match(script, /data\.message \|\| toastMessage/);
   });
 
   test("exposes the tag column filter handlers", () => {

@@ -7,12 +7,19 @@
  * means and what prose to append.
  */
 import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.ts";
+import { getChannelEffectiveTags } from "../../../../config/userChannels.ts";
+import { tagsEqual } from "../../../../config/channelForm.ts";
 
 /* Fields that appear in the generated M3U playlist and affect Channels DVR's view of the channel. When any of these change, we append PLAYLIST_HINT so the
  * user knows to reload the playlist in Channels DVR for the change to take effect. The `satisfies` constraint ensures every entry is a real ResolvedChannel
  * property name, so renaming a Channel identity field flags this list at compile time instead of silently orphaning the check.
+ *
+ * The list is field-level, and that is an approximation for two of the three helpers: playlistHintForStored and playlistHintForDelta report only that a listed
+ * field is present, and rendering can shadow a listed field (guideTitle wins over name) or filter its value (tags are intersected with the active vocabulary),
+ * so those two can report a change the playlist does not actually show. playlistHintForChange holds both full channel records, so it compares the tags field the
+ * way the playlist renders it rather than by presence alone.
  */
-export const M3U_FIELDS = [ "channelNumber", "guideTitle", "logoUrl", "name", "stationId", "tvgShift" ] as const satisfies readonly (keyof ResolvedChannel)[];
+export const M3U_FIELDS = [ "channelNumber", "guideTitle", "logoUrl", "name", "stationId", "tags", "tvgShift" ] as const satisfies readonly (keyof ResolvedChannel)[];
 
 // Appended to success messages when an M3U-affecting field changed. Begins with a leading space so callers can concatenate directly onto their message.
 export const PLAYLIST_HINT = " Reload the playlist in Channels DVR to see this change.";
@@ -54,5 +61,12 @@ export function playlistHintForChange(previous: ResolvedChannel | undefined, nex
     return PLAYLIST_HINT;
   }
 
-  return M3U_FIELDS.some((f) => previous[f] !== next[f]) ? PLAYLIST_HINT : "";
+  /* tags is the one array-valued field in the list, so identity comparison would flag every rebuilt-but-equal array. It is also the one field the playlist
+   * renders through a filter - the M3U shows effective tags, the intersection with the active vocabulary - so both sides are filtered before the
+   * order-independent, case-sensitive content comparison. A change confined to tag strings outside the vocabulary is therefore not playlist-visible and
+   * produces no hint. getChannelEffectiveTags returns [] for a channel with no tags, so the absent case needs no defaulting here.
+   */
+  return M3U_FIELDS.some((f) => (f === "tags") ?
+    !tagsEqual(getChannelEffectiveTags(previous), getChannelEffectiveTags(next)) :
+    (previous[f] !== next[f])) ? PLAYLIST_HINT : "";
 }

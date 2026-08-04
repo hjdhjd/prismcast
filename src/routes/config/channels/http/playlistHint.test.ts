@@ -13,13 +13,13 @@ import { makeChannel } from "../../../../config/userChannels.helpers.ts";
 
 describe("M3U_FIELDS", () => {
 
-  test("declares the six expected playlist-affecting fields", () => {
+  test("declares the expected playlist-affecting fields", () => {
 
     // The set is the canonical declaration of which fields surface in the generated M3U. Locking the membership prevents a silent expansion or contraction that
     // would change the playlist-reload nudge policy across the codebase.
     assert.deepEqual(
       [...M3U_FIELDS].toSorted(),
-      [ "channelNumber", "guideTitle", "logoUrl", "name", "stationId", "tvgShift" ]
+      [ "channelNumber", "guideTitle", "logoUrl", "name", "stationId", "tags", "tvgShift" ]
     );
   });
 });
@@ -160,12 +160,17 @@ describe("playlistHintForChange", () => {
 
   test("returns the hint for each individual M3U-affecting field in turn", () => {
 
-    // Lock the "any field difference is enough" semantics across the SSOT. We toggle one field at a time so a regression where the iteration shrinks would
-    // surface as a per-field failure.
+    /* Lock the "any field difference is enough" semantics across the SSOT. We toggle one field at a time so a regression where the iteration shrinks would
+     * surface as a per-field failure. tags needs its own pair of values: it is the one array-valued field in the list, and the comparator reads it through the
+     * effective-tags filter, so it takes vocabulary members rather than the scalar strings every other field uses.
+     */
+    const fieldValues: Partial<Record<(typeof M3U_FIELDS)[number], { after: string[]; before: string[] }>> = { tags: { after: ["Sports"], before: ["Local"] } };
+
     for(const field of M3U_FIELDS) {
 
-      const previous = makeChannel({ [field]: "before" });
-      const next = makeChannel({ [field]: "after" });
+      const values = fieldValues[field] ?? { after: "after", before: "before" };
+      const previous = makeChannel({ [field]: values.before });
+      const next = makeChannel({ [field]: values.after });
 
       assert.equal(playlistHintForChange(previous, next), PLAYLIST_HINT, "field " + field + " difference should trigger the hint");
     }
@@ -195,5 +200,45 @@ describe("playlistHintForChange", () => {
     const next = makeChannel({ channelNumber: "4" as unknown as number });
 
     assert.equal(playlistHintForChange(previous, next), PLAYLIST_HINT, "type difference must be treated as a real change");
+  });
+
+  /* tags is compared by content the way the playlist renders it, not by array identity. The pins below use members of the predefined vocabulary, because the
+   * comparator reads effective tags - a fixture tag outside the active vocabulary filters to nothing and would silently invert what the pin proves.
+   */
+
+  test("returns an empty string when the tag arrays hold the same tags in a different order", () => {
+
+    // Every edit rebuilds the tags array, so identity comparison would report a change on every save. Ordering is not playlist-visible either: the comparison is
+    // order-independent, so a reordered but equal set produces no hint.
+    const previous = makeChannel({ tags: [ "Sports", "Local" ] });
+    const next = makeChannel({ tags: [ "Local", "Sports" ] });
+
+    assert.equal(playlistHintForChange(previous, next), "");
+  });
+
+  test("returns PLAYLIST_HINT when the tag content genuinely changes", () => {
+
+    const previous = makeChannel({ tags: ["Local"] });
+    const next = makeChannel({ tags: ["Sports"] });
+
+    assert.equal(playlistHintForChange(previous, next), PLAYLIST_HINT);
+  });
+
+  test("returns an empty string when the difference is confined to tags outside the active vocabulary", () => {
+
+    // Tags outside the vocabulary never reach the M3U, so swapping one for another changes nothing the playlist shows and must not nudge the user to reload.
+    const previous = makeChannel({ tags: [ "Local", "NotAVocabularyTag" ] });
+    const next = makeChannel({ tags: [ "Local", "AlsoNotAVocabularyTag" ] });
+
+    assert.equal(playlistHintForChange(previous, next), "");
+  });
+
+  test("returns an empty string when absent tags become an empty array (boundary)", () => {
+
+    // Neither shape renders anything in the playlist, so the two are equal for hint purposes - the effective-tags read maps an absent field to an empty list.
+    const previous = makeChannel();
+    const next = makeChannel({ tags: [] });
+
+    assert.equal(playlistHintForChange(previous, next), "");
   });
 });

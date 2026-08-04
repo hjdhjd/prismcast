@@ -90,7 +90,8 @@ export function registerBulkRoutes(app: Express): void {
       ("Cleared channel numbers from " + String(affectedKeys.length) + " channels.") :
       ("Numbered " + String(affectedKeys.length) + " channels.");
 
-    sendSuccess(res, { affectedKeys, message, playlistHint: true });
+    // The hint rides only when channels actually changed: with an empty visible listing the message reports zero channels and nothing playlist-visible happened.
+    sendSuccess(res, { affectedKeys, message, playlistHint: affectedKeys.length > 0 });
   }));
 
   // POST /config/channels/hdhr-bulk - Toggle HDHomeRun lineup inclusion for all visible channels.
@@ -201,7 +202,8 @@ export function registerBulkRoutes(app: Express): void {
 
     const message = "Tag '" + tag + "' " + verb + " " + String(affectedKeys.length) + " channel(s).";
 
-    // Include the full tag UI bundle so the filter dropdown and tag manager modal stay in sync. Tag changes don't affect the M3U playlist, so no playlist hint.
-    sendSuccess(res, { affectedKeys, message, tags: true });
+    // Include the full tag UI bundle so the filter dropdown and tag manager modal stay in sync. Tags render in the playlist as group-title and tvc-guide-tags, so
+    // the reload hint rides the message; the early return above means this path is reached only with a non-empty affected set.
+    sendSuccess(res, { affectedKeys, message, playlistHint: true, tags: true });
   }));
 }

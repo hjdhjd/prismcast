@@ -15,12 +15,12 @@
 import type { ChannelDelta, ResolvedChannel, StoredChannel } from "../../../../types/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, sanitizeString } from "../../../../utils/index.ts";
+import { M3U_FIELDS, playlistHintForChange, playlistHintForDelta, playlistHintForStored } from "../http/playlistHint.ts";
 import { channelMatches, computePredefinedDelta, findMatchingVariant } from "../../../../config/channelForm.ts";
 import { clearChannelOverrides, getPredefinedChannel, inferTargetVariant, intersectBindingDeltas, isPredefinedChannel, isUserChannel,
   mutateChannels, parseTagInput, pickBindingFields, pickIdentityFields, replaceVariantBinding, sortTags, validateChannelKey, validateChannelName,
   validateChannelNumber, validateChannelProfile, validateChannelUrl } from "../../../../config/userChannels.ts";
 import { getResolvedChannel, resolveServiceKey } from "../../../../config/services.ts";
-import { playlistHintForChange, playlistHintForDelta, playlistHintForStored } from "../http/playlistHint.ts";
 import { sendFormErrors, sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import type { ChannelFormValues } from "../../../../config/channelForm.ts";
 import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
@@ -718,9 +718,9 @@ export function registerCrudRoutes(app: Express): void {
 
     LOG.info("Inline edit: %s for '%s' set to '%s'.", fieldLabel, key, displayValue);
 
-    // hdhrEnabled changes don't affect the M3U playlist (HDHomeRun is a separate discovery path), so it's the only field excluded here. channelNumber and
-    // stationId are genuine M3U_FIELDS entries; tags is not, but this check treats it as playlist-affecting too rather than importing M3U_FIELDS for one field.
-    const applyPlaylistHint = (field !== "hdhrEnabled");
+    // Membership in the playlist field list decides the hint: hdhrEnabled is the one inline-editable field outside it, since HDHomeRun is a separate discovery
+    // path. .some() rather than .includes() because the tuple's element union does not admit "hdhrEnabled", which .includes() would reject without a cast.
+    const applyPlaylistHint = M3U_FIELDS.some((f) => f === field);
 
     sendSuccess(res, {
 

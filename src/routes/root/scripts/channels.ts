@@ -1271,14 +1271,16 @@ export function generateChannelsSubtabScript(): string {
     // Tag Management Modal.
 
     // Single function for applying tag mutation responses. Updates the tag manager modal body, the column header filter dropdown, the channel table patch, and shows
-    // a toast. Exposed on window so both channels.ts and config.ts (bulkToggleTag) can use the same code path. No page reload needed.
+    // a toast. Exposed on window so both channels.ts and config.ts (bulkToggleTag) can use the same code path. No page reload needed. The server's message wins over
+    // the caller's fallback so a mutation response can carry the playlist-reload hint; the fallback covers responses that carry no message.
     "  window.applyTagResponse = (data, toastMessage) => {",
     "    const contentDiv = document.getElementById('tag-manager-modal-content');",
     "    if(contentDiv && data.modalBody) { contentDiv.innerHTML = data.modalBody; }",
     "    const filterMenu = document.getElementById('tag-filter-menu');",
     "    if(filterMenu && data.filterContent) { filterMenu.innerHTML = data.filterContent; applyTagColumnFilter(); }",
     "    if(data.patch) { channelTable.applyPatch(data.patch); }",
-    "    if(toastMessage && window.showToast) { window.showToast(toastMessage); }",
+    "    const toast = data.message || toastMessage;",
+    "    if(toast && window.showToast) { window.showToast(toast); }",
     "  };",
 
     "  window.openTagManager = () => {",

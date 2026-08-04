@@ -165,7 +165,8 @@ export function registerTagRoutes(app: Express): void {
 
     LOG.info("Deleted tag '%s' from vocabulary and %d channel assignments.", tag, affectedKeys.length);
 
-    sendSuccess(res, { affectedKeys, tags: true });
+    // The hint rides whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
+    sendSuccess(res, { affectedKeys, message: "Tag '" + tag + "' deleted.", playlistHint: affectedKeys.length > 0, tags: true });
   }));
 
   // POST /config/tags/restore - Restore a previously deleted predefined tag. Removes it from deletedTags so it reappears in the active vocabulary, then cascade-
@@ -219,7 +220,8 @@ export function registerTagRoutes(app: Express): void {
 
     LOG.info("Restored predefined tag '%s' on %d channels.", tag, affectedKeys.length);
 
-    sendSuccess(res, { affectedKeys, tags: true });
+    // The hint rides whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
+    sendSuccess(res, { affectedKeys, message: "Tag '" + canonicalTag + "' restored.", playlistHint: affectedKeys.length > 0, tags: true });
   }));
 
   // POST /config/tags/rename - Rename a tag across the vocabulary and all channel assignments via two ordered writes: the registry first, then a single batched
@@ -303,6 +305,7 @@ export function registerTagRoutes(app: Express): void {
 
     LOG.info("Renamed tag '%s' to '%s' across %d channels.", oldTag, newTag, affectedKeys.length);
 
-    sendSuccess(res, { affectedKeys, tags: true });
+    // The hint rides whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
+    sendSuccess(res, { affectedKeys, message: "Tag '" + oldTag + "' renamed to '" + newTag + "'.", playlistHint: affectedKeys.length > 0, tags: true });
   }));
 }

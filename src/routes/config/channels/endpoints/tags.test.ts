@@ -6,6 +6,7 @@
 import type { Express, RequestHandler } from "express";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { PLAYLIST_HINT } from "../http/playlistHint.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../../../../config/paths.ts";
 import { initializeUserChannels } from "../../../../config/userChannels.ts";
@@ -403,5 +404,96 @@ describe("POST /config/tags/rename", () => {
     const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
 
     assert.match(body["error"] as string, /already exists/);
+  });
+});
+
+/* Vocabulary mutations cascade into channel tag assignments, and tags render in the playlist, so a mutation that touched any channel is a playlist-visible
+ * change. Each endpoint reports what it did and appends the reload hint only when the cascade actually reached a channel - a vocabulary-only change shows
+ * nothing in the playlist.
+ */
+describe("tag vocabulary mutation responses", () => {
+
+  let dir: string;
+  let createTag: RequestHandler;
+  let deleteTag: RequestHandler;
+  let rename: RequestHandler;
+  let restore: RequestHandler;
+
+  beforeEach(async () => {
+
+    dir = await mkdtemp(path.join(os.tmpdir(), "prismcast-tagmsg-test-"));
+    initializeDataDir(dir);
+    await initializeUserChannels();
+
+    const { app, routes } = makeMockApp();
+
+    registerTagRoutes(app);
+
+    createTag = findRoute(routes, "post", "/config/tags");
+    deleteTag = findRoute(routes, "delete", "/config/tags/:tag");
+    rename = findRoute(routes, "post", "/config/tags/rename");
+    restore = findRoute(routes, "post", "/config/tags/restore");
+  });
+
+  afterEach(async () => {
+
+    await rm(dir, { force: true, recursive: true });
+  });
+
+  test("delete reports the tag and appends the hint when the cascade stripped it from channels", async () => {
+
+    const { json, req, res } = makeReqRes({ params: { tag: "Sports" } });
+
+    await deleteTag(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["message"], "Tag 'Sports' deleted." + PLAYLIST_HINT);
+  });
+
+  test("delete reports the tag without the hint when no channel carried it", async () => {
+
+    // A freshly created user tag has no channel assignments, so deleting it changes the vocabulary and nothing else - the playlist is unaffected.
+    const created = makeReqRes({ body: { tag: "UnusedTestTag" } });
+
+    await createTag(created.req, created.res, () => undefined);
+
+    const { json, req, res } = makeReqRes({ params: { tag: "UnusedTestTag" } });
+
+    await deleteTag(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["message"], "Tag 'UnusedTestTag' deleted.", "a vocabulary-only change carries no reload hint");
+  });
+
+  test("restore reports the tag and appends the hint when the cascade put it back on channels", async () => {
+
+    const deleted = makeReqRes({ params: { tag: "Sports" } });
+
+    await deleteTag(deleted.req, deleted.res, () => undefined);
+
+    const { json, req, res } = makeReqRes({ body: { tag: "Sports" } });
+
+    await restore(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["message"], "Tag 'Sports' restored." + PLAYLIST_HINT);
+  });
+
+  test("rename reports both names and appends the hint when the cascade renamed channel assignments", async () => {
+
+    const { json, req, res } = makeReqRes({ body: { newTag: "Sports Extra", oldTag: "Sports" } });
+
+    await rename(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["message"], "Tag 'Sports' renamed to 'Sports Extra'." + PLAYLIST_HINT);
   });
 });

@@ -25,7 +25,7 @@ import { isDeepStrictEqual } from "node:util";
  * @param b - The second tag array.
  * @returns True when the arrays contain the same tags, compared order-independently with case-sensitive value equality.
  */
-function tagsEqual(a: readonly string[], b: readonly string[]): boolean {
+export function tagsEqual(a: readonly string[], b: readonly string[]): boolean {
 
   if(a.length !== b.length) {
 

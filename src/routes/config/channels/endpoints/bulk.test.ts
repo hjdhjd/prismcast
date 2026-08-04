@@ -7,6 +7,7 @@
 import type { Express, RequestHandler } from "express";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { PLAYLIST_HINT } from "../http/playlistHint.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../../../../config/paths.ts";
 import { initializeUserChannels } from "../../../../config/userChannels.ts";
@@ -148,6 +149,20 @@ describe("POST /config/channels/auto-number", () => {
 
     assert.equal(body["success"], true);
   });
+
+  test("appends the playlist reload hint when channels were numbered", async () => {
+
+    // Channel numbers are playlist-visible, so a run that actually numbered channels tells the user to reload. The default listing is non-empty, so this is the
+    // hinted direction; the hint is gated on the affected count, which an empty visible listing would drive to zero.
+    const { json, req, res } = makeReqRes({ body: { start: 1 } });
+
+    await autoNumber(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.ok(((body["patch"] as { rows?: unknown[] } | undefined)?.rows?.length ?? 0) > 0, "the run numbered at least one channel");
+    assert.ok((body["message"] as string).endsWith(PLAYLIST_HINT), "the success message carries the reload hint");
+  });
 });
 
 describe("POST /config/channels/hdhr-bulk", () => {
@@ -247,5 +262,18 @@ describe("POST /config/channels/bulk-tags", () => {
     const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
 
     assert.match(body["error"] as string, /Unknown tag/);
+  });
+
+  test("appends the playlist reload hint when a tag was applied to channels", async () => {
+
+    // Tags render in the playlist as group-title and tvc-guide-tags, so a bulk retag is a playlist-visible change and the success message says so.
+    const { json, req, res } = makeReqRes({ body: { action: "add", tag: "Sports" } });
+
+    await bulkTags(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.ok((body["message"] as string).endsWith(PLAYLIST_HINT), "the success message carries the reload hint");
   });
 });
