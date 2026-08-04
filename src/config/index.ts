@@ -83,6 +83,12 @@ let stashedCliOverrides: CliOverrides | undefined;
 // persisted filter live without ever clobbering an env/CLI override - that override must win for the entire process lifetime.
 let envOrCliDebugOverride = false;
 
+/* Serialization queue for reloadConfiguration. Each call chains onto the previous one, so overlapping reloads read and commit in call order. Without it, two
+ * concurrent save-then-reload requests can interleave such that the reload holding the older disk snapshot commits last, leaving the live binding on a state
+ * the user already replaced.
+ */
+let reloadQueue: Promise<unknown> = Promise.resolve();
+
 // Whether validateConfiguration coerced a capture setting (forced FFmpeg mode, normalized captureCodecs) on the live CONFIG at startup. persistCoercedConfig
 // reads this to decide whether to write the coerced values back to disk so the on-disk state matches the live binding. Without the write-back a config file
 // holding an unsupported capture value (native mode) stays divergent from the coerced CONFIG forever, and the reload-validation path would then reject every
@@ -140,9 +146,31 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides, io: C
  * captureCodecs list missing the h264 baseline) is rejected rather than silently coerced: CONFIG stays on the previous valid state and every diffed change is
  * reported as rejected so the operator sees why nothing took effect. This closes the window where a live save could commit an un-normalized capture
  * configuration into the live binding without passing through validateConfiguration. The reject-on-invalid path is exercised by index.reload.test.ts.
+ *
+ * Serialization contract: calls are serialized on a module-level queue, so overlapping reloads read and commit in call order and the last reload to run always
+ * reads a snapshot at least as fresh as every write that preceded its call. A failed reload rejects to its own caller without breaking the chain for later
+ * ones. This extends the handler contract: a registered config-change handler must never call reloadConfiguration, because a queued reload awaiting a nested
+ * reload would deadlock the chain.
  * @returns The aggregate result of dispatching the diff.
  */
 export async function reloadConfiguration(io: ConfigStore = defaultConfigStore): Promise<ApplyResult> {
+
+  const operation = reloadQueue.then(async () => doReloadConfiguration(io));
+
+  // Swallow errors on the chain reference so future reloads can proceed. The error still propagates to the caller via the returned promise.
+  // eslint-disable-next-line @typescript-eslint/no-empty-function -- Intentional no-op: errors are propagated to the caller via the returned promise.
+  reloadQueue = operation.catch(() => {});
+
+  return operation;
+}
+
+/**
+ * Executes one reload: read, merge, normalize, diff, validate, commit, dispatch. Called only through the queue in reloadConfiguration, which is what makes the
+ * read-to-commit sequence below atomic with respect to other reloads.
+ * @param io - The config store to read through.
+ * @returns The aggregate result of dispatching the diff.
+ */
+async function doReloadConfiguration(io: ConfigStore): Promise<ApplyResult> {
 
   // Re-read the on-disk config snapshot that mutateConfig just wrote, then build the new in-memory shape in isolation so normalizations do not mutate the
   // previous snapshot before the diff is computed.

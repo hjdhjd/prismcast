@@ -31,6 +31,27 @@ const readConfigFailureMessage = "synthetic readConfig failure for atomicity tes
 let readConfigOverride: UserConfigLoadResult | null = null;
 let mutateConfigProbes: UserConfig[] = [];
 
+/* Indexed pool of pending reads used by the serialization suite. When armed, readConfig hands out pool entries in invocation order, so a test settles them BY
+ * INDEX rather than by call timing. Every entry exists before either reload is issued, which is what lets a test settle the second read first and still settle
+ * the first afterward - a pool built lazily inside readConfig could not express that order, because the second entry would not exist until the first read had
+ * already been served.
+ */
+let readConfigPool: PromiseWithResolvers<UserConfigLoadResult>[] | null = null;
+let readConfigInvocations = 0;
+
+/**
+ * Arms the indexed read pool with the requested number of pending entries and hands them back so the test can settle each one directly.
+ * @param size - How many reads to pre-allocate.
+ * @returns The pool entries, in the order readConfig will serve them.
+ */
+function armReadConfigPool(size: number): PromiseWithResolvers<UserConfigLoadResult>[] {
+
+  readConfigInvocations = 0;
+  readConfigPool = Array.from({ length: size }, () => Promise.withResolvers<UserConfigLoadResult>());
+
+  return readConfigPool;
+}
+
 /* The injected config store: substitutes config/index.ts's disk-persistence boundary so reloadConfiguration's merge + validation and persistCoercedConfig's write-
  * back run against controlled state without touching the real config file. Typed as the production ConfigStore port so the double cannot drift from it. Every
  * reload test arms a failure or an override before driving reloadConfiguration; readConfig throws on the un-armed path rather than falling through to a real disk
@@ -46,6 +67,19 @@ const io: indexModule.ConfigStore = {
     mutateConfigProbes.push(probe);
   },
   readConfig: () => {
+
+    // An armed pool takes precedence: each call is served the next pre-allocated entry so the test owns the settlement order.
+    if(readConfigPool) {
+
+      const queued = readConfigPool[readConfigInvocations++];
+
+      if(!queued) {
+
+        throw new Error("readConfig was called more times than the armed pool has entries.");
+      }
+
+      return queued.promise;
+    }
 
     if(armReadConfigFailure) {
 
@@ -205,5 +239,67 @@ describe("persistCoercedConfig - startup capture write-back", () => {
     await indexModule.persistCoercedConfig(io);
 
     assert.equal(mutateConfigProbes.length, 0, "no write-back without a coercion");
+  });
+});
+
+/* Reloads are serialized on a module-level queue, so two overlapping saves cannot interleave into a state where the reload holding the older disk snapshot
+ * commits last. Both pins drive two reloads whose reads settle out of call order, which is the shape a pair of concurrent save requests produces.
+ */
+describe("reloadConfiguration - serialized reloads", () => {
+
+  const queuedReadFailureMessage = "synthetic readConfig failure for the queued reload";
+
+  test("overlapping reloads commit in call order, leaving CONFIG on the newest snapshot", async () => {
+
+    const [ firstRead, secondRead ] = armReadConfigPool(2);
+
+    assert.ok(firstRead && secondRead, "both reads are pre-allocated before either reload is issued");
+
+    try {
+
+      /* Both reloads are issued without awaiting, then their reads are settled in reverse order: the second caller's newer snapshot settles first, the first
+       * caller's older snapshot afterward. Serialized, the second reload does not even request its read until the first has committed, so the newer value is
+       * the one left standing.
+       */
+      const older = indexModule.reloadConfiguration(io);
+      const newer = indexModule.reloadConfiguration(io);
+
+      secondRead.resolve({ config: { server: { port: 6200 } }, parseError: false, recoveredFromBackup: false });
+      firstRead.resolve({ config: { server: { port: 6100 } }, parseError: false, recoveredFromBackup: false });
+
+      await older;
+      await newer;
+
+      assert.equal(indexModule.CONFIG.server.port, 6200, "the live binding ends on the snapshot from the later call");
+    } finally {
+
+      readConfigPool = null;
+    }
+  });
+
+  test("a failed reload rejects its own caller and leaves the chain usable for the next one", async () => {
+
+    const [ firstRead, secondRead ] = armReadConfigPool(2);
+
+    assert.ok(firstRead && secondRead, "both reads are pre-allocated before either reload is issued");
+
+    try {
+
+      // The first reload's read fails. Its rejection must reach that caller alone: the queue swallows it on the chain reference so the reload behind it still
+      // runs and commits.
+      const failed = indexModule.reloadConfiguration(io);
+      const succeeded = indexModule.reloadConfiguration(io);
+
+      firstRead.reject(new Error(queuedReadFailureMessage));
+      secondRead.resolve({ config: { server: { port: 6300 } }, parseError: false, recoveredFromBackup: false });
+
+      await assert.rejects(() => failed, { message: queuedReadFailureMessage });
+      await succeeded;
+
+      assert.equal(indexModule.CONFIG.server.port, 6300, "the reload behind the failed one commits normally");
+    } finally {
+
+      readConfigPool = null;
+    }
   });
 });
