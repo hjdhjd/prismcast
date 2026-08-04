@@ -272,10 +272,15 @@ async function handlePredefinedEdit(key: string, predefinedBase: ResolvedChannel
     return;
   }
 
-  // Sibling variant match: the submitted values match a different variant's predefined definition exactly. That's an implicit revert-to-that-variant -
-  // delete the canonical override and switch the service selection. Variant-stored overrides on the active variant are also cleared since the user is
-  // explicitly reverting to a sibling.
-  const matchedVariantKey = isUserChannel(key) ? findMatchingVariant(key, formValues, tags) : undefined;
+  /* Sibling variant match: the submitted values match a different variant's predefined definition exactly. That is an implicit revert to that variant - switch
+   * the service selection to it and clear every stored override that could still shadow it, so the resolved channel equals exactly what the user just saved:
+   * the canonical override, the matched variant's own override, and (when it differs) the previously-active variant's override.
+   *
+   * The check runs unconditionally because findMatchingVariant self-guards - it returns undefined when the key has no service group - and because full-value
+   * matching is strictly the better answer than the URL-domain inference further below: it compares every submitted field against the variant's pure predefined
+   * data, so it picks the right sibling even when several siblings share a domain, which domain inference cannot tell apart.
+   */
+  const matchedVariantKey = findMatchingVariant(key, formValues, tags);
 
   if(matchedVariantKey) {
 
@@ -286,6 +291,9 @@ async function handlePredefinedEdit(key: string, predefinedBase: ResolvedChannel
       variantRevertHint = playlistHintForStored(data.channels[key]);
 
       Reflect.deleteProperty(data.channels, key);
+
+      // The matched variant presents its pure predefined data after the revert, so any override stored on it would resurface values the user just cleared.
+      Reflect.deleteProperty(data.channels, matchedVariantKey);
 
       // Clear any stored override on the previously-active variant since the user is switching away from it.
       if(activeVariantKey && (activeVariantKey !== matchedVariantKey)) {

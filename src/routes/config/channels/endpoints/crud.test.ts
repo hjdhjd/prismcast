@@ -127,6 +127,23 @@ async function readChannelsFile(dir: string): Promise<Record<string, Record<stri
   }
 }
 
+/* Reads the serviceSelections map from channels.json. The stored-entry reader above strips framework metadata, so selection assertions need their own accessor
+ * rather than re-parsing the file inline at each call site.
+ */
+async function readServiceSelections(dir: string): Promise<Record<string, string>> {
+
+  try {
+
+    const raw = await readFile(path.join(dir, "channels.json"), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+
+    return (parsed["serviceSelections"] ?? {}) as Record<string, string>;
+  } catch {
+
+    return {};
+  }
+}
+
 describe("registerCrudRoutes", () => {
 
   test("registers all five RESTful endpoints with the expected verb+path combinations", () => {
@@ -431,6 +448,241 @@ describe("handlePredefinedEdit (PUT /config/channels/:key)", () => {
     const selections = (parsed["serviceSelections"] ?? {}) as Record<string, string>;
 
     assert.equal(selections["abc"], undefined, "serviceSelections cleared for the custom-URL case");
+  });
+
+  /* Full-value sibling matching (the implicit revert-to-a-sibling path). The submission is compared against every sibling's PURE predefined definition, so a save
+   * that reproduces a sibling's values exactly is a revert to that sibling whatever was stored beforehand: the selection moves to the match, and the canonical
+   * override, the matched sibling's own override, and the previously-active sibling's override all clear so the resolved channel equals what the user saved. The
+   * tests below cover each stored-state shape that reaches the branch - an explicit selection, a filter-computed selection, and no selection at all - plus the
+   * same-domain case that URL-domain inference cannot tell apart.
+   */
+
+  test("full-value sibling match with a different variant selected switches the selection and stores no overrides", async () => {
+
+    // Cox is the active service and nothing is stored. Submitting Hulu's exact predefined values reverts to the Hulu sibling: the selection moves and neither the
+    // old nor the new variant is left with an entry.
+    const { mutateChannels } = await import("../../../../config/userChannels.ts");
+
+    await mutateChannels((data) => {
+
+      data.serviceSelections["abc"] = "abc-cox";
+    });
+
+    const formBody = makeFormBody({ channelSelector: "ABC", name: "ABC", tags: "Local", url: "https://www.hulu.com/live" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.match(body["message"] as string, /reverted to defaults/, "the revert branch announces the revert");
+
+    const stored = await readChannelsFile(dir);
+
+    assert.equal(stored["abc"], undefined, "no canonical override survives the revert");
+    assert.equal(stored["abc-cox"], undefined, "the previously-active variant keeps no override");
+    assert.equal(stored["abc-hulu"], undefined, "the matched variant keeps no override");
+
+    const selections = await readServiceSelections(dir);
+
+    assert.equal(selections["abc"], "abc-hulu", "the selection lands on the matched sibling");
+  });
+
+  test("full-value sibling match clears the override on the variant it switches away from", async () => {
+
+    // Cox is the active service and carries a binding override of its own. Reverting to the Hulu sibling moves the channel off Cox, so that override is cleared
+    // too - leaving it behind parks a customization on a service this channel has stopped resolving through, ready to resurface if the user ever switches back.
+    const { mutateChannels } = await import("../../../../config/userChannels.ts");
+
+    await mutateChannels((data) => {
+
+      data.channels["abc-cox"] = { canonicalKey: "abc", channelSelector: "COX-CUSTOM" };
+      data.serviceSelections["abc"] = "abc-cox";
+    });
+
+    const formBody = makeFormBody({ channelSelector: "ABC", name: "ABC", tags: "Local", url: "https://www.hulu.com/live" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.match(body["message"] as string, /reverted to defaults/, "the revert branch announces the revert");
+
+    const stored = await readChannelsFile(dir);
+
+    assert.equal(stored["abc-cox"], undefined, "the override on the variant being switched away from is cleared");
+    assert.equal(stored["abc"], undefined, "no canonical override survives the revert");
+    assert.equal(stored["abc-hulu"], undefined, "the matched variant keeps no override");
+
+    const selections = await readServiceSelections(dir);
+
+    assert.equal(selections["abc"], "abc-hulu", "the selection lands on the matched sibling");
+  });
+
+  test("full-value sibling match with a filter-computed active variant records the match as an explicit selection", async () => {
+
+    /* No selection is stored: the active variant arises computationally because the service filter excludes the canonical's own service, leaving Cox first among
+     * the enabled siblings. A submission matching Hulu's predefined values exactly still reverts to Hulu, and the resolution is written back as an explicit
+     * stored selection.
+     */
+    const { getEnabledServices, setEnabledServices } = await import("../../../../config/services.ts");
+    const previousServices = getEnabledServices();
+
+    setEnabledServices([ "cox", "hulu" ]);
+
+    try {
+
+      const formBody = makeFormBody({ channelSelector: "ABC", name: "ABC", tags: "Local", url: "https://www.hulu.com/live" });
+      const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+      await put(req, res, () => undefined);
+
+      const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+      assert.equal(body["success"], true);
+      assert.match(body["message"] as string, /reverted to defaults/, "the revert branch announces the revert");
+
+      const stored = await readChannelsFile(dir);
+
+      assert.equal(stored["abc"], undefined, "no canonical override is written");
+      assert.equal(stored["abc-cox"], undefined, "the filter-resolved variant keeps no override");
+      assert.equal(stored["abc-hulu"], undefined, "the matched variant keeps no override");
+
+      const selections = await readServiceSelections(dir);
+
+      assert.equal(selections["abc"], "abc-hulu", "the matched sibling becomes the explicit selection");
+    } finally {
+
+      // The enabled-services filter is module state shared by every test in this process, so restore it even when an assertion above throws.
+      setEnabledServices(previousServices);
+    }
+  });
+
+  test("full-value match on the active variant clears that variant's own stored override", async () => {
+
+    // The user has customized the canonical's identity and the active variant's binding, then saves the variant's exact predefined values. Both entries clear - a
+    // surviving variant override would resurface the channelSelector the user just cleared.
+    const { mutateChannels } = await import("../../../../config/userChannels.ts");
+
+    await mutateChannels((data) => {
+
+      data.channels["abc"] = { name: "ABC Custom" };
+      data.channels["abc-hulu"] = { canonicalKey: "abc", channelSelector: "MyCustomABC" };
+      data.serviceSelections["abc"] = "abc-hulu";
+    });
+
+    const formBody = makeFormBody({ channelSelector: "ABC", name: "ABC", tags: "Local", url: "https://www.hulu.com/live" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.match(body["message"] as string, /reverted to defaults/, "the revert branch announces the revert");
+
+    const stored = await readChannelsFile(dir);
+
+    assert.equal(stored["abc"], undefined, "the canonical override is cleared");
+    assert.equal(stored["abc-hulu"], undefined, "the matched variant's own override is cleared");
+
+    const selections = await readServiceSelections(dir);
+
+    assert.equal(selections["abc"], "abc-hulu", "the selection still points at the matched variant");
+  });
+
+  test("full-value match on the active variant clears its override even with no canonical override stored", async () => {
+
+    // Only the variant carries an override. The response is what tells the two paths apart here: this is a revert, not an ordinary update that happens to leave
+    // the same stored state behind.
+    const { mutateChannels } = await import("../../../../config/userChannels.ts");
+
+    await mutateChannels((data) => {
+
+      data.channels["abc-hulu"] = { canonicalKey: "abc", channelSelector: "MyCustomABC" };
+      data.serviceSelections["abc"] = "abc-hulu";
+    });
+
+    const formBody = makeFormBody({ channelSelector: "ABC", name: "ABC", tags: "Local", url: "https://www.hulu.com/live" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.match(body["message"] as string, /reverted to defaults/, "a full-value match reports a revert, not an update");
+
+    const stored = await readChannelsFile(dir);
+
+    assert.equal(stored["abc-hulu"], undefined, "the matched variant's own override is cleared");
+  });
+
+  test("full-value sibling match with only a canonical override switches the selection and clears the canonical", async () => {
+
+    // The original documented case: a customized canonical, no selection, and a submission matching a sibling exactly.
+    const { mutateChannels } = await import("../../../../config/userChannels.ts");
+
+    await mutateChannels((data) => {
+
+      data.channels["abc"] = { name: "ABC Override" };
+    });
+
+    const formBody = makeFormBody({ channelSelector: "ABC", name: "ABC", tags: "Local", url: "https://www.hulu.com/live" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.match(body["message"] as string, /reverted to defaults/, "the revert branch announces the revert");
+
+    const stored = await readChannelsFile(dir);
+
+    assert.equal(stored["abc"], undefined, "the canonical override is cleared");
+
+    const selections = await readServiceSelections(dir);
+
+    assert.equal(selections["abc"], "abc-hulu", "the selection lands on the matched sibling");
+  });
+
+  test("full-value sibling match picks the exact variant when a same-domain sibling exists", async () => {
+
+    /* A user-stored sibling sits on the same domain as the Hulu variant and sorts ahead of it alphabetically, so URL-domain inference would pick that one.
+     * Full-value matching compares every submitted field against each sibling's predefined data, so it lands on abc-hulu - the sibling whose values the user
+     * actually submitted - and leaves the same-domain entry untouched.
+     */
+    const { mutateChannels } = await import("../../../../config/userChannels.ts");
+    const alphaEntry = { canonicalKey: "abc", url: "https://www.hulu.com/live/alpha" };
+
+    await mutateChannels((data) => {
+
+      data.channels["abc-alpha"] = { ...alphaEntry };
+    });
+
+    const formBody = makeFormBody({ channelSelector: "ABC", name: "ABC", tags: "Local", url: "https://www.hulu.com/live" });
+    const { json, req, res } = makeReqRes({ body: formBody, params: { key: "abc" } });
+
+    await put(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.match(body["message"] as string, /reverted to defaults/, "the revert branch announces the revert");
+
+    const stored = await readChannelsFile(dir);
+
+    assert.equal(stored["abc"], undefined, "no canonical override is written");
+    assert.equal(stored["abc-hulu"], undefined, "the matched variant keeps no override");
+    assert.deepEqual(stored["abc-alpha"], alphaEntry, "the same-domain sibling is left untouched");
+
+    const selections = await readServiceSelections(dir);
+
+    assert.equal(selections["abc"], "abc-hulu", "the selection lands on the full-value match, not the alphabetically-first domain match");
   });
 });
 
