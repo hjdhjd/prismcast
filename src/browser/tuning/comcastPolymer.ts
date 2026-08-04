@@ -805,10 +805,11 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     }
 
     // Poll for Node-side cache population. The channelmap API response is intercepted by setupChannelmapInterception (called by resolveDirectUrl before we got
-    // here). We need the Node-side cache for findChannel's three-tier matching.
+    // here). We need the Node-side cache for findChannel's three-tier matching. The page check ends the wait the moment the page is gone: a closed page can never
+    // deliver that interception, so polling out the remaining clock only delays the failure this tune is already headed for. The empty-cache path below reports it.
     const deadline = Date.now() + timeout;
 
-    while((channelCache.size === 0) && (Date.now() < deadline)) {
+    while((channelCache.size === 0) && !page.isClosed() && (Date.now() < deadline)) {
 
       // eslint-disable-next-line no-await-in-loop
       await delay(CACHE_POLL_INTERVAL);
@@ -919,10 +920,12 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
       return [];
     }
 
-    // Poll for cache population.
+    // Poll for cache population. The page check ends the wait the moment the page is gone: a closed page can never deliver the channelmap interception, so polling
+    // out the remaining clock would only postpone this walk's settlement - and a refresh that cancelled this walk by closing its page waits on that settlement
+    // before it clears the caches. The empty-cache path below handles the early exit.
     const deadline = Date.now() + CONFIG.streaming.videoTimeout;
 
-    while((channelCache.size === 0) && (Date.now() < deadline)) {
+    while((channelCache.size === 0) && !page.isClosed() && (Date.now() < deadline)) {
 
       // eslint-disable-next-line no-await-in-loop
       await delay(CACHE_POLL_INTERVAL);
